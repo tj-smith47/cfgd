@@ -1,0 +1,23 @@
+Status
+
+Last Apply
+  Time     2026-05-14T11:30:00Z
+  Profile  default
+  Status   success
+
+Drift
+  ⚠ file ~/.zshrc — want: hash-desired, have: hash-actual
+  ⚠ package ripgrep — want: 14.1.0, have: 13.0.0 [team-config]
+
+Config Sources
+  Source       Status  Version  Last Fetched        
+  ──────────────────────────────────────────────────
+  team-config  synced  3.1.0    2026-05-14T09:00:00Z
+
+Pending Decisions
+  team-config
+    1 pending item
+    recommended package/curl — install curl 8.5.0 (install)
+
+Modules
+  ✓ shell-config: 0 pkgs, 4 files, installed

@@ -1,0 +1,36 @@
+{
+  "drift": [],
+  "lastApply": {
+    "id": 1,
+    "planHash": "deadbeef",
+    "profile": "default",
+    "status": "Success",
+    "summary": "12 actions applied",
+    "timestamp": "2026-05-14T10:00:00Z"
+  },
+  "managedResources": [
+    {
+      "lastApplied": 1715680800,
+      "lastHash": "hash1",
+      "resourceId": "~/.bashrc",
+      "resourceType": "file",
+      "source": "local"
+    }
+  ],
+  "modules": [
+    {
+      "files": 3,
+      "name": "base",
+      "packages": 5,
+      "status": "installed"
+    },
+    {
+      "files": 12,
+      "name": "dev-tools",
+      "packages": 18,
+      "status": "installed"
+    }
+  ],
+  "pendingDecisions": [],
+  "sources": []
+}

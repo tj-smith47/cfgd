@@ -1,47 +1,242 @@
 use super::*;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role, renderer::Table as TableV2};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct StatusOutput {
-    last_apply: Option<cfgd_core::state::ApplyRecord>,
-    drift: Vec<cfgd_core::state::DriftEvent>,
-    sources: Vec<cfgd_core::state::ConfigSourceRecord>,
-    pending_decisions: Vec<cfgd_core::state::PendingDecision>,
-    modules: Vec<ModuleStatusEntry>,
-    managed_resources: Vec<cfgd_core::state::ManagedResource>,
+pub struct StatusOutput {
+    pub last_apply: Option<cfgd_core::state::ApplyRecord>,
+    pub drift: Vec<cfgd_core::state::DriftEvent>,
+    pub sources: Vec<cfgd_core::state::ConfigSourceRecord>,
+    pub pending_decisions: Vec<cfgd_core::state::PendingDecision>,
+    pub modules: Vec<ModuleStatusEntry>,
+    pub managed_resources: Vec<cfgd_core::state::ManagedResource>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ModuleStatusEntry {
-    name: String,
-    packages: usize,
-    files: usize,
-    status: String,
+pub struct ModuleStatusEntry {
+    pub name: String,
+    pub packages: usize,
+    pub files: usize,
+    pub status: String,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ModuleStatus {
-    name: String,
-    packages: usize,
-    files: usize,
-    depends: Vec<String>,
-    status: String,
-    last_applied: Option<String>,
+pub struct ModuleStatus {
+    pub name: String,
+    pub packages: usize,
+    pub files: usize,
+    pub depends: Vec<String>,
+    pub status: String,
+    pub last_applied: Option<String>,
+}
+
+fn apply_status_str(s: &cfgd_core::state::ApplyStatus) -> &'static str {
+    match s {
+        cfgd_core::state::ApplyStatus::Success => "success",
+        cfgd_core::state::ApplyStatus::Partial => "partial",
+        cfgd_core::state::ApplyStatus::Failed => "failed",
+        cfgd_core::state::ApplyStatus::InProgress => "in_progress",
+    }
+}
+
+/// Build the fleet-wide `cfgd status` Doc. Caller supplies the precomputed
+/// payload and the configured `SourceSpec` list so the renderer can show
+/// "not yet fetched" rows for sources without state records.
+pub fn build_fleet_status_doc(output: &StatusOutput, configured_sources: &[String]) -> Doc {
+    let mut doc = Doc::new().heading("Status");
+
+    match &output.last_apply {
+        Some(last) => {
+            doc = doc.section("Last Apply", |s| {
+                let mut s = s
+                    .kv("Time", &last.timestamp)
+                    .kv("Profile", &last.profile)
+                    .kv("Status", apply_status_str(&last.status));
+                if let Some(summary) = &last.summary {
+                    s = s.kv("Summary", summary);
+                }
+                s
+            });
+        }
+        None => {
+            doc = doc.status(Role::Info, "No applies recorded yet");
+        }
+    }
+
+    doc = if output.drift.is_empty() {
+        doc.section("Drift", |s| s.status(Role::Ok, "No drift detected"))
+    } else {
+        doc.section("Drift", |s| {
+            output.drift.iter().fold(s, |s, event| {
+                let source_info = if event.source != "local" {
+                    format!(" [{}]", event.source)
+                } else {
+                    String::new()
+                };
+                s.status(
+                    Role::Warn,
+                    format!(
+                        "{} {} — want: {}, have: {}{}",
+                        event.resource_type,
+                        event.resource_id,
+                        event.expected.as_deref().unwrap_or("?"),
+                        event.actual.as_deref().unwrap_or("?"),
+                        source_info,
+                    ),
+                )
+            })
+        })
+    };
+
+    if !configured_sources.is_empty() {
+        doc = doc.section("Config Sources", |s| {
+            if output.sources.is_empty() {
+                configured_sources
+                    .iter()
+                    .fold(s, |s, name| s.kv(name, "not yet fetched"))
+            } else {
+                let mut t = TableV2::new(["Source", "Status", "Version", "Last Fetched"]);
+                for rec in &output.sources {
+                    t = t.row([
+                        rec.name.clone(),
+                        rec.status.clone(),
+                        rec.source_version.clone().unwrap_or_else(|| "-".into()),
+                        rec.last_fetched.clone().unwrap_or_else(|| "never".into()),
+                    ]);
+                }
+                s.table(t)
+            }
+        });
+    }
+
+    doc = doc.section_if_nonempty(
+        "Pending Decisions",
+        &output.pending_decisions,
+        |s, decisions| {
+            let mut by_source: std::collections::BTreeMap<
+                &str,
+                Vec<&cfgd_core::state::PendingDecision>,
+            > = std::collections::BTreeMap::new();
+            for d in decisions {
+                by_source.entry(&d.source).or_default().push(d);
+            }
+            by_source.into_iter().fold(s, |s, (source_name, items)| {
+                let count = items.len();
+                let plural = if count == 1 { "" } else { "s" };
+                s.subsection(source_name.to_string(), |sub| {
+                    let sub = sub.status(Role::Info, format!("{count} pending item{plural}"));
+                    items.iter().fold(sub, |sub, item| {
+                        sub.status(
+                            Role::Info,
+                            format!(
+                                "{} {} — {} ({})",
+                                item.tier, item.resource, item.summary, item.action
+                            ),
+                        )
+                    })
+                })
+            })
+        },
+    );
+
+    doc = doc.section_if_nonempty("Modules", &output.modules, |s, mods| {
+        mods.iter().fold(s, |s, m| {
+            let summary = format!("{} pkgs, {} files", m.packages, m.files);
+            let role = match m.status.as_str() {
+                "installed" => Role::Ok,
+                "not applied" | "not yet applied" => Role::Info,
+                _ => Role::Warn,
+            };
+            let suffix = if m.status == "not applied" {
+                "not yet applied".to_string()
+            } else {
+                m.status.clone()
+            };
+            s.status(role, format!("{}: {}, {}", m.name, summary, suffix))
+        })
+    });
+
+    doc = doc.section_if_nonempty(
+        "Managed Resources",
+        &output.managed_resources,
+        |s, items| {
+            let mut t = TableV2::new(["Type", "Resource", "Source"]);
+            for r in items {
+                t = t.row([
+                    r.resource_type.clone(),
+                    r.resource_id.clone(),
+                    r.source.clone(),
+                ]);
+            }
+            s.table(t)
+        },
+    );
+
+    doc.with_data(output)
+}
+
+/// Build the per-module `cfgd status <module>` Doc.
+/// `deployed_files` is a list of (path, exists) pairs.
+pub fn build_module_status_doc(output: &ModuleStatus, deployed_files: &[(String, bool)]) -> Doc {
+    let mut doc = Doc::new()
+        .heading(format!("Status: {}", output.name))
+        .kv("Packages", output.packages.to_string())
+        .kv("Files", output.files.to_string());
+
+    if !output.depends.is_empty() {
+        doc = doc.kv("Dependencies", output.depends.join(", "));
+    }
+
+    doc = doc.kv("Status", &output.status);
+    if let Some(last) = &output.last_applied {
+        doc = doc.kv("Last applied", last);
+    }
+
+    doc = doc.section_if_nonempty("Deployed Files", deployed_files, |s, files| {
+        files.iter().fold(s, |s, (path, exists)| {
+            if *exists {
+                s.status(Role::Ok, path)
+            } else {
+                s.status(Role::Fail, format!("{} (missing)", path))
+            }
+        })
+    });
+
+    doc.with_data(output)
+}
+
+/// Doc for the `cfgd status <module>` not-found path. Renders the module
+/// header and an info note; structured consumers get a payload with packages=0
+/// and `status: "not found"`.
+pub fn build_module_status_not_found_doc(name: &str) -> Doc {
+    let payload = ModuleStatus {
+        name: name.to_string(),
+        packages: 0,
+        files: 0,
+        depends: Vec::new(),
+        status: "not found".into(),
+        last_applied: None,
+    };
+    Doc::new()
+        .heading(format!("Status: {}", name))
+        .status(Role::Info, format!("Module '{}' not found", name))
+        .with_data(payload)
 }
 
 pub(super) fn cmd_status(
     cli: &Cli,
     printer: &Printer,
+    v2_printer: &PrinterV2,
     module_filter: Option<&str>,
     exit_code: bool,
 ) -> anyhow::Result<()> {
     if let Some(mod_name) = module_filter {
-        return cmd_status_module(cli, printer, mod_name);
+        return cmd_status_module(cli, printer, v2_printer, mod_name);
     }
 
-    let (cfg, resolved) = load_config_and_profile(cli, printer)?;
+    let (cfg, resolved) = load_config_and_profile_v2(cli, v2_printer)?;
     let state = open_state_store(cli.state_dir.as_deref())?;
 
     let last_apply = state.last_apply()?;
@@ -54,7 +249,6 @@ pub(super) fn cmd_status(
     let pending = state.pending_decisions()?;
     let resources = state.managed_resources()?;
 
-    // Build module status entries
     let config_dir = config_dir(cli);
     // default_module_cache_dir() can fail only if $HOME is unset; fall back to
     // empty PathBuf so the status display degrades gracefully instead of erroring.
@@ -88,143 +282,19 @@ pub(super) fn cmd_status(
         .collect();
 
     let has_drift = !drift_events.is_empty();
+    let configured_source_names: Vec<String> =
+        cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
 
-    if printer.is_structured() {
-        printer.write_structured(&StatusOutput {
-            last_apply,
-            drift: drift_events,
-            sources: source_records,
-            pending_decisions: pending,
-            modules: module_entries,
-            managed_resources: resources,
-        });
-        if exit_code && has_drift {
-            cfgd_core::exit::ExitCode::DriftDetected.exit();
-        }
-        return Ok(());
-    }
+    let output = StatusOutput {
+        last_apply,
+        drift: drift_events,
+        sources: source_records,
+        pending_decisions: pending,
+        modules: module_entries,
+        managed_resources: resources,
+    };
 
-    printer.header("Status");
-    printer.newline();
-
-    // Last apply
-    if let Some(last) = &last_apply {
-        printer.subheader("Last Apply");
-        printer.key_value("Time", &last.timestamp);
-        printer.key_value("Profile", &last.profile);
-        printer.key_value(
-            "Status",
-            match last.status {
-                cfgd_core::state::ApplyStatus::Success => "success",
-                cfgd_core::state::ApplyStatus::Partial => "partial",
-                cfgd_core::state::ApplyStatus::Failed => "failed",
-                cfgd_core::state::ApplyStatus::InProgress => "in_progress",
-            },
-        );
-        if let Some(ref summary) = last.summary {
-            printer.key_value("Summary", summary);
-        }
-    } else {
-        printer.info("No applies recorded yet");
-    }
-
-    // Drift summary
-    printer.newline();
-    printer.subheader("Drift");
-    if drift_events.is_empty() {
-        printer.success("No drift detected");
-    } else {
-        for event in &drift_events {
-            let source_info = if event.source != "local" {
-                format!(" [{}]", event.source)
-            } else {
-                String::new()
-            };
-            printer.warning(&format!(
-                "{} {} — want: {}, have: {}{}",
-                event.resource_type,
-                event.resource_id,
-                event.expected.as_deref().unwrap_or("?"),
-                event.actual.as_deref().unwrap_or("?"),
-                source_info,
-            ));
-        }
-    }
-
-    // Config sources
-    if !cfg.spec.sources.is_empty() {
-        printer.newline();
-        printer.subheader("Config Sources");
-        if source_records.is_empty() {
-            for source in &cfg.spec.sources {
-                printer.key_value(&source.name, "not yet fetched");
-            }
-        } else {
-            let rows: Vec<Vec<String>> = source_records
-                .iter()
-                .map(|s| {
-                    vec![
-                        s.name.clone(),
-                        s.status.clone(),
-                        s.source_version.clone().unwrap_or_else(|| "-".into()),
-                        s.last_fetched.clone().unwrap_or_else(|| "never".into()),
-                    ]
-                })
-                .collect();
-            printer.table(&["Source", "Status", "Version", "Last Fetched"], &rows);
-        }
-    }
-
-    // Pending decisions
-    if !pending.is_empty() {
-        printer.newline();
-        printer.subheader("Pending Decisions");
-        display_pending_decisions(printer, &pending);
-    }
-
-    // Modules
-    if !resolved.merged.modules.is_empty() {
-        printer.newline();
-        printer.subheader("Modules");
-
-        for mod_ref in &resolved.merged.modules {
-            let mod_name = modules::resolve_profile_module_name(mod_ref);
-            let (pkg_count, file_count) = all_modules
-                .get(mod_name)
-                .map(|m| (m.spec.packages.len(), m.spec.files.len()))
-                .unwrap_or((0, 0));
-
-            let summary = format!("{} pkgs, {} files", pkg_count, file_count);
-            if let Some(state_rec) = state_map.get(mod_name) {
-                if state_rec.status == "installed" {
-                    printer.success(&format!("{}: {}, {}", mod_ref, summary, state_rec.status));
-                } else {
-                    printer.warning(&format!("{}: {}, {}", mod_ref, summary, state_rec.status));
-                }
-            } else {
-                printer.info(&format!("{}: {}, not yet applied", mod_ref, summary));
-            }
-        }
-    }
-
-    // Managed resources
-    if !resources.is_empty() {
-        printer.newline();
-        printer.subheader("Managed Resources");
-        printer.table(
-            &["Type", "Resource", "Source"],
-            &resources
-                .iter()
-                .map(|r| {
-                    vec![
-                        r.resource_type.clone(),
-                        r.resource_id.clone(),
-                        r.source.clone(),
-                    ]
-                })
-                .collect::<Vec<_>>(),
-        );
-    }
+    v2_printer.emit(build_fleet_status_doc(&output, &configured_source_names));
 
     if exit_code && has_drift {
         cfgd_core::exit::ExitCode::DriftDetected.exit();
@@ -236,6 +306,7 @@ pub(super) fn cmd_status(
 pub(super) fn cmd_status_module(
     cli: &Cli,
     printer: &Printer,
+    v2_printer: &PrinterV2,
     mod_name: &str,
 ) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
@@ -249,20 +320,7 @@ pub(super) fn cmd_status_module(
     let module = match all_modules.get(mod_name) {
         Some(m) => m,
         None => {
-            // Module not found — show empty status gracefully
-            if printer.is_structured() {
-                printer.write_structured(&ModuleStatus {
-                    name: mod_name.to_string(),
-                    packages: 0,
-                    files: 0,
-                    depends: vec![],
-                    status: "not found".into(),
-                    last_applied: None,
-                });
-            } else {
-                printer.header(&format!("Status: {}", mod_name));
-                printer.info(&format!("Module '{}' not found", mod_name));
-            }
+            v2_printer.emit(build_module_status_not_found_doc(mod_name));
             return Ok(());
         }
     };
@@ -270,64 +328,39 @@ pub(super) fn cmd_status_module(
     let state = open_state_store(cli.state_dir.as_deref())?;
     let state_rec = state.module_state_by_name(mod_name)?;
 
-    if printer.is_structured() {
-        let status = state_rec
-            .as_ref()
-            .map(|s| s.status.clone())
-            .unwrap_or_else(|| "not applied".into());
-        let last_applied = state_rec.as_ref().map(|s| s.installed_at.clone());
-        printer.write_structured(&ModuleStatus {
-            name: mod_name.to_string(),
-            packages: module.spec.packages.len(),
-            files: module.spec.files.len(),
-            depends: module.spec.depends.clone(),
-            status,
-            last_applied,
-        });
-        return Ok(());
-    }
+    let status = state_rec
+        .as_ref()
+        .map(|s| s.status.clone())
+        .unwrap_or_else(|| "not applied".into());
+    let last_applied = state_rec.as_ref().map(|s| s.installed_at.clone());
 
-    printer.header(&format!("Status: {}", mod_name));
+    let output = ModuleStatus {
+        name: mod_name.to_string(),
+        packages: module.spec.packages.len(),
+        files: module.spec.files.len(),
+        depends: module.spec.depends.clone(),
+        status,
+        last_applied,
+    };
 
-    // Module info
-    printer.key_value("Packages", &module.spec.packages.len().to_string());
-    printer.key_value("Files", &module.spec.files.len().to_string());
-    if !module.spec.depends.is_empty() {
-        printer.key_value("Dependencies", &module.spec.depends.join(", "));
-    }
-
-    // State from DB
-    if let Some(rec) = &state_rec {
-        printer.key_value("Status", &rec.status);
-        printer.key_value("Last applied", &rec.installed_at);
-        printer.key_value("Packages hash", &rec.packages_hash);
-        printer.key_value("Files hash", &rec.files_hash);
-    } else {
-        printer.key_value("Status", "not applied");
-    }
-
-    // Show deployed files from manifest
-    let deployed_files = state.module_deployed_files(mod_name)?;
-    if !deployed_files.is_empty() {
-        printer.newline();
-        printer.subheader("Deployed Files");
-        for f in &deployed_files {
+    let deployed_files: Vec<(String, bool)> = state
+        .module_deployed_files(mod_name)?
+        .into_iter()
+        .map(|f| {
             let exists = std::path::Path::new(&f.file_path).exists();
-            if exists {
-                printer.success(&f.file_path);
-            } else {
-                printer.error(&format!("{} (missing)", f.file_path));
-            }
-        }
-    }
+            (f.file_path, exists)
+        })
+        .collect();
 
+    v2_printer.emit(build_module_status_doc(&output, &deployed_files));
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cfgd_core::output::OutputFormat;
+    use cfgd_core::output_v2::Printer as PrinterV2;
+    use cfgd_core::output_v2::Verbosity as VerbosityV2;
     use cfgd_core::state::ApplyStatus;
 
     // Minimal config + default profile YAML used by every test that exercises
@@ -362,11 +395,24 @@ mod tests {
             verbose: 0,
             quiet: true,
             no_color: true,
-            output: OutputFormatArg(OutputFormat::Table),
+            output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             jsonpath: None,
             state_dir: Some(state_dir.to_path_buf()),
             command: None,
         }
+    }
+
+    fn test_printers() -> (Printer, PrinterV2, std::sync::Arc<std::sync::Mutex<String>>) {
+        let (printer, _) = Printer::for_test();
+        let (v2_printer, v2_buf) = PrinterV2::for_test_at(VerbosityV2::Normal);
+        (printer, v2_printer, v2_buf)
+    }
+
+    fn test_printers_json() -> (Printer, PrinterV2, std::sync::Arc<std::sync::Mutex<String>>) {
+        let (printer, _) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        let (v2_printer, v2_buf) =
+            PrinterV2::for_test_with_format(cfgd_core::output_v2::OutputFormat::Json);
+        (printer, v2_printer, v2_buf)
     }
 
     /// Isolated config-dir + state-dir pair with a minimal valid `cfgd.yaml`
@@ -406,9 +452,9 @@ mod tests {
         let state_dir = tempfile::tempdir().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(dir.path().join("nope.yaml"), state_dir.path());
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, v2_printer, _) = test_printers();
 
-        let err = cmd_status(&cli, &printer, None, false).unwrap_err();
+        let err = cmd_status(&cli, &printer, &v2_printer, None, false).unwrap_err();
         let msg = err.to_string().to_lowercase();
         assert!(
             msg.contains("not found") || msg.contains("nope.yaml"),
@@ -420,18 +466,19 @@ mod tests {
     fn cmd_status_empty_state_renders_no_applies_and_no_drift() {
         let (_cfg_dir, state_dir, config_path) = setup_env();
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, buf) = Printer::for_test();
+        let (printer, v2_printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false).unwrap();
+        cmd_status(&cli, &printer, &v2_printer, None, false).unwrap();
+        drop(v2_printer);
 
         let output = buf.lock().unwrap();
         assert!(
-            output.contains("=== Status ==="),
-            "should render Status header, got: {output}"
+            output.contains("Status"),
+            "should render Status heading, got: {output}"
         );
         assert!(
             output.contains("No applies recorded yet"),
-            "empty applies table should print info line, got: {output}"
+            "empty applies state should render info line, got: {output}"
         );
         assert!(
             output.contains("No drift detected"),
@@ -453,21 +500,22 @@ mod tests {
             .unwrap();
 
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, buf) = Printer::for_test();
+        let (printer, v2_printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false).unwrap();
+        cmd_status(&cli, &printer, &v2_printer, None, false).unwrap();
+        drop(v2_printer);
 
         let output = buf.lock().unwrap();
         assert!(
             output.contains("Last Apply"),
-            "should render Last Apply subheader, got: {output}"
+            "should render Last Apply section, got: {output}"
         );
         assert!(
-            output.contains("Profile: default"),
-            "should print profile key/value, got: {output}"
+            output.contains("default"),
+            "should print profile, got: {output}"
         );
         assert!(
-            output.contains("Status: success"),
+            output.contains("success"),
             "should print success status, got: {output}"
         );
         assert!(
@@ -491,9 +539,10 @@ mod tests {
             .unwrap();
 
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, buf) = Printer::for_test();
+        let (printer, v2_printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false).unwrap();
+        cmd_status(&cli, &printer, &v2_printer, None, false).unwrap();
+        drop(v2_printer);
 
         let output = buf.lock().unwrap();
         assert!(
@@ -525,9 +574,10 @@ mod tests {
             .unwrap();
 
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, buf) = Printer::for_test();
+        let (printer, v2_printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false).unwrap();
+        cmd_status(&cli, &printer, &v2_printer, None, false).unwrap();
+        drop(v2_printer);
 
         let output = buf.lock().unwrap();
         // The format string adds " [<source>]" only when source != "local".
@@ -546,14 +596,15 @@ mod tests {
             .unwrap();
 
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, buf) = Printer::for_test();
+        let (printer, v2_printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, None, false).unwrap();
+        cmd_status(&cli, &printer, &v2_printer, None, false).unwrap();
+        drop(v2_printer);
 
         let output = buf.lock().unwrap();
         assert!(
             output.contains("Managed Resources"),
-            "should print Managed Resources subheader, got: {output}"
+            "should print Managed Resources section, got: {output}"
         );
         assert!(
             output.contains("/etc/managed.conf"),
@@ -573,9 +624,9 @@ mod tests {
             .unwrap();
 
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, _buf) = Printer::for_test();
+        let (printer, v2_printer, _) = test_printers();
 
-        let res = cmd_status(&cli, &printer, None, false);
+        let res = cmd_status(&cli, &printer, &v2_printer, None, false);
         assert!(res.is_ok(), "exit_code=false must return Ok, got: {res:?}");
     }
 
@@ -586,9 +637,9 @@ mod tests {
         // Ok. This exercises the (exit_code && has_drift) short-circuit gate.
         let (_cfg_dir, state_dir, config_path) = setup_env();
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, _buf) = Printer::for_test();
+        let (printer, v2_printer, _) = test_printers();
 
-        let res = cmd_status(&cli, &printer, None, true);
+        let res = cmd_status(&cli, &printer, &v2_printer, None, true);
         assert!(
             res.is_ok(),
             "exit_code=true with no drift must return Ok, got: {res:?}"
@@ -607,19 +658,14 @@ mod tests {
             .unwrap();
 
         let mut cli = test_cli_for(config_path, state_dir.path());
-        cli.output = OutputFormatArg(OutputFormat::Json);
-        let (printer, buf) = Printer::for_test_with_format(OutputFormat::Json);
+        cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
+        let (printer, v2_printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, None, false).unwrap();
+        cmd_status(&cli, &printer, &v2_printer, None, false).unwrap();
+        drop(v2_printer);
 
-        // load_config_and_profile captures Config:/Profile: key-value lines
-        // into the same buffer before the JSON is emitted; slice from the
-        // first '{' so serde_json sees a clean object.
         let captured = buf.lock().unwrap().clone();
-        let json_start = captured
-            .find('{')
-            .unwrap_or_else(|| panic!("no JSON object in output: {captured}"));
-        let parsed: serde_json::Value = serde_json::from_str(captured[json_start..].trim())
+        let parsed: serde_json::Value = serde_json::from_str(captured.trim())
             .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {captured}"));
         assert!(
             parsed["lastApply"].is_object(),
@@ -640,21 +686,22 @@ mod tests {
     #[test]
     fn cmd_status_module_filter_routes_to_per_module_path() {
         // When `module_filter` is Some, cmd_status delegates to
-        // cmd_status_module — the aggregate "Status" header must NOT appear.
+        // cmd_status_module — the aggregate "Status" heading must NOT appear.
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
         let (_cfg_dir, state_dir, config_path) = setup_env_with_module();
 
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, buf) = Printer::for_test();
+        let (printer, v2_printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, Some("test-mod"), false).unwrap();
+        cmd_status(&cli, &printer, &v2_printer, Some("test-mod"), false).unwrap();
+        drop(v2_printer);
 
         let output = buf.lock().unwrap();
-        // Per-module header is "Status: <name>" — must be present.
+        // Per-module heading is "Status: <name>" — must be present.
         assert!(
             output.contains("Status: test-mod"),
-            "should route to per-module header, got: {output}"
+            "should route to per-module heading, got: {output}"
         );
         // Aggregate-only sections (no apply record was made → 'No applies'
         // would have appeared in the main path) must NOT appear.
@@ -673,14 +720,15 @@ mod tests {
         let (_cfg_dir, state_dir, config_path) = setup_env();
 
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, buf) = Printer::for_test();
+        let (printer, v2_printer, buf) = test_printers();
 
-        cmd_status_module(&cli, &printer, "ghost").unwrap();
+        cmd_status_module(&cli, &printer, &v2_printer, "ghost").unwrap();
+        drop(v2_printer);
 
         let output = buf.lock().unwrap();
         assert!(
             output.contains("Status: ghost"),
-            "should print module header, got: {output}"
+            "should print module heading, got: {output}"
         );
         assert!(
             output.contains("not found"),
@@ -695,10 +743,11 @@ mod tests {
         let (_cfg_dir, state_dir, config_path) = setup_env();
 
         let mut cli = test_cli_for(config_path, state_dir.path());
-        cli.output = OutputFormatArg(OutputFormat::Json);
-        let (printer, buf) = Printer::for_test_with_format(OutputFormat::Json);
+        cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
+        let (printer, v2_printer, buf) = test_printers_json();
 
-        cmd_status_module(&cli, &printer, "ghost").unwrap();
+        cmd_status_module(&cli, &printer, &v2_printer, "ghost").unwrap();
+        drop(v2_printer);
 
         let captured = buf.lock().unwrap().clone();
         let parsed: serde_json::Value = serde_json::from_str(captured.trim())
@@ -730,30 +779,23 @@ mod tests {
             .unwrap();
 
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, buf) = Printer::for_test();
+        let (printer, v2_printer, buf) = test_printers();
 
-        cmd_status_module(&cli, &printer, "test-mod").unwrap();
+        cmd_status_module(&cli, &printer, &v2_printer, "test-mod").unwrap();
+        drop(v2_printer);
 
         let output = buf.lock().unwrap();
         assert!(
             output.contains("Status: test-mod"),
-            "should print module header, got: {output}"
+            "should print module heading, got: {output}"
         );
         assert!(
-            output.contains("Packages: 1"),
+            output.contains("Packages") && output.contains('1'),
             "module declares 1 package, got: {output}"
         );
         assert!(
-            output.contains("Status: installed"),
+            output.contains("installed"),
             "should print state-store status, got: {output}"
-        );
-        assert!(
-            output.contains("pkg-hash-xyz"),
-            "should print packages hash, got: {output}"
-        );
-        assert!(
-            output.contains("files-hash-abc"),
-            "should print files hash, got: {output}"
         );
     }
 
@@ -764,13 +806,14 @@ mod tests {
         let (_cfg_dir, state_dir, config_path) = setup_env_with_module();
 
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, buf) = Printer::for_test();
+        let (printer, v2_printer, buf) = test_printers();
 
-        cmd_status_module(&cli, &printer, "test-mod").unwrap();
+        cmd_status_module(&cli, &printer, &v2_printer, "test-mod").unwrap();
+        drop(v2_printer);
 
         let output = buf.lock().unwrap();
         assert!(
-            output.contains("Status: not applied"),
+            output.contains("not applied"),
             "no state-store record should produce 'not applied', got: {output}"
         );
     }
@@ -810,9 +853,10 @@ mod tests {
             .unwrap();
 
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, buf) = Printer::for_test();
+        let (printer, v2_printer, buf) = test_printers();
 
-        cmd_status_module(&cli, &printer, "test-mod").unwrap();
+        cmd_status_module(&cli, &printer, &v2_printer, "test-mod").unwrap();
+        drop(v2_printer);
 
         let output = buf.lock().unwrap();
         assert!(
@@ -821,7 +865,7 @@ mod tests {
         );
         assert!(
             output.contains(real_file.to_str().unwrap()),
-            "existing file should appear as success, got: {output}"
+            "existing file should appear, got: {output}"
         );
         assert!(
             output.contains("/nonexistent/missing.conf") && output.contains("(missing)"),
@@ -841,10 +885,11 @@ mod tests {
             .unwrap();
 
         let mut cli = test_cli_for(config_path, state_dir.path());
-        cli.output = OutputFormatArg(OutputFormat::Json);
-        let (printer, buf) = Printer::for_test_with_format(OutputFormat::Json);
+        cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
+        let (printer, v2_printer, buf) = test_printers_json();
 
-        cmd_status_module(&cli, &printer, "test-mod").unwrap();
+        cmd_status_module(&cli, &printer, &v2_printer, "test-mod").unwrap();
+        drop(v2_printer);
 
         let captured = buf.lock().unwrap().clone();
         let parsed: serde_json::Value = serde_json::from_str(captured.trim())

@@ -3714,7 +3714,7 @@ fn setup_test_env() -> (tempfile::TempDir, tempfile::TempDir) {
 #[test]
 fn cmd_status_with_empty_state() {
     let h = CliTestHarness::builder().build();
-    super::status::cmd_status(&h.cli(), h.printer(), None, false).unwrap();
+    super::status::cmd_status(&h.cli(), h.printer(), h.v2_printer(), None, false).unwrap();
     h.assert_header("Status");
     h.assert_output_contains("No applies recorded yet");
 }
@@ -3722,7 +3722,14 @@ fn cmd_status_with_empty_state() {
 #[test]
 fn cmd_status_module_not_found() {
     let h = CliTestHarness::builder().build();
-    super::status::cmd_status(&h.cli(), h.printer(), Some("nonexistent"), false).unwrap();
+    super::status::cmd_status(
+        &h.cli(),
+        h.printer(),
+        h.v2_printer(),
+        Some("nonexistent"),
+        false,
+    )
+    .unwrap();
     h.assert_output_contains("nonexistent");
 }
 
@@ -3731,7 +3738,14 @@ fn cmd_status_module_found() {
     let h = CliTestHarness::builder()
         .module("test-mod", SIMPLE_MODULE_YAML)
         .build();
-    super::status::cmd_status(&h.cli(), h.printer(), Some("test-mod"), false).unwrap();
+    super::status::cmd_status(
+        &h.cli(),
+        h.printer(),
+        h.v2_printer(),
+        Some("test-mod"),
+        false,
+    )
+    .unwrap();
     h.assert_output_contains("test-mod");
 }
 
@@ -3937,6 +3951,8 @@ fn cmd_status_after_apply() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
+    let (v2_printer, v2_buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     let args = ApplyArgs {
         from: None,
@@ -3952,11 +3968,13 @@ fn cmd_status_after_apply() {
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
     buf.lock().unwrap().clear();
 
-    super::status::cmd_status(&cli, &printer, None, false).unwrap();
-    let output = buf.lock().unwrap();
+    super::status::cmd_status(&cli, &printer, &v2_printer, None, false).unwrap();
+    drop(v2_printer);
+    let mut output = buf.lock().unwrap().clone();
+    output.push_str(&v2_buf.lock().unwrap());
     assert!(
         output.contains("Status"),
-        "should contain Status header, got: {output}"
+        "should contain Status heading, got: {output}"
     );
 }
 
@@ -4219,7 +4237,7 @@ fn cmd_diff_with_files() {
 #[test]
 fn cmd_status_structured_output() {
     let h = CliTestHarness::builder().json().build();
-    super::status::cmd_status(&h.cli(), h.printer(), None, false).unwrap();
+    super::status::cmd_status(&h.cli(), h.printer(), h.v2_printer(), None, false).unwrap();
     let parsed = h.json_output();
     assert!(
         parsed.get("lastApply").is_some() || parsed.get("modules").is_some(),
@@ -4699,14 +4717,18 @@ fn cmd_status_with_modules() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
+    let (v2_printer, v2_buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     assert!(
-        super::status::cmd_status(&cli, &printer, None, false).is_ok(),
+        super::status::cmd_status(&cli, &printer, &v2_printer, None, false).is_ok(),
         "status should succeed when profile references modules"
     );
 
-    let output = buf.lock().unwrap();
-    assert!(output.contains("Status"), "missing Status header");
+    drop(v2_printer);
+    let mut output = buf.lock().unwrap().clone();
+    output.push_str(&v2_buf.lock().unwrap());
+    assert!(output.contains("Status"), "missing Status heading");
     assert!(
         output.contains("test-mod"),
         "output should list module test-mod, got: {output}"
@@ -4757,9 +4779,13 @@ fn cmd_status_with_drift_events() {
     // Clear buffer before status call
     buf.lock().unwrap().clear();
 
-    super::status::cmd_status(&cli, &printer, None, false).unwrap();
+    let (v2_printer, v2_buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+    super::status::cmd_status(&cli, &printer, &v2_printer, None, false).unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
+    let mut output = buf.lock().unwrap().clone();
+    output.push_str(&v2_buf.lock().unwrap());
     assert!(
         output.contains("curl"),
         "drift output should mention resource 'curl', got: {output}"
@@ -9616,11 +9642,15 @@ fn cmd_status_module_structured_output() {
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
+        cfgd_core::output_v2::OutputFormat::Json,
+    );
 
-    super::status::cmd_status(&cli, &printer, Some("json-mod"), false).unwrap();
+    super::status::cmd_status(&cli, &printer, &v2_printer, Some("json-mod"), false).unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap().clone();
     let parsed = extract_json(&output);
     assert_eq!(parsed["name"], "json-mod", "should contain module name");
     assert_eq!(
@@ -11404,7 +11434,7 @@ fn cmd_module_add_from_registry_not_configured_fails() {
 #[test]
 fn cmd_status_module_not_found_output() {
     let h = CliTestHarness::builder().build();
-    super::status::cmd_status_module(&h.cli(), h.printer(), "nonexistent").unwrap();
+    super::status::cmd_status_module(&h.cli(), h.printer(), h.v2_printer(), "nonexistent").unwrap();
     h.assert_output_contains("nonexistent");
     h.assert_output_contains("not found");
 }
@@ -11412,7 +11442,7 @@ fn cmd_status_module_not_found_output() {
 #[test]
 fn cmd_status_module_not_found_json() {
     let h = CliTestHarness::builder().json().build();
-    super::status::cmd_status_module(&h.cli(), h.printer(), "ghost-mod").unwrap();
+    super::status::cmd_status_module(&h.cli(), h.printer(), h.v2_printer(), "ghost-mod").unwrap();
     let parsed = h.json_output();
     assert_eq!(parsed["name"], "ghost-mod");
     assert_eq!(parsed["status"], "not found");
@@ -11425,7 +11455,7 @@ fn cmd_status_module_found_output() {
     let h = CliTestHarness::builder()
             .module("my-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: my-mod\nspec:\n  packages:\n    - name: ripgrep\n  files: []\n")
             .build();
-    super::status::cmd_status_module(&h.cli(), h.printer(), "my-mod").unwrap();
+    super::status::cmd_status_module(&h.cli(), h.printer(), h.v2_printer(), "my-mod").unwrap();
     h.assert_output_contains("my-mod");
     // Status shows package count, not individual package names
     h.assert_output_contains("1");
@@ -11437,7 +11467,7 @@ fn cmd_status_module_found_json() {
             .json()
             .module("my-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: my-mod\nspec:\n  packages:\n    - name: ripgrep\n  files: []\n  depends:\n    - base\n")
             .build();
-    super::status::cmd_status_module(&h.cli(), h.printer(), "my-mod").unwrap();
+    super::status::cmd_status_module(&h.cli(), h.printer(), h.v2_printer(), "my-mod").unwrap();
     let parsed = h.json_output();
     assert_eq!(parsed["name"], "my-mod");
     assert_eq!(parsed["packages"], 1);
@@ -11648,7 +11678,7 @@ fn cmd_compliance_history_json() {
 #[test]
 fn json_schema_status() {
     let h = CliTestHarness::builder().json().build();
-    super::status::cmd_status(&h.cli(), h.printer(), None, false).unwrap();
+    super::status::cmd_status(&h.cli(), h.printer(), h.v2_printer(), None, false).unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(
         &parsed,
@@ -11672,7 +11702,7 @@ fn json_schema_status_module() {
         .json()
         .module("test-mod", SIMPLE_MODULE_YAML)
         .build();
-    super::status::cmd_status_module(&h.cli(), h.printer(), "test-mod").unwrap();
+    super::status::cmd_status_module(&h.cli(), h.printer(), h.v2_printer(), "test-mod").unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(
         &parsed,
@@ -14215,7 +14245,8 @@ spec:
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: base-mod\nspec:\n  packages: []\n",
     );
 
-    let result = super::status::cmd_status_module(&h.cli(), h.printer(), "status-mod");
+    let result =
+        super::status::cmd_status_module(&h.cli(), h.printer(), h.v2_printer(), "status-mod");
     assert!(
         result.is_ok(),
         "cmd_status_module should succeed: {:?}",
@@ -14265,7 +14296,8 @@ spec:
         .module("json-status-mod", module_yaml)
         .build();
 
-    let result = super::status::cmd_status_module(&h.cli(), h.printer(), "json-status-mod");
+    let result =
+        super::status::cmd_status_module(&h.cli(), h.printer(), h.v2_printer(), "json-status-mod");
     assert!(
         result.is_ok(),
         "JSON module status should succeed: {:?}",
@@ -14287,7 +14319,8 @@ spec:
 fn cmd_status_module_json_output_not_found() {
     let h = CliTestHarness::builder().json().build();
 
-    let result = super::status::cmd_status_module(&h.cli(), h.printer(), "nonexistent-mod");
+    let result =
+        super::status::cmd_status_module(&h.cli(), h.printer(), h.v2_printer(), "nonexistent-mod");
     assert!(result.is_ok(), "missing module JSON status should succeed");
 
     let json = h.json_output();
@@ -14560,7 +14593,7 @@ spec:
 #[test]
 fn cmd_status_with_sources_shows_source_section() {
     let h = CliTestHarness::builder().rich_config().build();
-    let result = super::status::cmd_status(&h.cli(), h.printer(), None, false);
+    let result = super::status::cmd_status(&h.cli(), h.printer(), h.v2_printer(), None, false);
     assert!(
         result.is_ok(),
         "status with sources should succeed: {:?}",

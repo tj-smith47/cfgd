@@ -23,7 +23,7 @@ mod registry;
 mod rollback;
 mod secret;
 pub mod source;
-mod status;
+pub mod status;
 mod sync;
 mod upgrade;
 mod verify;
@@ -1390,7 +1390,7 @@ pub fn execute(
         Command::Apply(args) => apply::cmd_apply(cli, printer, args),
         Command::Plan(args) => plan::cmd_plan(cli, printer, args),
         Command::Status { module, exit_code } => {
-            status::cmd_status(cli, printer, module.as_deref(), *exit_code)
+            status::cmd_status(cli, printer, v2_printer, module.as_deref(), *exit_code)
         }
         Command::Diff { module, exit_code } => {
             diff::cmd_diff(cli, printer, module.as_deref(), *exit_code)

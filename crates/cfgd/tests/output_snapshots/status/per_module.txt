@@ -1,0 +1,10 @@
+Status: dev-tools
+  Packages      18
+  Files         12
+  Dependencies  base
+  Status        installed
+  Last applied  2026-05-14T10:00:00Z
+
+Deployed Files
+  ✓ /home/user/.config/nvim/init.lua
+  ✗ /home/user/.gitconfig (missing)

@@ -1,0 +1,67 @@
+{
+  "drift": [
+    {
+      "actual": "hash-actual",
+      "expected": "hash-desired",
+      "id": 10,
+      "resolvedBy": null,
+      "resourceId": "~/.zshrc",
+      "resourceType": "file",
+      "source": "local",
+      "timestamp": "2026-05-14T12:00:00Z"
+    },
+    {
+      "actual": "13.0.0",
+      "expected": "14.1.0",
+      "id": 11,
+      "resolvedBy": null,
+      "resourceId": "ripgrep",
+      "resourceType": "package",
+      "source": "team-config",
+      "timestamp": "2026-05-14T12:01:00Z"
+    }
+  ],
+  "lastApply": {
+    "id": 2,
+    "planHash": "cafebabe",
+    "profile": "default",
+    "status": "Success",
+    "summary": null,
+    "timestamp": "2026-05-14T11:30:00Z"
+  },
+  "managedResources": [],
+  "modules": [
+    {
+      "files": 4,
+      "name": "shell-config",
+      "packages": 0,
+      "status": "installed"
+    }
+  ],
+  "pendingDecisions": [
+    {
+      "action": "install",
+      "createdAt": "2026-05-14T08:00:00Z",
+      "id": 5,
+      "resolution": null,
+      "resolvedAt": null,
+      "resource": "package/curl",
+      "source": "team-config",
+      "summary": "install curl 8.5.0",
+      "tier": "recommended"
+    }
+  ],
+  "sources": [
+    {
+      "id": 1,
+      "lastCommit": "abc123",
+      "lastFetched": "2026-05-14T09:00:00Z",
+      "name": "team-config",
+      "originBranch": "main",
+      "originUrl": "https://github.com/team/config",
+      "pinnedVersion": null,
+      "sourceVersion": "3.1.0",
+      "status": "synced"
+    }
+  ]
+}
