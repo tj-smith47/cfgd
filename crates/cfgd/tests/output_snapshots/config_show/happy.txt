@@ -1,0 +1,35 @@
+Configuration
+  File     /etc/cfgd/cfgd.yaml
+  Profile  base
+
+Origins
+  Primary: Git — git@example.com:owner/primary.git
+    Branch  main
+  Secondary: Server — https://cfgd.example.com
+    Branch  stable
+
+Sources
+  shared  git@example.com:owner/shared.git
+  team    git@example.com:team/configs.git
+
+Module Registries
+  official  git@example.com:cfgd/modules.git
+  internal  git@example.com:org/internal-modules.git
+
+Module Security
+  Require signatures  yes
+
+Daemon
+  Enabled  yes
+  Reconcile
+    Interval    5m
+    On change   yes
+    Auto apply  no
+  Sync
+    Interval  1h
+
+Secrets
+  Backend  sops
+
+Theme
+  Theme  dracula

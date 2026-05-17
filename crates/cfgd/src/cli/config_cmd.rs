@@ -1,99 +1,85 @@
 use super::*;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2};
 
 // --- Config CRUD ---
 
-pub(super) fn cmd_config_show(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+fn yes_no(b: bool) -> &'static str {
+    if b { "yes" } else { "no" }
+}
+
+pub fn build_config_show_doc(cfg: &CfgdConfig, config_path: &Path) -> Doc {
+    let mut doc = Doc::new()
+        .heading("Configuration")
+        .kv("File", config_path.display().to_string())
+        .kv(
+            "Profile",
+            cfg.spec.profile.as_deref().unwrap_or("(none)").to_string(),
+        );
+
+    doc = doc.section_if_nonempty("Origins", &cfg.spec.origin, |s, origins| {
+        origins.iter().enumerate().fold(s, |s, (i, origin)| {
+            let label = if i == 0 { "Primary" } else { "Secondary" };
+            s.subsection(
+                format!("{}: {:?} — {}", label, origin.origin_type, origin.url),
+                |sub| sub.kv("Branch", &origin.branch),
+            )
+        })
+    });
+
+    doc = doc.section_if_nonempty("Sources", &cfg.spec.sources, |s, sources| {
+        sources
+            .iter()
+            .fold(s, |s, src| s.kv(&src.name, &src.origin.url))
+    });
+
+    if let Some(ref mods) = cfg.spec.modules {
+        doc = doc.section_if_nonempty("Module Registries", &mods.registries, |s, regs| {
+            regs.iter().fold(s, |s, ms| s.kv(&ms.name, &ms.url))
+        });
+
+        if let Some(ref sec) = mods.security {
+            doc = doc.section("Module Security", |s| {
+                s.kv("Require signatures", yes_no(sec.require_signatures))
+            });
+        }
+    }
+
+    if let Some(ref daemon) = cfg.spec.daemon {
+        doc = doc.section("Daemon", |s| {
+            let mut s = s.kv("Enabled", yes_no(daemon.enabled));
+            if let Some(ref reconcile) = daemon.reconcile {
+                s = s.subsection("Reconcile", |sub| {
+                    sub.kv("Interval", &reconcile.interval)
+                        .kv("On change", yes_no(reconcile.on_change))
+                        .kv("Auto apply", yes_no(reconcile.auto_apply))
+                });
+            }
+            if let Some(ref sync) = daemon.sync {
+                s = s.subsection("Sync", |sub| sub.kv("Interval", &sync.interval));
+            }
+            s
+        });
+    }
+
+    if let Some(ref secrets) = cfg.spec.secrets {
+        doc = doc.section("Secrets", |s| s.kv("Backend", &secrets.backend));
+    }
+
+    if let Some(ref theme) = cfg.spec.theme {
+        doc = doc.section("Theme", |s| s.kv("Theme", &theme.name));
+    }
+
+    doc.with_data(cfg)
+}
+
+pub(super) fn cmd_config_show(cli: &Cli, printer: &PrinterV2) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
         anyhow::bail!("{}", MSG_NO_CONFIG);
     }
 
     let cfg = config::load_config(config_path)?;
-
-    if printer.write_structured(&cfg) {
-        return Ok(());
-    }
-
-    printer.header("Configuration");
-    printer.key_value("File", &config_path.display().to_string());
-    printer.key_value("Profile", cfg.spec.profile.as_deref().unwrap_or("(none)"));
-
-    // Origins
-    if !cfg.spec.origin.is_empty() {
-        printer.newline();
-        printer.subheader("Origins");
-        for (i, origin) in cfg.spec.origin.iter().enumerate() {
-            let label = if i == 0 { "Primary" } else { "Secondary" };
-            printer.key_value(label, &format!("{:?} — {}", origin.origin_type, origin.url));
-            printer.key_value("  Branch", &origin.branch);
-        }
-    }
-
-    // Sources
-    if !cfg.spec.sources.is_empty() {
-        printer.newline();
-        printer.subheader("Sources");
-        for src in &cfg.spec.sources {
-            printer.key_value(&src.name, &src.origin.url);
-        }
-    }
-
-    // Module registries
-    if let Some(ref mods) = cfg.spec.modules {
-        if !mods.registries.is_empty() {
-            printer.newline();
-            printer.subheader("Module Registries");
-            for ms in &mods.registries {
-                printer.key_value(&ms.name, &ms.url);
-            }
-        }
-
-        // Module security
-        if let Some(ref sec) = mods.security {
-            printer.newline();
-            printer.subheader("Module Security");
-            printer.key_value(
-                "Require signatures",
-                if sec.require_signatures { "yes" } else { "no" },
-            );
-        }
-    }
-
-    // Daemon
-    if let Some(ref daemon) = cfg.spec.daemon {
-        printer.newline();
-        printer.subheader("Daemon");
-        printer.key_value("Enabled", if daemon.enabled { "yes" } else { "no" });
-        if let Some(ref reconcile) = daemon.reconcile {
-            printer.key_value("  Reconcile interval", &reconcile.interval);
-            printer.key_value(
-                "  On change",
-                if reconcile.on_change { "yes" } else { "no" },
-            );
-            printer.key_value(
-                "  Auto apply",
-                if reconcile.auto_apply { "yes" } else { "no" },
-            );
-        }
-        if let Some(ref sync) = daemon.sync {
-            printer.key_value("  Sync interval", &sync.interval);
-        }
-    }
-
-    // Secrets
-    if let Some(ref secrets) = cfg.spec.secrets {
-        printer.newline();
-        printer.subheader("Secrets");
-        printer.key_value("Backend", &secrets.backend);
-    }
-
-    // Theme
-    if let Some(ref theme) = cfg.spec.theme {
-        printer.newline();
-        printer.subheader("Theme");
-        printer.key_value("Theme", &theme.name);
-    }
-
+    printer.emit(build_config_show_doc(&cfg, config_path));
     Ok(())
 }
 
@@ -447,7 +433,7 @@ spec:
     fn cmd_config_show_missing_file_bails_with_no_config_msg() {
         let dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(dir.path().join("does-not-exist.yaml"));
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = PrinterV2::new(cfgd_core::output_v2::Verbosity::Quiet);
 
         let err = cmd_config_show(&cli, &printer).unwrap_err();
         assert_eq!(err.to_string(), MSG_NO_CONFIG);
@@ -457,11 +443,13 @@ spec:
     fn cmd_config_show_table_renders_header_and_profile() {
         let dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(write_sample_config(dir.path()));
-        let (printer, buf) = Printer::for_test();
+        let (printer, cap) = PrinterV2::for_test_doc();
 
         cmd_config_show(&cli, &printer).unwrap();
+        printer.flush();
+        drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cap.human();
         assert!(
             output.contains("Configuration"),
             "should print 'Configuration' header, got: {output}"
@@ -476,7 +464,8 @@ spec:
     fn cmd_config_show_json_emits_parseable_object() {
         let dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(write_sample_config(dir.path()));
-        let (printer, buf) = Printer::for_test_with_format(OutputFormat::Json);
+        let (printer, buf) =
+            PrinterV2::for_test_with_format(cfgd_core::output_v2::OutputFormat::Json);
 
         cmd_config_show(&cli, &printer).unwrap();
 

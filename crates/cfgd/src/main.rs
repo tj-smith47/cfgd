@@ -101,8 +101,39 @@ fn main() -> anyhow::Result<()> {
         .then(|| cfgd_core::config::load_config(std::path::Path::new(&cli.config)).ok())
         .flatten()
         .and_then(|c| c.spec.theme);
-    let printer =
-        cfgd_core::output::Printer::with_format(verbosity, theme_config.as_ref(), output_format);
+    let printer = cfgd_core::output::Printer::with_format(
+        verbosity,
+        theme_config.as_ref(),
+        output_format.clone(),
+    );
+
+    let v2_verbosity = match verbosity {
+        cfgd_core::output::Verbosity::Quiet => cfgd_core::output_v2::Verbosity::Quiet,
+        cfgd_core::output::Verbosity::Normal => cfgd_core::output_v2::Verbosity::Normal,
+        cfgd_core::output::Verbosity::Verbose => cfgd_core::output_v2::Verbosity::Verbose,
+    };
+    let v2_format = match output_format {
+        cfgd_core::output::OutputFormat::Table => cfgd_core::output_v2::OutputFormat::Table,
+        cfgd_core::output::OutputFormat::Wide => cfgd_core::output_v2::OutputFormat::Wide,
+        cfgd_core::output::OutputFormat::Json => cfgd_core::output_v2::OutputFormat::Json,
+        cfgd_core::output::OutputFormat::Yaml => cfgd_core::output_v2::OutputFormat::Yaml,
+        cfgd_core::output::OutputFormat::Name => cfgd_core::output_v2::OutputFormat::Name,
+        cfgd_core::output::OutputFormat::Jsonpath(e) => {
+            cfgd_core::output_v2::OutputFormat::Jsonpath(e)
+        }
+        cfgd_core::output::OutputFormat::Template(t) => {
+            cfgd_core::output_v2::OutputFormat::Template(t)
+        }
+        cfgd_core::output::OutputFormat::TemplateFile(p) => {
+            cfgd_core::output_v2::OutputFormat::TemplateFile(p)
+        }
+    };
+    let v2_theme_name = theme_config.as_ref().map(|t| t.name.clone());
+    let v2_printer = cfgd_core::output_v2::Printer::with_format(
+        v2_verbosity,
+        v2_theme_name.as_deref(),
+        v2_format,
+    );
 
     if jsonpath_deprecated {
         printer.warning(
@@ -110,7 +141,7 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
-    if let Err(e) = cli::execute(&cli, &printer) {
+    if let Err(e) = cli::execute(&cli, &printer, &v2_printer) {
         // Format with `{}` not `{:#}` — CfgdError templates already include
         // `{0}` which expands the inner error, so `{:#}` would walk source()
         // and duplicate the inner text. See errors/mod.rs::CfgdError for the

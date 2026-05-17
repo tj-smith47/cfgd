@@ -1,0 +1,111 @@
+{
+  "apiVersion": "cfgd.io/v1alpha1",
+  "kind": "Config",
+  "metadata": {
+    "name": "happy-host"
+  },
+  "spec": {
+    "ai": null,
+    "aliases": {},
+    "compliance": null,
+    "daemon": {
+      "enabled": true,
+      "notify": null,
+      "reconcile": {
+        "autoApply": false,
+        "driftPolicy": "NotifyOnly",
+        "interval": "5m",
+        "onChange": true,
+        "patches": [],
+        "policy": null
+      },
+      "sync": {
+        "autoPull": true,
+        "autoPush": false,
+        "interval": "1h"
+      },
+      "windowsEventLog": false
+    },
+    "fileStrategy": "Symlink",
+    "modules": {
+      "registries": [
+        {
+          "name": "official",
+          "url": "git@example.com:cfgd/modules.git"
+        },
+        {
+          "name": "internal",
+          "url": "git@example.com:org/internal-modules.git"
+        }
+      ],
+      "security": {
+        "requireSignatures": true
+      }
+    },
+    "origin": [
+      {
+        "branch": "main",
+        "sshStrictHostKeyChecking": "AcceptNew",
+        "type": "Git",
+        "url": "git@example.com:owner/primary.git"
+      },
+      {
+        "branch": "stable",
+        "sshStrictHostKeyChecking": "AcceptNew",
+        "type": "Server",
+        "url": "https://cfgd.example.com"
+      }
+    ],
+    "profile": "base",
+    "secrets": {
+      "backend": "sops",
+      "integrations": []
+    },
+    "security": null,
+    "sources": [
+      {
+        "name": "shared",
+        "origin": {
+          "branch": "master",
+          "sshStrictHostKeyChecking": "AcceptNew",
+          "type": "Git",
+          "url": "git@example.com:owner/shared.git"
+        },
+        "subscription": {
+          "acceptRecommended": false,
+          "optIn": [],
+          "overrides": null,
+          "priority": 500,
+          "reject": null
+        },
+        "sync": {
+          "autoApply": false,
+          "interval": "1h"
+        }
+      },
+      {
+        "name": "team",
+        "origin": {
+          "branch": "master",
+          "sshStrictHostKeyChecking": "AcceptNew",
+          "type": "Git",
+          "url": "git@example.com:team/configs.git"
+        },
+        "subscription": {
+          "acceptRecommended": false,
+          "optIn": [],
+          "overrides": null,
+          "priority": 500,
+          "reject": null
+        },
+        "sync": {
+          "autoApply": false,
+          "interval": "1h"
+        }
+      }
+    ],
+    "theme": {
+      "name": "dracula"
+    }
+  }
+}

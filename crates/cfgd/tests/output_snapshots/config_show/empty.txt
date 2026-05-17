@@ -1,0 +1,3 @@
+Configuration
+  File     /etc/cfgd/cfgd.yaml
+  Profile  base

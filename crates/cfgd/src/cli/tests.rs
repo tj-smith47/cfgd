@@ -135,11 +135,38 @@ impl CliTestHarnessBuilder {
             Printer::for_test_with_format(self.output_format.clone())
         };
 
+        let v2_format = match self.output_format {
+            cfgd_core::output::OutputFormat::Table => cfgd_core::output_v2::OutputFormat::Table,
+            cfgd_core::output::OutputFormat::Wide => cfgd_core::output_v2::OutputFormat::Wide,
+            cfgd_core::output::OutputFormat::Json => cfgd_core::output_v2::OutputFormat::Json,
+            cfgd_core::output::OutputFormat::Yaml => cfgd_core::output_v2::OutputFormat::Yaml,
+            cfgd_core::output::OutputFormat::Name => cfgd_core::output_v2::OutputFormat::Name,
+            cfgd_core::output::OutputFormat::Jsonpath(ref e) => {
+                cfgd_core::output_v2::OutputFormat::Jsonpath(e.clone())
+            }
+            cfgd_core::output::OutputFormat::Template(ref t) => {
+                cfgd_core::output_v2::OutputFormat::Template(t.clone())
+            }
+            cfgd_core::output::OutputFormat::TemplateFile(ref p) => {
+                cfgd_core::output_v2::OutputFormat::TemplateFile(p.clone())
+            }
+        };
+        // For human formats, use Normal verbosity so tests can assert on
+        // rendered output (Quiet would suppress headings/sections). Structured
+        // formats route through `for_test_with_format`, which auto-quiets.
+        let (v2_printer, v2_buf) = if v2_format == cfgd_core::output_v2::OutputFormat::Table {
+            cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal)
+        } else {
+            cfgd_core::output_v2::Printer::for_test_with_format(v2_format)
+        };
+
         CliTestHarness {
             config_dir,
             state_dir,
             printer,
             buf,
+            v2_printer,
+            v2_buf,
             output_format: self.output_format,
         }
     }
@@ -150,6 +177,8 @@ struct CliTestHarness {
     state_dir: tempfile::TempDir,
     printer: Printer,
     buf: Arc<Mutex<String>>,
+    v2_printer: cfgd_core::output_v2::Printer,
+    v2_buf: Arc<Mutex<String>>,
     output_format: cfgd_core::output::OutputFormat,
 }
 
@@ -186,6 +215,10 @@ impl CliTestHarness {
         &self.printer
     }
 
+    fn v2_printer(&self) -> &cfgd_core::output_v2::Printer {
+        &self.v2_printer
+    }
+
     fn config_path(&self) -> &Path {
         self.config_dir.path()
     }
@@ -195,7 +228,12 @@ impl CliTestHarness {
     }
 
     fn output(&self) -> String {
-        self.buf.lock().unwrap().clone()
+        // Concatenate both Printers' capture buffers. Force-flush the v2 printer
+        // so any buffered kvs reach its buffer before we read it.
+        self.v2_printer.flush();
+        let mut s = self.buf.lock().unwrap().clone();
+        s.push_str(&self.v2_buf.lock().unwrap());
+        s
     }
 
     fn json_output(&self) -> serde_json::Value {
@@ -1215,6 +1253,10 @@ fn test_printer() -> Printer {
     Printer::new(cfgd_core::output::Verbosity::Quiet)
 }
 
+fn test_v2_printer() -> cfgd_core::output_v2::Printer {
+    cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet)
+}
+
 /// Extract JSON object or array from captured output that may contain
 /// preamble text (e.g. key_value lines from load_config_and_profile).
 fn extract_json(output: &str) -> serde_json::Value {
@@ -1962,11 +2004,13 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
     let result = config_cmd::cmd_config_show(&cli, &printer);
     assert!(result.is_ok(), "config show failed: {:?}", result.err());
+    printer.flush();
+    drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cap.human();
     assert!(
         output.contains("Configuration"),
         "output should contain header 'Configuration', got: {output}"
@@ -1981,8 +2025,7 @@ spec:
 fn config_show_fails_without_config() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
-    let result = config_cmd::cmd_config_show(&cli, &printer);
+    let result = config_cmd::cmd_config_show(&cli, &test_v2_printer());
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -2457,12 +2500,14 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
 
     let result = config_cmd::cmd_config_show(&cli, &printer);
     assert!(result.is_ok(), "config show failed: {:?}", result.err());
+    printer.flush();
+    drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cap.human();
     assert!(output.contains("Configuration"), "missing header");
     assert!(output.contains("Origins"), "missing Origins section");
     assert!(output.contains("Sources"), "missing Sources section");
@@ -2473,7 +2518,7 @@ spec:
     );
     assert!(output.contains("community"), "missing registry name");
     assert!(output.contains("Daemon"), "missing Daemon section");
-    assert!(output.contains("Enabled: yes"), "missing daemon enabled");
+    assert!(output.contains("Enabled"), "missing daemon enabled key");
     assert!(output.contains("Secrets"), "missing Secrets section");
     assert!(output.contains("sops-age"), "missing secrets backend");
     assert!(output.contains("Theme"), "missing Theme section");
@@ -3355,14 +3400,16 @@ fn config_show_succeeds_with_valid_config() {
         config: config_path,
         ..test_cli(dir.path())
     };
-    let (printer, buf) = Printer::for_test();
+    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
 
     assert!(
         super::config_cmd::cmd_config_show(&cli, &printer).is_ok(),
         "config show should succeed when cfgd.yaml exists and is valid"
     );
+    printer.flush();
+    drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cap.human();
     assert!(
         output.contains("Configuration"),
         "output should contain header, got: {output}"
@@ -3380,9 +3427,8 @@ fn config_show_errors_without_config() {
         config: dir.path().join("nonexistent.yaml"),
         ..test_cli(dir.path())
     };
-    let printer = test_printer();
 
-    assert!(super::config_cmd::cmd_config_show(&cli, &printer).is_err());
+    assert!(super::config_cmd::cmd_config_show(&cli, &test_v2_printer()).is_err());
 }
 
 // --- secret_backend_from_config ---
@@ -4231,7 +4277,7 @@ fn execute_with_no_subcommand_prints_help_and_returns_ok() {
     // writes directly to stdout (not through Printer), so we don't assert
     // on captured output here — exit-code 0 is the part of the contract that
     // moves the needle if it regresses.
-    super::execute(&cli, h.printer()).expect("no-subcommand must return Ok(())");
+    super::execute(&cli, h.printer(), h.v2_printer()).expect("no-subcommand must return Ok(())");
 }
 
 #[test]
@@ -4241,7 +4287,7 @@ fn execute_status_command() {
         module: None,
         exit_code: false,
     });
-    super::execute(&cli, h.printer()).unwrap();
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
     h.assert_header("Status");
 }
 
@@ -4252,7 +4298,7 @@ fn execute_log_command() {
         limit: 10,
         show_output: None,
     });
-    super::execute(&cli, h.printer()).unwrap();
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
     let output = h.output();
     assert!(
         output.contains("Apply History") || output.contains("No applies"),
@@ -4267,7 +4313,7 @@ fn execute_verify_command() {
         module: None,
         exit_code: false,
     });
-    super::execute(&cli, h.printer()).unwrap();
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
     h.assert_header("Verify");
 }
 
@@ -4278,7 +4324,7 @@ fn execute_diff_command() {
         module: None,
         exit_code: false,
     });
-    super::execute(&cli, h.printer()).unwrap();
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
     h.assert_header("Diff");
 }
 
@@ -4286,7 +4332,7 @@ fn execute_diff_command() {
 fn execute_doctor_command() {
     let h = CliTestHarness::builder().build();
     let cli = h.cli_with_command(Command::Doctor);
-    super::execute(&cli, h.printer()).unwrap();
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
     h.assert_header("Doctor");
 }
 
@@ -4296,7 +4342,7 @@ fn execute_profile_list() {
     let cli = h.cli_with_command(Command::Profile {
         command: ProfileCommand::List,
     });
-    super::execute(&cli, h.printer()).unwrap();
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
     h.assert_output_contains("default");
 }
 
@@ -4306,7 +4352,7 @@ fn execute_profile_show() {
     let cli = h.cli_with_command(Command::Profile {
         command: ProfileCommand::Show { name: None },
     });
-    super::execute(&cli, h.printer()).unwrap();
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
     h.assert_output_contains("default");
 }
 
@@ -4316,7 +4362,7 @@ fn execute_config_show() {
     let cli = h.cli_with_command(Command::Config {
         command: ConfigCommand::Show,
     });
-    super::execute(&cli, h.printer()).unwrap();
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
     h.assert_header("Configuration");
 }
 
@@ -4328,7 +4374,7 @@ fn execute_config_get() {
             key: "profile".to_string(),
         },
     });
-    super::execute(&cli, h.printer()).unwrap();
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
     h.assert_output_contains("default");
 }
 
@@ -4341,7 +4387,7 @@ fn execute_config_set() {
             value: "work".to_string(),
         },
     });
-    super::execute(&cli, h.printer()).unwrap();
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
 
     let cfg = config::load_config(&h.config_path().join("cfgd.yaml")).unwrap();
     assert_eq!(cfg.spec.profile.as_deref(), Some("work"));
@@ -4361,7 +4407,7 @@ fn execute_apply_dry_run() {
         skip_scripts: false,
         context: "apply".to_string(),
     }));
-    super::execute(&cli, h.printer()).unwrap();
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
     let output = h.output();
     assert!(
         output.contains("Plan") || output.contains("Nothing"),
@@ -4381,7 +4427,7 @@ fn execute_completions_bash() {
     // Completions write directly to stdout via clap_complete, not through Printer.
     // We verify execution succeeds; output content is clap_complete's responsibility.
     let printer = test_printer();
-    let result = super::execute(&cli, &printer);
+    let result = super::execute(&cli, &printer, &test_v2_printer());
     assert!(
         result.is_ok(),
         "bash completions failed: {:?}",
@@ -4399,7 +4445,7 @@ fn execute_completions_zsh() {
         ..test_cli(dir.path())
     };
     let printer = test_printer();
-    let result = super::execute(&cli, &printer);
+    let result = super::execute(&cli, &printer, &test_v2_printer());
     assert!(result.is_ok(), "zsh completions failed: {:?}", result.err());
 }
 
@@ -4413,7 +4459,7 @@ fn execute_completions_fish() {
         ..test_cli(dir.path())
     };
     let printer = test_printer();
-    let result = super::execute(&cli, &printer);
+    let result = super::execute(&cli, &printer, &test_v2_printer());
     assert!(
         result.is_ok(),
         "fish completions failed: {:?}",
@@ -4433,7 +4479,7 @@ fn execute_explain_command() {
     };
     let (printer, buf) = Printer::for_test();
 
-    super::execute(&cli, &printer).unwrap();
+    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Config") || output.contains("cfgd.yaml"),
@@ -4453,7 +4499,7 @@ fn execute_explain_profile() {
     };
     let (printer, buf) = Printer::for_test();
 
-    super::execute(&cli, &printer).unwrap();
+    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Profile") || output.contains("profile"),
@@ -4473,7 +4519,7 @@ fn execute_explain_module() {
     };
     let (printer, buf) = Printer::for_test();
 
-    super::execute(&cli, &printer).unwrap();
+    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Module") || output.contains("module"),
@@ -4496,7 +4542,7 @@ fn execute_explain_no_resource_json_format_writes_structured_array() {
         ..test_cli(dir.path())
     };
     let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
-    super::execute(&cli, &printer).unwrap();
+    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.trim().starts_with('[') && output.contains("\"kind\""),
@@ -4519,7 +4565,7 @@ fn execute_explain_resource_json_format_writes_structured_object() {
         ..test_cli(dir.path())
     };
     let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
-    super::execute(&cli, &printer).unwrap();
+    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.trim().starts_with('{') && output.contains("\"kind\""),
@@ -4539,7 +4585,7 @@ fn execute_explain_no_resource() {
     };
     let (printer, buf) = Printer::for_test();
 
-    super::execute(&cli, &printer).unwrap();
+    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Available resource types")
@@ -4921,7 +4967,7 @@ fn execute_profile_switch() {
     let printer = test_printer();
 
     assert!(
-        super::execute(&cli, &printer).is_ok(),
+        super::execute(&cli, &printer, &test_v2_printer()).is_ok(),
         "execute should dispatch Profile Switch command successfully"
     );
 
@@ -4944,7 +4990,7 @@ fn execute_module_list() {
     };
     let (printer, buf) = Printer::for_test();
 
-    super::execute(&cli, &printer).unwrap();
+    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Modules") || output.contains("No modules"),
@@ -4964,7 +5010,7 @@ fn execute_workflow_generate() {
     };
     let (printer, buf) = Printer::for_test();
 
-    super::execute(&cli, &printer).unwrap();
+    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("workflow")
@@ -5845,7 +5891,7 @@ fn execute_plan_command() {
     };
     let (printer, buf) = Printer::for_test();
 
-    super::execute(&cli, &printer).unwrap();
+    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Plan") || output.contains("Phase"),
@@ -5863,7 +5909,7 @@ fn execute_compliance_snapshot() {
     };
     let (printer, buf) = Printer::for_test();
 
-    super::execute(&cli, &printer).unwrap();
+    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Compliance") || output.contains("snapshot"),
@@ -5883,7 +5929,7 @@ fn execute_compliance_export() {
     };
     let (printer, buf) = Printer::for_test();
 
-    super::execute(&cli, &printer).unwrap();
+    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Compliance")
@@ -5905,7 +5951,7 @@ fn execute_compliance_history() {
     };
     let (printer, buf) = Printer::for_test();
 
-    super::execute(&cli, &printer).unwrap();
+    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Compliance") || output.contains("History") || output.contains("No"),
@@ -5927,7 +5973,7 @@ fn execute_rollback_invalid() {
     };
     let printer = test_printer();
 
-    let result = super::execute(&cli, &printer);
+    let result = super::execute(&cli, &printer, &test_v2_printer());
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -9376,7 +9422,7 @@ fn execute_explain_recursive() {
     };
     let (printer, buf) = Printer::for_test();
 
-    super::execute(&cli, &printer).unwrap();
+    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Config") || output.contains("config") || output.contains("spec"),
@@ -9394,7 +9440,7 @@ fn execute_compliance_command() {
     };
     let (printer, buf) = Printer::for_test();
 
-    super::execute(&cli, &printer).unwrap();
+    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Compliance") || output.contains("snapshot"),
@@ -9414,7 +9460,7 @@ fn execute_source_list() {
     };
     let (printer, buf) = Printer::for_test();
 
-    super::execute(&cli, &printer).unwrap();
+    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Sources") || output.contains("No sources"),
@@ -9439,7 +9485,7 @@ fn execute_decide_accept_all() {
     };
     let (printer, buf) = Printer::for_test();
 
-    super::execute(&cli, &printer).unwrap();
+    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("No pending")
@@ -9459,7 +9505,7 @@ fn execute_sync_command() {
     };
     let (printer, buf) = Printer::for_test();
 
-    super::execute(&cli, &printer).unwrap();
+    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Sync") || output.contains("No sources"),
@@ -9477,7 +9523,7 @@ fn execute_pull_command() {
     };
     let (printer, buf) = Printer::for_test();
 
-    super::execute(&cli, &printer).unwrap();
+    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Pull") || output.contains("No sources") || output.contains("no origin"),
@@ -10271,11 +10317,13 @@ fn setup_rich_test_env() -> (tempfile::TempDir, tempfile::TempDir) {
 fn cmd_config_show_with_rich_config() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
 
     super::config_cmd::cmd_config_show(&cli, &printer).unwrap();
+    printer.flush();
+    drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = cap.human();
     assert!(
         output.contains("Configuration"),
         "missing Configuration header"
@@ -10291,11 +10339,14 @@ fn cmd_config_show_structured_json() {
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (printer, buf) = cfgd_core::output_v2::Printer::for_test_with_format(
+        cfgd_core::output_v2::OutputFormat::Json,
+    );
 
     super::config_cmd::cmd_config_show(&cli, &printer).unwrap();
+    drop(printer);
 
-    let output = buf.lock().unwrap();
+    let output = buf.lock().unwrap().clone();
     let parsed: serde_json::Value = serde_json::from_str(&output)
         .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
     assert_eq!(
@@ -10312,9 +10363,8 @@ fn cmd_config_show_structured_json() {
 fn cmd_config_show_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
 
-    let result = super::config_cmd::cmd_config_show(&cli, &printer);
+    let result = super::config_cmd::cmd_config_show(&cli, &test_v2_printer());
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
 }
@@ -11646,7 +11696,7 @@ fn json_schema_plan() {
 #[test]
 fn json_schema_config_show() {
     let h = CliTestHarness::builder().json().rich_config().build();
-    super::config_cmd::cmd_config_show(&h.cli(), h.printer()).unwrap();
+    super::config_cmd::cmd_config_show(&h.cli(), h.v2_printer()).unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(&parsed, &["metadata", "spec"]);
     assert_json_field_type(&parsed, "metadata", "object");
@@ -14226,7 +14276,7 @@ fn cmd_status_module_json_output_not_found() {
 fn cmd_config_show_with_rich_config_full() {
     let h = CliTestHarness::builder().rich_config().build();
 
-    let result = super::config_cmd::cmd_config_show(&h.cli(), h.printer());
+    let result = super::config_cmd::cmd_config_show(&h.cli(), h.v2_printer());
     assert!(
         result.is_ok(),
         "config show should succeed: {:?}",
@@ -14253,7 +14303,7 @@ fn cmd_config_show_with_rich_config_full() {
         "should show daemon enabled, got: {output}"
     );
     assert!(
-        output.contains("Reconcile interval") && output.contains("5m"),
+        output.contains("Reconcile") && output.contains("Interval") && output.contains("5m"),
         "should show reconcile interval, got: {output}"
     );
     // Should show secrets
@@ -14267,8 +14317,7 @@ fn cmd_config_show_with_rich_config_full() {
 fn cmd_config_show_missing_file_errors() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli_with_state(dir.path(), None);
-    let printer = test_printer();
-    let result = super::config_cmd::cmd_config_show(&cli, &printer);
+    let result = super::config_cmd::cmd_config_show(&cli, &test_v2_printer());
     assert!(result.is_err());
     assert!(
         result
@@ -16567,7 +16616,7 @@ fn execute_dispatch_checkin() {
         api_key: None,
         device_id: Some("test-device".to_string()),
     });
-    let result = super::execute(&cli, h.printer());
+    let result = super::execute(&cli, h.printer(), h.v2_printer());
     // Checkin fails because server is unreachable, but dispatch arm was exercised
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
@@ -16598,7 +16647,7 @@ spec:
     let cli = h.cli_with_command(Command::Source {
         command: SourceCommand::Update { name: None },
     });
-    super::execute(&cli, h.printer()).unwrap();
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
     h.assert_header("Update Sources");
     // Source load fails, error is displayed but command succeeds
     h.assert_output_contains("Failed to update source 'src1'");
@@ -16628,7 +16677,7 @@ spec:
             value: None,
         },
     });
-    super::execute(&cli, h.printer()).unwrap();
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
     h.assert_output_contains("my-source");
     h.assert_output_contains("500");
 }
@@ -16658,7 +16707,7 @@ spec:
         },
     });
     // Dispatches through execute -> source::cmd_source_replace
-    let result = super::execute(&cli, h.printer());
+    let result = super::execute(&cli, h.printer(), h.v2_printer());
     // Replace will fail on the add step, but dispatch arm is exercised
     assert!(result.is_err());
     h.assert_output_contains("Replace Source: replaceable");
@@ -16670,7 +16719,7 @@ fn execute_dispatch_compliance_export() {
     let cli = h.cli_with_command(Command::Compliance {
         command: Some(ComplianceCommand::Export),
     });
-    super::execute(&cli, h.printer()).unwrap();
+    super::execute(&cli, h.printer(), h.v2_printer()).unwrap();
     h.assert_output_contains("Compliance snapshot written to");
 }
 

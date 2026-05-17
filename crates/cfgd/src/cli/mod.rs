@@ -1,7 +1,7 @@
 mod apply;
 mod checkin;
 mod compliance;
-mod config_cmd;
+pub mod config_cmd;
 mod daemon;
 mod decide;
 mod diff;
@@ -1372,7 +1372,11 @@ pub enum ModuleRegistryCommand {
 }
 
 /// Execute the given CLI command. Returns Ok(()) on success.
-pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+pub fn execute(
+    cli: &Cli,
+    printer: &Printer,
+    v2_printer: &cfgd_core::output_v2::Printer,
+) -> anyhow::Result<()> {
     // No subcommand: print help and exit 0. Required for package-manager
     // validators (winget, chocolatey) that smoke-test the installed binary
     // with no arguments and treat any non-zero exit code as failure.
@@ -1622,7 +1626,7 @@ pub fn execute(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             cli.state_dir.as_deref(),
         ),
         Command::Config { command } => match command {
-            ConfigCommand::Show => config_cmd::cmd_config_show(cli, printer),
+            ConfigCommand::Show => config_cmd::cmd_config_show(cli, v2_printer),
             ConfigCommand::Edit => config_cmd::cmd_config_edit(cli, printer),
             ConfigCommand::Get { key } => config_cmd::cmd_config_get(cli, printer, key),
             ConfigCommand::Set { key, value } => {
