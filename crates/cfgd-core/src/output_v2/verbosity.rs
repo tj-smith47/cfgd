@@ -27,6 +27,31 @@ impl OutputFormat {
     }
 }
 
+impl From<crate::output::Verbosity> for Verbosity {
+    fn from(v: crate::output::Verbosity) -> Self {
+        match v {
+            crate::output::Verbosity::Quiet => Verbosity::Quiet,
+            crate::output::Verbosity::Normal => Verbosity::Normal,
+            crate::output::Verbosity::Verbose => Verbosity::Verbose,
+        }
+    }
+}
+
+impl From<crate::output::OutputFormat> for OutputFormat {
+    fn from(f: crate::output::OutputFormat) -> Self {
+        match f {
+            crate::output::OutputFormat::Table => OutputFormat::Table,
+            crate::output::OutputFormat::Wide => OutputFormat::Wide,
+            crate::output::OutputFormat::Json => OutputFormat::Json,
+            crate::output::OutputFormat::Yaml => OutputFormat::Yaml,
+            crate::output::OutputFormat::Name => OutputFormat::Name,
+            crate::output::OutputFormat::Jsonpath(s) => OutputFormat::Jsonpath(s),
+            crate::output::OutputFormat::Template(s) => OutputFormat::Template(s),
+            crate::output::OutputFormat::TemplateFile(p) => OutputFormat::TemplateFile(p),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

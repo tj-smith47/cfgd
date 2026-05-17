@@ -135,22 +135,7 @@ impl CliTestHarnessBuilder {
             Printer::for_test_with_format(self.output_format.clone())
         };
 
-        let v2_format = match self.output_format {
-            cfgd_core::output::OutputFormat::Table => cfgd_core::output_v2::OutputFormat::Table,
-            cfgd_core::output::OutputFormat::Wide => cfgd_core::output_v2::OutputFormat::Wide,
-            cfgd_core::output::OutputFormat::Json => cfgd_core::output_v2::OutputFormat::Json,
-            cfgd_core::output::OutputFormat::Yaml => cfgd_core::output_v2::OutputFormat::Yaml,
-            cfgd_core::output::OutputFormat::Name => cfgd_core::output_v2::OutputFormat::Name,
-            cfgd_core::output::OutputFormat::Jsonpath(ref e) => {
-                cfgd_core::output_v2::OutputFormat::Jsonpath(e.clone())
-            }
-            cfgd_core::output::OutputFormat::Template(ref t) => {
-                cfgd_core::output_v2::OutputFormat::Template(t.clone())
-            }
-            cfgd_core::output::OutputFormat::TemplateFile(ref p) => {
-                cfgd_core::output_v2::OutputFormat::TemplateFile(p.clone())
-            }
-        };
+        let v2_format: cfgd_core::output_v2::OutputFormat = self.output_format.clone().into();
         // For human formats, use Normal verbosity so tests can assert on
         // rendered output (Quiet would suppress headings/sections). Structured
         // formats route through `for_test_with_format`, which auto-quiets.
@@ -2007,7 +1992,6 @@ spec:
     let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
     let result = config_cmd::cmd_config_show(&cli, &printer);
     assert!(result.is_ok(), "config show failed: {:?}", result.err());
-    printer.flush();
     drop(printer);
 
     let output = cap.human();
@@ -2504,7 +2488,6 @@ spec:
 
     let result = config_cmd::cmd_config_show(&cli, &printer);
     assert!(result.is_ok(), "config show failed: {:?}", result.err());
-    printer.flush();
     drop(printer);
 
     let output = cap.human();
@@ -2518,7 +2501,10 @@ spec:
     );
     assert!(output.contains("community"), "missing registry name");
     assert!(output.contains("Daemon"), "missing Daemon section");
-    assert!(output.contains("Enabled"), "missing daemon enabled key");
+    assert!(
+        output.contains("Enabled") && output.contains("yes"),
+        "daemon enabled key/value missing"
+    );
     assert!(output.contains("Secrets"), "missing Secrets section");
     assert!(output.contains("sops-age"), "missing secrets backend");
     assert!(output.contains("Theme"), "missing Theme section");
@@ -3406,7 +3392,6 @@ fn config_show_succeeds_with_valid_config() {
         super::config_cmd::cmd_config_show(&cli, &printer).is_ok(),
         "config show should succeed when cfgd.yaml exists and is valid"
     );
-    printer.flush();
     drop(printer);
 
     let output = cap.human();
@@ -10320,7 +10305,6 @@ fn cmd_config_show_with_rich_config() {
     let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
 
     super::config_cmd::cmd_config_show(&cli, &printer).unwrap();
-    printer.flush();
     drop(printer);
 
     let output = cap.human();

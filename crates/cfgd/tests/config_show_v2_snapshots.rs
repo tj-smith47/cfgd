@@ -8,7 +8,7 @@
 //!     INSTA_UPDATE=always cargo test -p cfgd --test config_show_v2_snapshots
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use cfgd::cli::config_cmd::build_config_show_doc;
 use cfgd_core::config::{
@@ -16,43 +16,10 @@ use cfgd_core::config::{
     ModuleSecurityConfig, ModulesConfig, OriginSpec, OriginType, ReconcileConfig, SecretsConfig,
     SourceSpec, SshHostKeyPolicy, SyncConfig, ThemeConfig,
 };
-use cfgd_core::output_v2::{OutputFormat, Printer};
+use cfgd_core::output_v2::Printer;
 use pretty_assertions::assert_eq;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
-
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' && chars.peek() == Some(&'[') {
-            chars.next();
-            for inner in chars.by_ref() {
-                if inner == 'm' {
-                    break;
-                }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
-fn snapshot_path(name: &str) -> PathBuf {
-    Path::new(SNAPSHOT_ROOT).join(name)
-}
-
-fn assert_snapshot(name: &str, actual: &str) {
-    let path = snapshot_path(name);
-    if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !path.exists() {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, actual).unwrap();
-        return;
-    }
-    let expected = std::fs::read_to_string(&path).unwrap();
-    assert_eq!(actual, expected, "snapshot mismatch: {name}");
-}
 
 fn happy_config() -> CfgdConfig {
     CfgdConfig {
@@ -176,31 +143,25 @@ fn config_show_happy_human() {
     let path = Path::new("/etc/cfgd/cfgd.yaml");
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_config_show_doc(&cfg, path));
-    printer.flush();
     drop(printer);
-    let actual = strip_ansi(&cap.human());
-    assert_snapshot("config_show/happy.txt", &actual);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "config_show/happy.txt");
 }
 
 #[test]
 fn config_show_happy_json() {
     let cfg = happy_config();
     let path = Path::new("/etc/cfgd/cfgd.yaml");
-    let (printer, buf) = Printer::for_test_with_format(OutputFormat::Json);
+    let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_config_show_doc(&cfg, path));
     drop(printer);
-    let raw = buf.lock().unwrap().clone();
-    let value: serde_json::Value =
-        serde_json::from_str(&raw).expect("emitted JSON parses as serde_json::Value");
-    let pretty = serde_json::to_string_pretty(&value).unwrap();
-    assert_snapshot("config_show/happy.json", &pretty);
-
-    // Cross-check: the emitted JSON equals serializing the config directly.
+    // Cross-check: emitted JSON shape equals direct serialization of the config.
     let expected = serde_json::to_value(&cfg).unwrap();
+    let actual = cap.json().expect("doc captured json");
     assert_eq!(
-        value, expected,
+        actual, expected,
         "emit -o json must match serde_json::to_value(cfg)"
     );
+    cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "config_show/happy.json");
 }
 
 #[test]
@@ -209,8 +170,6 @@ fn config_show_empty_human() {
     let path = Path::new("/etc/cfgd/cfgd.yaml");
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_config_show_doc(&cfg, path));
-    printer.flush();
     drop(printer);
-    let actual = strip_ansi(&cap.human());
-    assert_snapshot("config_show/empty.txt", &actual);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "config_show/empty.txt");
 }

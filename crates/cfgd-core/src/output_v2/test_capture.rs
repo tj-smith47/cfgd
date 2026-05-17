@@ -133,31 +133,39 @@ impl DocCapture {
     /// of `src/output_v2/tests/snapshots/<name>`. Use `INSTA_UPDATE=always
     /// cargo test` to refresh.
     pub fn assert_human_snapshot(&self, name: &str) {
-        let actual = strip_ansi(&self.human());
-        let path = std::path::Path::new("src/output_v2/tests/snapshots").join(name);
-        if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !path.exists() {
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, &actual).unwrap();
-            return;
-        }
-        let expected = std::fs::read_to_string(&path).unwrap();
-        pretty_assertions::assert_eq!(actual, expected, "snapshot mismatch: {name}");
+        self.assert_human_snapshot_in(std::path::Path::new("src/output_v2/tests/snapshots"), name);
     }
 
     pub fn assert_json_snapshot(&self, name: &str) {
+        self.assert_json_snapshot_in(std::path::Path::new("src/output_v2/tests/snapshots"), name);
+    }
+
+    /// Like `assert_human_snapshot` but rooted at `base` instead of the
+    /// hard-coded `src/output_v2/tests/snapshots`. Use from downstream test
+    /// crates that store snapshots elsewhere (e.g. `tests/output_snapshots/`).
+    pub fn assert_human_snapshot_in(&self, base: &std::path::Path, name: &str) {
+        let actual = strip_ansi(&self.human());
+        snapshot_assert(base, name, &actual);
+    }
+
+    pub fn assert_json_snapshot_in(&self, base: &std::path::Path, name: &str) {
         let actual = self
             .json()
             .map(|v| serde_json::to_string_pretty(&v).unwrap())
             .unwrap_or_default();
-        let path = std::path::Path::new("src/output_v2/tests/snapshots").join(name);
-        if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !path.exists() {
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, &actual).unwrap();
-            return;
-        }
-        let expected = std::fs::read_to_string(&path).unwrap();
-        pretty_assertions::assert_eq!(actual, expected, "snapshot mismatch: {name}");
+        snapshot_assert(base, name, &actual);
     }
+}
+
+fn snapshot_assert(base: &std::path::Path, name: &str, actual: &str) {
+    let path = base.join(name);
+    if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !path.exists() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, actual).unwrap();
+        return;
+    }
+    let expected = std::fs::read_to_string(&path).unwrap();
+    pretty_assertions::assert_eq!(actual, expected, "snapshot mismatch: {name}");
 }
 
 /// ANSI-stripping helper used by `assert_*_snapshot`. Mirrors
