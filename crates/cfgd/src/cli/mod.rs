@@ -1685,7 +1685,7 @@ pub fn execute(
                 compliance::cmd_compliance_history(cli, v2_printer, since.as_deref())
             }
             Some(ComplianceCommand::Diff { base_id, target_id }) => {
-                compliance::cmd_compliance_diff(cli, printer, *base_id, *target_id)
+                compliance::cmd_compliance_diff(cli, v2_printer, *base_id, *target_id)
             }
         },
     }

@@ -1,0 +1,26 @@
+{
+  "added": [
+    {
+      "category": "package",
+      "status": "Compliant",
+      "target": "fd"
+    }
+  ],
+  "changed": [
+    {
+      "detail": "nameserver mismatch",
+      "key": "file:/etc/resolv.conf",
+      "newStatus": "Violation",
+      "oldStatus": "Compliant"
+    }
+  ],
+  "id1": 1,
+  "id2": 2,
+  "removed": [
+    {
+      "category": "file",
+      "status": "Compliant",
+      "target": "/etc/hosts"
+    }
+  ]
+}

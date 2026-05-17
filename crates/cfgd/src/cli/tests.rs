@@ -5743,9 +5743,9 @@ fn cmd_compliance_diff_missing_snapshots() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::compliance::cmd_compliance_diff(&cli, &printer, 1, 2);
+    let result = super::compliance::cmd_compliance_diff(&cli, &v2_printer, 1, 2);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -5755,7 +5755,6 @@ fn cmd_compliance_diff_after_two_snapshots() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     // Create two snapshots
@@ -5771,7 +5770,7 @@ fn cmd_compliance_diff_after_two_snapshots() {
         "two snapshots should create two history entries"
     );
     let result =
-        super::compliance::cmd_compliance_diff(&cli, &printer, entries[1].id, entries[0].id);
+        super::compliance::cmd_compliance_diff(&cli, &v2_printer, entries[1].id, entries[0].id);
     assert!(
         result.is_ok(),
         "compliance diff should succeed when comparing two valid snapshots: {:?}",
@@ -9343,9 +9342,9 @@ fn cmd_compliance_diff_missing_snapshot() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::compliance::cmd_compliance_diff(&cli, &printer, 1, 2);
+    let result = super::compliance::cmd_compliance_diff(&cli, &v2_printer, 1, 2);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -10977,7 +10976,7 @@ fn cmd_compliance_history_invalid_since_fails() {
 #[test]
 fn cmd_compliance_diff_missing_snapshots_fails() {
     let h = CliTestHarness::builder().build();
-    let result = super::compliance::cmd_compliance_diff(&h.cli(), h.printer(), 1, 2);
+    let result = super::compliance::cmd_compliance_diff(&h.cli(), h.v2_printer(), 1, 2);
     assert_error_contains(&result, "not found");
 }
 
@@ -15523,8 +15522,9 @@ fn cmd_compliance_diff_identical_snapshots_reports_no_differences() {
 
     // Clear output before diff
     h.buf.lock().unwrap().clear();
+    h.v2_buf.lock().unwrap().clear();
 
-    super::compliance::cmd_compliance_diff(&h.cli(), h.printer(), entries[1].id, entries[0].id)
+    super::compliance::cmd_compliance_diff(&h.cli(), h.v2_printer(), entries[1].id, entries[0].id)
         .unwrap();
 
     h.assert_output_contains("No differences");
@@ -15589,7 +15589,7 @@ fn cmd_compliance_diff_with_changes_shows_added_and_removed() {
     let id1 = entries[1].id;
     let id2 = entries[0].id;
 
-    super::compliance::cmd_compliance_diff(&h.cli(), h.printer(), id1, id2).unwrap();
+    super::compliance::cmd_compliance_diff(&h.cli(), h.v2_printer(), id1, id2).unwrap();
 
     let output = h.output();
     assert!(
@@ -15668,7 +15668,7 @@ fn cmd_compliance_diff_with_status_change_shows_changed() {
     let id1 = entries[1].id;
     let id2 = entries[0].id;
 
-    super::compliance::cmd_compliance_diff(&h.cli(), h.printer(), id1, id2).unwrap();
+    super::compliance::cmd_compliance_diff(&h.cli(), h.v2_printer(), id1, id2).unwrap();
 
     let output = h.output();
     assert!(
@@ -15748,7 +15748,7 @@ fn cmd_compliance_diff_structured_json_with_changes() {
     let id1 = entries[1].id;
     let id2 = entries[0].id;
 
-    super::compliance::cmd_compliance_diff(&h.cli(), h.printer(), id1, id2).unwrap();
+    super::compliance::cmd_compliance_diff(&h.cli(), h.v2_printer(), id1, id2).unwrap();
 
     let parsed = h.json_output();
     assert_eq!(parsed["id1"], id1);

@@ -91,12 +91,11 @@ pub(super) fn cmd_compliance_history(
 /// Show diff between two snapshots by ID.
 pub(super) fn cmd_compliance_diff(
     cli: &Cli,
-    printer: &Printer,
+    v2_printer: &PrinterV2,
     id1: i64,
     id2: i64,
 ) -> anyhow::Result<()> {
     let state = open_state_store(cli.state_dir.as_deref())?;
-
     let snap1 = state
         .get_compliance_snapshot(id1)?
         .ok_or_else(|| anyhow::anyhow!("snapshot #{} not found", id1))?;
@@ -104,26 +103,43 @@ pub(super) fn cmd_compliance_diff(
         .get_compliance_snapshot(id2)?
         .ok_or_else(|| anyhow::anyhow!("snapshot #{} not found", id2))?;
 
-    // Build a key for each check to match them between snapshots.
-    fn check_key(c: &cfgd_core::compliance::ComplianceCheck) -> String {
-        let id = c
-            .target
-            .as_deref()
-            .or(c.name.as_deref())
-            .or(c.key.as_deref())
-            .or(c.path.as_deref())
-            .unwrap_or("(unknown)");
-        format!("{}:{}", c.category, id)
-    }
+    let diff = compute_compliance_diff(&snap1, &snap2);
+    v2_printer.emit(build_compliance_diff_doc(id1, id2, &snap1, &snap2, &diff));
+    Ok(())
+}
 
+/// Diff key for a compliance check — first available identifier, prefixed by category.
+pub(super) fn check_key(c: &ComplianceCheck) -> String {
+    let id = c
+        .target
+        .as_deref()
+        .or(c.name.as_deref())
+        .or(c.key.as_deref())
+        .or(c.path.as_deref())
+        .unwrap_or("(unknown)");
+    format!("{}:{}", c.category, id)
+}
+
+pub struct ComplianceDiff {
+    pub added: Vec<ComplianceCheck>,
+    pub removed: Vec<ComplianceCheck>,
+    pub changed: Vec<ComplianceCheckChange>,
+}
+
+/// Compute added/removed/changed between two snapshots; deterministically sorted.
+pub fn compute_compliance_diff(
+    snap1: &ComplianceSnapshot,
+    snap2: &ComplianceSnapshot,
+) -> ComplianceDiff {
     use std::collections::HashMap;
-    let map1: HashMap<String, &cfgd_core::compliance::ComplianceCheck> =
+
+    let map1: HashMap<String, &ComplianceCheck> =
         snap1.checks.iter().map(|c| (check_key(c), c)).collect();
-    let map2: HashMap<String, &cfgd_core::compliance::ComplianceCheck> =
+    let map2: HashMap<String, &ComplianceCheck> =
         snap2.checks.iter().map(|c| (check_key(c), c)).collect();
 
-    let mut added: Vec<cfgd_core::compliance::ComplianceCheck> = Vec::new();
-    let mut removed: Vec<cfgd_core::compliance::ComplianceCheck> = Vec::new();
+    let mut added: Vec<ComplianceCheck> = Vec::new();
+    let mut removed: Vec<ComplianceCheck> = Vec::new();
     let mut changed: Vec<ComplianceCheckChange> = Vec::new();
 
     for (key, check2) in &map2 {
@@ -146,70 +162,72 @@ pub(super) fn cmd_compliance_diff(
         }
     }
 
-    // Sort for deterministic output
     added.sort_by_key(check_key);
     removed.sort_by_key(check_key);
     changed.sort_by(|a, b| a.key.cmp(&b.key));
 
-    if printer.is_structured() {
-        printer.write_structured(&ComplianceDiffOutput {
-            id1,
-            id2,
-            added: added.clone(),
-            removed: removed.clone(),
-            changed: changed.clone(),
-        });
-        return Ok(());
+    ComplianceDiff {
+        added,
+        removed,
+        changed,
+    }
+}
+
+/// Pure builder: compliance diff Doc per spec §13.4.
+pub fn build_compliance_diff_doc(
+    id1: i64,
+    id2: i64,
+    snap1: &ComplianceSnapshot,
+    snap2: &ComplianceSnapshot,
+    diff: &ComplianceDiff,
+) -> Doc {
+    let mut doc = Doc::new()
+        .heading(format!("Compliance Diff #{} → #{}", id1, id2))
+        .kv_block([
+            ("Snapshot 1", snap1.timestamp.clone()),
+            ("Snapshot 2", snap2.timestamp.clone()),
+        ]);
+
+    if diff.added.is_empty() && diff.removed.is_empty() && diff.changed.is_empty() {
+        doc = doc.status(Role::Ok, "No differences between snapshots");
+    } else {
+        doc = doc.section_if_nonempty(
+            format!("Added ({} check(s))", diff.added.len()),
+            &diff.added,
+            |s, items| items.iter().fold(s, |s, c| s.bullet(check_key(c))),
+        );
+        doc = doc.section_if_nonempty(
+            format!("Removed ({} check(s))", diff.removed.len()),
+            &diff.removed,
+            |s, items| items.iter().fold(s, |s, c| s.bullet(check_key(c))),
+        );
+        doc = doc.section_if_nonempty(
+            format!("Changed ({} check(s))", diff.changed.len()),
+            &diff.changed,
+            |s, items| {
+                items.iter().fold(s, |s, c| {
+                    let role = match c.new_status.as_str() {
+                        "Violation" => Role::Fail,
+                        "Warning" => Role::Warn,
+                        _ => Role::Ok,
+                    };
+                    s.status_with(
+                        role,
+                        format!("{} ({} → {})", c.key, c.old_status, c.new_status),
+                        |sf| sf.detail_opt(c.detail.as_deref()),
+                    )
+                })
+            },
+        );
     }
 
-    printer.header(&format!("Compliance Diff #{} → #{}", id1, id2));
-    printer.newline();
-    printer.key_value("Snapshot 1", &snap1.timestamp);
-    printer.key_value("Snapshot 2", &snap2.timestamp);
-    printer.newline();
-
-    if added.is_empty() && removed.is_empty() && changed.is_empty() {
-        printer.success("No differences between snapshots");
-        return Ok(());
-    }
-
-    if !added.is_empty() {
-        printer.subheader(&format!("Added ({} check(s))", added.len()));
-        for check in &added {
-            printer.success(&format!("  + {}", check_key(check)));
-        }
-        printer.newline();
-    }
-
-    if !removed.is_empty() {
-        printer.subheader(&format!("Removed ({} check(s))", removed.len()));
-        for check in &removed {
-            printer.warning(&format!("  - {}", check_key(check)));
-        }
-        printer.newline();
-    }
-
-    if !changed.is_empty() {
-        printer.subheader(&format!("Changed ({} check(s))", changed.len()));
-        for change in &changed {
-            let msg = format!(
-                "  ~ {} ({} → {})",
-                change.key, change.old_status, change.new_status
-            );
-            if change.new_status == "Violation" {
-                printer.error(&msg);
-            } else if change.new_status == "Warning" {
-                printer.warning(&msg);
-            } else {
-                printer.success(&msg);
-            }
-            if let Some(ref detail) = change.detail {
-                printer.info(&format!("    {}", detail));
-            }
-        }
-    }
-
-    Ok(())
+    doc.with_data(ComplianceDiffOutput {
+        id1,
+        id2,
+        added: diff.added.clone(),
+        removed: diff.removed.clone(),
+        changed: diff.changed.clone(),
+    })
 }
 
 /// Pure builder: compliance snapshot summary Doc.
@@ -500,7 +518,7 @@ mod tests {
     fn cmd_compliance_diff_missing_snapshots_returns_err() {
         let state_dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(state_dir.path());
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let (printer, _cap) = PrinterV2::for_test_doc();
 
         let err = cmd_compliance_diff(&cli, &printer, 1, 2).unwrap_err();
         assert!(
@@ -522,11 +540,12 @@ mod tests {
         store_snapshot(state_dir.path(), &snapshot);
 
         let cli = test_cli_for(state_dir.path());
-        let (printer, buf) = Printer::for_test();
+        let (printer, cap) = PrinterV2::for_test_doc();
 
         cmd_compliance_diff(&cli, &printer, 1, 2).unwrap();
+        drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cap.human();
         assert!(
             output.contains("No differences between snapshots"),
             "identical snapshots should print no-diff message, got: {output}"
@@ -549,11 +568,12 @@ mod tests {
         store_snapshot(state_dir.path(), &snap2);
 
         let cli = test_cli_for(state_dir.path());
-        let (printer, buf) = Printer::for_test();
+        let (printer, cap) = PrinterV2::for_test_doc();
 
         cmd_compliance_diff(&cli, &printer, 1, 2).unwrap();
+        drop(printer);
 
-        let output = buf.lock().unwrap();
+        let output = cap.human();
         assert!(
             output.contains("Added (1 check(s))") && output.contains("file:/c"),
             "should report added check file:/c, got: {output}"
@@ -585,13 +605,12 @@ mod tests {
 
         let mut cli = test_cli_for(state_dir.path());
         cli.output = OutputFormatArg(OutputFormat::Json);
-        let (printer, buf) = Printer::for_test_with_format(OutputFormat::Json);
+        let (printer, cap) = PrinterV2::for_test_doc();
 
         cmd_compliance_diff(&cli, &printer, 1, 2).unwrap();
+        drop(printer);
 
-        let output = buf.lock().unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(output.trim())
-            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
+        let parsed = cap.json().expect("diff Doc carries with_data payload");
         assert_eq!(parsed["id1"], 1);
         assert_eq!(parsed["id2"], 2);
         assert!(

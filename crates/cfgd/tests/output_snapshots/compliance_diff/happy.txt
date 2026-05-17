@@ -1,0 +1,12 @@
+Compliance Diff #1 → #2
+  Snapshot 1  2026-05-14T09:00:00Z
+  Snapshot 2  2026-05-14T12:00:00Z
+
+Added (1 check(s))
+  - package:fd
+
+Removed (1 check(s))
+  - file:/etc/hosts
+
+Changed (1 check(s))
+  ✗ file:/etc/resolv.conf (Compliant → Violation) — nameserver mismatch

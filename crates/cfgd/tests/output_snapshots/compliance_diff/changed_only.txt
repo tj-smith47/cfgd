@@ -1,0 +1,8 @@
+Compliance Diff #3 → #4
+  Snapshot 1  2026-05-14T09:00:00Z
+  Snapshot 2  2026-05-14T12:00:00Z
+
+Changed (3 check(s))
+  ✗ file:/etc/hosts (Compliant → Violation) — hash drift detected
+  ⚠ package:ripgrep (Compliant → Warning)   — version mismatch: want 14.0.0, have 13.0.0
+  ✓ system:sysctl.vm.swappiness (Warning → Compliant)

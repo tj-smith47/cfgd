@@ -212,7 +212,7 @@ pub(in crate::cli) struct ComplianceDiffOutput {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct ComplianceCheckChange {
+pub struct ComplianceCheckChange {
     pub key: String,
     pub old_status: String,
     pub new_status: String,
