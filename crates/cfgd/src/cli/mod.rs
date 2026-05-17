@@ -1387,8 +1387,8 @@ pub fn execute(
         return Ok(());
     };
     match command {
-        Command::Apply(args) => apply::cmd_apply(cli, printer, args),
-        Command::Plan(args) => plan::cmd_plan(cli, printer, args),
+        Command::Apply(args) => apply::cmd_apply(cli, printer, v2_printer, args),
+        Command::Plan(args) => plan::cmd_plan(cli, printer, v2_printer, args),
         Command::Status { module, exit_code } => {
             status::cmd_status(cli, printer, v2_printer, module.as_deref(), *exit_code)
         }
@@ -1407,14 +1407,16 @@ pub fn execute(
             }
             ProfileCommand::List => profile::cmd_profile_list(cli, printer),
             ProfileCommand::Switch { name } => profile::cmd_profile_switch(cli, name, printer),
-            ProfileCommand::Create(args) => profile::cmd_profile_create(cli, printer, args),
+            ProfileCommand::Create(args) => {
+                profile::cmd_profile_create(cli, printer, v2_printer, args)
+            }
             ProfileCommand::Update(args) => {
                 let profile_name = resolve_profile_name(cli, args.name.as_deref())?;
                 profile::cmd_profile_update(cli, printer, &profile_name, args)
             }
             ProfileCommand::Edit { name } => profile::cmd_profile_edit(cli, printer, name),
             ProfileCommand::Delete { name, yes } => {
-                profile::cmd_profile_delete(cli, printer, name, *yes)
+                profile::cmd_profile_delete(cli, printer, v2_printer, name, *yes)
             }
         },
         Command::Doctor => doctor::cmd_doctor(cli, printer),
@@ -1452,11 +1454,13 @@ pub fn execute(
             ModuleCommand::Show { name, show_values } => {
                 module::cmd_module_show(cli, printer, v2_printer, name, *show_values)
             }
-            ModuleCommand::Create(args) => module::cmd_module_create(cli, printer, args),
+            ModuleCommand::Create(args) => {
+                module::cmd_module_create(cli, printer, v2_printer, args)
+            }
             ModuleCommand::Update(args) => module::cmd_module_update_local(cli, printer, args),
             ModuleCommand::Edit { name } => module::cmd_module_edit(cli, printer, name),
             ModuleCommand::Delete { name, yes, purge } => {
-                module::cmd_module_delete(cli, printer, name, *yes, *purge)
+                module::cmd_module_delete(cli, printer, v2_printer, name, *yes, *purge)
             }
             ModuleCommand::Upgrade {
                 name,

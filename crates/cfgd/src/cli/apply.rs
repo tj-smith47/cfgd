@@ -1,6 +1,11 @@
 use super::*;
 
-pub(super) fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyhow::Result<()> {
+pub(super) fn cmd_apply(
+    cli: &Cli,
+    printer: &Printer,
+    v2_printer: &cfgd_core::output_v2::Printer,
+    args: &ApplyArgs,
+) -> anyhow::Result<()> {
     // Parse --context (mirrors PlanArgs::context).
     let reconcile_context = match args.context.as_str() {
         "apply" => ReconcileContext::Apply,
@@ -28,9 +33,7 @@ pub(super) fn cmd_apply(cli: &Cli, printer: &Printer, args: &ApplyArgs) -> anyho
         } else {
             None
         };
-        let v2_printer =
-            cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Normal);
-        init::resolve_from(from, target, "master", printer, &v2_printer)?;
+        init::resolve_from(from, target, "master", printer, v2_printer)?;
     }
 
     let dry_run = args.dry_run;

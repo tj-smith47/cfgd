@@ -3,6 +3,7 @@ use super::*;
 pub(crate) fn cmd_profile_delete(
     cli: &Cli,
     printer: &Printer,
+    v2_printer: &cfgd_core::output_v2::Printer,
     name: &str,
     yes: bool,
 ) -> anyhow::Result<()> {
@@ -53,7 +54,7 @@ pub(crate) fn cmd_profile_delete(
 
     printer.success(&format!("Deleted profile '{}'", name));
 
-    maybe_update_workflow(cli, printer)?;
+    maybe_update_workflow(cli, v2_printer)?;
 
     Ok(())
 }

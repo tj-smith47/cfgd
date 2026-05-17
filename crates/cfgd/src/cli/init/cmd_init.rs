@@ -26,8 +26,8 @@ pub struct InitArgs<'a> {
 
 /// Structured-output payload for `cfgd init`. Drives `-o json|yaml|jsonpath|template`.
 #[derive(Debug, Serialize)]
-pub struct InitOutput {
-    pub target_dir: String,
+pub(crate) struct InitOutput {
+    pub(crate) target_dir: String,
 }
 
 /// Scaffold a new cfgd configuration repository.

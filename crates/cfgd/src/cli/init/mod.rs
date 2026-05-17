@@ -12,7 +12,7 @@ mod tests;
 // --- Re-export pub(crate) entry points so cli::mod can dispatch to them ---
 
 pub(super) use cmd_init::regenerate_workflow;
-pub use cmd_init::{InitArgs, InitOutput, cmd_init};
+pub use cmd_init::{InitArgs, cmd_init};
 pub(super) use enroll::cmd_enroll;
 pub(super) use source::resolve_from;
 

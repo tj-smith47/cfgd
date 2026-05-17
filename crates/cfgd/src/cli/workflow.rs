@@ -246,9 +246,11 @@ pub(super) fn generate_release_workflow_yaml(
     yaml
 }
 
-pub(super) fn maybe_update_workflow(cli: &Cli, _printer: &Printer) -> anyhow::Result<()> {
+pub(super) fn maybe_update_workflow(
+    cli: &Cli,
+    v2_printer: &cfgd_core::output_v2::Printer,
+) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
-    let v2_printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Normal);
-    init::regenerate_workflow(&config_dir, &v2_printer)?;
+    init::regenerate_workflow(&config_dir, v2_printer)?;
     Ok(())
 }

@@ -96,6 +96,10 @@ fn make_printer() -> Printer {
     Printer::new(cfgd_core::output::Verbosity::Quiet)
 }
 
+fn make_v2_printer() -> cfgd_core::output_v2::Printer {
+    cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet)
+}
+
 #[test]
 fn update_script_list_add_to_empty() {
     let printer = make_printer();
@@ -720,12 +724,13 @@ fn profile_create_interactive_drives_prompts_via_harness() {
         cfgd_core::output::PromptAnswer::Text("default".to_string()),
         cfgd_core::output::PromptAnswer::Text("".to_string()),
     ]);
+    let v2_printer = make_v2_printer();
 
     // setup_config_dir already creates a `default.yaml` profile that the
     // first prompt response will reference as a parent.
     let args = make_profile_create_args("interactive-child");
 
-    cmd_profile_create(&cli, &printer, &args)
+    cmd_profile_create(&cli, &printer, &v2_printer, &args)
         .expect("interactive profile create with valid parent + no modules");
 
     let profile_path = dir.path().join("profiles").join("interactive-child.yaml");
@@ -748,9 +753,10 @@ fn profile_create_interactive_with_missing_parent_bails() {
         cfgd_core::output::PromptAnswer::Text("ghost-parent".to_string()),
         cfgd_core::output::PromptAnswer::Text("".to_string()),
     ]);
+    let v2_printer = make_v2_printer();
 
     let args = make_profile_create_args("bad-parent-child");
-    let result = cmd_profile_create(&cli, &printer, &args);
+    let result = cmd_profile_create(&cli, &printer, &v2_printer, &args);
     let err = result.expect_err("missing parent must bail");
     let msg = err.to_string();
     assert!(
@@ -764,13 +770,14 @@ fn profile_create_minimal() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let printer = make_printer();
+    let v2_printer = make_v2_printer();
 
     let mut args = make_profile_create_args("devops");
     // Need at least one flag to avoid interactive mode
     args.modules = vec![];
     args.env = vec!["FOO=bar".to_string()];
 
-    let result = cmd_profile_create(&cli, &printer, &args);
+    let result = cmd_profile_create(&cli, &printer, &v2_printer, &args);
     assert!(
         result.is_ok(),
         "cmd_profile_create should succeed: {:?}",
@@ -792,11 +799,12 @@ fn profile_create_with_inherits() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let printer = make_printer();
+    let v2_printer = make_v2_printer();
 
     let mut args = make_profile_create_args("child");
     args.inherits = vec!["default".to_string()];
 
-    let result = cmd_profile_create(&cli, &printer, &args);
+    let result = cmd_profile_create(&cli, &printer, &v2_printer, &args);
     assert!(
         result.is_ok(),
         "cmd_profile_create with inherits should succeed: {:?}",
@@ -812,11 +820,12 @@ fn profile_create_with_modules() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let printer = make_printer();
+    let v2_printer = make_v2_printer();
 
     let mut args = make_profile_create_args("modular");
     args.modules = vec!["shell".to_string()];
 
-    let result = cmd_profile_create(&cli, &printer, &args);
+    let result = cmd_profile_create(&cli, &printer, &v2_printer, &args);
     assert!(
         result.is_ok(),
         "cmd_profile_create with modules should succeed: {:?}",
@@ -832,10 +841,11 @@ fn profile_create_duplicate_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let printer = make_printer();
+    let v2_printer = make_v2_printer();
 
     let mut args = make_profile_create_args("default");
     args.env = vec!["X=1".to_string()]; // avoid interactive
-    let result = cmd_profile_create(&cli, &printer, &args);
+    let result = cmd_profile_create(&cli, &printer, &v2_printer, &args);
     assert!(result.is_err(), "creating duplicate profile should fail");
     let err = result.unwrap_err().to_string();
     assert!(
@@ -850,11 +860,12 @@ fn profile_create_missing_parent_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let printer = make_printer();
+    let v2_printer = make_v2_printer();
 
     let mut args = make_profile_create_args("orphan");
     args.inherits = vec!["nonexistent-parent".to_string()];
 
-    let result = cmd_profile_create(&cli, &printer, &args);
+    let result = cmd_profile_create(&cli, &printer, &v2_printer, &args);
     assert!(
         result.is_err(),
         "creating profile with missing parent should fail"
@@ -872,11 +883,12 @@ fn profile_create_with_aliases() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let printer = make_printer();
+    let v2_printer = make_v2_printer();
 
     let mut args = make_profile_create_args("alias-test");
     args.aliases = vec!["ll=ls -la".to_string()];
 
-    let result = cmd_profile_create(&cli, &printer, &args);
+    let result = cmd_profile_create(&cli, &printer, &v2_printer, &args);
     assert!(
         result.is_ok(),
         "cmd_profile_create with aliases should succeed: {:?}",
@@ -894,11 +906,12 @@ fn profile_create_with_system_settings() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (printer, buf) = Printer::for_test();
+    let v2_printer = make_v2_printer();
 
     let mut args = make_profile_create_args("sys-test");
     args.system = vec!["sysctl=net.core.somaxconn".to_string()];
 
-    cmd_profile_create(&cli, &printer, &args).unwrap();
+    cmd_profile_create(&cli, &printer, &v2_printer, &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("sys-test.yaml")).unwrap();
     assert!(
@@ -922,11 +935,12 @@ fn profile_create_with_secrets() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let printer = make_printer();
+    let v2_printer = make_v2_printer();
 
     let mut args = make_profile_create_args("secret-test");
     args.secrets = vec!["secrets/key.enc:/tmp/key".to_string()];
 
-    let result = cmd_profile_create(&cli, &printer, &args);
+    let result = cmd_profile_create(&cli, &printer, &v2_printer, &args);
     assert!(
         result.is_ok(),
         "cmd_profile_create with secrets should succeed: {:?}",
@@ -944,13 +958,14 @@ fn profile_create_with_scripts() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let printer = make_printer();
+    let v2_printer = make_v2_printer();
 
     let mut args = make_profile_create_args("script-test");
     args.pre_apply = vec!["check.sh".to_string()];
     args.post_apply = vec!["notify.sh".to_string()];
     args.on_drift = vec!["alert.sh".to_string()];
 
-    let result = cmd_profile_create(&cli, &printer, &args);
+    let result = cmd_profile_create(&cli, &printer, &v2_printer, &args);
     assert!(
         result.is_ok(),
         "cmd_profile_create with scripts should succeed: {:?}",
@@ -972,10 +987,11 @@ fn profile_create_invalid_name_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let printer = make_printer();
+    let v2_printer = make_v2_printer();
 
     let mut args = make_profile_create_args(".hidden");
     args.env = vec!["X=1".to_string()]; // avoid interactive
-    let err = cmd_profile_create(&cli, &printer, &args).unwrap_err();
+    let err = cmd_profile_create(&cli, &printer, &v2_printer, &args).unwrap_err();
     assert!(
         err.to_string().contains("cannot start with '.' or '-'"),
         "should reject leading dot in name, got: {err}"
@@ -1099,11 +1115,12 @@ fn profile_update_add_inherits() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let printer = make_printer();
+    let v2_printer = make_v2_printer();
 
     // Create a base profile to inherit from
     let mut create_args = make_profile_create_args("base");
     create_args.env = vec!["X=1".to_string()]; // avoid interactive
-    cmd_profile_create(&cli, &printer, &create_args).unwrap();
+    cmd_profile_create(&cli, &printer, &v2_printer, &create_args).unwrap();
 
     // Update work to also inherit base
     let mut args = make_profile_update_args();
@@ -1410,9 +1427,10 @@ fn profile_delete_with_yes_flag() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (printer, buf) = Printer::for_test();
+    let v2_printer = make_v2_printer();
 
     // Delete 'work' (not active, not inherited by others)
-    cmd_profile_delete(&cli, &printer, "work", true).unwrap();
+    cmd_profile_delete(&cli, &printer, &v2_printer, "work", true).unwrap();
 
     let profile_path = dir.path().join("profiles").join("work.yaml");
     assert!(!profile_path.exists(), "profile file should be deleted");
@@ -1428,8 +1446,9 @@ fn profile_delete_nonexistent_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let printer = make_printer();
+    let v2_printer = make_v2_printer();
 
-    let result = cmd_profile_delete(&cli, &printer, "nonexistent", true);
+    let result = cmd_profile_delete(&cli, &printer, &v2_printer, "nonexistent", true);
     assert!(result.is_err(), "deleting nonexistent profile should fail");
     let err = result.unwrap_err().to_string();
     assert!(
@@ -1444,9 +1463,10 @@ fn profile_delete_active_profile_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let printer = make_printer();
+    let v2_printer = make_v2_printer();
 
     // 'default' is the active profile in cfgd.yaml
-    let result = cmd_profile_delete(&cli, &printer, "default", true);
+    let result = cmd_profile_delete(&cli, &printer, &v2_printer, "default", true);
     assert!(result.is_err(), "deleting active profile should fail");
     let err = result.unwrap_err().to_string();
     assert!(
@@ -1462,9 +1482,10 @@ fn profile_delete_inherited_profile_fails() {
     // Switch active to 'work' so 'default' is not active but is inherited by 'work'
     let cli = test_cli(dir.path());
     let printer = make_printer();
+    let v2_printer = make_v2_printer();
     cmd_profile_switch(&cli, "work", &printer).unwrap();
 
-    let result = cmd_profile_delete(&cli, &printer, "default", true);
+    let result = cmd_profile_delete(&cli, &printer, &v2_printer, "default", true);
     assert!(result.is_err(), "deleting inherited profile should fail");
     let err = result.unwrap_err().to_string();
     assert!(
@@ -1479,6 +1500,7 @@ fn profile_delete_cleans_files_dir() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let printer = make_printer();
+    let v2_printer = make_v2_printer();
 
     // Create a profile with a files subdirectory
     let files_dir = dir.path().join("profiles").join("ephemeral").join("files");
@@ -1493,7 +1515,7 @@ fn profile_delete_cleans_files_dir() {
     )
     .unwrap();
 
-    cmd_profile_delete(&cli, &printer, "ephemeral", true).unwrap();
+    cmd_profile_delete(&cli, &printer, &v2_printer, "ephemeral", true).unwrap();
 
     assert!(!files_dir.exists(), "files directory should be cleaned up");
 }
@@ -1503,8 +1525,9 @@ fn profile_delete_invalid_name_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let printer = make_printer();
+    let v2_printer = make_v2_printer();
 
-    let err = cmd_profile_delete(&cli, &printer, "-bad", true).unwrap_err();
+    let err = cmd_profile_delete(&cli, &printer, &v2_printer, "-bad", true).unwrap_err();
     assert!(
         err.to_string().contains("cannot start with '.' or '-'"),
         "should reject leading dash in name, got: {err}"
@@ -1556,8 +1579,9 @@ fn profile_delete_without_yes_and_prompt_confirmed_proceeds() {
         Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
             true,
         )]);
+    let v2_printer = make_v2_printer();
 
-    cmd_profile_delete(&cli, &printer, "work", false).unwrap();
+    cmd_profile_delete(&cli, &printer, &v2_printer, "work", false).unwrap();
 
     let profile_path = dir.path().join("profiles").join("work.yaml");
     assert!(
@@ -1582,8 +1606,9 @@ fn profile_delete_without_yes_and_prompt_declined_returns_cancelled() {
         Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
             false,
         )]);
+    let v2_printer = make_v2_printer();
 
-    cmd_profile_delete(&cli, &printer, "work", false).unwrap();
+    cmd_profile_delete(&cli, &printer, &v2_printer, "work", false).unwrap();
 
     let profile_path = dir.path().join("profiles").join("work.yaml");
     assert!(
@@ -1859,12 +1884,13 @@ fn profile_create_output_messages() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (printer, buf) = Printer::for_test();
+    let v2_printer = make_v2_printer();
 
     let mut args = make_profile_create_args("fancy");
     args.inherits = vec!["default".to_string()];
     args.modules = vec!["shell".to_string()];
 
-    cmd_profile_create(&cli, &printer, &args).unwrap();
+    cmd_profile_create(&cli, &printer, &v2_printer, &args).unwrap();
 
     let output = buf.lock().unwrap();
     assert!(
@@ -2466,11 +2492,12 @@ fn profile_create_with_packages() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let printer = make_printer();
+    let v2_printer = make_v2_printer();
 
     let mut args = make_profile_create_args("pkg-test");
     args.packages = vec!["brew:ripgrep".to_string()];
 
-    cmd_profile_create(&cli, &printer, &args).unwrap();
+    cmd_profile_create(&cli, &printer, &v2_printer, &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("pkg-test.yaml")).unwrap();
     let pkgs = doc.spec.packages.unwrap();
@@ -2540,6 +2567,7 @@ fn profile_create_with_all_script_types() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let printer = make_printer();
+    let v2_printer = make_v2_printer();
 
     let mut args = make_profile_create_args("all-scripts");
     args.pre_apply = vec!["pre.sh".to_string()];
@@ -2549,7 +2577,7 @@ fn profile_create_with_all_script_types() {
     args.on_change = vec!["change.sh".to_string()];
     args.on_drift = vec!["drift.sh".to_string()];
 
-    cmd_profile_create(&cli, &printer, &args).unwrap();
+    cmd_profile_create(&cli, &printer, &v2_printer, &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("all-scripts.yaml")).unwrap();
     let scripts = doc.spec.scripts.unwrap();

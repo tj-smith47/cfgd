@@ -3,6 +3,7 @@ use super::*;
 pub(crate) fn cmd_profile_create(
     cli: &Cli,
     printer: &Printer,
+    v2_printer: &cfgd_core::output_v2::Printer,
     args: &ProfileCreateArgs,
 ) -> anyhow::Result<()> {
     let name = &args.name;
@@ -256,7 +257,7 @@ pub(crate) fn cmd_profile_create(
     printer.newline();
     printer.info(&format!("Activate with: cfgd profile switch {}", name));
 
-    maybe_update_workflow(cli, printer)?;
+    maybe_update_workflow(cli, v2_printer)?;
 
     Ok(())
 }

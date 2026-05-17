@@ -3,6 +3,7 @@ use super::*;
 pub(crate) fn cmd_module_create(
     cli: &Cli,
     printer: &Printer,
+    v2_printer: &cfgd_core::output_v2::Printer,
     args: &ModuleCreateArgs,
 ) -> anyhow::Result<()> {
     let name = &args.name;
@@ -225,7 +226,7 @@ pub(crate) fn cmd_module_create(
     printer.info("Add to a profile with: cfgd profile update <profile> --module <name>");
     printer.info("Fine-tune with: cfgd module edit <name>");
 
-    maybe_update_workflow(cli, printer)?;
+    maybe_update_workflow(cli, v2_printer)?;
 
     // Apply if requested
     if args.apply {
@@ -598,6 +599,7 @@ pub(crate) fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyho
 pub(crate) fn cmd_module_delete(
     cli: &Cli,
     printer: &Printer,
+    v2_printer: &cfgd_core::output_v2::Printer,
     name: &str,
     yes: bool,
     purge: bool,
@@ -691,7 +693,7 @@ pub(crate) fn cmd_module_delete(
 
     printer.success(&format!("Deleted module '{}'", name));
 
-    maybe_update_workflow(cli, printer)?;
+    maybe_update_workflow(cli, v2_printer)?;
 
     Ok(())
 }
