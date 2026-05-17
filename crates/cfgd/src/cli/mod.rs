@@ -1,5 +1,5 @@
 pub mod apply;
-mod checkin;
+pub mod checkin;
 pub mod compliance;
 pub mod config_cmd;
 mod daemon;
@@ -1652,6 +1652,7 @@ pub fn execute(
         } => checkin::cmd_checkin(
             cli,
             printer,
+            v2_printer,
             server_url,
             api_key.as_deref(),
             device_id.as_deref(),

@@ -1,0 +1,11 @@
+Checkin
+  Server status   ok
+  Config changed  true
+
+⚠ Server pushed desired config
+
+Server config
+  ⚠ Saved to <PATH>
+  Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'
+
+No drift to report

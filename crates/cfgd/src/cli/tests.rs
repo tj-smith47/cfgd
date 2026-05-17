@@ -4708,7 +4708,8 @@ fn cmd_apply_with_env_vars() {
     }
 
     // Verify the profile was loaded with env vars by loading config+profile
-    let (_, resolved) = super::load_config_and_profile(&cli, &printer).unwrap();
+    let _ = &printer;
+    let (_, _, resolved) = super::load_config_and_profile_v2(&cli).unwrap();
     assert!(
         resolved.merged.env.iter().any(|e| e.name == "EDITOR"),
         "resolved profile should contain EDITOR env var"
@@ -8163,13 +8164,14 @@ fn load_config_and_profile_default_profile() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = super::load_config_and_profile(&cli, &printer);
+    let _ = &printer;
+    let result = super::load_config_and_profile_v2(&cli);
     assert!(
         result.is_ok(),
         "loading config and default profile should succeed: {:?}",
         result.err()
     );
-    let (cfg, resolved) = result.unwrap();
+    let (cfg, _, resolved) = result.unwrap();
     assert_eq!(cfg.spec.profile.as_deref(), Some("default"));
     // The resolved profile should contain the env var from default profile
     assert!(resolved.merged.env.iter().any(|e| e.name == "editor"));
@@ -8184,13 +8186,14 @@ fn load_config_and_profile_with_override() {
     cli.profile = Some("work".to_string());
     let printer = test_printer();
 
-    let result = super::load_config_and_profile(&cli, &printer);
+    let _ = &printer;
+    let result = super::load_config_and_profile_v2(&cli);
     assert!(
         result.is_ok(),
         "loading config with profile override should succeed: {:?}",
         result.err()
     );
-    let (_cfg, resolved) = result.unwrap();
+    let (_cfg, _, resolved) = result.unwrap();
     // Work profile overrides editor to 'code'
     let editor = resolved.merged.env.iter().find(|e| e.name == "editor");
     assert!(editor.is_some());
@@ -8203,7 +8206,8 @@ fn load_config_and_profile_missing_config_errors() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = super::load_config_and_profile(&cli, &printer);
+    let _ = &printer;
+    let result = super::load_config_and_profile_v2(&cli);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -8224,7 +8228,8 @@ fn load_config_and_profile_missing_profile_errors() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = super::load_config_and_profile(&cli, &printer);
+    let _ = &printer;
+    let result = super::load_config_and_profile_v2(&cli);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -10770,7 +10775,8 @@ fn load_config_and_profile_returns_correct_config() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let (cfg, resolved) = super::load_config_and_profile(&cli, &printer).unwrap();
+    let _ = &printer;
+    let (cfg, _, resolved) = super::load_config_and_profile_v2(&cli).unwrap();
     assert_eq!(cfg.metadata.name, "t");
     assert!(
         !resolved.merged.env.is_empty(),
@@ -10787,7 +10793,8 @@ fn load_config_and_profile_missing_profile_fails() {
     };
     let printer = test_printer();
 
-    let result = super::load_config_and_profile(&cli, &printer);
+    let _ = &printer;
+    let result = super::load_config_and_profile_v2(&cli);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -12365,8 +12372,15 @@ fn checkin_fails_when_no_profile_configured() {
     let no_profile_config =
         "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec: {}\n";
     let h = CliTestHarness::builder().config(no_profile_config).build();
-    let result =
-        super::checkin::cmd_checkin(&h.cli(), h.printer(), "http://localhost:8080", None, None);
+    let v2 = test_v2_printer();
+    let result = super::checkin::cmd_checkin(
+        &h.cli(),
+        h.printer(),
+        &v2,
+        "http://localhost:8080",
+        None,
+        None,
+    );
     assert_error_contains(&result, "no profile configured");
 }
 
@@ -12376,7 +12390,9 @@ fn checkin_fails_when_config_file_missing() {
     // Don't write any config file
     let cli = test_cli(dir.path());
     let printer = test_printer();
-    let result = super::checkin::cmd_checkin(&cli, &printer, "http://localhost:8080", None, None);
+    let v2 = test_v2_printer();
+    let result =
+        super::checkin::cmd_checkin(&cli, &printer, &v2, "http://localhost:8080", None, None);
     assert_error_contains(&result, "config file not found");
 }
 
@@ -12384,8 +12400,15 @@ fn checkin_fails_when_config_file_missing() {
 fn checkin_fails_when_profile_does_not_exist() {
     let bad_profile_config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: nonexistent\n";
     let h = CliTestHarness::builder().config(bad_profile_config).build();
-    let result =
-        super::checkin::cmd_checkin(&h.cli(), h.printer(), "http://localhost:8080", None, None);
+    let v2 = test_v2_printer();
+    let result = super::checkin::cmd_checkin(
+        &h.cli(),
+        h.printer(),
+        &v2,
+        "http://localhost:8080",
+        None,
+        None,
+    );
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -16658,9 +16681,11 @@ spec:
 #[test]
 fn cmd_checkin_server_unreachable() {
     let h = CliTestHarness::builder().build();
+    let v2 = test_v2_printer();
     let result = super::checkin::cmd_checkin(
         &h.cli(),
         h.printer(),
+        &v2,
         "http://127.0.0.1:19999",
         Some("test-api-key"),
         Some("test-device-42"),
@@ -16698,8 +16723,15 @@ spec:
     let h = CliTestHarness::builder()
         .config(config_with_compliance)
         .build();
-    let result =
-        super::checkin::cmd_checkin(&h.cli(), h.printer(), "http://127.0.0.1:19999", None, None);
+    let v2 = test_v2_printer();
+    let result = super::checkin::cmd_checkin(
+        &h.cli(),
+        h.printer(),
+        &v2,
+        "http://127.0.0.1:19999",
+        None,
+        None,
+    );
     assert!(
         result.is_err(),
         "checkin should fail with unreachable server"

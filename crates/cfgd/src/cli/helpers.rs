@@ -1,24 +1,6 @@
 use super::*;
 use cfgd_core::output_v2::{Printer as PrinterV2, Role};
 
-// TEMP (R3 removes)
-pub(in crate::cli) fn load_config_and_profile(
-    cli: &Cli,
-    printer: &Printer,
-) -> anyhow::Result<(CfgdConfig, ResolvedProfile)> {
-    let cfg = config::load_config(&cli.config)?;
-    let profile_name = match cli.profile.as_deref() {
-        Some(p) => p,
-        None => cfg.active_profile()?,
-    };
-
-    printer.key_value("Config", &cli.config.display().to_string());
-    printer.key_value("Profile", profile_name);
-
-    let resolved = config::resolve_profile(profile_name, &profiles_dir(cli))?;
-    Ok((cfg, resolved))
-}
-
 pub(in crate::cli) fn load_config_and_profile_v2(
     cli: &Cli,
 ) -> anyhow::Result<(CfgdConfig, String, ResolvedProfile)> {

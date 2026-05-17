@@ -1,0 +1,6 @@
+Checkin
+
+Checkin
+  ✓ server status: ok
+
+✓ Checkin complete

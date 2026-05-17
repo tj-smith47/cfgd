@@ -72,6 +72,16 @@ pub struct PullOutput {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckinOutput {
+    pub server_status: String,
+    pub config_changed: bool,
+    pub drift_count: usize,
+    pub drift_status: String,
+    pub server_pushed_config: bool,
+}
+
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffOutput {
