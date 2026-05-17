@@ -1,6 +1,6 @@
 mod apply;
 mod checkin;
-mod compliance;
+pub mod compliance;
 pub mod config_cmd;
 mod daemon;
 mod decide;
@@ -1679,10 +1679,10 @@ pub fn execute(
         }
         Command::McpServer => crate::mcp::server::run_mcp_server(&cli.config),
         Command::Compliance { command } => match command {
-            None => compliance::cmd_compliance_snapshot(cli, printer),
-            Some(ComplianceCommand::Export) => compliance::cmd_compliance_export(cli, printer),
+            None => compliance::cmd_compliance_snapshot(cli, v2_printer),
+            Some(ComplianceCommand::Export) => compliance::cmd_compliance_export(cli, v2_printer),
             Some(ComplianceCommand::History { since }) => {
-                compliance::cmd_compliance_history(cli, printer, since.as_deref())
+                compliance::cmd_compliance_history(cli, v2_printer, since.as_deref())
             }
             Some(ComplianceCommand::Diff { base_id, target_id }) => {
                 compliance::cmd_compliance_diff(cli, printer, *base_id, *target_id)

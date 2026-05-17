@@ -1,0 +1,17 @@
+Compliance Summary
+  Timestamp  2026-05-14T10:00:00Z
+  Machine    test-host
+  Profile    default
+  Status     Violation
+
+Compliant  1
+Warning    1
+Violation  1
+
+Violations
+  ✗ system:sysctl.vm.swappiness — expected 10, found 60
+
+Warnings
+  ⚠ package:ripgrep — version mismatch: want 14.0.0, have 13.0.0
+
+✗ Summary: 1 compliant, 1 warning, 1 violation

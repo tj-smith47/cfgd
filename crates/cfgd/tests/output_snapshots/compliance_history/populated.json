@@ -1,0 +1,25 @@
+{
+  "entries": [
+    {
+      "compliant": 12,
+      "id": 3,
+      "timestamp": "2026-05-14T12:00:00Z",
+      "violation": 0,
+      "warning": 1
+    },
+    {
+      "compliant": 11,
+      "id": 2,
+      "timestamp": "2026-05-13T09:00:00Z",
+      "violation": 1,
+      "warning": 0
+    },
+    {
+      "compliant": 10,
+      "id": 1,
+      "timestamp": "2026-05-12T08:00:00Z",
+      "violation": 0,
+      "warning": 0
+    }
+  ]
+}

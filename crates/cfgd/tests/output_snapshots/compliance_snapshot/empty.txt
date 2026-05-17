@@ -1,0 +1,11 @@
+Compliance Summary
+  Timestamp  2026-05-14T10:00:00Z
+  Machine    test-host
+  Profile    default
+  Status     Compliant
+
+Compliant  0
+Warning    0
+Violation  0
+
+No checks performed
