@@ -1,5 +1,7 @@
 use super::*;
+use cfgd_core::output_v2::{Printer as PrinterV2, Role};
 
+// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
 pub(in crate::cli) fn load_config_and_profile(
     cli: &Cli,
     printer: &Printer,
@@ -12,6 +14,25 @@ pub(in crate::cli) fn load_config_and_profile(
 
     printer.key_value("Config", &cli.config.display().to_string());
     printer.key_value("Profile", profile_name);
+
+    let resolved = config::resolve_profile(profile_name, &profiles_dir(cli))?;
+    Ok((cfg, resolved))
+}
+
+// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
+#[allow(dead_code)]
+pub(in crate::cli) fn load_config_and_profile_v2(
+    cli: &Cli,
+    printer: &PrinterV2,
+) -> anyhow::Result<(CfgdConfig, ResolvedProfile)> {
+    let cfg = config::load_config(&cli.config)?;
+    let profile_name = match cli.profile.as_deref() {
+        Some(p) => p,
+        None => cfg.active_profile()?,
+    };
+
+    printer.kv("Config", cli.config.display().to_string());
+    printer.kv("Profile", profile_name);
 
     let resolved = config::resolve_profile(profile_name, &profiles_dir(cli))?;
     Ok((cfg, resolved))
@@ -285,6 +306,7 @@ pub(in crate::cli) fn module_state_map(
         .collect()
 }
 
+// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
 pub(in crate::cli) fn open_in_editor(path: &Path, printer: &Printer) -> anyhow::Result<()> {
     let editor = std::env::var("EDITOR")
         .or_else(|_| std::env::var("VISUAL"))
@@ -300,6 +322,30 @@ pub(in crate::cli) fn open_in_editor(path: &Path, printer: &Printer) -> anyhow::
 
     if !status.success() {
         printer.warning(&format!("Editor '{}' exited with non-zero status", editor));
+    }
+    Ok(())
+}
+
+// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
+#[allow(dead_code)]
+pub(in crate::cli) fn open_in_editor_v2(path: &Path, printer: &PrinterV2) -> anyhow::Result<()> {
+    let editor = std::env::var("EDITOR")
+        .or_else(|_| std::env::var("VISUAL"))
+        .unwrap_or_else(|_| "vi".to_string());
+
+    let status = std::process::Command::new(&editor)
+        .arg(path)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .map_err(|e| anyhow::anyhow!("Failed to open editor '{}': {}", editor, e))?;
+
+    if !status.success() {
+        printer.status_simple(
+            Role::Warn,
+            format!("Editor '{}' exited with non-zero status", editor),
+        );
     }
     Ok(())
 }
@@ -385,6 +431,7 @@ pub(in crate::cli) fn set_nested_yaml_value(
 // --- Plan integration with sources (Phase 9) ---
 
 /// Compose sources with local profile for plan generation.
+// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
 pub(in crate::cli) fn compose_with_sources(
     cli: &Cli,
     cfg: &config::CfgdConfig,
@@ -500,6 +547,161 @@ pub(in crate::cli) fn compose_with_sources(
                 composition::ResolutionType::Default => {}
             }
         }
+
+        // Persist conflicts to state
+        if let Ok(state) = open_state_store(cli.state_dir.as_deref()) {
+            for conflict in &result.conflicts {
+                if let Err(e) = state.record_source_conflict(
+                    &conflict.winning_source,
+                    "composition",
+                    &conflict.resource_id,
+                    conflict.resolution_type.label(),
+                    Some(&conflict.details),
+                ) {
+                    tracing::warn!(
+                        error = %e,
+                        winning_source = %conflict.winning_source,
+                        resource_id = %conflict.resource_id,
+                        "failed to persist source conflict to state store; conflict history may be incomplete",
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
+#[allow(dead_code)]
+pub(in crate::cli) fn compose_with_sources_v2(
+    cli: &Cli,
+    cfg: &config::CfgdConfig,
+    local_resolved: &ResolvedProfile,
+    printer: &PrinterV2,
+) -> anyhow::Result<composition::CompositionResult> {
+    if cfg.spec.sources.is_empty() {
+        // No sources, return local profile as-is
+        return Ok(composition::CompositionResult {
+            resolved: local_resolved.clone(),
+            conflicts: Vec::new(),
+            source_env: std::collections::HashMap::new(),
+            source_commits: std::collections::HashMap::new(),
+        });
+    }
+
+    let cache_dir = source_cache_dir(cli)?;
+    let mut mgr = SourceManager::new(&cache_dir);
+    mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
+    // TEMP (R3 removes): SourceManager::load_sources still uses old Printer; bridges in a throwaway one
+    let legacy_verbosity = match printer.verbosity() {
+        cfgd_core::output_v2::Verbosity::Quiet => cfgd_core::output::Verbosity::Quiet,
+        cfgd_core::output_v2::Verbosity::Normal => cfgd_core::output::Verbosity::Normal,
+        cfgd_core::output_v2::Verbosity::Verbose => cfgd_core::output::Verbosity::Verbose,
+    };
+    let legacy_printer = Printer::new(legacy_verbosity);
+    mgr.load_sources(&cfg.spec.sources, &legacy_printer)?;
+
+    let mut inputs = Vec::new();
+    for source_spec in &cfg.spec.sources {
+        if let Some(cached) = mgr.get(&source_spec.name) {
+            // Load source profile layers
+            let mut layers = Vec::new();
+            if let Some(ref profile_name) = source_spec.subscription.profile {
+                let profiles_dir = mgr.source_profiles_dir(&source_spec.name)?;
+                if profiles_dir.exists() {
+                    match config::resolve_profile(profile_name, &profiles_dir) {
+                        Ok(resolved) => {
+                            layers = resolved.layers;
+                        }
+                        Err(e) => {
+                            printer.status_simple(
+                                Role::Warn,
+                                format!(
+                                    "Failed to resolve profile '{}' from source '{}': {}",
+                                    profile_name, source_spec.name, e
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Validate security constraints
+            for layer in &layers {
+                if let Err(e) = composition::validate_constraints(
+                    &source_spec.name,
+                    &cached.manifest.spec.policy.constraints,
+                    &layer.spec,
+                ) {
+                    printer.status_simple(
+                        Role::Fail,
+                        format!("Security violation in source '{}': {}", source_spec.name, e),
+                    );
+                    continue;
+                }
+            }
+
+            // Check if local config overrides any locked resources from this source
+            if let Err(e) = composition::check_locked_violations(
+                &source_spec.name,
+                &cached.manifest.spec.policy.locked,
+                &local_resolved.merged,
+            ) {
+                printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "Locked resource conflict with source '{}': {}",
+                        source_spec.name, e
+                    ),
+                );
+            }
+
+            inputs.push(CompositionInput {
+                source_name: source_spec.name.clone(),
+                priority: source_spec.subscription.priority,
+                policy: cached.manifest.spec.policy.clone(),
+                constraints: cached.manifest.spec.policy.constraints.clone(),
+                layers,
+                subscription: SubscriptionConfig::from_spec(source_spec),
+            });
+        }
+    }
+
+    let mut result = composition::compose(local_resolved, &inputs)?;
+
+    // Collect source commit hashes for record_source_apply linkage
+    for source_spec in &cfg.spec.sources {
+        if let Some(cached) = mgr.get(&source_spec.name)
+            && let Some(ref commit) = cached.last_commit
+        {
+            result
+                .source_commits
+                .insert(source_spec.name.clone(), commit.clone());
+        }
+    }
+
+    // Display conflicts
+    if !result.conflicts.is_empty() {
+        let guard = printer.section("Source Conflicts");
+        for conflict in &result.conflicts {
+            match conflict.resolution_type {
+                composition::ResolutionType::Locked => {
+                    guard.status_simple(Role::Warn, &conflict.details);
+                }
+                composition::ResolutionType::Required => {
+                    guard.status_simple(Role::Info, &conflict.details);
+                }
+                composition::ResolutionType::Rejected => {
+                    guard.status_simple(Role::Info, &conflict.details);
+                }
+                composition::ResolutionType::Override => {
+                    guard.status_simple(Role::Info, &conflict.details);
+                }
+                composition::ResolutionType::Default => {}
+            }
+        }
+        drop(guard);
 
         // Persist conflicts to state
         if let Ok(state) = open_state_store(cli.state_dir.as_deref()) {
