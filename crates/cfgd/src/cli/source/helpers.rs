@@ -310,6 +310,11 @@ pub(crate) fn display_policy_items(printer: &Printer, items: &config::PolicyItem
 // original. F1–F4 callers that already operate inside a `SectionGuard` should
 // pass "" to avoid double-indenting; the renderer's section depth handles the
 // visual indent on its own.
+//
+// F1 reviewer: when the first caller migrates, consider whether `indent` can be
+// dropped entirely from the v2 signature (rely on section depth for all indent)
+// or, at minimum, `debug_assert!(!indent.contains("  "))` added on entry as a
+// runtime tripwire against double-indenting.
 #[allow(dead_code)]
 pub(crate) fn display_policy_items_v2(
     printer: &PrinterV2,
@@ -404,7 +409,10 @@ pub(crate) fn display_pending_decisions_v2(
         by_source.entry(&d.source).or_default().push(d);
     }
     for (source_name, items) in &by_source {
-        let guard = printer.section((*source_name).to_string());
+        // F1 reviewer: confirm "N pending item(s)" summary row pairs cleanly with
+        // the section header; if it reads as a doubled signal in snapshots, fold
+        // the count into the header via section_or_collapse + format!("{src} ({n} pending)").
+        let guard = printer.section(source_name.to_string());
         guard.status_simple(
             Role::Info,
             format!(
