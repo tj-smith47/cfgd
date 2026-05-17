@@ -13,7 +13,7 @@ mod init;
 mod kubectl;
 mod log;
 mod module;
-mod output_types;
+pub mod output_types;
 mod plan;
 mod plan_ops;
 pub mod plugin;

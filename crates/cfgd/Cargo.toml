@@ -63,3 +63,4 @@ cfgd-core = { path = "../cfgd-core", version = "0.3.5", features = ["test-helper
 serial_test = "3"
 mockito = "1"
 tempfile = "3"
+pretty_assertions = "1"

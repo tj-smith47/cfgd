@@ -4,218 +4,218 @@ use serde::Serialize;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct LogOutput {
-    pub(in crate::cli) entries: Vec<cfgd_core::state::ApplyRecord>,
+pub struct LogOutput {
+    pub entries: Vec<cfgd_core::state::ApplyRecord>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct RollbackOutput {
-    pub(in crate::cli) apply_id: i64,
-    pub(in crate::cli) files_restored: usize,
-    pub(in crate::cli) files_removed: usize,
-    pub(in crate::cli) non_file_actions: Vec<String>,
+pub struct RollbackOutput {
+    pub apply_id: i64,
+    pub files_restored: usize,
+    pub files_removed: usize,
+    pub non_file_actions: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct PlanOutput {
-    pub(in crate::cli) context: String,
-    pub(in crate::cli) phases: Vec<PlanPhaseOutput>,
-    pub(in crate::cli) total_actions: usize,
+pub struct PlanOutput {
+    pub context: String,
+    pub phases: Vec<PlanPhaseOutput>,
+    pub total_actions: usize,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(in crate::cli) warnings: Vec<String>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct PlanPhaseOutput {
-    pub(in crate::cli) phase: String,
-    pub(in crate::cli) actions: Vec<PlanActionOutput>,
+pub struct PlanPhaseOutput {
+    pub phase: String,
+    pub actions: Vec<PlanActionOutput>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct PlanActionOutput {
-    pub(in crate::cli) description: String,
+pub struct PlanActionOutput {
+    pub description: String,
     #[serde(rename = "type")]
-    pub(in crate::cli) action_type: String,
+    pub action_type: String,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct DoctorOutput {
-    pub(in crate::cli) config: DoctorConfigCheck,
-    pub(in crate::cli) git: bool,
-    pub(in crate::cli) secrets: DoctorSecretsCheck,
-    pub(in crate::cli) package_managers: Vec<DoctorManagerCheck>,
-    pub(in crate::cli) modules: Vec<DoctorModuleCheck>,
-    pub(in crate::cli) system_configurators: Vec<DoctorConfiguratorCheck>,
+pub struct DoctorOutput {
+    pub config: DoctorConfigCheck,
+    pub git: bool,
+    pub secrets: DoctorSecretsCheck,
+    pub package_managers: Vec<DoctorManagerCheck>,
+    pub modules: Vec<DoctorModuleCheck>,
+    pub system_configurators: Vec<DoctorConfiguratorCheck>,
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct DoctorConfigCheck {
-    pub(in crate::cli) valid: bool,
-    pub(in crate::cli) path: String,
-    pub(in crate::cli) name: Option<String>,
-    pub(in crate::cli) profile: Option<String>,
-    pub(in crate::cli) error: Option<String>,
+pub struct DoctorConfigCheck {
+    pub valid: bool,
+    pub path: String,
+    pub name: Option<String>,
+    pub profile: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct DoctorSecretsCheck {
-    pub(in crate::cli) sops_available: bool,
-    pub(in crate::cli) sops_version: Option<String>,
-    pub(in crate::cli) age_key_exists: bool,
-    pub(in crate::cli) age_key_path: Option<String>,
-    pub(in crate::cli) sops_config_exists: bool,
-    pub(in crate::cli) providers: Vec<DoctorProviderCheck>,
+pub struct DoctorSecretsCheck {
+    pub sops_available: bool,
+    pub sops_version: Option<String>,
+    pub age_key_exists: bool,
+    pub age_key_path: Option<String>,
+    pub sops_config_exists: bool,
+    pub providers: Vec<DoctorProviderCheck>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct DoctorProviderCheck {
-    pub(in crate::cli) name: String,
-    pub(in crate::cli) available: bool,
+pub struct DoctorProviderCheck {
+    pub name: String,
+    pub available: bool,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct DoctorManagerCheck {
-    pub(in crate::cli) name: String,
-    pub(in crate::cli) available: bool,
-    pub(in crate::cli) declared: bool,
-    pub(in crate::cli) can_bootstrap: bool,
+pub struct DoctorManagerCheck {
+    pub name: String,
+    pub available: bool,
+    pub declared: bool,
+    pub can_bootstrap: bool,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct DoctorModuleCheck {
-    pub(in crate::cli) name: String,
-    pub(in crate::cli) valid: bool,
-    pub(in crate::cli) error: Option<String>,
+pub struct DoctorModuleCheck {
+    pub name: String,
+    pub valid: bool,
+    pub error: Option<String>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct DoctorConfiguratorCheck {
-    pub(in crate::cli) name: String,
-    pub(in crate::cli) available: bool,
+pub struct DoctorConfiguratorCheck {
+    pub name: String,
+    pub available: bool,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct SourceListEntry {
-    pub(in crate::cli) name: String,
-    pub(in crate::cli) url: String,
-    pub(in crate::cli) priority: u32,
-    pub(in crate::cli) version: Option<String>,
-    pub(in crate::cli) status: String,
-    pub(in crate::cli) last_fetched: Option<String>,
+pub struct SourceListEntry {
+    pub name: String,
+    pub url: String,
+    pub priority: u32,
+    pub version: Option<String>,
+    pub status: String,
+    pub last_fetched: Option<String>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct SourceShowOutput {
-    pub(in crate::cli) name: String,
-    pub(in crate::cli) url: String,
-    pub(in crate::cli) branch: String,
-    pub(in crate::cli) priority: u32,
-    pub(in crate::cli) accept_recommended: bool,
-    pub(in crate::cli) profile: Option<String>,
-    pub(in crate::cli) sync_interval: String,
-    pub(in crate::cli) auto_apply: bool,
-    pub(in crate::cli) version_pin: Option<String>,
-    pub(in crate::cli) state: Option<SourceStateInfo>,
-    pub(in crate::cli) managed_resources: Vec<SourceResourceEntry>,
+pub struct SourceShowOutput {
+    pub name: String,
+    pub url: String,
+    pub branch: String,
+    pub priority: u32,
+    pub accept_recommended: bool,
+    pub profile: Option<String>,
+    pub sync_interval: String,
+    pub auto_apply: bool,
+    pub version_pin: Option<String>,
+    pub state: Option<SourceStateInfo>,
+    pub managed_resources: Vec<SourceResourceEntry>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct SourceStateInfo {
-    pub(in crate::cli) status: String,
-    pub(in crate::cli) last_fetched: Option<String>,
-    pub(in crate::cli) last_commit: Option<String>,
-    pub(in crate::cli) version: Option<String>,
+pub struct SourceStateInfo {
+    pub status: String,
+    pub last_fetched: Option<String>,
+    pub last_commit: Option<String>,
+    pub version: Option<String>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct SourceResourceEntry {
-    pub(in crate::cli) resource_type: String,
-    pub(in crate::cli) resource_id: String,
+pub struct SourceResourceEntry {
+    pub resource_type: String,
+    pub resource_id: String,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct ProfileListEntry {
-    pub(in crate::cli) name: String,
-    pub(in crate::cli) active: bool,
+pub struct ProfileListEntry {
+    pub name: String,
+    pub active: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(in crate::cli) inherits: Option<String>,
-    pub(in crate::cli) module_count: usize,
+    pub inherits: Option<String>,
+    pub module_count: usize,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct ModuleSearchResult {
-    pub(in crate::cli) name: String,
-    pub(in crate::cli) registry: String,
+pub struct ModuleSearchResult {
+    pub name: String,
+    pub registry: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(in crate::cli) description: Option<String>,
+    pub description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(in crate::cli) version: Option<String>,
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct RegistryListEntry {
-    pub(in crate::cli) name: String,
-    pub(in crate::cli) url: String,
+pub struct RegistryListEntry {
+    pub name: String,
+    pub url: String,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct KeyListEntry {
-    pub(in crate::cli) name: String,
+pub struct KeyListEntry {
+    pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(in crate::cli) fingerprint: Option<String>,
+    pub fingerprint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(in crate::cli) created: Option<String>,
+    pub created: Option<String>,
 }
 
 // --- Compliance command output types ---
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct ComplianceSnapshotOutput {
-    pub(in crate::cli) snapshot: cfgd_core::compliance::ComplianceSnapshot,
+pub struct ComplianceSnapshotOutput {
+    pub snapshot: cfgd_core::compliance::ComplianceSnapshot,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct ComplianceHistoryOutput {
-    pub(in crate::cli) entries: Vec<cfgd_core::state::ComplianceHistoryRow>,
+pub struct ComplianceHistoryOutput {
+    pub entries: Vec<cfgd_core::state::ComplianceHistoryRow>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct ComplianceDiffOutput {
-    pub(in crate::cli) id1: i64,
-    pub(in crate::cli) id2: i64,
-    pub(in crate::cli) added: Vec<cfgd_core::compliance::ComplianceCheck>,
-    pub(in crate::cli) removed: Vec<cfgd_core::compliance::ComplianceCheck>,
-    pub(in crate::cli) changed: Vec<ComplianceCheckChange>,
+pub struct ComplianceDiffOutput {
+    pub id1: i64,
+    pub id2: i64,
+    pub added: Vec<cfgd_core::compliance::ComplianceCheck>,
+    pub removed: Vec<cfgd_core::compliance::ComplianceCheck>,
+    pub changed: Vec<ComplianceCheckChange>,
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct ComplianceCheckChange {
-    pub(in crate::cli) key: String,
-    pub(in crate::cli) old_status: String,
-    pub(in crate::cli) new_status: String,
+pub struct ComplianceCheckChange {
+    pub key: String,
+    pub old_status: String,
+    pub new_status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(in crate::cli) detail: Option<String>,
+    pub detail: Option<String>,
 }

@@ -541,6 +541,7 @@ dependencies = [
  "libc",
  "mockito",
  "predicates",
+ "pretty_assertions",
  "rustls",
  "schemars 0.8.22",
  "secrecy",
