@@ -1,0 +1,6 @@
+Diff
+
+Packages
+  ⚠ drift-mgr: missing — pkg-a
+
+⚠ Drift detected

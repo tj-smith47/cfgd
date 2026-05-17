@@ -1,0 +1,14 @@
+Diff
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  tiny
+
+Files
+  ⚠ File drift detected
+
+Packages
+  ✓ No package drift
+
+System
+  ✓ No system drift
+
+⚠ Drift detected

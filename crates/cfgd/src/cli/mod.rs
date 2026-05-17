@@ -4,7 +4,7 @@ pub mod compliance;
 pub mod config_cmd;
 mod daemon;
 pub mod decide;
-mod diff;
+pub mod diff;
 pub mod doctor;
 pub mod explain;
 pub mod generate;
@@ -1394,7 +1394,7 @@ pub fn execute(
             status::cmd_status(cli, printer, v2_printer, module.as_deref(), *exit_code)
         }
         Command::Diff { module, exit_code } => {
-            diff::cmd_diff(cli, printer, module.as_deref(), *exit_code)
+            diff::cmd_diff(cli, printer, v2_printer, module.as_deref(), *exit_code)
         }
         Command::Log { limit, show_output } => {
             log::cmd_log(printer, *limit, *show_output, cli.state_dir.as_deref())

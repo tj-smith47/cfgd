@@ -1,0 +1,10 @@
+Diff
+  Module  diff-mod
+
+Files
+  ⚠ <CONFIG_DIR>/mod-out/conf — missing
+
+Packages
+  ✓ No package drift
+
+⚠ Drift detected

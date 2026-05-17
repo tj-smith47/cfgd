@@ -72,6 +72,41 @@ pub struct PullOutput {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffOutput {
+    pub packages: Vec<PackageDrift>,
+    pub system: Vec<SystemDriftOutput>,
+    pub summary: DiffSummary,
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffSummary {
+    pub has_file_drift: bool,
+    pub has_pkg_drift: bool,
+    pub has_system_drift: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageDrift {
+    pub manager: String,
+    pub shape: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub packages: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bootstrap_method: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemDriftOutput {
+    pub key: String,
+    pub expected: String,
+    pub actual: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceSyncOutput {

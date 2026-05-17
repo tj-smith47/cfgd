@@ -4069,7 +4069,7 @@ fn cmd_verify_empty_profile() {
 #[test]
 fn cmd_diff_empty_profile() {
     let h = CliTestHarness::builder().build();
-    super::diff::cmd_diff(&h.cli(), h.printer(), None, false).unwrap();
+    super::diff::cmd_diff(&h.cli(), h.printer(), h.v2_printer(), None, false).unwrap();
     h.assert_header("Diff");
 }
 
@@ -4269,11 +4269,13 @@ fn cmd_diff_with_files() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
 
-    let result = super::diff::cmd_diff(&cli, &printer, None, false);
+    let result = super::diff::cmd_diff(&cli, &printer, &v2_printer, None, false);
     assert!(result.is_ok(), "diff failed: {:?}", result.err());
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = combine_buffers(&buf, &v2_buf);
     assert!(output.contains("Diff"), "missing Diff header");
     assert!(
         output.contains("-current content") || output.contains("+desired content"),
@@ -6304,15 +6306,17 @@ fn cmd_diff_with_module_filter() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
 
-    let result = super::diff::cmd_diff(&cli, &printer, Some("diff-mod"), false);
+    let result = super::diff::cmd_diff(&cli, &printer, &v2_printer, Some("diff-mod"), false);
     assert!(
         result.is_ok(),
         "diff should succeed when filtering to a specific module: {:?}",
         result.err()
     );
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = combine_buffers(&buf, &v2_buf);
     assert!(
         output.contains("Diff") || output.contains("diff-mod"),
         "diff with module filter should mention the module, got: {output}"
@@ -10827,7 +10831,14 @@ fn cmd_plan_with_skip_filters_actions() {
 #[test]
 fn cmd_diff_module_not_found_succeeds() {
     let h = CliTestHarness::builder().build();
-    super::diff::cmd_diff(&h.cli(), h.printer(), Some("nonexistent"), false).unwrap();
+    super::diff::cmd_diff(
+        &h.cli(),
+        h.printer(),
+        h.v2_printer(),
+        Some("nonexistent"),
+        false,
+    )
+    .unwrap();
     let output = h.output();
     assert!(
         output.contains("not found") || output.contains("Diff"),
@@ -10840,7 +10851,14 @@ fn cmd_diff_with_module() {
     let h = CliTestHarness::builder()
             .module("diff-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-mod\nspec:\n  packages: []\n")
             .build();
-    super::diff::cmd_diff(&h.cli(), h.printer(), Some("diff-mod"), false).unwrap();
+    super::diff::cmd_diff(
+        &h.cli(),
+        h.printer(),
+        h.v2_printer(),
+        Some("diff-mod"),
+        false,
+    )
+    .unwrap();
     let output = h.output();
     assert!(
         output.contains("Diff") || output.contains("diff-mod"),
@@ -14542,7 +14560,7 @@ fn build_registry_with_no_config_uses_defaults() {
 #[test]
 fn cmd_diff_full_profile_shows_all_sections() {
     let h = CliTestHarness::builder().build();
-    let result = super::diff::cmd_diff(&h.cli(), h.printer(), None, false);
+    let result = super::diff::cmd_diff(&h.cli(), h.printer(), h.v2_printer(), None, false);
     assert!(
         result.is_ok(),
         "diff with default profile should succeed: {:?}",
@@ -14575,7 +14593,13 @@ fn cmd_diff_full_profile_shows_all_sections() {
 #[test]
 fn cmd_diff_module_not_found_shows_info() {
     let h = CliTestHarness::builder().build();
-    let result = super::diff::cmd_diff(&h.cli(), h.printer(), Some("nonexistent-mod"), false);
+    let result = super::diff::cmd_diff(
+        &h.cli(),
+        h.printer(),
+        h.v2_printer(),
+        Some("nonexistent-mod"),
+        false,
+    );
     assert!(
         result.is_ok(),
         "diff with missing module should succeed gracefully"
@@ -14612,7 +14636,13 @@ spec:
         .join("files");
     std::fs::write(module_files.join("my-config"), "new config content\n").unwrap();
 
-    let result = super::diff::cmd_diff(&h.cli(), h.printer(), Some("diff-mod"), false);
+    let result = super::diff::cmd_diff(
+        &h.cli(),
+        h.printer(),
+        h.v2_printer(),
+        Some("diff-mod"),
+        false,
+    );
     assert!(
         result.is_ok(),
         "module diff should succeed: {:?}",
