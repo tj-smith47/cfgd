@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Printer as PrinterV2, Role};
+use cfgd_core::output_v2::{Printer as PrinterV2, Role, SectionBuilder};
 
 // --- Source cache layout ---
 
@@ -344,7 +344,10 @@ pub(crate) fn display_policy_items_v2(
     }
 }
 
-// TEMP (R3 removes)
+// Retained for legacy tests in `cli/tests.rs` that pin the v1 grouped-by-source
+// banner format; gated behind cfg(test) so production builds drop it. R3 will
+// retire the v1 helper together with its tests when output_v2 is the sole surface.
+#[cfg(test)]
 pub(crate) fn display_pending_decisions(
     printer: &Printer,
     decisions: &[cfgd_core::state::PendingDecision],
@@ -370,36 +373,38 @@ pub(crate) fn display_pending_decisions(
     }
 }
 
-#[allow(dead_code)]
-pub(crate) fn display_pending_decisions_v2(
-    printer: &PrinterV2,
+/// Append a per-source breakdown of pending decisions to a [`SectionBuilder`].
+///
+/// Grouped by source name (BTreeMap → alphabetical order). Each source becomes
+/// a nested subsection whose status lines list the per-item tier/resource/summary
+/// triplet. Returns the augmented builder so callers can chain further composition.
+pub(crate) fn build_pending_decisions_table_section(
+    s: SectionBuilder,
     decisions: &[cfgd_core::state::PendingDecision],
-) {
+) -> SectionBuilder {
     let mut by_source: std::collections::BTreeMap<&str, Vec<&cfgd_core::state::PendingDecision>> =
         std::collections::BTreeMap::new();
     for d in decisions {
         by_source.entry(&d.source).or_default().push(d);
     }
-    for (source_name, items) in &by_source {
-        let guard = printer.section(source_name.to_string());
-        guard.status_simple(
-            Role::Info,
-            format!(
-                "{} pending item{}",
-                items.len(),
-                if items.len() == 1 { "" } else { "s" }
-            ),
-        );
-        for item in items {
-            guard.status_simple(
-                Role::Info,
-                format!(
-                    "{} {} — {} ({})",
-                    item.tier, item.resource, item.summary, item.action
-                ),
-            );
-        }
-    }
+    by_source.into_iter().fold(s, |s, (source_name, items)| {
+        let count = items.len();
+        let plural = if count == 1 { "" } else { "s" };
+        s.subsection(
+            format!("{source_name}: {count} pending item{plural}"),
+            |sub| {
+                items.iter().fold(sub, |sub, item| {
+                    sub.status(
+                        Role::Info,
+                        format!(
+                            "{} {} — {} ({})",
+                            item.tier, item.resource, item.summary, item.action
+                        ),
+                    )
+                })
+            },
+        )
+    })
 }
 
 pub(crate) fn add_source_to_config(

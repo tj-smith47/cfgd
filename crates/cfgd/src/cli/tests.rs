@@ -4875,7 +4875,8 @@ fn cmd_source_list_no_config() {
 fn cmd_decide_accept_all_empty() {
     let (_config_dir, state_dir) = setup_test_env();
 
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     let result = super::decide::cmd_decide(
         &printer,
@@ -4886,6 +4887,7 @@ fn cmd_decide_accept_all_empty() {
         Some(state_dir.path()),
     );
     assert!(result.is_ok(), "decide failed: {:?}", result.err());
+    drop(printer);
 
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
     assert!(state.pending_decisions().unwrap().is_empty());
@@ -4901,7 +4903,8 @@ fn cmd_decide_accept_all_empty() {
 fn cmd_decide_reject_all_empty() {
     let (_config_dir, state_dir) = setup_test_env();
 
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     let result = super::decide::cmd_decide(
         &printer,
@@ -4912,6 +4915,7 @@ fn cmd_decide_reject_all_empty() {
         Some(state_dir.path()),
     );
     assert!(result.is_ok(), "decide failed: {:?}", result.err());
+    drop(printer);
 
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
     assert!(state.pending_decisions().unwrap().is_empty());
@@ -4931,7 +4935,8 @@ fn cmd_decide_reject_all_empty() {
 fn cmd_decide_accept_specific_resource() {
     let (_config_dir, state_dir) = setup_test_env();
 
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     let result = super::decide::cmd_decide(
         &printer,
@@ -4942,6 +4947,7 @@ fn cmd_decide_accept_specific_resource() {
         Some(state_dir.path()),
     );
     assert!(result.is_ok(), "decide failed: {:?}", result.err());
+    drop(printer);
 
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
     let pending = state.pending_decisions().unwrap();
@@ -4960,7 +4966,8 @@ fn cmd_decide_accept_specific_resource() {
 fn cmd_decide_reject_by_source() {
     let (_config_dir, state_dir) = setup_test_env();
 
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     let result = super::decide::cmd_decide(
         &printer,
@@ -4975,6 +4982,7 @@ fn cmd_decide_reject_by_source() {
         "decide reject-by-source should succeed (no-op when nothing pending for source): {:?}",
         result.err()
     );
+    drop(printer);
 
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
     let pending = state.pending_decisions().unwrap();
@@ -9149,7 +9157,8 @@ spec:
 #[test]
 fn cmd_decide_no_args_shows_pending() {
     let state_dir = tempfile::tempdir().unwrap();
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     super::decide::cmd_decide(
         &printer,
@@ -9160,6 +9169,7 @@ fn cmd_decide_no_args_shows_pending() {
         Some(state_dir.path()),
     )
     .unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap();
     assert!(
@@ -9171,7 +9181,8 @@ fn cmd_decide_no_args_shows_pending() {
 #[test]
 fn cmd_decide_with_pending_decision() {
     let state_dir = tempfile::tempdir().unwrap();
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
     state
@@ -9197,6 +9208,7 @@ fn cmd_decide_with_pending_decision() {
         "decide accept should succeed for a pending decision: {:?}",
         result.err()
     );
+    drop(printer);
 
     let pending = state.pending_decisions().unwrap();
     assert!(
@@ -9214,7 +9226,8 @@ fn cmd_decide_with_pending_decision() {
 #[test]
 fn cmd_decide_accept_all_with_pending() {
     let state_dir = tempfile::tempdir().unwrap();
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
     state
@@ -9243,6 +9256,7 @@ fn cmd_decide_accept_all_with_pending() {
         "decide accept-all should succeed and resolve all pending decisions: {:?}",
         result.err()
     );
+    drop(printer);
 
     let pending = state.pending_decisions().unwrap();
     assert!(pending.is_empty());
@@ -9257,7 +9271,8 @@ fn cmd_decide_accept_all_with_pending() {
 #[test]
 fn cmd_decide_reject_by_source_with_pending() {
     let state_dir = tempfile::tempdir().unwrap();
-    let (printer, _buf) = Printer::for_test();
+    let (printer, _buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
     state
@@ -9286,6 +9301,7 @@ fn cmd_decide_reject_by_source_with_pending() {
         "decide reject-by-source should succeed and only reject matching source: {:?}",
         result.err()
     );
+    drop(printer);
 
     // Only the "other" source's decision should remain pending
     let pending = state.pending_decisions().unwrap();
@@ -9632,10 +9648,13 @@ fn execute_decide_accept_all() {
         state_dir: Some(state_dir.path().to_path_buf()),
         ..test_cli(dir.path())
     };
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
-    let output = buf.lock().unwrap();
+    super::execute(&cli, &printer, &v2_printer).unwrap();
+    drop(v2_printer);
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("No pending")
             || output.contains("0 decision")
@@ -16142,7 +16161,8 @@ spec:
 #[test]
 fn cmd_decide_no_args_no_pending_shows_info() {
     let state_dir = tempfile::tempdir().unwrap();
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     // With no resource, no source, and all=false, should show pending list
     super::decide::cmd_decide(
@@ -16154,6 +16174,7 @@ fn cmd_decide_no_args_no_pending_shows_info() {
         Some(state_dir.path()),
     )
     .unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap().clone();
     assert!(
@@ -16165,7 +16186,8 @@ fn cmd_decide_no_args_no_pending_shows_info() {
 #[test]
 fn cmd_decide_no_args_with_pending_shows_list() {
     let state_dir = tempfile::tempdir().unwrap();
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
 
     state
@@ -16185,6 +16207,7 @@ fn cmd_decide_no_args_with_pending_shows_list() {
         Some(state_dir.path()),
     )
     .unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap().clone();
     assert!(
@@ -16221,7 +16244,8 @@ fn cmd_decide_no_args_with_pending_shows_list() {
 #[test]
 fn cmd_decide_reject_specific_resource_verifies_resolution() {
     let state_dir = tempfile::tempdir().unwrap();
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
 
     state
@@ -16243,6 +16267,7 @@ fn cmd_decide_reject_specific_resource_verifies_resolution() {
         Some(state_dir.path()),
     )
     .unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap().clone();
     assert!(
@@ -16265,7 +16290,8 @@ fn cmd_decide_reject_specific_resource_verifies_resolution() {
 #[test]
 fn cmd_decide_accept_specific_resource_verifies_messaging() {
     let state_dir = tempfile::tempdir().unwrap();
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
 
     state
@@ -16281,6 +16307,7 @@ fn cmd_decide_accept_specific_resource_verifies_messaging() {
         Some(state_dir.path()),
     )
     .unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap().clone();
     assert!(
@@ -16300,7 +16327,8 @@ fn cmd_decide_accept_specific_resource_verifies_messaging() {
 #[test]
 fn cmd_decide_accept_nonexistent_resource_warns() {
     let state_dir = tempfile::tempdir().unwrap();
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     super::decide::cmd_decide(
         &printer,
@@ -16311,6 +16339,7 @@ fn cmd_decide_accept_nonexistent_resource_warns() {
         Some(state_dir.path()),
     )
     .unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap().clone();
     assert!(
@@ -16326,7 +16355,8 @@ fn cmd_decide_accept_nonexistent_resource_warns() {
 #[test]
 fn cmd_decide_accept_all_reports_count() {
     let state_dir = tempfile::tempdir().unwrap();
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
 
     for i in 0..3 {
@@ -16350,6 +16380,7 @@ fn cmd_decide_accept_all_reports_count() {
         Some(state_dir.path()),
     )
     .unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap().clone();
     assert!(
@@ -16372,7 +16403,8 @@ fn cmd_decide_accept_all_reports_count() {
 #[test]
 fn cmd_decide_reject_by_source_preserves_other_sources() {
     let state_dir = tempfile::tempdir().unwrap();
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
 
     state
@@ -16394,6 +16426,7 @@ fn cmd_decide_reject_by_source_preserves_other_sources() {
         Some(state_dir.path()),
     )
     .unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap().clone();
     assert!(
@@ -16419,7 +16452,8 @@ fn cmd_decide_reject_by_source_preserves_other_sources() {
 #[test]
 fn cmd_decide_reject_by_source_with_no_matching_decisions() {
     let state_dir = tempfile::tempdir().unwrap();
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
 
     state
@@ -16435,6 +16469,7 @@ fn cmd_decide_reject_by_source_with_no_matching_decisions() {
         Some(state_dir.path()),
     )
     .unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap().clone();
     assert!(
@@ -16450,7 +16485,8 @@ fn cmd_decide_reject_by_source_with_no_matching_decisions() {
 #[test]
 fn cmd_decide_accept_single_item_singular_message() {
     let state_dir = tempfile::tempdir().unwrap();
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
 
     state
@@ -16466,6 +16502,7 @@ fn cmd_decide_accept_single_item_singular_message() {
         Some(state_dir.path()),
     )
     .unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap().clone();
     // When exactly 1 item, the message should use singular "item" not "items"

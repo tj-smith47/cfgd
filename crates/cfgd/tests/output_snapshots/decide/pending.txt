@@ -1,0 +1,8 @@
+Pending Decisions
+  team-config: 2 pending items
+    recommended packages.brew.curl — Install curl via brew (install)
+    optional env.EDITOR — Set EDITOR (set)
+
+→ Use `cfgd decide accept <resource>` or `cfgd decide reject <resource>` to resolve
+
+→ Use `cfgd decide accept --all` or `cfgd decide accept --source <name>` for bulk operations

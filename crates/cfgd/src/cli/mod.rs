@@ -3,7 +3,7 @@ mod checkin;
 pub mod compliance;
 pub mod config_cmd;
 mod daemon;
-mod decide;
+pub mod decide;
 mod diff;
 pub mod doctor;
 mod explain;
@@ -34,6 +34,8 @@ pub(in crate::cli) use output_types::*;
 pub(in crate::cli) use plan_ops::*;
 pub(in crate::cli) use registry::*;
 #[cfg(test)]
+pub(in crate::cli) use source::display_pending_decisions;
+#[cfg(test)]
 pub(in crate::cli) use source::{
     DEFAULT_NONINTERACTIVE_PRIORITY, add_source_to_config, build_subscription_preview_input,
     count_policy_items, display_policy_items, display_source_manifest,
@@ -41,7 +43,8 @@ pub(in crate::cli) use source::{
     remove_source_from_config, resolve_non_interactive_profile,
 };
 pub(in crate::cli) use source::{
-    build_permission_input, display_pending_decisions, mutate_config_yaml, source_cache_dir,
+    build_pending_decisions_table_section, build_permission_input, mutate_config_yaml,
+    source_cache_dir,
 };
 use workflow::{generate_release_workflow_yaml, maybe_update_workflow};
 
@@ -1623,7 +1626,7 @@ pub fn execute(
             source,
             all,
         } => decide::cmd_decide(
-            printer,
+            v2_printer,
             *action,
             resource.as_deref(),
             source.as_deref(),

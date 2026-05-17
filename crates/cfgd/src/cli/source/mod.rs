@@ -29,8 +29,11 @@ pub(super) use update::cmd_source_update;
 
 // --- Helpers consumed elsewhere in cli:: ---
 
+#[cfg(test)]
+pub(in crate::cli) use helpers::display_pending_decisions;
 pub(in crate::cli) use helpers::{
-    build_permission_input, display_pending_decisions, mutate_config_yaml, source_cache_dir,
+    build_pending_decisions_table_section, build_permission_input, mutate_config_yaml,
+    source_cache_dir,
 };
 
 #[cfg(test)]

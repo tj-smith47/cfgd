@@ -1,0 +1,26 @@
+{
+  "decisions": [
+    {
+      "action": "install",
+      "createdAt": "2026-05-11T00:00:00Z",
+      "id": 1,
+      "resolution": null,
+      "resolvedAt": null,
+      "resource": "packages.brew.curl",
+      "source": "team-config",
+      "summary": "Install curl via brew",
+      "tier": "recommended"
+    },
+    {
+      "action": "set",
+      "createdAt": "2026-05-11T00:00:00Z",
+      "id": 1,
+      "resolution": null,
+      "resolvedAt": null,
+      "resource": "env.EDITOR",
+      "source": "team-config",
+      "summary": "Set EDITOR",
+      "tier": "optional"
+    }
+  ]
+}
