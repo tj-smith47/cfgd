@@ -1664,6 +1664,7 @@ pub fn execute(
             username,
         } => init::cmd_enroll(
             printer,
+            v2_printer,
             server_url,
             token.as_deref(),
             ssh_key.as_deref(),

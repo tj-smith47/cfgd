@@ -1885,9 +1885,9 @@ fn sign_with_gpg_requires_gpg() {
 
 #[test]
 fn detect_ssh_key_returns_option() {
-    let (printer, _buf) = Printer::for_test();
+    let v2_printer = v2_quiet();
     // This will either find a key or return None — both are valid
-    let result = detect_ssh_key(&printer);
+    let result = detect_ssh_key(&v2_printer);
     // Just verify it doesn't panic and returns a valid type
     if let Some(ref path) = result {
         assert!(!path.is_empty(), "returned path should be non-empty");
@@ -2607,14 +2607,19 @@ fn next_steps_lines_starts_with_checkin_then_apply() {
 }
 
 #[test]
-fn next_steps_lines_are_indented_so_terminal_renders_consistently() {
-    // Every banner line is indented by two spaces. The Printer info() call
-    // doesn't add indentation — the strings own it. A drift to flush-left
-    // would break the visual grouping.
+fn next_steps_lines_are_bare_commands_not_pre_indented() {
+    // The "Next Steps" Doc section renders each line as a bullet, which
+    // supplies its own indent and "- " prefix. The line strings must NOT
+    // carry leading whitespace or the bullet output would have two layers
+    // of indentation.
     for line in super::next_steps_lines() {
         assert!(
-            line.starts_with("  "),
-            "line not 2-space indented: {line:?}"
+            !line.starts_with(' ') && !line.starts_with('\t'),
+            "line must be a bare command, got: {line:?}"
+        );
+        assert!(
+            line.starts_with("cfgd "),
+            "line must start with the cfgd command verb, got: {line:?}"
         );
     }
 }
@@ -2628,6 +2633,7 @@ fn next_steps_lines_are_indented_so_terminal_renders_consistently() {
 mod enroll_mockito {
     use crate::cli::init::enroll::cmd_enroll;
     use cfgd_core::output::Printer;
+    use cfgd_core::output_v2::Printer as PrinterV2;
     use cfgd_core::test_helpers::with_test_env_var;
     use serial_test::serial;
 
@@ -2655,10 +2661,12 @@ mod enroll_mockito {
                 .with_body(enroll_response_json())
                 .create();
 
-            let (printer, buf) = Printer::for_test();
+            let (printer, _buf) = Printer::for_test();
+            let (v2_printer, cap) = PrinterV2::for_test_doc();
             let url = server.url();
             let result = cmd_enroll(
                 &printer,
+                &v2_printer,
                 &url,
                 Some("bootstrap-token-xyz"),
                 None,
@@ -2680,8 +2688,10 @@ mod enroll_mockito {
             assert_eq!(cred["apiKey"], "key-xyz-789");
             assert_eq!(cred["username"], "alice");
 
-            // Printer output should announce success.
-            let captured = buf.lock().unwrap().clone();
+            // v2 printer output should announce success and emit the Next
+            // Steps section heading.
+            drop(v2_printer);
+            let captured = cap.human();
             assert!(
                 captured.contains("Enrolled as user 'alice'"),
                 "expected success message in: {captured}"
@@ -2707,8 +2717,17 @@ mod enroll_mockito {
                 .create();
 
             let printer = cfgd_core::test_helpers::test_printer();
+            let v2_printer = super::v2_quiet();
             let url = server.url();
-            let result = cmd_enroll(&printer, &url, Some("bad-token"), None, None, Some("alice"));
+            let result = cmd_enroll(
+                &printer,
+                &v2_printer,
+                &url,
+                Some("bad-token"),
+                None,
+                None,
+                Some("alice"),
+            );
             assert!(result.is_err());
             // No credential written on failure.
             assert!(!tmp.path().join("device-credential.json").exists());
@@ -2730,10 +2749,11 @@ mod enroll_mockito {
                 .create();
 
             let (printer, _buf) = Printer::for_test();
+            let v2_printer = super::v2_quiet();
             let url = server.url();
             // No --token but key-based attempted: should error with a
             // pointer to the token form.
-            let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
+            let result = cmd_enroll(&printer, &v2_printer, &url, None, None, None, Some("alice"));
             let err = result.unwrap_err().to_string();
             assert!(
                 err.contains("bootstrap token enrollment") || err.contains("--token"),
@@ -2764,8 +2784,9 @@ mod enroll_mockito {
                 .create();
 
             let printer = cfgd_core::test_helpers::test_printer();
+            let v2_printer = super::v2_quiet();
             let url = server.url();
-            let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
+            let result = cmd_enroll(&printer, &v2_printer, &url, None, None, None, Some("alice"));
             let err = result.unwrap_err().to_string();
             assert!(
                 err.contains("no SSH key found"),
@@ -2795,8 +2816,9 @@ mod enroll_mockito {
                 .create();
 
             let printer = cfgd_core::test_helpers::test_printer();
+            let v2_printer = super::v2_quiet();
             let url = server.url();
-            let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
+            let result = cmd_enroll(&printer, &v2_printer, &url, None, None, None, Some("alice"));
             let err = result.unwrap_err().to_string();
             assert!(
                 err.contains("enrollment info") || err.contains("500"),
@@ -2836,12 +2858,22 @@ mod enroll_mockito {
                 .with_body(body)
                 .create();
 
-            let (printer, buf) = Printer::for_test();
+            let (printer, _buf) = Printer::for_test();
+            let (v2_printer, cap) = PrinterV2::for_test_doc();
             let url = server.url();
-            let result = cmd_enroll(&printer, &url, Some("token"), None, None, Some("alice"));
+            let result = cmd_enroll(
+                &printer,
+                &v2_printer,
+                &url,
+                Some("token"),
+                None,
+                None,
+                Some("alice"),
+            );
             assert!(result.is_ok(), "cmd_enroll should succeed: {result:?}");
             m.assert();
-            let captured = buf.lock().unwrap().clone();
+            drop(v2_printer);
+            let captured = cap.human();
             assert!(
                 captured.contains("Server pushed desired config"),
                 "expected desired-config notice in: {captured}"

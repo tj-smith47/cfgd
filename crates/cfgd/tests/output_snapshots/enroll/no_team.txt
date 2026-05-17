@@ -1,0 +1,5 @@
+Next Steps
+  - cfgd checkin --server-url <url>  — report status to server
+  - cfgd apply --dry-run             — preview configuration
+  - cfgd apply                       — apply configuration
+  - cfgd daemon install              — start background sync
