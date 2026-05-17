@@ -141,8 +141,12 @@ fn checkin_server_pushed_config_human() {
     );
 }
 
-/// Bridge invariant: streaming "Checkin" section drops, buffered Doc emits —
-/// combined human surface contains exactly one blank line at the transition.
+/// Bridge invariant: streaming "Checkin" section drops, then a synthetic
+/// buffered status emits — combined human surface contains exactly one
+/// blank line at the transition. The bridge synthetic adds a status that
+/// real `cmd_checkin` does not emit (production's buffered Doc is
+/// payload-only); per the F3 README bridge-synthetic exception, deterministic
+/// minimal content on both sides is preferred over matching the real shape.
 #[test]
 fn checkin_bridge_one_blank_line() {
     let (v2_printer, cap) = Printer::for_test_doc();
