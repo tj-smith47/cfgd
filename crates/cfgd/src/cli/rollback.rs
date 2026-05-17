@@ -47,10 +47,7 @@ pub fn cmd_rollback(
         ),
     ];
     if non_file_count > 0 {
-        kv_pairs.push((
-            "Non-file actions (manual review)".to_string(),
-            non_file_count.to_string(),
-        ));
+        kv_pairs.push(("Non-file actions".to_string(), non_file_count.to_string()));
     }
     v2_printer.kv_block(kv_pairs);
 
@@ -95,8 +92,13 @@ pub fn cmd_rollback(
     let result = {
         let rb_sec = v2_printer.section("Restoring");
         let r = reconciler.rollback_apply(apply_id, printer)?;
-        let summary = format!("{} file(s) processed", r.files_restored + r.files_removed);
-        rb_sec.status_simple(Role::Ok, summary);
+        let processed = r.files_restored + r.files_removed;
+        let (role, msg) = if processed == 0 {
+            (Role::Info, "No files affected".to_string())
+        } else {
+            (Role::Ok, format!("{} file(s) processed", processed))
+        };
+        rb_sec.status_simple(role, msg);
         r
     };
 
@@ -114,35 +116,31 @@ pub fn cmd_rollback(
     }
 
     if !result.non_file_actions.is_empty() {
-        let nf_sec = v2_printer.section(format!(
-            "{} non-file action(s) require manual review",
-            result.non_file_actions.len()
-        ));
+        v2_printer.status_simple(
+            Role::Warn,
+            format!(
+                "{} non-file action(s) require manual review",
+                result.non_file_actions.len()
+            ),
+        );
+        let nf_sec = v2_printer.section("Actions");
         for action in &result.non_file_actions {
             nf_sec.bullet(action);
         }
     }
 
-    let (final_role, final_subject) = if result.files_restored == 0 && result.files_removed == 0 {
-        (Role::Info, "No files were changed during rollback")
-    } else {
-        (Role::Ok, "Rollback complete")
-    };
-
-    v2_printer.emit(
-        Doc::new()
-            .status(final_role, final_subject)
-            .with_data(&RollbackOutput {
-                apply_id,
-                files_restored: result.files_restored,
-                files_removed: result.files_removed,
-                non_file_actions: result.non_file_actions.clone(),
-            }),
-    );
+    v2_printer.emit(build_rollback_doc(&RollbackOutput {
+        apply_id,
+        files_restored: result.files_restored,
+        files_removed: result.files_removed,
+        non_file_actions: result.non_file_actions.clone(),
+    }));
 
     Ok(())
 }
 
+/// Sole place the Rollback final Role/subject is decided. Inline emits at
+/// every callsite would fork the rule; route through this helper instead.
 pub fn build_rollback_doc(output: &RollbackOutput) -> Doc {
     let (role, subject) = if output.files_restored == 0 && output.files_removed == 0 {
         (Role::Info, "No files were changed during rollback")

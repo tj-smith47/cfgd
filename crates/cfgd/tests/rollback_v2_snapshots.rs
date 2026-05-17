@@ -101,6 +101,38 @@ fn rollback_no_changes_human() {
     );
 }
 
+/// `yes=false` + `PromptAnswer::Confirm(true)` drives the accept path:
+/// prompt fires silently, reconciler restores, "Rollback complete" lands.
+/// F3 README §"Accept-confirm-then-success pattern" mandates a snapshot
+/// dedicated to the Confirm(true) branch — the rejection snapshot doesn't
+/// cover it.
+#[test]
+fn rollback_accept_human() {
+    let (_workspace, state_dir, target, apply_id) = rollback_state_with_backups_setup();
+
+    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
+    let (v2_printer, v2_buf) = Printer::for_test_with_prompt_responses_at(
+        vec![PromptAnswer::Confirm(true)],
+        V2Verbosity::Normal,
+    );
+
+    cmd_rollback(
+        &old_printer,
+        &v2_printer,
+        apply_id,
+        false,
+        Some(state_dir.path()),
+    )
+    .unwrap();
+    v2_printer.flush();
+    drop(v2_printer);
+
+    let raw = v2_buf.lock().unwrap().clone();
+    let normalized = raw.replace(&target.display().to_string(), "<TARGET>");
+    let stripped = strip_ansi(&normalized);
+    assert_snapshot(Path::new(SNAPSHOT_ROOT), "rollback/accept.txt", &stripped);
+}
+
 /// `yes=false` + `PromptAnswer::Confirm(false)` drives the rejection path:
 /// "Aborted" status, no reconciler invocation.
 #[test]

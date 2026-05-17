@@ -1,13 +1,14 @@
 Rollback
-  Target apply ID           1
-  File backups to restore   0
-  Non-file actions (manual review)
-    1
+  Target apply ID          1
+  File backups to restore  0
+  Non-file actions         1
 
 Restoring
-  ✓ 0 file(s) processed
+  No files affected
 
-1 non-file action(s) require manual review
+⚠ 1 non-file action(s) require manual review
+
+Actions
   - package:brew:install:ripgrep
 
 No files were changed during rollback
