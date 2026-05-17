@@ -289,7 +289,6 @@ pub(in crate::cli) fn display_plan_preview(
     }
 }
 
-#[allow(dead_code)]
 pub(in crate::cli) fn display_plan_preview_v2(
     plan: &reconciler::Plan,
     printer: &PrinterV2,
@@ -637,7 +636,6 @@ pub(in crate::cli) fn apply_backup_choice(
     Ok(())
 }
 
-#[allow(dead_code)]
 pub(in crate::cli) fn handle_unmanaged_file_targets_v2(
     plan: &mut reconciler::Plan,
     config_dir: &Path,
@@ -711,7 +709,6 @@ pub(in crate::cli) fn handle_unmanaged_file_targets_v2(
 }
 
 /// Prompt the user to choose how to handle an unmanaged file target.
-#[allow(dead_code)]
 fn prompt_backup_choice_v2<'a>(
     target: &Path,
     module_name: Option<&str>,
@@ -733,7 +730,6 @@ fn prompt_backup_choice_v2<'a>(
         .unwrap_or(&options[0]))
 }
 
-#[allow(dead_code)]
 pub(in crate::cli) fn backup_file_v2(target: &Path, printer: &PrinterV2) -> anyhow::Result<()> {
     let backup_path = PathBuf::from(format!("{}.cfgd-backup", target.display()));
     std::fs::rename(target, &backup_path).map_err(|e| {
@@ -748,7 +744,6 @@ pub(in crate::cli) fn backup_file_v2(target: &Path, printer: &PrinterV2) -> anyh
     Ok(())
 }
 
-#[allow(dead_code)]
 pub(in crate::cli) fn apply_backup_choice_v2(
     choice: &str,
     target: &Path,

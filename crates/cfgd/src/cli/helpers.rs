@@ -547,7 +547,6 @@ pub(in crate::cli) fn compose_with_sources(
     Ok(result)
 }
 
-#[allow(dead_code)]
 pub(in crate::cli) fn compose_with_sources_v2(
     cli: &Cli,
     cfg: &config::CfgdConfig,
