@@ -1,0 +1,20 @@
+{
+  "failCount": 0,
+  "passCount": 2,
+  "results": [
+    {
+      "actual": "installed",
+      "expected": "installed",
+      "matches": true,
+      "resource_id": "curl",
+      "resource_type": "package"
+    },
+    {
+      "actual": "installed",
+      "expected": "installed",
+      "matches": true,
+      "resource_id": "ripgrep",
+      "resource_type": "package"
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+Verify
+
+Resources
+  ✓ package curl — installed
+  ✗ sysctl net.ipv4.ip_forward — want: 1, have: 0
+
+⚠ 1 passed, 1 failed

@@ -26,7 +26,7 @@ pub mod source;
 pub mod status;
 mod sync;
 mod upgrade;
-mod verify;
+pub mod verify;
 mod workflow;
 
 pub(in crate::cli) use helpers::*;
@@ -1399,7 +1399,7 @@ pub fn execute(
             log::cmd_log(printer, *limit, *show_output, cli.state_dir.as_deref())
         }
         Command::Verify { module, exit_code } => {
-            verify::cmd_verify(cli, printer, module.as_deref(), *exit_code)
+            verify::cmd_verify(cli, printer, v2_printer, module.as_deref(), *exit_code)
         }
         Command::Profile { command } => match command {
             ProfileCommand::Show { name } => {

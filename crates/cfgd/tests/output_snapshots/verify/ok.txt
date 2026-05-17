@@ -1,0 +1,7 @@
+Verify
+
+Resources
+  ✓ package curl — installed
+  ✓ package ripgrep — installed
+
+✓ All 2 resource(s) match desired state

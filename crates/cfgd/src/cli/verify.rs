@@ -1,32 +1,18 @@
 use super::*;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct VerifyOutput {
-    results: Vec<cfgd_core::reconciler::VerifyResult>,
-    pass_count: usize,
-    fail_count: usize,
-}
-
-fn print_verify_results(results: &[reconciler::VerifyResult], printer: &Printer) {
-    for result in results {
-        if result.matches {
-            printer.success(&format!(
-                "{} {} — {}",
-                result.resource_type, result.resource_id, result.expected
-            ));
-        } else {
-            printer.error(&format!(
-                "{} {} — want: {}, have: {}",
-                result.resource_type, result.resource_id, result.expected, result.actual
-            ));
-        }
-    }
+pub struct VerifyOutput {
+    pub results: Vec<cfgd_core::reconciler::VerifyResult>,
+    pub pass_count: usize,
+    pub fail_count: usize,
 }
 
 pub(super) fn cmd_verify(
     cli: &Cli,
     printer: &Printer,
+    v2_printer: &PrinterV2,
     module_filter: Option<&str>,
     exit_code: bool,
 ) -> anyhow::Result<()> {
@@ -50,102 +36,152 @@ pub(super) fn cmd_verify(
         .unwrap_or_default();
         (resolved, mods, registry)
     } else {
-        let (_cfg, mut resolved) = load_config_and_profile(cli, printer)?;
+        let (_cfg, _profile_name, mut resolved) = load_config_and_profile_v2(cli)?;
         packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
         let registry = build_registry_with_profile(&resolved.merged.packages);
         (resolved, Vec::new(), registry)
     };
 
     let results = reconciler::verify(&resolved, &registry, &state, printer, &resolved_modules)?;
-
     let pass_count = results.iter().filter(|r| r.matches).count();
     let fail_count = results.iter().filter(|r| !r.matches).count();
+    let has_drift = fail_count > 0;
 
-    if printer.is_structured() {
-        let has_drift = fail_count > 0;
-        printer.write_structured(&VerifyOutput {
-            results,
-            pass_count,
-            fail_count,
-        });
-        if exit_code && has_drift {
-            cfgd_core::exit::ExitCode::DriftDetected.exit();
-        }
-        return Ok(());
-    }
+    let output = VerifyOutput {
+        results,
+        pass_count,
+        fail_count,
+    };
+    v2_printer.emit(build_verify_doc(&output));
 
-    printer.header("Verify");
-    printer.newline();
-
-    if results.is_empty() {
-        printer.info("No managed resources to verify");
-        return Ok(());
-    }
-
-    print_verify_results(&results, printer);
-
-    printer.newline();
-    if fail_count == 0 {
-        printer.success(&format!(
-            "All {} resource(s) match desired state",
-            pass_count
-        ));
-    } else {
-        printer.warning(&format!("{} passed, {} failed", pass_count, fail_count));
-    }
-
-    if exit_code && fail_count > 0 {
+    if exit_code && has_drift {
         cfgd_core::exit::ExitCode::DriftDetected.exit();
     }
-
     Ok(())
+}
+
+/// Pure builder: verify Doc from a collected `VerifyOutput`. Used by the live
+/// command and by snapshot tests under `tests/output_snapshots/verify/`.
+pub fn build_verify_doc(output: &VerifyOutput) -> Doc {
+    let mut doc = Doc::new().heading("Verify");
+
+    if output.results.is_empty() {
+        doc = doc.status(Role::Info, "No managed resources to verify");
+        return doc.with_data(output.clone());
+    }
+
+    doc = doc.section("Resources", |s| {
+        output.results.iter().fold(s, |s, r| {
+            if r.matches {
+                s.status(
+                    Role::Ok,
+                    format!("{} {} — {}", r.resource_type, r.resource_id, r.expected),
+                )
+            } else {
+                s.status_with(
+                    Role::Fail,
+                    format!("{} {}", r.resource_type, r.resource_id),
+                    |sf| sf.detail(format!("want: {}, have: {}", r.expected, r.actual)),
+                )
+            }
+        })
+    });
+
+    doc = if output.fail_count == 0 {
+        doc.status(
+            Role::Ok,
+            format!("All {} resource(s) match desired state", output.pass_count),
+        )
+    } else {
+        doc.status(
+            Role::Warn,
+            format!("{} passed, {} failed", output.pass_count, output.fail_count),
+        )
+    };
+
+    doc.with_data(output.clone())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn print_verify_results_renders_passing_resources() {
-        let (printer, buf) = Printer::for_test();
-        let results = vec![reconciler::VerifyResult {
+    fn passing_result() -> reconciler::VerifyResult {
+        reconciler::VerifyResult {
             resource_type: "package".into(),
             resource_id: "curl".into(),
             expected: "installed".into(),
             actual: "installed".into(),
             matches: true,
-        }];
-        print_verify_results(&results, &printer);
-        let out = buf.lock().unwrap();
-        assert!(
-            out.contains("package"),
-            "expected resource_type, got: {out}"
-        );
-        assert!(out.contains("curl"), "expected resource_id, got: {out}");
-        assert!(
-            out.contains("installed"),
-            "expected expected-value, got: {out}"
-        );
+        }
     }
 
-    #[test]
-    fn print_verify_results_renders_failures_with_actual() {
-        let (printer, buf) = Printer::for_test();
-        let results = vec![reconciler::VerifyResult {
+    fn failing_result() -> reconciler::VerifyResult {
+        reconciler::VerifyResult {
             resource_type: "sysctl".into(),
             resource_id: "net.ipv4.ip_forward".into(),
             expected: "1".into(),
             actual: "0".into(),
             matches: false,
-        }];
-        print_verify_results(&results, &printer);
-        let out = buf.lock().unwrap();
-        assert!(out.contains("sysctl"), "expected resource_type, got: {out}");
+        }
+    }
+
+    #[test]
+    fn build_verify_doc_renders_passing_resources() {
+        let (printer, cap) = PrinterV2::for_test_doc();
+        let output = VerifyOutput {
+            results: vec![passing_result()],
+            pass_count: 1,
+            fail_count: 0,
+        };
+        printer.emit(build_verify_doc(&output));
+        drop(printer);
+        let human = cap.human();
         assert!(
-            out.contains("net.ipv4.ip_forward"),
-            "expected resource_id, got: {out}"
+            human.contains("package"),
+            "expected resource_type, got: {human}"
         );
-        assert!(out.contains("want: 1"), "expected want-line, got: {out}");
-        assert!(out.contains("have: 0"), "expected have-line, got: {out}");
+        assert!(human.contains("curl"), "expected resource_id, got: {human}");
+        assert!(
+            human.contains("installed"),
+            "expected expected-value, got: {human}"
+        );
+        assert!(
+            human.contains("All 1 resource(s) match desired state"),
+            "expected summary line, got: {human}"
+        );
+    }
+
+    #[test]
+    fn build_verify_doc_renders_failures_with_actual() {
+        let (printer, cap) = PrinterV2::for_test_doc();
+        let output = VerifyOutput {
+            results: vec![failing_result()],
+            pass_count: 0,
+            fail_count: 1,
+        };
+        printer.emit(build_verify_doc(&output));
+        drop(printer);
+        let human = cap.human();
+        assert!(
+            human.contains("sysctl"),
+            "expected resource_type, got: {human}"
+        );
+        assert!(
+            human.contains("net.ipv4.ip_forward"),
+            "expected resource_id, got: {human}"
+        );
+        assert!(
+            human.contains("want: 1"),
+            "expected want-line, got: {human}"
+        );
+        assert!(
+            human.contains("have: 0"),
+            "expected have-line, got: {human}"
+        );
+        assert!(
+            human.contains("0 passed, 1 failed"),
+            "expected summary line, got: {human}"
+        );
     }
 }

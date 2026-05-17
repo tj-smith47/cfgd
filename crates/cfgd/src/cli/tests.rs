@@ -3772,7 +3772,14 @@ fn cmd_verify_module() {
     let h = CliTestHarness::builder()
         .module("test-mod", SIMPLE_MODULE_YAML)
         .build();
-    super::verify::cmd_verify(&h.cli(), h.printer(), Some("test-mod"), false).unwrap();
+    super::verify::cmd_verify(
+        &h.cli(),
+        h.printer(),
+        h.v2_printer(),
+        Some("test-mod"),
+        false,
+    )
+    .unwrap();
     h.assert_header("Verify");
     h.assert_output_contains("test-mod");
     let output = h.output();
@@ -4041,7 +4048,7 @@ fn cmd_log_after_apply() {
 #[test]
 fn cmd_verify_empty_profile() {
     let h = CliTestHarness::builder().build();
-    super::verify::cmd_verify(&h.cli(), h.printer(), None, false).unwrap();
+    super::verify::cmd_verify(&h.cli(), h.printer(), h.v2_printer(), None, false).unwrap();
     h.assert_header("Verify");
 }
 
@@ -5169,9 +5176,12 @@ fn cmd_verify_after_apply_with_env() {
     super::apply::cmd_apply(&cli, &printer, &v2_printer, &args).unwrap();
 
     buf.lock().unwrap().clear();
-    super::verify::cmd_verify(&cli, &printer, None, false).unwrap();
+    let (verify_v2_printer, verify_v2_buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+    super::verify::cmd_verify(&cli, &printer, &verify_v2_printer, None, false).unwrap();
+    verify_v2_printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = verify_v2_buf.lock().unwrap();
     assert!(
         output.contains("Verify"),
         "verify after apply should show Verify header, got: {output}"
@@ -6134,11 +6144,15 @@ fn cmd_verify_structured_json() {
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
+        cfgd_core::output_v2::OutputFormat::Json,
+    );
 
-    super::verify::cmd_verify(&cli, &printer, None, false).unwrap();
+    super::verify::cmd_verify(&cli, &printer, &v2_printer, None, false).unwrap();
+    v2_printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     let parsed = extract_json(&output);
     assert!(
         parsed.get("results").is_some(),
@@ -6304,17 +6318,20 @@ fn cmd_verify_module_not_found() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
 
     // Nonexistent module should succeed gracefully (empty results, exit 0)
-    let result = super::verify::cmd_verify(&cli, &printer, Some("nonexistent"), false);
+    let (v2_printer, v2_buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+    let result = super::verify::cmd_verify(&cli, &printer, &v2_printer, Some("nonexistent"), false);
     assert!(
         result.is_ok(),
         "verify should handle nonexistent module gracefully: {:?}",
         result.err()
     );
+    v2_printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("Verify") || output.contains("No managed"),
         "verify for nonexistent module should mention verify or no managed resources, got: {output}"
@@ -9756,11 +9773,15 @@ fn cmd_verify_structured_output() {
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
+        cfgd_core::output_v2::OutputFormat::Json,
+    );
 
-    super::verify::cmd_verify(&cli, &printer, None, false).unwrap();
+    super::verify::cmd_verify(&cli, &printer, &v2_printer, None, false).unwrap();
+    v2_printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     let parsed = extract_json(&output);
     assert!(
         parsed.get("results").is_some(),
@@ -10811,7 +10832,14 @@ fn cmd_verify_with_module_filter() {
     let h = CliTestHarness::builder()
             .module("verify-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: verify-mod\nspec:\n  packages: []\n")
             .build();
-    super::verify::cmd_verify(&h.cli(), h.printer(), Some("verify-mod"), false).unwrap();
+    super::verify::cmd_verify(
+        &h.cli(),
+        h.printer(),
+        h.v2_printer(),
+        Some("verify-mod"),
+        false,
+    )
+    .unwrap();
     let output = h.output();
     assert!(
         output.contains("Verify") || output.contains("verify-mod"),
@@ -11881,7 +11909,7 @@ fn json_schema_doctor() {
 #[test]
 fn json_schema_verify() {
     let h = CliTestHarness::builder().json().build();
-    super::verify::cmd_verify(&h.cli(), h.printer(), None, false).unwrap();
+    super::verify::cmd_verify(&h.cli(), h.printer(), h.v2_printer(), None, false).unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(&parsed, &["passCount", "failCount", "results"]);
     assert_json_field_type(&parsed, "passCount", "number");
