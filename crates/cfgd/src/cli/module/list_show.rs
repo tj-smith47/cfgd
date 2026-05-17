@@ -74,7 +74,11 @@ pub fn build_module_not_found_doc(name: &str, available: &[String]) -> Doc {
     if !available.is_empty() {
         doc = doc.hint(format!("Available modules: {}", available.join(", ")));
     }
-    doc
+    doc.with_data(serde_json::json!({
+        "error": "not_found",
+        "name": name,
+        "available": available,
+    }))
 }
 
 /// Build the `cfgd module show` Doc from precomputed inputs.

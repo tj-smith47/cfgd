@@ -432,8 +432,7 @@ fn cmd_module_list_json_with_modules() {
     drop(v2_printer);
 
     let output = v2_buf.lock().unwrap();
-    let start = output.find('[').expect("should have JSON array in output");
-    let json: serde_json::Value = serde_json::from_str(output[start..].trim()).unwrap();
+    let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
     assert!(json.is_array());
     let arr = json.as_array().unwrap();
     assert_eq!(arr.len(), 1);
@@ -2874,8 +2873,7 @@ fn cmd_module_list_json_active_modules() {
     drop(v2_printer);
 
     let output = v2_buf.lock().unwrap();
-    let start = output.find('[').expect("should have JSON array");
-    let json: serde_json::Value = serde_json::from_str(output[start..].trim()).unwrap();
+    let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
     let arr = json.as_array().unwrap();
     assert_eq!(arr.len(), 2);
 
@@ -3068,8 +3066,7 @@ fn cmd_module_list_with_lockfile_shows_remote() {
     drop(v2_printer);
 
     let output = v2_buf.lock().unwrap();
-    let start = output.find('[').expect("should have JSON array");
-    let json: serde_json::Value = serde_json::from_str(output[start..].trim()).unwrap();
+    let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
     let arr = json.as_array().unwrap();
     let entry = &arr[0];
     assert_eq!(entry["source"], "remote");
