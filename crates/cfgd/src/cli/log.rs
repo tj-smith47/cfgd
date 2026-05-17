@@ -52,7 +52,7 @@ fn cmd_log_show_output(
     let mut payload_entries = Vec::new();
     let mut found_output = false;
     {
-        let entries_sec = v2_printer.section("Entries");
+        let entries_sec = v2_printer.section_or_collapse("Entries");
         for entry in &entries {
             if let Some(ref output) = entry.script_output {
                 found_output = true;

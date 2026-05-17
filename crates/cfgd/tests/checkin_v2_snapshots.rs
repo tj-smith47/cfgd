@@ -117,7 +117,7 @@ fn checkin_server_pushed_config_human() {
     v2_printer.status_simple(Role::Warn, "Server pushed desired config");
     {
         let push_sec = v2_printer.section("Server config");
-        push_sec.status_simple(Role::Warn, "Saved to <PATH>");
+        push_sec.status_simple(Role::Ok, "Saved to <PATH>");
         push_sec.status_simple(
             Role::Info,
             "Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'",
