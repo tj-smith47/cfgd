@@ -110,7 +110,7 @@ pub(crate) fn cmd_profile_show(
 ) -> anyhow::Result<()> {
     let (profile_name, resolved) = match name {
         Some(n) => {
-            let _cfg = config::load_config(&cli.config)?;
+            config::load_config(&cli.config)?;
             printer.kv("Config", cli.config.display().to_string());
             printer.kv("Profile", n);
             let resolved = config::resolve_profile(n, &profiles_dir(cli))?;
