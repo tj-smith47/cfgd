@@ -18,7 +18,7 @@ pub mod plan;
 mod plan_ops;
 pub mod plugin;
 pub mod profile;
-mod pull;
+pub mod pull;
 mod registry;
 mod rollback;
 mod secret;
@@ -1561,7 +1561,7 @@ pub fn execute(
             },
         },
         Command::Sync => sync::cmd_sync(cli, printer, v2_printer),
-        Command::Pull => pull::cmd_pull(cli, printer),
+        Command::Pull => pull::cmd_pull(cli, printer, v2_printer),
         Command::Daemon { command } => daemon::cmd_daemon(cli, printer, command.as_ref()),
         Command::Secret { command } => match command {
             SecretCommand::Encrypt { file } => secret::cmd_secret_encrypt(cli, printer, file),

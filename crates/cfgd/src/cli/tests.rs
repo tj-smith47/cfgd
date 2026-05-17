@@ -5087,11 +5087,13 @@ fn cmd_pull_no_sources() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
 
-    super::pull::cmd_pull(&cli, &printer).unwrap();
+    super::pull::cmd_pull(&cli, &printer, &v2_printer).unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("No sources") || output.contains("Pull") || output.contains("no origin"),
         "pull with no sources should report no-sources, got: {output}"
@@ -9687,10 +9689,11 @@ fn execute_pull_command() {
         command: Some(Command::Pull),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = Printer::for_test();
+    let (printer, v1_buf) = Printer::for_test();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
 
-    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
-    let output = buf.lock().unwrap();
+    super::execute(&cli, &printer, &v2_printer).unwrap();
+    let output = combine_buffers(&v1_buf, &v2_buf);
     assert!(
         output.contains("Pull") || output.contains("No sources") || output.contains("no origin"),
         "pull dispatch should produce output, got: {output}"
@@ -11669,10 +11672,12 @@ fn cmd_source_add_duplicate_fails() {
 fn cmd_pull_non_git_dir_shows_warning() {
     let h = CliTestHarness::builder().build();
     // config dir is not a git repo, so git_pull_sync will fail gracefully
-    super::pull::cmd_pull(&h.cli(), h.printer()).unwrap();
-    h.assert_header("Pull");
-    // Should either show "up to date" or "Pull failed" — both are OK
+    super::pull::cmd_pull(&h.cli(), h.printer(), h.v2_printer()).unwrap();
     let output = h.output();
+    assert!(
+        output.contains("Pull"),
+        "pull output should contain Pull heading, got: {output}"
+    );
     assert!(
         output.contains("Pull failed") || output.contains("up to date"),
         "pull in non-git dir should warn or show up-to-date, got: {output}"
