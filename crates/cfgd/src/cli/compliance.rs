@@ -173,7 +173,7 @@ pub fn compute_compliance_diff(
     }
 }
 
-/// Pure builder: compliance diff Doc per spec §13.4.
+/// Pure builder: compliance diff Doc.
 pub fn build_compliance_diff_doc(
     id1: i64,
     id2: i64,
@@ -512,8 +512,6 @@ mod tests {
         );
     }
 
-    // --- cmd_compliance_diff (unchanged — T3 owns) ---
-
     #[test]
     fn cmd_compliance_diff_missing_snapshots_returns_err() {
         let state_dir = tempfile::tempdir().unwrap();
@@ -603,8 +601,7 @@ mod tests {
         store_snapshot(state_dir.path(), &snap1);
         store_snapshot(state_dir.path(), &snap2);
 
-        let mut cli = test_cli_for(state_dir.path());
-        cli.output = OutputFormatArg(OutputFormat::Json);
+        let cli = test_cli_for(state_dir.path());
         let (printer, cap) = PrinterV2::for_test_doc();
 
         cmd_compliance_diff(&cli, &printer, 1, 2).unwrap();
