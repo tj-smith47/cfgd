@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn cmd_plan(
+pub fn cmd_plan(
     cli: &Cli,
     printer: &Printer,
     v2_printer: &cfgd_core::output_v2::Printer,
@@ -34,7 +34,7 @@ pub(super) fn cmd_plan(
         init::resolve_from(from, target, "master", printer, v2_printer)?;
     }
 
-    printer.header("Plan");
+    v2_printer.heading("Plan");
 
     let config_dir = config_dir(cli);
     let state = open_state_store(cli.state_dir.as_deref())?;
@@ -42,20 +42,33 @@ pub(super) fn cmd_plan(
 
     // Load config and profile — same pattern as cmd_apply
     let (cfg, resolved) = if let Some(mod_name) = module_filter {
-        match load_config_and_profile(cli, printer) {
-            Ok(pair) => pair,
+        match load_config_and_profile_v2(cli) {
+            Ok((cfg, profile_name, resolved)) => {
+                v2_printer.kv_block([
+                    ("Config".to_string(), cli.config.display().to_string()),
+                    ("Profile".to_string(), profile_name),
+                ]);
+                (cfg, resolved)
+            }
             Err(e) => {
                 tracing::debug!("profile load failed, using module-only mode: {}", e);
                 let cfg =
                     config::load_config(&cli.config).unwrap_or_else(|_| config::minimal_config());
                 let resolved = empty_resolved_profile(mod_name);
-                printer.key_value("Config", &cli.config.display().to_string());
-                printer.key_value("Profile", "(module-only)");
+                v2_printer.kv_block([
+                    ("Config".to_string(), cli.config.display().to_string()),
+                    ("Profile".to_string(), "(module-only)".to_string()),
+                ]);
                 (cfg, resolved)
             }
         }
     } else {
-        load_config_and_profile(cli, printer)?
+        let (cfg, profile_name, resolved) = load_config_and_profile_v2(cli)?;
+        v2_printer.kv_block([
+            ("Config".to_string(), cli.config.display().to_string()),
+            ("Profile".to_string(), profile_name),
+        ]);
+        (cfg, resolved)
     };
 
     let mut registry = build_registry_with_config(Some(&cfg));
@@ -65,7 +78,7 @@ pub(super) fn cmd_plan(
 
     // Compose with sources if configured
     let source_env = if !cfg.spec.sources.is_empty() {
-        let composition_result = compose_with_sources(cli, &cfg, &resolved, printer)?;
+        let composition_result = compose_with_sources_v2(cli, &cfg, &resolved, v2_printer)?;
         let se = composition_result.source_env;
         (Some(composition_result.resolved), se)
     } else {
@@ -152,9 +165,9 @@ pub(super) fn cmd_plan(
         strip_scripts_from_plan(&mut plan);
     }
 
-    display_plan_preview(
+    display_plan_preview_v2(
         &plan,
-        printer,
+        v2_printer,
         &state,
         &args.context,
         phase_filter.as_ref(),

@@ -14,7 +14,7 @@ mod kubectl;
 mod log;
 pub mod module;
 pub mod output_types;
-mod plan;
+pub mod plan;
 mod plan_ops;
 pub mod plugin;
 pub mod profile;

@@ -1,0 +1,29 @@
+Plan
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  empty
+
+Phase: Pre-Scripts
+  (nothing to do)
+
+Phase: Environment
+  (nothing to do)
+
+Phase: Modules
+  (nothing to do)
+
+Phase: Packages
+  (nothing to do)
+
+Phase: System
+  (nothing to do)
+
+Phase: Files
+  (nothing to do)
+
+Phase: Secrets
+  (nothing to do)
+
+Phase: Post-Scripts
+  (nothing to do)
+
+✓ Nothing to do — everything is up to date

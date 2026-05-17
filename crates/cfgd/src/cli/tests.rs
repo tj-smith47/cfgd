@@ -5233,8 +5233,8 @@ fn cmd_plan_empty_profile() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
-    let v2_printer = test_v2_printer();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = PlanArgs {
         from: None,
         phase: None,
@@ -5246,8 +5246,9 @@ fn cmd_plan_empty_profile() {
     };
 
     super::plan::cmd_plan(&cli, &printer, &v2_printer, &args).unwrap();
+    v2_printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("Plan") || output.contains("Phase"),
         "plan should show Plan header or phase info, got: {output}"
@@ -5259,8 +5260,8 @@ fn cmd_plan_reconcile_context() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
-    let v2_printer = test_v2_printer();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = PlanArgs {
         from: None,
         phase: None,
@@ -5272,8 +5273,9 @@ fn cmd_plan_reconcile_context() {
     };
 
     super::plan::cmd_plan(&cli, &printer, &v2_printer, &args).unwrap();
+    v2_printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("Plan") || output.contains("Phase"),
         "plan with reconcile context should show plan info, got: {output}"
@@ -5307,8 +5309,8 @@ fn cmd_plan_with_phase_filter() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
-    let v2_printer = test_v2_printer();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = PlanArgs {
         from: None,
         phase: Some(ApplyPhase::Packages),
@@ -5320,7 +5322,8 @@ fn cmd_plan_with_phase_filter() {
     };
 
     super::plan::cmd_plan(&cli, &printer, &v2_printer, &args).unwrap();
-    let output = buf.lock().unwrap();
+    v2_printer.flush();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("Plan") || output.contains("Packages"),
         "plan with phase filter should show plan, got: {output}"
@@ -5336,8 +5339,8 @@ fn cmd_plan_with_skip_filter() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
-    let v2_printer = test_v2_printer();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = PlanArgs {
         from: None,
         phase: None,
@@ -5349,7 +5352,8 @@ fn cmd_plan_with_skip_filter() {
     };
 
     super::plan::cmd_plan(&cli, &printer, &v2_printer, &args).unwrap();
-    let output = buf.lock().unwrap();
+    v2_printer.flush();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("Plan") || output.contains("Phase"),
         "plan with skip filter should show plan, got: {output}"
@@ -5361,8 +5365,8 @@ fn cmd_plan_with_only_filter() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
-    let v2_printer = test_v2_printer();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = PlanArgs {
         from: None,
         phase: None,
@@ -5374,7 +5378,8 @@ fn cmd_plan_with_only_filter() {
     };
 
     super::plan::cmd_plan(&cli, &printer, &v2_printer, &args).unwrap();
-    let output = buf.lock().unwrap();
+    v2_printer.flush();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("Plan") || output.contains("Phase"),
         "plan with only filter should show plan, got: {output}"
@@ -5386,8 +5391,8 @@ fn cmd_plan_with_skip_scripts() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
-    let v2_printer = test_v2_printer();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = PlanArgs {
         from: None,
         phase: None,
@@ -5399,7 +5404,8 @@ fn cmd_plan_with_skip_scripts() {
     };
 
     super::plan::cmd_plan(&cli, &printer, &v2_printer, &args).unwrap();
-    let output = buf.lock().unwrap();
+    v2_printer.flush();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("Plan") || output.contains("Phase"),
         "plan with skip-scripts should show plan, got: {output}"
@@ -5417,8 +5423,8 @@ fn cmd_plan_with_module_filter() {
     );
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
-    let v2_printer = test_v2_printer();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = PlanArgs {
         from: None,
         phase: None,
@@ -5430,7 +5436,8 @@ fn cmd_plan_with_module_filter() {
     };
 
     super::plan::cmd_plan(&cli, &printer, &v2_printer, &args).unwrap();
-    let output = buf.lock().unwrap();
+    v2_printer.flush();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("Plan") || output.contains("plan-mod"),
         "plan with module filter should reference module, got: {output}"
@@ -5952,10 +5959,12 @@ fn execute_plan_command() {
         })),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
 
-    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
-    let output = buf.lock().unwrap();
+    super::execute(&cli, &printer, &v2_printer).unwrap();
+    v2_printer.flush();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("Plan") || output.contains("Phase"),
         "execute Plan should show plan info, got: {output}"
@@ -6092,8 +6101,8 @@ fn cmd_plan_structured_json() {
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
-    let (v2_printer, _v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
+    let (printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
         cfgd_core::output_v2::OutputFormat::Json,
     );
 
@@ -6108,8 +6117,9 @@ fn cmd_plan_structured_json() {
     };
 
     super::plan::cmd_plan(&cli, &printer, &v2_printer, &args).unwrap();
+    v2_printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     let parsed = extract_json(&output);
     assert!(
         parsed.get("context").is_some(),
@@ -6353,8 +6363,8 @@ fn cmd_plan_module_with_packages() {
     .unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
-    let v2_printer = test_v2_printer();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = PlanArgs {
         from: None,
         phase: None,
@@ -6371,8 +6381,9 @@ fn cmd_plan_module_with_packages() {
         "plan should succeed when module contains packages: {:?}",
         result.err()
     );
+    v2_printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("Plan")
             || output.contains("Phase")
@@ -9450,8 +9461,8 @@ fn cmd_plan_module_only_no_profile() {
     );
 
     let cli = test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
-    let v2_printer = test_v2_printer();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = PlanArgs {
         from: None,
         phase: None,
@@ -9468,8 +9479,9 @@ fn cmd_plan_module_only_no_profile() {
         "plan should succeed with --module flag and no profile configured: {:?}",
         result.err()
     );
+    v2_printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("Plan") || output.contains("solo") || output.contains("Nothing"),
         "plan with module-only should mention the module or plan, got: {output}"
@@ -9816,8 +9828,8 @@ fn cmd_plan_structured_output() {
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
-    let (v2_printer, _v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
+    let (printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
         cfgd_core::output_v2::OutputFormat::Json,
     );
     let args = PlanArgs {
@@ -9831,8 +9843,9 @@ fn cmd_plan_structured_output() {
     };
 
     super::plan::cmd_plan(&cli, &printer, &v2_printer, &args).unwrap();
+    v2_printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     let parsed = extract_json(&output);
     assert!(
         parsed.get("context").is_some(),
@@ -10446,8 +10459,8 @@ fn cmd_plan_module_structured_output() {
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
-    let (v2_printer, _v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
+    let (printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
         cfgd_core::output_v2::OutputFormat::Json,
     );
     let args = PlanArgs {
@@ -10461,8 +10474,9 @@ fn cmd_plan_module_structured_output() {
     };
 
     super::plan::cmd_plan(&cli, &printer, &v2_printer, &args).unwrap();
+    v2_printer.flush();
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     let parsed = extract_json(&output);
     assert!(
         parsed.get("context").is_some(),

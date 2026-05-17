@@ -1,0 +1,15 @@
+{
+  "context": "apply",
+  "phases": [
+    {
+      "actions": [
+        {
+          "description": "create /etc/hosts",
+          "type": "file.create"
+        }
+      ],
+      "phase": "Files"
+    }
+  ],
+  "totalActions": 1
+}

@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use cfgd::cli::{ApplyArgs, Cli, Command, OutputFormatArg};
+use cfgd::cli::{ApplyArgs, Cli, Command, OutputFormatArg, PlanArgs};
 use cfgd_core::output;
 
 /// Build a tempdir-backed profile with a single file action that will
@@ -128,6 +128,77 @@ pub fn apply_args_dry_run() -> ApplyArgs {
         skip: vec![],
         only: vec![],
         module: None,
+        skip_scripts: false,
+        context: "apply".to_string(),
+    }
+}
+
+/// Build a tempdir-backed profile with zero managed files and zero modules.
+/// `cmd_plan` against this fixture exercises the "nothing to do" branch.
+///
+/// Returns `(config_dir, state_dir)`.
+pub fn empty_profile_setup() -> (tempfile::TempDir, tempfile::TempDir) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: empty\nspec:\n  inherits: []\n  modules: []\n";
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("empty.yaml"), profile).unwrap();
+
+    let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: empty\n";
+    std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
+
+    (config_dir, state_dir)
+}
+
+/// Like `tiny_profile_setup` but pre-records an unresolved pending decision in
+/// the state DB so `display_plan_preview_v2` renders the pending-decisions
+/// section.
+///
+/// Returns `(config_dir, state_dir, target)`.
+pub fn state_with_pending_decision_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+
+    // `cmd_plan` opens the state DB at `<state_dir>/cfgd.db` via
+    // `open_state_store`; record the pending decision against the same path so
+    // the subsequent `pending_decisions()` query inside `display_plan_preview_v2`
+    // sees it.
+    let store = cfgd_core::state::StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+    store
+        .upsert_pending_decision(
+            "team-config",
+            "packages.brew.ripgrep",
+            "permission",
+            "add",
+            "team-config wants to install ripgrep",
+        )
+        .unwrap();
+
+    (config_dir, state_dir, target)
+}
+
+/// Default `PlanArgs` for a plan against the active profile.
+pub fn plan_args() -> PlanArgs {
+    PlanArgs {
+        from: None,
+        phase: None,
+        skip: vec![],
+        only: vec![],
+        module: None,
+        skip_scripts: false,
+        context: "apply".to_string(),
+    }
+}
+
+/// `PlanArgs` with a `--module` filter set.
+pub fn plan_args_module(name: &str) -> PlanArgs {
+    PlanArgs {
+        from: None,
+        phase: None,
+        skip: vec![],
+        only: vec![],
+        module: Some(name.to_string()),
         skip_scripts: false,
         context: "apply".to_string(),
     }

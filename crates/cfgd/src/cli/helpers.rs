@@ -424,6 +424,7 @@ pub(in crate::cli) fn set_nested_yaml_value(
 
 /// Compose sources with local profile for plan generation.
 // TEMP (R3 removes)
+#[allow(dead_code)]
 pub(in crate::cli) fn compose_with_sources(
     cli: &Cli,
     cfg: &config::CfgdConfig,

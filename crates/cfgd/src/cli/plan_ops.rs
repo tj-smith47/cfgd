@@ -220,6 +220,7 @@ pub(in crate::cli) fn display_plan_table_v2(
 /// file diffs, warnings, and summary line.
 /// Used by both `cmd_plan` and `cmd_apply --dry-run`.
 // TEMP (R3 removes)
+#[allow(dead_code)]
 pub(in crate::cli) fn display_plan_preview(
     plan: &reconciler::Plan,
     printer: &Printer,

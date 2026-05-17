@@ -1,0 +1,32 @@
+Plan
+  Config   <CONFIG_DIR>/cfgd.yaml
+  Profile  tiny
+
+Pending Decisions (not included in this plan)
+  permission packages.brew.ripgrep — add by team-config (run `cfgd decide accept/reject`)
+
+Phase: Pre-Scripts
+  (nothing to do)
+
+Phase: Environment
+  (nothing to do)
+
+Phase: Modules
+  (nothing to do)
+
+Phase: Packages
+  (nothing to do)
+
+Phase: System
+  (nothing to do)
+
+Phase: Files
+  - create <TARGET>
+
+Phase: Secrets
+  (nothing to do)
+
+Phase: Post-Scripts
+  (nothing to do)
+
+1 action(s) planned
