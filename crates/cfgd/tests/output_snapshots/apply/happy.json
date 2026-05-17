@@ -1,0 +1,9 @@
+{
+  "applyId": 42,
+  "failed": 0,
+  "sourceCommits": {
+    "team-config": "abc1234"
+  },
+  "status": "success",
+  "succeeded": 3
+}

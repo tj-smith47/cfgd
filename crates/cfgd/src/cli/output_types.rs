@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::Serialize;
 
 // --- Command output types ---
@@ -6,6 +8,44 @@ use serde::Serialize;
 #[serde(rename_all = "camelCase")]
 pub struct LogOutput {
     pub entries: Vec<cfgd_core::state::ApplyRecord>,
+}
+
+/// Structured payload for `cfgd apply`. Carries the result of an apply run for
+/// `-o json|yaml|jsonpath|template` consumers (CI, scripts, the operator). The
+/// optional fields cover the no-op paths (`nothing_to_do`, `aborted`) where no
+/// reconciler run happened and there is no apply_id to report.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyOutput {
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apply_id: Option<i64>,
+    pub succeeded: usize,
+    pub failed: usize,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub source_commits: HashMap<String, String>,
+}
+
+impl ApplyOutput {
+    pub fn nothing_to_do() -> Self {
+        Self {
+            status: "nothingToDo".to_string(),
+            apply_id: None,
+            succeeded: 0,
+            failed: 0,
+            source_commits: HashMap::new(),
+        }
+    }
+
+    pub fn aborted() -> Self {
+        Self {
+            status: "aborted".to_string(),
+            apply_id: None,
+            succeeded: 0,
+            failed: 0,
+            source_commits: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Serialize)]

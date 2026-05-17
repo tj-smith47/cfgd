@@ -1,0 +1,14 @@
+Apply
+  Config   /etc/cfgd.yaml
+  Profile  default
+
+Plan preview
+  Files
+    - create /etc/hosts
+    - create /tmp/foo
+
+Files
+  ✓ Wrote /etc/hosts
+  ✗ Failed /tmp/foo — permission denied
+
+⚠ Apply partially complete — 1 succeeded, 1 failed

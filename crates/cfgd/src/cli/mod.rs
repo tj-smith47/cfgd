@@ -1,4 +1,4 @@
-mod apply;
+pub mod apply;
 mod checkin;
 pub mod compliance;
 pub mod config_cmd;

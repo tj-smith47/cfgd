@@ -1,0 +1,12 @@
+Apply
+  Config   /etc/cfgd.yaml
+  Profile  default
+
+Plan preview
+  Files
+    - create /etc/hosts
+  Packages
+    - install nodejs
+    - install ripgrep
+
+✓ Apply complete — 3 action(s) succeeded

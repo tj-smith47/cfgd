@@ -1,6 +1,8 @@
 use super::*;
 
-pub(super) fn cmd_apply(
+use cfgd_core::output_v2::{Doc, Role};
+
+pub fn cmd_apply(
     cli: &Cli,
     printer: &Printer,
     v2_printer: &cfgd_core::output_v2::Printer,
@@ -42,9 +44,9 @@ pub(super) fn cmd_apply(
     let only = &args.only;
     let module_filter = args.module.as_deref();
     if dry_run {
-        printer.header("Plan");
+        v2_printer.heading("Plan");
     } else {
-        printer.header("Apply");
+        v2_printer.heading("Apply");
     }
 
     let config_dir = config_dir(cli);
@@ -52,20 +54,33 @@ pub(super) fn cmd_apply(
 
     // When --module is set, try loading profile but fall back to empty if none configured
     let (cfg, resolved) = if let Some(mod_name) = module_filter {
-        match load_config_and_profile(cli, printer) {
-            Ok(pair) => pair,
+        match load_config_and_profile_v2(cli) {
+            Ok((cfg, profile_name, resolved)) => {
+                v2_printer.kv_block([
+                    ("Config".to_string(), cli.config.display().to_string()),
+                    ("Profile".to_string(), profile_name),
+                ]);
+                (cfg, resolved)
+            }
             Err(e) => {
                 tracing::debug!("profile load failed, using module-only mode: {}", e);
                 let cfg =
                     config::load_config(&cli.config).unwrap_or_else(|_| config::minimal_config());
                 let resolved = empty_resolved_profile(mod_name);
-                printer.key_value("Config", &cli.config.display().to_string());
-                printer.key_value("Profile", "(module-only)");
+                v2_printer.kv_block([
+                    ("Config".to_string(), cli.config.display().to_string()),
+                    ("Profile".to_string(), "(module-only)".to_string()),
+                ]);
                 (cfg, resolved)
             }
         }
     } else {
-        load_config_and_profile(cli, printer)?
+        let (cfg, profile_name, resolved) = load_config_and_profile_v2(cli)?;
+        v2_printer.kv_block([
+            ("Config".to_string(), cli.config.display().to_string()),
+            ("Profile".to_string(), profile_name),
+        ]);
+        (cfg, resolved)
     };
 
     let mut registry = build_registry_with_config(Some(&cfg));
@@ -75,7 +90,7 @@ pub(super) fn cmd_apply(
 
     // Compose with sources if configured
     let (source_env, source_commits) = if !cfg.spec.sources.is_empty() {
-        let composition_result = compose_with_sources(cli, &cfg, &resolved, printer)?;
+        let composition_result = compose_with_sources_v2(cli, &cfg, &resolved, v2_printer)?;
         let se = composition_result.source_env;
         let sc = composition_result.source_commits;
         ((Some(composition_result.resolved), se), sc)
@@ -189,9 +204,9 @@ pub(super) fn cmd_apply(
     }
 
     if dry_run {
-        display_plan_preview(
+        display_plan_preview_v2(
             &plan,
-            printer,
+            v2_printer,
             &state,
             &args.context,
             phase_filter.as_ref(),
@@ -204,7 +219,7 @@ pub(super) fn cmd_apply(
 
     // Handle unmanaged file targets: if a target exists as a non-cfgd file, prompt to
     // adopt (proceed), backup (rename to .cfgd-backup), or skip.
-    handle_unmanaged_file_targets(&mut plan, &config_dir, &state, printer, yes)?;
+    handle_unmanaged_file_targets_v2(&mut plan, &config_dir, &state, v2_printer, yes)?;
 
     // Check if filtered plan has actions
     let has_actions = if let Some(ref pf) = phase_filter {
@@ -216,43 +231,48 @@ pub(super) fn cmd_apply(
     };
 
     if !has_actions {
-        printer.success(MSG_NOTHING_TO_DO);
+        v2_printer.status_simple(Role::Ok, MSG_NOTHING_TO_DO);
+        v2_printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
         return Ok(());
     }
 
-    // Show what will change
-    printer.newline();
-    for phase_item in &plan.phases {
-        if let Some(ref pf) = phase_filter
-            && &phase_item.name != pf
-        {
-            continue;
+    // Show what will change, nested under a section so each phase's items
+    // render at the section's indent (§1.8: children stay indented).
+    {
+        let preview = v2_printer.section("Plan preview");
+        for phase_item in &plan.phases {
+            if let Some(ref pf) = phase_filter
+                && &phase_item.name != pf
+            {
+                continue;
+            }
+            let items = reconciler::format_plan_items(phase_item);
+            if items.is_empty() {
+                continue;
+            }
+            let phase_sec = preview.section(phase_item.name.display_name());
+            for item in &items {
+                phase_sec.bullet(item);
+            }
         }
-        let items = reconciler::format_plan_items(phase_item);
-        if !items.is_empty() {
-            printer.plan_phase(phase_item.name.display_name(), &items);
+        for w in &plan.warnings {
+            preview.status_simple(Role::Warn, w);
         }
-    }
-
-    for w in &plan.warnings {
-        printer.warning(w);
     }
 
     // Confirm
     if !yes {
-        printer.newline();
         // Closed-TTY / non-interactive defaults to "no" — apply is destructive
         // and silence is treated as decline, not as approval.
-        let confirmed = printer
+        let confirmed = v2_printer
             .prompt_confirm("Apply these changes?")
             .unwrap_or(false);
         if !confirmed {
-            printer.info("Aborted");
+            v2_printer.status_simple(Role::Info, "Aborted");
+            v2_printer.emit(Doc::new().with_data(ApplyOutput::aborted()));
             return Ok(());
         }
     }
-
-    printer.newline();
 
     // Acquire apply lock to prevent concurrent applies
     let lock_state_dir;
@@ -277,8 +297,7 @@ pub(super) fn cmd_apply(
         args.skip_scripts,
     )?;
 
-    printer.newline();
-    print_apply_result(&result, printer);
+    let status = print_apply_result_v2(&result, v2_printer);
 
     // Link source commits to this apply for provenance tracking
     if !source_commits.is_empty() {
@@ -297,5 +316,30 @@ pub(super) fn cmd_apply(
     // Prune old backups — keep last 10 applies' worth.
     let _ = state.prune_old_backups(10);
 
+    let output = ApplyOutput {
+        status: apply_status_str(&status).to_string(),
+        apply_id: Some(result.apply_id),
+        succeeded: result.succeeded(),
+        failed: result.failed(),
+        source_commits,
+    };
+    v2_printer.emit(Doc::new().with_data(&output));
+
     Ok(())
+}
+
+fn apply_status_str(status: &cfgd_core::state::ApplyStatus) -> &'static str {
+    match status {
+        cfgd_core::state::ApplyStatus::Success => "success",
+        cfgd_core::state::ApplyStatus::Partial => "partial",
+        cfgd_core::state::ApplyStatus::Failed => "failed",
+        cfgd_core::state::ApplyStatus::InProgress => "inProgress",
+    }
+}
+
+/// Build the buffered `Doc` that carries the final `ApplyOutput` payload.
+/// Pure function so snapshot tests can drive the JSON path without standing
+/// up a reconciler.
+pub fn build_apply_doc(output: &ApplyOutput) -> Doc {
+    Doc::new().with_data(output)
 }

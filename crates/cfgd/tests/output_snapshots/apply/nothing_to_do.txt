@@ -1,0 +1,5 @@
+Apply
+  Config   /etc/cfgd.yaml
+  Profile  default
+
+✓ Nothing to do — everything is up to date

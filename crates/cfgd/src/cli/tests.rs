@@ -1242,6 +1242,20 @@ fn test_v2_printer() -> cfgd_core::output_v2::Printer {
     cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet)
 }
 
+/// Capturing v2 printer at `Normal` verbosity. Tests that previously inspected
+/// the legacy `Printer`'s buffer for headings/sections need to capture the v2
+/// surface too once a command migrates — the legacy buffer no longer carries
+/// those lines. `combine_buffers` glues both captures together for assertion.
+fn test_v2_printer_capture() -> (cfgd_core::output_v2::Printer, Arc<Mutex<String>>) {
+    cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal)
+}
+
+fn combine_buffers(v1: &Arc<Mutex<String>>, v2: &Arc<Mutex<String>>) -> String {
+    let mut s = v1.lock().unwrap().clone();
+    s.push_str(&v2.lock().unwrap());
+    s
+}
+
 /// Extract JSON object or array from captured output that may contain
 /// preamble text (e.g. key_value lines from load_config_and_profile).
 fn extract_json(output: &str) -> serde_json::Value {
@@ -4085,7 +4099,7 @@ fn cmd_apply_dry_run_with_files() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
-    let v2_printer = test_v2_printer();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = ApplyArgs {
         from: None,
         dry_run: true,
@@ -4107,7 +4121,8 @@ fn cmd_apply_dry_run_with_files() {
     // File should NOT be created (dry-run)
     assert!(!target.exists());
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = combine_buffers(&buf, &v2_buf);
     assert!(
         output.contains("Plan"),
         "should contain Plan header, got: {output}"
@@ -4190,7 +4205,7 @@ fn cmd_apply_idempotent() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
-    let v2_printer = test_v2_printer();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = ApplyArgs {
         from: None,
         dry_run: false,
@@ -4207,8 +4222,9 @@ fn cmd_apply_idempotent() {
     super::apply::cmd_apply(&cli, &printer, &v2_printer, &args).unwrap();
     assert!(target.exists());
 
-    // Clear buffer before second apply
+    // Clear buffers before second apply
     buf.lock().unwrap().clear();
+    v2_buf.lock().unwrap().clear();
 
     // Second apply — should succeed with nothing to do
     let result = super::apply::cmd_apply(&cli, &printer, &v2_printer, &args);
@@ -4218,7 +4234,8 @@ fn cmd_apply_idempotent() {
         result.err()
     );
 
-    let output = buf.lock().unwrap();
+    v2_printer.flush();
+    let output = combine_buffers(&buf, &v2_buf);
     assert!(
         output.contains("Nothing to do"),
         "second apply should say nothing to do, got: {output}"
@@ -4617,7 +4634,7 @@ fn cmd_apply_with_module_filter() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
-    let v2_printer = test_v2_printer();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = ApplyArgs {
         from: None,
         dry_run: true,
@@ -4633,7 +4650,8 @@ fn cmd_apply_with_module_filter() {
     let result = super::apply::cmd_apply(&cli, &printer, &v2_printer, &args);
     assert!(result.is_ok(), "apply failed: {:?}", result.err());
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = combine_buffers(&buf, &v2_buf);
     assert!(
         output.contains("Plan") || output.contains("test-mod") || output.contains("Nothing"),
         "apply with module filter should reference module or show plan, got: {output}"
@@ -4654,7 +4672,7 @@ fn cmd_apply_with_env_vars() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
-    let v2_printer = test_v2_printer();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = ApplyArgs {
         from: None,
         dry_run: false,
@@ -4674,15 +4692,16 @@ fn cmd_apply_with_env_vars() {
         result.err()
     );
 
+    v2_printer.flush();
     {
-        let output = buf.lock().unwrap();
+        let output = combine_buffers(&buf, &v2_buf);
         assert!(
             output.contains("Apply"),
             "should contain Apply header, got: {output}"
         );
         assert!(
-            output.contains("Phase:") || output.contains("Nothing to do"),
-            "should mention plan phases or nothing to do, got: {output}"
+            output.contains("Plan preview") || output.contains("Nothing to do"),
+            "should mention plan preview or nothing to do, got: {output}"
         );
     }
 
@@ -5884,7 +5903,7 @@ fn cmd_apply_dry_run_with_skip_scripts() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
-    let v2_printer = test_v2_printer();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = ApplyArgs {
         from: None,
         dry_run: true,
@@ -5904,7 +5923,8 @@ fn cmd_apply_dry_run_with_skip_scripts() {
         result.err()
     );
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = combine_buffers(&buf, &v2_buf);
     assert!(
         output.contains("Apply")
             || output.contains("Plan")
@@ -9382,7 +9402,7 @@ fn cmd_apply_module_only_no_profile() {
 
     let cli = test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
-    let v2_printer = test_v2_printer();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = ApplyArgs {
         from: None,
         dry_run: true,
@@ -9402,7 +9422,8 @@ fn cmd_apply_module_only_no_profile() {
         result.err()
     );
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = combine_buffers(&buf, &v2_buf);
     assert!(
         output.contains("standalone-mod") || output.contains("Apply") || output.contains("Nothing"),
         "apply with module-only should mention the module, got: {output}"
@@ -9677,7 +9698,7 @@ fn cmd_apply_with_aliases() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
-    let v2_printer = test_v2_printer();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = ApplyArgs {
         from: None,
         dry_run: true,
@@ -9697,7 +9718,8 @@ fn cmd_apply_with_aliases() {
         result.err()
     );
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = combine_buffers(&buf, &v2_buf);
     assert!(
         output.contains("Plan"),
         "should contain Plan header, got: {output}"
@@ -10370,7 +10392,7 @@ fn cmd_apply_dry_run_with_skip_and_only() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, buf) = Printer::for_test();
-    let v2_printer = test_v2_printer();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = ApplyArgs {
         from: None,
         dry_run: true,
@@ -10397,7 +10419,8 @@ fn cmd_apply_dry_run_with_skip_and_only() {
         "dry-run with skip+only filters should not create apply records"
     );
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = combine_buffers(&buf, &v2_buf);
     assert!(
         output.contains("Apply")
             || output.contains("Plan")

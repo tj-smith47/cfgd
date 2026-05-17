@@ -1,0 +1,11 @@
+Plan
+  Config   /etc/cfgd.yaml
+  Profile  default
+
+Phase: Files
+  - create /etc/hosts
+
+Phase: Packages
+  - install nodejs
+
+2 action(s) planned

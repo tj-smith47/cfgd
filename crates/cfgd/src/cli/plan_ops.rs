@@ -5,6 +5,7 @@ use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
 /// Display apply result summary via Printer. Returns the status for caller control flow.
 // TEMP (R3 removes)
+#[allow(dead_code)]
 pub(in crate::cli) fn print_apply_result(
     result: &cfgd_core::reconciler::ApplyResult,
     printer: &Printer,
@@ -496,6 +497,7 @@ pub(in crate::cli) fn is_unmanaged_file(
 /// Handle unmanaged file targets in the plan: for each file Create/Update action targeting
 /// an existing file not managed by cfgd, prompt the user to adopt, backup, or skip.
 // TEMP (R3 removes)
+#[allow(dead_code)]
 pub(in crate::cli) fn handle_unmanaged_file_targets(
     plan: &mut reconciler::Plan,
     config_dir: &Path,
@@ -569,6 +571,7 @@ pub(in crate::cli) fn handle_unmanaged_file_targets(
 }
 
 /// Prompt the user to choose how to handle an unmanaged file target.
+#[allow(dead_code)]
 fn prompt_backup_choice<'a>(
     target: &Path,
     module_name: Option<&str>,
@@ -592,6 +595,7 @@ fn prompt_backup_choice<'a>(
 
 /// Rename a file to <path>.cfgd-backup.
 // TEMP (R3 removes)
+#[allow(dead_code)]
 pub(in crate::cli) fn backup_file(target: &Path, printer: &Printer) -> anyhow::Result<()> {
     let backup_path = PathBuf::from(format!("{}.cfgd-backup", target.display()));
     std::fs::rename(target, &backup_path).map_err(|e| {
@@ -608,6 +612,7 @@ pub(in crate::cli) fn backup_file(target: &Path, printer: &Printer) -> anyhow::R
 
 /// Apply the user's backup choice to a file action.
 // TEMP (R3 removes)
+#[allow(dead_code)]
 pub(in crate::cli) fn apply_backup_choice(
     choice: &str,
     target: &Path,
