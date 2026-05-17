@@ -20,6 +20,7 @@ pub(in crate::cli) fn load_config_and_profile(
 }
 
 // Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
+// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
 #[allow(dead_code)]
 pub(in crate::cli) fn load_config_and_profile_v2(
     cli: &Cli,
@@ -327,6 +328,7 @@ pub(in crate::cli) fn open_in_editor(path: &Path, printer: &Printer) -> anyhow::
 }
 
 // Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
+// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
 #[allow(dead_code)]
 pub(in crate::cli) fn open_in_editor_v2(path: &Path, printer: &PrinterV2) -> anyhow::Result<()> {
     let editor = std::env::var("EDITOR")
@@ -573,6 +575,7 @@ pub(in crate::cli) fn compose_with_sources(
 }
 
 // Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
+// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
 #[allow(dead_code)]
 pub(in crate::cli) fn compose_with_sources_v2(
     cli: &Cli,
