@@ -25,12 +25,45 @@ impl KeyType {
 
 /// Structured-output payload for `cfgd enroll`. Drives `-o json|yaml|jsonpath|template`.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EnrollOutput {
     pub server_url: String,
     pub device_id: String,
     pub username: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team: Option<String>,
+}
+
+/// Doc emitted before an enrollment error bubbles to `main.rs::printer.error`.
+/// `kind` tags the error class (e.g. `"method_mismatch"`, `"no_key"`,
+/// `"signing_failed"`) and `payload` carries any additional fields. The
+/// user-visible error string itself is rendered by `main.rs` so it appears
+/// exactly once.
+pub fn build_enroll_error_doc(kind: &'static str, payload: serde_json::Value) -> Doc {
+    let mut doc = Doc::new();
+    let hint = match kind {
+        "method_mismatch" => Some(
+            "This server uses bootstrap token enrollment. Re-run with: cfgd enroll --server-url <url> --token <token>",
+        ),
+        "no_key" => Some(
+            "Provide --ssh-key <path> or --gpg-key <id>. Checked: SSH agent, ~/.ssh/id_ed25519, ~/.ssh/id_rsa, ~/.ssh/id_ecdsa",
+        ),
+        "signing_failed" => {
+            Some("Verify the signing key is accessible and the signing tool is installed.")
+        }
+        _ => None,
+    };
+    if let Some(h) = hint {
+        doc = doc.hint(h);
+    }
+    let mut obj = serde_json::Map::new();
+    obj.insert("error".into(), serde_json::Value::String(kind.into()));
+    if let serde_json::Value::Object(extra) = payload {
+        for (k, v) in extra {
+            obj.insert(k, v);
+        }
+    }
+    doc.with_data(serde_json::Value::Object(obj))
 }
 
 // ─────────────────────────────────────────────────────
@@ -84,6 +117,13 @@ pub(crate) fn cmd_enroll(
     let info = client.enroll_info().map_err(|e| anyhow::anyhow!("{}", e))?;
 
     if info.method == "token" {
+        v2_printer.emit(build_enroll_error_doc(
+            "method_mismatch",
+            serde_json::json!({
+                "serverUrl": server_url,
+                "serverMethod": info.method,
+            }),
+        ));
         anyhow::bail!(
             "This server uses bootstrap token enrollment. Run: cfgd enroll --server-url <url> --token <token>"
         );
@@ -98,6 +138,17 @@ pub(crate) fn cmd_enroll(
         match detect_ssh_key(v2_printer) {
             Some(path) => (KeyType::Ssh, path),
             None => {
+                v2_printer.emit(build_enroll_error_doc(
+                    "no_key",
+                    serde_json::json!({
+                        "checked": [
+                            "ssh-agent",
+                            "~/.ssh/id_ed25519",
+                            "~/.ssh/id_rsa",
+                            "~/.ssh/id_ecdsa",
+                        ],
+                    }),
+                ));
                 anyhow::bail!(
                     "no SSH key found — provide --ssh-key <path> or --gpg-key <id>\n\
                      Checked: SSH agent, ~/.ssh/id_ed25519, ~/.ssh/id_rsa, ~/.ssh/id_ecdsa"
@@ -120,9 +171,19 @@ pub(crate) fn cmd_enroll(
     v2_printer.kv("Expires", &challenge.expires_at);
 
     let signature = match key_type {
-        KeyType::Ssh => sign_with_ssh(&challenge.nonce, &key_ref)?,
-        KeyType::Gpg => sign_with_gpg(&challenge.nonce, &key_ref)?,
-    };
+        KeyType::Ssh => sign_with_ssh(&challenge.nonce, &key_ref),
+        KeyType::Gpg => sign_with_gpg(&challenge.nonce, &key_ref),
+    }
+    .inspect_err(|e| {
+        v2_printer.emit(build_enroll_error_doc(
+            "signing_failed",
+            serde_json::json!({
+                "keyType": key_type.as_str(),
+                "keyRef": key_ref,
+                "message": e.to_string(),
+            }),
+        ));
+    })?;
 
     v2_printer.status_simple(Role::Ok, "Challenge signed");
 

@@ -12,7 +12,7 @@
 
 use std::path::Path;
 
-use cfgd::cli::init::{EnrollOutput, build_enroll_final_doc};
+use cfgd::cli::init::{EnrollOutput, build_enroll_error_doc, build_enroll_final_doc};
 use cfgd_core::output_v2::Printer;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
@@ -66,6 +66,24 @@ fn enroll_next_steps_section_lists_four_commands() {
             "missing next-step `{cmd}` in:\n{human}"
         );
     }
+}
+
+#[test]
+fn enroll_not_found_method_human() {
+    // Pins the not-found Doc shape emitted when the server reports
+    // bootstrap-token enrollment but the CLI was invoked without --token.
+    // Mirrors the F1 not-found pattern: hint + with_data envelope, no
+    // Role::Fail status (main.rs renders the error string).
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_enroll_error_doc(
+        "method_mismatch",
+        serde_json::json!({
+            "serverUrl": "https://gateway.example.com",
+            "serverMethod": "token",
+        }),
+    ));
+    drop(printer);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "enroll/not_found_method.txt");
 }
 
 #[test]

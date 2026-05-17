@@ -1,6 +1,6 @@
 {
-  "device_id": "host-abc-001",
-  "server_url": "https://gateway.example.com",
+  "deviceId": "host-abc-001",
+  "serverUrl": "https://gateway.example.com",
   "team": "platform",
   "username": "alice"
 }

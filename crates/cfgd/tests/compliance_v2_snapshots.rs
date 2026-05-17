@@ -150,6 +150,30 @@ fn compliance_export_happy_human() {
 }
 
 #[test]
+fn compliance_export_empty_human() {
+    let snap = empty_snapshot();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_compliance_export_doc(
+        &snap,
+        Path::new("/var/lib/cfgd/compliance/2026-05-14.json"),
+    ));
+    drop(printer);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "compliance_export/empty.txt");
+}
+
+#[test]
+fn compliance_export_with_path_human() {
+    let snap = happy_snapshot();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_compliance_export_doc(
+        &snap,
+        Path::new("/var/log/compliance/snapshot-2026-05-17-1234567.json"),
+    ));
+    drop(printer);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "compliance_export/with_path.txt");
+}
+
+#[test]
 fn compliance_export_happy_json() {
     let snap = happy_snapshot();
     let (printer, cap) = Printer::for_test_doc();
@@ -226,6 +250,21 @@ fn compliance_history_populated_json() {
         Path::new(SNAPSHOT_ROOT),
         "compliance_history/populated.json",
     );
+}
+
+#[test]
+fn compliance_history_filtered_human() {
+    let entries = vec![ComplianceHistoryRow {
+        id: 3,
+        timestamp: "2026-05-14T12:00:00Z".into(),
+        compliant: 12,
+        warning: 1,
+        violation: 0,
+    }];
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_compliance_history_doc(&entries));
+    drop(printer);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "compliance_history/filtered.txt");
 }
 
 #[test]

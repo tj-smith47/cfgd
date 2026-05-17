@@ -1,5 +1,5 @@
 {
-  "api_version": "cfgd.io/v1alpha1",
+  "apiVersion": "cfgd.io/v1alpha1",
   "description": "Self-contained, portable configuration unit. Defines packages, files, and scripts with cross-platform resolution and dependency management.",
   "fields": [
     {

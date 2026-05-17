@@ -1,0 +1,1 @@
+→ This server uses bootstrap token enrollment. Re-run with: cfgd enroll --server-url <url> --token <token>

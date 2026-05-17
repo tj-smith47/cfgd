@@ -109,6 +109,7 @@ fn resolve_field_path<'a>(
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExplainOutput {
     pub name: &'static str,
     pub api_version: &'static str,
@@ -119,6 +120,7 @@ pub struct ExplainOutput {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExplainField {
     pub name: &'static str,
     #[serde(rename = "type")]
@@ -131,6 +133,7 @@ pub struct ExplainField {
 
 /// Drill-down payload (`cfgd explain <resource>.<field.path>`).
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExplainDrilldownOutput {
     pub path: String,
     pub fields: Vec<ExplainField>,
@@ -220,6 +223,20 @@ pub fn build_explain_schema_doc(schema: &ResourceSchema, recursive: bool) -> Doc
         .with_data(output)
 }
 
+/// Doc emitted before the not-found error bubbles to `main.rs::printer.error`.
+/// Carries the structured payload for `-o json` consumers and a hint listing
+/// available resource types; the user-visible error string itself is rendered
+/// by `main.rs` so it appears exactly once.
+pub fn build_explain_not_found_doc(name: &str, available: &[&'static str]) -> Doc {
+    Doc::new()
+        .hint("Run 'cfgd explain' to see available resource types.")
+        .with_data(serde_json::json!({
+            "error": "not_found",
+            "name": name,
+            "available": available,
+        }))
+}
+
 /// Build the `cfgd explain <resource>.<field.path>` Doc — drill-in view.
 pub fn build_explain_drilldown_doc(
     schema: &ResourceSchema,
@@ -268,12 +285,17 @@ pub(super) fn cmd_explain(
     let resource_name = parts[0];
     let field_path = &parts[1..];
 
-    let schema = find_schema(resource_name).ok_or_else(|| {
-        anyhow::anyhow!(
-            "Unknown resource type '{}'. Run 'cfgd explain' to see available types.",
-            resource_name
-        )
-    })?;
+    let schema = match find_schema(resource_name) {
+        Some(s) => s,
+        None => {
+            let available: Vec<&'static str> = ALL_SCHEMAS.iter().map(|s| s.name).collect();
+            v2_printer.emit(build_explain_not_found_doc(resource_name, &available));
+            anyhow::bail!(
+                "Unknown resource type '{}'. Run 'cfgd explain' to see available types.",
+                resource_name
+            );
+        }
+    };
 
     // The schema lists fields under `spec` directly; `module.spec.packages`
     // resolves identically to `module.packages` so users can paste either form.

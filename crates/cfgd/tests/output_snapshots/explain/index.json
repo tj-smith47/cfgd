@@ -1,6 +1,6 @@
 [
   {
-    "api_version": "cfgd.io/v1alpha1",
+    "apiVersion": "cfgd.io/v1alpha1",
     "description": "Self-contained, portable configuration unit. Defines packages, files, and scripts with cross-platform resolution and dependency management.",
     "fields": [
       {
@@ -105,7 +105,7 @@
     "name": "Module"
   },
   {
-    "api_version": "cfgd.io/v1alpha1",
+    "apiVersion": "cfgd.io/v1alpha1",
     "description": "Defines the desired state for a machine: packages, files, system settings, secrets, and scripts. Supports inheritance for layered configuration.",
     "fields": [
       {
@@ -578,7 +578,7 @@
     "name": "Profile"
   },
   {
-    "api_version": "cfgd.io/v1alpha1",
+    "apiVersion": "cfgd.io/v1alpha1",
     "description": "Root configuration file for cfgd. Defines the active profile, origin, daemon settings, secrets backend, sources, theme, and module sources.",
     "fields": [
       {
@@ -1073,7 +1073,7 @@
     "name": "CfgdConfig"
   },
   {
-    "api_version": "cfgd.io/v1alpha1",
+    "apiVersion": "cfgd.io/v1alpha1",
     "description": "Team config source manifest. Published by teams in their config repos to define profiles, modules, and policy tiers available for subscription.",
     "fields": [
       {
@@ -1356,7 +1356,7 @@
     "name": "ConfigSource"
   },
   {
-    "api_version": "cfgd.io/v1alpha1",
+    "apiVersion": "cfgd.io/v1alpha1",
     "description": "Kubernetes Custom Resource representing a managed machine's desired and observed configuration state.",
     "fields": [
       {
@@ -1447,7 +1447,7 @@
     "name": "MachineConfig"
   },
   {
-    "api_version": "cfgd.io/v1alpha1",
+    "apiVersion": "cfgd.io/v1alpha1",
     "description": "Kubernetes Custom Resource defining fleet-wide configuration baselines. Machines are checked for compliance against policies.",
     "fields": [
       {
@@ -1500,7 +1500,7 @@
     "name": "ConfigPolicy"
   },
   {
-    "api_version": "cfgd.io/v1alpha1",
+    "apiVersion": "cfgd.io/v1alpha1",
     "description": "Kubernetes Custom Resource created when a machine drifts from its desired state. Tracks drift details and resolution status.",
     "fields": [
       {
@@ -1553,7 +1553,7 @@
     "name": "DriftAlert"
   },
   {
-    "api_version": "cfgd.io/v1alpha1",
+    "apiVersion": "cfgd.io/v1alpha1",
     "description": "Crossplane composite resource for team-level configuration. Fans out to per-user MachineConfig CRDs via composition function.",
     "fields": [
       {

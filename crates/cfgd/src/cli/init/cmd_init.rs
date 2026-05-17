@@ -39,6 +39,10 @@ pub fn cmd_init(
     v2_printer.heading("Initialize cfgd");
 
     if !check_prerequisites(v2_printer) {
+        let output = InitOutput {
+            target_dir: args.path.unwrap_or("").to_string(),
+        };
+        v2_printer.emit(Doc::new().with_data(&output));
         return Ok(());
     }
 
@@ -73,6 +77,10 @@ pub fn cmd_init(
             Role::Info,
             format!("Already initialized at {}", target_dir.display()),
         );
+        let output = InitOutput {
+            target_dir: target_dir.display().to_string(),
+        };
+        v2_printer.emit(Doc::new().with_data(&output));
         return Ok(());
     }
 
