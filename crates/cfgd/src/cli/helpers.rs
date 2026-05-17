@@ -1,7 +1,7 @@
 use super::*;
 use cfgd_core::output_v2::{Printer as PrinterV2, Role};
 
-// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
+// TEMP (R3 removes)
 pub(in crate::cli) fn load_config_and_profile(
     cli: &Cli,
     printer: &Printer,
@@ -19,8 +19,6 @@ pub(in crate::cli) fn load_config_and_profile(
     Ok((cfg, resolved))
 }
 
-// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
-// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
 #[allow(dead_code)]
 pub(in crate::cli) fn load_config_and_profile_v2(
     cli: &Cli,
@@ -307,7 +305,7 @@ pub(in crate::cli) fn module_state_map(
         .collect()
 }
 
-// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
+// TEMP (R3 removes)
 pub(in crate::cli) fn open_in_editor(path: &Path, printer: &Printer) -> anyhow::Result<()> {
     let editor = std::env::var("EDITOR")
         .or_else(|_| std::env::var("VISUAL"))
@@ -327,8 +325,6 @@ pub(in crate::cli) fn open_in_editor(path: &Path, printer: &Printer) -> anyhow::
     Ok(())
 }
 
-// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
-// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
 #[allow(dead_code)]
 pub(in crate::cli) fn open_in_editor_v2(path: &Path, printer: &PrinterV2) -> anyhow::Result<()> {
     let editor = std::env::var("EDITOR")
@@ -433,7 +429,7 @@ pub(in crate::cli) fn set_nested_yaml_value(
 // --- Plan integration with sources (Phase 9) ---
 
 /// Compose sources with local profile for plan generation.
-// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
+// TEMP (R3 removes)
 pub(in crate::cli) fn compose_with_sources(
     cli: &Cli,
     cfg: &config::CfgdConfig,
@@ -574,8 +570,6 @@ pub(in crate::cli) fn compose_with_sources(
     Ok(result)
 }
 
-// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
-// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
 #[allow(dead_code)]
 pub(in crate::cli) fn compose_with_sources_v2(
     cli: &Cli,
@@ -596,7 +590,7 @@ pub(in crate::cli) fn compose_with_sources_v2(
     let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
-    // TEMP (R3 removes): SourceManager::load_sources still uses old Printer; bridges in a throwaway one
+    // TEMP (R3 removes): SourceManager::load_sources still takes old Printer.
     let legacy_verbosity = match printer.verbosity() {
         cfgd_core::output_v2::Verbosity::Quiet => cfgd_core::output::Verbosity::Quiet,
         cfgd_core::output_v2::Verbosity::Normal => cfgd_core::output::Verbosity::Normal,

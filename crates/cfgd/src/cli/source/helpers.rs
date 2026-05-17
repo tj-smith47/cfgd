@@ -96,7 +96,7 @@ pub(crate) fn parse_priority_input(input: &str) -> anyhow::Result<u32> {
 ///
 /// Side effects only on `printer` — split out so the output contract is
 /// testable via `Printer::for_test()` without needing a real source clone.
-// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
+// TEMP (R3 removes)
 pub(crate) fn display_source_manifest(
     printer: &Printer,
     manifest: &config::ConfigSourceDocument,
@@ -157,14 +157,6 @@ pub(crate) fn display_source_manifest(
     provided_profiles
 }
 
-// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
-// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
-//
-// The original's `printer.newline()` between the two subheaders is intentionally
-// dropped: output_v2's renderer auto-blanks between top-level sections per spec
-// §13 (writer + blank-line state machine). The two `subheader` calls become two
-// sibling `printer.section(...)` blocks — NOT nested — each binding its own
-// guard so the `kv`/`status_simple` children land inside the right section.
 #[allow(dead_code)]
 pub(crate) fn display_source_manifest_v2(
     printer: &PrinterV2,
@@ -259,7 +251,7 @@ pub(crate) fn count_policy_items(items: &config::PolicyItems) -> usize {
     count
 }
 
-// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
+// TEMP (R3 removes)
 pub(crate) fn display_policy_items(printer: &Printer, items: &config::PolicyItems, indent: &str) {
     if let Some(ref pkgs) = items.packages {
         if let Some(ref brew) = pkgs.brew {
@@ -303,18 +295,6 @@ pub(crate) fn display_policy_items(printer: &Printer, items: &config::PolicyItem
     }
 }
 
-// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
-// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
-//
-// `indent` is preserved as a `&str` prefix on each line for byte-parity with the
-// original. F1–F4 callers that already operate inside a `SectionGuard` should
-// pass "" to avoid double-indenting; the renderer's section depth handles the
-// visual indent on its own.
-//
-// F1 reviewer: when the first caller migrates, consider whether `indent` can be
-// dropped entirely from the v2 signature (rely on section depth for all indent)
-// or, at minimum, `debug_assert!(!indent.contains("  "))` added on entry as a
-// runtime tripwire against double-indenting.
 #[allow(dead_code)]
 pub(crate) fn display_policy_items_v2(
     printer: &PrinterV2,
@@ -363,7 +343,7 @@ pub(crate) fn display_policy_items_v2(
     }
 }
 
-// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
+// TEMP (R3 removes)
 pub(crate) fn display_pending_decisions(
     printer: &Printer,
     decisions: &[cfgd_core::state::PendingDecision],
@@ -389,15 +369,6 @@ pub(crate) fn display_pending_decisions(
     }
 }
 
-// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
-// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
-//
-// The original emitted a per-source summary line followed by manually two-space-
-// indented child lines (`"  {tier} {resource} ..."`). In output_v2 this becomes
-// a `section(source_name)` per source whose children are `status_simple` rows
-// at the section's depth — the renderer owns the indent. The summary count line
-// stays as the section's first child so the "N pending item(s)" framing remains
-// visible.
 #[allow(dead_code)]
 pub(crate) fn display_pending_decisions_v2(
     printer: &PrinterV2,
@@ -409,9 +380,6 @@ pub(crate) fn display_pending_decisions_v2(
         by_source.entry(&d.source).or_default().push(d);
     }
     for (source_name, items) in &by_source {
-        // F1 reviewer: confirm "N pending item(s)" summary row pairs cleanly with
-        // the section header; if it reads as a doubled signal in snapshots, fold
-        // the count into the header via section_or_collapse + format!("{src} ({n} pending)").
         let guard = printer.section(source_name.to_string());
         guard.status_simple(
             Role::Info,

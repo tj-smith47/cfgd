@@ -4,7 +4,7 @@ use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 // --- Plan output rendering ---
 
 /// Display apply result summary via Printer. Returns the status for caller control flow.
-// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
+// TEMP (R3 removes)
 pub(in crate::cli) fn print_apply_result(
     result: &cfgd_core::reconciler::ApplyResult,
     printer: &Printer,
@@ -36,10 +36,6 @@ pub(in crate::cli) fn print_apply_result(
     result.status.clone()
 }
 
-// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
-// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
-// Pinned per F0 README open Q#2: `print_apply_result_v2` stays a depth-0 top-level emit;
-// callers (`cmd_apply`, `cmd_init`'s `apply_plan`) invoke at depth 0, no `&SectionGuard`.
 #[allow(dead_code)]
 pub(in crate::cli) fn print_apply_result_v2(
     result: &cfgd_core::reconciler::ApplyResult,
@@ -180,7 +176,7 @@ pub(in crate::cli) fn strip_scripts_from_plan(plan: &mut reconciler::Plan) {
 
 /// Display a reconciliation plan in table mode.
 /// Used by both `cmd_plan` and `cmd_apply --dry-run`.
-// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
+// TEMP (R3 removes)
 pub(in crate::cli) fn display_plan_table(
     plan: &reconciler::Plan,
     printer: &Printer,
@@ -197,8 +193,6 @@ pub(in crate::cli) fn display_plan_table(
     }
 }
 
-// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
-// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
 #[allow(dead_code)]
 pub(in crate::cli) fn display_plan_table_v2(
     plan: &reconciler::Plan,
@@ -226,7 +220,7 @@ pub(in crate::cli) fn display_plan_table_v2(
 /// Display the full plan output: pending decisions, structured/table output,
 /// file diffs, warnings, and summary line.
 /// Used by both `cmd_plan` and `cmd_apply --dry-run`.
-// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
+// TEMP (R3 removes)
 pub(in crate::cli) fn display_plan_preview(
     plan: &reconciler::Plan,
     printer: &Printer,
@@ -295,12 +289,6 @@ pub(in crate::cli) fn display_plan_preview(
     }
 }
 
-// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
-// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
-//
-// The original's `printer.newline()` calls (pre-pending-header, pre-table, pre-summary)
-// are intentionally dropped: output_v2's renderer auto-blanks between top-level groups
-// and around section open/close per spec §13 (writer + blank-line state machine).
 #[allow(dead_code)]
 pub(in crate::cli) fn display_plan_preview_v2(
     plan: &reconciler::Plan,
@@ -354,10 +342,8 @@ pub(in crate::cli) fn display_plan_preview_v2(
                     } else {
                         std::fs::read_to_string(source).unwrap_or_default()
                     };
-                    // Diff label: `printer.diff` is a raw renderer (bypasses section
-                    // header flushing per output_v2 §5a), so a `section()` here would
-                    // render its header AFTER the diff. Use `heading()` instead — same
-                    // visual role as the original `subheader(target.display())`.
+                    // `printer.diff` bypasses section header flushing; wrapping the
+                    // file label in `section()` would render the header after the diff.
                     printer.heading(target.display().to_string());
                     printer.diff(&target_content, &source_content);
                 }
@@ -511,7 +497,7 @@ pub(in crate::cli) fn is_unmanaged_file(
 
 /// Handle unmanaged file targets in the plan: for each file Create/Update action targeting
 /// an existing file not managed by cfgd, prompt the user to adopt, backup, or skip.
-// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
+// TEMP (R3 removes)
 pub(in crate::cli) fn handle_unmanaged_file_targets(
     plan: &mut reconciler::Plan,
     config_dir: &Path,
@@ -607,7 +593,7 @@ fn prompt_backup_choice<'a>(
 }
 
 /// Rename a file to <path>.cfgd-backup.
-// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
+// TEMP (R3 removes)
 pub(in crate::cli) fn backup_file(target: &Path, printer: &Printer) -> anyhow::Result<()> {
     let backup_path = PathBuf::from(format!("{}.cfgd-backup", target.display()));
     std::fs::rename(target, &backup_path).map_err(|e| {
@@ -623,7 +609,7 @@ pub(in crate::cli) fn backup_file(target: &Path, printer: &Printer) -> anyhow::R
 }
 
 /// Apply the user's backup choice to a file action.
-// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
+// TEMP (R3 removes)
 pub(in crate::cli) fn apply_backup_choice(
     choice: &str,
     target: &Path,
@@ -647,8 +633,6 @@ pub(in crate::cli) fn apply_backup_choice(
     Ok(())
 }
 
-// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
-// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
 #[allow(dead_code)]
 pub(in crate::cli) fn handle_unmanaged_file_targets_v2(
     plan: &mut reconciler::Plan,
@@ -722,9 +706,7 @@ pub(in crate::cli) fn handle_unmanaged_file_targets_v2(
     Ok(())
 }
 
-/// Prompt the user to choose how to handle an unmanaged file target. (v2 helper)
-// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
-// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
+/// Prompt the user to choose how to handle an unmanaged file target.
 #[allow(dead_code)]
 fn prompt_backup_choice_v2<'a>(
     target: &Path,
@@ -747,8 +729,6 @@ fn prompt_backup_choice_v2<'a>(
         .unwrap_or(&options[0]))
 }
 
-// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
-// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
 #[allow(dead_code)]
 pub(in crate::cli) fn backup_file_v2(target: &Path, printer: &PrinterV2) -> anyhow::Result<()> {
     let backup_path = PathBuf::from(format!("{}.cfgd-backup", target.display()));
@@ -764,8 +744,6 @@ pub(in crate::cli) fn backup_file_v2(target: &Path, printer: &PrinterV2) -> anyh
     Ok(())
 }
 
-// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
-// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
 #[allow(dead_code)]
 pub(in crate::cli) fn apply_backup_choice_v2(
     choice: &str,
