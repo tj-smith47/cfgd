@@ -1,0 +1,7 @@
+Source: minimal
+  URL                 https://github.com/team/minimal
+  Branch              main
+  Priority            500
+  Accept Recommended  false
+  Sync Interval       1h
+  Auto Apply          false

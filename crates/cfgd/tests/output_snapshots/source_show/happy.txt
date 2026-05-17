@@ -1,0 +1,34 @@
+Source: team-config
+  URL                 https://github.com/team/config
+  Branch              main
+  Priority            100
+  Accept Recommended  true
+  Profile             team
+  Sync Interval       1h
+  Auto Apply          false
+  Version Pin         v1.2.3
+
+State
+  Status        synced
+  Last Fetched  2026-05-14T10:00:00Z
+  Last Commit   deadbeef1234
+  Version       3.1.0
+
+Managed Resources
+  Type     Resource 
+  ──────────────────
+  package  brew/curl
+  file     ~/.bashrc
+  env      EDITOR   
+
+Manifest
+  Name         team-config
+  Description  Team-wide baseline
+  Policy Summary
+    Required
+      Count  2
+      file: ~/.bashrc
+      env: EDITOR
+    Recommended
+      Count  1
+      system: shellAliases

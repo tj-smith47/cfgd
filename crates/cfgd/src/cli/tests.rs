@@ -8802,7 +8802,7 @@ fn cmd_source_show_not_found() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::source::cmd_source_show(&cli, &printer, "nonexistent");
+    let result = super::source::cmd_source_show(&cli, &printer, &test_v2_printer(), "nonexistent");
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -8836,11 +8836,14 @@ spec:
     );
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    super::source::cmd_source_show(&cli, &printer, "team-config").unwrap();
+    super::source::cmd_source_show(&cli, &printer, &v2_printer, "team-config").unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("team-config"),
         "source show should display source name, got: {output}"
@@ -11061,16 +11064,19 @@ fn cmd_source_priority_updates_config() {
 fn cmd_source_show_exists() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (printer, _buf) = Printer::for_test();
+    let (v2_printer, v2_buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    let result = super::source::cmd_source_show(&cli, &printer, "team-config");
+    let result = super::source::cmd_source_show(&cli, &printer, &v2_printer, "team-config");
     assert!(
         result.is_ok(),
         "source show should succeed: {:?}",
         result.err()
     );
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("team-config") || output.contains("Source"),
         "source show should display source info, got: {output}"
@@ -11084,11 +11090,15 @@ fn cmd_source_show_structured_json() {
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
+        cfgd_core::output_v2::OutputFormat::Json,
+    );
 
-    super::source::cmd_source_show(&cli, &printer, "team-config").unwrap();
+    super::source::cmd_source_show(&cli, &printer, &v2_printer, "team-config").unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&output)
         .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
     assert_eq!(parsed["name"], "team-config");
@@ -11770,7 +11780,7 @@ fn json_schema_source_list() {
 #[test]
 fn json_schema_source_show() {
     let h = CliTestHarness::builder().json().rich_config().build();
-    super::source::cmd_source_show(&h.cli(), h.printer(), "team-config").unwrap();
+    super::source::cmd_source_show(&h.cli(), h.printer(), h.v2_printer(), "team-config").unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(&parsed, &["name", "url"]);
 }
@@ -15168,7 +15178,7 @@ fn cmd_source_list_structured_json_includes_state_info() {
 fn cmd_source_show_displays_all_key_fields() {
     let h = CliTestHarness::builder().rich_config().build();
 
-    super::source::cmd_source_show(&h.cli(), h.printer(), "team-config").unwrap();
+    super::source::cmd_source_show(&h.cli(), h.printer(), h.v2_printer(), "team-config").unwrap();
 
     let output = h.output();
     assert!(
@@ -15220,7 +15230,7 @@ fn cmd_source_show_with_state_shows_status_section() {
         )
         .unwrap();
 
-    super::source::cmd_source_show(&h.cli(), h.printer(), "team-config").unwrap();
+    super::source::cmd_source_show(&h.cli(), h.printer(), h.v2_printer(), "team-config").unwrap();
 
     let output = h.output();
     assert!(
@@ -15257,7 +15267,7 @@ fn cmd_source_show_with_managed_resources_shows_table() {
         .upsert_managed_resource("file", "~/.bashrc", "team-config", None, None)
         .unwrap();
 
-    super::source::cmd_source_show(&h.cli(), h.printer(), "team-config").unwrap();
+    super::source::cmd_source_show(&h.cli(), h.printer(), h.v2_printer(), "team-config").unwrap();
 
     let output = h.output();
     assert!(
@@ -15282,7 +15292,7 @@ fn cmd_source_show_json_includes_managed_resources() {
         .upsert_managed_resource("env", "EDITOR", "team-config", None, None)
         .unwrap();
 
-    super::source::cmd_source_show(&h.cli(), h.printer(), "team-config").unwrap();
+    super::source::cmd_source_show(&h.cli(), h.printer(), h.v2_printer(), "team-config").unwrap();
 
     let parsed = h.json_output();
     assert_eq!(parsed["name"], "team-config");
@@ -17694,7 +17704,7 @@ mod cmd_source_add_local {
                 .expect("cmd_source_update");
 
             let baseline_len = h.output().len();
-            super::source::cmd_source_show(&h.cli(), h.printer(), "shown-src")
+            super::source::cmd_source_show(&h.cli(), h.printer(), h.v2_printer(), "shown-src")
                 .expect("cmd_source_show");
             let full = h.output();
             let show_out = &full[baseline_len..];

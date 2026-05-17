@@ -1,6 +1,160 @@
 use super::*;
+use cfgd_core::config::{ConfigSourceDocument, PolicyItems};
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role, doc::SectionBuilder, renderer::Table};
 
-pub(crate) fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<()> {
+pub fn build_source_show_doc(
+    output: &SourceShowOutput,
+    manifest: Option<&ConfigSourceDocument>,
+) -> Doc {
+    let mut doc = Doc::new()
+        .heading(format!("Source: {}", output.name))
+        .kv("URL", &output.url)
+        .kv("Branch", &output.branch)
+        .kv("Priority", output.priority.to_string())
+        .kv("Accept Recommended", output.accept_recommended.to_string());
+
+    if let Some(ref profile) = output.profile {
+        doc = doc.kv("Profile", profile);
+    }
+    doc = doc
+        .kv("Sync Interval", &output.sync_interval)
+        .kv("Auto Apply", output.auto_apply.to_string());
+    if let Some(ref pin) = output.version_pin {
+        doc = doc.kv("Version Pin", pin);
+    }
+
+    if let Some(ref state_info) = output.state {
+        doc = doc.section("State", |s| {
+            let mut s = s.kv("Status", &state_info.status);
+            if let Some(ref fetched) = state_info.last_fetched {
+                s = s.kv("Last Fetched", fetched);
+            }
+            if let Some(ref commit) = state_info.last_commit {
+                let short = &commit[..commit.len().min(12)];
+                s = s.kv("Last Commit", short);
+            }
+            if let Some(ref version) = state_info.version {
+                s = s.kv("Version", version);
+            }
+            s
+        });
+    }
+
+    doc = doc.section_if_nonempty(
+        "Managed Resources",
+        &output.managed_resources,
+        |s, resources| {
+            let mut table = Table::new(["Type", "Resource"]);
+            for r in resources {
+                table = table.row([r.resource_type.clone(), r.resource_id.clone()]);
+            }
+            s.table(table)
+        },
+    );
+
+    if let Some(m) = manifest {
+        doc = doc.section("Manifest", |s| {
+            let mut s = s.kv("Name", &m.metadata.name);
+            if let Some(ref desc) = m.metadata.description {
+                s = s.kv("Description", desc);
+            }
+
+            let policy = &m.spec.policy;
+            let locked = count_policy_items(&policy.locked);
+            let required = count_policy_items(&policy.required);
+            let recommended = count_policy_items(&policy.recommended);
+
+            if locked + required + recommended > 0 {
+                s = s.subsection("Policy Summary", |sub| {
+                    let sub = if locked > 0 {
+                        sub.subsection("Locked", |inner| {
+                            append_policy_items(
+                                inner.kv("Count", locked.to_string()),
+                                &policy.locked,
+                            )
+                        })
+                    } else {
+                        sub
+                    };
+                    let sub = if required > 0 {
+                        sub.subsection("Required", |inner| {
+                            append_policy_items(
+                                inner.kv("Count", required.to_string()),
+                                &policy.required,
+                            )
+                        })
+                    } else {
+                        sub
+                    };
+                    if recommended > 0 {
+                        sub.subsection("Recommended", |inner| {
+                            append_policy_items(
+                                inner.kv("Count", recommended.to_string()),
+                                &policy.recommended,
+                            )
+                        })
+                    } else {
+                        sub
+                    }
+                });
+            }
+            s
+        });
+    }
+
+    doc.with_data(output)
+}
+
+fn append_policy_items(mut s: SectionBuilder, items: &PolicyItems) -> SectionBuilder {
+    if let Some(ref pkgs) = items.packages {
+        if let Some(ref brew) = pkgs.brew {
+            for f in &brew.formulae {
+                s = s.status(Role::Info, format!("brew formula: {f}"));
+            }
+            for c in &brew.casks {
+                s = s.status(Role::Info, format!("brew cask: {c}"));
+            }
+        }
+        if let Some(ref apt) = pkgs.apt {
+            for p in &apt.packages {
+                s = s.status(Role::Info, format!("apt: {p}"));
+            }
+        }
+        if let Some(ref cargo) = pkgs.cargo {
+            for p in &cargo.packages {
+                s = s.status(Role::Info, format!("cargo: {p}"));
+            }
+        }
+        for p in &pkgs.pipx {
+            s = s.status(Role::Info, format!("pipx: {p}"));
+        }
+        for p in &pkgs.dnf {
+            s = s.status(Role::Info, format!("dnf: {p}"));
+        }
+        if let Some(ref npm) = pkgs.npm {
+            for p in &npm.global {
+                s = s.status(Role::Info, format!("npm: {p}"));
+            }
+        }
+    }
+    for f in &items.files {
+        s = s.status(Role::Info, format!("file: {}", f.target.display()));
+    }
+    for ev in &items.env {
+        s = s.status(Role::Info, format!("env: {}", ev.name));
+    }
+    for k in items.system.keys() {
+        s = s.status(Role::Info, format!("system: {k}"));
+    }
+    s
+}
+
+pub(crate) fn cmd_source_show(
+    cli: &Cli,
+    printer: &Printer,
+    v2_printer: &PrinterV2,
+    name: &str,
+) -> anyhow::Result<()> {
     let config_path = cli.config.clone();
     let cfg = config::load_config(&config_path)?;
 
@@ -11,123 +165,43 @@ pub(crate) fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyho
         .find(|s| s.name == name)
         .ok_or_else(|| anyhow::anyhow!("Source '{}' not found", name))?;
 
-    if printer.is_structured() {
-        let state = open_state_store(cli.state_dir.as_deref())?;
-        let state_info = state.config_source_by_name(name)?;
-        let resources = state.managed_resources_by_source(name)?;
-        let output = SourceShowOutput {
-            name: name.to_string(),
-            url: source_spec.origin.url.clone(),
-            branch: source_spec.origin.branch.clone(),
-            priority: source_spec.subscription.priority,
-            accept_recommended: source_spec.subscription.accept_recommended,
-            profile: source_spec.subscription.profile.clone(),
-            sync_interval: source_spec.sync.interval.clone(),
-            auto_apply: source_spec.sync.auto_apply,
-            version_pin: source_spec.sync.pin_version.clone(),
-            state: state_info.map(|s| SourceStateInfo {
-                status: s.status,
-                last_fetched: s.last_fetched,
-                last_commit: s.last_commit,
-                version: s.source_version,
-            }),
-            managed_resources: resources
-                .iter()
-                .map(|r| SourceResourceEntry {
-                    resource_type: r.resource_type.clone(),
-                    resource_id: r.resource_id.clone(),
-                })
-                .collect(),
-        };
-        printer.write_structured(&output);
-        return Ok(());
-    }
-
-    printer.header(&format!("Source: {}", name));
-    printer.key_value("URL", &source_spec.origin.url);
-    printer.key_value("Branch", &source_spec.origin.branch);
-    printer.key_value("Priority", &source_spec.subscription.priority.to_string());
-    printer.key_value(
-        "Accept Recommended",
-        &source_spec.subscription.accept_recommended.to_string(),
-    );
-    if let Some(ref profile) = source_spec.subscription.profile {
-        printer.key_value("Profile", profile);
-    }
-    printer.key_value("Sync Interval", &source_spec.sync.interval);
-    printer.key_value("Auto Apply", &source_spec.sync.auto_apply.to_string());
-    if let Some(ref pin) = source_spec.sync.pin_version {
-        printer.key_value("Version Pin", pin);
-    }
-
-    // Show state info
     let state = open_state_store(cli.state_dir.as_deref())?;
-    if let Some(state_info) = state.config_source_by_name(name)? {
-        printer.newline();
-        printer.subheader("State");
-        printer.key_value("Status", &state_info.status);
-        if let Some(ref fetched) = state_info.last_fetched {
-            printer.key_value("Last Fetched", fetched);
-        }
-        if let Some(ref commit) = state_info.last_commit {
-            printer.key_value("Last Commit", &commit[..commit.len().min(12)]);
-        }
-        if let Some(ref version) = state_info.source_version {
-            printer.key_value("Version", version);
-        }
-    }
-
-    // Show managed resources from this source
+    let state_info = state.config_source_by_name(name)?;
     let resources = state.managed_resources_by_source(name)?;
-    if !resources.is_empty() {
-        printer.newline();
-        printer.subheader("Managed Resources");
-        let rows: Vec<Vec<String>> = resources
-            .iter()
-            .map(|r| vec![r.resource_type.clone(), r.resource_id.clone()])
-            .collect();
-        printer.table(&["Type", "Resource"], &rows);
-    }
 
-    // Load and show manifest from cache
+    let output = SourceShowOutput {
+        name: name.to_string(),
+        url: source_spec.origin.url.clone(),
+        branch: source_spec.origin.branch.clone(),
+        priority: source_spec.subscription.priority,
+        accept_recommended: source_spec.subscription.accept_recommended,
+        profile: source_spec.subscription.profile.clone(),
+        sync_interval: source_spec.sync.interval.clone(),
+        auto_apply: source_spec.sync.auto_apply,
+        version_pin: source_spec.sync.pin_version.clone(),
+        state: state_info.map(|s| SourceStateInfo {
+            status: s.status,
+            last_fetched: s.last_fetched,
+            last_commit: s.last_commit,
+            version: s.source_version,
+        }),
+        managed_resources: resources
+            .iter()
+            .map(|r| SourceResourceEntry {
+                resource_type: r.resource_type.clone(),
+                resource_id: r.resource_id.clone(),
+            })
+            .collect(),
+    };
+
     let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
-    // Populate the manager from the cached source on disk
     if let Err(e) = mgr.load_source(source_spec, printer) {
         printer.warning(&format!("Failed to load source manifest: {}", e));
     }
-    if let Some(cached) = mgr.get(name) {
-        printer.newline();
-        printer.subheader("Manifest");
-        printer.key_value("Name", &cached.manifest.metadata.name);
-        if let Some(ref desc) = cached.manifest.metadata.description {
-            printer.key_value("Description", desc);
-        }
+    let manifest = mgr.get(name).map(|c| &c.manifest);
 
-        let policy = &cached.manifest.spec.policy;
-        let locked_count = count_policy_items(&policy.locked);
-        let required_count = count_policy_items(&policy.required);
-        let recommended_count = count_policy_items(&policy.recommended);
-
-        if locked_count + required_count + recommended_count > 0 {
-            printer.newline();
-            printer.subheader("Policy Summary");
-
-            if locked_count > 0 {
-                printer.key_value("Locked", &locked_count.to_string());
-                display_policy_items(printer, &policy.locked, "  ");
-            }
-            if required_count > 0 {
-                printer.key_value("Required", &required_count.to_string());
-                display_policy_items(printer, &policy.required, "  ");
-            }
-            if recommended_count > 0 {
-                printer.key_value("Recommended", &recommended_count.to_string());
-                display_policy_items(printer, &policy.recommended, "  ");
-            }
-        }
-    }
-
+    v2_printer.emit(build_source_show_doc(&output, manifest));
     Ok(())
 }

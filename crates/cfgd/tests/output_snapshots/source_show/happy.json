@@ -1,0 +1,31 @@
+{
+  "acceptRecommended": true,
+  "autoApply": false,
+  "branch": "main",
+  "managedResources": [
+    {
+      "resourceId": "brew/curl",
+      "resourceType": "package"
+    },
+    {
+      "resourceId": "~/.bashrc",
+      "resourceType": "file"
+    },
+    {
+      "resourceId": "EDITOR",
+      "resourceType": "env"
+    }
+  ],
+  "name": "team-config",
+  "priority": 100,
+  "profile": "team",
+  "state": {
+    "lastCommit": "deadbeef1234567890abcdef",
+    "lastFetched": "2026-05-14T10:00:00Z",
+    "status": "synced",
+    "version": "3.1.0"
+  },
+  "syncInterval": "1h",
+  "url": "https://github.com/team/config",
+  "versionPin": "v1.2.3"
+}

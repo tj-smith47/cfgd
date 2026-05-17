@@ -22,7 +22,7 @@ mod pull;
 mod registry;
 mod rollback;
 mod secret;
-mod source;
+pub mod source;
 mod status;
 mod sync;
 mod upgrade;
@@ -1569,7 +1569,7 @@ pub fn execute(
                 source::cmd_source_priority(cli, printer, name, *value)
             }
             SourceCommand::List => source::cmd_source_list(cli, printer),
-            SourceCommand::Show { name } => source::cmd_source_show(cli, printer, name),
+            SourceCommand::Show { name } => source::cmd_source_show(cli, printer, v2_printer, name),
             SourceCommand::Remove {
                 name,
                 keep_all,

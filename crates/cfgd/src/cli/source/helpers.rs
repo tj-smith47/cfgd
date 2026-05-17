@@ -252,6 +252,7 @@ pub(crate) fn count_policy_items(items: &config::PolicyItems) -> usize {
 }
 
 // TEMP (R3 removes)
+#[cfg(test)]
 pub(crate) fn display_policy_items(printer: &Printer, items: &config::PolicyItems, indent: &str) {
     if let Some(ref pkgs) = items.packages {
         if let Some(ref brew) = pkgs.brew {

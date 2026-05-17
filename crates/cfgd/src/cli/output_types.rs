@@ -118,7 +118,7 @@ pub(in crate::cli) struct SourceListEntry {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct SourceShowOutput {
+pub struct SourceShowOutput {
     pub name: String,
     pub url: String,
     pub branch: String,
@@ -134,7 +134,7 @@ pub(in crate::cli) struct SourceShowOutput {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct SourceStateInfo {
+pub struct SourceStateInfo {
     pub status: String,
     pub last_fetched: Option<String>,
     pub last_commit: Option<String>,
@@ -143,7 +143,7 @@ pub(in crate::cli) struct SourceStateInfo {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct SourceResourceEntry {
+pub struct SourceResourceEntry {
     pub resource_type: String,
     pub resource_id: String,
 }

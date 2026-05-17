@@ -11,7 +11,7 @@ mod override_cmd;
 mod priority;
 mod remove;
 mod replace;
-mod show;
+pub mod show;
 mod update;
 
 // --- Re-export pub(crate) handlers so cli::mod can dispatch to them ---
