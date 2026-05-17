@@ -76,7 +76,15 @@ pub fn cmd_sync(
                             }
                         });
 
-                        if let Some(perm_changes) = perm_changes {
+                        let commit_short = cached
+                            .last_commit
+                            .as_deref()
+                            .map(|c| &c[..c.len().min(12)])
+                            .unwrap_or("unknown")
+                            .to_string();
+
+                        let had_perm_changes = perm_changes.is_some();
+                        let proceed = if let Some(perm_changes) = perm_changes {
                             sp.finish_warn(format!(
                                 "'{}' has permission changes",
                                 source_spec.name
@@ -89,12 +97,7 @@ pub fn cmd_sync(
                                 }
                             }
                             match v2_printer.prompt_confirm("Accept permission changes?") {
-                                Ok(true) => {
-                                    sources_sec.status_simple(
-                                        Role::Info,
-                                        format!("Accepted '{}'", source_spec.name),
-                                    );
-                                }
+                                Ok(true) => true,
                                 Ok(false) => {
                                     sources_sec.status_simple(
                                         Role::Info,
@@ -103,12 +106,7 @@ pub fn cmd_sync(
                                             source_spec.name
                                         ),
                                     );
-                                    sync_payload.sources.push(SourceSyncOutput {
-                                        name: source_spec.name.clone(),
-                                        status: "skipped".to_string(),
-                                        commit: None,
-                                    });
-                                    continue;
+                                    false
                                 }
                                 Err(_) => {
                                     sources_sec.status_simple(
@@ -118,30 +116,38 @@ pub fn cmd_sync(
                                             source_spec.name
                                         ),
                                     );
-                                    sync_payload.sources.push(SourceSyncOutput {
-                                        name: source_spec.name.clone(),
-                                        status: "skipped".to_string(),
-                                        commit: None,
-                                    });
-                                    continue;
+                                    false
                                 }
                             }
                         } else {
-                            let commit_short = cached
-                                .last_commit
-                                .as_deref()
-                                .map(|c| &c[..c.len().min(12)])
-                                .unwrap_or("unknown");
                             sp.finish_ok(format!("'{}' synced", source_spec.name))
                                 .detail(format!("commit: {}", commit_short));
-                        }
+                            true
+                        };
 
-                        changes_detected = true;
-                        sync_payload.sources.push(SourceSyncOutput {
-                            name: source_spec.name.clone(),
-                            status: "synced".to_string(),
-                            commit: cached.last_commit.clone(),
-                        });
+                        if proceed {
+                            // Accept-after-prompt path: spinner already
+                            // finished as Warn. Emit the canonical success
+                            // line so human consumers see "'X' synced —
+                            // commit: <hash>".
+                            if had_perm_changes {
+                                sources_sec
+                                    .status(Role::Ok, format!("'{}' synced", source_spec.name))
+                                    .detail(format!("commit: {}", commit_short));
+                            }
+                            changes_detected = true;
+                            sync_payload.sources.push(SourceSyncOutput {
+                                name: source_spec.name.clone(),
+                                status: "synced".to_string(),
+                                commit: cached.last_commit.clone(),
+                            });
+                        } else {
+                            sync_payload.sources.push(SourceSyncOutput {
+                                name: source_spec.name.clone(),
+                                status: "skipped".to_string(),
+                                commit: None,
+                            });
+                        }
                     }
                 }
                 Err(e) => {

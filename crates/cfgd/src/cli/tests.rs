@@ -16698,12 +16698,12 @@ fn cmd_sync_non_git_shows_pull_warning_and_sync_header() {
     // Spinner section appears with the pulling message; final state is "Pull
     // failed" on a non-git dir.
     assert!(
-        output.contains("Local repo") || output.contains("Pulling from remote"),
-        "should display local-repo section / pull spinner, got: {output}"
+        output.contains("Local repo"),
+        "missing 'Local repo' section: {output}"
     );
     assert!(
-        output.contains("Pull failed") || output.contains("up to date"),
-        "should show pull result (failure or up-to-date), got: {output}"
+        output.contains("Pull failed"),
+        "missing pull failure status: {output}"
     );
 }
 

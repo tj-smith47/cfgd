@@ -205,13 +205,15 @@ pub fn plan_args_module(name: &str) -> PlanArgs {
 }
 
 // ---------------------------------------------------------------------------
-// Source-sync fixtures (T3 / cmd_sync)
+// Source-sync fixtures (cmd_sync).
 //
 // Each fixture initialises one or more bare git repos populated with a
 // `cfgd-source.yaml` manifest, then writes a cfgd config whose sources point
-// at them via `file://`. `CFGD_ALLOW_LOCAL_SOURCES=1` must be set in the env
-// that drives `cmd_sync` (handled per-test via `EnvVarGuard`) because the
-// SourceManager rejects file:// URLs otherwise.
+// at them via `file://`. `cfgd_core::sources::SourceManager` rejects
+// `file://` URLs by default to prevent local-path injection; these fixtures
+// require their consumer tests to set `CFGD_ALLOW_LOCAL_SOURCES=1` (handled
+// per-test via `EnvVarGuard`). See `crates/cfgd-core/src/sources/mod.rs`
+// for the env-var check.
 // ---------------------------------------------------------------------------
 
 fn write_manifest_to_bare(
@@ -220,35 +222,35 @@ fn write_manifest_to_bare(
     manifest: &str,
 ) -> std::path::PathBuf {
     let bare = tmp_path.join(format!("{}-bare.git", name));
-    let _ = git2::Repository::init_bare(&bare).unwrap();
+    let _ = git2::Repository::init_bare(&bare).expect("init_bare");
 
     let src = tmp_path.join(format!("{}-src", name));
-    let src_repo = git2::Repository::init(&src).unwrap();
-    std::fs::write(src.join("cfgd-source.yaml"), manifest).unwrap();
-    let mut index = src_repo.index().unwrap();
+    let src_repo = git2::Repository::init(&src).expect("init_src");
+    std::fs::write(src.join("cfgd-source.yaml"), manifest).expect("write_manifest");
+    let mut index = src_repo.index().expect("index");
     index
         .add_path(std::path::Path::new("cfgd-source.yaml"))
-        .unwrap();
-    index.write().unwrap();
-    let tree_id = index.write_tree().unwrap();
-    let tree = src_repo.find_tree(tree_id).unwrap();
-    let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        .expect("add_path");
+    index.write().expect("index_write");
+    let tree_id = index.write_tree().expect("write_tree");
+    let tree = src_repo.find_tree(tree_id).expect("find_tree");
+    let sig = git2::Signature::now("t", "t@example.com").expect("signature");
     src_repo
         .commit(Some("HEAD"), &sig, &sig, "initial manifest", &tree, &[])
-        .unwrap();
+        .expect("commit");
     drop(tree);
 
     let url = format!("file://{}", bare.display());
-    let mut remote = src_repo.remote("origin", &url).unwrap();
+    let mut remote = src_repo.remote("origin", &url).expect("add_remote");
     let branch = src_repo
         .head()
-        .unwrap()
+        .expect("head")
         .shorthand()
         .unwrap_or("master")
         .to_string();
     remote
         .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
-        .unwrap();
+        .expect("push");
     bare
 }
 

@@ -1,26 +1,5 @@
-//! Snapshot tests for `cfgd sync`.
-//!
-//! Pins the rendered output of every shape `cmd_sync` produces. Goldens
-//! live under `tests/output_snapshots/sync/`. Regenerate with:
-//!     INSTA_UPDATE=always cargo test -p cfgd --test sync_v2_snapshots
-//!
-//! Cases:
-//!   - `sync/happy.{txt,json}`   — local pull + two sources synced from
-//!     local bare repos (file:// URLs, guarded by
-//!     `CFGD_ALLOW_LOCAL_SOURCES=1`).
-//!   - `sync/no_sources.txt`     — empty source list. Local repo section
-//!     only.
-//!   - `sync/perm_changes.txt`   — pre-clone with a permissive manifest,
-//!     rewrite upstream with stricter locked policy; the rejection-path
-//!     snapshot exercises the prompt-confirm-inside-section pattern under
-//!     `CFGD_NONINTERACTIVE=1`-style stubbed input (queued prompt
-//!     response).
-//!   - `sync/source_failure.txt` — one source URL is unreachable; spinner
-//!     ends with `finish_fail`. Indent invariant holds — the failure
-//!     status renders INSIDE the Sources section.
-//!   - `sync/bridge.txt`         — streaming spinner section + buffered
-//!     Doc on the same `Printer`; asserts the §17.2 bridge invariant (one
-//!     blank line between streaming and buffered surfaces).
+//! Snapshot tests for cfgd sync — local repo pull, source iteration,
+//! permission prompts, failure handling, bridge transition.
 
 mod common;
 
@@ -96,6 +75,7 @@ fn normalize_commit_hashes(raw: &str) -> String {
     out
 }
 
+/// Two-source happy path: local pull + per-source spinners + sources updated status.
 #[test]
 #[serial]
 fn sync_happy_human() {
@@ -116,6 +96,7 @@ fn sync_happy_human() {
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "sync/happy.txt", &stripped);
 }
 
+/// JSON payload roundtrip — SyncOutput shape via build_sync_doc + cap.json().
 #[test]
 fn sync_happy_json() {
     let output = happy_output();
@@ -132,6 +113,7 @@ fn sync_happy_json() {
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "sync/happy.json");
 }
 
+/// No-sources path emits only the local pull section.
 #[test]
 #[serial]
 fn sync_no_sources_human() {
@@ -149,21 +131,16 @@ fn sync_no_sources_human() {
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "sync/no_sources.txt", &stripped);
 }
 
+/// Permission-rejection path skips the source and prints a Skipped status.
 #[test]
 #[serial]
 fn sync_perm_changes_rejection_human() {
-    // Prompt-confirm-inside-section rejection path. The migrated body must
-    // drop the nested perm SectionGuard before invoking prompt_confirm; the
-    // queued `false` answer drives the rejection branch and `cmd_sync`
-    // emits the "Skipped ..." status into the Sources section.
     let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
 
     let (_workspace, config_dir, state_dir, _branch) = permission_change_source_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
-    // Capture buffer + canned `Confirm(false)` answer to drive the rejection
-    // branch deterministically.
     use cfgd_core::output_v2::{PromptAnswer, Verbosity as V2Verbosity};
     let (v2_printer, v2_buf) = Printer::for_test_with_prompt_responses_at(
         vec![PromptAnswer::Confirm(false)],
@@ -180,13 +157,41 @@ fn sync_perm_changes_rejection_human() {
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "sync/perm_changes.txt", &stripped);
 }
 
+/// Permission-acceptance path emits the canonical "'X' synced" line after the prompt.
+#[test]
+#[serial]
+fn sync_perm_changes_accept_human() {
+    let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+    let (_workspace, config_dir, state_dir, _branch) = permission_change_source_setup();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
+    use cfgd_core::output_v2::{PromptAnswer, Verbosity as V2Verbosity};
+    let (v2_printer, v2_buf) = Printer::for_test_with_prompt_responses_at(
+        vec![PromptAnswer::Confirm(true)],
+        V2Verbosity::Normal,
+    );
+
+    cmd_sync(&cli, &old_printer, &v2_printer).unwrap();
+    v2_printer.flush();
+    drop(v2_printer);
+
+    let raw = v2_buf.lock().unwrap().clone();
+    let normalized = normalize_tempdir_paths(&raw, config_dir.path());
+    let normalized = normalize_commit_hashes(&normalized);
+    let stripped = strip_ansi(&normalized);
+    assert_snapshot(
+        Path::new(SNAPSHOT_ROOT),
+        "sync/perm_changes_accept.txt",
+        &stripped,
+    );
+}
+
+/// Failed source produces a "Failed to sync" status inside the Sources section.
 #[test]
 #[serial]
 fn sync_source_failure_human() {
-    // No CFGD_ALLOW_LOCAL_SOURCES → load_source rejects file:// URLs and
-    // returns Err. The spinner finishes via `finish_fail`. Verified against
-    // the indent invariant: the failure status appears INSIDE the Sources
-    // section, not at depth 0.
     let _disallow = EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES");
 
     let (config_dir, state_dir) = unreachable_source_setup();
@@ -207,12 +212,9 @@ fn sync_source_failure_human() {
     );
 }
 
+/// Streaming section followed by buffered Doc produces exactly one blank line between.
 #[test]
 fn sync_bridge_one_blank_line() {
-    // Bridge invariant: when the streaming SectionGuard drops, the
-    // renderer auto-emits one blank line. The buffered Doc that follows
-    // respects the no-leading-blank rule, so the combined surface has
-    // exactly one blank line at the transition.
     let (v2_printer, cap) = Printer::for_test_doc();
 
     v2_printer.heading("Sync");
