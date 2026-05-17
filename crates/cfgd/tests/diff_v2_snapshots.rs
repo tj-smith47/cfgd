@@ -4,9 +4,10 @@
 //! (subheaders + unified diff lines) still renders through the v1 `Printer`
 //! via `CfgdFileManager::diff` until F4b migrates the files lib; v2 snapshots
 //! only lock the section headers + outcome statuses + buffered summary, not
-//! the diff body. The `cmd_diff` body emits per-host system configurators
-//! that vary by platform — `normalize_system_lines` strips them so the
-//! goldens are host-stable.
+//! the diff body. Test profiles use an empty `spec.system` map so each
+//! system configurator short-circuits on `merged.system.get(key) == None` —
+//! the System section emits only "No system drift" regardless of host. The
+//! `normalize` helper handles tempdir path substitution only.
 //!
 //! Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test diff_v2_snapshots

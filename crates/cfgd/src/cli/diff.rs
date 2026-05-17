@@ -95,21 +95,9 @@ pub fn cmd_diff(
         has_system_drift,
     };
 
-    let any_drift = has_file_drift || has_pkg_drift || has_system_drift;
-    let summary_role = if any_drift { Role::Warn } else { Role::Ok };
-    let summary_subject = if any_drift {
-        "Drift detected"
-    } else {
-        "No drift detected"
-    };
+    v2_printer.emit(build_diff_doc(&diff_payload));
 
-    v2_printer.emit(
-        Doc::new()
-            .status(summary_role, summary_subject)
-            .with_data(&diff_payload),
-    );
-
-    if exit_code && any_drift {
+    if exit_code && (has_file_drift || has_pkg_drift || has_system_drift) {
         cfgd_core::exit::ExitCode::DriftDetected.exit();
     }
 
@@ -138,9 +126,13 @@ fn cmd_diff_module(
     ) {
         Ok(mods) => mods,
         Err(_) => {
-            v2_printer.status_simple(
-                Role::Info,
-                format!("Module '{}' not found — nothing to diff", mod_name),
+            v2_printer.emit(
+                Doc::new()
+                    .status(
+                        Role::Info,
+                        format!("Module '{}' not found — nothing to diff", mod_name),
+                    )
+                    .with_data(DiffOutput::default()),
             );
             return Ok(());
         }
@@ -220,21 +212,9 @@ fn cmd_diff_module(
         has_system_drift: false,
     };
 
-    let any_drift = has_file_diff || has_pkg_drift;
-    let summary_role = if any_drift { Role::Warn } else { Role::Ok };
-    let summary_subject = if any_drift {
-        "Drift detected"
-    } else {
-        "No drift detected"
-    };
+    v2_printer.emit(build_diff_doc(&diff_payload));
 
-    v2_printer.emit(
-        Doc::new()
-            .status(summary_role, summary_subject)
-            .with_data(&diff_payload),
-    );
-
-    if exit_code && any_drift {
+    if exit_code && (has_file_diff || has_pkg_drift) {
         cfgd_core::exit::ExitCode::DriftDetected.exit();
     }
 
