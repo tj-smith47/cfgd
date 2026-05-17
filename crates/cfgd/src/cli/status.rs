@@ -53,7 +53,7 @@ pub fn build_fleet_status_doc(output: &StatusOutput, configured_sources: &[Strin
                 let mut s = s
                     .kv("Time", &last.timestamp)
                     .kv("Profile", &last.profile)
-                    .kv("Status", apply_status_str(&last.status));
+                    .kv("Result", apply_status_str(&last.status));
                 if let Some(summary) = &last.summary {
                     s = s.kv("Summary", summary);
                 }
@@ -222,7 +222,7 @@ pub fn build_module_status_not_found_doc(name: &str) -> Doc {
     Doc::new()
         .heading(format!("Status: {}", name))
         .status(Role::Info, format!("Module '{}' not found", name))
-        .with_data(payload)
+        .with_data(&payload)
 }
 
 pub(super) fn cmd_status(

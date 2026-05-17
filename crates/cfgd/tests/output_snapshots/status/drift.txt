@@ -3,7 +3,7 @@ Status
 Last Apply
   Time     2026-05-14T11:30:00Z
   Profile  default
-  Status   success
+  Result   success
 
 Drift
   ⚠ file ~/.zshrc — want: hash-desired, have: hash-actual

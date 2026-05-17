@@ -3,7 +3,7 @@ Status
 Last Apply
   Time     2026-05-14T10:00:00Z
   Profile  default
-  Status   success
+  Result   success
   Summary  12 actions applied
 
 Drift
