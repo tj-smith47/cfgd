@@ -1,8 +1,10 @@
 use super::*;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
 // --- Plan output rendering ---
 
 /// Display apply result summary via Printer. Returns the status for caller control flow.
+// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
 pub(in crate::cli) fn print_apply_result(
     result: &cfgd_core::reconciler::ApplyResult,
     printer: &Printer,
@@ -29,6 +31,48 @@ pub(in crate::cli) fn print_apply_result(
         }
         cfgd_core::state::ApplyStatus::InProgress => {
             printer.warning("Apply still in progress (unexpected state)");
+        }
+    }
+    result.status.clone()
+}
+
+// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
+// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
+// Pinned per F0 README open Q#2: `print_apply_result_v2` stays a depth-0 top-level emit;
+// callers (`cmd_apply`, `cmd_init`'s `apply_plan`) invoke at depth 0, no `&SectionGuard`.
+#[allow(dead_code)]
+pub(in crate::cli) fn print_apply_result_v2(
+    result: &cfgd_core::reconciler::ApplyResult,
+    printer: &PrinterV2,
+) -> cfgd_core::state::ApplyStatus {
+    match result.status {
+        cfgd_core::state::ApplyStatus::Success => {
+            printer.status_simple(
+                Role::Ok,
+                format!(
+                    "Apply complete — {} action(s) succeeded",
+                    result.succeeded()
+                ),
+            );
+        }
+        cfgd_core::state::ApplyStatus::Partial => {
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "Apply partially complete — {} succeeded, {} failed",
+                    result.succeeded(),
+                    result.failed()
+                ),
+            );
+        }
+        cfgd_core::state::ApplyStatus::Failed => {
+            printer.status_simple(
+                Role::Fail,
+                format!("Apply failed — {} action(s) failed", result.failed()),
+            );
+        }
+        cfgd_core::state::ApplyStatus::InProgress => {
+            printer.status_simple(Role::Warn, "Apply still in progress (unexpected state)");
         }
     }
     result.status.clone()
@@ -136,6 +180,7 @@ pub(in crate::cli) fn strip_scripts_from_plan(plan: &mut reconciler::Plan) {
 
 /// Display a reconciliation plan in table mode.
 /// Used by both `cmd_plan` and `cmd_apply --dry-run`.
+// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
 pub(in crate::cli) fn display_plan_table(
     plan: &reconciler::Plan,
     printer: &Printer,
@@ -152,9 +197,36 @@ pub(in crate::cli) fn display_plan_table(
     }
 }
 
+// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
+// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
+#[allow(dead_code)]
+pub(in crate::cli) fn display_plan_table_v2(
+    plan: &reconciler::Plan,
+    printer: &PrinterV2,
+    phase_filter: Option<&PhaseName>,
+) {
+    for phase_item in &plan.phases {
+        if let Some(pf) = phase_filter
+            && &phase_item.name != pf
+        {
+            continue;
+        }
+        let items = reconciler::format_plan_items(phase_item);
+        let phase = printer.section(format!("Phase: {}", phase_item.name.display_name()));
+        if items.is_empty() {
+            phase.empty_state("(nothing to do)");
+        } else {
+            for item in &items {
+                phase.bullet(item);
+            }
+        }
+    }
+}
+
 /// Display the full plan output: pending decisions, structured/table output,
 /// file diffs, warnings, and summary line.
 /// Used by both `cmd_plan` and `cmd_apply --dry-run`.
+// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
 pub(in crate::cli) fn display_plan_preview(
     plan: &reconciler::Plan,
     printer: &Printer,
@@ -220,6 +292,86 @@ pub(in crate::cli) fn display_plan_preview(
         printer.success(MSG_NOTHING_TO_DO);
     } else {
         printer.info(&format!("{} action(s) planned", plan_output.total_actions));
+    }
+}
+
+// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
+// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
+#[allow(dead_code)]
+pub(in crate::cli) fn display_plan_preview_v2(
+    plan: &reconciler::Plan,
+    printer: &PrinterV2,
+    state: &cfgd_core::state::StateStore,
+    context: &str,
+    phase_filter: Option<&PhaseName>,
+    dry_run_fm: Option<&CfgdFileManager>,
+) {
+    // Show pending decisions (not included in this plan)
+    if let Ok(pending) = state.pending_decisions()
+        && !pending.is_empty()
+    {
+        let section = printer.section("Pending Decisions (not included in this plan)");
+        for d in &pending {
+            section.status_simple(
+                Role::Info,
+                format!(
+                    "{} {} — {} by {} (run `cfgd decide accept/reject`)",
+                    d.tier, d.resource, d.action, d.source,
+                ),
+            );
+        }
+    }
+
+    // Build structured output
+    let plan_output = build_plan_output(plan, context, phase_filter);
+
+    // Structured-output routing: when -o yaml/json/etc., emit the plan as the
+    // doc's data payload and skip the human render.
+    if printer.is_structured() {
+        printer.emit(Doc::new().with_data(&plan_output));
+        return;
+    }
+
+    // Table mode display
+    display_plan_table_v2(plan, printer, phase_filter);
+
+    // Show diffs for file updates
+    if let Some(fm) = dry_run_fm {
+        for phase_item in &plan.phases {
+            if phase_item.name != PhaseName::Files {
+                continue;
+            }
+            for action in &phase_item.actions {
+                if let reconciler::Action::File(FileAction::Update { source, target, .. }) = action
+                    && let Ok(target_content) = std::fs::read_to_string(target)
+                {
+                    let source_content = if crate::files::is_tera_template(source) {
+                        fm.render_template_for_display(source).unwrap_or_default()
+                    } else {
+                        std::fs::read_to_string(source).unwrap_or_default()
+                    };
+                    // Diff label: `printer.diff` is a raw renderer (bypasses section
+                    // header flushing per output_v2 §5a), so a `section()` here would
+                    // render its header AFTER the diff. Use `heading()` instead — same
+                    // visual role as the original `subheader(target.display())`.
+                    printer.heading(format!("{}", target.display()));
+                    printer.diff(&target_content, &source_content);
+                }
+            }
+        }
+    }
+
+    for w in &plan.warnings {
+        printer.status_simple(Role::Warn, w);
+    }
+
+    if plan_output.total_actions == 0 {
+        printer.status_simple(Role::Ok, MSG_NOTHING_TO_DO);
+    } else {
+        printer.status_simple(
+            Role::Info,
+            format!("{} action(s) planned", plan_output.total_actions),
+        );
     }
 }
 
@@ -355,6 +507,7 @@ pub(in crate::cli) fn is_unmanaged_file(
 
 /// Handle unmanaged file targets in the plan: for each file Create/Update action targeting
 /// an existing file not managed by cfgd, prompt the user to adopt, backup, or skip.
+// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
 pub(in crate::cli) fn handle_unmanaged_file_targets(
     plan: &mut reconciler::Plan,
     config_dir: &Path,
@@ -450,6 +603,7 @@ fn prompt_backup_choice<'a>(
 }
 
 /// Rename a file to <path>.cfgd-backup.
+// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
 pub(in crate::cli) fn backup_file(target: &Path, printer: &Printer) -> anyhow::Result<()> {
     let backup_path = PathBuf::from(format!("{}.cfgd-backup", target.display()));
     std::fs::rename(target, &backup_path).map_err(|e| {
@@ -465,6 +619,7 @@ pub(in crate::cli) fn backup_file(target: &Path, printer: &Printer) -> anyhow::R
 }
 
 /// Apply the user's backup choice to a file action.
+// TEMP (R3 removes): F1–F4 callers migrate to *_v2; this stays for the un-migrated.
 pub(in crate::cli) fn apply_backup_choice(
     choice: &str,
     target: &Path,
@@ -473,6 +628,147 @@ pub(in crate::cli) fn apply_backup_choice(
 ) -> anyhow::Result<()> {
     if choice.starts_with("Backup") {
         backup_file(target, printer)?;
+    } else if choice.starts_with("Skip") {
+        let origin = match action {
+            reconciler::Action::File(FileAction::Create { origin, .. })
+            | reconciler::Action::File(FileAction::Update { origin, .. }) => origin.clone(),
+            _ => "local".to_string(),
+        };
+        *action = reconciler::Action::File(FileAction::Skip {
+            target: target.to_path_buf(),
+            reason: "skipped by user (unmanaged file exists)".to_string(),
+            origin,
+        });
+    }
+    Ok(())
+}
+
+// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
+// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
+#[allow(dead_code)]
+pub(in crate::cli) fn handle_unmanaged_file_targets_v2(
+    plan: &mut reconciler::Plan,
+    config_dir: &Path,
+    state: &StateStore,
+    printer: &PrinterV2,
+    auto_yes: bool,
+) -> anyhow::Result<()> {
+    let options = vec![
+        "Adopt (overwrite with cfgd-managed version)".to_string(),
+        "Backup (save as .cfgd-backup, then overwrite)".to_string(),
+        "Skip (leave file untouched)".to_string(),
+    ];
+
+    for phase in &mut plan.phases {
+        let mut i = 0;
+        while i < phase.actions.len() {
+            // Profile file actions
+            if let reconciler::Action::File(
+                FileAction::Create { target, .. } | FileAction::Update { target, .. },
+            ) = &phase.actions[i]
+            {
+                let target = target.clone();
+                if is_unmanaged_file(&target, config_dir, state) && !auto_yes {
+                    let choice = prompt_backup_choice_v2(&target, None, printer, &options)?;
+                    apply_backup_choice_v2(choice, &target, &mut phase.actions[i], printer)?;
+                }
+            }
+
+            // Module file actions
+            if let reconciler::Action::Module(ref ma) = phase.actions[i]
+                && let reconciler::ModuleActionKind::DeployFiles { files } = &ma.kind
+            {
+                let needs_prompt = !auto_yes
+                    && files.iter().any(|f| {
+                        let t = cfgd_core::expand_tilde(&f.target);
+                        is_unmanaged_file(&t, config_dir, state)
+                    });
+                if needs_prompt {
+                    let module_name = ma.module_name.clone();
+                    if let reconciler::Action::Module(ref mut ma) = phase.actions[i]
+                        && let reconciler::ModuleActionKind::DeployFiles { ref mut files } = ma.kind
+                    {
+                        let mut j = 0;
+                        while j < files.len() {
+                            let file_target = cfgd_core::expand_tilde(&files[j].target);
+                            if is_unmanaged_file(&file_target, config_dir, state) {
+                                let choice = prompt_backup_choice_v2(
+                                    &file_target,
+                                    Some(&module_name),
+                                    printer,
+                                    &options,
+                                )?;
+                                if choice.starts_with("Backup") {
+                                    backup_file_v2(&file_target, printer)?;
+                                } else if choice.starts_with("Skip") {
+                                    files.remove(j);
+                                    continue;
+                                }
+                            }
+                            j += 1;
+                        }
+                    }
+                }
+            }
+
+            i += 1;
+        }
+    }
+
+    Ok(())
+}
+
+/// Prompt the user to choose how to handle an unmanaged file target. (v2 helper)
+#[allow(dead_code)]
+fn prompt_backup_choice_v2<'a>(
+    target: &Path,
+    module_name: Option<&str>,
+    printer: &PrinterV2,
+    options: &'a [String],
+) -> anyhow::Result<&'a String> {
+    let msg = if let Some(m) = module_name {
+        format!(
+            "Module '{}': target exists as unmanaged file: {}",
+            m,
+            target.display()
+        )
+    } else {
+        format!("Target exists as unmanaged file: {}", target.display())
+    };
+    printer.status_simple(Role::Warn, msg);
+    Ok(printer
+        .prompt_select("How should cfgd handle this file?", options)
+        .unwrap_or(&options[0]))
+}
+
+// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
+// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
+#[allow(dead_code)]
+pub(in crate::cli) fn backup_file_v2(target: &Path, printer: &PrinterV2) -> anyhow::Result<()> {
+    let backup_path = PathBuf::from(format!("{}.cfgd-backup", target.display()));
+    std::fs::rename(target, &backup_path).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to backup {} to {}: {}",
+            target.display(),
+            backup_path.display(),
+            e
+        )
+    })?;
+    printer.status_simple(Role::Ok, format!("Backed up to {}", backup_path.display()));
+    Ok(())
+}
+
+// Bridge helper: callers wire up in R2 families F1–F4 (this file ships in F0 ahead of them).
+// #[allow(dead_code)] removed when R3 deletes the originals and renames *_v2 → bare name.
+#[allow(dead_code)]
+pub(in crate::cli) fn apply_backup_choice_v2(
+    choice: &str,
+    target: &Path,
+    action: &mut reconciler::Action,
+    printer: &PrinterV2,
+) -> anyhow::Result<()> {
+    if choice.starts_with("Backup") {
+        backup_file_v2(target, printer)?;
     } else if choice.starts_with("Skip") {
         let origin = match action {
             reconciler::Action::File(FileAction::Create { origin, .. })
