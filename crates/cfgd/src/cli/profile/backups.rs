@@ -1,3 +1,6 @@
+use cfgd_core::output_v2::Role;
+use tracing::warn;
+
 use super::*;
 
 pub(crate) fn collect_module_file_targets(module_name: &str, config_dir: &Path) -> Vec<PathBuf> {
@@ -39,17 +42,27 @@ pub(crate) fn prompt_restore_backups(
     targets: &[PathBuf],
     v2_printer: &cfgd_core::output_v2::Printer,
 ) -> anyhow::Result<()> {
-    use cfgd_core::output_v2::Role;
     for target in targets {
         let backup_path = PathBuf::from(format!("{}.cfgd-backup", target.display()));
         if backup_path.exists() {
-            let confirmed = v2_printer
-                .prompt_confirm(&format!(
-                    "Restore backup {} to {}?",
-                    backup_path.display(),
-                    target.display()
-                ))
-                .unwrap_or(false);
+            // Decline-on-IO-error is the safe default for an unattended path,
+            // but the underlying failure is logged so it's not invisible.
+            let confirmed = match v2_printer.prompt_confirm(&format!(
+                "Restore backup {} to {}?",
+                backup_path.display(),
+                target.display()
+            )) {
+                Ok(answer) => answer,
+                Err(e) => {
+                    warn!(
+                        target = %target.display(),
+                        backup = %backup_path.display(),
+                        error = %e,
+                        "prompt_restore_backups: prompt failed; declining restore"
+                    );
+                    false
+                }
+            };
             if confirmed {
                 // Remove the cfgd-managed file/symlink if it exists
                 if target.symlink_metadata().is_ok() {

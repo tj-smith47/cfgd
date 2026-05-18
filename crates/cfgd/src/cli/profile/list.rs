@@ -47,7 +47,7 @@ pub fn build_profile_list_missing_doc(profiles_dir: &Path) -> Doc {
         .with_data(&empty)
 }
 
-pub(crate) fn cmd_profile_list(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
+pub fn cmd_profile_list(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
     let profiles_dir = profiles_dir(cli);
 
     if !profiles_dir.exists() {

@@ -1,9 +1,11 @@
 Update Profile: default
 
+⚠ Module 'nvim' not found locally — make sure it exists or is a remote module
+
 ✓ Added module: nvim
 
-✓ Removed env: EDITOR
-
 ⚠ Module 'missing' not found in profile
+
+✓ Removed env: EDITOR
 
 ✓ Updated profile 'default' (2 change(s))

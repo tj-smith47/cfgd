@@ -3,4 +3,4 @@ Available Profiles
 Profile  Active  Inherits  Modules
 ──────────────────────────────────
 default  yes     -         0      
-work     -       default   2      
+work     -       default   0      

@@ -1,3 +1,5 @@
 Delete Profile: work
 
 ✓ Deleted profile 'work'
+
+✓ Generated .github/workflows/cfgd-release.yml

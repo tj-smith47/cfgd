@@ -1,0 +1,3 @@
+✗ Profile 'default' has errors: invalid type: string "not valid", expected struct ProfileDocument
+
+✓ Profile 'default' is valid

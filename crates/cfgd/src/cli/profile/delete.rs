@@ -1,7 +1,7 @@
 use super::*;
 use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
-pub(crate) fn cmd_profile_delete(
+pub fn cmd_profile_delete(
     cli: &Cli,
     v2_printer: &PrinterV2,
     name: &str,
@@ -15,6 +15,12 @@ pub(crate) fn cmd_profile_delete(
     let profile_path = pdir.join(format!("{}.yaml", name));
 
     if !profile_path.exists() {
+        v2_printer.emit(build_profile_error_doc(
+            name,
+            "not_found",
+            format!("Profile '{}' not found", name),
+            serde_json::Value::Null,
+        ));
         anyhow::bail!("Profile '{}' not found", name);
     }
 
@@ -23,6 +29,15 @@ pub(crate) fn cmd_profile_delete(
         && let Ok(cfg) = config::load_config(&cli.config)
         && cfg.spec.profile.as_deref() == Some(name)
     {
+        v2_printer.emit(build_profile_error_doc(
+            name,
+            "active_profile",
+            format!(
+                "Cannot delete '{}' — it is the active profile. Switch first with: cfgd profile switch <other>",
+                name
+            ),
+            serde_json::Value::Null,
+        ));
         anyhow::bail!(
             "Cannot delete '{}' — it is the active profile. Switch first with: cfgd profile switch <other>",
             name
@@ -32,6 +47,16 @@ pub(crate) fn cmd_profile_delete(
     // Safety: refuse if inherited by other profiles
     let inheritors = profiles_inheriting(&pdir, name)?;
     if !inheritors.is_empty() {
+        v2_printer.emit(build_profile_error_doc(
+            name,
+            "inherited",
+            format!(
+                "Cannot delete '{}' — inherited by: {}",
+                name,
+                inheritors.join(", ")
+            ),
+            serde_json::json!({ "inheritors": inheritors }),
+        ));
         anyhow::bail!(
             "Cannot delete '{}' — inherited by: {}",
             name,

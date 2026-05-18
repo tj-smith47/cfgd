@@ -1,0 +1,3 @@
+Delete Profile: default
+
+✗ Cannot delete 'default' — it is the active profile. Switch first with: cfgd profile switch <other>

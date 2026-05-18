@@ -109,11 +109,7 @@ fn package_display_rows(pkgs: &PackagesSpec) -> Vec<(String, String)> {
     rows
 }
 
-pub(crate) fn cmd_profile_show(
-    cli: &Cli,
-    printer: &PrinterV2,
-    name: Option<&str>,
-) -> anyhow::Result<()> {
+pub fn cmd_profile_show(cli: &Cli, printer: &PrinterV2, name: Option<&str>) -> anyhow::Result<()> {
     let (profile_name, resolved) = match name {
         Some(n) => {
             config::load_config(&cli.config)?;

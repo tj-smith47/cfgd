@@ -131,6 +131,28 @@ impl Printer {
         );
         (p, buf)
     }
+
+    /// Doc capture combined with canned prompt responses. Required by snapshot
+    /// tests that drive `cmd_x` against a tempdir fixture while the command
+    /// itself calls `prompt_confirm` / `prompt_text` (e.g. profile create's
+    /// interactive mode, profile edit's accept-retry branch).
+    pub fn for_test_doc_with_prompt_responses(responses: Vec<PromptAnswer>) -> (Self, DocCapture) {
+        let human = Arc::new(Mutex::new(String::new()));
+        let doc_json = Arc::new(Mutex::new(None));
+        let cap = DocCapture {
+            human: human.clone(),
+            doc_json,
+        };
+        let p = build_test_printer(
+            human,
+            Theme::default(),
+            Verbosity::Normal,
+            OutputFormat::Table,
+            Some(cap.clone_internal()),
+            Some(Arc::new(Mutex::new(VecDeque::from(responses)))),
+        );
+        (p, cap)
+    }
 }
 
 impl DocCapture {

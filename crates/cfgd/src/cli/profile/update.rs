@@ -1,7 +1,7 @@
 use super::*;
 use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
-pub(crate) fn cmd_profile_update(
+pub fn cmd_profile_update(
     cli: &Cli,
     printer: &Printer,
     v2_printer: &PrinterV2,
@@ -30,6 +30,12 @@ pub(crate) fn cmd_profile_update(
     let config_dir = config_dir(cli);
     let profile_path = config_dir.join("profiles").join(format!("{}.yaml", name));
     if !profile_path.exists() {
+        v2_printer.emit(super::build_profile_error_doc(
+            name,
+            "not_found",
+            format!("Profile '{}' not found", name),
+            serde_json::Value::Null,
+        ));
         anyhow::bail!("Profile '{}' not found", name);
     }
 
@@ -45,6 +51,12 @@ pub(crate) fn cmd_profile_update(
         }
         let parent_path = profiles_dir.join(format!("{}.yaml", parent));
         if !parent_path.exists() {
+            v2_printer.emit(super::build_profile_error_doc(
+                name,
+                "parent_not_found",
+                format!("Parent profile '{}' not found", parent),
+                serde_json::json!({ "parent": parent }),
+            ));
             anyhow::bail!("Parent profile '{}' not found", parent);
         }
         doc.spec.inherits.push(parent.clone());
@@ -408,7 +420,9 @@ pub(crate) fn cmd_profile_update(
     // Add secrets
     for secret_str in &add_secrets {
         let secret = parse_secret_spec(secret_str)?;
-        // parse_secret_spec always produces a target
+        // parse_secret_spec always produces a target; this branch guards an
+        // internal invariant rather than a user-facing error, so it stays as
+        // a bare bail without a structured Doc.
         let target = match secret.target.as_ref() {
             Some(t) => cfgd_core::expand_tilde(t),
             None => anyhow::bail!("secret parsed without target"),

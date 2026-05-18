@@ -1,0 +1,4 @@
+Switch Profile
+
+✗ Profile 'missing' not found at <CONFIG_DIR>/profiles/missing.yaml
+Available profiles: default, work

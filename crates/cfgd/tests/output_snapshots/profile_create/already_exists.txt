@@ -1,0 +1,3 @@
+Create Profile: default
+
+✗ Profile 'default' already exists at <CONFIG_DIR>/profiles/default.yaml

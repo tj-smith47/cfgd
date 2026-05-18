@@ -292,7 +292,7 @@ fn prompt_restore_backups_no_op_when_no_backup_files_exist() {
 fn prompt_restore_backups_with_confirmed_yes_restores_backup_to_target() {
     // Stage `<target>.cfgd-backup` alongside a target path, queue
     // Confirm(true), assert: backup file is renamed onto the target,
-    // the printer.success "Restored <path>" line fires.
+    // the v2_printer.status_simple(Role::Ok, "Restored <path>") line fires.
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("restored.conf");
     let backup = dir.path().join("restored.conf.cfgd-backup");

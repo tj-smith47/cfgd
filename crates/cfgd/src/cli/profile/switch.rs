@@ -1,16 +1,18 @@
 use super::*;
 use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
-pub(crate) fn cmd_profile_switch(
-    cli: &Cli,
-    name: &str,
-    v2_printer: &PrinterV2,
-) -> anyhow::Result<()> {
+pub fn cmd_profile_switch(cli: &Cli, name: &str, v2_printer: &PrinterV2) -> anyhow::Result<()> {
     v2_printer.heading("Switch Profile");
 
     let config_dir = super::config_dir(cli);
     let config_path = config_dir.join("cfgd.yaml");
     if !config_path.exists() {
+        v2_printer.emit(super::build_profile_error_doc(
+            name,
+            "no_config",
+            MSG_NO_CONFIG,
+            serde_json::json!({ "configPath": config_path.display().to_string() }),
+        ));
         anyhow::bail!("{}", MSG_NO_CONFIG);
     }
 
@@ -19,11 +21,26 @@ pub(crate) fn cmd_profile_switch(
     let profile_path = profiles_dir.join(format!("{}.yaml", name));
     if !profile_path.exists() {
         // List available profiles for the error message
-        let mut hint = String::new();
         let available = super::list_yaml_stems(&profiles_dir).unwrap_or_default();
-        if !available.is_empty() {
-            hint = format!("\nAvailable profiles: {}", available.join(", "));
-        }
+        let hint = if available.is_empty() {
+            String::new()
+        } else {
+            format!("\nAvailable profiles: {}", available.join(", "))
+        };
+        v2_printer.emit(super::build_profile_error_doc(
+            name,
+            "not_found",
+            format!(
+                "Profile '{}' not found at {}{}",
+                name,
+                profile_path.display(),
+                hint
+            ),
+            serde_json::json!({
+                "profilePath": profile_path.display().to_string(),
+                "available": available,
+            }),
+        ));
         anyhow::bail!(
             "Profile '{}' not found at {}{}",
             name,

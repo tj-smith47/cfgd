@@ -1,14 +1,16 @@
 use super::*;
 use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
-pub(crate) fn cmd_profile_edit(
-    cli: &Cli,
-    v2_printer: &PrinterV2,
-    name: &str,
-) -> anyhow::Result<()> {
+pub fn cmd_profile_edit(cli: &Cli, v2_printer: &PrinterV2, name: &str) -> anyhow::Result<()> {
     validate_resource_name(name, "Profile")?;
     let profile_path = profiles_dir(cli).join(format!("{}.yaml", name));
     if !profile_path.exists() {
+        v2_printer.emit(build_profile_error_doc(
+            name,
+            "not_found",
+            format!("Profile '{}' not found", name),
+            serde_json::Value::Null,
+        ));
         anyhow::bail!("Profile '{}' not found", name);
     }
 

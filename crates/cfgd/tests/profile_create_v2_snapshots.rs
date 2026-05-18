@@ -2,83 +2,177 @@
 //!
 //! Cases:
 //!   - `profile_create/happy.{txt,json}` — flag-driven create with no
-//!     inherits and no modules.
+//!     inherits and no modules; real `cmd_profile_create` against a
+//!     tempdir fixture.
 //!   - `profile_create/inherits.txt` — create with `--inherits a,b` and
-//!     `--modules nvim`; both kvs render under the success status.
-//!
-//! `cmd_profile_create` builds its emitted Doc inline; these tests
-//! reconstruct the same Doc shape so the renderer coverage is tested
-//! without needing a real tempdir + file copy machinery. The
-//! `cmd_profile_create` body itself is exercised by the in-crate unit
-//! tests in `src/cli/profile/tests.rs`.
+//!     `--modules nvim`.
+//!   - `profile_create/interactive.txt` — empty flags trigger interactive
+//!     mode; the prompt-response queue answers both `prompt_text` calls
+//!     with the empty string so no inherits/modules are added.
+//!   - `profile_create/already_exists.txt` — re-creating a fixture-seeded
+//!     profile triggers the emit-then-bail error Doc
+//!     (`{error: "already_exists"}`).
 //!
 //! Goldens live under `tests/output_snapshots/profile_create/`. Regenerate
 //! with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test profile_create_v2_snapshots
 
+mod common;
+
 use std::path::Path;
 
-use cfgd_core::output_v2::{Doc, Printer, Role};
+use cfgd::cli::profile::cmd_profile_create;
+use cfgd_core::output_v2::{Printer, PromptAnswer};
+
+use common::{cli_for, normalize_profile_paths, profile_create_args, profile_test_config_setup};
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
-fn create_doc(name: &str, path: &str, inherits: &[&str], modules: &[&str]) -> Doc {
-    let mut doc = Doc::new().status(Role::Ok, format!("Created profile '{}' at {}", name, path));
-    if !inherits.is_empty() {
-        doc = doc.kv("Inherits", inherits.join(", "));
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for inner in chars.by_ref() {
+                if inner == 'm' {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
     }
-    if !modules.is_empty() {
-        doc = doc.kv("Modules", modules.join(", "));
+    out
+}
+
+fn assert_snapshot(base: &Path, name: &str, actual: &str) {
+    let path = base.join(name);
+    if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !path.exists() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, actual).unwrap();
+        return;
     }
-    doc.hint(format!("Activate with: cfgd profile switch {}", name))
-        .with_data(serde_json::json!({
-            "name": name,
-            "path": path,
-            "inherits": inherits,
-            "modules": modules,
-        }))
+    let expected = std::fs::read_to_string(&path).unwrap();
+    pretty_assertions::assert_eq!(actual, expected, "snapshot mismatch: {name}");
 }
 
 #[test]
 fn profile_create_happy_human() {
-    let (printer, cap) = Printer::for_test_doc();
-    printer.heading("Create Profile: newprof");
-    printer.emit(create_doc(
-        "newprof",
-        "/etc/cfgd/profiles/newprof.yaml",
-        &[],
-        &[],
-    ));
-    drop(printer);
-    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "profile_create/happy.txt");
+    let (config_dir, state_dir) = profile_test_config_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (v2_printer, cap) = Printer::for_test_doc();
+    let mut args = profile_create_args("newprof");
+    // Non-empty packages list forces non-interactive mode without adding a
+    // package: pass a flag that's a no-op against the default platform mgr.
+    args.env = vec!["FOO=bar".to_string()];
+
+    cmd_profile_create(&cli, &v2_printer, &args).unwrap();
+    drop(v2_printer);
+
+    let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
+    assert_snapshot(
+        Path::new(SNAPSHOT_ROOT),
+        "profile_create/happy.txt",
+        &stripped,
+    );
 }
 
 #[test]
 fn profile_create_happy_json() {
-    let (printer, cap) = Printer::for_test_doc();
-    printer.emit(create_doc(
-        "newprof",
-        "/etc/cfgd/profiles/newprof.yaml",
-        &[],
-        &[],
-    ));
-    drop(printer);
+    let (config_dir, state_dir) = profile_test_config_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (v2_printer, cap) = Printer::for_test_doc();
+    let mut args = profile_create_args("newprof");
+    args.env = vec!["FOO=bar".to_string()];
+
+    cmd_profile_create(&cli, &v2_printer, &args).unwrap();
+    drop(v2_printer);
+
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["name"], "newprof");
-    assert_eq!(json["path"], "/etc/cfgd/profiles/newprof.yaml");
-    cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "profile_create/happy.json");
+    assert!(json["path"].as_str().unwrap().ends_with("newprof.yaml"));
 }
 
 #[test]
 fn profile_create_inherits_human() {
-    let (printer, cap) = Printer::for_test_doc();
-    printer.heading("Create Profile: child");
-    printer.emit(create_doc(
-        "child",
-        "/etc/cfgd/profiles/child.yaml",
-        &["default", "shared"],
-        &["nvim"],
-    ));
-    drop(printer);
-    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "profile_create/inherits.txt");
+    let (config_dir, state_dir) = profile_test_config_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (v2_printer, cap) = Printer::for_test_doc();
+    let mut args = profile_create_args("child");
+    args.inherits = vec!["default".to_string()];
+    args.modules = vec!["nvim".to_string()];
+
+    cmd_profile_create(&cli, &v2_printer, &args).unwrap();
+    drop(v2_printer);
+
+    let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
+    assert_snapshot(
+        Path::new(SNAPSHOT_ROOT),
+        "profile_create/inherits.txt",
+        &stripped,
+    );
+}
+
+#[test]
+fn profile_create_interactive_human() {
+    // Empty args list triggers interactive mode; the queue answers both
+    // `prompt_text` invocations with the empty string so the profile is
+    // created with no inherits and no modules.
+    let (config_dir, state_dir) = profile_test_config_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (v2_printer, cap) = Printer::for_test_doc_with_prompt_responses(vec![
+        PromptAnswer::Text(String::new()),
+        PromptAnswer::Text(String::new()),
+    ]);
+    let args = profile_create_args("interactive_prof");
+
+    cmd_profile_create(&cli, &v2_printer, &args).unwrap();
+    drop(v2_printer);
+
+    let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
+    assert_snapshot(
+        Path::new(SNAPSHOT_ROOT),
+        "profile_create/interactive.txt",
+        &stripped,
+    );
+}
+
+#[test]
+fn profile_create_already_exists_human() {
+    // `default` is seeded in the fixture, so re-creating it triggers the
+    // emit-then-bail Doc before `anyhow::bail!` fires.
+    let (config_dir, state_dir) = profile_test_config_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (v2_printer, cap) = Printer::for_test_doc();
+    let mut args = profile_create_args("default");
+    args.env = vec!["FOO=bar".to_string()];
+
+    let err = cmd_profile_create(&cli, &v2_printer, &args)
+        .expect_err("creating an existing profile must error");
+    assert!(err.to_string().contains("already exists"));
+    drop(v2_printer);
+
+    let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
+    assert_snapshot(
+        Path::new(SNAPSHOT_ROOT),
+        "profile_create/already_exists.txt",
+        &stripped,
+    );
+}
+
+#[test]
+fn profile_create_already_exists_json_payload() {
+    let (config_dir, state_dir) = profile_test_config_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (v2_printer, cap) = Printer::for_test_doc();
+    let mut args = profile_create_args("default");
+    args.env = vec!["FOO=bar".to_string()];
+
+    let _ = cmd_profile_create(&cli, &v2_printer, &args);
+    drop(v2_printer);
+
+    let json = cap.json().expect("error path emits a Doc with payload");
+    assert_eq!(json["error"], "already_exists");
+    assert_eq!(json["name"], "default");
 }

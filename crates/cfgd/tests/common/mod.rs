@@ -9,7 +9,9 @@
 
 use std::path::PathBuf;
 
-use cfgd::cli::{ApplyArgs, Cli, Command, OutputFormatArg, PlanArgs};
+use cfgd::cli::{
+    ApplyArgs, Cli, Command, OutputFormatArg, PlanArgs, ProfileCreateArgs, ProfileUpdateArgs,
+};
 use cfgd_core::output;
 use cfgd_core::state::{ApplyStatus, StateStore};
 
@@ -538,6 +540,193 @@ pub fn log_show_output_no_journal_setup() -> (tempfile::TempDir, i64) {
         .record_apply("test", "hash1", ApplyStatus::Success, None)
         .unwrap();
     (state_dir, apply_id)
+}
+
+// ---------------------------------------------------------------------------
+// Profile fixtures (cmd_profile_*).
+//
+// Each fixture writes a `cfgd.yaml` + one or more `profiles/<name>.yaml` files
+// into a tempdir so the profile commands can exercise their on-disk paths.
+// ---------------------------------------------------------------------------
+
+const PROFILE_DEFAULT_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  env:
+    - name: EDITOR
+      value: vim
+"#;
+
+const PROFILE_WORK_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: work
+spec:
+  inherits:
+    - default
+  env:
+    - name: EDITOR
+      value: code
+"#;
+
+const PROFILE_CFGD_CONFIG_YAML: &str =
+    "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n";
+
+/// Tempdir-backed `cfgd.yaml` + `profiles/default.yaml` + `profiles/work.yaml`.
+/// Returns `(config_dir, state_dir)` — both tempdirs must outlive the test.
+/// `work` inherits from `default` so the inheritor-refusal path is reachable.
+pub fn profile_test_config_setup() -> (tempfile::TempDir, tempfile::TempDir) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        config_dir.path().join("cfgd.yaml"),
+        PROFILE_CFGD_CONFIG_YAML,
+    )
+    .unwrap();
+    std::fs::write(profiles_dir.join("default.yaml"), PROFILE_DEFAULT_YAML).unwrap();
+    std::fs::write(profiles_dir.join("work.yaml"), PROFILE_WORK_YAML).unwrap();
+    (config_dir, state_dir)
+}
+
+/// Like `profile_test_config_setup` but writes ONLY `default.yaml` (no `work`),
+/// so the inheritor-refusal path isn't reachable. Use when the test needs a
+/// minimal single-profile dir.
+pub fn profile_test_config_single_setup() -> (tempfile::TempDir, tempfile::TempDir) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        config_dir.path().join("cfgd.yaml"),
+        PROFILE_CFGD_CONFIG_YAML,
+    )
+    .unwrap();
+    std::fs::write(profiles_dir.join("default.yaml"), PROFILE_DEFAULT_YAML).unwrap();
+    (config_dir, state_dir)
+}
+
+/// Default `ProfileCreateArgs` — empty flags so the command body takes the
+/// interactive path (used by snapshot tests that drive `prompt_text`).
+pub fn profile_create_args(name: &str) -> ProfileCreateArgs {
+    ProfileCreateArgs {
+        name: name.to_string(),
+        inherits: vec![],
+        modules: vec![],
+        packages: vec![],
+        env: vec![],
+        aliases: vec![],
+        system: vec![],
+        files: vec![],
+        private: false,
+        secrets: vec![],
+        pre_apply: vec![],
+        post_apply: vec![],
+        pre_reconcile: vec![],
+        post_reconcile: vec![],
+        on_change: vec![],
+        on_drift: vec![],
+    }
+}
+
+/// Default `ProfileUpdateArgs` — empty add/remove vectors. Mutate the returned
+/// struct directly to add specific args (e.g. `args.modules = vec![url]`).
+pub fn profile_update_args() -> ProfileUpdateArgs {
+    ProfileUpdateArgs {
+        name: None,
+        inherits: vec![],
+        modules: vec![],
+        packages: vec![],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        system: vec![],
+        secrets: vec![],
+        pre_apply: vec![],
+        post_apply: vec![],
+        pre_reconcile: vec![],
+        post_reconcile: vec![],
+        on_change: vec![],
+        on_drift: vec![],
+        private: false,
+    }
+}
+
+/// Initialise a bare upstream + a working source repo, commit a minimal
+/// `module.yaml` at the root, annotate it with `tag`, and push both the
+/// branch and the tag to the bare. Returns the bare path so
+/// `file://<bare>@<tag>` can be used as a remote module URL.
+///
+/// Mirrors `cmd_module_add_remote_local_bare::make_bare_with_module` in
+/// `crates/cfgd/src/cli/module/tests.rs`; lifted here so integration test
+/// crates can drive `cmd_profile_update --module <file://...>` against a
+/// hermetic remote.
+pub fn make_bare_module_repo(
+    tmp_root: &std::path::Path,
+    module_name: &str,
+    tag: &str,
+) -> std::path::PathBuf {
+    let bare = tmp_root.join(format!("{}-upstream.git", module_name));
+    let _bare_repo = git2::Repository::init_bare(&bare).expect("init_bare");
+
+    let src = tmp_root.join(format!("{}-src", module_name));
+    let src_repo = git2::Repository::init(&src).expect("init_src");
+    let yaml = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {}\n  description: test mod\nspec: {{}}\n",
+        module_name
+    );
+    std::fs::write(src.join("module.yaml"), yaml).expect("write module.yaml");
+    let mut index = src_repo.index().expect("index");
+    index
+        .add_path(std::path::Path::new("module.yaml"))
+        .expect("add_path");
+    index.write().expect("index_write");
+    let tree_id = index.write_tree().expect("write_tree");
+    let tree = src_repo.find_tree(tree_id).expect("find_tree");
+    let sig = git2::Signature::now("t", "t@example.com").expect("signature");
+    let commit_id = src_repo
+        .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+        .expect("commit");
+    drop(tree);
+    let commit_obj = src_repo.find_commit(commit_id).expect("find_commit");
+    src_repo
+        .tag(tag, commit_obj.as_object(), &sig, "release", false)
+        .expect("tag");
+
+    let bare_url = format!("file://{}", bare.display());
+    let mut remote = src_repo.remote("origin", &bare_url).expect("add_remote");
+    let branch = src_repo
+        .head()
+        .expect("head")
+        .shorthand()
+        .unwrap_or("master")
+        .to_string();
+    remote
+        .push(
+            &[
+                &format!("refs/heads/{branch}:refs/heads/{branch}"),
+                &format!("refs/tags/{tag}:refs/tags/{tag}"),
+            ],
+            None,
+        )
+        .expect("push");
+    bare
+}
+
+/// Normalize tempdir-rooted paths in a captured snapshot to stable placeholders
+/// so goldens are host-stable across runs.
+pub fn normalize_profile_paths(raw: &str, config_dir: &std::path::Path) -> String {
+    let mut out = raw.to_string();
+    let cfg_file = config_dir.join("cfgd.yaml");
+    out = out.replace(
+        &cfg_file.to_string_lossy().to_string(),
+        "<CONFIG_DIR>/cfgd.yaml",
+    );
+    out = out.replace(&config_dir.to_string_lossy().to_string(), "<CONFIG_DIR>");
+    out
 }
 
 /// Seed a state DB with a target apply followed by a non-file (package)
