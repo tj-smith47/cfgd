@@ -1459,8 +1459,8 @@ pub fn execute(
             ModuleCommand::Create(args) => {
                 module::cmd_module_create(cli, printer, v2_printer, args)
             }
-            ModuleCommand::Update(args) => module::cmd_module_update_local(cli, printer, args),
-            ModuleCommand::Edit { name } => module::cmd_module_edit(cli, printer, name),
+            ModuleCommand::Update(args) => module::cmd_module_update_local(cli, v2_printer, args),
+            ModuleCommand::Edit { name } => module::cmd_module_edit(cli, v2_printer, name),
             ModuleCommand::Delete { name, yes, purge } => {
                 module::cmd_module_delete(cli, printer, v2_printer, name, *yes, *purge)
             }

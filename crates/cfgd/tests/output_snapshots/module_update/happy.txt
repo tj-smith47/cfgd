@@ -1,0 +1,5 @@
+Update Module: upd-mod
+
+✓ Added package: ripgrep
+
+✓ Updated module 'upd-mod' (1 change(s))

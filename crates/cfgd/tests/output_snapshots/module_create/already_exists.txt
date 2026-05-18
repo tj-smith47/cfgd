@@ -1,0 +1,3 @@
+Create Module: dup-mod
+
+✗ Module 'dup-mod' already exists at <CONFIG_DIR>/modules/dup-mod

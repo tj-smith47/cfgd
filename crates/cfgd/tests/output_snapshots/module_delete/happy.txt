@@ -1,0 +1,8 @@
+Delete Module: del-mod
+
+Restoring files
+  (none)
+
+✓ Deleted module 'del-mod'
+
+✓ Generated .github/workflows/cfgd-release.yml

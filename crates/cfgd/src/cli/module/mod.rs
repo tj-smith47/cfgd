@@ -157,9 +157,7 @@ mod tests;
 
 pub use apply_crd::{PushOptions, cmd_module_pull, cmd_module_push};
 pub use build::cmd_module_build;
-pub(super) use crud::{
-    cmd_module_create, cmd_module_delete, cmd_module_edit, cmd_module_update_local,
-};
+pub use crud::{cmd_module_create, cmd_module_delete, cmd_module_edit, cmd_module_update_local};
 pub use export::cmd_module_export;
 pub use keys::cmd_module_keys_list;
 pub(super) use keys::{cmd_module_keys_generate, cmd_module_keys_rotate};

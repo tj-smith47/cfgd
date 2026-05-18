@@ -1,0 +1,3 @@
+Update Module: ghost
+
+✗ Module 'ghost' not found at <CONFIG_DIR>/modules/ghost/module.yaml

@@ -1440,13 +1440,14 @@ fn module_update_add_and_remove_packages() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let _printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let args = ModuleUpdateArgs {
         packages: vec!["ripgrep".to_string(), "-vim".to_string()],
         ..empty_module_update_args("test-mod")
     };
-    module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+    module::cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "test-mod").unwrap();
     let names: Vec<&str> = doc.spec.packages.iter().map(|p| p.name.as_str()).collect();
@@ -1465,7 +1466,8 @@ fn module_update_set_overrides() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let _printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let args = ModuleUpdateArgs {
         sets: vec![
@@ -1475,7 +1477,7 @@ fn module_update_set_overrides() {
         ],
         ..empty_module_update_args("test-mod")
     };
-    module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+    module::cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "test-mod").unwrap();
     let pkg = &doc.spec.packages[0];
@@ -1628,13 +1630,14 @@ fn module_update_idempotent_add() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let _printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let args = ModuleUpdateArgs {
         packages: vec!["curl".to_string()],
         ..empty_module_update_args("test-mod")
     };
-    module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+    module::cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "test-mod").unwrap();
     assert_eq!(doc.spec.packages.len(), 1);
@@ -6986,13 +6989,14 @@ spec:
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let _printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let args = ModuleUpdateArgs {
         env: vec!["TERM=xterm".to_string(), "-PAGER".to_string()],
         ..empty_module_update_args("env-mod")
     };
-    module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+    module::cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "env-mod").unwrap();
     let names: Vec<&str> = doc.spec.env.iter().map(|e| e.name.as_str()).collect();
@@ -7021,13 +7025,14 @@ spec:
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let _printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let args = ModuleUpdateArgs {
         aliases: vec!["gd=git diff".to_string(), "-gs".to_string()],
         ..empty_module_update_args("alias-mod")
     };
-    module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+    module::cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "alias-mod").unwrap();
     let names: Vec<&str> = doc.spec.aliases.iter().map(|a| a.name.as_str()).collect();
@@ -7054,13 +7059,14 @@ spec:
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let _printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let args = ModuleUpdateArgs {
         depends: vec!["tools".to_string(), "-core".to_string()],
         ..empty_module_update_args("dep-mod")
     };
-    module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+    module::cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "dep-mod").unwrap();
     assert!(doc.spec.depends.contains(&"base".to_string()));
@@ -7087,13 +7093,14 @@ spec:
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let _printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let args = ModuleUpdateArgs {
         post_apply: vec!["echo new-step".to_string(), "-echo cleanup".to_string()],
         ..empty_module_update_args("script-mod")
     };
-    module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+    module::cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "script-mod").unwrap();
     let scripts = doc.spec.scripts.unwrap();
@@ -7113,13 +7120,14 @@ fn module_update_description() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let _printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let args = ModuleUpdateArgs {
         description: Some("New description".to_string()),
         ..empty_module_update_args("desc-mod")
     };
-    module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+    module::cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "desc-mod").unwrap();
     assert_eq!(
@@ -7138,13 +7146,14 @@ fn module_update_clear_description() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let _printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let args = ModuleUpdateArgs {
         description: Some(String::new()),
         ..empty_module_update_args("desc-mod")
     };
-    module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+    module::cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "desc-mod").unwrap();
     assert_eq!(doc.metadata.description, None);
@@ -7161,10 +7170,12 @@ fn module_update_no_changes() {
 
     let cli = test_cli(dir.path());
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
+    let _ = &printer;
 
     // No flags at all — should print "no changes" and succeed
     let args = empty_module_update_args("noop-mod");
-    let result = module::cmd_module_update_local(&cli, &printer, &args);
+    let result = module::cmd_module_update_local(&cli, &v2_printer, &args);
     assert!(
         result.is_ok(),
         "module update with no flags should succeed (no-op): {:?}",
@@ -7182,9 +7193,11 @@ fn module_update_nonexistent_module_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
+    let _ = &printer;
 
     let args = empty_module_update_args("nonexistent");
-    let result = module::cmd_module_update_local(&cli, &printer, &args);
+    let result = module::cmd_module_update_local(&cli, &v2_printer, &args);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -7207,7 +7220,8 @@ fn module_update_add_files() {
     std::fs::write(&source_file, "key = \"value\"").unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let _printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let args = ModuleUpdateArgs {
         files: vec![format!(
@@ -7216,7 +7230,7 @@ fn module_update_add_files() {
         )],
         ..empty_module_update_args("file-mod")
     };
-    module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+    module::cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "file-mod").unwrap();
     assert_eq!(doc.spec.files.len(), 1);
@@ -7252,13 +7266,14 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let _printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let args = ModuleUpdateArgs {
         files: vec![format!("-{}", target_path)],
         ..empty_module_update_args("rm-file-mod")
     };
-    module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+    module::cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "rm-file-mod").unwrap();
     assert_eq!(
@@ -7288,6 +7303,8 @@ fn module_update_remove_nonexistent_warns() {
 
     let cli = test_cli(dir.path());
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
+    let _ = &printer;
 
     // Try removing items that don't exist — should still succeed (just warns)
     let args = ModuleUpdateArgs {
@@ -7297,7 +7314,7 @@ fn module_update_remove_nonexistent_warns() {
         depends: vec!["-nodep".to_string()],
         ..empty_module_update_args("warn-mod")
     };
-    let result = module::cmd_module_update_local(&cli, &printer, &args);
+    let result = module::cmd_module_update_local(&cli, &v2_printer, &args);
     assert!(
         result.is_ok(),
         "module update should succeed when removing nonexistent items (warns only): {:?}",
@@ -10336,14 +10353,15 @@ fn module_update_env_add_and_remove() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let _printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     // Add env
     let args = ModuleUpdateArgs {
         env: vec!["MY_VAR=hello".to_string()],
         ..empty_module_update_args("env-mod")
     };
-    module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+    module::cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "env-mod").unwrap();
     assert!(doc.spec.env.iter().any(|e| e.name == "MY_VAR"));
@@ -10353,7 +10371,7 @@ fn module_update_env_add_and_remove() {
         env: vec!["-MY_VAR".to_string()],
         ..empty_module_update_args("env-mod")
     };
-    module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+    module::cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "env-mod").unwrap();
     assert!(!doc.spec.env.iter().any(|e| e.name == "MY_VAR"));
@@ -10371,14 +10389,15 @@ fn module_update_alias_add_and_remove() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let _printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     // Add alias
     let args = ModuleUpdateArgs {
         aliases: vec!["ll=ls -la".to_string()],
         ..empty_module_update_args("alias-mod")
     };
-    module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+    module::cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "alias-mod").unwrap();
     assert!(doc.spec.aliases.iter().any(|a| a.name == "ll"));
@@ -10388,7 +10407,7 @@ fn module_update_alias_add_and_remove() {
         aliases: vec!["-ll".to_string()],
         ..empty_module_update_args("alias-mod")
     };
-    module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+    module::cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "alias-mod").unwrap();
     assert!(!doc.spec.aliases.iter().any(|a| a.name == "ll"));
@@ -10406,14 +10425,15 @@ fn module_update_depends_add_and_remove() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let _printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     // Add dependency
     let args = ModuleUpdateArgs {
         depends: vec!["base".to_string()],
         ..empty_module_update_args("dep-mod")
     };
-    module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+    module::cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "dep-mod").unwrap();
     assert!(doc.spec.depends.contains(&"base".to_string()));
@@ -10423,7 +10443,7 @@ fn module_update_depends_add_and_remove() {
         depends: vec!["-base".to_string()],
         ..empty_module_update_args("dep-mod")
     };
-    module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+    module::cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "dep-mod").unwrap();
     assert!(!doc.spec.depends.contains(&"base".to_string()));
