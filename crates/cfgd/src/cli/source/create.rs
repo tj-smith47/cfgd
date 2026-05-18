@@ -1,8 +1,9 @@
 use super::*;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
-pub(crate) fn cmd_source_create(
+pub fn cmd_source_create(
     cli: &Cli,
-    printer: &Printer,
+    v2_printer: &PrinterV2,
     name: Option<&str>,
     description: Option<&str>,
     version: Option<&str>,
@@ -10,6 +11,15 @@ pub(crate) fn cmd_source_create(
     let config_dir = config_dir(cli);
     let source_path = config_dir.join("cfgd-source.yaml");
     if source_path.exists() {
+        v2_printer.emit(build_source_error_doc(
+            "cfgd-source.yaml",
+            "already_exists",
+            format!(
+                "cfgd-source.yaml already exists at {} — use 'cfgd source edit' to modify it",
+                source_path.display()
+            ),
+            serde_json::json!({ "path": source_path.display().to_string() }),
+        ));
         anyhow::bail!(
             "cfgd-source.yaml already exists at {} — use 'cfgd source edit' to modify it",
             source_path.display()
@@ -28,7 +38,7 @@ pub(crate) fn cmd_source_create(
                 .and_then(|n| n.to_str())
                 .unwrap_or("my-config");
             if is_interactive {
-                printer.prompt_text("Source name", dir_name)?
+                v2_printer.prompt_text("Source name", dir_name)?
             } else {
                 dir_name.to_string()
             }
@@ -39,7 +49,7 @@ pub(crate) fn cmd_source_create(
         Some(d) => d.to_string(),
         None => {
             if is_interactive {
-                printer.prompt_text("Description", "Team configuration source")?
+                v2_printer.prompt_text("Description", "Team configuration source")?
             } else {
                 "Team configuration source".to_string()
             }
@@ -104,25 +114,41 @@ pub(crate) fn cmd_source_create(
     );
 
     cfgd_core::atomic_write_str(&source_path, &yaml)?;
-    printer.success(&format!(
-        "Created cfgd-source.yaml at {}",
-        source_path.display()
-    ));
+
+    let mut doc = Doc::new().status(
+        Role::Ok,
+        format!("Created cfgd-source.yaml at {}", source_path.display()),
+    );
     if !profile_names.is_empty() {
-        printer.info(&format!(
-            "Included {} profile(s): {}",
-            profile_names.len(),
-            profile_names.join(", ")
-        ));
+        doc = doc.status(
+            Role::Info,
+            format!(
+                "Included {} profile(s): {}",
+                profile_names.len(),
+                profile_names.join(", ")
+            ),
+        );
     }
     if !module_names.is_empty() {
-        printer.info(&format!(
-            "Included {} module(s): {}",
-            module_names.len(),
-            module_names.join(", ")
-        ));
+        doc = doc.status(
+            Role::Info,
+            format!(
+                "Included {} module(s): {}",
+                module_names.len(),
+                module_names.join(", ")
+            ),
+        );
     }
-    printer.info("Edit the file to configure policy tiers and platform-profiles");
+    doc = doc
+        .hint("Edit the file to configure policy tiers and platform-profiles")
+        .with_data(serde_json::json!({
+            "name": source_name,
+            "path": source_path.display().to_string(),
+            "version": source_version,
+            "profiles": profile_names,
+            "modules": module_names,
+        }));
+    v2_printer.emit(doc);
 
     Ok(())
 }

@@ -1,0 +1,4 @@
+Source    team-config
+Priority  100
+
+→ Local config priority is 1000

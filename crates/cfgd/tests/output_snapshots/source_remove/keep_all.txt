@@ -1,0 +1,3 @@
+Remove Source: team-config
+
+✓ Source 'team-config' removed

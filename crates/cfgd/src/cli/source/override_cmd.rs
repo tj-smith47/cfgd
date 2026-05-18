@@ -1,8 +1,9 @@
 use super::*;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
-pub(crate) fn cmd_source_override(
+pub fn cmd_source_override(
     cli: &Cli,
-    printer: &Printer,
+    v2_printer: &PrinterV2,
     source_name: &str,
     action: SourceOverrideAction,
     path: &str,
@@ -13,29 +14,58 @@ pub(crate) fn cmd_source_override(
 
     // Verify source exists in config
     if !cfg.spec.sources.iter().any(|s| s.name == source_name) {
+        v2_printer.emit(build_source_error_doc(
+            source_name,
+            "not_found",
+            format!("Source '{}' not found", source_name),
+            serde_json::Value::Null,
+        ));
         anyhow::bail!("Source '{}' not found", source_name);
     }
 
     match action {
         SourceOverrideAction::Reject => {
-            printer.info(&format!(
-                "Rejecting '{}' from source '{}'",
-                path, source_name
-            ));
             update_source_rejection(&config_path, source_name, path)?;
-            printer.success(&format!("Rejected '{}' from '{}'", path, source_name));
+            v2_printer.emit(
+                Doc::new()
+                    .status(
+                        Role::Ok,
+                        format!("Rejected '{}' from '{}'", path, source_name),
+                    )
+                    .with_data(serde_json::json!({
+                        "sourceName": source_name,
+                        "path": path,
+                        "action": "reject",
+                    })),
+            );
         }
         SourceOverrideAction::Set => {
-            let val = value.ok_or_else(|| anyhow::anyhow!("'set' action requires a value"))?;
-            printer.info(&format!(
-                "Overriding '{}' = '{}' for source '{}'",
-                path, val, source_name
-            ));
+            let val = match value {
+                Some(v) => v,
+                None => {
+                    v2_printer.emit(build_source_error_doc(
+                        source_name,
+                        "missing_value",
+                        "'set' action requires a value",
+                        serde_json::json!({ "path": path }),
+                    ));
+                    anyhow::bail!("'set' action requires a value");
+                }
+            };
             update_source_override(&config_path, source_name, path, val)?;
-            printer.success(&format!(
-                "Override set: {} = {} for '{}'",
-                path, val, source_name
-            ));
+            v2_printer.emit(
+                Doc::new()
+                    .status(
+                        Role::Ok,
+                        format!("Override set: {} = {} for '{}'", path, val, source_name),
+                    )
+                    .with_data(serde_json::json!({
+                        "sourceName": source_name,
+                        "path": path,
+                        "value": val,
+                        "action": "set",
+                    })),
+            );
         }
     }
 

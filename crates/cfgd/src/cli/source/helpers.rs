@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Printer as PrinterV2, Role, SectionBuilder};
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role, SectionBuilder};
 
 // --- Source cache layout ---
 
@@ -97,6 +97,7 @@ pub(crate) fn parse_priority_input(input: &str) -> anyhow::Result<u32> {
 /// Side effects only on `printer` — split out so the output contract is
 /// testable via `Printer::for_test()` without needing a real source clone.
 // TEMP (R3 removes)
+#[allow(dead_code)]
 pub(crate) fn display_source_manifest(
     printer: &Printer,
     manifest: &config::ConfigSourceDocument,
@@ -157,74 +158,85 @@ pub(crate) fn display_source_manifest(
     provided_profiles
 }
 
-#[allow(dead_code)]
+/// Emit the "Source Manifest" + "Policy" sections via a buffered Doc and
+/// return the list of profile names the manifest provides. Doc-based so
+/// kv ordering inside sections renders deterministically (the SectionGuard
+/// path defers kv emission past section close, mis-ordering with the
+/// section header).
 pub(crate) fn display_source_manifest_v2(
     printer: &PrinterV2,
     manifest: &config::ConfigSourceDocument,
 ) -> Vec<String> {
     let provided_profiles = cfgd_core::config::source_profile_names(&manifest.spec.provides);
 
-    {
-        let guard = printer.section("Source Manifest");
-        guard.kv("Name", &manifest.metadata.name);
+    let mut doc = Doc::new().section("Source Manifest", |s| {
+        let mut s = s.kv("Name", &manifest.metadata.name);
         if let Some(ref version) = manifest.metadata.version {
-            guard.kv("Version", version);
+            s = s.kv("Version", version);
         }
         if let Some(ref desc) = manifest.metadata.description {
-            guard.kv("Description", desc);
+            s = s.kv("Description", desc);
         }
-
         if !provided_profiles.is_empty() {
-            guard.kv("Profiles", provided_profiles.join(", "));
+            s = s.kv("Profiles", provided_profiles.join(", "));
         }
-    }
+        s
+    });
 
-    // Policy summary
     let policy = &manifest.spec.policy;
     let required_count = count_policy_items(&policy.required);
     let recommended_count = count_policy_items(&policy.recommended);
     let locked_count = count_policy_items(&policy.locked);
+    let constraints = &manifest.spec.policy.constraints;
 
-    {
-        let guard = printer.section("Policy");
-        if locked_count > 0 {
-            guard.status_simple(
-                Role::Warn,
-                format!("{} locked item(s) (cannot override)", locked_count),
-            );
-        }
-        if required_count > 0 {
-            guard.status_simple(
-                Role::Info,
-                format!("{} required item(s) (team requirement)", required_count),
-            );
-        }
-        if recommended_count > 0 {
-            guard.status_simple(
-                Role::Info,
-                format!("{} recommended item(s)", recommended_count),
-            );
-        }
+    let any_policy_content = locked_count > 0
+        || required_count > 0
+        || recommended_count > 0
+        || constraints.no_scripts
+        || constraints.no_secrets_read
+        || !constraints.allowed_target_paths.is_empty();
 
-        // Constraints
-        let constraints = &manifest.spec.policy.constraints;
-        if constraints.no_scripts {
-            guard.status_simple(Role::Info, "Scripts: blocked");
-        }
-        if constraints.no_secrets_read {
-            guard.status_simple(Role::Info, "Secret access: blocked");
-        }
-        if !constraints.allowed_target_paths.is_empty() {
-            guard.status_simple(
-                Role::Info,
-                format!(
-                    "Allowed paths: {}",
-                    constraints.allowed_target_paths.join(", ")
-                ),
-            );
-        }
+    if any_policy_content {
+        doc = doc.section("Policy", |s| {
+            let mut s = s;
+            if locked_count > 0 {
+                s = s.status(
+                    Role::Warn,
+                    format!("{} locked item(s) (cannot override)", locked_count),
+                );
+            }
+            if required_count > 0 {
+                s = s.status(
+                    Role::Info,
+                    format!("{} required item(s) (team requirement)", required_count),
+                );
+            }
+            if recommended_count > 0 {
+                s = s.status(
+                    Role::Info,
+                    format!("{} recommended item(s)", recommended_count),
+                );
+            }
+            if constraints.no_scripts {
+                s = s.status(Role::Info, "Scripts: blocked");
+            }
+            if constraints.no_secrets_read {
+                s = s.status(Role::Info, "Secret access: blocked");
+            }
+            if !constraints.allowed_target_paths.is_empty() {
+                s = s.status(
+                    Role::Info,
+                    format!(
+                        "Allowed paths: {}",
+                        constraints.allowed_target_paths.join(", ")
+                    ),
+                );
+            }
+            s
+        });
     }
 
+    printer.emit(doc);
     provided_profiles
 }
 

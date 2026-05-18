@@ -1,0 +1,1 @@
+✗ No cfgd-source.yaml found in <CONFIG_DIR> — run 'cfgd source create' to scaffold one

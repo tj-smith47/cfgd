@@ -1,0 +1,5 @@
+Config Sources
+
+Name         URL                             Priority  Status 
+──────────────────────────────────────────────────────────────
+team-config  https://github.com/team/config  100       unknown

@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 use cfgd::cli::{
     ApplyArgs, Cli, Command, OutputFormatArg, PlanArgs, ProfileCreateArgs, ProfileUpdateArgs,
+    SourceAddArgs,
 };
 use cfgd_core::output;
 use cfgd_core::state::{ApplyStatus, StateStore};
@@ -727,6 +728,129 @@ pub fn normalize_profile_paths(raw: &str, config_dir: &std::path::Path) -> Strin
     );
     out = out.replace(&config_dir.to_string_lossy().to_string(), "<CONFIG_DIR>");
     out
+}
+
+// ---------------------------------------------------------------------------
+// Source fixtures (cmd_source_*).
+//
+// Tempdir-backed `cfgd.yaml` (+ optional sources entry); bare git repos for
+// `cmd_source_add` happy paths. Bare-source fixtures pair with the
+// `CFGD_ALLOW_LOCAL_SOURCES=1` env-var guard so `file://` URLs are accepted.
+// ---------------------------------------------------------------------------
+
+const SOURCE_CFGD_CONFIG_YAML: &str =
+    "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n";
+
+const SOURCE_DEFAULT_PROFILE_YAML: &str =
+    "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n";
+
+/// Bare-bones config dir for source-command tests: writes `cfgd.yaml` +
+/// `profiles/default.yaml` so command bodies that load the active profile
+/// find one. Returns `(config_dir, state_dir)` — both tempdirs must outlive
+/// the test.
+pub fn source_test_config_setup() -> (tempfile::TempDir, tempfile::TempDir) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(config_dir.path().join("cfgd.yaml"), SOURCE_CFGD_CONFIG_YAML).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        SOURCE_DEFAULT_PROFILE_YAML,
+    )
+    .unwrap();
+    (config_dir, state_dir)
+}
+
+/// `source_test_config_setup` plus one source entry in `cfgd.yaml` referencing
+/// the supplied URL and branch. Use when the test needs to exercise an
+/// already-subscribed source (`cmd_source_remove`, `cmd_source_update`,
+/// `cmd_source_show`, `cmd_source_priority`, `cmd_source_override`).
+pub fn source_test_config_with_source_setup(
+    source_name: &str,
+    url: &str,
+    branch: &str,
+    priority: u32,
+) -> (tempfile::TempDir, tempfile::TempDir) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        SOURCE_DEFAULT_PROFILE_YAML,
+    )
+    .unwrap();
+    let config = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: {source_name}\n      origin:\n        type: Git\n        url: {url}\n        branch: {branch}\n      subscription:\n        priority: {priority}\n"
+    );
+    std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
+    (config_dir, state_dir)
+}
+
+/// Default `SourceAddArgs` carrying the supplied URL; everything else
+/// defaults so each test mutates only the slots it cares about.
+pub fn source_add_args(url: impl Into<String>) -> SourceAddArgs {
+    SourceAddArgs {
+        url: url.into(),
+        name: None,
+        branch: None,
+        profile: None,
+        accept_recommended: false,
+        priority: None,
+        opt_in: vec![],
+        sync_interval: None,
+        auto_apply: false,
+        version_pin: None,
+        yes: true,
+    }
+}
+
+/// Initialise a bare upstream + a working source repo, commit a minimal
+/// `cfgd-source.yaml` at the root, push to the bare. Returns the bare path
+/// so `file://<bare>` can be used as a remote source URL.
+///
+/// Mirrors `make_bare_module_repo` shape, adapted to the source manifest.
+pub fn make_bare_source_repo(
+    tmp_root: &std::path::Path,
+    source_name: &str,
+    extra_spec: Option<&str>,
+) -> std::path::PathBuf {
+    let bare = tmp_root.join(format!("{}-source.git", source_name));
+    let _bare_repo = git2::Repository::init_bare(&bare).expect("init_bare");
+
+    let src = tmp_root.join(format!("{}-src", source_name));
+    let src_repo = git2::Repository::init(&src).expect("init_src");
+    let extra = extra_spec.unwrap_or("");
+    let yaml = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: {source_name}\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n{extra}",
+    );
+    std::fs::write(src.join("cfgd-source.yaml"), yaml).expect("write cfgd-source.yaml");
+    let mut index = src_repo.index().expect("index");
+    index
+        .add_path(std::path::Path::new("cfgd-source.yaml"))
+        .expect("add_path");
+    index.write().expect("index_write");
+    let tree_id = index.write_tree().expect("write_tree");
+    let tree = src_repo.find_tree(tree_id).expect("find_tree");
+    let sig = git2::Signature::now("t", "t@example.com").expect("signature");
+    src_repo
+        .commit(Some("HEAD"), &sig, &sig, "initial manifest", &tree, &[])
+        .expect("commit");
+    drop(tree);
+
+    let bare_url = format!("file://{}", bare.display());
+    let mut remote = src_repo.remote("origin", &bare_url).expect("add_remote");
+    let branch = src_repo
+        .head()
+        .expect("head")
+        .shorthand()
+        .unwrap_or("master")
+        .to_string();
+    remote
+        .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
+        .expect("push");
+    bare
 }
 
 /// Seed a state DB with a target apply followed by a non-file (package)

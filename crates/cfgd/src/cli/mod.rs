@@ -1572,11 +1572,11 @@ pub fn execute(
             SecretCommand::Init => secret::cmd_secret_init(cli, printer),
         },
         Command::Source { command } => match command {
-            SourceCommand::Add(args) => source::cmd_source_add(cli, printer, args),
+            SourceCommand::Add(args) => source::cmd_source_add(cli, printer, v2_printer, args),
             SourceCommand::Priority { name, value } => {
-                source::cmd_source_priority(cli, printer, name, *value)
+                source::cmd_source_priority(cli, v2_printer, name, *value)
             }
-            SourceCommand::List => source::cmd_source_list(cli, printer),
+            SourceCommand::List => source::cmd_source_list(cli, v2_printer),
             SourceCommand::Show { name } => source::cmd_source_show(cli, printer, v2_printer, name),
             SourceCommand::Remove {
                 name,
@@ -1586,30 +1586,38 @@ pub fn execute(
             } => source::cmd_source_remove(
                 cli,
                 printer,
+                v2_printer,
                 name,
                 *keep_all || (*yes && !*remove_all),
                 *remove_all,
             ),
             SourceCommand::Update { name } => {
-                source::cmd_source_update(cli, printer, name.as_deref())
+                source::cmd_source_update(cli, printer, v2_printer, name.as_deref())
             }
             SourceCommand::Override {
                 source,
                 action,
                 path,
                 value,
-            } => source::cmd_source_override(cli, printer, source, *action, path, value.as_deref()),
+            } => source::cmd_source_override(
+                cli,
+                v2_printer,
+                source,
+                *action,
+                path,
+                value.as_deref(),
+            ),
             SourceCommand::Replace { old_name, new_url } => {
-                source::cmd_source_replace(cli, printer, old_name, new_url)
+                source::cmd_source_replace(cli, printer, v2_printer, old_name, new_url)
             }
-            SourceCommand::Edit => source::cmd_source_edit(cli, printer),
+            SourceCommand::Edit => source::cmd_source_edit(cli, v2_printer),
             SourceCommand::Create {
                 name,
                 description,
                 version,
             } => source::cmd_source_create(
                 cli,
-                printer,
+                v2_printer,
                 name.as_deref(),
                 description.as_deref(),
                 version.as_deref(),

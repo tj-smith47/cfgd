@@ -2050,11 +2050,11 @@ fn source_create_scaffolds_manifest() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let result = source::cmd_source_create(
         &cli,
-        &printer,
+        &v2_printer,
         Some("my-source"),
         Some("Test"),
         Some("1.0.0"),
@@ -2084,8 +2084,8 @@ fn source_create_refuses_duplicate() {
     std::fs::write(dir.path().join("cfgd-source.yaml"), "existing").unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
-    let result = source::cmd_source_create(&cli, &printer, Some("x"), Some("x"), Some("1.0"));
+    let v2_printer = test_v2_printer();
+    let result = source::cmd_source_create(&cli, &v2_printer, Some("x"), Some("x"), Some("1.0"));
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("already exists"));
 }
@@ -2099,12 +2099,13 @@ fn source_create_interactive_mode_prompts_for_name_and_description() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, _buf) = cfgd_core::output::Printer::for_test_with_prompt_responses(vec![
-        cfgd_core::output::PromptAnswer::Text("interactive-source".to_string()),
-        cfgd_core::output::PromptAnswer::Text("Interactive description".to_string()),
-    ]);
+    let (v2_printer, _cap) =
+        cfgd_core::output_v2::Printer::for_test_doc_with_prompt_responses(vec![
+            cfgd_core::output_v2::PromptAnswer::Text("interactive-source".to_string()),
+            cfgd_core::output_v2::PromptAnswer::Text("Interactive description".to_string()),
+        ]);
 
-    source::cmd_source_create(&cli, &printer, None, None, None)
+    source::cmd_source_create(&cli, &v2_printer, None, None, None)
         .expect("interactive create should succeed");
 
     let contents = std::fs::read_to_string(dir.path().join("cfgd-source.yaml")).unwrap();
@@ -2160,7 +2161,7 @@ fn source_edit_with_valid_manifest_reports_valid_and_returns_ok() {
     // and lands in the "Source manifest is valid" success arm.
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
     std::fs::write(
         dir.path().join("cfgd-source.yaml"),
         "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: edit-mod\nspec:\n  provides:\n    profiles:\n      - default\n",
@@ -2168,9 +2169,10 @@ fn source_edit_with_valid_manifest_reports_valid_and_returns_ok() {
     .unwrap();
 
     let _editor = EditorGuard::set("/bin/true");
-    source::cmd_source_edit(&cli, &printer).expect("valid manifest + no-op editor → Ok");
+    source::cmd_source_edit(&cli, &v2_printer).expect("valid manifest + no-op editor → Ok");
 
-    let out = buf.lock().unwrap().clone();
+    drop(v2_printer);
+    let out = cap.human();
     assert!(
         out.contains("Source manifest is valid"),
         "happy-path validation arm should announce validity: {out}"
@@ -2192,15 +2194,16 @@ fn source_edit_with_invalid_manifest_and_prompt_declined_breaks_with_warning() {
     )
     .unwrap();
     let cli = test_cli(dir.path());
-    let (printer, buf) =
-        Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
-            false,
-        )]);
+    let (v2_printer, cap) =
+        cfgd_core::output_v2::Printer::for_test_doc_with_prompt_responses(vec![
+            cfgd_core::output_v2::PromptAnswer::Confirm(false),
+        ]);
 
     let _editor = EditorGuard::set("/bin/true");
-    source::cmd_source_edit(&cli, &printer).expect("save-with-errors must return Ok");
+    source::cmd_source_edit(&cli, &v2_printer).expect("save-with-errors must return Ok");
 
-    let out = buf.lock().unwrap().clone();
+    drop(v2_printer);
+    let out = cap.human();
     assert!(
         out.contains("Saved with validation errors"),
         "prompt-decline branch must warn: {out}"
@@ -2211,8 +2214,8 @@ fn source_edit_with_invalid_manifest_and_prompt_declined_breaks_with_warning() {
 fn source_edit_fails_without_manifest() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
-    let result = source::cmd_source_edit(&cli, &printer);
+    let v2_printer = test_v2_printer();
+    let result = source::cmd_source_edit(&cli, &v2_printer);
     assert!(result.is_err());
     assert!(
         result
@@ -2408,11 +2411,11 @@ fn source_create_with_modules() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let result = source::cmd_source_create(
         &cli,
-        &printer,
+        &v2_printer,
         Some("test-source"),
         Some("Test"),
         Some("1.0.0"),
@@ -2438,11 +2441,11 @@ fn source_create_output_is_parseable() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     source::cmd_source_create(
         &cli,
-        &printer,
+        &v2_printer,
         Some("my-source"),
         Some("desc"),
         Some("0.1.0"),
@@ -4822,14 +4825,15 @@ fn cmd_source_list_no_sources() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
 
     assert!(
-        super::source::cmd_source_list(&cli, &printer).is_ok(),
+        super::source::cmd_source_list(&cli, &v2_printer).is_ok(),
         "source list should succeed when no sources are configured"
     );
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = cap.human();
     assert!(
         output.contains("Sources") || output.contains("No sources"),
         "output should show Sources header or no-sources message, got: {output}"
@@ -4845,14 +4849,15 @@ fn cmd_source_list_no_config() {
         config: dir.path().join("nonexistent.yaml"),
         ..test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = Printer::for_test();
+    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
 
     assert!(
-        super::source::cmd_source_list(&cli, &printer).is_ok(),
+        super::source::cmd_source_list(&cli, &v2_printer).is_ok(),
         "source list should succeed even without cfgd.yaml"
     );
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = cap.human();
     assert!(
         output.contains("Sources") || output.contains("No sources"),
         "output should show sources info even without config, got: {output}"
@@ -8923,9 +8928,9 @@ spec:
     assert_eq!(cfg.spec.sources[0].name, "team-config");
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::source::cmd_source_list(&cli, &printer);
+    let result = super::source::cmd_source_list(&cli, &v2_printer);
     assert!(
         result.is_ok(),
         "source list should succeed when sources are configured in cfgd.yaml: {:?}",
@@ -8945,13 +8950,14 @@ fn cmd_source_list_structured_output() {
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
 
-    super::source::cmd_source_list(&cli, &printer).unwrap();
+    super::source::cmd_source_list(&cli, &v2_printer).unwrap();
 
-    let output = buf.lock().unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&output)
-        .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
+    drop(v2_printer);
+    let parsed = cap
+        .json()
+        .expect("source list should emit a Doc with payload");
     let arr = parsed
         .as_array()
         .expect("source list JSON should be an array");
@@ -9027,8 +9033,10 @@ fn cmd_source_remove_not_found() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::source::cmd_source_remove(&cli, &printer, "nonexistent", true, false);
+    let result =
+        super::source::cmd_source_remove(&cli, &printer, &v2_printer, "nonexistent", true, false);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -9039,8 +9047,10 @@ fn cmd_source_remove_keep_all_and_remove_all_conflict() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::source::cmd_source_remove(&cli, &printer, "anything", true, true);
+    let result =
+        super::source::cmd_source_remove(&cli, &printer, &v2_printer, "anything", true, true);
     assert!(result.is_err());
     assert!(
         result
@@ -9057,11 +9067,11 @@ fn cmd_source_override_source_not_found() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let result = super::source::cmd_source_override(
         &cli,
-        &printer,
+        &v2_printer,
         "nonexistent",
         super::SourceOverrideAction::Reject,
         "env.FOO",
@@ -9096,11 +9106,11 @@ spec:
     std::fs::write(config_dir.path().join("cfgd.yaml"), config_with_source).unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let result = super::source::cmd_source_override(
         &cli,
-        &printer,
+        &v2_printer,
         "team",
         super::SourceOverrideAction::Set,
         "env.FOO",
@@ -9117,9 +9127,9 @@ fn cmd_source_priority_not_found() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::source::cmd_source_priority(&cli, &printer, "nonexistent", None);
+    let result = super::source::cmd_source_priority(&cli, &v2_printer, "nonexistent", None);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -9146,11 +9156,12 @@ spec:
     std::fs::write(config_dir.path().join("cfgd.yaml"), config_with_source).unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
 
-    super::source::cmd_source_priority(&cli, &printer, "team", None).unwrap();
+    super::source::cmd_source_priority(&cli, &v2_printer, "team", None).unwrap();
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = cap.human();
     assert!(
         output.contains("team") || output.contains("200"),
         "source priority should show source name or priority, got: {output}"
@@ -9179,9 +9190,9 @@ spec:
     std::fs::write(config_dir.path().join("cfgd.yaml"), config_with_source).unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::source::cmd_source_priority(&cli, &printer, "team", Some(500));
+    let result = super::source::cmd_source_priority(&cli, &v2_printer, "team", Some(500));
     assert!(
         result.is_ok(),
         "source priority update should succeed: {:?}",
@@ -9668,10 +9679,12 @@ fn execute_source_list() {
         }),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = Printer::for_test();
+    let printer = test_printer();
+    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
 
-    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
-    let output = buf.lock().unwrap();
+    super::execute(&cli, &printer, &v2_printer).unwrap();
+    drop(v2_printer);
+    let output = cap.human();
     assert!(
         output.contains("Sources") || output.contains("No sources"),
         "source list should produce output, got: {output}"
@@ -11126,11 +11139,13 @@ fn cmd_source_remove_existing_removes_from_config() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let cfg = config::load_config(&config_dir.path().join("cfgd.yaml")).unwrap();
     assert_eq!(cfg.spec.sources.len(), 1);
 
-    let result = super::source::cmd_source_remove(&cli, &printer, "team-config", false, true);
+    let result =
+        super::source::cmd_source_remove(&cli, &printer, &v2_printer, "team-config", false, true);
     assert!(
         result.is_ok(),
         "source remove should succeed: {:?}",
@@ -11150,6 +11165,7 @@ fn cmd_source_remove_with_keep_all_transfers_resources_to_local_management() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (printer, _buf) = Printer::for_test();
+    let v2_printer = test_v2_printer();
 
     let store = cfgd_core::state::StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
     store
@@ -11163,7 +11179,7 @@ fn cmd_source_remove_with_keep_all_transfers_resources_to_local_management() {
         .unwrap();
     drop(store);
 
-    super::source::cmd_source_remove(&cli, &printer, "team-config", true, false)
+    super::source::cmd_source_remove(&cli, &printer, &v2_printer, "team-config", true, false)
         .expect("source remove --keep-all should succeed");
 
     // Source dropped from cfgd.yaml.
@@ -11194,8 +11210,10 @@ fn cmd_source_remove_nonexistent_fails() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::source::cmd_source_remove(&cli, &printer, "nonexistent", false, true);
+    let result =
+        super::source::cmd_source_remove(&cli, &printer, &v2_printer, "nonexistent", false, true);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -11210,11 +11228,11 @@ fn cmd_source_remove_nonexistent_fails() {
 fn cmd_source_override_reject_succeeds() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
 
     super::source::cmd_source_override(
         &cli,
-        &printer,
+        &v2_printer,
         "team-config",
         super::SourceOverrideAction::Reject,
         "packages.brew",
@@ -11222,7 +11240,8 @@ fn cmd_source_override_reject_succeeds() {
     )
     .unwrap();
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = cap.human();
     assert!(
         output.contains("Rejected") && output.contains("packages.brew"),
         "should confirm rejection of packages.brew, got: {output}"
@@ -11233,11 +11252,11 @@ fn cmd_source_override_reject_succeeds() {
 fn cmd_source_override_set_succeeds() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
 
     super::source::cmd_source_override(
         &cli,
-        &printer,
+        &v2_printer,
         "team-config",
         super::SourceOverrideAction::Set,
         "packages.brew.ripgrep",
@@ -11245,7 +11264,8 @@ fn cmd_source_override_set_succeeds() {
     )
     .unwrap();
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = cap.human();
     assert!(
         output.contains("Override set") && output.contains("packages.brew.ripgrep"),
         "should confirm override set for packages.brew.ripgrep, got: {output}"
@@ -11260,11 +11280,11 @@ fn cmd_source_override_set_succeeds() {
 fn cmd_source_override_nonexistent_source_fails() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let result = super::source::cmd_source_override(
         &cli,
-        &printer,
+        &v2_printer,
         "nonexistent",
         super::SourceOverrideAction::Reject,
         "packages.brew",
@@ -11284,9 +11304,9 @@ fn cmd_source_override_nonexistent_source_fails() {
 fn cmd_source_priority_nonexistent_fails() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::source::cmd_source_priority(&cli, &printer, "nonexistent", None);
+    let result = super::source::cmd_source_priority(&cli, &v2_printer, "nonexistent", None);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -11299,9 +11319,9 @@ fn cmd_source_priority_nonexistent_fails() {
 fn cmd_source_priority_updates_config() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::source::cmd_source_priority(&cli, &printer, "team-config", Some(200));
+    let result = super::source::cmd_source_priority(&cli, &v2_printer, "team-config", Some(200));
     assert!(result.is_ok(), "source priority update: {:?}", result.err());
 
     let cfg = config::load_config(&config_dir.path().join("cfgd.yaml")).unwrap();
@@ -11362,12 +11382,12 @@ fn cmd_source_show_structured_json() {
 fn cmd_source_create_initializes_manifest() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     // source create writes manifest in the config directory itself
     let result = super::source::cmd_source_create(
         &cli,
-        &printer,
+        &v2_printer,
         Some("my-source"),
         Some("A test source"),
         Some("1.0.0"),
@@ -11394,16 +11414,17 @@ fn cmd_source_create_initializes_manifest() {
 fn cmd_source_list_with_sources_shows_entries() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
 
-    let result = super::source::cmd_source_list(&cli, &printer);
+    let result = super::source::cmd_source_list(&cli, &v2_printer);
     assert!(
         result.is_ok(),
         "source list with sources: {:?}",
         result.err()
     );
 
-    let output = buf.lock().unwrap();
+    drop(v2_printer);
+    let output = cap.human();
     assert!(
         output.contains("team-config") || output.contains("Config Sources"),
         "source list should show source entries, got: {output}"
@@ -11417,13 +11438,14 @@ fn cmd_source_list_structured_json() {
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
 
-    super::source::cmd_source_list(&cli, &printer).unwrap();
+    super::source::cmd_source_list(&cli, &v2_printer).unwrap();
 
-    let output = buf.lock().unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&output)
-        .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
+    drop(v2_printer);
+    let parsed = cap
+        .json()
+        .expect("source list should emit a Doc with payload");
     let arr = parsed
         .as_array()
         .expect("source list JSON should be an array");
@@ -11728,7 +11750,7 @@ fn cmd_source_add_duplicate_fails() {
         version_pin: None,
         yes: true,
     };
-    let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+    let result = super::source::cmd_source_add(&h.cli(), h.printer(), h.v2_printer(), &args);
     assert_error_contains(&result, "already exists");
 }
 
@@ -11810,7 +11832,7 @@ fn cmd_config_edit_with_invalid_config_and_prompt_declined_breaks_with_warning()
 #[test]
 fn cmd_source_update_no_sources_succeeds() {
     let h = CliTestHarness::builder().build();
-    super::source::cmd_source_update(&h.cli(), h.printer(), None).unwrap();
+    super::source::cmd_source_update(&h.cli(), h.printer(), h.v2_printer(), None).unwrap();
     h.assert_header("Update Sources");
     h.assert_output_contains("No sources configured");
 }
@@ -11819,7 +11841,12 @@ fn cmd_source_update_no_sources_succeeds() {
 fn cmd_source_update_named_not_found_fails() {
     // Need a config with sources so it doesn't take the "no sources" early return
     let h = CliTestHarness::builder().rich_config().build();
-    let result = super::source::cmd_source_update(&h.cli(), h.printer(), Some("nonexistent"));
+    let result = super::source::cmd_source_update(
+        &h.cli(),
+        h.printer(),
+        h.v2_printer(),
+        Some("nonexistent"),
+    );
     assert_error_contains(&result, "not found");
 }
 
@@ -11833,6 +11860,7 @@ fn cmd_source_replace_nonexistent_fails() {
     let result = super::source::cmd_source_replace(
         &h.cli(),
         h.printer(),
+        h.v2_printer(),
         "nonexistent",
         "https://github.com/new/config.git",
     );
@@ -12013,7 +12041,7 @@ fn json_schema_verify() {
 #[test]
 fn json_schema_source_list() {
     let h = CliTestHarness::builder().json().rich_config().build();
-    super::source::cmd_source_list(&h.cli(), h.printer()).unwrap();
+    super::source::cmd_source_list(&h.cli(), h.v2_printer()).unwrap();
     let output = h.output();
     // Source list writes a JSON array; output may have trailing newlines from capture()
     // Use serde_json::from_str on trimmed output, finding the JSON portion
@@ -15308,7 +15336,7 @@ fn cmd_source_list_table_shows_status_and_priority() {
         )
         .unwrap();
 
-    super::source::cmd_source_list(&h.cli(), h.printer()).unwrap();
+    super::source::cmd_source_list(&h.cli(), h.v2_printer()).unwrap();
 
     let output = h.output();
     // Table should include the source name, URL, priority, version, and status
@@ -15337,7 +15365,7 @@ fn cmd_source_list_structured_json_includes_state_info() {
         )
         .unwrap();
 
-    super::source::cmd_source_list(&h.cli(), h.printer()).unwrap();
+    super::source::cmd_source_list(&h.cli(), h.v2_printer()).unwrap();
 
     let output = h.output();
     let parsed: serde_json::Value = serde_json::from_str(output.trim())
@@ -15502,8 +15530,14 @@ fn cmd_source_remove_keep_all_reassigns_resources_to_local() {
         .upsert_managed_resource("env", "EDITOR", "team-config", Some("hash2"), None)
         .unwrap();
 
-    let result =
-        super::source::cmd_source_remove(&h.cli(), h.printer(), "team-config", true, false);
+    let result = super::source::cmd_source_remove(
+        &h.cli(),
+        h.printer(),
+        h.v2_printer(),
+        "team-config",
+        true,
+        false,
+    );
     assert!(result.is_ok(), "remove with keep_all: {:?}", result.err());
 
     // Source should be gone from config
@@ -15537,8 +15571,14 @@ fn cmd_source_remove_remove_all_does_not_reassign() {
         .upsert_managed_resource("package", "brew/curl", "team-config", None, None)
         .unwrap();
 
-    let result =
-        super::source::cmd_source_remove(&h.cli(), h.printer(), "team-config", false, true);
+    let result = super::source::cmd_source_remove(
+        &h.cli(),
+        h.printer(),
+        h.v2_printer(),
+        "team-config",
+        false,
+        true,
+    );
     assert!(result.is_ok(), "remove with remove_all: {:?}", result.err());
 
     // Source should be gone from config
@@ -15560,7 +15600,15 @@ fn cmd_source_remove_remove_all_does_not_reassign() {
 fn cmd_source_remove_prints_success_message() {
     let h = CliTestHarness::builder().rich_config().build();
 
-    super::source::cmd_source_remove(&h.cli(), h.printer(), "team-config", false, true).unwrap();
+    super::source::cmd_source_remove(
+        &h.cli(),
+        h.printer(),
+        h.v2_printer(),
+        "team-config",
+        false,
+        true,
+    )
+    .unwrap();
 
     h.assert_output_contains("Source 'team-config' removed");
 }
@@ -16541,7 +16589,7 @@ spec:
 "#;
     let h = CliTestHarness::builder().config(config_with_source).build();
     // The update should succeed overall (errors per source are printed, not propagated)
-    super::source::cmd_source_update(&h.cli(), h.printer(), None).unwrap();
+    super::source::cmd_source_update(&h.cli(), h.printer(), h.v2_printer(), None).unwrap();
     h.assert_header("Update Sources");
     h.assert_output_contains("Failed to update source 'my-source'");
 }
@@ -16572,7 +16620,7 @@ spec:
 "#;
     let h = CliTestHarness::builder().config(config_with_source).build();
     // Update only 'alpha'; 'beta' should not appear in output
-    super::source::cmd_source_update(&h.cli(), h.printer(), Some("alpha")).unwrap();
+    super::source::cmd_source_update(&h.cli(), h.printer(), h.v2_printer(), Some("alpha")).unwrap();
     h.assert_output_contains("Failed to update source 'alpha'");
     let output = h.output();
     assert!(
@@ -16610,6 +16658,7 @@ spec:
     let result = super::source::cmd_source_replace(
         &h.cli(),
         h.printer(),
+        h.v2_printer(),
         "old-source",
         "file:///nonexistent/new-config.git",
     );
@@ -16651,7 +16700,7 @@ spec:
         priority: 750
 "#;
     let h = CliTestHarness::builder().config(config_with_source).build();
-    super::source::cmd_source_priority(&h.cli(), h.printer(), "team-src", None).unwrap();
+    super::source::cmd_source_priority(&h.cli(), h.v2_printer(), "team-src", None).unwrap();
     // View mode should display source name and priority value
     h.assert_output_contains("team-src");
     h.assert_output_contains("750");
@@ -16676,7 +16725,7 @@ spec:
         priority: 750
 "#;
     let h = CliTestHarness::builder().config(config_with_source).build();
-    super::source::cmd_source_priority(&h.cli(), h.printer(), "team-src", Some(100)).unwrap();
+    super::source::cmd_source_priority(&h.cli(), h.v2_printer(), "team-src", Some(100)).unwrap();
     // Should display the old->new priority change
     h.assert_output_contains("priority updated: 750 -> 100");
     // Verify the file was actually updated
@@ -17326,7 +17375,8 @@ mod cmd_source_add_local {
                 name: Some("local-team".to_string()),
                 ..empty_source_args(url.clone())
             };
-            let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            let result =
+                super::source::cmd_source_add(&h.cli(), h.printer(), h.v2_printer(), &args);
             assert!(result.is_ok(), "cmd_source_add should succeed: {result:?}");
             // Source row added to cfgd.yaml.
             let cfg_after = std::fs::read_to_string(h.config_path().join("cfgd.yaml")).unwrap();
@@ -17354,7 +17404,8 @@ mod cmd_source_add_local {
                 version_pin: Some("~1".to_string()),
                 ..empty_source_args(url)
             };
-            let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            let result =
+                super::source::cmd_source_add(&h.cli(), h.printer(), h.v2_printer(), &args);
             assert!(result.is_ok(), "cmd_source_add should succeed: {result:?}");
             let cfg_after = std::fs::read_to_string(h.config_path().join("cfgd.yaml")).unwrap();
             assert!(
@@ -17380,7 +17431,8 @@ mod cmd_source_add_local {
                 accept_recommended: true,
                 ..empty_source_args(url)
             };
-            let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            let result =
+                super::source::cmd_source_add(&h.cli(), h.printer(), h.v2_printer(), &args);
             assert!(result.is_ok(), "cmd_source_add should succeed: {result:?}");
             let cfg_after = std::fs::read_to_string(h.config_path().join("cfgd.yaml")).unwrap();
             assert!(
@@ -17415,14 +17467,14 @@ mod cmd_source_add_local {
                 ..empty_source_args(url.clone())
             };
             // First add succeeds.
-            let r1 = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            let r1 = super::source::cmd_source_add(&h.cli(), h.printer(), h.v2_printer(), &args);
             assert!(r1.is_ok(), "first add should succeed: {r1:?}");
             // Second add against the same name fails with the "already exists" message.
             let args2 = SourceAddArgs {
                 name: Some("dup-name".to_string()),
                 ..empty_source_args(url)
             };
-            let r2 = super::source::cmd_source_add(&h.cli(), h.printer(), &args2);
+            let r2 = super::source::cmd_source_add(&h.cli(), h.printer(), h.v2_printer(), &args2);
             let err = r2.expect_err("duplicate source name should fail");
             assert!(
                 err.to_string().to_lowercase().contains("already exists"),
@@ -17524,7 +17576,8 @@ mod cmd_source_add_local {
                 profile: None, // <- trigger auto-detect branch
                 ..empty_source_args(url)
             };
-            let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            let result =
+                super::source::cmd_source_add(&h.cli(), h.printer(), h.v2_printer(), &args);
             assert!(result.is_ok(), "cmd_source_add should succeed: {result:?}");
             let cfg_after = std::fs::read_to_string(h.config_path().join("cfgd.yaml")).unwrap();
             assert!(
@@ -17582,7 +17635,8 @@ mod cmd_source_add_local {
                 profile: None,
                 ..empty_source_args(url)
             };
-            let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            let result =
+                super::source::cmd_source_add(&h.cli(), h.printer(), h.v2_printer(), &args);
             let err = result.expect_err("empty provides.profiles must fail in source load");
             assert!(
                 err.to_string().to_lowercase().contains("no profiles"),
@@ -17619,7 +17673,8 @@ mod cmd_source_add_local {
                 branch: Some(actual_branch.clone()),
                 ..empty_source_args(url)
             };
-            let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
+            let result =
+                super::source::cmd_source_add(&h.cli(), h.printer(), h.v2_printer(), &args);
             assert!(result.is_ok(), "cmd_source_add should succeed: {result:?}");
             let cfg_after = std::fs::read_to_string(h.config_path().join("cfgd.yaml")).unwrap();
             assert!(
@@ -17650,13 +17705,13 @@ mod cmd_source_add_local {
                 name: Some("upd-src".to_string()),
                 ..empty_source_args(url)
             };
-            super::source::cmd_source_add(&h.cli(), h.printer(), &add_args)
+            super::source::cmd_source_add(&h.cli(), h.printer(), h.v2_printer(), &add_args)
                 .expect("cmd_source_add precondition should succeed");
 
             // No name → updates every source. Drives the
             // `mgr.get(...).is_some()` happy path + upsert_config_source +
             // "Updated source" success line.
-            super::source::cmd_source_update(&h.cli(), h.printer(), None)
+            super::source::cmd_source_update(&h.cli(), h.printer(), h.v2_printer(), None)
                 .expect("cmd_source_update should succeed against the staged source");
 
             h.assert_output_contains("Updated source 'upd-src'");
@@ -17686,6 +17741,7 @@ mod cmd_source_add_local {
             super::source::cmd_source_add(
                 &h.cli(),
                 h.printer(),
+                h.v2_printer(),
                 &SourceAddArgs {
                     name: Some("src-a".to_string()),
                     ..empty_source_args(url_a)
@@ -17695,6 +17751,7 @@ mod cmd_source_add_local {
             super::source::cmd_source_add(
                 &h.cli(),
                 h.printer(),
+                h.v2_printer(),
                 &SourceAddArgs {
                     name: Some("src-b".to_string()),
                     ..empty_source_args(url_b)
@@ -17711,7 +17768,7 @@ mod cmd_source_add_local {
             // source. The post-update slice must contain src-b AND must NOT
             // mention src-a; without the second assertion the test would
             // pass even if the name filter was wired to update everything.
-            super::source::cmd_source_update(&h.cli(), h.printer(), Some("src-b"))
+            super::source::cmd_source_update(&h.cli(), h.printer(), h.v2_printer(), Some("src-b"))
                 .expect("named update should succeed");
 
             let full = h.output();
@@ -17789,6 +17846,7 @@ mod cmd_source_add_local {
             super::source::cmd_source_add(
                 &h.cli(),
                 h.printer(),
+                h.v2_printer(),
                 &SourceAddArgs {
                     name: Some("shown-src".to_string()),
                     accept_recommended: true,
@@ -17814,8 +17872,13 @@ mod cmd_source_add_local {
             // Err → continue. The cache nevertheless got the v2 manifest
             // written by SourceManager::load_source BEFORE the permission
             // check ran, so cmd_source_show can render its policy section.
-            super::source::cmd_source_update(&h.cli(), h.printer(), Some("shown-src"))
-                .expect("cmd_source_update");
+            super::source::cmd_source_update(
+                &h.cli(),
+                h.printer(),
+                h.v2_printer(),
+                Some("shown-src"),
+            )
+            .expect("cmd_source_update");
 
             let baseline_len = h.output().len();
             super::source::cmd_source_show(&h.cli(), h.printer(), h.v2_printer(), "shown-src")
@@ -17873,6 +17936,7 @@ mod cmd_source_add_local {
             super::source::cmd_source_add(
                 &h.cli(),
                 h.printer(),
+                h.v2_printer(),
                 &SourceAddArgs {
                     name: Some("perm-src".to_string()),
                     ..empty_source_args(url)
@@ -17890,8 +17954,13 @@ mod cmd_source_add_local {
             push_replacement_manifest(&scratch, &bare, v2);
 
             let baseline_len = h.output().len();
-            super::source::cmd_source_update(&h.cli(), h.printer(), Some("perm-src"))
-                .expect("cmd_source_update should not bubble up the cancelled prompt");
+            super::source::cmd_source_update(
+                &h.cli(),
+                h.printer(),
+                h.v2_printer(),
+                Some("perm-src"),
+            )
+            .expect("cmd_source_update should not bubble up the cancelled prompt");
 
             let full = h.output();
             let update_out = &full[baseline_len..];
@@ -17931,6 +18000,7 @@ mod cmd_source_add_local {
             super::source::cmd_source_add(
                 &h.cli(),
                 h.printer(),
+                h.v2_printer(),
                 &SourceAddArgs {
                     name: Some("doomed-src".to_string()),
                     ..empty_source_args(url)
@@ -17946,8 +18016,13 @@ mod cmd_source_add_local {
                 std::fs::remove_dir_all(&cache_dir).unwrap();
             }
 
-            super::source::cmd_source_update(&h.cli(), h.printer(), Some("doomed-src"))
-                .expect("cmd_source_update should not bubble up a fetch failure");
+            super::source::cmd_source_update(
+                &h.cli(),
+                h.printer(),
+                h.v2_printer(),
+                Some("doomed-src"),
+            )
+            .expect("cmd_source_update should not bubble up a fetch failure");
 
             h.assert_output_contains("Failed to update source 'doomed-src'");
 

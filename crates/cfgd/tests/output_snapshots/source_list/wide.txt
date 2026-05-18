@@ -1,0 +1,5 @@
+Config Sources
+
+Name         URL                             Priority  Version  Status  Last Fetched        
+────────────────────────────────────────────────────────────────────────────────────────────
+team-config  https://github.com/team/config  100       1.0.0    synced  2026-05-14T10:00:00Z

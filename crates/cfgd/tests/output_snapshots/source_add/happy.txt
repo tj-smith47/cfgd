@@ -1,0 +1,18 @@
+Add Config Source
+
+Source Manifest
+  Name      team-config
+  Version   1.0.0
+  Profiles  default
+
+Policy
+  Scripts: blocked
+  Secret access: blocked
+
+✓ No conflicts with current config
+
+✓ Subscribed to source 'team-config'
+
+Profile  default
+
+→ Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'

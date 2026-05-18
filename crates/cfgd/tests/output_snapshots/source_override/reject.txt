@@ -1,0 +1,1 @@
+✓ Rejected 'packages.brew.ripgrep' from 'team-config'

@@ -167,7 +167,7 @@ fn append_policy_items(mut s: SectionBuilder, items: &PolicyItems) -> SectionBui
     s
 }
 
-pub(crate) fn cmd_source_show(
+pub fn cmd_source_show(
     cli: &Cli,
     printer: &Printer,
     v2_printer: &PrinterV2,

@@ -253,7 +253,7 @@ pub struct DoctorConfiguratorCheck {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct SourceListEntry {
+pub struct SourceListEntry {
     pub name: String,
     pub url: String,
     pub priority: u32,

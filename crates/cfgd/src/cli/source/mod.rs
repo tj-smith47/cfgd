@@ -1,31 +1,55 @@
 use super::*;
+use cfgd_core::output_v2::{Doc, Role};
 
 // --- Submodule declarations ---
 
-mod add;
-mod create;
-mod edit;
+pub mod add;
+pub mod create;
+pub mod edit;
 mod helpers;
-mod list;
-mod override_cmd;
-mod priority;
-mod remove;
-mod replace;
+pub mod list;
+pub mod override_cmd;
+pub mod priority;
+pub mod remove;
+pub mod replace;
 pub mod show;
-mod update;
+pub mod update;
 
-// --- Re-export pub(crate) handlers so cli::mod can dispatch to them ---
+// --- Re-export handlers so cli::mod can dispatch to them ---
 
-pub(super) use add::cmd_source_add;
-pub(super) use create::cmd_source_create;
-pub(super) use edit::cmd_source_edit;
-pub(super) use list::cmd_source_list;
-pub(super) use override_cmd::cmd_source_override;
-pub(super) use priority::cmd_source_priority;
-pub(super) use remove::cmd_source_remove;
-pub(super) use replace::cmd_source_replace;
-pub(super) use show::cmd_source_show;
-pub(super) use update::cmd_source_update;
+pub use add::cmd_source_add;
+pub use create::cmd_source_create;
+pub use edit::cmd_source_edit;
+pub use list::cmd_source_list;
+pub use override_cmd::cmd_source_override;
+pub use priority::cmd_source_priority;
+pub use remove::cmd_source_remove;
+pub use replace::cmd_source_replace;
+pub use show::cmd_source_show;
+pub use update::cmd_source_update;
+
+/// Doc emitted on every source-command error path before the `anyhow::bail!`
+/// fires. Carries an `error` category key + `name` so structured consumers
+/// (`-o json`) see a stable shape on failure.
+pub(super) fn build_source_error_doc(
+    name: &str,
+    error_kind: &str,
+    message: impl Into<String>,
+    extras: serde_json::Value,
+) -> Doc {
+    let mut payload = serde_json::json!({
+        "error": error_kind,
+        "name": name,
+    });
+    if let serde_json::Value::Object(extra_map) = extras
+        && let serde_json::Value::Object(payload_map) = &mut payload
+    {
+        for (k, v) in extra_map {
+            payload_map.insert(k, v);
+        }
+    }
+    Doc::new().status(Role::Fail, message).with_data(payload)
+}
 
 // --- Helpers consumed elsewhere in cli:: ---
 

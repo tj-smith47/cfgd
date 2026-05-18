@@ -1,23 +1,31 @@
 use super::*;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
-pub(crate) fn cmd_source_priority(
+pub fn cmd_source_priority(
     cli: &Cli,
-    printer: &Printer,
+    v2_printer: &PrinterV2,
     name: &str,
     value: Option<u32>,
 ) -> anyhow::Result<()> {
     let config_path = cli.config.clone();
     let cfg = config::load_config(&config_path)?;
 
-    let source = cfg
-        .spec
-        .sources
-        .iter()
-        .find(|s| s.name == name)
-        .ok_or_else(|| anyhow::anyhow!("source '{}' not found", name))?;
+    let source = match cfg.spec.sources.iter().find(|s| s.name == name) {
+        Some(s) => s,
+        None => {
+            v2_printer.emit(build_source_error_doc(
+                name,
+                "not_found",
+                format!("source '{}' not found", name),
+                serde_json::Value::Null,
+            ));
+            anyhow::bail!("source '{}' not found", name);
+        }
+    };
 
     match value {
         Some(new_priority) => {
+            let old_priority = source.subscription.priority;
             // Update priority in cfgd.yaml
             with_source_config(&config_path, name, |source_entry| {
                 let subscription = source_entry.get_mut("subscription").ok_or_else(|| {
@@ -33,15 +41,33 @@ pub(crate) fn cmd_source_priority(
                 Ok(())
             })?;
 
-            printer.success(&format!(
-                "Source '{}' priority updated: {} -> {}",
-                name, source.subscription.priority, new_priority
-            ));
+            v2_printer.emit(
+                Doc::new()
+                    .status(
+                        Role::Ok,
+                        format!(
+                            "Source '{}' priority updated: {} -> {}",
+                            name, old_priority, new_priority
+                        ),
+                    )
+                    .with_data(serde_json::json!({
+                        "name": name,
+                        "priority": new_priority,
+                        "previousPriority": old_priority,
+                    })),
+            );
         }
         None => {
-            printer.key_value("Source", name);
-            printer.key_value("Priority", &source.subscription.priority.to_string());
-            printer.info("Local config priority is 1000");
+            v2_printer.emit(
+                Doc::new()
+                    .kv("Source", name)
+                    .kv("Priority", source.subscription.priority.to_string())
+                    .hint("Local config priority is 1000")
+                    .with_data(serde_json::json!({
+                        "name": name,
+                        "priority": source.subscription.priority,
+                    })),
+            );
         }
     }
 

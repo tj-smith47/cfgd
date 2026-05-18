@@ -1,8 +1,10 @@
 use super::*;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
-pub(crate) fn cmd_source_add(
+pub fn cmd_source_add(
     cli: &Cli,
     printer: &Printer,
+    v2_printer: &PrinterV2,
     args: &SourceAddArgs,
 ) -> anyhow::Result<()> {
     let url = &args.url;
@@ -15,7 +17,7 @@ pub(crate) fn cmd_source_add(
     let sync_interval = args.sync_interval.as_deref();
     let auto_apply = args.auto_apply;
     let pin_version = args.version_pin.as_deref();
-    printer.header("Add Config Source");
+    v2_printer.heading("Add Config Source");
 
     // Infer name from URL if not provided
     let source_name = name
@@ -27,6 +29,15 @@ pub(crate) fn cmd_source_add(
     if config_path.exists() {
         let cfg = config::load_config(&config_path)?;
         if cfg.spec.sources.iter().any(|s| s.name == source_name) {
+            v2_printer.emit(build_source_error_doc(
+                &source_name,
+                "already_exists",
+                format!(
+                    "Source '{}' already exists. Use 'cfgd source update' to refresh.",
+                    source_name
+                ),
+                serde_json::Value::Null,
+            ));
             anyhow::bail!(
                 "Source '{}' already exists. Use 'cfgd source update' to refresh.",
                 source_name
@@ -49,15 +60,25 @@ pub(crate) fn cmd_source_add(
         );
     }
     let spec = SourceManager::build_source_spec(&source_name, url, profile);
+    // Hybrid lib-call: cfgd_core::sources keeps the v1 Printer until F4b.
     mgr.load_source(&spec, printer)?;
 
-    let cached = mgr
-        .get(&source_name)
-        .ok_or_else(|| anyhow::anyhow!("Failed to load source '{}'", source_name))?;
+    let cached = match mgr.get(&source_name) {
+        Some(c) => c,
+        None => {
+            v2_printer.emit(build_source_error_doc(
+                &source_name,
+                "load_failed",
+                format!("Failed to load source '{}'", source_name),
+                serde_json::json!({ "url": url }),
+            ));
+            anyhow::bail!("Failed to load source '{}'", source_name);
+        }
+    };
 
     // Display source manifest info
     let manifest = &cached.manifest;
-    let provided_profiles = display_source_manifest(printer, manifest);
+    let provided_profiles = display_source_manifest_v2(v2_printer, manifest);
 
     // Profile selection: explicit flag > platform auto-detect > single profile > interactive
     let auto_detected_profile =
@@ -68,11 +89,14 @@ pub(crate) fn cmd_source_add(
                 &manifest.spec.provides.platform_profiles,
             )
             .inspect(|matched| {
-                printer.success(&format!(
-                    "Auto-selected profile '{}' for platform {}",
-                    matched,
-                    platform.distro.as_deref().unwrap_or(&platform.os)
-                ));
+                v2_printer.status_simple(
+                    Role::Ok,
+                    format!(
+                        "Auto-selected profile '{}' for platform {}",
+                        matched,
+                        platform.distro.as_deref().unwrap_or(&platform.os)
+                    ),
+                );
             })
         } else {
             None
@@ -86,9 +110,8 @@ pub(crate) fn cmd_source_add(
         Some(p) => Some(p),
         None if provided_profiles.is_empty() => None,
         None => {
-            printer.newline();
-            let selection =
-                printer.prompt_select("Select a profile to subscribe to:", &provided_profiles)?;
+            let selection = v2_printer
+                .prompt_select("Select a profile to subscribe to:", &provided_profiles)?;
             Some(selection.clone())
         }
     };
@@ -99,8 +122,7 @@ pub(crate) fn cmd_source_add(
     } else if args.yes {
         DEFAULT_NONINTERACTIVE_PRIORITY
     } else {
-        printer.newline();
-        let input = printer.prompt_text("Set priority", "500")?;
+        let input = v2_printer.prompt_text("Set priority", "500")?;
         parse_priority_input(&input)?
     };
 
@@ -139,30 +161,34 @@ pub(crate) fn cmd_source_add(
                 Ok(result) => {
                     let lines = format_conflict_preview_lines(&result.conflicts);
                     if lines.is_empty() {
-                        printer.newline();
-                        printer.success("No conflicts with current config");
+                        v2_printer.status_simple(Role::Ok, "No conflicts with current config");
                     } else {
-                        printer.newline();
-                        printer.subheader("Conflicts with Current Config");
+                        let conflicts_sec = v2_printer.section("Conflicts with Current Config");
                         for line in &lines {
-                            printer.warning(line);
+                            conflicts_sec.status_simple(Role::Warn, line.trim_start().to_string());
                         }
                     }
                 }
                 Err(e) => {
-                    printer.warning(&format!("Failed to preview conflicts: {}", e));
+                    v2_printer
+                        .status_simple(Role::Warn, format!("Failed to preview conflicts: {}", e));
                 }
             }
         }
     }
 
     // Confirm subscription
-    if !args.yes {
-        printer.newline();
-        if !printer.prompt_confirm("Subscribe to this source?")? {
-            printer.info("Cancelled");
-            return Ok(());
-        }
+    if !args.yes && !v2_printer.prompt_confirm("Subscribe to this source?")? {
+        v2_printer.emit(
+            Doc::new()
+                .status(Role::Info, "Cancelled")
+                .with_data(serde_json::json!({
+                    "name": source_name,
+                    "url": url,
+                    "cancelled": true,
+                })),
+        );
+        return Ok(());
     }
 
     // Build the source spec with user choices
@@ -200,11 +226,19 @@ pub(crate) fn cmd_source_add(
         None,
     )?;
 
-    printer.success(&format!("Subscribed to source '{}'", source_name));
-    if let Some(ref profile) = selected_profile {
-        printer.key_value("Profile", profile);
+    let mut doc = Doc::new().status(Role::Ok, format!("Subscribed to source '{}'", source_name));
+    if let Some(ref p) = selected_profile {
+        doc = doc.kv("Profile", p);
     }
-    printer.info(MSG_RUN_APPLY);
+    doc = doc.hint(MSG_RUN_APPLY).with_data(serde_json::json!({
+        "name": source_name,
+        "url": url,
+        "branch": source_spec.origin.branch,
+        "commit": cached.last_commit.clone().unwrap_or_default(),
+        "profile": selected_profile,
+        "priority": resolved_priority,
+    }));
+    v2_printer.emit(doc);
 
     Ok(())
 }

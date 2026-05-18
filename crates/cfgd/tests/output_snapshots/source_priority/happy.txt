@@ -1,0 +1,1 @@
+✓ Source 'team-config' priority updated: 100 -> 500

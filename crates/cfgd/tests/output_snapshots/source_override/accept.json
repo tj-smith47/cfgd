@@ -1,0 +1,6 @@
+{
+  "action": "set",
+  "path": "packages.brew.ripgrep",
+  "sourceName": "team-config",
+  "value": "true"
+}

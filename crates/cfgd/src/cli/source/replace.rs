@@ -1,12 +1,14 @@
 use super::*;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
-pub(crate) fn cmd_source_replace(
+pub fn cmd_source_replace(
     cli: &Cli,
     printer: &Printer,
+    v2_printer: &PrinterV2,
     old_name: &str,
     new_url: &str,
 ) -> anyhow::Result<()> {
-    printer.header(&format!("Replace Source: {}", old_name));
+    v2_printer.heading(format!("Replace Source: {}", old_name));
 
     // Capture old source's profile and priority before removing
     let config_path = cli.config.clone();
@@ -16,12 +18,13 @@ pub(crate) fn cmd_source_replace(
     let old_priority = old_source.map(|s| s.subscription.priority).unwrap_or(500);
 
     // Remove old source (keeping resources)
-    cmd_source_remove(cli, printer, old_name, true, false)?;
+    cmd_source_remove(cli, printer, v2_printer, old_name, true, false)?;
 
     // Add new source with same name, carrying over profile and priority
     cmd_source_add(
         cli,
         printer,
+        v2_printer,
         &SourceAddArgs {
             url: new_url.to_string(),
             name: Some(old_name.to_string()),
@@ -37,6 +40,16 @@ pub(crate) fn cmd_source_replace(
         },
     )?;
 
-    printer.success(&format!("Source '{}' replaced with {}", old_name, new_url));
+    v2_printer.emit(
+        Doc::new()
+            .status(
+                Role::Ok,
+                format!("Source '{}' replaced with {}", old_name, new_url),
+            )
+            .with_data(serde_json::json!({
+                "oldName": old_name,
+                "newUrl": new_url,
+            })),
+    );
     Ok(())
 }
