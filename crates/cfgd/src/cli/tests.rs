@@ -7431,10 +7431,12 @@ spec:
     let output = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let result = module::cmd_module_export(
         &cli,
         &printer,
+        &v2_printer,
         "export-mod",
         &ExportFormat::Devcontainer,
         Some(output.path().to_str().unwrap()),
@@ -7475,9 +7477,11 @@ fn module_export_nonexistent_module() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
+    let v2_printer = test_v2_printer();
     let result = module::cmd_module_export(
         &cli,
         &printer,
+        &v2_printer,
         "nonexistent",
         &ExportFormat::Devcontainer,
         None,
@@ -7520,10 +7524,12 @@ spec:
     let output = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     module::cmd_module_export(
         &cli,
         &printer,
+        &v2_printer,
         "full-mod",
         &ExportFormat::Devcontainer,
         Some(output.path().to_str().unwrap()),
@@ -8012,10 +8018,12 @@ fn module_registry_rename_no_config() {
 
 #[test]
 fn module_keys_list_no_keys() {
-    let (printer, buf) = Printer::for_test();
-    module::cmd_module_keys_list(&printer).unwrap();
+    let (v2_printer, v2_buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+    module::cmd_module_keys_list(&v2_printer).unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("Keys") || output.contains("No") || output.contains("cosign"),
         "keys list should show key info or no-keys, got: {output}"
@@ -8027,10 +8035,12 @@ fn module_keys_list_with_pub_key() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("cosign.pub"), "fake pub key").unwrap();
 
-    let (printer, buf) = Printer::for_test();
-    module::cmd_module_keys_list(&printer).unwrap();
+    let (v2_printer, v2_buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+    module::cmd_module_keys_list(&v2_printer).unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("Keys") || output.contains("cosign"),
         "keys list should show key info, got: {output}"
@@ -11548,9 +11558,11 @@ fn cmd_module_search_no_registries_structured() {
 fn cmd_module_build_no_module_yaml_fails() {
     let dir = tempfile::tempdir().unwrap();
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let result = module::cmd_module_build(
         &printer,
+        &v2_printer,
         &dir.path().display().to_string(),
         None,
         None,
@@ -11573,9 +11585,9 @@ fn cmd_module_keys_generate_no_cosign_fails() {
         // Skip test if cosign is actually available
         return;
     }
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = module::cmd_module_keys_generate(&printer, None);
+    let result = module::cmd_module_keys_generate(&v2_printer, None);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("cosign not found"));
 }
@@ -11585,9 +11597,9 @@ fn cmd_module_keys_rotate_no_cosign_fails() {
     if cfgd_core::command_available("cosign") {
         return;
     }
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = module::cmd_module_keys_rotate(&printer, None, &[]);
+    let result = module::cmd_module_keys_rotate(&v2_printer, None, &[]);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("cosign not found"));
 }

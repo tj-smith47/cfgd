@@ -237,6 +237,7 @@ spec:
 
     let output_dir = tempfile::tempdir().unwrap();
     let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2_printer = make_v2_printer();
     let cli = super::Cli {
         command: Some(super::Command::Status {
             module: None,
@@ -255,6 +256,7 @@ spec:
     let result = super::export_devcontainer(
         &cli,
         &printer,
+        &v2_printer,
         "test-tool",
         Some(output_dir.path().to_str().unwrap()),
     );
@@ -1281,10 +1283,12 @@ fn cmd_module_registry_list_no_config() {
 
 #[test]
 fn cmd_module_keys_list_no_keys() {
-    let (printer, buf) = cfgd_core::output::Printer::for_test();
-    cmd_module_keys_list(&printer).unwrap();
+    let (v2_printer, v2_buf) =
+        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+    cmd_module_keys_list(&v2_printer).unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("No signing keys found"),
         "should report no keys, got: {output}"
@@ -1344,8 +1348,8 @@ fn cmd_module_keys_generate_no_cosign_fails() {
     if cfgd_core::command_available("cosign") {
         return; // skip if cosign is actually installed
     }
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
-    let err = cmd_module_keys_generate(&printer, None).unwrap_err();
+    let v2_printer = make_v2_printer();
+    let err = cmd_module_keys_generate(&v2_printer, None).unwrap_err();
     assert!(
         err.to_string().contains("cosign not found"),
         "should report cosign missing, got: {err}"
@@ -1358,6 +1362,7 @@ fn cmd_module_keys_generate_no_cosign_fails() {
 fn cmd_module_push_no_module_yaml_fails() {
     let dir = tempfile::tempdir().unwrap();
     let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    let v2_printer = make_v2_printer();
 
     let opts = PushOptions {
         platform: None,
@@ -1368,6 +1373,7 @@ fn cmd_module_push_no_module_yaml_fails() {
     };
     let err = cmd_module_push(
         &printer,
+        &v2_printer,
         dir.path().to_str().unwrap(),
         "oci.example.com/test:v1",
         opts,
@@ -1383,9 +1389,11 @@ fn cmd_module_push_no_module_yaml_fails() {
 fn cmd_module_build_no_module_yaml_fails() {
     let dir = tempfile::tempdir().unwrap();
     let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    let v2_printer = make_v2_printer();
 
     let err = cmd_module_build(
         &printer,
+        &v2_printer,
         dir.path().to_str().unwrap(),
         None,
         None,
@@ -1407,10 +1415,12 @@ fn cmd_module_export_not_found() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    let v2_printer = make_v2_printer();
 
     let err = cmd_module_export(
         &cli,
         &printer,
+        &v2_printer,
         "ghost",
         &super::ExportFormat::Devcontainer,
         None,
@@ -2818,10 +2828,12 @@ spec:
     let output_dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
     let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    let v2_printer = make_v2_printer();
 
     let result = super::export_devcontainer(
         &cli,
         &printer,
+        &v2_printer,
         "complex-tool",
         Some(output_dir.path().to_str().unwrap()),
     );
@@ -3559,8 +3571,8 @@ fn cmd_module_keys_rotate_no_cosign_fails() {
     if cfgd_core::command_available("cosign") {
         return;
     }
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
-    let err = cmd_module_keys_rotate(&printer, None, &[]).unwrap_err();
+    let v2_printer = make_v2_printer();
+    let err = cmd_module_keys_rotate(&v2_printer, None, &[]).unwrap_err();
     assert!(
         err.to_string().contains("cosign not found"),
         "should report cosign missing, got: {err}"
@@ -3575,9 +3587,9 @@ fn cmd_module_keys_rotate_no_existing_key_fails() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    let v2_printer = make_v2_printer();
     let err =
-        cmd_module_keys_rotate(&printer, Some(dir.path().to_str().unwrap()), &[]).unwrap_err();
+        cmd_module_keys_rotate(&v2_printer, Some(dir.path().to_str().unwrap()), &[]).unwrap_err();
     assert!(
         err.to_string().contains("No existing cosign.key"),
         "should report no existing key, got: {err}"
@@ -3624,10 +3636,12 @@ fn cmd_module_export_devcontainer_no_packages() {
     let output_dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
     let (printer, _buf) = cfgd_core::output::Printer::for_test();
+    let v2_printer = make_v2_printer();
 
     super::export_devcontainer(
         &cli,
         &printer,
+        &v2_printer,
         "env-only",
         Some(output_dir.path().to_str().unwrap()),
     )
@@ -3948,8 +3962,10 @@ mod keys_with_fake_cosign {
         let work = tempfile::tempdir().expect("workdir");
         let dir_str = work.path().to_str().unwrap();
 
-        let (printer, buf) = cfgd_core::output::Printer::for_test();
-        cmd_module_keys_generate(&printer, Some(dir_str)).expect("happy path → Ok");
+        let (v2_printer, v2_buf) =
+            cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cmd_module_keys_generate(&v2_printer, Some(dir_str)).expect("happy path → Ok");
+        drop(v2_printer);
 
         assert!(
             work.path().join("cosign.key").is_file(),
@@ -3960,9 +3976,9 @@ mod keys_with_fake_cosign {
             "public key written by shim must land in target dir"
         );
 
-        let output = buf.lock().unwrap();
+        let output = v2_buf.lock().unwrap();
         assert!(
-            output.contains("Private key:") && output.contains("Public key:"),
+            output.contains("Private key") && output.contains("Public key"),
             "success output must mention both key paths: {output}"
         );
     }
@@ -3978,9 +3994,9 @@ mod keys_with_fake_cosign {
         let work = tempfile::tempdir().expect("workdir");
         let dir_str = work.path().to_str().unwrap();
 
-        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+        let v2_printer = make_v2_printer();
         let err =
-            cmd_module_keys_generate(&printer, Some(dir_str)).expect_err("non-zero exit → Err");
+            cmd_module_keys_generate(&v2_printer, Some(dir_str)).expect_err("non-zero exit → Err");
         assert!(
             err.to_string().contains("cosign generate-key-pair failed"),
             "error must surface the failure context: {err}"
@@ -3997,8 +4013,8 @@ mod keys_with_fake_cosign {
         let work = tempfile::tempdir().expect("workdir");
         let dir_str = work.path().to_str().unwrap();
 
-        let (printer, _buf) = cfgd_core::output::Printer::for_test();
-        let err = cmd_module_keys_rotate(&printer, Some(dir_str), &[])
+        let v2_printer = make_v2_printer();
+        let err = cmd_module_keys_rotate(&v2_printer, Some(dir_str), &[])
             .expect_err("missing cosign.key → Err");
         let msg = err.to_string();
         // require_tool_with_seam might fail first if cosign is missing
@@ -4025,8 +4041,8 @@ mod keys_with_fake_cosign {
         std::fs::write(dir.join("cosign.key"), b"old-private-key-bytes").unwrap();
         std::fs::write(dir.join("cosign.pub"), b"old-public-key-bytes").unwrap();
 
-        let (printer, _buf) = cfgd_core::output::Printer::for_test();
-        cmd_module_keys_rotate(&printer, Some(dir.to_str().unwrap()), &[])
+        let v2_printer = make_v2_printer();
+        cmd_module_keys_rotate(&v2_printer, Some(dir.to_str().unwrap()), &[])
             .expect("rotate happy path → Ok");
 
         // The new key files written by the shim are present.

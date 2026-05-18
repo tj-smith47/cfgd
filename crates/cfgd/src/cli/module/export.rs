@@ -1,20 +1,25 @@
 use super::*;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
-pub(crate) fn cmd_module_export(
+pub fn cmd_module_export(
     cli: &Cli,
     printer: &Printer,
+    v2_printer: &PrinterV2,
     name: &str,
     format: &super::ExportFormat,
     output_dir: Option<&str>,
 ) -> anyhow::Result<()> {
     match format {
-        super::ExportFormat::Devcontainer => export_devcontainer(cli, printer, name, output_dir),
+        super::ExportFormat::Devcontainer => {
+            export_devcontainer(cli, printer, v2_printer, name, output_dir)
+        }
     }
 }
 
 pub(super) fn export_devcontainer(
     cli: &Cli,
     printer: &Printer,
+    v2_printer: &PrinterV2,
     name: &str,
     output_dir: Option<&str>,
 ) -> anyhow::Result<()> {
@@ -22,9 +27,18 @@ pub(super) fn export_devcontainer(
     let cache_base = modules::default_module_cache_dir()?;
     let all_modules = modules::load_all_modules(&config_dir, &cache_base, printer)?;
 
-    let module = all_modules
-        .get(name)
-        .ok_or_else(|| anyhow::anyhow!("Module '{}' not found", name))?;
+    let module = match all_modules.get(name) {
+        Some(m) => m,
+        None => {
+            v2_printer.emit(cfgd_core::output_v2::error_doc(
+                name,
+                "not_found",
+                format!("Module '{}' not found", name),
+                serde_json::json!({}),
+            ));
+            anyhow::bail!("Module '{}' not found", name);
+        }
+    };
 
     let out = PathBuf::from(output_dir.unwrap_or("."));
     let feature_dir = out.join(name);
@@ -141,21 +155,34 @@ pub(super) fn export_devcontainer(
     });
 
     let feature_json = serde_json::to_string_pretty(&feature)?;
-    cfgd_core::atomic_write_str(
-        &feature_dir.join("devcontainer-feature.json"),
-        &feature_json,
-    )?;
+    let feature_path = feature_dir.join("devcontainer-feature.json");
+    cfgd_core::atomic_write_str(&feature_path, &feature_json)?;
 
-    printer.success(&format!(
+    let install_path_str = install_path.display().to_string();
+    let feature_path_str = feature_path.display().to_string();
+    let out_sec = v2_printer.section(format!(
         "Exported module '{}' as DevContainer Feature to {}",
         name,
         feature_dir.display()
     ));
-    printer.info(&format!("  {}/install.sh", feature_dir.display()));
-    printer.info(&format!(
-        "  {}/devcontainer-feature.json",
-        feature_dir.display()
-    ));
+    out_sec.bullet(install_path_str.clone());
+    out_sec.bullet(feature_path_str.clone());
+    drop(out_sec);
+
+    v2_printer.emit(
+        Doc::new()
+            .status(
+                Role::Ok,
+                format!("Exported module '{}' as DevContainer Feature", name),
+            )
+            .with_data(serde_json::json!({
+                "name": name,
+                "format": "devcontainer",
+                "outputDir": feature_dir.display().to_string(),
+                "installScript": install_path_str,
+                "featureJson": feature_path_str,
+            })),
+    );
 
     Ok(())
 }

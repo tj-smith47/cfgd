@@ -1,8 +1,9 @@
 use super::*;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
 // --- OCI Push / Pull ---
 
-pub(crate) struct PushOptions<'a> {
+pub struct PushOptions<'a> {
     pub platform: Option<&'a str>,
     pub apply: bool,
     pub sign: bool,
@@ -10,8 +11,9 @@ pub(crate) struct PushOptions<'a> {
     pub attest: bool,
 }
 
-pub(crate) fn cmd_module_push(
+pub fn cmd_module_push(
     printer: &Printer,
+    v2_printer: &PrinterV2,
     dir: &str,
     artifact: &str,
     opts: PushOptions<'_>,
@@ -25,30 +27,44 @@ pub(crate) fn cmd_module_push(
     } = opts;
     let dir_path = Path::new(dir);
     if !dir_path.join("module.yaml").exists() {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            dir,
+            "module_yaml_missing",
+            format!(
+                "Directory '{}' does not contain a module.yaml",
+                dir_path.display()
+            ),
+            serde_json::json!({ "dir": dir }),
+        ));
         anyhow::bail!(
             "Directory '{}' does not contain a module.yaml",
             dir_path.display()
         );
     }
 
-    printer.header("Push Module");
-    printer.key_value("Directory", dir);
-    printer.key_value("Artifact", artifact);
+    v2_printer.heading("Push Module");
+    let mut header = vec![
+        ("Directory".to_string(), dir.to_string()),
+        ("Artifact".to_string(), artifact.to_string()),
+    ];
     if let Some(p) = platform {
-        printer.key_value("Platform", p);
+        header.push(("Platform".to_string(), p.to_string()));
     }
+    v2_printer.kv_block(header);
 
     let digest = cfgd_core::oci::push_module(dir_path, artifact, platform, Some(printer))
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    printer.success(&format!("Pushed {artifact}"));
-    printer.key_value("Digest", &digest);
+    v2_printer.status_simple(Role::Ok, format!("Pushed {artifact}"));
+    v2_printer.kv("Digest", &digest);
 
     // Sign if requested
     if sign {
         cfgd_core::oci::sign_artifact(artifact, key).map_err(|e| anyhow::anyhow!("{e}"))?;
-        printer.success("Signed artifact with cosign");
+        v2_printer.status_simple(Role::Ok, "Signed artifact with cosign");
     }
+
+    let mut attestation_attached = false;
 
     // Attach SLSA provenance attestation if requested
     if attest {
@@ -62,17 +78,30 @@ pub(crate) fn cmd_module_push(
         std::fs::write(tmp.path(), &provenance)?;
         cfgd_core::oci::attach_attestation(artifact, &tmp.path().display().to_string(), key)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        printer.success("Attached SLSA provenance attestation");
+        v2_printer.status_simple(Role::Ok, "Attached SLSA provenance attestation");
+        attestation_attached = true;
     }
 
+    let mut applied_name: Option<String> = None;
     if apply {
         let module_yaml = std::fs::read_to_string(dir_path.join("module.yaml"))?;
         let module_doc = cfgd_core::config::parse_module(&module_yaml)
             .map_err(|e| anyhow::anyhow!("Failed to parse module.yaml: {e}"))?;
 
         let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(apply_module_crd(printer, &module_doc, artifact))?;
+        rt.block_on(apply_module_crd(v2_printer, &module_doc, artifact))?;
+        applied_name = Some(module_doc.metadata.name.clone());
     }
+
+    v2_printer.emit(Doc::new().with_data(serde_json::json!({
+        "dir": dir,
+        "artifact": artifact,
+        "platform": platform,
+        "digest": digest,
+        "signed": sign,
+        "attestation": attestation_attached,
+        "applied": applied_name,
+    })));
 
     Ok(())
 }
@@ -131,7 +160,7 @@ pub(super) fn build_module_crd_json(
 }
 
 async fn apply_module_crd(
-    printer: &Printer,
+    v2_printer: &PrinterV2,
     module_doc: &cfgd_core::config::ModuleDocument,
     artifact: &str,
 ) -> anyhow::Result<()> {
@@ -165,12 +194,13 @@ async fn apply_module_crd(
         .await
         .map_err(|e| anyhow::anyhow!("Failed to apply Module CRD: {e}"))?;
 
-    printer.success(&format!("Applied Module CRD '{name}' to cluster"));
+    v2_printer.status_simple(Role::Ok, format!("Applied Module CRD '{name}' to cluster"));
     Ok(())
 }
 
-pub(crate) fn cmd_module_pull(
+pub fn cmd_module_pull(
     printer: &Printer,
+    v2_printer: &PrinterV2,
     artifact_ref: &str,
     output: &str,
     require_signature: bool,
@@ -179,42 +209,61 @@ pub(crate) fn cmd_module_pull(
 ) -> anyhow::Result<()> {
     let output_path = Path::new(output);
 
-    printer.header("Pull Module");
-    printer.key_value("Artifact", artifact_ref);
-    printer.key_value("Output", output);
+    v2_printer.heading("Pull Module");
+    v2_printer.kv_block([("Artifact", artifact_ref), ("Output", output)]);
 
     // Verify signature if requested (uses cosign, not the old tag-check)
     if require_signature {
         cfgd_core::oci::verify_signature(artifact_ref, &verify_opts)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        printer.success("Signature verified");
+        v2_printer.status_simple(Role::Ok, "Signature verified");
     }
 
     // Verify attestation if requested
     if verify_attestation {
         cfgd_core::oci::verify_attestation(artifact_ref, "slsaprovenance", &verify_opts)
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        printer.success("SLSA provenance attestation verified");
+        v2_printer.status_simple(Role::Ok, "SLSA provenance attestation verified");
     }
 
     // Pull uses the existing require_signature=false since we've already verified above
     cfgd_core::oci::pull_module(artifact_ref, output_path, false, Some(printer))
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    printer.success(&format!("Pulled {artifact_ref} to {output}"));
+    v2_printer.status_simple(Role::Ok, format!("Pulled {artifact_ref} to {output}"));
 
     // Check if module.yaml exists in extracted content
+    let mut module_name: Option<String> = None;
+    let mut module_description: Option<String> = None;
+    let mut package_count: Option<usize> = None;
+    let mut file_count: Option<usize> = None;
     if output_path.join("module.yaml").exists() {
         let contents = std::fs::read_to_string(output_path.join("module.yaml"))?;
         if let Ok(doc) = cfgd_core::config::parse_module(&contents) {
-            printer.key_value("Module", &doc.metadata.name);
+            let mut pairs = vec![("Module".to_string(), doc.metadata.name.clone())];
             if let Some(desc) = &doc.metadata.description {
-                printer.key_value("Description", desc);
+                pairs.push(("Description".to_string(), desc.clone()));
             }
-            printer.key_value("Packages", &doc.spec.packages.len().to_string());
-            printer.key_value("Files", &doc.spec.files.len().to_string());
+            pairs.push(("Packages".to_string(), doc.spec.packages.len().to_string()));
+            pairs.push(("Files".to_string(), doc.spec.files.len().to_string()));
+            v2_printer.kv_block(pairs);
+            module_name = Some(doc.metadata.name.clone());
+            module_description = doc.metadata.description.clone();
+            package_count = Some(doc.spec.packages.len());
+            file_count = Some(doc.spec.files.len());
         }
     }
+
+    v2_printer.emit(Doc::new().with_data(serde_json::json!({
+        "artifact": artifact_ref,
+        "output": output,
+        "signatureVerified": require_signature,
+        "attestationVerified": verify_attestation,
+        "moduleName": module_name,
+        "moduleDescription": module_description,
+        "packageCount": package_count,
+        "fileCount": file_count,
+    })));
 
     Ok(())
 }

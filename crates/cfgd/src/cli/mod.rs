@@ -1494,7 +1494,9 @@ pub fn execute(
                 name,
                 as_format,
                 dir,
-            } => module::cmd_module_export(cli, printer, name, as_format, dir.as_deref()),
+            } => {
+                module::cmd_module_export(cli, printer, v2_printer, name, as_format, dir.as_deref())
+            }
             ModuleCommand::Push {
                 dir,
                 artifact,
@@ -1505,6 +1507,7 @@ pub fn execute(
                 attest,
             } => module::cmd_module_push(
                 printer,
+                v2_printer,
                 dir,
                 artifact,
                 module::PushOptions {
@@ -1525,6 +1528,7 @@ pub fn execute(
                 certificate_oidc_issuer,
             } => module::cmd_module_pull(
                 printer,
+                v2_printer,
                 artifact_ref,
                 dir,
                 *require_signature,
@@ -1544,6 +1548,7 @@ pub fn execute(
                 key,
             } => module::cmd_module_build(
                 printer,
+                v2_printer,
                 dir,
                 target.as_deref(),
                 base_image.as_deref(),
@@ -1553,11 +1558,11 @@ pub fn execute(
             ),
             ModuleCommand::Keys { command } => match command {
                 ModuleKeysCommand::Generate { dir } => {
-                    module::cmd_module_keys_generate(printer, dir.as_deref())
+                    module::cmd_module_keys_generate(v2_printer, dir.as_deref())
                 }
-                ModuleKeysCommand::List => module::cmd_module_keys_list(printer),
+                ModuleKeysCommand::List => module::cmd_module_keys_list(v2_printer),
                 ModuleKeysCommand::Rotate { dir, artifacts } => {
-                    module::cmd_module_keys_rotate(printer, dir.as_deref(), artifacts)
+                    module::cmd_module_keys_rotate(v2_printer, dir.as_deref(), artifacts)
                 }
             },
         },

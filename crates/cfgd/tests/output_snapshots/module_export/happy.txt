@@ -1,0 +1,5 @@
+Exported module 'export-mod' as DevContainer Feature to <OUTPUT_DIR>/export-mod
+  - <OUTPUT_DIR>/export-mod/install.sh
+  - <OUTPUT_DIR>/export-mod/devcontainer-feature.json
+
+✓ Exported module 'export-mod' as DevContainer Feature
