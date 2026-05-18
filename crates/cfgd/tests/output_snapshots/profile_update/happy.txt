@@ -1,0 +1,5 @@
+Update Profile: default
+
+✓ Set env: EDITOR=nvim
+
+✓ Updated profile 'default' (1 change(s))

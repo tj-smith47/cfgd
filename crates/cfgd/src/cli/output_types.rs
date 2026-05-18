@@ -296,7 +296,7 @@ pub struct SourceResourceEntry {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(in crate::cli) struct ProfileListEntry {
+pub struct ProfileListEntry {
     pub name: String,
     pub active: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

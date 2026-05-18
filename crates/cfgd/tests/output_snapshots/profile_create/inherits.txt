@@ -1,0 +1,8 @@
+Create Profile: child
+
+✓ Created profile 'child' at /etc/cfgd/profiles/child.yaml
+
+Inherits  default, shared
+Modules   nvim
+
+→ Activate with: cfgd profile switch child

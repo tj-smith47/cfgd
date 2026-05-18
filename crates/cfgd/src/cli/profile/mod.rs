@@ -8,7 +8,7 @@ mod backups;
 mod create;
 mod delete;
 mod edit;
-mod list;
+pub mod list;
 mod parsers;
 pub mod show;
 mod switch;

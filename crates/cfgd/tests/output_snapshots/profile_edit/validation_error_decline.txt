@@ -1,0 +1,3 @@
+✗ Profile 'default' has errors: missing field `kind`
+
+⚠ Saved with validation errors

@@ -1,0 +1,13 @@
+[
+  {
+    "active": true,
+    "moduleCount": 0,
+    "name": "default"
+  },
+  {
+    "active": false,
+    "inherits": "default",
+    "moduleCount": 2,
+    "name": "work"
+  }
+]

@@ -1,0 +1,9 @@
+Update Profile: default
+
+✓ Added module: nvim
+
+✓ Removed env: EDITOR
+
+⚠ Module 'missing' not found in profile
+
+✓ Updated profile 'default' (2 change(s))

@@ -1,9 +1,9 @@
 use super::*;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
 pub(crate) fn cmd_profile_create(
     cli: &Cli,
-    printer: &Printer,
-    v2_printer: &cfgd_core::output_v2::Printer,
+    v2_printer: &PrinterV2,
     args: &ProfileCreateArgs,
 ) -> anyhow::Result<()> {
     let name = &args.name;
@@ -22,7 +22,7 @@ pub(crate) fn cmd_profile_create(
     let on_change = &args.on_change;
     let on_drift = &args.on_drift;
     validate_resource_name(name, "Profile")?;
-    printer.header(&format!("Create Profile: {}", name));
+    v2_printer.heading(format!("Create Profile: {}", name));
 
     let config_dir = config_dir(cli);
     let pdir = config_dir.join("profiles");
@@ -62,7 +62,7 @@ pub(crate) fn cmd_profile_create(
         && on_drift.is_empty();
 
     let (inh, mods, pkgs_parsed, vars, sys) = if is_interactive {
-        let inh_str = printer.prompt_text("Inherit from (comma-separated, or empty)", "")?;
+        let inh_str = v2_printer.prompt_text("Inherit from (comma-separated, or empty)", "")?;
         let inh: Vec<String> = if inh_str.is_empty() {
             Vec::new()
         } else {
@@ -75,7 +75,7 @@ pub(crate) fn cmd_profile_create(
             }
         }
 
-        let mods_str = printer.prompt_text("Modules (comma-separated, or empty)", "")?;
+        let mods_str = v2_printer.prompt_text("Modules (comma-separated, or empty)", "")?;
         let mods: Vec<String> = if mods_str.is_empty() {
             Vec::new()
         } else {
@@ -103,10 +103,13 @@ pub(crate) fn cmd_profile_create(
     let modules_dir = config_dir.join("modules");
     for m in &mods {
         if !modules_dir.join(m).join("module.yaml").exists() {
-            printer.warning(&format!(
-                "Module '{}' not found locally — make sure it exists or is a remote module",
-                m
-            ));
+            v2_printer.status_simple(
+                Role::Warn,
+                format!(
+                    "Module '{}' not found locally — make sure it exists or is a remote module",
+                    m
+                ),
+            );
         }
     }
 
@@ -243,19 +246,25 @@ pub(crate) fn cmd_profile_create(
     let yaml = serde_yaml::to_string(&doc)?;
     cfgd_core::atomic_write_str(&profile_path, &yaml)?;
 
-    printer.success(&format!(
-        "Created profile '{}' at {}",
-        name,
-        profile_path.display()
-    ));
+    let mut out = Doc::new().status(
+        Role::Ok,
+        format!("Created profile '{}' at {}", name, profile_path.display()),
+    );
     if !doc.spec.inherits.is_empty() {
-        printer.key_value("Inherits", &doc.spec.inherits.join(", "));
+        out = out.kv("Inherits", doc.spec.inherits.join(", "));
     }
     if !doc.spec.modules.is_empty() {
-        printer.key_value("Modules", &doc.spec.modules.join(", "));
+        out = out.kv("Modules", doc.spec.modules.join(", "));
     }
-    printer.newline();
-    printer.info(&format!("Activate with: cfgd profile switch {}", name));
+    out = out
+        .hint(format!("Activate with: cfgd profile switch {}", name))
+        .with_data(serde_json::json!({
+            "name": name,
+            "path": profile_path.display().to_string(),
+            "inherits": doc.spec.inherits,
+            "modules": doc.spec.modules,
+        }));
+    v2_printer.emit(out);
 
     maybe_update_workflow(cli, v2_printer)?;
 

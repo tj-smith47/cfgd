@@ -1,18 +1,61 @@
 use super::*;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role, renderer::Table as TableV2};
 
-pub(crate) fn cmd_profile_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+/// Build the `cfgd profile list` Doc from a populated entries vector + `--wide`
+/// flag. Pure; the caller assembles the entries from disk.
+pub fn build_profile_list_doc(entries: &[super::ProfileListEntry], wide: bool) -> Doc {
+    let mut doc = Doc::new().heading("Available Profiles");
+
+    if entries.is_empty() {
+        doc = doc.status(Role::Info, "No profiles found");
+        return doc.with_data(entries);
+    }
+
+    if wide {
+        let mut t = TableV2::new(["Profile", "Active", "Inherits", "Modules"]);
+        for e in entries {
+            t = t.row([
+                e.name.clone(),
+                if e.active { "yes" } else { "-" }.to_string(),
+                e.inherits.clone().unwrap_or_else(|| "-".into()),
+                e.module_count.to_string(),
+            ]);
+        }
+        doc = doc.table(t);
+    } else {
+        for entry in entries {
+            if entry.active {
+                doc = doc.status(Role::Ok, format!("{} (active)", entry.name));
+            } else {
+                doc = doc.status(Role::Info, entry.name.clone());
+            }
+        }
+    }
+
+    doc.with_data(entries)
+}
+
+/// Doc emitted when the profiles directory is absent.
+pub fn build_profile_list_missing_doc(profiles_dir: &Path) -> Doc {
+    let empty: Vec<super::ProfileListEntry> = Vec::new();
+    Doc::new()
+        .heading("Available Profiles")
+        .status(
+            Role::Warn,
+            format!("Profiles directory not found: {}", profiles_dir.display()),
+        )
+        .with_data(&empty)
+}
+
+pub(crate) fn cmd_profile_list(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
     let profiles_dir = profiles_dir(cli);
 
     if !profiles_dir.exists() {
-        if printer.is_structured() {
-            printer.write_structured(&Vec::<super::ProfileListEntry>::new());
+        if v2_printer.is_structured() {
+            v2_printer.emit(Doc::new().with_data(Vec::<super::ProfileListEntry>::new()));
             return Ok(());
         }
-        printer.header("Available Profiles");
-        printer.warning(&format!(
-            "Profiles directory not found: {}",
-            profiles_dir.display()
-        ));
+        v2_printer.emit(build_profile_list_missing_doc(&profiles_dir));
         return Ok(());
     }
 
@@ -58,38 +101,7 @@ pub(crate) fn cmd_profile_list(cli: &Cli, printer: &Printer) -> anyhow::Result<(
         })
         .collect();
 
-    if printer.write_structured(&entries) {
-        return Ok(());
-    }
-
-    printer.header("Available Profiles");
-
-    if printer.is_wide() {
-        let rows: Vec<Vec<String>> = entries
-            .iter()
-            .map(|e| {
-                vec![
-                    e.name.clone(),
-                    if e.active { "yes" } else { "-" }.to_string(),
-                    e.inherits.clone().unwrap_or_else(|| "-".into()),
-                    e.module_count.to_string(),
-                ]
-            })
-            .collect();
-        printer.table(&["Profile", "Active", "Inherits", "Modules"], &rows);
-    } else {
-        for entry in &entries {
-            if entry.active {
-                printer.success(&format!("{} (active)", entry.name));
-            } else {
-                printer.info(&entry.name);
-            }
-        }
-    }
-
-    if entries.is_empty() {
-        printer.info("No profiles found");
-    }
+    v2_printer.emit(build_profile_list_doc(&entries, v2_printer.is_wide()));
 
     Ok(())
 }

@@ -1,7 +1,12 @@
 use super::*;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
-pub(crate) fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::Result<()> {
-    printer.header("Switch Profile");
+pub(crate) fn cmd_profile_switch(
+    cli: &Cli,
+    name: &str,
+    v2_printer: &PrinterV2,
+) -> anyhow::Result<()> {
+    v2_printer.heading("Switch Profile");
 
     let config_dir = super::config_dir(cli);
     let config_path = config_dir.join("cfgd.yaml");
@@ -36,8 +41,17 @@ pub(crate) fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> an
     let yaml = serde_yaml::to_string(&cfg)?;
     cfgd_core::atomic_write_str(&config_path, &yaml)?;
 
-    printer.success(&format!("Switched profile: {} → {}", old_profile, name));
-    printer.info(MSG_RUN_APPLY);
+    let doc = Doc::new()
+        .status(
+            Role::Ok,
+            format!("Switched profile: {} → {}", old_profile, name),
+        )
+        .hint(MSG_RUN_APPLY)
+        .with_data(serde_json::json!({
+            "from": old_profile,
+            "to": name,
+        }));
+    v2_printer.emit(doc);
 
     Ok(())
 }

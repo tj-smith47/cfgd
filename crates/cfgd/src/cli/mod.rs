@@ -1410,18 +1410,16 @@ pub fn execute(
             ProfileCommand::Show { name } => {
                 profile::cmd_profile_show(cli, v2_printer, name.as_deref())
             }
-            ProfileCommand::List => profile::cmd_profile_list(cli, printer),
-            ProfileCommand::Switch { name } => profile::cmd_profile_switch(cli, name, printer),
-            ProfileCommand::Create(args) => {
-                profile::cmd_profile_create(cli, printer, v2_printer, args)
-            }
+            ProfileCommand::List => profile::cmd_profile_list(cli, v2_printer),
+            ProfileCommand::Switch { name } => profile::cmd_profile_switch(cli, name, v2_printer),
+            ProfileCommand::Create(args) => profile::cmd_profile_create(cli, v2_printer, args),
             ProfileCommand::Update(args) => {
                 let profile_name = resolve_profile_name(cli, args.name.as_deref())?;
-                profile::cmd_profile_update(cli, printer, &profile_name, args)
+                profile::cmd_profile_update(cli, printer, v2_printer, &profile_name, args)
             }
-            ProfileCommand::Edit { name } => profile::cmd_profile_edit(cli, printer, name),
+            ProfileCommand::Edit { name } => profile::cmd_profile_edit(cli, v2_printer, name),
             ProfileCommand::Delete { name, yes } => {
-                profile::cmd_profile_delete(cli, printer, v2_printer, name, *yes)
+                profile::cmd_profile_delete(cli, v2_printer, name, *yes)
             }
         },
         Command::Doctor => doctor::cmd_doctor(cli, printer, v2_printer),

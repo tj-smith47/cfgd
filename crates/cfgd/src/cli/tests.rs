@@ -1646,7 +1646,6 @@ fn module_update_idempotent_add() {
 fn profile_create_with_flags() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     let args = ProfileCreateArgs {
@@ -1657,7 +1656,7 @@ fn profile_create_with_flags() {
         system: vec!["shell=/bin/zsh".to_string()],
         ..test_profile_create_args("new-profile")
     };
-    profile::cmd_profile_create(&cli, &printer, &v2_printer, &args).unwrap();
+    profile::cmd_profile_create(&cli, &v2_printer, &args).unwrap();
 
     let profile_path = dir.path().join("profiles").join("new-profile.yaml");
     assert!(profile_path.exists());
@@ -1674,11 +1673,10 @@ fn profile_create_with_flags() {
 fn profile_create_refuses_duplicate() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     let args = test_profile_create_args("default");
-    let result = profile::cmd_profile_create(&cli, &printer, &v2_printer, &args);
+    let result = profile::cmd_profile_create(&cli, &v2_printer, &args);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("already exists"));
 }
@@ -1687,14 +1685,13 @@ fn profile_create_refuses_duplicate() {
 fn profile_create_refuses_missing_parent() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     let args = ProfileCreateArgs {
         inherits: vec!["nonexistent".to_string()],
         ..test_profile_create_args("child")
     };
-    let result = profile::cmd_profile_create(&cli, &printer, &v2_printer, &args);
+    let result = profile::cmd_profile_create(&cli, &v2_printer, &args);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -1704,6 +1701,7 @@ fn profile_update_add_and_remove() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let args = ProfileUpdateArgs {
         modules: vec!["nvim".to_string()],
@@ -1712,7 +1710,7 @@ fn profile_update_add_and_remove() {
         system: vec!["shell=/bin/zsh".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
 
     let profile_path = dir.path().join("profiles").join("default.yaml");
     let doc = config::load_profile(&profile_path).unwrap();
@@ -1731,10 +1729,9 @@ fn profile_delete_refuses_active() {
         .unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
-    let result = profile::cmd_profile_delete(&cli, &printer, &v2_printer, "default", true);
+    let result = profile::cmd_profile_delete(&cli, &v2_printer, "default", true);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("active profile"));
 }
@@ -1743,10 +1740,9 @@ fn profile_delete_refuses_active() {
 fn profile_delete_refuses_when_inherited() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
-    let result = profile::cmd_profile_delete(&cli, &printer, &v2_printer, "default", true);
+    let result = profile::cmd_profile_delete(&cli, &v2_printer, "default", true);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("inherited by"));
 }
@@ -1755,10 +1751,9 @@ fn profile_delete_refuses_when_inherited() {
 fn profile_delete_succeeds() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
-    profile::cmd_profile_delete(&cli, &printer, &v2_printer, "work", true).unwrap();
+    profile::cmd_profile_delete(&cli, &v2_printer, "work", true).unwrap();
     assert!(!dir.path().join("profiles").join("work.yaml").exists());
 }
 
@@ -1863,13 +1858,14 @@ fn profile_update_inherits() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     // Add inherits
     let args = ProfileUpdateArgs {
         inherits: vec!["default".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "work", &args).unwrap();
+    profile::cmd_profile_update(&cli, &printer, &v2_printer, "work", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("work.yaml")).unwrap();
     assert!(doc.spec.inherits.contains(&"default".to_string()));
@@ -1879,7 +1875,7 @@ fn profile_update_inherits() {
         inherits: vec!["-default".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "work", &args).unwrap();
+    profile::cmd_profile_update(&cli, &printer, &v2_printer, "work", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("work.yaml")).unwrap();
     assert!(!doc.spec.inherits.contains(&"default".to_string()));
@@ -1890,13 +1886,14 @@ fn profile_update_secrets() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     // Add secret
     let args = ProfileUpdateArgs {
         secrets: vec!["secrets/key.enc:~/.config/app/key".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert_eq!(doc.spec.secrets.len(), 1);
@@ -1907,7 +1904,7 @@ fn profile_update_secrets() {
         secrets: vec!["-~/.config/app/key".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(doc.spec.secrets.is_empty());
@@ -1918,6 +1915,7 @@ fn profile_update_scripts() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     // Add pre-apply, post-apply, pre-reconcile, post-reconcile, on-change
     let args = ProfileUpdateArgs {
@@ -1928,7 +1926,7 @@ fn profile_update_scripts() {
         on_change: vec!["scripts/on-change.sh".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let scripts = doc.spec.scripts.as_ref().unwrap();
@@ -1968,7 +1966,7 @@ fn profile_update_scripts() {
         on_change: vec!["-scripts/on-change.sh".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let scripts = doc.spec.scripts.as_ref().unwrap();
@@ -10067,6 +10065,7 @@ fn profile_update_add_and_remove_files() {
 
     let cli = test_cli(dir.path());
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     // Add file to profile
     let args = ProfileUpdateArgs {
@@ -10077,7 +10076,7 @@ fn profile_update_add_and_remove_files() {
         )],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let managed = &doc.spec.files.as_ref().unwrap().managed;
@@ -10097,7 +10096,7 @@ fn profile_update_add_and_remove_files() {
         files: vec![format!("-{}", target_path.display())],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let file_count = doc
@@ -10119,13 +10118,14 @@ fn profile_update_env_add_and_remove() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     // Add env var
     let args = ProfileUpdateArgs {
         env: vec!["CUSTOM_VAR=hello".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(doc.spec.env.iter().any(|e| e.name == "CUSTOM_VAR"));
@@ -10135,7 +10135,7 @@ fn profile_update_env_add_and_remove() {
         env: vec!["-CUSTOM_VAR".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(!doc.spec.env.iter().any(|e| e.name == "CUSTOM_VAR"));
@@ -10148,13 +10148,14 @@ fn profile_update_alias_add_and_remove() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     // Add alias
     let args = ProfileUpdateArgs {
         aliases: vec!["ll=ls -la".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(doc.spec.aliases.iter().any(|a| a.name == "ll"));
@@ -10164,7 +10165,7 @@ fn profile_update_alias_add_and_remove() {
         aliases: vec!["-ll".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(!doc.spec.aliases.iter().any(|a| a.name == "ll"));
@@ -10177,13 +10178,14 @@ fn profile_update_modules_add_and_remove() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     // Add module
     let args = ProfileUpdateArgs {
         modules: vec!["neovim".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(doc.spec.modules.contains(&"neovim".to_string()));
@@ -10193,7 +10195,7 @@ fn profile_update_modules_add_and_remove() {
         modules: vec!["-neovim".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(!doc.spec.modules.contains(&"neovim".to_string()));
@@ -10206,13 +10208,14 @@ fn profile_update_packages_add_and_remove() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     // Add package
     let args = ProfileUpdateArgs {
         packages: vec!["brew:jq".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let brew = doc.spec.packages.as_ref().unwrap().brew.as_ref().unwrap();
@@ -10223,7 +10226,7 @@ fn profile_update_packages_add_and_remove() {
         packages: vec!["-brew:jq".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let brew = doc.spec.packages.as_ref().unwrap().brew.as_ref().unwrap();
@@ -10236,14 +10239,13 @@ fn profile_update_packages_add_and_remove() {
 fn profile_create_with_aliases() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     let args = ProfileCreateArgs {
         aliases: vec!["ll=ls -la".to_string(), "gs=git status".to_string()],
         ..test_profile_create_args("alias-profile")
     };
-    profile::cmd_profile_create(&cli, &printer, &v2_printer, &args).unwrap();
+    profile::cmd_profile_create(&cli, &v2_printer, &args).unwrap();
 
     let doc =
         config::load_profile(&dir.path().join("profiles").join("alias-profile.yaml")).unwrap();
@@ -10256,14 +10258,13 @@ fn profile_create_with_aliases() {
 fn profile_create_with_secrets() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     let args = ProfileCreateArgs {
         secrets: vec!["secrets/api.enc:~/.config/app/key".to_string()],
         ..test_profile_create_args("secret-profile")
     };
-    profile::cmd_profile_create(&cli, &printer, &v2_printer, &args).unwrap();
+    profile::cmd_profile_create(&cli, &v2_printer, &args).unwrap();
 
     let doc =
         config::load_profile(&dir.path().join("profiles").join("secret-profile.yaml")).unwrap();
@@ -10275,7 +10276,6 @@ fn profile_create_with_secrets() {
 fn profile_create_with_scripts() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     let args = ProfileCreateArgs {
@@ -10285,7 +10285,7 @@ fn profile_create_with_scripts() {
         on_drift: vec!["scripts/drift.sh".to_string()],
         ..test_profile_create_args("script-profile")
     };
-    profile::cmd_profile_create(&cli, &printer, &v2_printer, &args).unwrap();
+    profile::cmd_profile_create(&cli, &v2_printer, &args).unwrap();
 
     let doc =
         config::load_profile(&dir.path().join("profiles").join("script-profile.yaml")).unwrap();
@@ -10303,12 +10303,13 @@ fn profile_update_on_drift_scripts() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
     let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let args = ProfileUpdateArgs {
         on_drift: vec!["scripts/drift.sh".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let scripts = doc.spec.scripts.as_ref().unwrap();
@@ -10322,7 +10323,7 @@ fn profile_update_on_drift_scripts() {
         on_drift: vec!["-scripts/drift.sh".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let scripts = doc.spec.scripts.as_ref().unwrap();

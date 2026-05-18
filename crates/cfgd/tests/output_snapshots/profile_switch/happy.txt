@@ -1,0 +1,5 @@
+Switch Profile
+
+✓ Switched profile: default → work
+
+→ Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'

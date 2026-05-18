@@ -45,19 +45,23 @@ pub(crate) fn update_script_list(
     remove: &[String],
     label: &str,
     field: fn(&mut config::ScriptSpec) -> &mut Vec<config::ScriptEntry>,
-    printer: &Printer,
+    v2_printer: &cfgd_core::output_v2::Printer,
 ) -> u32 {
+    use cfgd_core::output_v2::Role;
     let mut changes = 0u32;
     for script in add {
         let scripts = scripts_opt.get_or_insert_with(Default::default);
         let list = field(scripts);
         let entry = config::ScriptEntry::Simple(script.clone());
         if list.contains(&entry) {
-            printer.warning(&format!("{} script '{}' already exists", label, script));
+            v2_printer.status_simple(
+                Role::Warn,
+                format!("{} script '{}' already exists", label, script),
+            );
             continue;
         }
         list.push(entry);
-        printer.success(&format!("Added {}: {}", label, script));
+        v2_printer.status_simple(Role::Ok, format!("Added {}: {}", label, script));
         changes += 1;
     }
     for script in remove {
@@ -66,13 +70,19 @@ pub(crate) fn update_script_list(
             let before = list.len();
             list.retain(|e| e.run_str() != script.as_str());
             if list.len() < before {
-                printer.success(&format!("Removed {}: {}", label, script));
+                v2_printer.status_simple(Role::Ok, format!("Removed {}: {}", label, script));
                 changes += 1;
             } else {
-                printer.warning(&format!("{} script '{}' not found", label, script));
+                v2_printer.status_simple(
+                    Role::Warn,
+                    format!("{} script '{}' not found", label, script),
+                );
             }
         } else {
-            printer.warning(&format!("{} script '{}' not found", label, script));
+            v2_printer.status_simple(
+                Role::Warn,
+                format!("{} script '{}' not found", label, script),
+            );
         }
     }
     changes

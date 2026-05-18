@@ -35,11 +35,15 @@ pub(crate) fn collect_module_file_targets(module_name: &str, config_dir: &Path) 
 
 /// After removing a module, check if any of its file targets have `.cfgd-backup` files
 /// and prompt the user to restore them.
-pub(crate) fn prompt_restore_backups(targets: &[PathBuf], printer: &Printer) -> anyhow::Result<()> {
+pub(crate) fn prompt_restore_backups(
+    targets: &[PathBuf],
+    v2_printer: &cfgd_core::output_v2::Printer,
+) -> anyhow::Result<()> {
+    use cfgd_core::output_v2::Role;
     for target in targets {
         let backup_path = PathBuf::from(format!("{}.cfgd-backup", target.display()));
         if backup_path.exists() {
-            let confirmed = printer
+            let confirmed = v2_printer
                 .prompt_confirm(&format!(
                     "Restore backup {} to {}?",
                     backup_path.display(),
@@ -52,7 +56,7 @@ pub(crate) fn prompt_restore_backups(targets: &[PathBuf], printer: &Printer) -> 
                     std::fs::remove_file(target)?;
                 }
                 std::fs::rename(&backup_path, target)?;
-                printer.success(&format!("Restored {}", target.display()));
+                v2_printer.status_simple(Role::Ok, format!("Restored {}", target.display()));
             }
         }
     }

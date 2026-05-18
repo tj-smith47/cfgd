@@ -1,0 +1,3 @@
+Available Profiles
+
+⚠ Profiles directory not found: /etc/cfgd/profiles

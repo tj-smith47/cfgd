@@ -1,8 +1,10 @@
 use super::*;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
 pub(crate) fn cmd_profile_update(
     cli: &Cli,
     printer: &Printer,
+    v2_printer: &PrinterV2,
     name: &str,
     args: &ProfileUpdateArgs,
 ) -> anyhow::Result<()> {
@@ -23,7 +25,7 @@ pub(crate) fn cmd_profile_update(
     let (add_on_change, remove_on_change) = cfgd_core::split_add_remove(&args.on_change);
     let (add_on_drift, remove_on_drift) = cfgd_core::split_add_remove(&args.on_drift);
     validate_resource_name(name, "Profile")?;
-    printer.header(&format!("Update Profile: {}", name));
+    v2_printer.heading(format!("Update Profile: {}", name));
 
     let config_dir = config_dir(cli);
     let profile_path = config_dir.join("profiles").join(format!("{}.yaml", name));
@@ -38,7 +40,7 @@ pub(crate) fn cmd_profile_update(
     let profiles_dir = config_dir.join("profiles");
     for parent in &add_inherits {
         if doc.spec.inherits.contains(parent) {
-            printer.warning(&format!("Profile already inherits '{}'", parent));
+            v2_printer.status_simple(Role::Warn, format!("Profile already inherits '{}'", parent));
             continue;
         }
         let parent_path = profiles_dir.join(format!("{}.yaml", parent));
@@ -46,7 +48,7 @@ pub(crate) fn cmd_profile_update(
             anyhow::bail!("Parent profile '{}' not found", parent);
         }
         doc.spec.inherits.push(parent.clone());
-        printer.success(&format!("Added inherits: {}", parent));
+        v2_printer.status_simple(Role::Ok, format!("Added inherits: {}", parent));
         changes += 1;
     }
 
@@ -55,10 +57,13 @@ pub(crate) fn cmd_profile_update(
         let before = doc.spec.inherits.len();
         doc.spec.inherits.retain(|x| x != parent);
         if doc.spec.inherits.len() < before {
-            printer.success(&format!("Removed inherits: {}", parent));
+            v2_printer.status_simple(Role::Ok, format!("Removed inherits: {}", parent));
             changes += 1;
         } else {
-            printer.warning(&format!("Inherits '{}' not found in profile", parent));
+            v2_printer.status_simple(
+                Role::Warn,
+                format!("Inherits '{}' not found in profile", parent),
+            );
         }
     }
 
@@ -85,13 +90,16 @@ pub(crate) fn cmd_profile_update(
             changes += 1;
         } else {
             if !modules_dir.join(m).join("module.yaml").exists() {
-                printer.warning(&format!(
-                    "Module '{}' not found locally — make sure it exists or is a remote module",
-                    m
-                ));
+                v2_printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "Module '{}' not found locally — make sure it exists or is a remote module",
+                        m
+                    ),
+                );
             }
             doc.spec.modules.push(m.clone());
-            printer.success(&format!("Added module: {}", m));
+            v2_printer.status_simple(Role::Ok, format!("Added module: {}", m));
             changes += 1;
         }
     }
@@ -110,15 +118,16 @@ pub(crate) fn cmd_profile_update(
             lockfile.modules.retain(|e| e.name != *m);
             if let Some(entry) = removed_entry {
                 modules::save_lockfile(&config_dir, &lockfile)?;
-                printer.info(&format!("Removed '{}' from modules.lock", m));
+                v2_printer.status_simple(Role::Info, format!("Removed '{}' from modules.lock", m));
                 if let Ok(git_src) = modules::parse_git_source(&entry.url) {
                     let cache_base = modules::default_module_cache_dir().unwrap_or_default();
                     let cache_dir = modules::git_cache_dir(&cache_base, &git_src.repo_url);
                     if cache_dir.exists() {
                         if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
-                            printer.warning(&format!("Failed to clean cache: {}", e));
+                            v2_printer
+                                .status_simple(Role::Warn, format!("Failed to clean cache: {}", e));
                         } else {
-                            printer.info("Cleaned cached checkout");
+                            v2_printer.status_simple(Role::Info, "Cleaned cached checkout");
                         }
                     }
                 }
@@ -128,22 +137,25 @@ pub(crate) fn cmd_profile_update(
                 // Query file manifest for deployed files
                 if let Ok(manifest) = state.module_deployed_files(m) {
                     if !manifest.is_empty() {
-                        printer.info(&format!(
-                            "Module '{}' deployed {} file(s):",
-                            m,
-                            manifest.len()
-                        ));
-                        for f in &manifest {
-                            printer.info(&format!("  {}", f.file_path));
+                        {
+                            let deployed_sec = v2_printer.section(format!(
+                                "Module '{}' deployed {} file(s)",
+                                m,
+                                manifest.len()
+                            ));
+                            for f in &manifest {
+                                deployed_sec.bullet(f.file_path.clone());
+                            }
                         }
 
-                        let should_clean = printer
+                        let should_clean = v2_printer
                             .prompt_confirm(
                                 "Remove deployed files? Backups will be restored where available.",
                             )
                             .unwrap_or(false);
 
                         if should_clean {
+                            let cleanup_sec = v2_printer.section("Rollback");
                             for f in &manifest {
                                 let path = std::path::Path::new(&f.file_path);
                                 // Try to restore from backup store
@@ -151,10 +163,13 @@ pub(crate) fn cmd_profile_update(
                                 {
                                     if backup.was_symlink {
                                         if let Err(e) = std::fs::remove_file(path) {
-                                            printer.warning(&format!(
-                                                "  rollback: failed to remove {}: {}",
-                                                f.file_path, e
-                                            ));
+                                            cleanup_sec.status_simple(
+                                                Role::Warn,
+                                                format!(
+                                                    "rollback: failed to remove {}: {}",
+                                                    f.file_path, e
+                                                ),
+                                            );
                                         }
                                         if let Some(ref link_target) = backup.symlink_target
                                             && let Err(e) = cfgd_core::create_symlink(
@@ -162,57 +177,75 @@ pub(crate) fn cmd_profile_update(
                                                 path,
                                             )
                                         {
-                                            printer.warning(&format!(
-                                                "  rollback: failed to restore symlink {}: {}",
-                                                f.file_path, e
-                                            ));
+                                            cleanup_sec.status_simple(
+                                                Role::Warn,
+                                                format!(
+                                                    "rollback: failed to restore symlink {}: {}",
+                                                    f.file_path, e
+                                                ),
+                                            );
                                         }
-                                        printer
-                                            .info(&format!("  Restored symlink: {}", f.file_path));
+                                        cleanup_sec.status_simple(
+                                            Role::Ok,
+                                            format!("Restored symlink: {}", f.file_path),
+                                        );
                                     } else if !backup.oversized && !backup.content.is_empty() {
                                         if let Err(e) =
                                             cfgd_core::atomic_write(path, &backup.content)
                                         {
-                                            printer.warning(&format!(
-                                                "  rollback: failed to restore {}: {}",
-                                                f.file_path, e
-                                            ));
+                                            cleanup_sec.status_simple(
+                                                Role::Warn,
+                                                format!(
+                                                    "rollback: failed to restore {}: {}",
+                                                    f.file_path, e
+                                                ),
+                                            );
                                         } else {
-                                            printer.info(&format!("  Restored: {}", f.file_path));
+                                            cleanup_sec.status_simple(
+                                                Role::Ok,
+                                                format!("Restored: {}", f.file_path),
+                                            );
                                         }
                                     }
                                 } else if path.exists() || path.symlink_metadata().is_ok() {
                                     if let Err(e) = std::fs::remove_file(path) {
-                                        printer.warning(&format!(
-                                            "  rollback: failed to remove {}: {}",
-                                            f.file_path, e
-                                        ));
+                                        cleanup_sec.status_simple(
+                                            Role::Warn,
+                                            format!(
+                                                "rollback: failed to remove {}: {}",
+                                                f.file_path, e
+                                            ),
+                                        );
                                     } else {
-                                        printer.info(&format!("  Removed: {}", f.file_path));
+                                        cleanup_sec.status_simple(
+                                            Role::Ok,
+                                            format!("Removed: {}", f.file_path),
+                                        );
                                     }
                                 }
                             }
                         }
                     }
                     if let Err(e) = state.delete_module_files(m) {
-                        printer.warning(&format!(
-                            "  rollback: failed to clean module files for {}: {}",
-                            m, e
-                        ));
+                        v2_printer.status_simple(
+                            Role::Warn,
+                            format!("rollback: failed to clean module files for {}: {}", m, e),
+                        );
                     }
                 }
 
                 if let Err(e) = state.remove_module_state(m) {
-                    printer.warning(&format!("Failed to clean module state: {}", e));
+                    v2_printer
+                        .status_simple(Role::Warn, format!("Failed to clean module state: {}", e));
                 }
             }
-            printer.success(&format!("Removed module: {}", m));
+            v2_printer.status_simple(Role::Ok, format!("Removed module: {}", m));
             changes += 1;
 
             // Check for .cfgd-backup files at module file targets and offer to restore
-            prompt_restore_backups(&module_file_targets, printer)?;
+            prompt_restore_backups(&module_file_targets, v2_printer)?;
         } else {
-            printer.warning(&format!("Module '{}' not found in profile", m));
+            v2_printer.status_simple(Role::Warn, format!("Module '{}' not found in profile", m));
         }
     }
 
@@ -225,7 +258,7 @@ pub(crate) fn cmd_profile_update(
         let mgr = mgr_opt.unwrap_or_else(|| default_mgr.clone());
         let pkgs = doc.spec.packages.get_or_insert_with(Default::default);
         packages::add_package(&mgr, &pkg, pkgs)?;
-        printer.success(&format!("Added package: {} ({})", pkg, mgr));
+        v2_printer.status_simple(Role::Ok, format!("Added package: {} ({})", pkg, mgr));
         changes += 1;
     }
 
@@ -234,10 +267,13 @@ pub(crate) fn cmd_profile_update(
         let (mgr, pkg) = parse_manager_package(pkg_str)?;
         let pkgs = doc.spec.packages.get_or_insert_with(Default::default);
         if packages::remove_package(&mgr, &pkg, pkgs)? {
-            printer.success(&format!("Removed package: {} ({})", pkg, mgr));
+            v2_printer.status_simple(Role::Ok, format!("Removed package: {} ({})", pkg, mgr));
             changes += 1;
         } else {
-            printer.warning(&format!("Package '{}' not found in {}", pkg, mgr));
+            v2_printer.status_simple(
+                Role::Warn,
+                format!("Package '{}' not found in {}", pkg, mgr),
+            );
         }
     }
 
@@ -264,7 +300,7 @@ pub(crate) fn cmd_profile_update(
                     encryption: None,
                     permissions: None,
                 });
-                printer.success(&format!("Added file: {}", basename));
+                v2_printer.status_simple(Role::Ok, format!("Added file: {}", basename));
                 changes += 1;
             }
         }
@@ -292,10 +328,13 @@ pub(crate) fn cmd_profile_update(
                         std::fs::remove_file(&source_path)?;
                     }
                 }
-                printer.success(&format!("Removed file: {}", target));
+                v2_printer.status_simple(Role::Ok, format!("Removed file: {}", target));
                 changes += 1;
             } else {
-                printer.warning(&format!("File '{}' not found in profile", target));
+                v2_printer.status_simple(
+                    Role::Warn,
+                    format!("File '{}' not found in profile", target),
+                );
             }
         }
     }
@@ -304,7 +343,7 @@ pub(crate) fn cmd_profile_update(
     for v in &add_env {
         let ev = cfgd_core::parse_env_var(v).map_err(|e| anyhow::anyhow!(e))?;
         cfgd_core::merge_env(&mut doc.spec.env, std::slice::from_ref(&ev));
-        printer.success(&format!("Set env: {}={}", ev.name, ev.value));
+        v2_printer.status_simple(Role::Ok, format!("Set env: {}={}", ev.name, ev.value));
         changes += 1;
     }
 
@@ -313,10 +352,10 @@ pub(crate) fn cmd_profile_update(
         let before = doc.spec.env.len();
         doc.spec.env.retain(|e| e.name != *key);
         if doc.spec.env.len() < before {
-            printer.success(&format!("Removed env: {}", key));
+            v2_printer.status_simple(Role::Ok, format!("Removed env: {}", key));
             changes += 1;
         } else {
-            printer.warning(&format!("Env var '{}' not found", key));
+            v2_printer.status_simple(Role::Warn, format!("Env var '{}' not found", key));
         }
     }
 
@@ -324,19 +363,22 @@ pub(crate) fn cmd_profile_update(
     for a in &add_aliases {
         let alias = cfgd_core::parse_alias(a).map_err(|e| anyhow::anyhow!(e))?;
         cfgd_core::merge_aliases(&mut doc.spec.aliases, std::slice::from_ref(&alias));
-        printer.success(&format!("Set alias: {}={}", alias.name, alias.command));
+        v2_printer.status_simple(
+            Role::Ok,
+            format!("Set alias: {}={}", alias.name, alias.command),
+        );
         changes += 1;
     }
 
     // Remove aliases
-    for name in &remove_aliases {
+    for alias_name in &remove_aliases {
         let before = doc.spec.aliases.len();
-        doc.spec.aliases.retain(|a| a.name != *name);
+        doc.spec.aliases.retain(|a| a.name != *alias_name);
         if doc.spec.aliases.len() < before {
-            printer.success(&format!("Removed alias: {}", name));
+            v2_printer.status_simple(Role::Ok, format!("Removed alias: {}", alias_name));
             changes += 1;
         } else {
-            printer.warning(&format!("Alias '{}' not found", name));
+            v2_printer.status_simple(Role::Warn, format!("Alias '{}' not found", alias_name));
         }
     }
 
@@ -349,17 +391,17 @@ pub(crate) fn cmd_profile_update(
             key.to_string(),
             serde_yaml::Value::String(value.to_string()),
         );
-        printer.success(&format!("Set system: {}={}", key, value));
+        v2_printer.status_simple(Role::Ok, format!("Set system: {}={}", key, value));
         changes += 1;
     }
 
     // Remove system settings
     for key in &remove_system {
         if doc.spec.system.remove(key.as_str()).is_some() {
-            printer.success(&format!("Removed system setting: {}", key));
+            v2_printer.status_simple(Role::Ok, format!("Removed system setting: {}", key));
             changes += 1;
         } else {
-            printer.warning(&format!("System setting '{}' not found", key));
+            v2_printer.status_simple(Role::Warn, format!("System setting '{}' not found", key));
         }
     }
 
@@ -377,17 +419,16 @@ pub(crate) fn cmd_profile_update(
             .iter()
             .any(|s| s.target.as_ref().map(|t| cfgd_core::expand_tilde(t)) == Some(target.clone()))
         {
-            printer.warning(&format!(
-                "Secret targeting '{}' already exists",
-                target.display()
-            ));
+            v2_printer.status_simple(
+                Role::Warn,
+                format!("Secret targeting '{}' already exists", target.display()),
+            );
             continue;
         }
-        printer.success(&format!(
-            "Added secret: {} → {}",
-            secret.source,
-            target.display()
-        ));
+        v2_printer.status_simple(
+            Role::Ok,
+            format!("Added secret: {} → {}", secret.source, target.display()),
+        );
         doc.spec.secrets.push(secret);
         changes += 1;
     }
@@ -400,10 +441,13 @@ pub(crate) fn cmd_profile_update(
             s.target.as_ref().map(|t| cfgd_core::expand_tilde(t)) != Some(target.clone())
         });
         if doc.spec.secrets.len() < before {
-            printer.success(&format!("Removed secret: {}", target_str));
+            v2_printer.status_simple(Role::Ok, format!("Removed secret: {}", target_str));
             changes += 1;
         } else {
-            printer.warning(&format!("Secret targeting '{}' not found", target_str));
+            v2_printer.status_simple(
+                Role::Warn,
+                format!("Secret targeting '{}' not found", target_str),
+            );
         }
     }
 
@@ -414,7 +458,7 @@ pub(crate) fn cmd_profile_update(
         &remove_pre_apply,
         "preApply",
         |s| &mut s.pre_apply,
-        printer,
+        v2_printer,
     );
     changes += update_script_list(
         &mut doc.spec.scripts,
@@ -422,7 +466,7 @@ pub(crate) fn cmd_profile_update(
         &remove_post_apply,
         "postApply",
         |s| &mut s.post_apply,
-        printer,
+        v2_printer,
     );
     changes += update_script_list(
         &mut doc.spec.scripts,
@@ -430,7 +474,7 @@ pub(crate) fn cmd_profile_update(
         &remove_pre_reconcile,
         "preReconcile",
         |s| &mut s.pre_reconcile,
-        printer,
+        v2_printer,
     );
     changes += update_script_list(
         &mut doc.spec.scripts,
@@ -438,7 +482,7 @@ pub(crate) fn cmd_profile_update(
         &remove_post_reconcile,
         "postReconcile",
         |s| &mut s.post_reconcile,
-        printer,
+        v2_printer,
     );
     changes += update_script_list(
         &mut doc.spec.scripts,
@@ -446,7 +490,7 @@ pub(crate) fn cmd_profile_update(
         &remove_on_change,
         "onChange",
         |s| &mut s.on_change,
-        printer,
+        v2_printer,
     );
     changes += update_script_list(
         &mut doc.spec.scripts,
@@ -454,21 +498,34 @@ pub(crate) fn cmd_profile_update(
         &remove_on_drift,
         "onDrift",
         |s| &mut s.on_drift,
-        printer,
+        v2_printer,
     );
 
     if changes == 0 {
-        printer.info("No changes specified");
+        v2_printer.emit(
+            Doc::new()
+                .status(Role::Info, "No changes specified")
+                .with_data(serde_json::json!({
+                    "name": name,
+                    "changes": 0,
+                })),
+        );
         return Ok(());
     }
 
     let yaml = serde_yaml::to_string(&doc)?;
     cfgd_core::atomic_write_str(&profile_path, &yaml)?;
-    printer.newline();
-    printer.success(&format!(
-        "Updated profile '{}' ({} change(s))",
-        name, changes
-    ));
+    v2_printer.emit(
+        Doc::new()
+            .status(
+                Role::Ok,
+                format!("Updated profile '{}' ({} change(s))", name, changes),
+            )
+            .with_data(serde_json::json!({
+                "name": name,
+                "changes": changes,
+            })),
+    );
 
     Ok(())
 }
