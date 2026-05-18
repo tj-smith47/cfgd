@@ -75,10 +75,27 @@ pub fn build_config_show_doc(cfg: &CfgdConfig, config_path: &Path) -> Doc {
 pub fn cmd_config_show(cli: &Cli, printer: &PrinterV2) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
+        printer.emit(cfgd_core::output_v2::error_doc(
+            &config_path.display().to_string(),
+            "no_config",
+            MSG_NO_CONFIG.to_string(),
+            serde_json::json!({ "path": config_path.display().to_string() }),
+        ));
         anyhow::bail!("{}", MSG_NO_CONFIG);
     }
 
-    let cfg = config::load_config(config_path)?;
+    let cfg = match config::load_config(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            printer.emit(cfgd_core::output_v2::error_doc(
+                &config_path.display().to_string(),
+                "parse_failed",
+                format!("{}", e),
+                serde_json::json!({ "path": config_path.display().to_string() }),
+            ));
+            return Err(e.into());
+        }
+    };
     printer.emit(build_config_show_doc(&cfg, config_path));
     Ok(())
 }
@@ -287,6 +304,7 @@ pub fn cmd_config_get(cli: &Cli, v2_printer: &PrinterV2, key: &str) -> anyhow::R
         }
     };
 
+    // human path writes the bare value via data_line; structured needs the keyed envelope.
     if v2_printer.is_structured() {
         let json_value: serde_json::Value =
             serde_json::to_value(value).unwrap_or(serde_json::Value::Null);

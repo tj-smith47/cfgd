@@ -111,7 +111,7 @@ pub fn cmd_secret_edit(cli: &Cli, v2_printer: &PrinterV2, file: &Path) -> anyhow
     if let Err(e) = backend.edit_file(file) {
         v2_printer.emit(cfgd_core::output_v2::error_doc(
             &file.display().to_string(),
-            "encryption_failed",
+            "edit_failed",
             format!("{}", e),
             serde_json::json!({
                 "path": file.display().to_string(),
