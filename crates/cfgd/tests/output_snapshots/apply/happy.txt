@@ -6,4 +6,4 @@ Plan preview
   Files
     - create <TARGET>
 
-✓ Apply complete — 1 action(s) succeeded
+✓ Apply complete — 1 action(s) succeeded (XXs)

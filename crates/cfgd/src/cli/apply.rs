@@ -236,6 +236,8 @@ pub fn cmd_apply(
         return Ok(());
     }
 
+    let start = std::time::Instant::now();
+
     // Show what will change, nested under a section so each phase's items
     // render at the section's indent.
     {
@@ -297,7 +299,7 @@ pub fn cmd_apply(
         args.skip_scripts,
     )?;
 
-    let status = print_apply_result_v2(&result, v2_printer);
+    let status = print_apply_result_v2(&result, v2_printer, Some(start.elapsed()));
 
     // Link source commits to this apply for provenance tracking
     if !source_commits.is_empty() {

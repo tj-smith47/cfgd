@@ -67,6 +67,50 @@ fn normalize_tempdir_paths(raw: &str, config_dir: &Path, extra_paths: &[(&Path, 
     out
 }
 
+/// Replace ` (N.Ns)` duration suffixes (rendered by StatusBuilder.duration())
+/// with a stable placeholder so the apply-summary golden is host-stable.
+fn normalize_duration(raw: &str) -> String {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut out = String::with_capacity(raw.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if let Some(len) = duration_span(&chars[i..]) {
+            out.push_str(" (XXs)");
+            i += len;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Detect a ` (N.Ns)` or ` (NN.Ns)` (etc.) suffix and return its length in chars.
+/// Renderer formats `{:.1}s` so there is always exactly one fractional digit.
+fn duration_span(window: &[char]) -> Option<usize> {
+    if window.len() < 7 || window[0] != ' ' || window[1] != '(' {
+        return None;
+    }
+    let mut i = 2;
+    let int_start = i;
+    while i < window.len() && window[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == int_start {
+        return None;
+    }
+    if i + 3 >= window.len() {
+        return None;
+    }
+    if window[i] != '.' || !window[i + 1].is_ascii_digit() {
+        return None;
+    }
+    if window[i + 2] != 's' || window[i + 3] != ')' {
+        return None;
+    }
+    Some(i + 4)
+}
+
 #[test]
 fn apply_happy_human() {
     let (config_dir, state_dir, target) = tiny_profile_setup();
@@ -81,7 +125,7 @@ fn apply_happy_human() {
 
     let normalized =
         normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
-    let stripped = strip_ansi(&normalized);
+    let stripped = normalize_duration(&strip_ansi(&normalized));
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "apply/happy.txt", &stripped);
 }
 
@@ -165,7 +209,7 @@ fn apply_with_failures_human() {
         config_dir.path(),
         &[(&target_ok, "<TARGET_OK>"), (&target_fail, "<TARGET_FAIL>")],
     );
-    let stripped = strip_ansi(&normalized);
+    let stripped = normalize_duration(&strip_ansi(&normalized));
     assert_snapshot(
         Path::new(SNAPSHOT_ROOT),
         "apply/with_failures.txt",

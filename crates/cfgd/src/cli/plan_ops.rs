@@ -40,36 +40,38 @@ pub(in crate::cli) fn print_apply_result(
 pub(in crate::cli) fn print_apply_result_v2(
     result: &cfgd_core::reconciler::ApplyResult,
     printer: &PrinterV2,
+    elapsed: Option<std::time::Duration>,
 ) -> cfgd_core::state::ApplyStatus {
-    match result.status {
-        cfgd_core::state::ApplyStatus::Success => {
-            printer.status_simple(
-                Role::Ok,
-                format!(
-                    "Apply complete — {} action(s) succeeded",
-                    result.succeeded()
-                ),
-            );
+    let (role, subject) = match result.status {
+        cfgd_core::state::ApplyStatus::Success => (
+            Role::Ok,
+            format!(
+                "Apply complete — {} action(s) succeeded",
+                result.succeeded()
+            ),
+        ),
+        cfgd_core::state::ApplyStatus::Partial => (
+            Role::Warn,
+            format!(
+                "Apply partially complete — {} succeeded, {} failed",
+                result.succeeded(),
+                result.failed()
+            ),
+        ),
+        cfgd_core::state::ApplyStatus::Failed => (
+            Role::Fail,
+            format!("Apply failed — {} action(s) failed", result.failed()),
+        ),
+        cfgd_core::state::ApplyStatus::InProgress => (
+            Role::Warn,
+            "Apply still in progress (unexpected state)".to_string(),
+        ),
+    };
+    match elapsed {
+        Some(d) => {
+            printer.status(role, subject).duration(d);
         }
-        cfgd_core::state::ApplyStatus::Partial => {
-            printer.status_simple(
-                Role::Warn,
-                format!(
-                    "Apply partially complete — {} succeeded, {} failed",
-                    result.succeeded(),
-                    result.failed()
-                ),
-            );
-        }
-        cfgd_core::state::ApplyStatus::Failed => {
-            printer.status_simple(
-                Role::Fail,
-                format!("Apply failed — {} action(s) failed", result.failed()),
-            );
-        }
-        cfgd_core::state::ApplyStatus::InProgress => {
-            printer.status_simple(Role::Warn, "Apply still in progress (unexpected state)");
-        }
+        None => printer.status_simple(role, subject),
     }
     result.status.clone()
 }

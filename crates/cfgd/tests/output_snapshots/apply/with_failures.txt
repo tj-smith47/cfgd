@@ -7,4 +7,4 @@ Plan preview
     - create <TARGET_OK>
     - create <TARGET_FAIL>
 
-⚠ Apply partially complete — 1 succeeded, 1 failed
+⚠ Apply partially complete — 1 succeeded, 1 failed (XXs)
