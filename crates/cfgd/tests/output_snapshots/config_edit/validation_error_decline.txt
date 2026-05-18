@@ -1,0 +1,3 @@
+✗ Invalid configuration: config error: yaml parse error: invalid type: string "not a Config document", expected struct RawCfgdConfig
+
+⚠ Saved with validation errors

@@ -928,3 +928,52 @@ pub fn rollback_state_with_non_file_actions_setup() -> (tempfile::TempDir, i64) 
 
     (state_dir, apply_id_1)
 }
+
+/// Pre-stage a minimal `cfgd.yaml` so `cmd_config_*` finds a parseable
+/// config + a `spec` section. The default profile field lets get/set/unset
+/// exercise existing-key paths.
+pub fn config_test_setup() -> (tempfile::TempDir, tempfile::TempDir) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(config_dir.path().join("profiles")).unwrap();
+    std::fs::write(
+        config_dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  theme:\n    name: monokai\n",
+    )
+    .unwrap();
+    std::fs::write(
+        config_dir.path().join("profiles/default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+    (config_dir, state_dir)
+}
+
+/// Same shape as `config_test_setup` but without a `cfgd.yaml` — for
+/// no-config error-path cases.
+pub fn config_test_setup_no_config() -> (tempfile::TempDir, tempfile::TempDir) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(config_dir.path().join("profiles")).unwrap();
+    (config_dir, state_dir)
+}
+
+/// Pre-stage a config_dir for `cfgd secret *` commands. The minimal
+/// `cfgd.yaml` declares the sops backend (default), which `get_secret_backend`
+/// reads to dispatch encryption.
+pub fn secret_test_setup() -> (tempfile::TempDir, tempfile::TempDir) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(config_dir.path().join("profiles")).unwrap();
+    std::fs::write(
+        config_dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  secrets:\n    backend: sops\n",
+    )
+    .unwrap();
+    std::fs::write(
+        config_dir.path().join("profiles/default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+    (config_dir, state_dir)
+}

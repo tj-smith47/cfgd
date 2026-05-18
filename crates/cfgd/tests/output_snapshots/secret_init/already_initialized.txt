@@ -1,0 +1,1 @@
+Secrets already initialized at <HOME>/.config/cfgd/age-key.txt

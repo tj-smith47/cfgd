@@ -2126,9 +2126,9 @@ use cfgd_core::test_helpers::EditorGuard;
 #[test]
 #[serial_test::serial]
 fn source_edit_with_valid_manifest_reports_valid_and_returns_ok() {
-    // EDITOR=/bin/true → open_in_editor exits 0 without touching the file,
-    // so the post-edit validation reads the same valid manifest we wrote
-    // and lands in the "Source manifest is valid" success arm.
+    // EDITOR=/bin/true → open_in_editor_v2 exits 0 without touching the
+    // file, so the post-edit validation reads the same valid manifest we
+    // wrote and lands in the "Source manifest is valid" success arm.
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
     let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
@@ -3282,9 +3282,9 @@ fn config_get_reads_value() {
         config: config_path.clone(),
         ..test_cli(dir.path())
     };
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::config_cmd::cmd_config_get(&cli, &printer, "profile");
+    let result = super::config_cmd::cmd_config_get(&cli, &v2_printer, "profile");
     assert!(
         result.is_ok(),
         "config get should read profile value without error: {:?}",
@@ -3306,9 +3306,9 @@ fn cmd_config_get_missing_key_errors() {
         config: config_path,
         ..test_cli(dir.path())
     };
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    assert!(super::config_cmd::cmd_config_get(&cli, &printer, "nonexistent").is_err());
+    assert!(super::config_cmd::cmd_config_get(&cli, &v2_printer, "nonexistent").is_err());
 }
 
 #[test]
@@ -3321,9 +3321,9 @@ fn config_set_and_get_roundtrip() {
         config: config_path.clone(),
         ..test_cli(dir.path())
     };
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    super::config_cmd::cmd_config_set(&cli, &printer, "profile", "work").unwrap();
+    super::config_cmd::cmd_config_set(&cli, &v2_printer, "profile", "work").unwrap();
 
     let contents = std::fs::read_to_string(&config_path).unwrap();
     assert!(contents.contains("work"));
@@ -3339,9 +3339,9 @@ fn cmd_config_unset_removes_key() {
         config: config_path.clone(),
         ..test_cli(dir.path())
     };
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::config_cmd::cmd_config_unset(&cli, &printer, "profile");
+    let result = super::config_cmd::cmd_config_unset(&cli, &v2_printer, "profile");
     assert!(
         result.is_ok(),
         "config unset should remove the key successfully: {:?}",
@@ -3366,9 +3366,9 @@ fn cmd_config_unset_missing_key_errors() {
         config: config_path,
         ..test_cli(dir.path())
     };
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    assert!(super::config_cmd::cmd_config_unset(&cli, &printer, "nope").is_err());
+    assert!(super::config_cmd::cmd_config_unset(&cli, &v2_printer, "nope").is_err());
 }
 
 // --- config_cmd::cmd_config_show ---
@@ -8856,10 +8856,10 @@ fn cmd_config_set_creates_nested_key() {
         config: config_path.clone(),
         ..test_cli(dir.path())
     };
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     // Set a nested key
-    super::config_cmd::cmd_config_set(&cli, &printer, "daemon.enabled", "true").unwrap();
+    super::config_cmd::cmd_config_set(&cli, &v2_printer, "daemon.enabled", "true").unwrap();
 
     let contents = std::fs::read_to_string(&config_path).unwrap();
     assert!(contents.contains("daemon"));
@@ -8873,9 +8873,9 @@ fn cmd_config_set_no_config_errors() {
         config: dir.path().join("nonexistent.yaml"),
         ..test_cli(dir.path())
     };
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::config_cmd::cmd_config_set(&cli, &printer, "profile", "work");
+    let result = super::config_cmd::cmd_config_set(&cli, &v2_printer, "profile", "work");
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
 }
@@ -8887,9 +8887,9 @@ fn cmd_config_unset_no_config_errors() {
         config: dir.path().join("nonexistent.yaml"),
         ..test_cli(dir.path())
     };
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::config_cmd::cmd_config_unset(&cli, &printer, "profile");
+    let result = super::config_cmd::cmd_config_unset(&cli, &v2_printer, "profile");
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
 }
@@ -10617,11 +10617,12 @@ fn cmd_config_show_no_config_fails() {
 fn cmd_config_get_reads_profile() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
 
-    super::config_cmd::cmd_config_get(&cli, &printer, "profile").unwrap();
+    super::config_cmd::cmd_config_get(&cli, &v2_printer, "profile").unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
+    let output = cap.human();
     assert!(
         output.contains("default"),
         "config get profile should return 'default', got: {output}"
@@ -10632,11 +10633,12 @@ fn cmd_config_get_reads_profile() {
 fn cmd_config_get_nested_key() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
 
-    super::config_cmd::cmd_config_get(&cli, &printer, "daemon.enabled").unwrap();
+    super::config_cmd::cmd_config_get(&cli, &v2_printer, "daemon.enabled").unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
+    let output = cap.human();
     assert!(
         output.contains("true"),
         "config get daemon.enabled should return 'true', got: {output}"
@@ -10650,23 +10652,28 @@ fn cmd_config_get_structured_json() {
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc_with_format(
+        cfgd_core::output_v2::OutputFormat::Json,
+    );
 
-    super::config_cmd::cmd_config_get(&cli, &printer, "profile").unwrap();
+    super::config_cmd::cmd_config_get(&cli, &v2_printer, "profile").unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&output)
-        .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
-    assert_eq!(parsed, "default", "profile should be 'default'");
+    let parsed = cap.json().expect("doc captured json");
+    assert_eq!(parsed["key"], "profile");
+    assert_eq!(
+        parsed["value"], "default",
+        "profile value should be 'default'"
+    );
 }
 
 #[test]
 fn cmd_config_get_missing_key_fails() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::config_cmd::cmd_config_get(&cli, &printer, "nonexistent.path");
+    let result = super::config_cmd::cmd_config_get(&cli, &v2_printer, "nonexistent.path");
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -10679,9 +10686,9 @@ fn cmd_config_get_missing_key_fails() {
 fn cmd_config_get_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::config_cmd::cmd_config_get(&cli, &printer, "profile");
+    let result = super::config_cmd::cmd_config_get(&cli, &v2_printer, "profile");
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
 }
@@ -10692,9 +10699,9 @@ fn cmd_config_get_no_config_fails() {
 fn cmd_config_set_updates_value() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::config_cmd::cmd_config_set(&cli, &printer, "profile", "work");
+    let result = super::config_cmd::cmd_config_set(&cli, &v2_printer, "profile", "work");
     assert!(
         result.is_ok(),
         "config set should succeed: {:?}",
@@ -10709,9 +10716,9 @@ fn cmd_config_set_updates_value() {
 fn cmd_config_set_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::config_cmd::cmd_config_set(&cli, &printer, "profile", "work");
+    let result = super::config_cmd::cmd_config_set(&cli, &v2_printer, "profile", "work");
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -10726,9 +10733,9 @@ fn cmd_config_set_no_config_fails() {
 fn cmd_config_unset_missing_key_fails() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::config_cmd::cmd_config_unset(&cli, &printer, "nonexistent");
+    let result = super::config_cmd::cmd_config_unset(&cli, &v2_printer, "nonexistent");
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -10737,9 +10744,9 @@ fn cmd_config_unset_missing_key_fails() {
 fn cmd_config_unset_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = super::config_cmd::cmd_config_unset(&cli, &printer, "profile");
+    let result = super::config_cmd::cmd_config_unset(&cli, &v2_printer, "profile");
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -11774,8 +11781,8 @@ fn cmd_sync_non_git_dir_shows_output() {
 fn cmd_config_edit_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
-    let result = super::config_cmd::cmd_config_edit(&cli, &printer);
+    let v2_printer = test_v2_printer();
+    let result = super::config_cmd::cmd_config_edit(&cli, &v2_printer);
     assert!(result.is_err());
     assert_error_contains(&result, "No cfgd.yaml");
 }
@@ -11784,26 +11791,27 @@ fn cmd_config_edit_no_config_fails() {
 #[cfg(unix)]
 #[serial_test::serial]
 fn cmd_config_edit_with_invalid_config_and_prompt_declined_breaks_with_warning() {
-    // Drive config_cmd::cmd_config_edit's validate loop into the
-    // prompt-decline branch at config_cmd.rs:117-120. EDITOR=/bin/true
-    // leaves the invalid config in place; load_config Errs; the prompt
-    // fires; queue's Confirm(false) breaks the loop with "Saved with
-    // validation errors".
+    // Drive cmd_config_edit's validate loop into the prompt-decline branch.
+    // EDITOR=/bin/true leaves the invalid config in place; load_config Errs;
+    // the prompt fires; queue's Confirm(false) breaks the loop with the
+    // "Saved with validation errors" Doc.
     let dir = tempfile::tempdir().unwrap();
     // Write invalid YAML AT cli.config so the loop's first iteration
     // takes the Err arm.
     std::fs::write(dir.path().join("cfgd.yaml"), "not a Config document").unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) =
-        Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
-            false,
-        )]);
+    let (v2_printer, cap) =
+        cfgd_core::output_v2::Printer::for_test_doc_with_prompt_responses(vec![
+            cfgd_core::output_v2::PromptAnswer::Confirm(false),
+        ]);
 
-    let _editor = cfgd_core::test_helpers::EnvVarGuard::set("EDITOR", "/bin/true");
-    super::config_cmd::cmd_config_edit(&cli, &printer).expect("edit must Ok on save-with-errors");
+    let _editor = cfgd_core::test_helpers::EditorGuard::set("/bin/true");
+    super::config_cmd::cmd_config_edit(&cli, &v2_printer)
+        .expect("edit must Ok on save-with-errors");
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
+    let output = cap.human();
     assert!(
         output.contains("Saved with validation errors"),
         "should warn: {output}"
@@ -12061,22 +12069,22 @@ fn secret_init_prints_header_and_key_path() {
     // cmd_secret_init calls secrets::init_age_key which shells out to age-keygen.
     // If age-keygen is not installed, the error message should mention it.
     let h = CliTestHarness::builder().build();
-    let result = super::secret::cmd_secret_init(&h.cli(), h.printer());
+    let result = super::secret::cmd_secret_init(&h.cli(), h.v2_printer());
 
     match result {
         Ok(()) => {
             // age-keygen was available: verify output mentions key path and completion
             let output = h.output();
             assert!(
-                output.contains("Secret Init"),
-                "expected 'Secret Init' header, got: {output}"
+                output.contains("Secrets Initialized") || output.contains("already initialized"),
+                "expected secrets section header, got: {output}"
             );
             assert!(
-                output.contains("Age key:"),
+                output.contains("Age key") || output.contains("age-key"),
                 "expected key path in output, got: {output}"
             );
             assert!(
-                output.contains("Secrets setup complete"),
+                output.contains("Secrets setup complete") || output.contains("already initialized"),
                 "expected completion message, got: {output}"
             );
         }
@@ -12136,7 +12144,7 @@ fn resolve_secret_backend_no_config_file_errors() {
 fn cmd_secret_encrypt_file_not_found() {
     let h = CliTestHarness::builder().rich_config().build();
     let nonexistent = h.config_path().join("missing.enc.yaml");
-    let result = super::secret::cmd_secret_encrypt(&h.cli(), h.printer(), &nonexistent);
+    let result = super::secret::cmd_secret_encrypt(&h.cli(), h.v2_printer(), &nonexistent);
     assert_error_contains(&result, "File not found");
 }
 
@@ -12144,7 +12152,7 @@ fn cmd_secret_encrypt_file_not_found() {
 fn cmd_secret_decrypt_file_not_found() {
     let h = CliTestHarness::builder().rich_config().build();
     let nonexistent = h.config_path().join("missing.enc.yaml");
-    let result = super::secret::cmd_secret_decrypt(&h.cli(), h.printer(), &nonexistent);
+    let result = super::secret::cmd_secret_decrypt(&h.cli(), h.v2_printer(), &nonexistent);
     assert_error_contains(&result, "File not found");
 }
 
@@ -14427,7 +14435,7 @@ fn cmd_config_show_missing_file_errors() {
 #[test]
 fn cmd_config_get_string_value() {
     let h = CliTestHarness::builder().build();
-    let result = super::config_cmd::cmd_config_get(&h.cli(), h.printer(), "profile");
+    let result = super::config_cmd::cmd_config_get(&h.cli(), h.v2_printer(), "profile");
     assert!(
         result.is_ok(),
         "config get profile should succeed: {:?}",
@@ -14443,7 +14451,7 @@ fn cmd_config_get_string_value() {
 #[test]
 fn cmd_config_get_missing_key_errors_no_config() {
     let h = CliTestHarness::builder().build();
-    let result = super::config_cmd::cmd_config_get(&h.cli(), h.printer(), "nonexistent.key");
+    let result = super::config_cmd::cmd_config_get(&h.cli(), h.v2_printer(), "nonexistent.key");
     assert!(result.is_err(), "missing key should error");
     assert!(
         result.unwrap_err().to_string().contains("not found"),
@@ -14454,7 +14462,7 @@ fn cmd_config_get_missing_key_errors_no_config() {
 #[test]
 fn cmd_config_get_json_output() {
     let h = CliTestHarness::builder().json().build();
-    let result = super::config_cmd::cmd_config_get(&h.cli(), h.printer(), "profile");
+    let result = super::config_cmd::cmd_config_get(&h.cli(), h.v2_printer(), "profile");
     assert!(result.is_ok(), "JSON config get should succeed");
     let output = h.output();
     // JSON output should contain the value

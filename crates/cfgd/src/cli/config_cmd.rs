@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2};
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
 // --- Config CRUD ---
 
@@ -72,7 +72,7 @@ pub fn build_config_show_doc(cfg: &CfgdConfig, config_path: &Path) -> Doc {
     doc.with_data(cfg)
 }
 
-pub(super) fn cmd_config_show(cli: &Cli, printer: &PrinterV2) -> anyhow::Result<()> {
+pub fn cmd_config_show(cli: &Cli, printer: &PrinterV2) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
         anyhow::bail!("{}", MSG_NO_CONFIG);
@@ -83,30 +83,56 @@ pub(super) fn cmd_config_show(cli: &Cli, printer: &PrinterV2) -> anyhow::Result<
     Ok(())
 }
 
-pub(super) fn cmd_config_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_config_edit(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            &config_path.display().to_string(),
+            "no_config",
+            MSG_NO_CONFIG.to_string(),
+            serde_json::json!({ "path": config_path.display().to_string() }),
+        ));
         anyhow::bail!("{}", MSG_NO_CONFIG);
     }
 
-    open_in_editor(config_path, printer)?;
+    open_in_editor_v2(config_path, v2_printer)?;
 
     // Validate after editing — loop until valid or user cancels
+    let mut valid = false;
     loop {
         match config::load_config(config_path) {
             Ok(_) => {
-                printer.success("Configuration is valid");
+                valid = true;
                 break;
             }
             Err(e) => {
-                printer.error(&format!("Invalid configuration: {}", e));
-                if !printer.prompt_confirm("Re-open in editor to fix?")? {
-                    printer.warning("Saved with validation errors");
+                v2_printer.status_simple(Role::Fail, format!("Invalid configuration: {}", e));
+                if !v2_printer.prompt_confirm("Re-open in editor to fix?")? {
                     break;
                 }
-                open_in_editor(config_path, printer)?;
+                open_in_editor_v2(config_path, v2_printer)?;
             }
         }
+    }
+
+    if valid {
+        v2_printer.emit(
+            Doc::new()
+                .status(Role::Ok, "Configuration is valid")
+                .with_data(serde_json::json!({
+                    "path": config_path.display().to_string(),
+                    "valid": true,
+                })),
+        );
+    } else {
+        v2_printer.emit(
+            Doc::new()
+                .status(Role::Warn, "Saved with validation errors")
+                .with_data(serde_json::json!({
+                    "path": config_path.display().to_string(),
+                    "valid": false,
+                })),
+        );
     }
 
     Ok(())
@@ -209,93 +235,225 @@ pub(super) fn parse_yaml_value(s: &str) -> serde_yaml::Value {
     }
 }
 
-pub(super) fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result<()> {
+pub fn cmd_config_get(cli: &Cli, v2_printer: &PrinterV2, key: &str) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            key,
+            "no_config",
+            MSG_NO_CONFIG.to_string(),
+            serde_json::json!({ "path": config_path.display().to_string() }),
+        ));
         anyhow::bail!("{}", MSG_NO_CONFIG);
     }
 
     let contents = std::fs::read_to_string(config_path)?;
-    let raw: serde_yaml::Value = serde_yaml::from_str(&contents)?;
+    let raw: serde_yaml::Value = match serde_yaml::from_str(&contents) {
+        Ok(v) => v,
+        Err(e) => {
+            v2_printer.emit(cfgd_core::output_v2::error_doc(
+                key,
+                "parse_failed",
+                format!("failed to parse config: {}", e),
+                serde_json::json!({ "path": config_path.display().to_string() }),
+            ));
+            return Err(e.into());
+        }
+    };
 
-    let spec = raw
-        .get("spec")
-        .ok_or_else(|| anyhow::anyhow!("config has no 'spec' section"))?;
+    let spec = match raw.get("spec") {
+        Some(s) => s,
+        None => {
+            v2_printer.emit(cfgd_core::output_v2::error_doc(
+                key,
+                "parse_failed",
+                "config has no 'spec' section",
+                serde_json::json!({ "path": config_path.display().to_string() }),
+            ));
+            anyhow::bail!("config has no 'spec' section");
+        }
+    };
 
-    let value = walk_yaml_path(spec, key)?;
+    let value = match walk_yaml_path(spec, key) {
+        Ok(v) => v,
+        Err(e) => {
+            v2_printer.emit(cfgd_core::output_v2::error_doc(
+                key,
+                "key_not_found",
+                format!("{}", e),
+                serde_json::json!({ "path": config_path.display().to_string() }),
+            ));
+            return Err(e);
+        }
+    };
 
-    if printer.is_structured() {
-        // Convert serde_yaml::Value to serde_json::Value for structured output
+    if v2_printer.is_structured() {
         let json_value: serde_json::Value =
             serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
-        printer.write_structured(&json_value);
+        v2_printer.emit(Doc::new().with_data(serde_json::json!({
+            "key": key,
+            "value": json_value,
+        })));
         return Ok(());
     }
 
-    match value {
-        serde_yaml::Value::Null => {} // key exists but null — print nothing
-        serde_yaml::Value::String(s) => printer.stdout_line(s),
-        serde_yaml::Value::Bool(b) => printer.stdout_line(&b.to_string()),
-        serde_yaml::Value::Number(n) => printer.stdout_line(&n.to_string()),
+    let rendered = match value {
+        serde_yaml::Value::Null => String::new(),
+        serde_yaml::Value::String(s) => s.clone(),
+        serde_yaml::Value::Bool(b) => b.to_string(),
+        serde_yaml::Value::Number(n) => n.to_string(),
         other => {
             let yaml = serde_yaml::to_string(other)?;
-            let trimmed = yaml.strip_prefix("---\n").unwrap_or(&yaml);
-            printer.stdout_line(trimmed.trim_end());
+            yaml.strip_prefix("---\n")
+                .unwrap_or(&yaml)
+                .trim_end()
+                .to_string()
         }
+    };
+
+    // Human output: bare value on stdout for piping (matches `git config <key>`,
+    // `kubectl config view -o jsonpath` shape). Empty for null leaves.
+    if !rendered.is_empty() {
+        v2_printer.data_line(&rendered);
     }
 
     Ok(())
 }
 
-pub(super) fn cmd_config_set(
+pub fn cmd_config_set(
     cli: &Cli,
-    printer: &Printer,
+    v2_printer: &PrinterV2,
     key: &str,
     value: &str,
 ) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            key,
+            "no_config",
+            MSG_NO_CONFIG.to_string(),
+            serde_json::json!({ "path": config_path.display().to_string() }),
+        ));
         anyhow::bail!("{}", MSG_NO_CONFIG);
     }
 
-    mutate_config_yaml(config_path, true, |raw| {
+    let parsed_value = parse_yaml_value(value);
+    let mut previous: serde_json::Value = serde_json::Value::Null;
+
+    let mutate_result = mutate_config_yaml(config_path, true, |raw| {
         let spec = raw
             .get_mut("spec")
             .ok_or_else(|| anyhow::anyhow!("config has no 'spec' section"))?;
         let (parent, leaf_key) = walk_yaml_path_mut(spec, key)?;
         let yaml_key = serde_yaml::Value::String(leaf_key);
-        parent.insert(yaml_key, parse_yaml_value(value));
+        if let Some(prior) = parent.get(&yaml_key) {
+            previous = serde_json::to_value(prior).unwrap_or(serde_json::Value::Null);
+        }
+        parent.insert(yaml_key, parsed_value.clone());
         Ok(())
-    })?;
-    printer.success(&format!("Set {} = {}", key, value));
+    });
+
+    if let Err(e) = mutate_result {
+        let kind = classify_mutate_error(&e);
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            key,
+            kind,
+            format!("{}", e),
+            serde_json::json!({ "path": config_path.display().to_string() }),
+        ));
+        return Err(e);
+    }
+
+    let value_json: serde_json::Value =
+        serde_json::to_value(&parsed_value).unwrap_or(serde_json::Value::Null);
+
+    v2_printer.emit(
+        Doc::new()
+            .status(Role::Ok, format!("Set {} = {}", key, value))
+            .with_data(serde_json::json!({
+                "key": key,
+                "value": value_json,
+                "previousValue": previous,
+            })),
+    );
+
     Ok(())
 }
 
-pub(super) fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result<()> {
+pub fn cmd_config_unset(cli: &Cli, v2_printer: &PrinterV2, key: &str) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            key,
+            "no_config",
+            MSG_NO_CONFIG.to_string(),
+            serde_json::json!({ "path": config_path.display().to_string() }),
+        ));
         anyhow::bail!("{}", MSG_NO_CONFIG);
     }
 
-    mutate_config_yaml(config_path, true, |raw| {
+    let mut previous: serde_json::Value = serde_json::Value::Null;
+
+    let mutate_result = mutate_config_yaml(config_path, true, |raw| {
         let spec = raw
             .get_mut("spec")
             .ok_or_else(|| anyhow::anyhow!("config has no 'spec' section"))?;
         let (parent, leaf_key) = walk_yaml_path_mut(spec, key)?;
         let yaml_key = serde_yaml::Value::String(leaf_key.clone());
-        if parent.remove(&yaml_key).is_none() {
-            anyhow::bail!("key '{}' not found in config", key);
+        match parent.remove(&yaml_key) {
+            Some(prior) => {
+                previous = serde_json::to_value(&prior).unwrap_or(serde_json::Value::Null);
+                Ok(())
+            }
+            None => anyhow::bail!("key '{}' not found in config", key),
         }
-        Ok(())
-    })?;
-    printer.success(&format!("Unset {}", key));
+    });
+
+    if let Err(e) = mutate_result {
+        let kind = classify_mutate_error(&e);
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            key,
+            kind,
+            format!("{}", e),
+            serde_json::json!({ "path": config_path.display().to_string() }),
+        ));
+        return Err(e);
+    }
+
+    v2_printer.emit(
+        Doc::new()
+            .status(Role::Ok, format!("Unset {}", key))
+            .with_data(serde_json::json!({
+                "key": key,
+                "previousValue": previous,
+                "removed": true,
+            })),
+    );
+
     Ok(())
+}
+
+/// Classify a `mutate_config_yaml` error into a stable error_kind for the
+/// emit-then-bail Doc payload. Falls back to `invalid_value` for shapes that
+/// don't match the known buckets (parse-fail / not-found / no-spec).
+fn classify_mutate_error(e: &anyhow::Error) -> &'static str {
+    let msg = e.to_string();
+    if msg.contains("not found") {
+        "key_not_found"
+    } else if msg.contains("no 'spec' section")
+        || msg.contains("would become invalid")
+        || msg.contains("not a mapping")
+    {
+        "parse_failed"
+    } else {
+        "invalid_value"
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cfgd_core::output::OutputFormat;
+    use cfgd_core::output_v2::OutputFormat as OutputFormatV2;
 
     fn test_cli_for(config_path: std::path::PathBuf) -> Cli {
         Cli {
@@ -304,7 +462,7 @@ mod tests {
             verbose: 0,
             quiet: true,
             no_color: true,
-            output: OutputFormatArg(OutputFormat::Table),
+            output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             jsonpath: None,
             state_dir: None,
             command: None,
@@ -483,7 +641,7 @@ spec:
     fn cmd_config_get_missing_file_bails_with_no_config_msg() {
         let dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(dir.path().join("does-not-exist.yaml"));
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = PrinterV2::new(cfgd_core::output_v2::Verbosity::Quiet);
 
         let err = cmd_config_get(&cli, &printer, "profile").unwrap_err();
         assert_eq!(err.to_string(), MSG_NO_CONFIG);
@@ -493,11 +651,12 @@ spec:
     fn cmd_config_get_scalar_prints_value_only() {
         let dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(write_sample_config(dir.path()));
-        let (printer, buf) = Printer::for_test();
+        let (printer, cap) = PrinterV2::for_test_doc();
 
         cmd_config_get(&cli, &printer, "profile").unwrap();
+        drop(printer);
 
-        let captured = buf.lock().unwrap().clone();
+        let captured = cap.human();
         assert_eq!(
             captured.trim(),
             "work",
@@ -509,11 +668,12 @@ spec:
     fn cmd_config_get_nested_key_prints_value() {
         let dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(write_sample_config(dir.path()));
-        let (printer, buf) = Printer::for_test();
+        let (printer, cap) = PrinterV2::for_test_doc();
 
         cmd_config_get(&cli, &printer, "theme.name").unwrap();
+        drop(printer);
 
-        let captured = buf.lock().unwrap().clone();
+        let captured = cap.human();
         assert_eq!(captured.trim(), "monokai");
     }
 
@@ -521,7 +681,7 @@ spec:
     fn cmd_config_get_unknown_key_errs() {
         let dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(write_sample_config(dir.path()));
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = PrinterV2::new(cfgd_core::output_v2::Verbosity::Quiet);
 
         let err = cmd_config_get(&cli, &printer, "missing").unwrap_err();
         assert!(
@@ -536,7 +696,7 @@ spec:
         let path = dir.path().join("nospec.yaml");
         std::fs::write(&path, "apiVersion: cfgd.io/v1alpha1\nkind: Config\n").unwrap();
         let cli = test_cli_for(path);
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = PrinterV2::new(cfgd_core::output_v2::Verbosity::Quiet);
 
         let err = cmd_config_get(&cli, &printer, "profile").unwrap_err();
         assert!(
@@ -549,14 +709,14 @@ spec:
     fn cmd_config_get_json_emits_parseable_value() {
         let dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(write_sample_config(dir.path()));
-        let (printer, buf) = Printer::for_test_with_format(OutputFormat::Json);
+        let (printer, cap) = PrinterV2::for_test_doc_with_format(OutputFormatV2::Json);
 
         cmd_config_get(&cli, &printer, "theme").unwrap();
+        drop(printer);
 
-        let captured = buf.lock().unwrap().clone();
-        let parsed: serde_json::Value = serde_json::from_str(captured.trim())
-            .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {captured}"));
-        assert_eq!(parsed["name"], "monokai");
+        let parsed = cap.json().expect("doc captured json");
+        assert_eq!(parsed["key"], "theme");
+        assert_eq!(parsed["value"]["name"], "monokai");
     }
 
     // --- cmd_config_set ---
@@ -565,7 +725,7 @@ spec:
     fn cmd_config_set_missing_file_bails_with_no_config_msg() {
         let dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(dir.path().join("does-not-exist.yaml"));
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = PrinterV2::new(cfgd_core::output_v2::Verbosity::Quiet);
 
         let err = cmd_config_set(&cli, &printer, "profile", "dev").unwrap_err();
         assert_eq!(err.to_string(), MSG_NO_CONFIG);
@@ -576,7 +736,7 @@ spec:
         let dir = tempfile::tempdir().unwrap();
         let path = write_sample_config(dir.path());
         let cli = test_cli_for(path.clone());
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = PrinterV2::new(cfgd_core::output_v2::Verbosity::Quiet);
 
         cmd_config_set(&cli, &printer, "profile", "dev").unwrap();
 
@@ -594,7 +754,7 @@ spec:
         let dir = tempfile::tempdir().unwrap();
         let path = write_sample_config(dir.path());
         let cli = test_cli_for(path.clone());
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = PrinterV2::new(cfgd_core::output_v2::Verbosity::Quiet);
         let weird = "value with: colon, # hash, and 'quote'";
 
         cmd_config_set(&cli, &printer, "profile", weird).unwrap();
@@ -612,7 +772,7 @@ spec:
         let dir = tempfile::tempdir().unwrap();
         let path = write_sample_config(dir.path());
         let cli = test_cli_for(path.clone());
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = PrinterV2::new(cfgd_core::output_v2::Verbosity::Quiet);
 
         cmd_config_set(&cli, &printer, "profile", "").unwrap();
 
@@ -629,7 +789,7 @@ spec:
         let dir = tempfile::tempdir().unwrap();
         let path = write_sample_config(dir.path());
         let cli = test_cli_for(path);
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = PrinterV2::new(cfgd_core::output_v2::Verbosity::Quiet);
 
         let err = cmd_config_set(&cli, &printer, "a..b", "x").unwrap_err();
         assert!(
@@ -644,7 +804,7 @@ spec:
     fn cmd_config_unset_missing_file_bails_with_no_config_msg() {
         let dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(dir.path().join("does-not-exist.yaml"));
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = PrinterV2::new(cfgd_core::output_v2::Verbosity::Quiet);
 
         let err = cmd_config_unset(&cli, &printer, "profile").unwrap_err();
         assert_eq!(err.to_string(), MSG_NO_CONFIG);
@@ -655,7 +815,7 @@ spec:
         let dir = tempfile::tempdir().unwrap();
         let path = write_sample_config(dir.path());
         let cli = test_cli_for(path.clone());
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = PrinterV2::new(cfgd_core::output_v2::Verbosity::Quiet);
 
         cmd_config_unset(&cli, &printer, "profile").unwrap();
 
@@ -672,7 +832,7 @@ spec:
         let dir = tempfile::tempdir().unwrap();
         let path = write_sample_config(dir.path());
         let cli = test_cli_for(path);
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = PrinterV2::new(cfgd_core::output_v2::Verbosity::Quiet);
 
         let err = cmd_config_unset(&cli, &printer, "missingKey").unwrap_err();
         assert!(

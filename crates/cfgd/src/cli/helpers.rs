@@ -281,27 +281,6 @@ pub(in crate::cli) fn module_state_map(
         .collect()
 }
 
-// TEMP (R3 removes)
-pub(in crate::cli) fn open_in_editor(path: &Path, printer: &Printer) -> anyhow::Result<()> {
-    let editor = std::env::var("EDITOR")
-        .or_else(|_| std::env::var("VISUAL"))
-        .unwrap_or_else(|_| "vi".to_string());
-
-    let status = std::process::Command::new(&editor)
-        .arg(path)
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status()
-        .map_err(|e| anyhow::anyhow!("Failed to open editor '{}': {}", editor, e))?;
-
-    if !status.success() {
-        printer.warning(&format!("Editor '{}' exited with non-zero status", editor));
-    }
-    Ok(())
-}
-
-#[allow(dead_code)]
 pub(in crate::cli) fn open_in_editor_v2(path: &Path, printer: &PrinterV2) -> anyhow::Result<()> {
     let editor = std::env::var("EDITOR")
         .or_else(|_| std::env::var("VISUAL"))

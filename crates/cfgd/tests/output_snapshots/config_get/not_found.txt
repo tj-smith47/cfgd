@@ -1,0 +1,1 @@
+✗ key 'ghost' not found in config

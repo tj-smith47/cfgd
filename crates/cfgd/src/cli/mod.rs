@@ -21,7 +21,7 @@ pub mod profile;
 pub mod pull;
 mod registry;
 pub mod rollback;
-mod secret;
+pub mod secret;
 pub mod source;
 pub mod status;
 pub mod sync;
@@ -1570,10 +1570,10 @@ pub fn execute(
         Command::Pull => pull::cmd_pull(cli, printer, v2_printer),
         Command::Daemon { command } => daemon::cmd_daemon(cli, printer, command.as_ref()),
         Command::Secret { command } => match command {
-            SecretCommand::Encrypt { file } => secret::cmd_secret_encrypt(cli, printer, file),
-            SecretCommand::Decrypt { file } => secret::cmd_secret_decrypt(cli, printer, file),
-            SecretCommand::Edit { file } => secret::cmd_secret_edit(cli, printer, file),
-            SecretCommand::Init => secret::cmd_secret_init(cli, printer),
+            SecretCommand::Encrypt { file } => secret::cmd_secret_encrypt(cli, v2_printer, file),
+            SecretCommand::Decrypt { file } => secret::cmd_secret_decrypt(cli, v2_printer, file),
+            SecretCommand::Edit { file } => secret::cmd_secret_edit(cli, v2_printer, file),
+            SecretCommand::Init => secret::cmd_secret_init(cli, v2_printer),
         },
         Command::Source { command } => match command {
             SourceCommand::Add(args) => source::cmd_source_add(cli, printer, v2_printer, args),
@@ -1646,12 +1646,12 @@ pub fn execute(
         ),
         Command::Config { command } => match command {
             ConfigCommand::Show => config_cmd::cmd_config_show(cli, v2_printer),
-            ConfigCommand::Edit => config_cmd::cmd_config_edit(cli, printer),
-            ConfigCommand::Get { key } => config_cmd::cmd_config_get(cli, printer, key),
+            ConfigCommand::Edit => config_cmd::cmd_config_edit(cli, v2_printer),
+            ConfigCommand::Get { key } => config_cmd::cmd_config_get(cli, v2_printer, key),
             ConfigCommand::Set { key, value } => {
-                config_cmd::cmd_config_set(cli, printer, key, value)
+                config_cmd::cmd_config_set(cli, v2_printer, key, value)
             }
-            ConfigCommand::Unset { key } => config_cmd::cmd_config_unset(cli, printer, key),
+            ConfigCommand::Unset { key } => config_cmd::cmd_config_unset(cli, v2_printer, key),
         },
         Command::Workflow { command } => match command {
             WorkflowCommand::Generate { force } => {

@@ -1,0 +1,1 @@
+✓ Encrypted <CONFIG_DIR>/secret.enc.yaml via sops
