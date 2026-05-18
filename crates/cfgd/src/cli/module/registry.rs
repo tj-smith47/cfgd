@@ -76,9 +76,11 @@ pub fn cmd_module_add_from_registry(
                     reg_ref.module
                 ),
             );
-            // Fetch the registry repo so we can read tags.
-            // Hybrid lib call: modules::fetch_registry_modules takes &Printer (F4b).
-            let printer = legacy_printer_for_lib();
+            // Fetch the registry repo so we can read tags. The lib call
+            // takes &Printer; the null sink suppresses its v1 progress so
+            // this command's v2 status surface above owns the user-facing
+            // line.
+            let printer = null_lib_printer();
             modules::fetch_registry_modules(registry_entry, &cache_base, &printer)?;
             match modules::latest_module_version(registry_entry, &reg_ref.module, &cache_base)? {
                 Some(t) => t,
@@ -135,10 +137,11 @@ pub fn cmd_module_add_remote(
     let config_dir = config_dir(cli);
     let cache_base = modules::default_module_cache_dir()?;
 
-    // Streaming: clone-fetch spinner.
+    // Streaming: clone-fetch spinner. The lib call takes &Printer; the
+    // null sink suppresses its v1 progress so the v2 spinner owns the
+    // user-facing surface.
     let sp = v2_printer.spinner(format!("Fetching {}", url));
-    // Hybrid lib call: modules::fetch_remote_module takes &Printer.
-    let printer = legacy_printer_for_lib();
+    let printer = null_lib_printer();
     let fetched = match modules::fetch_remote_module(url, &cache_base, &printer) {
         Ok(f) => {
             sp.finish_ok(format!("Fetched {}", url));
@@ -310,7 +313,7 @@ pub fn cmd_module_upgrade(
 
     let config_dir = config_dir(cli);
     let cache_base = modules::default_module_cache_dir()?;
-    let printer = legacy_printer_for_lib();
+    let printer = null_lib_printer();
 
     // Find the lockfile entry
     let mut lockfile = modules::load_lockfile(&config_dir)?;
@@ -566,7 +569,7 @@ pub(super) fn filter_and_build_search_results(
 
 pub fn cmd_module_search(cli: &Cli, v2_printer: &PrinterV2, query: &str) -> anyhow::Result<()> {
     let cache_base = modules::default_module_cache_dir()?;
-    let printer = legacy_printer_for_lib();
+    let printer = null_lib_printer();
 
     if !cli.config.exists() {
         v2_printer.emit(cfgd_core::output_v2::error_doc(
@@ -1096,9 +1099,10 @@ pub(super) fn ensure_module_in_profile_doc(
 }
 
 /// Construct a Quiet v1 Printer for outbound `cfgd_core::modules::*` library
-/// calls that haven't migrated to v2 yet (F4b territory). Buffering the v1
-/// surface keeps progress noise out of v2 snapshots; the user-facing line
-/// is the v2_printer status that wraps the lib call.
-fn legacy_printer_for_lib() -> Printer {
+/// calls. The lib still owns its progress surface through `&Printer`; this
+/// CLI module already owns the user-facing v2 spinner / status above the
+/// call, so the lib's v1 emissions are suppressed (inversion of control —
+/// v2 owns the user-facing surface, the lib gets a non-emitting sink).
+fn null_lib_printer() -> Printer {
     Printer::new(cfgd_core::output::Verbosity::Quiet)
 }

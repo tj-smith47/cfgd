@@ -1,0 +1,8 @@
+[
+  {
+    "description": "Alpha module",
+    "name": "myreg/alpha",
+    "registry": "myreg",
+    "version": "v1.0.0"
+  }
+]

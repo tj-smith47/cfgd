@@ -257,6 +257,10 @@ fn module_registry_rename_happy_human() {
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["from"], "old");
     assert_eq!(json["to"], "fresh");
+    cap.assert_json_snapshot_in(
+        Path::new(SNAPSHOT_ROOT),
+        "module_registry_rename/happy.json",
+    );
 }
 
 // ─── registry list ──────────────────────────────────────────────────
@@ -410,6 +414,16 @@ fn module_add_from_registry_bridge_one_blank_line() {
     assert!(
         !combined.contains("\n\n\n"),
         "bridge has duplicate blank line: {combined}"
+    );
+
+    let mut stripped = normalize(&strip_ansi(&combined), config_dir.path());
+    stripped = stripped.replace(&src.to_string_lossy().to_string(), "<REG_SRC>");
+    stripped = stripped.replace(&src_root.path().to_string_lossy().to_string(), "<REG_ROOT>");
+    stripped = mask_commit_sha(&stripped);
+    assert_snapshot(
+        Path::new(SNAPSHOT_ROOT),
+        "module_add_from_registry/bridge.txt",
+        &stripped,
     );
 }
 

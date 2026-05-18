@@ -1019,10 +1019,9 @@ fn cmd_module_create_invalid_name_fails() {
 fn cmd_module_delete_nonexistent_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
     let v2_printer = make_v2_printer();
 
-    let err = cmd_module_delete(&cli, &printer, &v2_printer, "ghost", true, false).unwrap_err();
+    let err = cmd_module_delete(&cli, &v2_printer, "ghost", true, false).unwrap_err();
     assert!(
         err.to_string().contains("not found"),
         "should report not found, got: {err}"
@@ -1033,10 +1032,9 @@ fn cmd_module_delete_nonexistent_fails() {
 fn cmd_module_delete_invalid_name_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
     let v2_printer = make_v2_printer();
 
-    let err = cmd_module_delete(&cli, &printer, &v2_printer, "-bad", true, false).unwrap_err();
+    let err = cmd_module_delete(&cli, &v2_printer, "-bad", true, false).unwrap_err();
     assert!(
         err.to_string().contains("cannot start with"),
         "should reject invalid name, got: {err}"
@@ -2435,11 +2433,10 @@ fn cmd_module_delete_with_yes_succeeds() {
     );
 
     let cli = test_cli(dir.path());
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    cmd_module_delete(&cli, &printer, &v2_printer, "to-delete", true, false).unwrap();
+    cmd_module_delete(&cli, &v2_printer, "to-delete", true, false).unwrap();
     drop(v2_printer);
 
     let output = buf.lock().unwrap();
@@ -2466,13 +2463,12 @@ fn cmd_module_delete_without_yes_and_prompt_confirmed_proceeds_with_deletion() {
     );
 
     let cli = test_cli(dir.path());
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) = cfgd_core::output_v2::Printer::for_test_with_prompt_responses_at(
         vec![cfgd_core::output_v2::PromptAnswer::Confirm(true)],
         cfgd_core::output_v2::Verbosity::Normal,
     );
 
-    cmd_module_delete(&cli, &printer, &v2_printer, "prompt-yes-mod", false, false).unwrap();
+    cmd_module_delete(&cli, &v2_printer, "prompt-yes-mod", false, false).unwrap();
     drop(v2_printer);
 
     let output = buf.lock().unwrap();
@@ -2632,13 +2628,12 @@ fn cmd_module_delete_without_yes_and_prompt_declined_returns_cancelled() {
     );
 
     let cli = test_cli(dir.path());
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) = cfgd_core::output_v2::Printer::for_test_with_prompt_responses_at(
         vec![cfgd_core::output_v2::PromptAnswer::Confirm(false)],
         cfgd_core::output_v2::Verbosity::Normal,
     );
 
-    cmd_module_delete(&cli, &printer, &v2_printer, "prompt-no-mod", false, false).unwrap();
+    cmd_module_delete(&cli, &v2_printer, "prompt-no-mod", false, false).unwrap();
     drop(v2_printer);
 
     let output = buf.lock().unwrap();
@@ -2671,11 +2666,9 @@ fn cmd_module_delete_refused_when_profile_references() {
         ).unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
     let v2_printer = make_v2_printer();
 
-    let err =
-        cmd_module_delete(&cli, &printer, &v2_printer, "referenced", true, false).unwrap_err();
+    let err = cmd_module_delete(&cli, &v2_printer, "referenced", true, false).unwrap_err();
     assert!(
         err.to_string().contains("referenced by profile"),
         "should refuse deletion when profiles reference module, got: {err}"
@@ -2698,11 +2691,10 @@ fn cmd_module_delete_with_purge() {
     make_module(dir.path(), "purge-mod", &yaml);
 
     let cli = test_cli(dir.path());
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    cmd_module_delete(&cli, &printer, &v2_printer, "purge-mod", true, true).unwrap();
+    cmd_module_delete(&cli, &v2_printer, "purge-mod", true, true).unwrap();
 
     assert!(!target_file.exists(), "target file should be purged");
     let output = buf.lock().unwrap();
@@ -2737,11 +2729,10 @@ fn cmd_module_delete_restores_symlinked_files() {
     std::fs::write(dir.path().join("modules/restore-mod/module.yaml"), &yaml).unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    cmd_module_delete(&cli, &printer, &v2_printer, "restore-mod", true, false).unwrap();
+    cmd_module_delete(&cli, &v2_printer, "restore-mod", true, false).unwrap();
 
     assert!(
         target_file.exists(),
@@ -2783,10 +2774,9 @@ fn cmd_module_delete_with_purge_removes_directory_target() {
     make_module(dir.path(), "purge-dir-mod", &yaml);
 
     let cli = test_cli(dir.path());
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
-    cmd_module_delete(&cli, &printer, &v2_printer, "purge-dir-mod", true, true).unwrap();
+    cmd_module_delete(&cli, &v2_printer, "purge-dir-mod", true, true).unwrap();
 
     assert!(
         !target_dir.exists(),
@@ -2833,10 +2823,9 @@ fn cmd_module_delete_default_mode_restores_directory_source_via_copy_dir() {
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
-    cmd_module_delete(&cli, &printer, &v2_printer, "restore-dir-mod", true, false).unwrap();
+    cmd_module_delete(&cli, &v2_printer, "restore-dir-mod", true, false).unwrap();
 
     // The symlink is replaced by a real directory whose contents match.
     assert!(target.exists(), "target dir must remain after restore");
@@ -2884,11 +2873,10 @@ fn cmd_module_delete_cleans_lockfile() {
     modules::save_lockfile(dir.path(), &lockfile).unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    cmd_module_delete(&cli, &printer, &v2_printer, "lock-mod", true, false).unwrap();
+    cmd_module_delete(&cli, &v2_printer, "lock-mod", true, false).unwrap();
 
     let lockfile = modules::load_lockfile(dir.path()).unwrap();
     assert!(

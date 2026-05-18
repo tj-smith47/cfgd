@@ -1,0 +1,19 @@
+Resolved: myreg/alpha -> file://<REG_SRC>//modules/alpha@alpha/v1.0.0
+
+Add Remote Module
+
+✓ Fetched file://<REG_SRC>//modules/alpha@alpha/v1.0.0
+
+Commit     <COMMIT_SHA>
+Integrity  sha256:f985ba1cbee0471b1ae5f1587c1fd5135017f58e90555db572c592cbc25d91cf
+
+Module: alpha
+  (none)
+
+Tag 'alpha/v1.0.0' is unsigned
+
+✓ Added module 'myreg/alpha' to profile 'default'
+
+✓ Locked remote module 'alpha' in modules.lock
+
+→ Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'

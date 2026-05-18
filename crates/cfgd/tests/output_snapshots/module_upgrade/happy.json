@@ -1,0 +1,7 @@
+{
+  "integrity": "<INTEGRITY>",
+  "name": "upmod",
+  "newCommit": "<NEW_COMMIT>",
+  "oldCommit": "<OLD_COMMIT>",
+  "pinnedRef": "v1.1.0"
+}

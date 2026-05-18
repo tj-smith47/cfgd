@@ -1503,10 +1503,9 @@ fn module_delete_refuses_when_referenced() {
     std::fs::write(&profile_path, &yaml).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
-    let result = module::cmd_module_delete(&cli, &printer, &v2_printer, "used-mod", true, false);
+    let result = module::cmd_module_delete(&cli, &v2_printer, "used-mod", true, false);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("referenced by"));
 }
@@ -1521,10 +1520,9 @@ fn module_delete_succeeds_when_unreferenced() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
-    module::cmd_module_delete(&cli, &printer, &v2_printer, "orphan-mod", true, false).unwrap();
+    module::cmd_module_delete(&cli, &v2_printer, "orphan-mod", true, false).unwrap();
     assert!(!dir.path().join("modules").join("orphan-mod").exists());
 }
 
@@ -1557,10 +1555,9 @@ fn module_delete_purge_removes_target_files() {
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
-    module::cmd_module_delete(&cli, &printer, &v2_printer, "purge-mod", true, true).unwrap();
+    module::cmd_module_delete(&cli, &v2_printer, "purge-mod", true, true).unwrap();
     assert!(!dir.path().join("modules").join("purge-mod").exists());
     assert!(!target_file.exists(), "purge should remove target file");
 }
@@ -1582,10 +1579,9 @@ fn module_delete_no_purge_preserves_target_files() {
     create_module_in_dir(dir.path(), "keep-mod", &module_yaml);
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
-    module::cmd_module_delete(&cli, &printer, &v2_printer, "keep-mod", true, false).unwrap();
+    module::cmd_module_delete(&cli, &v2_printer, "keep-mod", true, false).unwrap();
     assert!(!dir.path().join("modules").join("keep-mod").exists());
     assert!(
         target_file.exists(),
@@ -7332,10 +7328,9 @@ fn module_update_remove_nonexistent_warns() {
 fn module_delete_nonexistent() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
-    let result = module::cmd_module_delete(&cli, &printer, &v2_printer, "nonexistent", true, false);
+    let result = module::cmd_module_delete(&cli, &v2_printer, "nonexistent", true, false);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -7362,10 +7357,9 @@ modules:
     std::fs::write(dir.path().join("modules.lock"), lockfile_content).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
-    module::cmd_module_delete(&cli, &printer, &v2_printer, "remote-mod", true, false).unwrap();
+    module::cmd_module_delete(&cli, &v2_printer, "remote-mod", true, false).unwrap();
 
     // Module directory should be gone
     assert!(
@@ -7407,10 +7401,9 @@ fn module_delete_restores_symlinked_files() {
     std::fs::write(module_dir.join("module.yaml"), &module_yaml).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
-    module::cmd_module_delete(&cli, &printer, &v2_printer, "link-mod", true, false).unwrap();
+    module::cmd_module_delete(&cli, &v2_printer, "link-mod", true, false).unwrap();
 
     // Module dir gone
     assert!(!module_dir.exists());

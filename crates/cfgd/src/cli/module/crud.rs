@@ -684,7 +684,6 @@ pub fn cmd_module_edit(cli: &Cli, v2_printer: &PrinterV2, name: &str) -> anyhow:
 
 pub fn cmd_module_delete(
     cli: &Cli,
-    printer: &Printer,
     v2_printer: &PrinterV2,
     name: &str,
     yes: bool,
@@ -806,11 +805,6 @@ pub fn cmd_module_delete(
         modules::save_lockfile(&config_dir, &lockfile)?;
         v2_printer.status_simple(Role::Info, format!("Removed '{}' from modules.lock", name));
     }
-
-    // printer is reserved for the (currently absent) reconciler-driven
-    // cleanup path that F4b will lift. Keep the v1 arg threaded so the
-    // signature is stable across hybrid windows.
-    let _ = printer;
 
     v2_printer.emit(
         Doc::new()

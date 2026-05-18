@@ -1,0 +1,6 @@
+{
+  "artifactsResigned": [],
+  "backupPrivateKey": "<DIR>/cosign.key.<TIMESTAMP>",
+  "backupPublicKey": "<DIR>/cosign.pub.<TIMESTAMP>",
+  "dir": "<DIR>"
+}

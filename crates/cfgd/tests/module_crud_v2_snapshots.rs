@@ -306,10 +306,9 @@ fn module_delete_happy_human() {
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: del-mod\nspec: {}\n",
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
-    module::cmd_module_delete(&cli, &printer, &v2_printer, "del-mod", true, false).unwrap();
+    module::cmd_module_delete(&cli, &v2_printer, "del-mod", true, false).unwrap();
     drop(v2_printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
@@ -333,11 +332,10 @@ fn module_delete_cancelled_human() {
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: cancel-mod\nspec: {}\n",
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
 
-    module::cmd_module_delete(&cli, &printer, &v2_printer, "cancel-mod", false, false).unwrap();
+    module::cmd_module_delete(&cli, &v2_printer, "cancel-mod", false, false).unwrap();
     drop(v2_printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
@@ -355,10 +353,9 @@ fn module_delete_cancelled_human() {
 fn module_delete_not_found_human() {
     let (config_dir, state_dir) = module_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
-    let result = module::cmd_module_delete(&cli, &printer, &v2_printer, "ghost", true, false);
+    let result = module::cmd_module_delete(&cli, &v2_printer, "ghost", true, false);
     assert!(result.is_err());
     drop(v2_printer);
 

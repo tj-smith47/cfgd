@@ -1,7 +1,7 @@
 use super::*;
 use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
-pub(crate) fn cmd_module_keys_generate(
+pub fn cmd_module_keys_generate(
     v2_printer: &PrinterV2,
     output_dir: Option<&str>,
 ) -> anyhow::Result<()> {
@@ -130,7 +130,7 @@ pub fn cmd_module_keys_list(v2_printer: &PrinterV2) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) fn cmd_module_keys_rotate(
+pub fn cmd_module_keys_rotate(
     v2_printer: &PrinterV2,
     dir: Option<&str>,
     artifacts: &[String],

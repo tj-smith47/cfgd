@@ -1,0 +1,11 @@
+Rotate Cosign Key Pair
+
+Backed up old private key to <DIR>/cosign.key.<TIMESTAMP>
+
+Backed up old public key to <DIR>/cosign.pub.<TIMESTAMP>
+
+✓ Generated new key pair
+
+✓ Re-signed oci.example.com/m:v1
+
+✓ Key rotation complete
