@@ -18,13 +18,16 @@
 //!   (the safe, no-exit, no-network-mutation case). The release-info
 //!   payload is stubbed via mockito and the buffered v2 Doc is captured
 //!   for both human (`up_to_date.txt`) and JSON (`up_to_date.json`)
-//!   shapes.
+//!   shapes. The `up_to_date.{txt,json}` filenames cover the `--check`
+//!   up-to-date sub-case; the upgrade-without-`--check` up-to-date path
+//!   shares the same buffered Doc shape (different `with_data` keys) and
+//!   is exercised end-to-end by `crates/cfgd-core/src/upgrade/tests.rs`.
 
 use std::path::Path;
 
 use cfgd::cli::upgrade;
 use cfgd_core::output::{OutputFormat as OutputFormatV1, Printer as PrinterV1, Verbosity};
-use cfgd_core::output_v2::{OutputFormat, Printer};
+use cfgd_core::output_v2::{Doc, OutputFormat, Printer, Role};
 use cfgd_core::test_helpers::EnvVarGuard;
 use serial_test::serial;
 
@@ -122,4 +125,43 @@ fn upgrade_check_up_to_date_json() {
         json["currentVersion"].as_str().is_some(),
         "currentVersion should be a string"
     );
+}
+
+/// Bridge invariant: streaming "Downloading" section drops, then a buffered
+/// summary Doc emits — combined human surface contains exactly one blank
+/// line at the transition. Production `cmd_upgrade`'s download path requires
+/// a live GitHub release + cosign signature + checksum bundle (covered E2E
+/// by `crates/cfgd-core/src/upgrade/tests.rs::download_and_install_to_*`),
+/// so per the F3 README bridge-synthetic exception we hand-roll the
+/// minimal streaming-then-buffered shape here. The streaming-side status
+/// content is deterministic and may diverge from any specific real
+/// invocation; what's locked is the §17.2 invariant.
+#[test]
+fn upgrade_bridge_one_blank_line() {
+    let (v2_printer, cap) = Printer::for_test_doc();
+    v2_printer.heading("Upgrade");
+    {
+        let work = v2_printer.section("Downloading");
+        work.status(Role::Ok, "Verified signature");
+    }
+    v2_printer.emit(Doc::new().status(Role::Ok, "Upgraded to v0.4.0").with_data(
+        serde_json::json!({
+            "currentVersion": "0.3.5",
+            "targetVersion": "0.4.0",
+            "installed": true,
+            "verified": true,
+        }),
+    ));
+    drop(v2_printer);
+
+    let captured = strip_ansi(&cap.human());
+    assert!(
+        captured.contains("\n\n"),
+        "bridge missing blank line:\n{captured}"
+    );
+    assert!(
+        !captured.contains("\n\n\n"),
+        "bridge has duplicate blank line:\n{captured}"
+    );
+    assert_snapshot(Path::new(SNAPSHOT_ROOT), "upgrade/bridge.txt", &captured);
 }

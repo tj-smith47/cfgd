@@ -57,7 +57,7 @@ pub enum GenerateTarget {
 }
 
 pub fn cmd_generate(cli: &Cli, v2_printer: &PrinterV2, args: &GenerateArgs) -> anyhow::Result<()> {
-    // Support legacy --scan-only mode
+    // --scan-only short-circuits the AI conversation loop.
     if args.scan_only {
         return cmd_generate_scan_only(v2_printer, args);
     }

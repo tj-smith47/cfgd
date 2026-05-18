@@ -23,7 +23,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::generate::{self, GenerateArgs};
-use cfgd_core::output_v2::{OutputFormat, Printer};
+use cfgd_core::output_v2::{Doc, OutputFormat, Printer, Role};
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -120,4 +120,41 @@ fn generate_scan_only_json_shape() {
     assert!(json["dotfileEntries"].as_u64().is_some());
     assert!(json["settingsCaptured"].as_u64().is_some());
     assert!(json["toolsScanned"].is_array());
+}
+
+/// Bridge invariant: streaming per-turn status lines drop, then a buffered
+/// summary Doc emits — combined human surface contains exactly one blank
+/// line at the transition. Production `cmd_generate`'s non-scan_only branch
+/// drives a multi-turn Anthropic conversation whose transcript content and
+/// timing are non-deterministic; per the F3 README bridge-synthetic
+/// exception we hand-roll the minimal streaming-then-buffered shape here.
+/// The streaming-side content is deterministic and may diverge from any
+/// specific real invocation; what's locked is the §17.2 invariant.
+#[test]
+fn generate_bridge_one_blank_line() {
+    let (v2_printer, cap) = Printer::for_test_doc();
+    v2_printer.heading("Generate");
+    v2_printer.status_simple(Role::Info, "Scanning system for installed tools");
+    v2_printer.emit(
+        Doc::new()
+            .status(Role::Ok, "Generation complete")
+            .with_data(serde_json::json!({
+                "target": "profile",
+                "outputPath": "profiles/dev.yaml",
+                "scanned": 12,
+                "modulesGenerated": 3,
+            })),
+    );
+    drop(v2_printer);
+
+    let captured = strip_ansi(&cap.human());
+    assert!(
+        captured.contains("\n\n"),
+        "bridge missing blank line:\n{captured}"
+    );
+    assert!(
+        !captured.contains("\n\n\n"),
+        "bridge has duplicate blank line:\n{captured}"
+    );
+    assert_snapshot(Path::new(SNAPSHOT_ROOT), "generate/bridge.txt", &captured);
 }

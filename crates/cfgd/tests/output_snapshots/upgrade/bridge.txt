@@ -1,0 +1,6 @@
+Upgrade
+
+Downloading
+  ✓ Verified signature
+
+✓ Upgraded to v0.4.0

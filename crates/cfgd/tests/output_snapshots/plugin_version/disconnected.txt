@@ -1,0 +1,2 @@
+Client        0.3.5
+Server (k8s)  not connected

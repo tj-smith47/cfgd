@@ -21,6 +21,8 @@ use std::path::Path;
 
 use cfgd::cli::plugin;
 use cfgd_core::output_v2::{OutputFormat, Printer};
+use cfgd_core::test_helpers::EnvVarGuard;
+use serial_test::serial;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -170,4 +172,32 @@ fn plugin_inject_invalid_resource_human() {
 
     let json = cap.json().expect("error Doc carries with_data");
     assert_eq!(json["error"], "invalid_resource");
+}
+
+// --- cmd_version disconnected branch ---
+
+/// `cmd_version` falls back to `"not connected"` when `kube::Client::try_default()`
+/// or `apiserver_version()` fails. Point `KUBECONFIG` at a nonexistent path
+/// so the kube client construction short-circuits — deterministic, no live
+/// cluster required.
+#[test]
+#[serial]
+fn plugin_version_disconnected_human() {
+    let _kubeconfig = EnvVarGuard::set("KUBECONFIG", "/tmp/nonexistent-kubeconfig");
+    let (v2_printer, cap) = Printer::for_test_doc();
+
+    plugin::cmd_version(&v2_printer).unwrap();
+    drop(v2_printer);
+
+    let stripped = strip_ansi(&cap.human());
+    assert_snapshot(
+        Path::new(SNAPSHOT_ROOT),
+        "plugin_version/disconnected.txt",
+        &stripped,
+    );
+
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(json["kubectl"], "not connected");
+    assert!(json["version"].as_str().is_some());
+    assert!(json["cfgd"].as_str().is_some());
 }

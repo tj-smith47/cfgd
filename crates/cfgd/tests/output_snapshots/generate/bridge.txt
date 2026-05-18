@@ -1,0 +1,5 @@
+Generate
+
+Scanning system for installed tools
+
+✓ Generation complete
