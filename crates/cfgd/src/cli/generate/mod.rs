@@ -2,7 +2,7 @@ use clap::{Args, Subcommand};
 
 use cfgd_core::config::{self, AiConfig};
 use cfgd_core::generate::{PresentYamlRequest, PresentYamlResponse};
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
 use crate::ai::client::{AnthropicClient, ContentBlock};
 use crate::ai::conversation::Conversation;
@@ -56,10 +56,10 @@ pub enum GenerateTarget {
     },
 }
 
-pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow::Result<()> {
+pub fn cmd_generate(cli: &Cli, v2_printer: &PrinterV2, args: &GenerateArgs) -> anyhow::Result<()> {
     // Support legacy --scan-only mode
     if args.scan_only {
-        return cmd_generate_scan_only(printer, args);
+        return cmd_generate_scan_only(v2_printer, args);
     }
 
     // 1. Load config, resolve AiConfig
@@ -79,6 +79,12 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
 
     // 2. Resolve API key
     let api_key = std::env::var(&ai_config.api_key_env).map_err(|_| {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            &ai_config.api_key_env,
+            "api_error",
+            format!("API key env var '{}' not set", ai_config.api_key_env),
+            serde_json::json!({ "envVar": ai_config.api_key_env }),
+        ));
         cfgd_core::errors::GenerateError::ApiKeyNotFound {
             env_var: ai_config.api_key_env.clone(),
         }
@@ -86,18 +92,31 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
 
     // 3. Consent disclosure (unless --yes)
     if !args.yes {
-        printer.warning(&format!(
-            "This command sends file contents and system information to {}'s API to generate your configuration.",
-            provider
-        ));
-        printer.info(
+        let consent = v2_printer.section("Consent");
+        consent.status(
+            Role::Warn,
+            format!(
+                "This command sends file contents and system information to {}'s API to generate your configuration.",
+                provider
+            ),
+        );
+        consent.note(
             "Only files in your home directory are accessible, and private keys/credentials are excluded.",
         );
         // Routed through Printer::prompt_confirm so -o json / structured mode
         // early-returns with a non-interactive error instead of hanging.
-        let proceed = printer.prompt_confirm("Continue?")?;
+        let proceed = v2_printer.prompt_confirm("Continue?")?;
         if !proceed {
-            printer.info("Aborted.");
+            drop(consent);
+            v2_printer.emit(Doc::new().status(Role::Info, "Aborted.").with_data(
+                serde_json::json!({
+                    "target": target_label(&args.target),
+                    "outputPath": "",
+                    "scanned": 0,
+                    "modulesGenerated": 0,
+                    "aborted": true,
+                }),
+            ));
             return Ok(());
         }
     }
@@ -147,9 +166,10 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
     let mut turn = 0usize;
     loop {
         if turn >= MAX_TURNS {
-            printer.warning(&format!(
-                "Conversation reached the {MAX_TURNS}-turn limit; stopping."
-            ));
+            v2_printer.status_simple(
+                Role::Warn,
+                format!("Conversation reached the {MAX_TURNS}-turn limit; stopping."),
+            );
             break;
         }
         turn += 1;
@@ -174,13 +194,13 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
         for block in &response.content {
             match block {
                 ContentBlock::Text { text } => {
-                    printer.info(text);
+                    v2_printer.status_simple(Role::Info, text);
                 }
                 ContentBlock::ToolUse { id, name, input } => {
                     has_tool_calls = true;
 
                     if name == "present_yaml" {
-                        let result = handle_present_yaml(printer, id, input, args.yes)?;
+                        let result = handle_present_yaml(v2_printer, id, input, args.yes)?;
                         tool_results.push(result);
                     } else {
                         let result =
@@ -208,16 +228,29 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
 
     // 10. Show summary
     let generated = session.list_generated();
+    let generated_count = generated.len();
+    let generated_files: Vec<serde_json::Value> = generated
+        .iter()
+        .map(|g| {
+            serde_json::json!({
+                "name": g.name,
+                "path": g.path.display().to_string(),
+            })
+        })
+        .collect();
+    let mut committed = false;
     if !generated.is_empty() {
-        printer.header("Generated files");
-        for item in &generated {
-            printer.success(&format!("{}: {}", item.name, item.path.display()));
+        {
+            let sec = v2_printer.section("Generated files");
+            for item in &generated {
+                sec.status(Role::Ok, format!("{}: {}", item.name, item.path.display()));
+            }
         }
 
         let commit = if args.yes {
             true
         } else {
-            printer.prompt_confirm("Commit all generated files?")?
+            v2_printer.prompt_confirm("Commit all generated files?")?
         };
         if commit {
             let mut add_cmd = cfgd_core::git_cmd_local();
@@ -227,10 +260,13 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
             }
             let add_out = add_cmd.output()?;
             if !add_out.status.success() {
-                printer.warning(&format!(
-                    "git add failed: {}",
-                    cfgd_core::stderr_lossy_trimmed(&add_out)
-                ));
+                v2_printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "git add failed: {}",
+                        cfgd_core::stderr_lossy_trimmed(&add_out)
+                    ),
+                );
             } else {
                 let commit_out = cfgd_core::git_cmd_local()
                     .args([
@@ -240,12 +276,16 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
                     ])
                     .output()?;
                 if commit_out.status.success() {
-                    printer.success("Changes committed.");
+                    committed = true;
+                    v2_printer.status_simple(Role::Ok, "Changes committed.");
                 } else {
-                    printer.warning(&format!(
-                        "git commit failed: {}",
-                        cfgd_core::stderr_lossy_trimmed(&commit_out)
-                    ));
+                    v2_printer.status_simple(
+                        Role::Warn,
+                        format!(
+                            "git commit failed: {}",
+                            cfgd_core::stderr_lossy_trimmed(&commit_out)
+                        ),
+                    );
                 }
             }
         }
@@ -253,28 +293,52 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
 
     // 11. Show token usage
     let (input_tokens, output_tokens) = conversation.total_tokens();
-    printer.info(&format!(
-        "Token usage: {} input, {} output, {} total",
-        input_tokens,
-        output_tokens,
-        input_tokens + output_tokens
-    ));
-
-    printer.info("Run 'cfgd apply --dry-run' to preview what would be applied.");
+    v2_printer.emit(
+        Doc::new()
+            .status(
+                Role::Info,
+                format!(
+                    "Token usage: {} input, {} output, {} total",
+                    input_tokens,
+                    output_tokens,
+                    input_tokens + output_tokens
+                ),
+            )
+            .hint("Run 'cfgd apply --dry-run' to preview what would be applied.")
+            .with_data(serde_json::json!({
+                "target": target_label(&args.target),
+                "provider": provider,
+                "model": model,
+                "modulesGenerated": generated_count,
+                "scanned": 0,
+                "files": generated_files,
+                "committed": committed,
+                "inputTokens": input_tokens,
+                "outputTokens": output_tokens,
+            })),
+    );
 
     Ok(())
 }
 
+fn target_label(target: &Option<GenerateTarget>) -> String {
+    match target {
+        None => "full".to_string(),
+        Some(GenerateTarget::Module { name }) => format!("module/{}", name),
+        Some(GenerateTarget::Profile { name }) => format!("profile/{}", name),
+    }
+}
+
 fn handle_present_yaml(
-    printer: &Printer,
+    v2_printer: &PrinterV2,
     tool_use_id: &str,
     input: &serde_json::Value,
     auto_accept: bool,
 ) -> anyhow::Result<ContentBlock> {
     let req: PresentYamlRequest = serde_json::from_value(input.clone())?;
 
-    printer.header(&format!("Generated {} — {}", req.kind, req.description));
-    printer.syntax_highlight(&req.content, "yaml");
+    v2_printer.heading(format!("Generated {} — {}", req.kind, req.description));
+    v2_printer.syntax_highlight(&req.content, "yaml");
 
     let response = if auto_accept {
         PresentYamlResponse::Accept
@@ -283,7 +347,7 @@ fn handle_present_yaml(
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let choice = printer
+        let choice = v2_printer
             .prompt_select("What would you like to do?", &options)?
             .as_str();
 
@@ -291,7 +355,7 @@ fn handle_present_yaml(
             "Accept" => PresentYamlResponse::Accept,
             "Reject" => PresentYamlResponse::Reject,
             "Give feedback" => {
-                let feedback = printer.prompt_text("Your feedback:", "")?;
+                let feedback = v2_printer.prompt_text("Your feedback:", "")?;
                 PresentYamlResponse::Feedback { message: feedback }
             }
             "Step through" => PresentYamlResponse::StepThrough,
@@ -307,7 +371,7 @@ fn handle_present_yaml(
 }
 
 /// Legacy scan-only mode: scan dotfiles and shell config without AI.
-fn cmd_generate_scan_only(printer: &Printer, args: &GenerateArgs) -> anyhow::Result<()> {
+fn cmd_generate_scan_only(v2_printer: &PrinterV2, args: &GenerateArgs) -> anyhow::Result<()> {
     let home_path = if let Some(h) = &args.home {
         std::path::PathBuf::from(h)
     } else {
@@ -324,44 +388,66 @@ fn cmd_generate_scan_only(printer: &Printer, args: &GenerateArgs) -> anyhow::Res
         })
         .unwrap_or_else(|| "zsh".to_string());
 
-    printer.header("Scanning dotfiles");
-
     let dotfiles = generate::scan::scan_dotfiles(&home_path)?;
     let tool_set: std::collections::HashSet<String> = dotfiles
         .iter()
         .filter_map(|e| e.tool_guess.clone())
         .collect();
+    let mut sorted_tools: Vec<String> = tool_set.iter().cloned().collect();
+    sorted_tools.sort();
 
-    if dotfiles.is_empty() {
-        printer.info("No dotfiles found");
-    } else {
-        printer.info(&format!("Found {} dotfile entries", dotfiles.len()));
-        if !tool_set.is_empty() {
-            let mut sorted_tools: Vec<String> = tool_set.into_iter().collect();
-            sorted_tools.sort();
-            printer.info(&format!("Detected tools: {}", sorted_tools.join(", ")));
+    {
+        let sec = v2_printer.section("Scanning dotfiles");
+        if dotfiles.is_empty() {
+            sec.status(Role::Info, "No dotfiles found");
+        } else {
+            sec.kv("Entries", dotfiles.len().to_string());
+            if !sorted_tools.is_empty() {
+                sec.kv("Detected tools", sorted_tools.join(", "));
+            }
         }
     }
 
-    printer.header(&format!("Scanning {} config", detected_shell));
     let shell_result = generate::scan::scan_shell_config(&detected_shell, &home_path)?;
-    if !shell_result.aliases.is_empty() {
-        printer.info(&format!("Found {} aliases", shell_result.aliases.len()));
-    }
-    if !shell_result.exports.is_empty() {
-        printer.info(&format!("Found {} exports", shell_result.exports.len()));
-    }
-    if !shell_result.path_additions.is_empty() {
-        printer.info(&format!(
-            "Found {} PATH additions",
-            shell_result.path_additions.len()
-        ));
-    }
-    if let Some(pm) = &shell_result.plugin_manager {
-        printer.info(&format!("Plugin manager: {}", pm));
+    {
+        let sec = v2_printer.section(format!("Scanning {} config", detected_shell));
+        if !shell_result.aliases.is_empty() {
+            sec.kv("Aliases", shell_result.aliases.len().to_string());
+        }
+        if !shell_result.exports.is_empty() {
+            sec.kv("Exports", shell_result.exports.len().to_string());
+        }
+        if !shell_result.path_additions.is_empty() {
+            sec.kv(
+                "PATH additions",
+                shell_result.path_additions.len().to_string(),
+            );
+        }
+        if let Some(pm) = &shell_result.plugin_manager {
+            sec.kv("Plugin manager", pm);
+        }
     }
 
-    printer.success("Scan complete — use without --scan-only to generate config");
+    v2_printer.emit(
+        Doc::new()
+            .status(
+                Role::Ok,
+                "Scan complete — use without --scan-only to generate config",
+            )
+            .with_data(serde_json::json!({
+                "target": "scan_only",
+                "shell": detected_shell,
+                "toolsScanned": sorted_tools,
+                "dotfileEntries": dotfiles.len(),
+                "aliases": shell_result.aliases.len(),
+                "exports": shell_result.exports.len(),
+                "pathAdditions": shell_result.path_additions.len(),
+                "pluginManager": shell_result.plugin_manager,
+                "settingsCaptured": shell_result.aliases.len()
+                    + shell_result.exports.len()
+                    + shell_result.path_additions.len(),
+            })),
+    );
     Ok(())
 }
 

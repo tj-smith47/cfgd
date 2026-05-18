@@ -1,10 +1,7 @@
 use super::*;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
-pub(super) fn cmd_workflow_generate(
-    cli: &Cli,
-    printer: &Printer,
-    force: bool,
-) -> anyhow::Result<()> {
+pub fn cmd_workflow_generate(cli: &Cli, v2_printer: &PrinterV2, force: bool) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     let workflow_dir = config_dir.join(".github").join("workflows");
     let workflow_path = workflow_dir.join("cfgd-release.yml");
@@ -17,38 +14,80 @@ pub(super) fn cmd_workflow_generate(
         cfgd_core::detect_default_branch(&config_dir).unwrap_or_else(|| "master".to_string());
 
     if profile_names.is_empty() && module_names.is_empty() {
-        printer.warning("No profiles or modules found — nothing to generate");
+        v2_printer.emit(
+            Doc::new()
+                .status(
+                    Role::Warn,
+                    "No profiles or modules found — nothing to generate",
+                )
+                .with_data(serde_json::json!({
+                    "error": "no_profiles",
+                    "path": workflow_path.display().to_string(),
+                    "profiles": Vec::<String>::new(),
+                    "modules": Vec::<String>::new(),
+                })),
+        );
         return Ok(());
     }
 
     // Check for existing file
     if workflow_path.exists()
         && !force
-        && !printer
+        && !v2_printer
             .prompt_confirm(&format!(
                 "Workflow already exists at {} — overwrite?",
                 workflow_path.display()
             ))
             .unwrap_or(false)
     {
-        printer.info("Skipped workflow generation");
+        v2_printer.emit(
+            Doc::new()
+                .status(Role::Info, "Skipped workflow generation")
+                .with_data(serde_json::json!({
+                    "path": workflow_path.display().to_string(),
+                    "skipped": true,
+                    "profiles": &profile_names,
+                    "modules": &module_names,
+                })),
+        );
         return Ok(());
     }
 
     let yaml = generate_release_workflow_yaml(&module_names, &profile_names, &default_branch);
 
-    std::fs::create_dir_all(&workflow_dir)?;
-    cfgd_core::atomic_write_str(&workflow_path, &yaml)?;
+    std::fs::create_dir_all(&workflow_dir).map_err(|e| {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            &workflow_path.display().to_string(),
+            "write_failed",
+            format!("failed to create workflow directory: {}", e),
+            serde_json::json!({ "path": workflow_path.display().to_string() }),
+        ));
+        anyhow::anyhow!("failed to create workflow directory: {}", e)
+    })?;
+    cfgd_core::atomic_write_str(&workflow_path, &yaml).map_err(|e| {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            &workflow_path.display().to_string(),
+            "write_failed",
+            format!("failed to write workflow file: {}", e),
+            serde_json::json!({ "path": workflow_path.display().to_string() }),
+        ));
+        anyhow::anyhow!("failed to write workflow file: {}", e)
+    })?;
 
-    printer.success(&format!(
-        "Generated release workflow at {}",
-        workflow_path.display()
-    ));
-    printer.info(&format!(
-        "Covers {} module(s) and {} profile(s)",
-        module_names.len(),
-        profile_names.len()
-    ));
+    v2_printer.emit(
+        Doc::new()
+            .status(
+                Role::Ok,
+                format!("Generated release workflow at {}", workflow_path.display()),
+            )
+            .kv("Modules", module_names.len().to_string())
+            .kv("Profiles", profile_names.len().to_string())
+            .with_data(serde_json::json!({
+                "path": workflow_path.display().to_string(),
+                "profiles": &profile_names,
+                "modules": &module_names,
+            })),
+    );
 
     Ok(())
 }

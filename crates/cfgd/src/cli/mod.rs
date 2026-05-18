@@ -25,9 +25,9 @@ pub mod secret;
 pub mod source;
 pub mod status;
 pub mod sync;
-mod upgrade;
+pub mod upgrade;
 pub mod verify;
-mod workflow;
+pub mod workflow;
 
 pub(in crate::cli) use helpers::*;
 pub(in crate::cli) use output_types::*;
@@ -1383,7 +1383,6 @@ pub fn execute(
     let Some(command) = &cli.command else {
         use clap::CommandFactory;
         let _ = Cli::command().print_help();
-        printer.newline();
         return Ok(());
     };
     match command {
@@ -1630,7 +1629,7 @@ pub fn execute(
             resource,
             recursive,
         } => explain::cmd_explain(v2_printer, resource.as_deref(), *recursive),
-        Command::Upgrade { check } => upgrade::cmd_upgrade(printer, *check),
+        Command::Upgrade { check } => upgrade::cmd_upgrade(printer, v2_printer, *check),
         Command::Decide {
             action,
             resource,
@@ -1655,7 +1654,7 @@ pub fn execute(
         },
         Command::Workflow { command } => match command {
             WorkflowCommand::Generate { force } => {
-                workflow::cmd_workflow_generate(cli, printer, *force)
+                workflow::cmd_workflow_generate(cli, v2_printer, *force)
             }
         },
         Command::Checkin {
@@ -1689,7 +1688,7 @@ pub fn execute(
             clap_complete::generate(*shell, &mut Cli::command(), "cfgd", &mut std::io::stdout());
             Ok(())
         }
-        Command::Generate(args) => generate::cmd_generate(cli, printer, args),
+        Command::Generate(args) => generate::cmd_generate(cli, v2_printer, args),
         Command::Rollback { apply_id, yes } => rollback::cmd_rollback(
             printer,
             v2_printer,

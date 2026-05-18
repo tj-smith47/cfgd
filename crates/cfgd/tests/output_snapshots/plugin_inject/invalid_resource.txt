@@ -1,0 +1,1 @@
+✗ invalid resource format 'bad-format-no-slash' — expected kind/name (e.g. deployment/myapp)

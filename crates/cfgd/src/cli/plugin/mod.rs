@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Doc, OutputFormat, Printer, Role, Verbosity};
 
 #[derive(Parser)]
 #[command(
@@ -150,11 +150,7 @@ pub fn plugin_main() -> anyhow::Result<()> {
         Printer::disable_colors();
     }
 
-    let printer = Printer::with_format(
-        cfgd_core::output::Verbosity::Normal,
-        None,
-        cfgd_core::output::OutputFormat::Table,
-    );
+    let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Table);
 
     match cli.command {
         PluginCommand::Debug {
@@ -179,14 +175,20 @@ pub fn plugin_main() -> anyhow::Result<()> {
     }
 }
 
-fn cmd_debug(
-    printer: &Printer,
+pub fn cmd_debug(
+    v2_printer: &Printer,
     pod: &str,
     modules: &[String],
     namespace: &str,
     image: &str,
 ) -> anyhow::Result<()> {
     if modules.is_empty() {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            pod,
+            "module_required",
+            MODULE_REQUIRED.to_string(),
+            serde_json::json!({ "namespace": namespace, "pod": pod }),
+        ));
         anyhow::bail!(MODULE_REQUIRED);
     }
 
@@ -241,29 +243,62 @@ fn cmd_debug(
             &kube::api::Patch::Strategic(patch),
         )
         .await
-        .map_err(|e| anyhow::anyhow!("failed to create ephemeral container: {e}"))?;
+        .map_err(|e| {
+            v2_printer.emit(cfgd_core::output_v2::error_doc(
+                pod,
+                "inject_failed",
+                format!("failed to create ephemeral container: {e}"),
+                serde_json::json!({ "namespace": namespace, "pod": pod }),
+            ));
+            anyhow::anyhow!("failed to create ephemeral container: {e}")
+        })?;
 
-        printer.success(&format!("Ephemeral debug container created on pod {namespace}/{pod}"));
-        printer.info(&format!("Modules: {}", module_names.join(", ")));
-        printer.info(&format!(
-            "Attach with: kubectl attach -n {namespace} {pod} -c cfgd-debug -it"
-        ));
+        v2_printer.emit(
+            Doc::new()
+                .status(
+                    Role::Ok,
+                    format!("Ephemeral debug container created on pod {namespace}/{pod}"),
+                )
+                .kv("Modules", module_names.join(", "))
+                .hint(format!(
+                    "Attach with: kubectl attach -n {namespace} {pod} -c cfgd-debug -it"
+                ))
+                .with_data(serde_json::json!({
+                    "namespace": namespace,
+                    "pod": pod,
+                    "modules": &module_names,
+                    "image": image,
+                    "verified": true,
+                })),
+        );
 
         Ok(())
     })
 }
 
-fn cmd_exec(
-    printer: &Printer,
+pub fn cmd_exec(
+    v2_printer: &Printer,
     pod: &str,
     modules: &[String],
     namespace: &str,
     command: &[String],
 ) -> anyhow::Result<()> {
     if modules.is_empty() {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            pod,
+            "module_required",
+            MODULE_REQUIRED.to_string(),
+            serde_json::json!({ "namespace": namespace, "pod": pod }),
+        ));
         anyhow::bail!(MODULE_REQUIRED);
     }
     if command.is_empty() {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            pod,
+            "command_required",
+            "command is required after --".to_string(),
+            serde_json::json!({ "namespace": namespace, "pod": pod }),
+        ));
         anyhow::bail!("command is required after --");
     }
 
@@ -296,7 +331,22 @@ fn cmd_exec(
         format!("export PATH={path_prefix}:$PATH; exec {inner_cmd}"),
     ];
 
-    printer.info(&format!("Executing in {namespace}/{pod} with modules"));
+    let module_names: Vec<String> = parsed.iter().map(|(n, v)| format!("{n}:{v}")).collect();
+
+    v2_printer.emit(
+        Doc::new()
+            .status(
+                Role::Info,
+                format!("Executing in {namespace}/{pod} with modules"),
+            )
+            .kv("Modules", module_names.join(", "))
+            .with_data(serde_json::json!({
+                "namespace": namespace,
+                "pod": pod,
+                "modules": &module_names,
+                "command": command,
+            })),
+    );
 
     let code = super::kubectl::run_argv_inherit(&exec_args)?;
     if code != 0 {
@@ -305,17 +355,31 @@ fn cmd_exec(
     Ok(())
 }
 
-fn cmd_inject(
-    printer: &Printer,
+pub fn cmd_inject(
+    v2_printer: &Printer,
     resource: &str,
     modules: &[String],
     namespace: &str,
 ) -> anyhow::Result<()> {
     if modules.is_empty() {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            resource,
+            "module_required",
+            MODULE_REQUIRED.to_string(),
+            serde_json::json!({ "namespace": namespace, "resource": resource }),
+        ));
         anyhow::bail!(MODULE_REQUIRED);
     }
 
     let (kind, name) = resource.split_once('/').ok_or_else(|| {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            resource,
+            "invalid_resource",
+            format!(
+                "invalid resource format '{resource}' — expected kind/name (e.g. deployment/myapp)"
+            ),
+            serde_json::json!({ "namespace": namespace, "resource": resource }),
+        ));
         anyhow::anyhow!(
             "invalid resource format '{resource}' — expected kind/name (e.g. deployment/myapp)"
         )
@@ -343,19 +407,45 @@ fn cmd_inject(
         &patch_str,
     ])?;
     if code != 0 {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            resource,
+            "inject_failed",
+            "kubectl patch failed".to_string(),
+            serde_json::json!({
+                "namespace": namespace,
+                "resource": resource,
+                "kind": kind,
+                "name": name,
+                "exitCode": code,
+            }),
+        ));
         anyhow::bail!("kubectl patch failed");
     }
 
-    printer.success(&format!(
-        "Injected modules into {namespace}/{kind}/{name}: {}",
-        module_names.join(", ")
-    ));
-    printer.info("Pods will receive modules on next rollout");
+    v2_printer.emit(
+        Doc::new()
+            .status(
+                Role::Ok,
+                format!(
+                    "Injected modules into {namespace}/{kind}/{name}: {}",
+                    module_names.join(", ")
+                ),
+            )
+            .hint("Pods will receive modules on next rollout")
+            .with_data(serde_json::json!({
+                "namespace": namespace,
+                "resource": resource,
+                "kind": kind,
+                "name": name,
+                "modules": &module_names,
+                "patched": [name],
+            })),
+    );
 
     Ok(())
 }
 
-fn cmd_status(printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_status(v2_printer: &Printer) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let client = kube::Client::try_default().await?;
@@ -375,13 +465,20 @@ fn cmd_status(printer: &Printer) -> anyhow::Result<()> {
         let list = modules
             .list(&kube::api::ListParams::default())
             .await
-            .map_err(|e| anyhow::anyhow!("failed to list modules: {e}"))?;
+            .map_err(|e| {
+                v2_printer.emit(cfgd_core::output_v2::error_doc(
+                    "modules",
+                    "list_failed",
+                    format!("failed to list modules: {e}"),
+                    serde_json::json!({}),
+                ));
+                anyhow::anyhow!("failed to list modules: {e}")
+            })?;
 
-        printer.header("Modules");
-        if list.items.is_empty() {
-            printer.info("No modules found");
-        } else {
-            for module in &list.items {
+        let entries: Vec<serde_json::Value> = list
+            .items
+            .iter()
+            .map(|module| {
                 let name = module.metadata.name.as_deref().unwrap_or("?");
                 let verified = module
                     .data
@@ -393,18 +490,48 @@ fn cmd_status(printer: &Printer) -> anyhow::Result<()> {
                     .pointer("/spec/ociArtifact")
                     .and_then(|v| v.as_str())
                     .unwrap_or("-");
-                let status_icon = if verified { "verified" } else { "unverified" };
-                printer.key_value(name, &format!("{artifact} ({status_icon})"));
+                serde_json::json!({
+                    "name": name,
+                    "artifact": artifact,
+                    "verified": verified,
+                })
+            })
+            .collect();
+
+        let doc = Doc::new().section_or_collapse("Modules", |sb| {
+            if list.items.is_empty() {
+                sb.status(Role::Info, "No modules found")
+            } else {
+                let mut sb = sb;
+                for module in &list.items {
+                    let name = module.metadata.name.as_deref().unwrap_or("?");
+                    let verified = module
+                        .data
+                        .pointer("/status/verified")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    let artifact = module
+                        .data
+                        .pointer("/spec/ociArtifact")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("-");
+                    let status_icon = if verified { "verified" } else { "unverified" };
+                    sb = sb.kv(name, format!("{artifact} ({status_icon})"));
+                }
+                sb
             }
-        }
+        });
+
+        v2_printer.emit(doc.with_data(serde_json::json!({
+            "modules": entries,
+            "pods": Vec::<serde_json::Value>::new(),
+        })));
 
         Ok(())
     })
 }
 
-fn cmd_version(printer: &Printer) -> anyhow::Result<()> {
-    printer.key_value("Client", env!("CARGO_PKG_VERSION"));
-
+pub fn cmd_version(v2_printer: &Printer) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let server_version = rt.block_on(async {
         let client = kube::Client::try_default().await.ok()?;
@@ -412,10 +539,20 @@ fn cmd_version(printer: &Printer) -> anyhow::Result<()> {
         Some(format!("{}.{}", version.major, version.minor))
     });
 
-    match server_version {
-        Some(v) => printer.key_value("Server (k8s)", &v),
-        None => printer.key_value("Server (k8s)", "not connected"),
-    }
+    let server_label = server_version
+        .clone()
+        .unwrap_or_else(|| "not connected".to_string());
+
+    v2_printer.emit(
+        Doc::new()
+            .kv("Client", env!("CARGO_PKG_VERSION"))
+            .kv("Server (k8s)", &server_label)
+            .with_data(serde_json::json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "kubectl": server_label,
+                "cfgd": env!("CARGO_PKG_VERSION"),
+            })),
+    );
 
     Ok(())
 }

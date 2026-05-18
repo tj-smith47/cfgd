@@ -1,70 +1,143 @@
 use super::*;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
-pub(super) fn cmd_upgrade(printer: &Printer, check_only: bool) -> anyhow::Result<()> {
+pub fn cmd_upgrade(
+    printer: &Printer,
+    v2_printer: &PrinterV2,
+    check_only: bool,
+) -> anyhow::Result<()> {
     use cfgd_core::upgrade;
 
     if check_only {
         let check = upgrade::check_latest(None, Some(printer))?;
 
         if check.update_available {
-            printer.info(&format!(
-                "Update available: {} -> {}",
-                check.current, check.latest
-            ));
-            printer.info("Run 'cfgd upgrade' to install");
+            v2_printer.emit(
+                Doc::new()
+                    .status(
+                        Role::Info,
+                        format!("Update available: {} -> {}", check.current, check.latest),
+                    )
+                    .hint("Run 'cfgd upgrade' to install")
+                    .with_data(serde_json::json!({
+                        "currentVersion": check.current.to_string(),
+                        "latestVersion": check.latest.to_string(),
+                        "updateAvailable": true,
+                    })),
+            );
             // "Action needed, not an error" — reserves Error (1) for
             // actual failures so scripts can distinguish `--check`
             // results from network/IO errors.
             cfgd_core::exit::ExitCode::UpdateAvailable.exit();
         } else {
-            printer.success(&format!("cfgd {} is up to date", check.current));
+            v2_printer.emit(
+                Doc::new()
+                    .status(Role::Ok, format!("cfgd {} is up to date", check.current))
+                    .with_data(serde_json::json!({
+                        "currentVersion": check.current.to_string(),
+                        "latestVersion": check.latest.to_string(),
+                        "updateAvailable": false,
+                    })),
+            );
         }
 
         return Ok(());
     }
 
-    printer.header("Upgrade");
+    v2_printer.heading("Upgrade");
 
     let check = upgrade::check_latest(None, Some(printer))?;
 
     if !check.update_available {
-        printer.success(&format!(
-            "cfgd {} is already the latest version",
-            check.current
-        ));
+        v2_printer.emit(
+            Doc::new()
+                .status(
+                    Role::Ok,
+                    format!("cfgd {} is already the latest version", check.current),
+                )
+                .with_data(serde_json::json!({
+                    "currentVersion": check.current.to_string(),
+                    "targetVersion": check.current.to_string(),
+                    "downloaded": false,
+                    "installed": false,
+                    "verified": false,
+                    "updateAvailable": false,
+                })),
+        );
         return Ok(());
     }
 
-    printer.info(&format!(
-        "Update available: {} -> {}",
-        check.current, check.latest
-    ));
+    let release = check.release.as_ref().ok_or_else(|| {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            &check.latest.to_string(),
+            "no_release",
+            "release info not available".to_string(),
+            serde_json::json!({
+                "currentVersion": check.current.to_string(),
+                "latestVersion": check.latest.to_string(),
+            }),
+        ));
+        anyhow::anyhow!("release info not available")
+    })?;
 
-    let release = check
-        .release
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("release info not available"))?;
+    let asset = upgrade::find_asset_for_platform(release).map_err(|e| {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            &check.latest.to_string(),
+            "no_release",
+            format!("no asset for platform: {e}"),
+            serde_json::json!({
+                "currentVersion": check.current.to_string(),
+                "latestVersion": check.latest.to_string(),
+            }),
+        ));
+        e
+    })?;
 
-    let asset = upgrade::find_asset_for_platform(release)?;
-    printer.key_value("Binary", &asset.name);
-    if asset.size > 0 {
-        printer.key_value("Size", &format_bytes(asset.size));
+    {
+        let sec = v2_printer.section(format!(
+            "Update available: {} -> {}",
+            check.current, check.latest
+        ));
+        sec.kv("Binary", &asset.name);
+        if asset.size > 0 {
+            sec.kv("Size", format_bytes(asset.size));
+        }
     }
-    printer.newline();
 
-    let installed_path = upgrade::download_and_install(release, asset, Some(printer))?;
-    printer.success(&format!("Installed to {}", installed_path.display()));
+    let installed_path =
+        upgrade::download_and_install(release, asset, Some(printer)).map_err(|e| {
+            v2_printer.emit(cfgd_core::output_v2::error_doc(
+                &check.latest.to_string(),
+                "install_failed",
+                format!("download/install failed: {e}"),
+                serde_json::json!({
+                    "currentVersion": check.current.to_string(),
+                    "latestVersion": check.latest.to_string(),
+                }),
+            ));
+            e
+        })?;
 
     // Invalidate version cache since we just upgraded
     upgrade::invalidate_cache();
 
     // Restart daemon if running
-    if upgrade::restart_daemon_if_running() {
-        printer.info("Daemon restarted with new version");
-    }
+    let daemon_restarted = upgrade::restart_daemon_if_running();
 
-    printer.newline();
-    printer.success(&format!("cfgd upgraded to {}", check.latest));
+    v2_printer.emit(
+        Doc::new()
+            .status(Role::Ok, format!("cfgd upgraded to {}", check.latest))
+            .kv("Installed to", installed_path.display().to_string())
+            .with_data(serde_json::json!({
+                "currentVersion": check.current.to_string(),
+                "targetVersion": check.latest.to_string(),
+                "downloaded": true,
+                "installed": true,
+                "verified": true,
+                "daemonRestarted": daemon_restarted,
+                "installedPath": installed_path.display().to_string(),
+            })),
+    );
 
     Ok(())
 }

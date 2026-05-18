@@ -977,3 +977,42 @@ pub fn secret_test_setup() -> (tempfile::TempDir, tempfile::TempDir) {
     .unwrap();
     (config_dir, state_dir)
 }
+
+/// Pre-stage a config_dir for `cfgd workflow generate`. One profile + one
+/// module so the generator finds targets and writes a non-placeholder YAML.
+pub fn workflow_test_setup() -> (tempfile::TempDir, tempfile::TempDir) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(config_dir.path().join("profiles")).unwrap();
+    std::fs::create_dir_all(config_dir.path().join("modules").join("neovim")).unwrap();
+    std::fs::write(
+        config_dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+    )
+    .unwrap();
+    std::fs::write(
+        config_dir.path().join("profiles/default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        config_dir.path().join("modules/neovim/module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: neovim\nspec:\n  version: 0.1.0\n",
+    )
+    .unwrap();
+    (config_dir, state_dir)
+}
+
+/// Like `workflow_test_setup` but with no profiles or modules — the
+/// `no_profiles` warning branch.
+pub fn workflow_empty_test_setup() -> (tempfile::TempDir, tempfile::TempDir) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(config_dir.path().join("profiles")).unwrap();
+    std::fs::write(
+        config_dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+    )
+    .unwrap();
+    (config_dir, state_dir)
+}

@@ -1,0 +1,7 @@
+Scanning dotfiles
+  No dotfiles found
+
+Scanning zsh config
+  (none)
+
+✓ Scan complete — use without --scan-only to generate config

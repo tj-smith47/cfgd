@@ -2258,9 +2258,9 @@ fn workflow_generate_creates_file() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = workflow::cmd_workflow_generate(&cli, &printer, false);
+    let result = workflow::cmd_workflow_generate(&cli, &v2_printer, false);
     assert!(
         result.is_ok(),
         "workflow generate should create the workflow file: {:?}",
@@ -2285,10 +2285,10 @@ fn workflow_generate_empty_repo() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (v2_printer, buf) = test_v2_printer_capture();
 
     // No profiles or modules — should warn and return Ok
-    let result = workflow::cmd_workflow_generate(&cli, &printer, false);
+    let result = workflow::cmd_workflow_generate(&cli, &v2_printer, false);
     assert!(
         result.is_ok(),
         "workflow generate should return Ok with no modules/profiles (warn+skip): {:?}",
@@ -2305,6 +2305,7 @@ fn workflow_generate_empty_repo() {
         "no workflow file should be created for empty repo"
     );
 
+    drop(v2_printer);
     let output = buf.lock().unwrap();
     assert!(
         output.contains("No profiles") || output.contains("nothing to generate"),
@@ -2351,10 +2352,10 @@ fn workflow_generate_force_overwrites() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     // First generate
-    workflow::cmd_workflow_generate(&cli, &printer, false).unwrap();
+    workflow::cmd_workflow_generate(&cli, &v2_printer, false).unwrap();
     let path = dir.path().join(".github/workflows/cfgd-release.yml");
     assert!(path.exists());
 
@@ -2362,7 +2363,7 @@ fn workflow_generate_force_overwrites() {
     std::fs::write(&path, "old content").unwrap();
 
     // Force overwrite
-    workflow::cmd_workflow_generate(&cli, &printer, true).unwrap();
+    workflow::cmd_workflow_generate(&cli, &v2_printer, true).unwrap();
     let contents = std::fs::read_to_string(&path).unwrap();
     assert!(contents.contains("cfgd Release"));
     assert!(!contents.contains("old content"));
@@ -5028,10 +5029,12 @@ fn execute_workflow_generate() {
         }),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = Printer::for_test();
+    let printer = test_printer();
+    let (v2_printer, v2_buf) = test_v2_printer_capture();
 
-    super::execute(&cli, &printer, &test_v2_printer()).unwrap();
-    let output = buf.lock().unwrap();
+    super::execute(&cli, &printer, &v2_printer).unwrap();
+    drop(v2_printer);
+    let output = v2_buf.lock().unwrap();
     assert!(
         output.contains("workflow")
             || output.contains("Workflow")
@@ -9362,18 +9365,20 @@ fn cmd_workflow_generate_no_overwrite_without_force() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     // First generate
-    super::workflow::cmd_workflow_generate(&cli, &printer, false).unwrap();
+    super::workflow::cmd_workflow_generate(&cli, &v2_printer, false).unwrap();
     let path = dir.path().join(".github/workflows/cfgd-release.yml");
     assert!(path.exists());
 
     // Write custom content
     std::fs::write(&path, "custom content").unwrap();
 
-    // Generate without force — should NOT overwrite
-    super::workflow::cmd_workflow_generate(&cli, &printer, false).unwrap();
+    // Generate without force — should NOT overwrite. The non-force path
+    // prompts via inquire; with no response queued the prompt returns Err
+    // which `unwrap_or(false)` maps to "do not overwrite".
+    super::workflow::cmd_workflow_generate(&cli, &v2_printer, false).unwrap();
 
     let contents = std::fs::read_to_string(&path).unwrap();
     assert_eq!(
@@ -11456,9 +11461,9 @@ fn cmd_workflow_generate_with_git_repo() {
         .ok();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (v2_printer, buf) = test_v2_printer_capture();
 
-    let result = super::workflow::cmd_workflow_generate(&cli, &printer, true);
+    let result = super::workflow::cmd_workflow_generate(&cli, &v2_printer, true);
     assert!(
         result.is_ok(),
         "workflow generate with git repo should succeed: {:?}",
@@ -11471,6 +11476,7 @@ fn cmd_workflow_generate_with_git_repo() {
         "workflow directory should be created"
     );
 
+    drop(v2_printer);
     let output = buf.lock().unwrap();
     assert!(
         output.contains("Generated") || output.contains("workflow"),

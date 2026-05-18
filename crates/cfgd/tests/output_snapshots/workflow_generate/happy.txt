@@ -1,0 +1,4 @@
+✓ Generated release workflow at <CONFIG_DIR>/.github/workflows/cfgd-release.yml
+
+Modules   1
+Profiles  1
