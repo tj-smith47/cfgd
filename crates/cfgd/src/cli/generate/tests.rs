@@ -589,10 +589,10 @@ mod cmd_generate_mockito {
             output.contains("I'll help generate your cfgd configuration."),
             "assistant text from mock should print: {output}"
         );
-        // Token tally pulls from response.usage and reports the sum.
+        // Token tally pulls from response.usage and reports the breakdown.
         assert!(
-            output.contains("Token usage:") && output.contains("60 total"),
-            "should tally 42+18=60 tokens: {output}"
+            output.contains("42 in, 18 out"),
+            "should tally 42 in / 18 out: {output}"
         );
         // The final hint always renders.
         assert!(
@@ -732,10 +732,10 @@ mod cmd_generate_mockito {
             output.contains("Got it — platform detected."),
             "turn-2 assistant text must print: {output}"
         );
-        // Token tally sums across BOTH turns: (10+5) + (20+8) = 43.
+        // Token tally sums across BOTH turns: (10+20)=30 in, (5+8)=13 out.
         assert!(
-            output.contains("Token usage:") && output.contains("43 total"),
-            "token tally must sum across both turns (got 43 total): {output}"
+            output.contains("30 in, 13 out"),
+            "token tally must sum across both turns (30 in / 13 out): {output}"
         );
     }
 

@@ -49,20 +49,44 @@ pub fn cmd_module_build(
 
     if targets.len() == 1 {
         let output_dir = cfgd_core::oci::build_module(dir_path, Some(targets[0]), base_image)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            .map_err(|e| {
+                v2_printer.emit(cfgd_core::output_v2::error_doc(
+                    dir,
+                    "build_failed",
+                    e.to_string(),
+                    serde_json::json!({ "dir": dir, "target": targets[0] }),
+                ));
+                anyhow::anyhow!("{e}")
+            })?;
         v2_printer.status_simple(Role::Ok, format!("Built to {}", output_dir.display()));
         output_artifacts.push(output_dir.display().to_string());
 
         if let Some(art) = artifact {
             let digest =
                 cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]), Some(printer))
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    .map_err(|e| {
+                        v2_printer.emit(cfgd_core::output_v2::error_doc(
+                            art,
+                            "push_failed",
+                            e.to_string(),
+                            serde_json::json!({ "artifact": art, "target": targets[0] }),
+                        ));
+                        anyhow::anyhow!("{e}")
+                    })?;
             v2_printer.status_simple(Role::Ok, format!("Pushed {art}"));
             v2_printer.kv("Digest", &digest);
             digest_value = Some(digest);
 
             if sign {
-                cfgd_core::oci::sign_artifact(art, key).map_err(|e| anyhow::anyhow!("{e}"))?;
+                cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
+                    v2_printer.emit(cfgd_core::output_v2::error_doc(
+                        art,
+                        "sign_failed",
+                        e.to_string(),
+                        serde_json::json!({ "artifact": art }),
+                    ));
+                    anyhow::anyhow!("{e}")
+                })?;
                 v2_printer.status_simple(Role::Ok, "Signed artifact");
             }
         }
@@ -78,6 +102,12 @@ pub fn cmd_module_build(
                 Err(e) => {
                     sp.finish_fail(format!("Build failed for {t}"))
                         .detail(e.to_string());
+                    v2_printer.emit(cfgd_core::output_v2::error_doc(
+                        dir,
+                        "build_failed",
+                        e.to_string(),
+                        serde_json::json!({ "dir": dir, "target": *t }),
+                    ));
                     return Err(anyhow::anyhow!("{e}"));
                 }
             };
@@ -91,13 +121,29 @@ pub fn cmd_module_build(
                 .map(|(dir, plat)| (dir.as_path(), plat.as_str()))
                 .collect();
             let digest = cfgd_core::oci::push_module_multiplatform(&build_refs, art, Some(printer))
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+                .map_err(|e| {
+                    v2_printer.emit(cfgd_core::output_v2::error_doc(
+                        art,
+                        "push_failed",
+                        e.to_string(),
+                        serde_json::json!({ "artifact": art, "targets": &targets }),
+                    ));
+                    anyhow::anyhow!("{e}")
+                })?;
             v2_printer.status_simple(Role::Ok, format!("Pushed multi-platform index {art}"));
             v2_printer.kv("Digest", &digest);
             digest_value = Some(digest);
 
             if sign {
-                cfgd_core::oci::sign_artifact(art, key).map_err(|e| anyhow::anyhow!("{e}"))?;
+                cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
+                    v2_printer.emit(cfgd_core::output_v2::error_doc(
+                        art,
+                        "sign_failed",
+                        e.to_string(),
+                        serde_json::json!({ "artifact": art }),
+                    ));
+                    anyhow::anyhow!("{e}")
+                })?;
                 v2_printer.status_simple(Role::Ok, "Signed artifact");
             }
         }

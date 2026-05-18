@@ -52,15 +52,31 @@ pub fn cmd_module_push(
     }
     v2_printer.kv_block(header);
 
-    let digest = cfgd_core::oci::push_module(dir_path, artifact, platform, Some(printer))
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let digest =
+        cfgd_core::oci::push_module(dir_path, artifact, platform, Some(printer)).map_err(|e| {
+            v2_printer.emit(cfgd_core::output_v2::error_doc(
+                artifact,
+                "push_failed",
+                e.to_string(),
+                serde_json::json!({ "artifact": artifact, "dir": dir, "platform": platform }),
+            ));
+            anyhow::anyhow!("{e}")
+        })?;
 
     v2_printer.status_simple(Role::Ok, format!("Pushed {artifact}"));
     v2_printer.kv("Digest", &digest);
 
     // Sign if requested
     if sign {
-        cfgd_core::oci::sign_artifact(artifact, key).map_err(|e| anyhow::anyhow!("{e}"))?;
+        cfgd_core::oci::sign_artifact(artifact, key).map_err(|e| {
+            v2_printer.emit(cfgd_core::output_v2::error_doc(
+                artifact,
+                "sign_failed",
+                e.to_string(),
+                serde_json::json!({ "artifact": artifact }),
+            ));
+            anyhow::anyhow!("{e}")
+        })?;
         v2_printer.status_simple(Role::Ok, "Signed artifact with cosign");
     }
 
@@ -71,13 +87,30 @@ pub fn cmd_module_push(
         let repo = detect_git_remote().unwrap_or_else(|| "unknown".to_string());
         let commit = detect_git_head().unwrap_or_else(|| "unknown".to_string());
 
-        let provenance =
-            cfgd_core::oci::generate_slsa_provenance(artifact, &digest, &repo, &commit)
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let provenance = cfgd_core::oci::generate_slsa_provenance(
+            artifact, &digest, &repo, &commit,
+        )
+        .map_err(|e| {
+            v2_printer.emit(cfgd_core::output_v2::error_doc(
+                artifact,
+                "attest_failed",
+                e.to_string(),
+                serde_json::json!({ "artifact": artifact, "digest": digest, "step": "provenance" }),
+            ));
+            anyhow::anyhow!("{e}")
+        })?;
         let tmp = tempfile::NamedTempFile::new()?;
         std::fs::write(tmp.path(), &provenance)?;
         cfgd_core::oci::attach_attestation(artifact, &tmp.path().display().to_string(), key)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            .map_err(|e| {
+                v2_printer.emit(cfgd_core::output_v2::error_doc(
+                    artifact,
+                    "attest_failed",
+                    e.to_string(),
+                    serde_json::json!({ "artifact": artifact, "step": "attach" }),
+                ));
+                anyhow::anyhow!("{e}")
+            })?;
         v2_printer.status_simple(Role::Ok, "Attached SLSA provenance attestation");
         attestation_attached = true;
     }
@@ -167,11 +200,17 @@ async fn apply_module_crd(
     use kube::Client;
     use kube::api::{Api, Patch, PatchParams};
 
-    let client = Client::try_default()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to connect to cluster: {e}"))?;
-
     let name = &module_doc.metadata.name;
+    let client = Client::try_default().await.map_err(|e| {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            name,
+            "crd_connect_failed",
+            format!("Failed to connect to cluster: {e}"),
+            serde_json::json!({ "artifact": artifact }),
+        ));
+        anyhow::anyhow!("Failed to connect to cluster: {e}")
+    })?;
+
     let module_json = build_module_crd_json(module_doc, artifact);
 
     let modules: Api<kube::core::DynamicObject> = Api::all_with(
@@ -192,7 +231,15 @@ async fn apply_module_crd(
             &Patch::Apply(module_json),
         )
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to apply Module CRD: {e}"))?;
+        .map_err(|e| {
+            v2_printer.emit(cfgd_core::output_v2::error_doc(
+                name,
+                "crd_apply_failed",
+                format!("Failed to apply Module CRD: {e}"),
+                serde_json::json!({ "artifact": artifact }),
+            ));
+            anyhow::anyhow!("Failed to apply Module CRD: {e}")
+        })?;
 
     v2_printer.status_simple(Role::Ok, format!("Applied Module CRD '{name}' to cluster"));
     Ok(())
@@ -214,21 +261,44 @@ pub fn cmd_module_pull(
 
     // Verify signature if requested (uses cosign, not the old tag-check)
     if require_signature {
-        cfgd_core::oci::verify_signature(artifact_ref, &verify_opts)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        cfgd_core::oci::verify_signature(artifact_ref, &verify_opts).map_err(|e| {
+            v2_printer.emit(cfgd_core::output_v2::error_doc(
+                artifact_ref,
+                "verify_failed",
+                e.to_string(),
+                serde_json::json!({ "artifact": artifact_ref, "step": "signature" }),
+            ));
+            anyhow::anyhow!("{e}")
+        })?;
         v2_printer.status_simple(Role::Ok, "Signature verified");
     }
 
     // Verify attestation if requested
     if verify_attestation {
-        cfgd_core::oci::verify_attestation(artifact_ref, "slsaprovenance", &verify_opts)
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        cfgd_core::oci::verify_attestation(artifact_ref, "slsaprovenance", &verify_opts).map_err(
+            |e| {
+                v2_printer.emit(cfgd_core::output_v2::error_doc(
+                    artifact_ref,
+                    "verify_failed",
+                    e.to_string(),
+                    serde_json::json!({ "artifact": artifact_ref, "step": "attestation" }),
+                ));
+                anyhow::anyhow!("{e}")
+            },
+        )?;
         v2_printer.status_simple(Role::Ok, "SLSA provenance attestation verified");
     }
 
     // Pull uses the existing require_signature=false since we've already verified above
-    cfgd_core::oci::pull_module(artifact_ref, output_path, false, Some(printer))
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    cfgd_core::oci::pull_module(artifact_ref, output_path, false, Some(printer)).map_err(|e| {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            artifact_ref,
+            "pull_failed",
+            e.to_string(),
+            serde_json::json!({ "artifact": artifact_ref, "output": output }),
+        ));
+        anyhow::anyhow!("{e}")
+    })?;
 
     v2_printer.status_simple(Role::Ok, format!("Pulled {artifact_ref} to {output}"));
 

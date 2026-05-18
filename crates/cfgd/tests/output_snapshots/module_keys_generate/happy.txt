@@ -5,3 +5,5 @@ Generate Cosign Key Pair
 → Sign with: cfgd module push --sign --key cosign.key ...
 
 → Verify with: cosign verify --key cosign.pub <artifact>
+
+✓ Generated cosign key pair

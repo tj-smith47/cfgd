@@ -3805,7 +3805,7 @@ fn build_module_crd_json_emits_canonical_crd_envelope() {
     // Drifting any of these literal strings silently breaks `module push --apply`
     // for every existing operator-deployed cluster, so pin them here.
     let doc = module_doc_with("my-mod", vec![], vec![], vec![]);
-    let v = super::apply_crd::build_module_crd_json(&doc, "ghcr.io/me/my-mod:v1");
+    let v = super::push_pull::build_module_crd_json(&doc, "ghcr.io/me/my-mod:v1");
 
     assert_eq!(v["apiVersion"], cfgd_core::API_VERSION);
     assert_eq!(v["kind"], "Module");
@@ -3819,7 +3819,7 @@ fn build_module_crd_json_uses_module_name_not_artifact_for_metadata() {
     // ref. The CRD names live in k8s; the artifact ref lives in OCI. Conflating
     // them would make every artifact-renamed module push create a NEW CRD.
     let doc = module_doc_with("module-canonical", vec![], vec![], vec![]);
-    let v = super::apply_crd::build_module_crd_json(&doc, "ghcr.io/whatever/totally-different:v9");
+    let v = super::push_pull::build_module_crd_json(&doc, "ghcr.io/whatever/totally-different:v9");
 
     assert_eq!(v["metadata"]["name"], "module-canonical");
     assert_ne!(v["metadata"]["name"], "totally-different");
@@ -3839,7 +3839,7 @@ fn build_module_crd_json_packages_emit_only_name_field() {
     pkg.platforms = vec!["darwin".into()];
 
     let doc = module_doc_with("m", vec![pkg], vec![], vec![]);
-    let v = super::apply_crd::build_module_crd_json(&doc, "art");
+    let v = super::push_pull::build_module_crd_json(&doc, "art");
 
     let pkgs = v["spec"]["packages"].as_array().expect("packages array");
     assert_eq!(pkgs.len(), 1);
@@ -3864,7 +3864,7 @@ fn build_module_crd_json_files_emit_only_source_and_target() {
         encryption: None,
     };
     let doc = module_doc_with("m", vec![], vec![f], vec![]);
-    let v = super::apply_crd::build_module_crd_json(&doc, "art");
+    let v = super::push_pull::build_module_crd_json(&doc, "art");
 
     let files = v["spec"]["files"].as_array().expect("files array");
     assert_eq!(files.len(), 1);
@@ -3884,7 +3884,7 @@ fn build_module_crd_json_depends_passes_through_verbatim() {
         vec![],
         vec!["base".into(), "shell".into(), "git".into()],
     );
-    let v = super::apply_crd::build_module_crd_json(&doc, "art");
+    let v = super::push_pull::build_module_crd_json(&doc, "art");
 
     let depends = v["spec"]["depends"].as_array().expect("depends array");
     let names: Vec<&str> = depends.iter().filter_map(|d| d.as_str()).collect();
@@ -3926,7 +3926,7 @@ fn detect_git_remote_returns_url_when_origin_configured() {
 
     let prior_cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(tmp.path()).unwrap();
-    let url = super::apply_crd::detect_git_remote_for_tests();
+    let url = super::push_pull::detect_git_remote_for_tests();
     std::env::set_current_dir(prior_cwd).unwrap();
 
     assert_eq!(
@@ -3960,7 +3960,7 @@ fn detect_git_head_returns_commit_sha_for_repo_with_commit() {
     }
     let prior_cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(tmp.path()).unwrap();
-    let head = super::apply_crd::detect_git_head_for_tests();
+    let head = super::push_pull::detect_git_head_for_tests();
     std::env::set_current_dir(prior_cwd).unwrap();
 
     let sha = head.expect("rev-parse should succeed in fresh repo");
@@ -3978,7 +3978,7 @@ fn detect_git_remote_returns_none_outside_a_git_repo() {
     let tmp = tempfile::tempdir().unwrap();
     let prior_cwd = std::env::current_dir().unwrap();
     std::env::set_current_dir(tmp.path()).unwrap();
-    let url = super::apply_crd::detect_git_remote_for_tests();
+    let url = super::push_pull::detect_git_remote_for_tests();
     std::env::set_current_dir(prior_cwd).unwrap();
     assert!(url.is_none(), "non-repo dir should return None");
 }
@@ -3990,7 +3990,7 @@ fn build_module_crd_json_empty_collections_emit_as_empty_arrays_not_null() {
     // means "set to empty"). The patch must always emit `[]` so that
     // an apply removes any stale entries from a previous module version.
     let doc = module_doc_with("m", vec![], vec![], vec![]);
-    let v = super::apply_crd::build_module_crd_json(&doc, "art");
+    let v = super::push_pull::build_module_crd_json(&doc, "art");
 
     assert!(v["spec"]["packages"].is_array());
     assert!(v["spec"]["files"].is_array());

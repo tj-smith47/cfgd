@@ -68,11 +68,15 @@ pub fn cmd_module_keys_generate(
         public_key = Some(pub_path);
     }
 
-    v2_printer.emit(Doc::new().with_data(serde_json::json!({
-        "dir": dir,
-        "privateKey": private_key,
-        "publicKey": public_key,
-    })));
+    v2_printer.emit(
+        Doc::new()
+            .status(Role::Ok, "Generated cosign key pair")
+            .with_data(serde_json::json!({
+                "dir": dir,
+                "privateKey": private_key,
+                "publicKey": public_key,
+            })),
+    );
 
     Ok(())
 }
@@ -233,6 +237,15 @@ pub fn cmd_module_keys_rotate(
             Err(e) => {
                 sp.finish_fail(format!("Failed to re-sign {artifact}"))
                     .detail(e.to_string());
+                v2_printer.emit(cfgd_core::output_v2::error_doc(
+                    "keys",
+                    "resign_failed",
+                    e.to_string(),
+                    serde_json::json!({
+                        "artifact": artifact,
+                        "newKeyPath": new_key_path.display().to_string(),
+                    }),
+                ));
                 return Err(anyhow::anyhow!("{e}"));
             }
         }

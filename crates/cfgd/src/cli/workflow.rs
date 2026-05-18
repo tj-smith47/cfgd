@@ -21,10 +21,10 @@ pub fn cmd_workflow_generate(cli: &Cli, v2_printer: &PrinterV2, force: bool) -> 
                     "No profiles or modules found — nothing to generate",
                 )
                 .with_data(serde_json::json!({
-                    "error": "no_profiles",
                     "path": workflow_path.display().to_string(),
                     "profiles": Vec::<String>::new(),
                     "modules": Vec::<String>::new(),
+                    "skipped": true,
                 })),
         );
         return Ok(());

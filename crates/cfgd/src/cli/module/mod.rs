@@ -140,13 +140,13 @@ pub(super) fn apply_module_sets(
 }
 // --- Submodule declarations ---
 
-mod apply_crd;
 mod build;
 mod crud;
 mod export;
 mod io;
 mod keys;
 pub mod list_show;
+mod push_pull;
 mod registry;
 mod signature;
 
@@ -155,12 +155,12 @@ mod tests;
 
 // --- Re-export pub(super) handlers so cli::mod can dispatch to them ---
 
-pub use apply_crd::{PushOptions, cmd_module_pull, cmd_module_push};
 pub use build::cmd_module_build;
 pub use crud::{cmd_module_create, cmd_module_delete, cmd_module_edit, cmd_module_update_local};
 pub use export::cmd_module_export;
 pub use keys::{cmd_module_keys_generate, cmd_module_keys_list, cmd_module_keys_rotate};
 pub(super) use list_show::{cmd_module_list, cmd_module_show};
+pub use push_pull::{PushOptions, cmd_module_pull, cmd_module_push};
 #[cfg(test)]
 pub(super) use registry::build_registry_module_url;
 pub use registry::{

@@ -295,14 +295,10 @@ pub fn cmd_generate(cli: &Cli, v2_printer: &PrinterV2, args: &GenerateArgs) -> a
     let (input_tokens, output_tokens) = conversation.total_tokens();
     v2_printer.emit(
         Doc::new()
-            .status(
-                Role::Info,
-                format!(
-                    "Token usage: {} input, {} output, {} total",
-                    input_tokens,
-                    output_tokens,
-                    input_tokens + output_tokens
-                ),
+            .status(Role::Ok, format!("Generated {} file(s)", generated_count))
+            .kv(
+                "Tokens",
+                format!("{} in, {} out", input_tokens, output_tokens),
             )
             .hint("Run 'cfgd apply --dry-run' to preview what would be applied.")
             .with_data(serde_json::json!({

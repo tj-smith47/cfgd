@@ -199,7 +199,15 @@ pub fn cmd_debug(
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let client = kube::Client::try_default().await?;
+        let client = kube::Client::try_default().await.map_err(|e| {
+            v2_printer.emit(cfgd_core::output_v2::error_doc(
+                pod,
+                "kube_connect_failed",
+                format!("Failed to connect to cluster: {e}"),
+                serde_json::json!({ "namespace": namespace, "pod": pod }),
+            ));
+            anyhow::anyhow!("Failed to connect to cluster: {e}")
+        })?;
         let pods: kube::Api<k8s_openapi::api::core::v1::Pod> =
             kube::Api::namespaced(client, namespace);
 
@@ -448,7 +456,15 @@ pub fn cmd_inject(
 pub fn cmd_status(v2_printer: &Printer) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let client = kube::Client::try_default().await?;
+        let client = kube::Client::try_default().await.map_err(|e| {
+            v2_printer.emit(cfgd_core::output_v2::error_doc(
+                "cluster",
+                "kube_connect_failed",
+                format!("Failed to connect to cluster: {e}"),
+                serde_json::json!({}),
+            ));
+            anyhow::anyhow!("Failed to connect to cluster: {e}")
+        })?;
 
         // List Module CRDs
         let modules: kube::Api<kube::core::DynamicObject> = kube::Api::all_with(

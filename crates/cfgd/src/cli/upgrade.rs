@@ -9,7 +9,15 @@ pub fn cmd_upgrade(
     use cfgd_core::upgrade;
 
     if check_only {
-        let check = upgrade::check_latest(None, Some(printer))?;
+        let check = upgrade::check_latest(None, Some(printer)).map_err(|e| {
+            v2_printer.emit(cfgd_core::output_v2::error_doc(
+                env!("CARGO_PKG_VERSION"),
+                "check_failed",
+                format!("Failed to check latest version: {e}"),
+                serde_json::json!({ "currentVersion": env!("CARGO_PKG_VERSION") }),
+            ));
+            e
+        })?;
 
         if check.update_available {
             v2_printer.emit(
@@ -46,7 +54,15 @@ pub fn cmd_upgrade(
 
     v2_printer.heading("Upgrade");
 
-    let check = upgrade::check_latest(None, Some(printer))?;
+    let check = upgrade::check_latest(None, Some(printer)).map_err(|e| {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            env!("CARGO_PKG_VERSION"),
+            "check_failed",
+            format!("Failed to check latest version: {e}"),
+            serde_json::json!({ "currentVersion": env!("CARGO_PKG_VERSION") }),
+        ));
+        e
+    })?;
 
     if !check.update_available {
         v2_printer.emit(

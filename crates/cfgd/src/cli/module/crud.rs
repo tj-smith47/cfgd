@@ -114,6 +114,15 @@ pub fn cmd_module_create(
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
             if !seen.insert(base.clone()) {
+                v2_printer.emit(cfgd_core::output_v2::error_doc(
+                    name,
+                    "duplicate_basename",
+                    format!(
+                        "Duplicate file basename '{}' — multiple files would overwrite each other in modules/{}/files/",
+                        base, name
+                    ),
+                    serde_json::json!({ "basename": base, "name": name }),
+                ));
                 anyhow::bail!(
                     "Duplicate file basename '{}' — multiple files would overwrite each other in modules/{}/files/",
                     base,
@@ -278,7 +287,7 @@ pub fn cmd_module_create(
 
         let total = plan.total_actions();
         if total == 0 {
-            v2_printer.status_simple(Role::Ok, "Nothing to do");
+            v2_printer.status_simple(Role::Info, "Nothing to do");
         } else {
             if !args.yes {
                 super::display_plan_table_v2(&plan, v2_printer, None);

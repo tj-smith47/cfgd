@@ -112,7 +112,7 @@ fn write_registry_config(config_dir: &Path, reg_url: &str) {
 
 #[test]
 #[serial]
-fn search_bridge_one_blank_line() {
+fn module_search_bridge_one_blank_line() {
     // §17.2 bridge invariant: the per-registry spinner stream and the
     // buffered table Doc must have exactly one blank line between them.
     let (config_dir, _state_dir) = search_test_setup();

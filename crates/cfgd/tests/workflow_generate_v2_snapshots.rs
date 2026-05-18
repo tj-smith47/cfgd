@@ -5,7 +5,7 @@
 //!     with one profile + one module; Doc carries `path`, `profiles`,
 //!     `modules`.
 //!   - `workflow_generate/no_profiles_warning.txt` — empty repo (no
-//!     profiles or modules) → Role::Warn Doc with `error: "no_profiles"`.
+//!     profiles or modules) → Role::Warn Doc with `skipped: true`.
 //!   - `workflow_generate/skipped.txt` — workflow exists, --force not set,
 //!     prompt declines → Role::Info Doc with `skipped: true`. The
 //!     `cli_for` helper uses Quiet+NoColor; `prompt_confirm` on a
@@ -112,7 +112,9 @@ fn workflow_generate_no_profiles_warning_human() {
     );
 
     let json = cap.json().expect("warn Doc carries with_data");
-    assert_eq!(json["error"], "no_profiles");
+    assert_eq!(json["skipped"], true);
+    assert!(json["profiles"].as_array().unwrap().is_empty());
+    assert!(json["modules"].as_array().unwrap().is_empty());
 }
 
 #[test]

@@ -77,8 +77,23 @@ pub fn cmd_secret_decrypt(cli: &Cli, v2_printer: &PrinterV2, file: &Path) -> any
     let plaintext = secrecy::ExposeSecret::expose_secret(&decrypted);
 
     // Plaintext must land on stdout so `cfgd secret decrypt foo.yaml > out.txt`
-    // and `| pbcopy` work. `data_line` writes raw stdout without role decoration;
-    // the status Doc routes to stderr (human) or the structured channel.
+    // and `| pbcopy` work in human mode. Under structured output (`-o json`),
+    // skip the raw stdout sink so plaintext doesn't contaminate both the
+    // JSON channel and raw stdout — the structured caller receives plaintext
+    // inside the Doc payload.
+    if v2_printer.is_structured() {
+        v2_printer.emit(
+            Doc::new()
+                .status(Role::Ok, format!("Decrypted {}", file.display()))
+                .with_data(serde_json::json!({
+                    "path": file.display().to_string(),
+                    "backend": backend_name,
+                    "plaintext": plaintext,
+                })),
+        );
+        return Ok(());
+    }
+
     v2_printer.data_line(plaintext);
 
     v2_printer.emit(

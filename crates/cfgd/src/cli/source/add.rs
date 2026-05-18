@@ -172,6 +172,8 @@ pub fn cmd_source_add(
                 Ok(result) => {
                     let lines = format_conflict_preview_lines(&result.conflicts);
                     if lines.is_empty() {
+                        // Role::Ok marks the conflict-check step as having passed cleanly
+                        // (consistent with other clean-state preview steps).
                         v2_printer.status_simple(Role::Ok, "No conflicts with current config");
                     } else {
                         let conflicts_sec = v2_printer.section("Conflicts with Current Config");

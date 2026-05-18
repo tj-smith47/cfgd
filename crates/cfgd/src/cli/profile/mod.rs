@@ -5,14 +5,14 @@ use super::*;
 // --- Submodule declarations ---
 
 mod backups;
-pub mod create;
-pub mod delete;
-pub mod edit;
+mod create;
+mod delete;
+mod edit;
 pub mod list;
 mod parsers;
 pub mod show;
-pub mod switch;
-pub mod update;
+mod switch;
+mod update;
 
 #[cfg(test)]
 mod tests;
