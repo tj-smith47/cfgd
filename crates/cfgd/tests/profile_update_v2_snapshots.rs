@@ -22,8 +22,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::profile::cmd_profile_update;
-use cfgd_core::output::Printer as PrinterV1;
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output_v2::{Printer, PromptAnswer};
 use serial_test::serial;
 
 use common::{
@@ -66,12 +65,11 @@ fn assert_snapshot(base: &Path, name: &str, actual: &str) {
 fn profile_update_happy_human() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
     let mut args = profile_update_args();
     args.env = vec!["EDITOR=nvim".to_string()];
 
-    cmd_profile_update(&cli, &old_printer, &v2_printer, "default", &args).unwrap();
+    cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
     drop(v2_printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
@@ -86,12 +84,11 @@ fn profile_update_happy_human() {
 fn profile_update_happy_json() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
     let mut args = profile_update_args();
     args.env = vec!["EDITOR=nvim".to_string()];
 
-    cmd_profile_update(&cli, &old_printer, &v2_printer, "default", &args).unwrap();
+    cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
     drop(v2_printer);
 
     let json = cap.json().expect("doc captured json");
@@ -104,11 +101,10 @@ fn profile_update_happy_json() {
 fn profile_update_no_changes_human() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
     let args = profile_update_args();
 
-    cmd_profile_update(&cli, &old_printer, &v2_printer, "default", &args).unwrap();
+    cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
     drop(v2_printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
@@ -123,11 +119,10 @@ fn profile_update_no_changes_human() {
 fn profile_update_no_changes_json() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
     let args = profile_update_args();
 
-    cmd_profile_update(&cli, &old_printer, &v2_printer, "default", &args).unwrap();
+    cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
     drop(v2_printer);
 
     let json = cap.json().expect("doc captured json");
@@ -139,13 +134,12 @@ fn profile_update_no_changes_json() {
 fn profile_update_add_remove_mixed_human() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
     let mut args = profile_update_args();
     args.modules = vec!["nvim".to_string(), "-missing".to_string()];
     args.env = vec!["-EDITOR".to_string()];
 
-    cmd_profile_update(&cli, &old_printer, &v2_printer, "default", &args).unwrap();
+    cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
     drop(v2_printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
@@ -159,9 +153,10 @@ fn profile_update_add_remove_mixed_human() {
 #[test]
 #[serial]
 fn profile_update_add_module_remote_hybrid_human() {
-    // T1→T3 hybrid: `cmd_profile_update --module <file://...>` saves the
-    // current Doc, then delegates to `module::cmd_module_add_remote(cli,
-    // printer, ...)` — passing the v1 `&Printer`. T3 closes both ends.
+    // T1→T3 closed: `cmd_profile_update --module <file://...>` delegates to
+    // `module::cmd_module_add_remote(cli, v2_printer, ...)` — both ends on v2.
+    // The v2 prompt queue drives the "Add this remote module?" / signature
+    // confirmations through the unified Printer surface.
     let (config_dir, state_dir) = profile_test_config_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
     let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
@@ -171,20 +166,12 @@ fn profile_update_add_module_remote_hybrid_human() {
     let module_url = format!("file://{}@v1.0.0", bare.display());
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    // The v1 printer carries the prompt queue for `module::cmd_module_add_remote`'s
-    // "Add this remote module?" / signature-policy prompts; `yes=false` is
-    // hard-coded in the hybrid call site, so the queued Confirm(true) drives
-    // past them. T3 will switch this to v2 prompts when registry migrates.
-    let (old_printer, _v1_buf) = PrinterV1::for_test_with_prompt_responses(vec![
-        cfgd_core::output::PromptAnswer::Confirm(true),
-        cfgd_core::output::PromptAnswer::Confirm(true),
-        cfgd_core::output::PromptAnswer::Confirm(true),
-    ]);
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (v2_printer, cap) =
+        Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
     let mut args = profile_update_args();
     args.modules = vec![module_url.clone()];
 
-    cmd_profile_update(&cli, &old_printer, &v2_printer, "default", &args).unwrap();
+    cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
     drop(v2_printer);
 
     let mut stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
@@ -194,9 +181,36 @@ fn profile_update_add_module_remote_hybrid_human() {
         &bare_root.path().to_string_lossy().to_string(),
         "<BARE_ROOT>",
     );
+    // Mask the 40-char hex commit SHA — git2 generates a new one each test run.
+    stripped = mask_commit_sha(&stripped);
     assert_snapshot(
         Path::new(SNAPSHOT_ROOT),
         "profile_update/add_module_remote_hybrid.txt",
         &stripped,
     );
+}
+
+/// Replace any 40-char run of lowercase hex (a git commit SHA) with the literal
+/// placeholder `<COMMIT_SHA>` so the snapshot is stable across runs. Walks
+/// chars (not bytes) so multi-byte UTF-8 glyphs (✓, →) survive intact.
+fn mask_commit_sha(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if i + 40 <= chars.len()
+            && chars[i..i + 40]
+                .iter()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+            && (i == 0 || !chars[i - 1].is_ascii_alphanumeric())
+            && (i + 40 == chars.len() || !chars[i + 40].is_ascii_alphanumeric())
+        {
+            out.push_str("<COMMIT_SHA>");
+            i += 40;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
 }

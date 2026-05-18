@@ -1,0 +1,5 @@
+Module Registries
+
+No module registries configured
+
+→ Add one: cfgd module registry add <git-url>

@@ -1,3 +1,21 @@
 Update Profile: default
 
+Add Remote Module
+
+✓ Fetched file://<BARE>@v1.0.0
+
+Commit     <COMMIT_SHA>
+Integrity  sha256:9ddde7d140067f9a93cc4d4f012b292d023731854e4f8a957bad25e565eb579b
+
+Module: mymod
+  (none)
+
+Tag 'v1.0.0' is unsigned
+
+✓ Added module 'mymod' to profile 'default'
+
+✓ Locked remote module 'mymod' in modules.lock
+
+→ Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'
+
 ✓ Updated profile 'default' (1 change(s))

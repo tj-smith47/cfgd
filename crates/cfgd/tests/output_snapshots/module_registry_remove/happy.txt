@@ -1,0 +1,3 @@
+Remove Module Registry
+
+✓ Removed module registry 'team'

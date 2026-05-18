@@ -1,0 +1,5 @@
+Search Modules: anything
+
+No module registries configured
+
+→ Add a registry: cfgd module registry add <git-url>

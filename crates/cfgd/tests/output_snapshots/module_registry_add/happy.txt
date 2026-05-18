@@ -1,0 +1,5 @@
+Add Module Registry
+
+✓ Added module registry 'team' (https://github.com/team/modules.git)
+
+→ Search for modules: cfgd module search <query>

@@ -164,7 +164,7 @@ pub(super) use keys::{cmd_module_keys_generate, cmd_module_keys_rotate};
 pub(super) use list_show::{cmd_module_list, cmd_module_show};
 #[cfg(test)]
 pub(super) use registry::build_registry_module_url;
-pub(super) use registry::{
+pub use registry::{
     cmd_module_add_from_registry, cmd_module_add_remote, cmd_module_registry_add,
     cmd_module_registry_list, cmd_module_registry_remove, cmd_module_registry_rename,
     cmd_module_search, cmd_module_upgrade,

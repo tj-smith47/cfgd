@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::output_v2::{Printer as PrinterV2, Role};
 
 /// Cryptographically verify a git tag signature using `git tag -v`.
 /// Returns `Ok(true)` if verified, `Ok(false)` if verification fails (bad sig),
@@ -31,7 +32,7 @@ fn verify_tag_signature_cryptographic(repo_dir: &Path, tag_name: &str) -> anyhow
 /// and bails if policy is violated. Returns Ok(()) if allowed to proceed.
 pub(crate) fn enforce_signature_policy(
     cli: &Cli,
-    printer: &Printer,
+    v2_printer: &PrinterV2,
     tag: Option<&str>,
     module_name: &str,
     allow_unsigned: bool,
@@ -49,6 +50,15 @@ pub(crate) fn enforce_signature_policy(
 
     let Some(tag) = tag else {
         if require_signatures && !allow_unsigned {
+            v2_printer.emit(cfgd_core::output_v2::error_doc(
+                module_name,
+                "signature_required",
+                format!(
+                    "Module '{}' has no tag — your config has require-signatures enabled. Pass --allow-unsigned to override.",
+                    module_name
+                ),
+                serde_json::json!({}),
+            ));
             anyhow::bail!(
                 "Module '{}' has no tag — your config has require-signatures enabled. Pass --allow-unsigned to override.",
                 module_name
@@ -63,11 +73,18 @@ pub(crate) fn enforce_signature_policy(
     match &sig_status {
         Ok(modules::TagSignatureStatus::SignaturePresent) => {
             match verify_tag_signature_cryptographic(&repo_dir, tag) {
-                Ok(true) => printer.success(&format!("Tag '{}' signature verified", tag)),
+                Ok(true) => {
+                    v2_printer.status_simple(Role::Ok, format!("Tag '{}' signature verified", tag))
+                }
                 Ok(false) => {
-                    printer.error(&format!(
-                        "Tag '{}' has an INVALID signature — refusing to proceed",
-                        tag
+                    v2_printer.emit(cfgd_core::output_v2::error_doc(
+                        module_name,
+                        "signature_failed",
+                        format!(
+                            "Tag '{}' has an INVALID signature — refusing to proceed",
+                            tag
+                        ),
+                        serde_json::json!({ "tag": tag }),
                     ));
                     anyhow::bail!(
                         "Signature verification failed for tag '{}' — the signature is present but invalid",
@@ -75,10 +92,13 @@ pub(crate) fn enforce_signature_policy(
                     );
                 }
                 Err(e) => {
-                    printer.warning(&format!(
-                        "Tag '{}' has a signature but verification skipped: {}",
-                        tag, e
-                    ));
+                    v2_printer.status_simple(
+                        Role::Warn,
+                        format!(
+                            "Tag '{}' has a signature but verification skipped: {}",
+                            tag, e
+                        ),
+                    );
                 }
             }
         }
@@ -91,19 +111,24 @@ pub(crate) fn enforce_signature_policy(
                 _ => format!("Tag '{}' is unsigned", tag),
             };
             if require_signatures && !allow_unsigned {
-                printer.error(&label);
+                v2_printer.emit(cfgd_core::output_v2::error_doc(
+                    module_name,
+                    "signature_required",
+                    label.clone(),
+                    serde_json::json!({ "tag": tag }),
+                ));
                 anyhow::bail!(
                     "Module '{}' tag '{}' is unsigned — your config has require-signatures enabled. Pass --allow-unsigned to override.",
                     module_name,
                     tag
                 );
             }
-            printer.info(&label);
+            v2_printer.status_simple(Role::Info, label);
         }
         Ok(modules::TagSignatureStatus::TagNotFound) => {
-            printer.warning(&format!("Tag '{}' not found in repo", tag));
+            v2_printer.status_simple(Role::Warn, format!("Tag '{}' not found in repo", tag));
         }
-        Err(e) => printer.warning(&format!("Signature check: {}", e)),
+        Err(e) => v2_printer.status_simple(Role::Warn, format!("Signature check: {}", e)),
     }
 
     Ok(())

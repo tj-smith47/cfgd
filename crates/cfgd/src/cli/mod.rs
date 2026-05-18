@@ -1414,7 +1414,7 @@ pub fn execute(
             ProfileCommand::Create(args) => profile::cmd_profile_create(cli, v2_printer, args),
             ProfileCommand::Update(args) => {
                 let profile_name = resolve_profile_name(cli, args.name.as_deref())?;
-                profile::cmd_profile_update(cli, printer, v2_printer, &profile_name, args)
+                profile::cmd_profile_update(cli, v2_printer, &profile_name, args)
             }
             ProfileCommand::Edit { name } => profile::cmd_profile_edit(cli, v2_printer, name),
             ProfileCommand::Delete { name, yes } => {
@@ -1471,24 +1471,24 @@ pub fn execute(
                 allow_unsigned,
             } => module::cmd_module_upgrade(
                 cli,
-                printer,
+                v2_printer,
                 name,
                 ref_.as_deref(),
                 *yes,
                 *allow_unsigned,
             ),
-            ModuleCommand::Search { query } => module::cmd_module_search(cli, printer, query),
+            ModuleCommand::Search { query } => module::cmd_module_search(cli, v2_printer, query),
             ModuleCommand::Registry { command } => match command {
                 ModuleRegistryCommand::Add { url, name } => {
-                    module::cmd_module_registry_add(cli, printer, url, name.as_deref())
+                    module::cmd_module_registry_add(cli, v2_printer, url, name.as_deref())
                 }
                 ModuleRegistryCommand::Remove { name } => {
-                    module::cmd_module_registry_remove(cli, printer, name)
+                    module::cmd_module_registry_remove(cli, v2_printer, name)
                 }
                 ModuleRegistryCommand::Rename { name, new_name } => {
-                    module::cmd_module_registry_rename(cli, printer, name, new_name)
+                    module::cmd_module_registry_rename(cli, v2_printer, name, new_name)
                 }
-                ModuleRegistryCommand::List => module::cmd_module_registry_list(cli, printer),
+                ModuleRegistryCommand::List => module::cmd_module_registry_list(cli, v2_printer),
             },
             ModuleCommand::Export {
                 name,

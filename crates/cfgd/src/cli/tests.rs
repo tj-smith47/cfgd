@@ -1703,7 +1703,6 @@ fn profile_create_refuses_missing_parent() {
 fn profile_update_add_and_remove() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     let args = ProfileUpdateArgs {
@@ -1713,7 +1712,7 @@ fn profile_update_add_and_remove() {
         system: vec!["shell=/bin/zsh".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
 
     let profile_path = dir.path().join("profiles").join("default.yaml");
     let doc = config::load_profile(&profile_path).unwrap();
@@ -1860,7 +1859,6 @@ fn parse_secret_spec_invalid() {
 fn profile_update_inherits() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     // Add inherits
@@ -1868,7 +1866,7 @@ fn profile_update_inherits() {
         inherits: vec!["default".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, &v2_printer, "work", &args).unwrap();
+    profile::cmd_profile_update(&cli, &v2_printer, "work", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("work.yaml")).unwrap();
     assert!(doc.spec.inherits.contains(&"default".to_string()));
@@ -1878,7 +1876,7 @@ fn profile_update_inherits() {
         inherits: vec!["-default".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, &v2_printer, "work", &args).unwrap();
+    profile::cmd_profile_update(&cli, &v2_printer, "work", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("work.yaml")).unwrap();
     assert!(!doc.spec.inherits.contains(&"default".to_string()));
@@ -1888,7 +1886,6 @@ fn profile_update_inherits() {
 fn profile_update_secrets() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     // Add secret
@@ -1896,7 +1893,7 @@ fn profile_update_secrets() {
         secrets: vec!["secrets/key.enc:~/.config/app/key".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert_eq!(doc.spec.secrets.len(), 1);
@@ -1907,7 +1904,7 @@ fn profile_update_secrets() {
         secrets: vec!["-~/.config/app/key".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(doc.spec.secrets.is_empty());
@@ -1917,7 +1914,6 @@ fn profile_update_secrets() {
 fn profile_update_scripts() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     // Add pre-apply, post-apply, pre-reconcile, post-reconcile, on-change
@@ -1929,7 +1925,7 @@ fn profile_update_scripts() {
         on_change: vec!["scripts/on-change.sh".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let scripts = doc.spec.scripts.as_ref().unwrap();
@@ -1969,7 +1965,7 @@ fn profile_update_scripts() {
         on_change: vec!["-scripts/on-change.sh".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let scripts = doc.spec.scripts.as_ref().unwrap();
@@ -7580,9 +7576,10 @@ spec:
 fn module_registry_list_no_config() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (v2_printer, buf) = test_v2_printer_capture();
 
-    module::cmd_module_registry_list(&cli, &printer).unwrap();
+    module::cmd_module_registry_list(&cli, &v2_printer).unwrap();
+    drop(v2_printer);
 
     let output = buf.lock().unwrap();
     assert!(
@@ -7597,9 +7594,10 @@ fn module_registry_list_empty_registries() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (v2_printer, buf) = test_v2_printer_capture();
 
-    module::cmd_module_registry_list(&cli, &printer).unwrap();
+    module::cmd_module_registry_list(&cli, &v2_printer).unwrap();
+    drop(v2_printer);
 
     let output = buf.lock().unwrap();
     assert!(
@@ -7630,9 +7628,10 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (v2_printer, buf) = test_v2_printer_capture();
 
-    module::cmd_module_registry_list(&cli, &printer).unwrap();
+    module::cmd_module_registry_list(&cli, &v2_printer).unwrap();
+    drop(v2_printer);
 
     let output = buf.lock().unwrap();
     assert!(
@@ -7651,11 +7650,11 @@ spec:
 fn module_registry_add_no_config() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let result = module::cmd_module_registry_add(
         &cli,
-        &printer,
+        &v2_printer,
         "https://github.com/example/modules.git",
         None,
     );
@@ -7669,11 +7668,11 @@ fn module_registry_add_success() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     module::cmd_module_registry_add(
         &cli,
-        &printer,
+        &v2_printer,
         "https://github.com/cfgd-community/modules.git",
         Some("community"),
     )
@@ -7709,12 +7708,12 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     // Adding the same registry again should succeed (idempotent) but not duplicate
     let result = module::cmd_module_registry_add(
         &cli,
-        &printer,
+        &v2_printer,
         "https://github.com/cfgd-community/modules.git",
         Some("community"),
     );
@@ -7749,11 +7748,11 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     module::cmd_module_registry_add(
         &cli,
-        &printer,
+        &v2_printer,
         "git@github.com:my-org/private-modules.git",
         Some("private"),
     )
@@ -7771,9 +7770,9 @@ spec:
 fn module_registry_remove_no_config() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = module::cmd_module_registry_remove(&cli, &printer, "community");
+    let result = module::cmd_module_registry_remove(&cli, &v2_printer, "community");
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -7804,9 +7803,9 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    module::cmd_module_registry_remove(&cli, &printer, "community").unwrap();
+    module::cmd_module_registry_remove(&cli, &v2_printer, "community").unwrap();
 
     let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
     let registries = cfg.spec.modules.unwrap().registries;
@@ -7820,9 +7819,10 @@ fn module_registry_remove_not_found() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (v2_printer, buf) = test_v2_printer_capture();
 
-    module::cmd_module_registry_remove(&cli, &printer, "nonexistent").unwrap();
+    module::cmd_module_registry_remove(&cli, &v2_printer, "nonexistent").unwrap();
+    drop(v2_printer);
 
     let output = buf.lock().unwrap();
     assert!(
@@ -7869,9 +7869,10 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test();
+    let (v2_printer, buf) = test_v2_printer_capture();
 
-    module::cmd_module_registry_remove(&cli, &printer, "community").unwrap();
+    module::cmd_module_registry_remove(&cli, &v2_printer, "community").unwrap();
+    drop(v2_printer);
 
     let output = buf.lock().unwrap();
     assert!(
@@ -7909,9 +7910,9 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    module::cmd_module_registry_rename(&cli, &printer, "old-name", "new-name").unwrap();
+    module::cmd_module_registry_rename(&cli, &v2_printer, "old-name", "new-name").unwrap();
 
     let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
     let registries = cfg.spec.modules.unwrap().registries;
@@ -7955,9 +7956,9 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    module::cmd_module_registry_rename(&cli, &printer, "old-reg", "new-reg").unwrap();
+    module::cmd_module_registry_rename(&cli, &v2_printer, "old-reg", "new-reg").unwrap();
 
     // Profile should be updated
     let profile = config::load_profile(&profiles_dir.join("default.yaml")).unwrap();
@@ -7980,9 +7981,9 @@ fn module_registry_rename_not_found() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = module::cmd_module_registry_rename(&cli, &printer, "nonexistent", "new-name");
+    let result = module::cmd_module_registry_rename(&cli, &v2_printer, "nonexistent", "new-name");
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -8009,9 +8010,9 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = module::cmd_module_registry_rename(&cli, &printer, "alpha", "beta");
+    let result = module::cmd_module_registry_rename(&cli, &v2_printer, "alpha", "beta");
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("already exists"));
 }
@@ -8020,9 +8021,9 @@ spec:
 fn module_registry_rename_no_config() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = module::cmd_module_registry_rename(&cli, &printer, "old", "new");
+    let result = module::cmd_module_registry_rename(&cli, &v2_printer, "old", "new");
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -8153,13 +8154,12 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
 
-    module::cmd_module_registry_list(&cli, &printer).unwrap();
+    module::cmd_module_registry_list(&cli, &v2_printer).unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&output)
-        .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
+    let parsed = cap.json().expect("doc captured json");
     assert!(parsed.is_array(), "JSON should be an array of registries");
     assert_eq!(parsed[0]["name"], "community");
 }
@@ -10075,7 +10075,6 @@ fn profile_update_add_and_remove_files() {
     std::fs::write(&test_file, "test content").unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     // Add file to profile
@@ -10087,7 +10086,7 @@ fn profile_update_add_and_remove_files() {
         )],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let managed = &doc.spec.files.as_ref().unwrap().managed;
@@ -10107,7 +10106,7 @@ fn profile_update_add_and_remove_files() {
         files: vec![format!("-{}", target_path.display())],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let file_count = doc
@@ -10128,7 +10127,6 @@ fn profile_update_add_and_remove_files() {
 fn profile_update_env_add_and_remove() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     // Add env var
@@ -10136,7 +10134,7 @@ fn profile_update_env_add_and_remove() {
         env: vec!["CUSTOM_VAR=hello".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(doc.spec.env.iter().any(|e| e.name == "CUSTOM_VAR"));
@@ -10146,7 +10144,7 @@ fn profile_update_env_add_and_remove() {
         env: vec!["-CUSTOM_VAR".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(!doc.spec.env.iter().any(|e| e.name == "CUSTOM_VAR"));
@@ -10158,7 +10156,6 @@ fn profile_update_env_add_and_remove() {
 fn profile_update_alias_add_and_remove() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     // Add alias
@@ -10166,7 +10163,7 @@ fn profile_update_alias_add_and_remove() {
         aliases: vec!["ll=ls -la".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(doc.spec.aliases.iter().any(|a| a.name == "ll"));
@@ -10176,7 +10173,7 @@ fn profile_update_alias_add_and_remove() {
         aliases: vec!["-ll".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(!doc.spec.aliases.iter().any(|a| a.name == "ll"));
@@ -10188,7 +10185,6 @@ fn profile_update_alias_add_and_remove() {
 fn profile_update_modules_add_and_remove() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     // Add module
@@ -10196,7 +10192,7 @@ fn profile_update_modules_add_and_remove() {
         modules: vec!["neovim".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(doc.spec.modules.contains(&"neovim".to_string()));
@@ -10206,7 +10202,7 @@ fn profile_update_modules_add_and_remove() {
         modules: vec!["-neovim".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     assert!(!doc.spec.modules.contains(&"neovim".to_string()));
@@ -10218,7 +10214,6 @@ fn profile_update_modules_add_and_remove() {
 fn profile_update_packages_add_and_remove() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     // Add package
@@ -10226,7 +10221,7 @@ fn profile_update_packages_add_and_remove() {
         packages: vec!["brew:jq".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let brew = doc.spec.packages.as_ref().unwrap().brew.as_ref().unwrap();
@@ -10237,7 +10232,7 @@ fn profile_update_packages_add_and_remove() {
         packages: vec!["-brew:jq".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let brew = doc.spec.packages.as_ref().unwrap().brew.as_ref().unwrap();
@@ -10313,14 +10308,13 @@ fn profile_create_with_scripts() {
 fn profile_update_on_drift_scripts() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     let args = ProfileUpdateArgs {
         on_drift: vec!["scripts/drift.sh".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let scripts = doc.spec.scripts.as_ref().unwrap();
@@ -10334,7 +10328,7 @@ fn profile_update_on_drift_scripts() {
         on_drift: vec!["-scripts/drift.sh".to_string()],
         ..empty_profile_update_args()
     };
-    profile::cmd_profile_update(&cli, &printer, &v2_printer, "default", &args).unwrap();
+    profile::cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
 
     let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
     let scripts = doc.spec.scripts.as_ref().unwrap();
@@ -11524,9 +11518,9 @@ fn open_state_store_creates_db_file() {
 fn cmd_module_search_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = module::cmd_module_search(&cli, &printer, "test");
+    let result = module::cmd_module_search(&cli, &v2_printer, "test");
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -11539,15 +11533,16 @@ fn cmd_module_search_no_config_fails() {
 fn cmd_module_search_no_registries() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (v2_printer, buf) = test_v2_printer_capture();
 
     // Config exists but has no module registries
-    let result = module::cmd_module_search(&cli, &printer, "test");
+    let result = module::cmd_module_search(&cli, &v2_printer, "test");
     assert!(
         result.is_ok(),
         "search with no registries should succeed: {:?}",
         result.err()
     );
+    drop(v2_printer);
 
     let output = buf.lock().unwrap();
     assert!(
@@ -11563,13 +11558,12 @@ fn cmd_module_search_no_registries_structured() {
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
 
-    module::cmd_module_search(&cli, &printer, "test").unwrap();
+    module::cmd_module_search(&cli, &v2_printer, "test").unwrap();
+    drop(v2_printer);
 
-    let output = buf.lock().unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&output)
-        .unwrap_or_else(|e| panic!("invalid JSON: {e}, got: {output}"));
+    let parsed = cap.json().expect("doc captured json");
     let arr = parsed.as_array().expect("search JSON should be an array");
     assert_eq!(arr.len(), 0, "no registries should yield zero results");
 }
@@ -11628,10 +11622,10 @@ fn cmd_module_keys_rotate_no_cosign_fails() {
 fn cmd_module_add_from_registry_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
     let result =
-        module::cmd_module_add_from_registry(&cli, &printer, "myregistry/mymod", false, false);
+        module::cmd_module_add_from_registry(&cli, &v2_printer, "myregistry/mymod", false, false);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -11644,9 +11638,9 @@ fn cmd_module_add_from_registry_no_config_fails() {
 fn cmd_module_add_from_registry_invalid_ref_fails() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
+    let v2_printer = test_v2_printer();
 
-    let result = module::cmd_module_add_from_registry(&cli, &printer, "no-slash", false, false);
+    let result = module::cmd_module_add_from_registry(&cli, &v2_printer, "no-slash", false, false);
     assert!(result.is_err());
     assert!(
         result
@@ -11661,7 +11655,7 @@ fn cmd_module_add_from_registry_not_configured_fails() {
     let h = CliTestHarness::builder().build();
     let result = module::cmd_module_add_from_registry(
         &h.cli(),
-        h.printer(),
+        h.v2_printer(),
         "myregistry/mymod@v1.0",
         false,
         false,

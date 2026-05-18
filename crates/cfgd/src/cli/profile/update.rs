@@ -3,7 +3,6 @@ use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
 pub fn cmd_profile_update(
     cli: &Cli,
-    printer: &Printer,
     v2_printer: &PrinterV2,
     name: &str,
     args: &ProfileUpdateArgs,
@@ -90,14 +89,14 @@ pub fn cmd_profile_update(
             // Save profile first with current changes, then delegate to remote add
             let yaml = serde_yaml::to_string(&doc)?;
             cfgd_core::atomic_write_str(&profile_path, &yaml)?;
-            module::cmd_module_add_remote(cli, printer, m, None, false, false)?;
+            module::cmd_module_add_remote(cli, v2_printer, m, None, false, false)?;
             // Reload profile (remote add may have modified it)
             doc = config::load_profile(&profile_path)?;
             changes += 1;
         } else if modules::is_registry_ref(m) {
             let yaml = serde_yaml::to_string(&doc)?;
             cfgd_core::atomic_write_str(&profile_path, &yaml)?;
-            module::cmd_module_add_from_registry(cli, printer, m, false, false)?;
+            module::cmd_module_add_from_registry(cli, v2_printer, m, false, false)?;
             doc = config::load_profile(&profile_path)?;
             changes += 1;
         } else {

@@ -1,0 +1,17 @@
+Add Remote Module
+
+✓ Fetched file://<BARE>@v1.0.0
+
+Commit     <COMMIT_SHA>
+Integrity  sha256:516f5495fa6ff3a4552d414b42565a523f3473abe558054719ae5bb9df53b0db
+
+Module: bridgemod
+  (none)
+
+Tag 'v1.0.0' is unsigned
+
+✓ Added module 'bridgemod' to profile 'default'
+
+✓ Locked remote module 'bridgemod' in modules.lock
+
+→ Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'

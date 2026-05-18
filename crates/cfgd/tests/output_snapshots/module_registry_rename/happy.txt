@@ -1,0 +1,1 @@
+✓ Renamed registry 'old' to 'fresh'
