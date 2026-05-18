@@ -1,0 +1,13 @@
+{
+  "errors": 0,
+  "skipped": 0,
+  "sources": [
+    {
+      "commit": "<SHA>",
+      "name": "accept-src",
+      "permChanges": 1,
+      "status": "updated"
+    }
+  ],
+  "updated": 1
+}

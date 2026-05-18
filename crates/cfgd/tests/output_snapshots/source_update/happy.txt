@@ -1,5 +1,6 @@
 Update Sources
 
-✓ Updated source 'upd-src'
+Source 'upd-src'
+  ✓ Updated source 'upd-src'
 
 ✓ Updated 1 source(s)

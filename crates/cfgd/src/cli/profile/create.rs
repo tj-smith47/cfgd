@@ -30,7 +30,7 @@ pub fn cmd_profile_create(
 
     let profile_path = pdir.join(format!("{}.yaml", name));
     if profile_path.exists() {
-        v2_printer.emit(super::build_profile_error_doc(
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
             name,
             "already_exists",
             format!(
@@ -51,7 +51,7 @@ pub fn cmd_profile_create(
     for parent in inherits {
         let parent_path = pdir.join(format!("{}.yaml", parent));
         if !parent_path.exists() {
-            v2_printer.emit(super::build_profile_error_doc(
+            v2_printer.emit(cfgd_core::output_v2::error_doc(
                 name,
                 "parent_not_found",
                 format!("Parent profile '{}' not found", parent),
@@ -87,7 +87,7 @@ pub fn cmd_profile_create(
         for parent in &inh {
             let parent_path = pdir.join(format!("{}.yaml", parent));
             if !parent_path.exists() {
-                v2_printer.emit(super::build_profile_error_doc(
+                v2_printer.emit(cfgd_core::output_v2::error_doc(
                     name,
                     "parent_not_found",
                     format!("Parent profile '{}' not found", parent),

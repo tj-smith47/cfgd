@@ -1,5 +1,6 @@
 Update Sources
 
-✓ Updated source 'bridge-upd'
+Source 'bridge-upd'
+  ✓ Updated source 'bridge-upd'
 
 ✓ Updated 1 source(s)

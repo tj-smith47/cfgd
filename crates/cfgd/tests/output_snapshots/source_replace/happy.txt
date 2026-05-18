@@ -1,0 +1,26 @@
+Replace Source: replace-old
+
+Remove Source: replace-old
+
+✓ Source 'replace-old' removed
+
+Add Config Source
+
+Source Manifest
+  Name      replace-old
+  Version   1.0.0
+  Profiles  default
+
+Policy
+  Scripts: blocked
+  Secret access: blocked
+
+✓ No conflicts with current config
+
+✓ Subscribed to source 'replace-old'
+
+Profile  default
+
+→ Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'
+
+✓ Source 'replace-old' replaced with file://<BARE_NEW>

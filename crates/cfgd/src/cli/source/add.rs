@@ -29,7 +29,7 @@ pub fn cmd_source_add(
     if config_path.exists() {
         let cfg = config::load_config(&config_path)?;
         if cfg.spec.sources.iter().any(|s| s.name == source_name) {
-            v2_printer.emit(build_source_error_doc(
+            v2_printer.emit(cfgd_core::output_v2::error_doc(
                 &source_name,
                 "already_exists",
                 format!(
@@ -61,12 +61,23 @@ pub fn cmd_source_add(
     }
     let spec = SourceManager::build_source_spec(&source_name, url, profile);
     // Hybrid lib-call: cfgd_core::sources keeps the v1 Printer until F4b.
-    mgr.load_source(&spec, printer)?;
+    // Surface lib-side load failure as a load_failed Doc so structured
+    // consumers see the same {"error": "load_failed", ...} shape as the
+    // "Ok-but-no-cache-entry" fallback below.
+    if let Err(e) = mgr.load_source(&spec, printer) {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            &source_name,
+            "load_failed",
+            format!("Failed to load source '{}': {}", source_name, e),
+            serde_json::json!({ "url": url }),
+        ));
+        anyhow::bail!("Failed to load source '{}': {}", source_name, e);
+    }
 
     let cached = match mgr.get(&source_name) {
         Some(c) => c,
         None => {
-            v2_printer.emit(build_source_error_doc(
+            v2_printer.emit(cfgd_core::output_v2::error_doc(
                 &source_name,
                 "load_failed",
                 format!("Failed to load source '{}'", source_name),

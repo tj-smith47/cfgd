@@ -5,7 +5,7 @@ pub fn cmd_profile_edit(cli: &Cli, v2_printer: &PrinterV2, name: &str) -> anyhow
     validate_resource_name(name, "Profile")?;
     let profile_path = profiles_dir(cli).join(format!("{}.yaml", name));
     if !profile_path.exists() {
-        v2_printer.emit(build_profile_error_doc(
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
             name,
             "not_found",
             format!("Profile '{}' not found", name),

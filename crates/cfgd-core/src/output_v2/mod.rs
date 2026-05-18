@@ -39,6 +39,31 @@ pub mod raw;
 pub mod doc;
 pub use doc::{Doc, SectionBuilder, StatusFields};
 
+/// Build a stable-shaped error Doc for `bail!`-on-emit-then-fail sites.
+/// Carries an `error` category key + `name` so structured consumers
+/// (`-o json`) see a consistent payload on failure. Any extra fields in
+/// `extras` (object literal expected) are merged into the payload alongside
+/// `error` + `name`.
+pub fn error_doc(
+    name: &str,
+    error_kind: &str,
+    message: impl Into<String>,
+    extras: serde_json::Value,
+) -> Doc {
+    let mut payload = serde_json::json!({
+        "error": error_kind,
+        "name": name,
+    });
+    if let serde_json::Value::Object(extra_map) = extras
+        && let serde_json::Value::Object(payload_map) = &mut payload
+    {
+        for (k, v) in extra_map {
+            payload_map.insert(k, v);
+        }
+    }
+    Doc::new().status(Role::Fail, message).with_data(payload)
+}
+
 pub mod render_doc;
 
 pub mod structured;

@@ -1,0 +1,3 @@
+✗ Invalid source manifest: config error: yaml parse error: invalid type: string "not a ConfigSource document", expected struct ConfigSourceDocument
+
+⚠ Saved with validation errors

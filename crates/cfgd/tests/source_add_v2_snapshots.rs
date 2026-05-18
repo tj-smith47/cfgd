@@ -5,6 +5,9 @@
 //!     local source repo (file:// URL gated by `CFGD_ALLOW_LOCAL_SOURCES=1`).
 //!   - `source_add/already_exists.txt` — error-path Doc when the source name
 //!     is already subscribed in `cfgd.yaml`.
+//!   - `source_add/clone_failure.txt` — error-path Doc when the upstream URL
+//!     points to a non-existent local bare repo; `SourceManager::load_source`
+//!     fails and `cmd_source_add` bails after emitting the load-failure Doc.
 //!   - `source_add/bridge.txt` — §17.2 streaming-to-buffered bridge assertion
 //!     (single blank line between the streaming clone surface and the buffered
 //!     "Subscribed" Doc).
@@ -139,6 +142,40 @@ fn source_add_already_exists_human() {
     let json = cap.json().expect("error Doc carries with_data");
     assert_eq!(json["error"], "already_exists");
     assert_eq!(json["name"], "team-config");
+}
+
+#[test]
+#[serial]
+fn source_add_clone_failure_human() {
+    // Point cmd_source_add at a non-existent bare repo. SourceManager::load_source
+    // fails (git can't open the URL), and cmd_source_add bails after emitting
+    // the `load_failed` Doc.
+    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let (config_dir, state_dir) = source_test_config_setup();
+    let bogus_root = tempfile::tempdir().unwrap();
+    let bogus = bogus_root.path().join("nonexistent-bare.git");
+    let url = format!("file://{}", bogus.display());
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let v1_printer = PrinterV1::new(Verbosity::Quiet);
+    let (v2_printer, cap) = Printer::for_test_doc();
+    let mut args = source_add_args(url);
+    args.name = Some("doomed-src".into());
+
+    let result = cmd_source_add(&cli, &v1_printer, &v2_printer, &args);
+    assert!(result.is_err(), "cmd_source_add must fail on bogus URL");
+    drop(v2_printer);
+
+    let stripped = normalize_bare(&strip_ansi(&cap.human()), &bogus, bogus_root.path());
+    assert_snapshot(
+        Path::new(SNAPSHOT_ROOT),
+        "source_add/clone_failure.txt",
+        &stripped,
+    );
+
+    let json = cap.json().expect("error Doc carries with_data");
+    assert_eq!(json["error"], "load_failed");
+    assert_eq!(json["name"], "doomed-src");
 }
 
 #[test]

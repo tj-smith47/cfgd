@@ -853,6 +853,53 @@ pub fn make_bare_source_repo(
     bare
 }
 
+/// Clone `bare` into a fresh workdir, replace its `cfgd-source.yaml` with
+/// `new_manifest_yaml`, commit + push back to the bare. Mirrors the
+/// `push_replacement_manifest` helper used by the permission-change unit
+/// tests in `cli/tests.rs`. Use to seed a "v2" manifest atop a bare so
+/// `cmd_source_update` exercises the permission-expansion prompt path.
+pub fn push_replacement_manifest_to_bare(
+    scratch: &std::path::Path,
+    bare: &std::path::Path,
+    new_manifest_yaml: &str,
+) {
+    let clone_dir = scratch.join(format!(
+        "replace-clone-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    let url = format!("file://{}", bare.display());
+    let repo = git2::Repository::clone(&url, &clone_dir).unwrap();
+    std::fs::write(clone_dir.join("cfgd-source.yaml"), new_manifest_yaml).unwrap();
+    let mut index = repo.index().unwrap();
+    index
+        .add_path(std::path::Path::new("cfgd-source.yaml"))
+        .unwrap();
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+    let sig = git2::Signature::now("t", "t@example.com").unwrap();
+    let parent = repo.head().unwrap().peel_to_commit().unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, "v2 manifest", &tree, &[&parent])
+        .unwrap();
+    drop(tree);
+    let branch = repo
+        .head()
+        .unwrap()
+        .shorthand()
+        .unwrap_or("master")
+        .to_string();
+    let mut remote = repo.find_remote("origin").unwrap();
+    remote
+        .push(
+            &[&format!("+refs/heads/{branch}:refs/heads/{branch}")],
+            None,
+        )
+        .unwrap();
+}
+
 /// Seed a state DB with a target apply followed by a non-file (package)
 /// action — exercises the "Non-file actions (manual review)" section.
 pub fn rollback_state_with_non_file_actions_setup() -> (tempfile::TempDir, i64) {

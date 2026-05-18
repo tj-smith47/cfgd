@@ -1,0 +1,7 @@
+Update Sources
+
+Source 'reject-src' update changes permissions
+  ⚠ Required items increased from 0 to 2
+  Skipped source 'reject-src' (permission changes rejected)
+
+⚠ Updated 0, skipped 1, errored 0

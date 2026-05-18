@@ -3,10 +3,14 @@
 //! Cases:
 //!   - `source_replace/not_found.txt` — error-path Doc when the old source
 //!     doesn't exist (`cmd_source_remove` fails first).
+//!   - `source_replace/happy.{txt,json}` — `cmd_source_replace` swaps the
+//!     subscribed URL from one local bare repo to another, walking the
+//!     `cmd_source_remove` + `cmd_source_add` composition end-to-end. Drives
+//!     `cmd_source_add` first to seed the initial subscription, then runs
+//!     `cmd_source_replace` against a second `make_bare_source_repo`.
 //!
-//! `cmd_source_replace` composes `cmd_source_remove` + `cmd_source_add`. The
-//! happy path requires a live source clone (network-dependent in production);
-//! the failure path is the most stable snapshot anchor.
+//! `cmd_source_replace` composes `cmd_source_remove` + `cmd_source_add`. Both
+//! `file://` fixtures rely on `CFGD_ALLOW_LOCAL_SOURCES=1`.
 //!
 //! Goldens live under `tests/output_snapshots/source_replace/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test source_replace_v2_snapshots
@@ -15,11 +19,12 @@ mod common;
 
 use std::path::Path;
 
-use cfgd::cli::source::cmd_source_replace;
+use cfgd::cli::source::{cmd_source_add, cmd_source_replace};
 use cfgd_core::output::{Printer as PrinterV1, Verbosity};
 use cfgd_core::output_v2::Printer;
+use serial_test::serial;
 
-use common::{cli_for, source_test_config_setup};
+use common::{cli_for, make_bare_source_repo, source_add_args, source_test_config_setup};
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -50,6 +55,76 @@ fn assert_snapshot(base: &Path, name: &str, actual: &str) {
     }
     let expected = std::fs::read_to_string(&path).unwrap();
     pretty_assertions::assert_eq!(actual, expected, "snapshot mismatch: {name}");
+}
+
+fn normalize_bare(raw: &str, bares: &[(&std::path::Path, &str)]) -> String {
+    let mut out = raw.to_string();
+    for (path, label) in bares {
+        out = out.replace(&path.to_string_lossy().to_string(), label);
+    }
+    out
+}
+
+#[test]
+#[serial]
+fn source_replace_happy_human() {
+    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let (config_dir, state_dir) = source_test_config_setup();
+    let bare_root = tempfile::tempdir().unwrap();
+    let bare_old = make_bare_source_repo(bare_root.path(), "replace-old", None);
+    let bare_new = make_bare_source_repo(bare_root.path(), "replace-new", None);
+    let url_old = format!("file://{}", bare_old.display());
+    let url_new = format!("file://{}", bare_new.display());
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let v1_printer = PrinterV1::new(Verbosity::Quiet);
+
+    // Seed the initial subscription via cmd_source_add (matches add fixture).
+    let (v2_add, _add_cap) = Printer::for_test_doc();
+    let mut args = source_add_args(url_old);
+    args.name = Some("replace-old".into());
+    cmd_source_add(&cli, &v1_printer, &v2_add, &args).expect("seed source");
+    drop(v2_add);
+
+    let (v2_printer, cap) = Printer::for_test_doc();
+    cmd_source_replace(&cli, &v1_printer, &v2_printer, "replace-old", &url_new).unwrap();
+    drop(v2_printer);
+
+    let stripped = normalize_bare(
+        &strip_ansi(&cap.human()),
+        &[
+            (&bare_old, "<BARE_OLD>"),
+            (&bare_new, "<BARE_NEW>"),
+            (bare_root.path(), "<BARE_ROOT>"),
+        ],
+    );
+    assert_snapshot(
+        Path::new(SNAPSHOT_ROOT),
+        "source_replace/happy.txt",
+        &stripped,
+    );
+
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(json["oldName"], "replace-old");
+    assert_eq!(json["newUrl"], url_new);
+
+    // Roll our own JSON snapshot — the captured payload carries the tempdir
+    // path, so route it through the same normalize_bare helper used for
+    // the human surface.
+    let json_pretty = serde_json::to_string_pretty(&json).unwrap();
+    let normalized_json = normalize_bare(
+        &json_pretty,
+        &[
+            (&bare_old, "<BARE_OLD>"),
+            (&bare_new, "<BARE_NEW>"),
+            (bare_root.path(), "<BARE_ROOT>"),
+        ],
+    );
+    assert_snapshot(
+        Path::new(SNAPSHOT_ROOT),
+        "source_replace/happy.json",
+        &normalized_json,
+    );
 }
 
 #[test]

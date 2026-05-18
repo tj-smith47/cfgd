@@ -2125,32 +2125,7 @@ fn source_create_interactive_mode_prompts_for_name_and_description() {
     );
 }
 
-/// RAII guard that sets EDITOR for the duration of the closure. Pair with
-/// `#[serial]` so concurrent tests don't observe the override.
-struct EditorGuard {
-    prior: Option<String>,
-}
-impl EditorGuard {
-    fn set(editor: &str) -> Self {
-        // SAFETY: serialized via #[serial].
-        let prior = std::env::var("EDITOR").ok();
-        unsafe {
-            std::env::set_var("EDITOR", editor);
-        }
-        Self { prior }
-    }
-}
-impl Drop for EditorGuard {
-    fn drop(&mut self) {
-        // SAFETY: serialized via #[serial].
-        unsafe {
-            match self.prior.take() {
-                Some(v) => std::env::set_var("EDITOR", v),
-                None => std::env::remove_var("EDITOR"),
-            }
-        }
-    }
-}
+use cfgd_core::test_helpers::EditorGuard;
 
 #[cfg(unix)]
 #[test]
@@ -9032,11 +9007,9 @@ fn cmd_source_remove_not_found() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
-    let result =
-        super::source::cmd_source_remove(&cli, &printer, &v2_printer, "nonexistent", true, false);
+    let result = super::source::cmd_source_remove(&cli, &v2_printer, "nonexistent", true, false);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -9046,11 +9019,9 @@ fn cmd_source_remove_keep_all_and_remove_all_conflict() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
-    let result =
-        super::source::cmd_source_remove(&cli, &printer, &v2_printer, "anything", true, true);
+    let result = super::source::cmd_source_remove(&cli, &v2_printer, "anything", true, true);
     assert!(result.is_err());
     assert!(
         result
@@ -11138,14 +11109,12 @@ fn cmd_compliance_diff_missing_snapshots_fails() {
 fn cmd_source_remove_existing_removes_from_config() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     let cfg = config::load_config(&config_dir.path().join("cfgd.yaml")).unwrap();
     assert_eq!(cfg.spec.sources.len(), 1);
 
-    let result =
-        super::source::cmd_source_remove(&cli, &printer, &v2_printer, "team-config", false, true);
+    let result = super::source::cmd_source_remove(&cli, &v2_printer, "team-config", false, true);
     assert!(
         result.is_ok(),
         "source remove should succeed: {:?}",
@@ -11164,7 +11133,6 @@ fn cmd_source_remove_with_keep_all_transfers_resources_to_local_management() {
     // re-upsert each row with source="local" before removing the source.
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, _buf) = Printer::for_test();
     let v2_printer = test_v2_printer();
 
     let store = cfgd_core::state::StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
@@ -11179,7 +11147,7 @@ fn cmd_source_remove_with_keep_all_transfers_resources_to_local_management() {
         .unwrap();
     drop(store);
 
-    super::source::cmd_source_remove(&cli, &printer, &v2_printer, "team-config", true, false)
+    super::source::cmd_source_remove(&cli, &v2_printer, "team-config", true, false)
         .expect("source remove --keep-all should succeed");
 
     // Source dropped from cfgd.yaml.
@@ -11209,11 +11177,9 @@ fn cmd_source_remove_with_keep_all_transfers_resources_to_local_management() {
 fn cmd_source_remove_nonexistent_fails() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
-    let result =
-        super::source::cmd_source_remove(&cli, &printer, &v2_printer, "nonexistent", false, true);
+    let result = super::source::cmd_source_remove(&cli, &v2_printer, "nonexistent", false, true);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -12459,125 +12425,6 @@ fn checkin_fails_when_profile_does_not_exist() {
     assert!(
         msg.contains("profile not found: nonexistent"),
         "expected 'profile not found' error, got: {msg}"
-    );
-}
-
-// -----------------------------------------------------------------------
-// display_policy_items tests
-// -----------------------------------------------------------------------
-
-#[test]
-fn display_policy_items_shows_packages() {
-    let (printer, buf) = Printer::for_test();
-    let items = config::PolicyItems {
-        packages: Some(config::PackagesSpec {
-            brew: Some(config::BrewSpec {
-                file: None,
-                taps: vec![],
-                formulae: vec!["git".into(), "curl".into()],
-                casks: vec!["firefox".into()],
-            }),
-            apt: Some(config::AptSpec {
-                file: None,
-                packages: vec!["build-essential".into()],
-            }),
-            cargo: Some(config::CargoSpec {
-                file: None,
-                packages: vec!["ripgrep".into()],
-            }),
-            pipx: vec!["black".into()],
-            dnf: vec!["vim".into()],
-            npm: Some(config::NpmSpec {
-                file: None,
-                global: vec!["typescript".into()],
-            }),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    super::display_policy_items(&printer, &items, "  ");
-    let output = buf.lock().unwrap().clone();
-    assert!(
-        output.contains("brew formula: git"),
-        "missing 'brew formula: git' in: {output}"
-    );
-    assert!(
-        output.contains("brew formula: curl"),
-        "missing 'brew formula: curl' in: {output}"
-    );
-    assert!(
-        output.contains("brew cask: firefox"),
-        "missing 'brew cask: firefox' in: {output}"
-    );
-    assert!(
-        output.contains("apt: build-essential"),
-        "missing 'apt: build-essential' in: {output}"
-    );
-    assert!(
-        output.contains("cargo: ripgrep"),
-        "missing 'cargo: ripgrep' in: {output}"
-    );
-    assert!(
-        output.contains("pipx: black"),
-        "missing 'pipx: black' in: {output}"
-    );
-    assert!(
-        output.contains("dnf: vim"),
-        "missing 'dnf: vim' in: {output}"
-    );
-    assert!(
-        output.contains("npm: typescript"),
-        "missing 'npm: typescript' in: {output}"
-    );
-}
-
-#[test]
-fn display_policy_items_shows_files_env_system() {
-    let (printer, buf) = Printer::for_test();
-    let mut system = std::collections::HashMap::new();
-    system.insert("sysctl".into(), serde_yaml::Value::Null);
-    let items = config::PolicyItems {
-        files: vec![config::ManagedFileSpec {
-            source: "bashrc".into(),
-            target: std::path::PathBuf::from("/home/user/.bashrc"),
-            strategy: None,
-            private: false,
-            origin: None,
-            encryption: None,
-            permissions: None,
-        }],
-        env: vec![config::EnvVar {
-            name: "EDITOR".into(),
-            value: "vim".into(),
-        }],
-        system,
-        ..Default::default()
-    };
-    super::display_policy_items(&printer, &items, "");
-    let output = buf.lock().unwrap().clone();
-    assert!(
-        output.contains("file: /home/user/.bashrc"),
-        "missing file line in: {output}"
-    );
-    assert!(
-        output.contains("env: EDITOR"),
-        "missing env line in: {output}"
-    );
-    assert!(
-        output.contains("system: sysctl"),
-        "missing system line in: {output}"
-    );
-}
-
-#[test]
-fn display_policy_items_empty_prints_nothing() {
-    let (printer, buf) = Printer::for_test();
-    let items = config::PolicyItems::default();
-    super::display_policy_items(&printer, &items, "  ");
-    let output = buf.lock().unwrap().clone();
-    assert!(
-        output.is_empty(),
-        "expected empty output for empty items, got: {output}"
     );
 }
 
@@ -15530,14 +15377,8 @@ fn cmd_source_remove_keep_all_reassigns_resources_to_local() {
         .upsert_managed_resource("env", "EDITOR", "team-config", Some("hash2"), None)
         .unwrap();
 
-    let result = super::source::cmd_source_remove(
-        &h.cli(),
-        h.printer(),
-        h.v2_printer(),
-        "team-config",
-        true,
-        false,
-    );
+    let result =
+        super::source::cmd_source_remove(&h.cli(), h.v2_printer(), "team-config", true, false);
     assert!(result.is_ok(), "remove with keep_all: {:?}", result.err());
 
     // Source should be gone from config
@@ -15571,14 +15412,8 @@ fn cmd_source_remove_remove_all_does_not_reassign() {
         .upsert_managed_resource("package", "brew/curl", "team-config", None, None)
         .unwrap();
 
-    let result = super::source::cmd_source_remove(
-        &h.cli(),
-        h.printer(),
-        h.v2_printer(),
-        "team-config",
-        false,
-        true,
-    );
+    let result =
+        super::source::cmd_source_remove(&h.cli(), h.v2_printer(), "team-config", false, true);
     assert!(result.is_ok(), "remove with remove_all: {:?}", result.err());
 
     // Source should be gone from config
@@ -15600,15 +15435,7 @@ fn cmd_source_remove_remove_all_does_not_reassign() {
 fn cmd_source_remove_prints_success_message() {
     let h = CliTestHarness::builder().rich_config().build();
 
-    super::source::cmd_source_remove(
-        &h.cli(),
-        h.printer(),
-        h.v2_printer(),
-        "team-config",
-        false,
-        true,
-    )
-    .unwrap();
+    super::source::cmd_source_remove(&h.cli(), h.v2_printer(), "team-config", false, true).unwrap();
 
     h.assert_output_contains("Source 'team-config' removed");
 }
@@ -17165,116 +16992,6 @@ fn count_policy_items_packages_none_does_not_panic() {
         ..Default::default()
     };
     assert_eq!(super::count_policy_items(&items), 1);
-}
-
-// ============================================================================
-// display_policy_items — output shape pinning
-// ============================================================================
-
-#[test]
-fn display_policy_items_renders_brew_formula_and_cask_lines() {
-    let (printer, buf) = cfgd_core::output::Printer::for_test();
-    let items = cfgd_core::config::PolicyItems {
-        packages: Some(cfgd_core::config::PackagesSpec {
-            brew: Some(cfgd_core::config::BrewSpec {
-                formulae: vec!["ripgrep".to_string()],
-                casks: vec!["firefox".to_string()],
-                ..Default::default()
-            }),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    super::display_policy_items(&printer, &items, "  ");
-    let out = buf.lock().unwrap().clone();
-    assert!(out.contains("brew formula: ripgrep"), "output: {out}");
-    assert!(out.contains("brew cask: firefox"), "output: {out}");
-}
-
-#[test]
-fn display_policy_items_renders_pipx_dnf_apt_cargo_lines() {
-    let (printer, buf) = cfgd_core::output::Printer::for_test();
-    let items = cfgd_core::config::PolicyItems {
-        packages: Some(cfgd_core::config::PackagesSpec {
-            apt: Some(cfgd_core::config::AptSpec {
-                packages: vec!["curl".to_string()],
-                ..Default::default()
-            }),
-            cargo: Some(cfgd_core::config::CargoSpec {
-                packages: vec!["bat".to_string()],
-                ..Default::default()
-            }),
-            pipx: vec!["black".to_string()],
-            dnf: vec!["wireshark".to_string()],
-            npm: Some(cfgd_core::config::NpmSpec {
-                global: vec!["typescript".to_string()],
-                ..Default::default()
-            }),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    super::display_policy_items(&printer, &items, "");
-    let out = buf.lock().unwrap().clone();
-    for needle in [
-        "apt: curl",
-        "cargo: bat",
-        "pipx: black",
-        "dnf: wireshark",
-        "npm: typescript",
-    ] {
-        assert!(out.contains(needle), "expected `{needle}` in: {out}");
-    }
-}
-
-#[test]
-fn display_policy_items_renders_file_env_and_system_lines() {
-    let (printer, buf) = cfgd_core::output::Printer::for_test();
-    let mut system = std::collections::HashMap::new();
-    system.insert(
-        "systemd".to_string(),
-        serde_yaml::Value::String("on".to_string()),
-    );
-    let items = cfgd_core::config::PolicyItems {
-        files: vec![cfgd_core::config::ManagedFileSpec {
-            source: "src/foo.conf".to_string(),
-            target: std::path::PathBuf::from("/etc/foo.conf"),
-            strategy: None,
-            private: false,
-            origin: None,
-            encryption: None,
-            permissions: None,
-        }],
-        env: vec![cfgd_core::config::EnvVar {
-            name: "PATH_EXTRA".to_string(),
-            value: "/opt/bin".to_string(),
-        }],
-        system,
-        ..Default::default()
-    };
-    super::display_policy_items(&printer, &items, "");
-    let out = buf.lock().unwrap().clone();
-    assert!(out.contains("file: /etc/foo.conf"), "output: {out}");
-    assert!(out.contains("env: PATH_EXTRA"), "output: {out}");
-    assert!(out.contains("system: systemd"), "output: {out}");
-}
-
-#[test]
-fn display_policy_items_honors_indent_prefix() {
-    let (printer, buf) = cfgd_core::output::Printer::for_test();
-    let items = cfgd_core::config::PolicyItems {
-        env: vec![cfgd_core::config::EnvVar {
-            name: "X".to_string(),
-            value: "1".to_string(),
-        }],
-        ..Default::default()
-    };
-    super::display_policy_items(&printer, &items, ">>>");
-    let out = buf.lock().unwrap().clone();
-    assert!(
-        out.contains(">>>env: X"),
-        "expected indent in output: {out}"
-    );
 }
 
 // ===========================================================================

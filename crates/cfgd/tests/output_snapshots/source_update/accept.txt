@@ -1,0 +1,7 @@
+Update Sources
+
+Source 'accept-src' update changes permissions
+  ⚠ Required items increased from 0 to 2
+  ✓ Updated source 'accept-src'
+
+✓ Updated 1 source(s)

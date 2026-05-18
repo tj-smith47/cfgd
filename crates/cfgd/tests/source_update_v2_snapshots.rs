@@ -8,12 +8,15 @@
 //!   - `source_update/happy.{txt,json}` — real `cmd_source_update` after a
 //!     successful `cmd_source_add` against a local bare repo; no permission
 //!     changes, takes the no-prompt success branch.
+//!   - `source_update/accept.{txt,json}` — Accept-confirm-then-success
+//!     pattern: a v2 manifest with expanded permissions is published to the
+//!     bare; the prompt receives `Confirm(true)` and `cmd_source_update`
+//!     emits the canonical Updated line nested under the per-source
+//!     section. The JSON snapshot normalises the non-deterministic
+//!     `commit` SHA to `<SHA>` so the golden stays stable across runs.
+//!   - `source_update/rejection.txt` — same fixture, prompt receives
+//!     `Confirm(false)`; emits the "permission changes rejected" skip line.
 //!   - `source_update/bridge.txt` — §17.2 streaming-to-buffered bridge.
-//!
-//! Permission-change accept/reject snapshots fold into `cli/tests.rs::
-//! cmd_source_update_detects_permission_change_*` where the two-stage bare
-//! repo fixture is already wired (and asserts on side-effects rather than
-//! the snapshot envelope).
 //!
 //! Goldens live under `tests/output_snapshots/source_update/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test source_update_v2_snapshots
@@ -24,12 +27,12 @@ use std::path::Path;
 
 use cfgd::cli::source::{cmd_source_add, cmd_source_update};
 use cfgd_core::output::{Printer as PrinterV1, Verbosity};
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output_v2::{Printer, PromptAnswer};
 use serial_test::serial;
 
 use common::{
-    cli_for, make_bare_source_repo, source_add_args, source_test_config_setup,
-    source_test_config_with_source_setup,
+    cli_for, make_bare_source_repo, push_replacement_manifest_to_bare, source_add_args,
+    source_test_config_setup, source_test_config_with_source_setup,
 };
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
@@ -169,6 +172,105 @@ fn source_update_happy_json() {
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["updated"], 1);
     assert_eq!(json["errors"], 0);
+}
+
+/// Stage a bare source, subscribe, then publish a v2 manifest that expands
+/// `policy.required.modules` from 0 to 2 items. Returns the configured
+/// fixture so per-test prompt-response wiring drives the perm-change arm.
+fn perm_change_fixture(
+    source_name: &str,
+) -> (
+    tempfile::TempDir,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    std::path::PathBuf,
+) {
+    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let (config_dir, state_dir) = source_test_config_setup();
+    let bare_root = tempfile::tempdir().unwrap();
+    let bare = make_bare_source_repo(bare_root.path(), source_name, None);
+    let url = format!("file://{}", bare.display());
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let v1_printer = PrinterV1::new(Verbosity::Quiet);
+    let (v2_add, _add_cap) = Printer::for_test_doc();
+    let mut args = source_add_args(url);
+    args.name = Some(source_name.into());
+    cmd_source_add(&cli, &v1_printer, &v2_add, &args).expect("seed source");
+    drop(v2_add);
+
+    // Publish a v2 manifest with expanded policy. required.modules grows
+    // from 0 → 2 — detect_permission_changes will flag this.
+    let v2 = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: {source_name}\n  version: \"1.0.0\"\nspec:\n  provides:\n    profiles:\n      - default\n  policy:\n    required:\n      modules:\n        - mod-a\n        - mod-b\n"
+    );
+    push_replacement_manifest_to_bare(bare_root.path(), &bare, &v2);
+
+    (config_dir, state_dir, bare_root, bare)
+}
+
+#[test]
+#[serial]
+fn source_update_accept_human() {
+    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let (config_dir, state_dir, bare_root, bare) = perm_change_fixture("accept-src");
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let v1_printer = PrinterV1::new(Verbosity::Quiet);
+    let (v2_printer, cap) =
+        Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
+    cmd_source_update(&cli, &v1_printer, &v2_printer, Some("accept-src")).unwrap();
+    drop(v2_printer);
+
+    let stripped = normalize_bare(&strip_ansi(&cap.human()), &bare, bare_root.path());
+    assert_snapshot(
+        Path::new(SNAPSHOT_ROOT),
+        "source_update/accept.txt",
+        &stripped,
+    );
+
+    let mut json = cap.json().expect("doc captured json");
+    assert_eq!(json["updated"], 1);
+    assert_eq!(json["skipped"], 0);
+    assert_eq!(json["errors"], 0);
+    // Normalise the non-deterministic per-source commit SHA so the golden
+    // is stable across fixture runs.
+    for src in json["sources"].as_array_mut().expect("sources array") {
+        if src["commit"].is_string() {
+            src["commit"] = serde_json::Value::String("<SHA>".into());
+        }
+    }
+    let json_pretty = serde_json::to_string_pretty(&json).unwrap();
+    assert_snapshot(
+        Path::new(SNAPSHOT_ROOT),
+        "source_update/accept.json",
+        &json_pretty,
+    );
+}
+
+#[test]
+#[serial]
+fn source_update_rejection_human() {
+    let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+    let (config_dir, state_dir, bare_root, bare) = perm_change_fixture("reject-src");
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let v1_printer = PrinterV1::new(Verbosity::Quiet);
+    let (v2_printer, cap) =
+        Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
+    cmd_source_update(&cli, &v1_printer, &v2_printer, Some("reject-src")).unwrap();
+    drop(v2_printer);
+
+    let stripped = normalize_bare(&strip_ansi(&cap.human()), &bare, bare_root.path());
+    assert_snapshot(
+        Path::new(SNAPSHOT_ROOT),
+        "source_update/rejection.txt",
+        &stripped,
+    );
+
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(json["updated"], 0);
+    assert_eq!(json["skipped"], 1);
 }
 
 #[test]

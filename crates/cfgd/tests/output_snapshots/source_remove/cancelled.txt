@@ -1,0 +1,8 @@
+Remove Source: team-config
+
+This source manages 1 resource(s)
+  Type     Resource 
+  ──────────────────
+  package  brew/curl
+
+Cancelled — source not removed

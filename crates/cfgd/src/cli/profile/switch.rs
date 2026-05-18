@@ -7,7 +7,7 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, v2_printer: &PrinterV2) -> anyh
     let config_dir = super::config_dir(cli);
     let config_path = config_dir.join("cfgd.yaml");
     if !config_path.exists() {
-        v2_printer.emit(super::build_profile_error_doc(
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
             name,
             "no_config",
             MSG_NO_CONFIG,
@@ -27,7 +27,7 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, v2_printer: &PrinterV2) -> anyh
         } else {
             format!("\nAvailable profiles: {}", available.join(", "))
         };
-        v2_printer.emit(super::build_profile_error_doc(
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
             name,
             "not_found",
             format!(

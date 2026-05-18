@@ -883,6 +883,40 @@ impl Drop for EnvVarGuard {
     }
 }
 
+/// RAII guard that sets `EDITOR` for the duration of the closure. Pair with
+/// `#[serial]` so concurrent tests don't observe the override. Use in tests
+/// that drive `open_in_editor` / `open_in_editor_v2` against a known editor
+/// binary (e.g. `/bin/true` for no-op, `/bin/sh -c '...'` for content
+/// rewrites). `unsafe` is sound under `#[serial]` since env mutation is
+/// process-global and the guard preserves the prior value across panics.
+pub struct EditorGuard {
+    prior: Option<String>,
+}
+
+impl EditorGuard {
+    /// Capture the prior value of `EDITOR`, then set it to `editor`.
+    pub fn set(editor: &str) -> Self {
+        // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
+        let prior = std::env::var("EDITOR").ok();
+        unsafe {
+            std::env::set_var("EDITOR", editor);
+        }
+        Self { prior }
+    }
+}
+
+impl Drop for EditorGuard {
+    fn drop(&mut self) {
+        // SAFETY: serial_test::serial gates execution; no concurrent reader/writer.
+        unsafe {
+            match self.prior.take() {
+                Some(v) => std::env::set_var("EDITOR", v),
+                None => std::env::remove_var("EDITOR"),
+            }
+        }
+    }
+}
+
 /// Function-call style env-var scope: capture prior, set/unset `var` to
 /// `value`, run `f`, then restore. `value = None` removes the var for the
 /// duration of `f`.

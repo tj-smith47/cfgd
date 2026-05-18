@@ -11,7 +11,7 @@ pub fn cmd_source_create(
     let config_dir = config_dir(cli);
     let source_path = config_dir.join("cfgd-source.yaml");
     if source_path.exists() {
-        v2_printer.emit(build_source_error_doc(
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
             "cfgd-source.yaml",
             "already_exists",
             format!(

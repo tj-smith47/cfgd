@@ -5,6 +5,10 @@
 //!     source without prompting and emits the success Doc.
 //!   - `source_remove/keep_all.txt` — `--keep-all` branch transfers managed
 //!     resources to local management.
+//!   - `source_remove/cancelled.txt` — interactive Cancel option: the source
+//!     manages at least one resource so `cmd_source_remove` opens the
+//!     three-option prompt; the `Cancel` answer aborts removal without
+//!     mutating config or state.
 //!   - `source_remove/not_found.txt` — error-path Doc for missing source.
 //!   - `source_remove/conflicting_flags.txt` — error-path Doc when both
 //!     `--keep-all` and `--remove-all` are passed.
@@ -17,8 +21,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::source::cmd_source_remove;
-use cfgd_core::output::{Printer as PrinterV1, Verbosity};
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output_v2::{Printer, PromptAnswer};
 
 use common::{cli_for, source_test_config_with_source_setup};
 
@@ -62,10 +65,9 @@ fn source_remove_happy_human() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let v1_printer = PrinterV1::new(Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
-    cmd_source_remove(&cli, &v1_printer, &v2_printer, "team-config", false, true).unwrap();
+    cmd_source_remove(&cli, &v2_printer, "team-config", false, true).unwrap();
     drop(v2_printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -85,10 +87,9 @@ fn source_remove_happy_json() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let v1_printer = PrinterV1::new(Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
-    cmd_source_remove(&cli, &v1_printer, &v2_printer, "team-config", false, true).unwrap();
+    cmd_source_remove(&cli, &v2_printer, "team-config", false, true).unwrap();
     drop(v2_printer);
 
     let json = cap.json().expect("doc captured json");
@@ -106,10 +107,9 @@ fn source_remove_keep_all_human() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let v1_printer = PrinterV1::new(Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
-    cmd_source_remove(&cli, &v1_printer, &v2_printer, "team-config", true, false).unwrap();
+    cmd_source_remove(&cli, &v2_printer, "team-config", true, false).unwrap();
     drop(v2_printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -121,6 +121,48 @@ fn source_remove_keep_all_human() {
 }
 
 #[test]
+fn source_remove_cancelled_human() {
+    // Seed the source AND a managed resource owned by it so the
+    // three-option prompt opens. PromptAnswer::Select("Cancel...") routes
+    // to the Cancel branch; the command emits "Cancelled — source not
+    // removed" and returns Ok(()) without mutating config or state.
+    let (config_dir, state_dir) = source_test_config_with_source_setup(
+        "team-config",
+        "https://github.com/team/config",
+        "main",
+        100,
+    );
+    let store = cfgd_core::state::StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+    store
+        .upsert_managed_resource("package", "brew/curl", "team-config", Some("hash1"), None)
+        .unwrap();
+
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (v2_printer, cap) =
+        Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Select(
+            "Cancel (abort remove)".into(),
+        )]);
+
+    cmd_source_remove(&cli, &v2_printer, "team-config", false, false).unwrap();
+    drop(v2_printer);
+
+    let stripped = strip_ansi(&cap.human());
+    assert_snapshot(
+        Path::new(SNAPSHOT_ROOT),
+        "source_remove/cancelled.txt",
+        &stripped,
+    );
+
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(json["name"], "team-config");
+    assert_eq!(json["cancelled"], true);
+
+    // Cancel must NOT mutate config (source still subscribed).
+    let cfg = cfgd_core::config::load_config(&config_dir.path().join("cfgd.yaml")).unwrap();
+    assert!(cfg.spec.sources.iter().any(|s| s.name == "team-config"));
+}
+
+#[test]
 fn source_remove_not_found_human() {
     let (config_dir, state_dir) = source_test_config_with_source_setup(
         "team-config",
@@ -129,10 +171,9 @@ fn source_remove_not_found_human() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let v1_printer = PrinterV1::new(Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
-    let result = cmd_source_remove(&cli, &v1_printer, &v2_printer, "missing", false, true);
+    let result = cmd_source_remove(&cli, &v2_printer, "missing", false, true);
     assert!(result.is_err());
     drop(v2_printer);
 
@@ -157,10 +198,9 @@ fn source_remove_conflicting_flags_human() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let v1_printer = PrinterV1::new(Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
-    let result = cmd_source_remove(&cli, &v1_printer, &v2_printer, "team-config", true, true);
+    let result = cmd_source_remove(&cli, &v2_printer, "team-config", true, true);
     assert!(result.is_err());
     drop(v2_printer);
 

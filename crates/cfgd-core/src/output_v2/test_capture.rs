@@ -132,6 +132,29 @@ impl Printer {
         (p, buf)
     }
 
+    /// Doc capture with an explicit OutputFormat. Required by snapshot tests
+    /// that exercise behaviour gated on `Printer::is_wide()` (e.g.
+    /// `source list --wide` table layout): the default `for_test_doc`
+    /// captures at `OutputFormat::Table`, leaving the wide branch
+    /// untestable. Use `OutputFormat::Wide` to drive the wide-table path.
+    pub fn for_test_doc_with_format(format: OutputFormat) -> (Self, DocCapture) {
+        let human = Arc::new(Mutex::new(String::new()));
+        let doc_json = Arc::new(Mutex::new(None));
+        let cap = DocCapture {
+            human: human.clone(),
+            doc_json,
+        };
+        let p = build_test_printer(
+            human,
+            Theme::default(),
+            Verbosity::Normal,
+            format,
+            Some(cap.clone_internal()),
+            None,
+        );
+        (p, cap)
+    }
+
     /// Doc capture combined with canned prompt responses. Required by snapshot
     /// tests that drive `cmd_x` against a tempdir fixture while the command
     /// itself calls `prompt_confirm` / `prompt_text` (e.g. profile create's

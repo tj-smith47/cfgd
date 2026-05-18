@@ -15,7 +15,7 @@ pub fn cmd_profile_delete(
     let profile_path = pdir.join(format!("{}.yaml", name));
 
     if !profile_path.exists() {
-        v2_printer.emit(build_profile_error_doc(
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
             name,
             "not_found",
             format!("Profile '{}' not found", name),
@@ -29,7 +29,7 @@ pub fn cmd_profile_delete(
         && let Ok(cfg) = config::load_config(&cli.config)
         && cfg.spec.profile.as_deref() == Some(name)
     {
-        v2_printer.emit(build_profile_error_doc(
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
             name,
             "active_profile",
             format!(
@@ -47,7 +47,7 @@ pub fn cmd_profile_delete(
     // Safety: refuse if inherited by other profiles
     let inheritors = profiles_inheriting(&pdir, name)?;
     if !inheritors.is_empty() {
-        v2_printer.emit(build_profile_error_doc(
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
             name,
             "inherited",
             format!(

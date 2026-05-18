@@ -35,7 +35,7 @@ pub fn cmd_source_update(
     if sources_to_update.is_empty()
         && let Some(name) = name
     {
-        v2_printer.emit(build_source_error_doc(
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
             name,
             "not_found",
             format!("Source '{}' not found", name),
@@ -77,14 +77,26 @@ pub fn cmd_source_update(
                         Vec::new()
                     };
 
-                    let proceed = if !perm_changes.is_empty() {
-                        let source_sec = v2_printer.section(format!(
+                    // Per-source SectionGuard binds across both the prompt
+                    // and the success emit so the canonical
+                    // Accept-confirm-then-success line nests under the same
+                    // section header as the prompt context bullets (F3
+                    // README Accept-confirm-then-success pattern). The
+                    // section header phrasing pivots on whether permission
+                    // changes were detected.
+                    let source_sec = if perm_changes.is_empty() {
+                        v2_printer.section(format!("Source '{}'", source.name))
+                    } else {
+                        v2_printer.section(format!(
                             "Source '{}' update changes permissions",
                             source.name
-                        ));
-                        for change in &perm_changes {
-                            source_sec.status_simple(Role::Warn, change.description.clone());
-                        }
+                        ))
+                    };
+                    for change in &perm_changes {
+                        source_sec.status_simple(Role::Warn, change.description.clone());
+                    }
+
+                    let proceed = if !perm_changes.is_empty() {
                         match v2_printer.prompt_confirm("Accept permission changes?") {
                             Ok(true) => true,
                             Ok(false) => {
@@ -130,7 +142,7 @@ pub fn cmd_source_update(
                             cached.manifest.metadata.version.as_deref(),
                             source.sync.pin_version.as_deref(),
                         )?;
-                        v2_printer
+                        source_sec
                             .status_simple(Role::Ok, format!("Updated source '{}'", source.name));
                         entries.push(UpdateEntry {
                             name: source.name.clone(),

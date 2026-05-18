@@ -1,7 +1,5 @@
 use std::path::Path;
 
-use cfgd_core::output_v2::{Doc, Role};
-
 use super::*;
 
 // --- Submodule declarations ---
@@ -33,29 +31,6 @@ pub use update::cmd_profile_update;
 
 pub(super) use backups::{collect_module_file_targets, prompt_restore_backups};
 pub(super) use parsers::{parse_manager_package, parse_secret_spec, update_script_list};
-
-/// Doc emitted on every profile-command error path before the `anyhow::bail!`
-/// fires. Carries an `error` category key + `name` so structured consumers
-/// (`-o json`) see a stable shape on failure.
-pub(super) fn build_profile_error_doc(
-    name: &str,
-    error_kind: &str,
-    message: impl Into<String>,
-    extras: serde_json::Value,
-) -> Doc {
-    let mut payload = serde_json::json!({
-        "error": error_kind,
-        "name": name,
-    });
-    if let serde_json::Value::Object(extra_map) = extras
-        && let serde_json::Value::Object(payload_map) = &mut payload
-    {
-        for (k, v) in extra_map {
-            payload_map.insert(k, v);
-        }
-    }
-    Doc::new().status(Role::Fail, message).with_data(payload)
-}
 
 pub(super) fn profiles_inheriting(profiles_dir: &Path, name: &str) -> anyhow::Result<Vec<String>> {
     let mut result = Vec::new();
