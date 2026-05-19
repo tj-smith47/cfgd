@@ -542,14 +542,22 @@ pub fn init_test_git_repo(dir: &Path) {
 // ---------------------------------------------------------------------------
 
 /// Create a quiet `Printer` suitable for tests (suppresses terminal output).
+/// Returns the [`crate::output::Printer`] type — used by mock trait impls
+/// (`MockPackageManager`, `MockSecretBackend`, `MockSystemConfigurator`,
+/// `MockFileManager`) whose method signatures take this type, plus
+/// reconciler helpers that still accept it.
 pub fn test_printer() -> Printer {
     Printer::new(Verbosity::Quiet)
 }
 
-/// Create a quiet v2 `Printer` for tests that exercise the v2 reconciler
-/// entry surface (`Reconciler::apply`, `Reconciler::apply_action`, and
-/// per-action helpers in `apply.rs` / `modules.rs` / `packages.rs` /
-/// `secrets.rs` / `system.rs`).
+/// Create a quiet [`crate::output_v2::Printer`] for tests that exercise
+/// the reconciler entry surface (`Reconciler::apply`,
+/// `Reconciler::apply_action`, and per-action helpers in `apply.rs` /
+/// `modules.rs` / `packages.rs` / `secrets.rs` / `system.rs`).
+///
+/// Returns a bare `Printer` (not the `(Printer, Buffer)` tuple from
+/// `Printer::for_test()`) so it drops in as a direct replacement for
+/// [`test_printer`] in fixtures that don't assert on captured output.
 pub fn test_printer_v2() -> crate::output_v2::Printer {
     crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet)
 }
