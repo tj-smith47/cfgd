@@ -31,11 +31,7 @@ pub(crate) struct InitOutput {
 }
 
 /// Scaffold a new cfgd configuration repository.
-pub fn cmd_init(
-    printer: &Printer,
-    v2_printer: &PrinterV2,
-    args: &InitArgs<'_>,
-) -> anyhow::Result<()> {
+pub fn cmd_init(v2_printer: &PrinterV2, args: &InitArgs<'_>) -> anyhow::Result<()> {
     v2_printer.heading("Initialize cfgd");
 
     if !check_prerequisites(v2_printer) {
@@ -132,7 +128,7 @@ pub fn cmd_init(
         if module_only {
             // Validate that requested modules exist
             let cache_base = modules::default_module_cache_dir()?;
-            let all_modules = modules::load_all_modules(&target_dir, &cache_base, printer)?;
+            let all_modules = modules::load_all_modules(&target_dir, &cache_base, v2_printer)?;
             for m in args.apply_modules {
                 let resolved_name = modules::resolve_profile_module_name(m);
                 if !all_modules.contains_key(resolved_name) {
@@ -160,7 +156,7 @@ pub fn cmd_init(
                 &cache_base,
                 &platform,
                 &mgr_map,
-                printer,
+                v2_printer,
             )?;
 
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
@@ -226,7 +222,7 @@ pub fn cmd_init(
                 let mgr_map = super::managers_map(&registry);
                 let cache_base = modules::default_module_cache_dir()?;
                 // Validate --apply-module names exist (load once, check all)
-                let all_modules = modules::load_all_modules(&target_dir, &cache_base, printer)?;
+                let all_modules = modules::load_all_modules(&target_dir, &cache_base, v2_printer)?;
                 for m in args.apply_modules {
                     let resolved_name = modules::resolve_profile_module_name(m);
                     if !all_modules.contains_key(resolved_name) {
@@ -239,7 +235,7 @@ pub fn cmd_init(
                     &cache_base,
                     &platform,
                     &mgr_map,
-                    printer,
+                    v2_printer,
                 )?
             } else {
                 Vec::new()

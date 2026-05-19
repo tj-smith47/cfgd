@@ -93,7 +93,6 @@ fn normalize(raw: &str, config_dir: &Path) -> String {
 fn module_create_happy_human() {
     let (config_dir, state_dir) = module_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
     let args = cfgd::cli::ModuleCreateArgs {
@@ -110,7 +109,7 @@ fn module_create_happy_human() {
         apply: false,
         yes: true,
     };
-    module::cmd_module_create(&cli, &printer, &v2_printer, &args).unwrap();
+    module::cmd_module_create(&cli, &v2_printer, &args).unwrap();
     drop(v2_printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
@@ -125,7 +124,6 @@ fn module_create_happy_human() {
 fn module_create_happy_json() {
     let (config_dir, state_dir) = module_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
     let args = cfgd::cli::ModuleCreateArgs {
@@ -142,7 +140,7 @@ fn module_create_happy_json() {
         apply: false,
         yes: true,
     };
-    module::cmd_module_create(&cli, &printer, &v2_printer, &args).unwrap();
+    module::cmd_module_create(&cli, &v2_printer, &args).unwrap();
     drop(v2_printer);
 
     let json = cap.json().expect("doc captured json");
@@ -155,7 +153,6 @@ fn module_create_already_exists_human() {
     let (config_dir, state_dir) = module_test_config_setup();
     write_module(config_dir.path(), "dup-mod", VALID_MODULE);
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
     let args = cfgd::cli::ModuleCreateArgs {
@@ -172,7 +169,7 @@ fn module_create_already_exists_human() {
         apply: false,
         yes: true,
     };
-    let result = module::cmd_module_create(&cli, &printer, &v2_printer, &args);
+    let result = module::cmd_module_create(&cli, &v2_printer, &args);
     assert!(result.is_err());
     drop(v2_printer);
 

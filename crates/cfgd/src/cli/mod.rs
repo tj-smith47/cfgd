@@ -1386,13 +1386,13 @@ pub fn execute(
         return Ok(());
     };
     match command {
-        Command::Apply(args) => apply::cmd_apply(cli, printer, v2_printer, args),
-        Command::Plan(args) => plan::cmd_plan(cli, printer, v2_printer, args),
+        Command::Apply(args) => apply::cmd_apply(cli, v2_printer, args),
+        Command::Plan(args) => plan::cmd_plan(cli, v2_printer, args),
         Command::Status { module, exit_code } => {
-            status::cmd_status(cli, printer, v2_printer, module.as_deref(), *exit_code)
+            status::cmd_status(cli, v2_printer, module.as_deref(), *exit_code)
         }
         Command::Diff { module, exit_code } => {
-            diff::cmd_diff(cli, printer, v2_printer, module.as_deref(), *exit_code)
+            diff::cmd_diff(cli, v2_printer, module.as_deref(), *exit_code)
         }
         Command::Log { limit, show_output } => log::cmd_log(
             printer,
@@ -1402,7 +1402,7 @@ pub fn execute(
             cli.state_dir.as_deref(),
         ),
         Command::Verify { module, exit_code } => {
-            verify::cmd_verify(cli, printer, v2_printer, module.as_deref(), *exit_code)
+            verify::cmd_verify(cli, v2_printer, module.as_deref(), *exit_code)
         }
         Command::Profile { command } => match command {
             ProfileCommand::Show { name } => {
@@ -1420,7 +1420,7 @@ pub fn execute(
                 profile::cmd_profile_delete(cli, v2_printer, name, *yes)
             }
         },
-        Command::Doctor => doctor::cmd_doctor(cli, printer, v2_printer),
+        Command::Doctor => doctor::cmd_doctor(cli, v2_printer),
         Command::Init {
             path,
             from,
@@ -1434,7 +1434,6 @@ pub fn execute(
             apply_profile,
             apply_modules,
         } => init::cmd_init(
-            printer,
             v2_printer,
             &init::InitArgs {
                 path: path.as_deref(),
@@ -1451,13 +1450,11 @@ pub fn execute(
             },
         ),
         Command::Module { command } => match command {
-            ModuleCommand::List => module::cmd_module_list(cli, printer, v2_printer),
+            ModuleCommand::List => module::cmd_module_list(cli, v2_printer),
             ModuleCommand::Show { name, show_values } => {
-                module::cmd_module_show(cli, printer, v2_printer, name, *show_values)
+                module::cmd_module_show(cli, v2_printer, name, *show_values)
             }
-            ModuleCommand::Create(args) => {
-                module::cmd_module_create(cli, printer, v2_printer, args)
-            }
+            ModuleCommand::Create(args) => module::cmd_module_create(cli, v2_printer, args),
             ModuleCommand::Update(args) => module::cmd_module_update_local(cli, v2_printer, args),
             ModuleCommand::Edit { name } => module::cmd_module_edit(cli, v2_printer, name),
             ModuleCommand::Delete { name, yes, purge } => {
@@ -1493,9 +1490,7 @@ pub fn execute(
                 name,
                 as_format,
                 dir,
-            } => {
-                module::cmd_module_export(cli, printer, v2_printer, name, as_format, dir.as_deref())
-            }
+            } => module::cmd_module_export(cli, v2_printer, name, as_format, dir.as_deref()),
             ModuleCommand::Push {
                 dir,
                 artifact,

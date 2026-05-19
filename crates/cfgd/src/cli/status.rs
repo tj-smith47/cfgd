@@ -235,13 +235,12 @@ pub fn build_module_status_not_found_doc(name: &str) -> Doc {
 
 pub(super) fn cmd_status(
     cli: &Cli,
-    printer: &Printer,
     v2_printer: &PrinterV2,
     module_filter: Option<&str>,
     exit_code: bool,
 ) -> anyhow::Result<()> {
     if let Some(mod_name) = module_filter {
-        return cmd_status_module(cli, printer, v2_printer, mod_name);
+        return cmd_status_module(cli, v2_printer, mod_name);
     }
 
     let (cfg, profile_name, resolved) = load_config_and_profile_v2(cli)?;
@@ -264,7 +263,7 @@ pub(super) fn cmd_status(
     // load_all_modules failure (e.g., malformed module YAML) should not abort a
     // read-only status query; degrade to an empty map so the rest still renders.
     let all_modules =
-        modules::load_all_modules(&config_dir, &cache_base, printer).unwrap_or_default();
+        modules::load_all_modules(&config_dir, &cache_base, v2_printer).unwrap_or_default();
     let state_map = module_state_map(&state);
     let module_entries: Vec<ModuleStatusEntry> = resolved
         .merged
@@ -318,7 +317,6 @@ pub(super) fn cmd_status(
 
 pub(super) fn cmd_status_module(
     cli: &Cli,
-    printer: &Printer,
     v2_printer: &PrinterV2,
     mod_name: &str,
 ) -> anyhow::Result<()> {
@@ -328,7 +326,7 @@ pub(super) fn cmd_status_module(
     // answer the user's specific question and should error rather than silently
     // claim "module not found".
     let cache_base = modules::default_module_cache_dir()?;
-    let all_modules = modules::load_all_modules(&config_dir, &cache_base, printer)?;
+    let all_modules = modules::load_all_modules(&config_dir, &cache_base, v2_printer)?;
 
     let module = match all_modules.get(mod_name) {
         Some(m) => m,
@@ -415,17 +413,12 @@ mod tests {
         }
     }
 
-    fn test_printers() -> (Printer, PrinterV2, std::sync::Arc<std::sync::Mutex<String>>) {
-        let (printer, _) = Printer::for_test();
-        let (v2_printer, v2_buf) = PrinterV2::for_test_at(VerbosityV2::Normal);
-        (printer, v2_printer, v2_buf)
+    fn test_printers() -> (PrinterV2, std::sync::Arc<std::sync::Mutex<String>>) {
+        PrinterV2::for_test_at(VerbosityV2::Normal)
     }
 
-    fn test_printers_json() -> (Printer, PrinterV2, std::sync::Arc<std::sync::Mutex<String>>) {
-        let (printer, _) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
-        let (v2_printer, v2_buf) =
-            PrinterV2::for_test_with_format(cfgd_core::output_v2::OutputFormat::Json);
-        (printer, v2_printer, v2_buf)
+    fn test_printers_json() -> (PrinterV2, std::sync::Arc<std::sync::Mutex<String>>) {
+        PrinterV2::for_test_with_format(cfgd_core::output_v2::OutputFormat::Json)
     }
 
     /// Isolated config-dir + state-dir pair with a minimal valid `cfgd.yaml`
@@ -465,9 +458,9 @@ mod tests {
         let state_dir = tempfile::tempdir().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(dir.path().join("nope.yaml"), state_dir.path());
-        let (printer, v2_printer, _) = test_printers();
+        let (v2_printer, _) = test_printers();
 
-        let err = cmd_status(&cli, &printer, &v2_printer, None, false).unwrap_err();
+        let err = cmd_status(&cli, &v2_printer, None, false).unwrap_err();
         let msg = err.to_string().to_lowercase();
         assert!(
             msg.contains("not found") || msg.contains("nope.yaml"),
@@ -479,9 +472,9 @@ mod tests {
     fn cmd_status_empty_state_renders_no_applies_and_no_drift() {
         let (_cfg_dir, state_dir, config_path) = setup_env();
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, v2_printer, buf) = test_printers();
+        let (v2_printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, &v2_printer, None, false).unwrap();
+        cmd_status(&cli, &v2_printer, None, false).unwrap();
         drop(v2_printer);
 
         let output = buf.lock().unwrap();
@@ -513,9 +506,9 @@ mod tests {
             .unwrap();
 
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, v2_printer, buf) = test_printers();
+        let (v2_printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, &v2_printer, None, false).unwrap();
+        cmd_status(&cli, &v2_printer, None, false).unwrap();
         drop(v2_printer);
 
         let output = buf.lock().unwrap();
@@ -552,9 +545,9 @@ mod tests {
             .unwrap();
 
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, v2_printer, buf) = test_printers();
+        let (v2_printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, &v2_printer, None, false).unwrap();
+        cmd_status(&cli, &v2_printer, None, false).unwrap();
         drop(v2_printer);
 
         let output = buf.lock().unwrap();
@@ -587,9 +580,9 @@ mod tests {
             .unwrap();
 
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, v2_printer, buf) = test_printers();
+        let (v2_printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, &v2_printer, None, false).unwrap();
+        cmd_status(&cli, &v2_printer, None, false).unwrap();
         drop(v2_printer);
 
         let output = buf.lock().unwrap();
@@ -609,9 +602,9 @@ mod tests {
             .unwrap();
 
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, v2_printer, buf) = test_printers();
+        let (v2_printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, &v2_printer, None, false).unwrap();
+        cmd_status(&cli, &v2_printer, None, false).unwrap();
         drop(v2_printer);
 
         let output = buf.lock().unwrap();
@@ -637,9 +630,9 @@ mod tests {
             .unwrap();
 
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, v2_printer, _) = test_printers();
+        let (v2_printer, _) = test_printers();
 
-        let res = cmd_status(&cli, &printer, &v2_printer, None, false);
+        let res = cmd_status(&cli, &v2_printer, None, false);
         assert!(res.is_ok(), "exit_code=false must return Ok, got: {res:?}");
     }
 
@@ -650,9 +643,9 @@ mod tests {
         // Ok. This exercises the (exit_code && has_drift) short-circuit gate.
         let (_cfg_dir, state_dir, config_path) = setup_env();
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, v2_printer, _) = test_printers();
+        let (v2_printer, _) = test_printers();
 
-        let res = cmd_status(&cli, &printer, &v2_printer, None, true);
+        let res = cmd_status(&cli, &v2_printer, None, true);
         assert!(
             res.is_ok(),
             "exit_code=true with no drift must return Ok, got: {res:?}"
@@ -672,9 +665,9 @@ mod tests {
 
         let mut cli = test_cli_for(config_path, state_dir.path());
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
-        let (printer, v2_printer, buf) = test_printers_json();
+        let (v2_printer, buf) = test_printers_json();
 
-        cmd_status(&cli, &printer, &v2_printer, None, false).unwrap();
+        cmd_status(&cli, &v2_printer, None, false).unwrap();
         drop(v2_printer);
 
         let captured = buf.lock().unwrap().clone();
@@ -705,9 +698,9 @@ mod tests {
         let (_cfg_dir, state_dir, config_path) = setup_env_with_module();
 
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, v2_printer, buf) = test_printers();
+        let (v2_printer, buf) = test_printers();
 
-        cmd_status(&cli, &printer, &v2_printer, Some("test-mod"), false).unwrap();
+        cmd_status(&cli, &v2_printer, Some("test-mod"), false).unwrap();
         drop(v2_printer);
 
         let output = buf.lock().unwrap();
@@ -733,9 +726,9 @@ mod tests {
         let (_cfg_dir, state_dir, config_path) = setup_env();
 
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, v2_printer, buf) = test_printers();
+        let (v2_printer, buf) = test_printers();
 
-        cmd_status_module(&cli, &printer, &v2_printer, "ghost").unwrap();
+        cmd_status_module(&cli, &v2_printer, "ghost").unwrap();
         drop(v2_printer);
 
         let output = buf.lock().unwrap();
@@ -757,9 +750,9 @@ mod tests {
 
         let mut cli = test_cli_for(config_path, state_dir.path());
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
-        let (printer, v2_printer, buf) = test_printers_json();
+        let (v2_printer, buf) = test_printers_json();
 
-        cmd_status_module(&cli, &printer, &v2_printer, "ghost").unwrap();
+        cmd_status_module(&cli, &v2_printer, "ghost").unwrap();
         drop(v2_printer);
 
         let captured = buf.lock().unwrap().clone();
@@ -792,9 +785,9 @@ mod tests {
             .unwrap();
 
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, v2_printer, buf) = test_printers();
+        let (v2_printer, buf) = test_printers();
 
-        cmd_status_module(&cli, &printer, &v2_printer, "test-mod").unwrap();
+        cmd_status_module(&cli, &v2_printer, "test-mod").unwrap();
         drop(v2_printer);
 
         let output = buf.lock().unwrap();
@@ -819,9 +812,9 @@ mod tests {
         let (_cfg_dir, state_dir, config_path) = setup_env_with_module();
 
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, v2_printer, buf) = test_printers();
+        let (v2_printer, buf) = test_printers();
 
-        cmd_status_module(&cli, &printer, &v2_printer, "test-mod").unwrap();
+        cmd_status_module(&cli, &v2_printer, "test-mod").unwrap();
         drop(v2_printer);
 
         let output = buf.lock().unwrap();
@@ -866,9 +859,9 @@ mod tests {
             .unwrap();
 
         let cli = test_cli_for(config_path, state_dir.path());
-        let (printer, v2_printer, buf) = test_printers();
+        let (v2_printer, buf) = test_printers();
 
-        cmd_status_module(&cli, &printer, &v2_printer, "test-mod").unwrap();
+        cmd_status_module(&cli, &v2_printer, "test-mod").unwrap();
         drop(v2_printer);
 
         let output = buf.lock().unwrap();
@@ -899,9 +892,9 @@ mod tests {
 
         let mut cli = test_cli_for(config_path, state_dir.path());
         cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
-        let (printer, v2_printer, buf) = test_printers_json();
+        let (v2_printer, buf) = test_printers_json();
 
-        cmd_status_module(&cli, &printer, &v2_printer, "test-mod").unwrap();
+        cmd_status_module(&cli, &v2_printer, "test-mod").unwrap();
         drop(v2_printer);
 
         let captured = buf.lock().unwrap().clone();

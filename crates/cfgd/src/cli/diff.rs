@@ -4,7 +4,6 @@ use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role, section_guard::Secti
 
 pub fn cmd_diff(
     cli: &Cli,
-    printer: &Printer,
     v2_printer: &PrinterV2,
     module_filter: Option<&str>,
     exit_code: bool,
@@ -14,7 +13,7 @@ pub fn cmd_diff(
     let config_dir = config_dir(cli);
 
     if let Some(mod_name) = module_filter {
-        return cmd_diff_module(cli, printer, v2_printer, mod_name, &config_dir, exit_code);
+        return cmd_diff_module(cli, v2_printer, mod_name, &config_dir, exit_code);
     }
 
     let (_cfg, profile_name, mut resolved) = load_config_and_profile_v2(cli)?;
@@ -106,7 +105,6 @@ pub fn cmd_diff(
 
 fn cmd_diff_module(
     _cli: &Cli,
-    printer: &Printer,
     v2_printer: &PrinterV2,
     mod_name: &str,
     config_dir: &std::path::Path,
@@ -122,7 +120,7 @@ fn cmd_diff_module(
         &cache_base,
         &platform,
         &mgr_map,
-        printer,
+        v2_printer,
     ) {
         Ok(mods) => mods,
         Err(_) => {

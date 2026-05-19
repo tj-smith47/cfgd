@@ -1,12 +1,8 @@
 use super::*;
 use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role, doc::SectionBuilder};
 
-pub(super) fn cmd_doctor(
-    cli: &Cli,
-    printer: &Printer,
-    v2_printer: &PrinterV2,
-) -> anyhow::Result<()> {
-    let (output, extras) = collect_doctor_output(cli, printer)?;
+pub(super) fn cmd_doctor(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
+    let (output, extras) = collect_doctor_output(cli, v2_printer)?;
     v2_printer.emit(build_doctor_doc(&output, &extras));
     Ok(())
 }
@@ -44,7 +40,7 @@ pub struct DoctorConfigSource {
 /// The lib call to `modules::load_all_modules` still takes the old `Printer`.
 fn collect_doctor_output(
     cli: &Cli,
-    printer: &Printer,
+    v2_printer: &PrinterV2,
 ) -> anyhow::Result<(DoctorOutput, DoctorExtras)> {
     let (config_check, loaded_cfg) = if cli.config.exists() {
         match config::load_config(&cli.config) {
@@ -202,7 +198,7 @@ fn collect_doctor_output(
 
     let cache_base = modules::default_module_cache_dir().unwrap_or_default();
     let all_modules =
-        modules::load_all_modules(&config_dir, &cache_base, printer).unwrap_or_default();
+        modules::load_all_modules(&config_dir, &cache_base, v2_printer).unwrap_or_default();
 
     // Per-module package detail: resolve each declared package against the
     // platform's manager and query installed_packages to know whether the

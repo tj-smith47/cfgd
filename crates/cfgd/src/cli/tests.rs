@@ -1360,7 +1360,6 @@ fn module_create_with_flags_produces_valid_yaml() {
     std::fs::write(&test_file, "content").unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     let args = ModuleCreateArgs {
@@ -1376,7 +1375,7 @@ fn module_create_with_flags_produces_valid_yaml() {
         ],
         ..test_module_create_args("test-mod")
     };
-    module::cmd_module_create(&cli, &printer, &v2_printer, &args).unwrap();
+    module::cmd_module_create(&cli, &v2_printer, &args).unwrap();
 
     assert!(module_yaml.exists());
 
@@ -1418,14 +1417,13 @@ fn module_create_refuses_duplicate() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     let args = ModuleCreateArgs {
         description: Some("dup".to_string()),
         ..test_module_create_args("existing")
     };
-    let result = module::cmd_module_create(&cli, &printer, &v2_printer, &args);
+    let result = module::cmd_module_create(&cli, &v2_printer, &args);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("already exists"));
 }
@@ -3426,7 +3424,7 @@ fn secret_backend_defaults_to_sops() {
 
 #[test]
 fn print_apply_result_success() {
-    let printer = test_printer();
+    let (printer, _) = Printer::for_test();
     let result = cfgd_core::reconciler::ApplyResult {
         status: cfgd_core::state::ApplyStatus::Success,
         action_results: vec![],
@@ -3438,7 +3436,7 @@ fn print_apply_result_success() {
 
 #[test]
 fn print_apply_result_partial() {
-    let printer = test_printer();
+    let (printer, _) = Printer::for_test();
     let result = cfgd_core::reconciler::ApplyResult {
         status: cfgd_core::state::ApplyStatus::Partial,
         action_results: vec![],
@@ -3450,7 +3448,7 @@ fn print_apply_result_partial() {
 
 #[test]
 fn print_apply_result_failed() {
-    let printer = test_printer();
+    let (printer, _) = Printer::for_test();
     let result = cfgd_core::reconciler::ApplyResult {
         status: cfgd_core::state::ApplyStatus::Failed,
         action_results: vec![],
@@ -3653,11 +3651,11 @@ fn cmd_doctor_with_valid_config() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    let result = super::doctor::cmd_doctor(&cli, &printer, &v2_printer);
+    let result = super::doctor::cmd_doctor(&cli, &v2_printer);
     assert!(result.is_ok(), "doctor failed: {:?}", result.err());
     v2_printer.flush();
 
@@ -3679,11 +3677,11 @@ fn cmd_doctor_without_config() {
         config: config_path,
         ..test_cli(dir.path())
     };
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    let result = super::doctor::cmd_doctor(&cli, &printer, &v2_printer);
+    let result = super::doctor::cmd_doctor(&cli, &v2_printer);
     assert!(result.is_ok(), "doctor failed: {:?}", result.err());
     v2_printer.flush();
 
@@ -3718,7 +3716,7 @@ fn setup_test_env() -> (tempfile::TempDir, tempfile::TempDir) {
 #[test]
 fn cmd_status_with_empty_state() {
     let h = CliTestHarness::builder().build();
-    super::status::cmd_status(&h.cli(), h.printer(), h.v2_printer(), None, false).unwrap();
+    super::status::cmd_status(&h.cli(), h.v2_printer(), None, false).unwrap();
     h.assert_header("Status");
     h.assert_output_contains("No applies recorded yet");
 }
@@ -3726,14 +3724,7 @@ fn cmd_status_with_empty_state() {
 #[test]
 fn cmd_status_module_not_found() {
     let h = CliTestHarness::builder().build();
-    super::status::cmd_status(
-        &h.cli(),
-        h.printer(),
-        h.v2_printer(),
-        Some("nonexistent"),
-        false,
-    )
-    .unwrap();
+    super::status::cmd_status(&h.cli(), h.v2_printer(), Some("nonexistent"), false).unwrap();
     h.assert_output_contains("nonexistent");
 }
 
@@ -3742,14 +3733,7 @@ fn cmd_status_module_found() {
     let h = CliTestHarness::builder()
         .module("test-mod", SIMPLE_MODULE_YAML)
         .build();
-    super::status::cmd_status(
-        &h.cli(),
-        h.printer(),
-        h.v2_printer(),
-        Some("test-mod"),
-        false,
-    )
-    .unwrap();
+    super::status::cmd_status(&h.cli(), h.v2_printer(), Some("test-mod"), false).unwrap();
     h.assert_output_contains("test-mod");
 }
 
@@ -3758,14 +3742,7 @@ fn cmd_verify_module() {
     let h = CliTestHarness::builder()
         .module("test-mod", SIMPLE_MODULE_YAML)
         .build();
-    super::verify::cmd_verify(
-        &h.cli(),
-        h.printer(),
-        h.v2_printer(),
-        Some("test-mod"),
-        false,
-    )
-    .unwrap();
+    super::verify::cmd_verify(&h.cli(), h.v2_printer(), Some("test-mod"), false).unwrap();
     h.assert_header("Verify");
     h.assert_output_contains("test-mod");
     let output = h.output();
@@ -3798,7 +3775,7 @@ fn cmd_apply_dry_run_empty_profile() {
         context: "apply".to_string(),
     };
 
-    super::apply::cmd_apply(&h.cli(), h.printer(), h.v2_printer(), &args).unwrap();
+    super::apply::cmd_apply(&h.cli(), h.v2_printer(), &args).unwrap();
     h.assert_header("Plan");
     let output = h.output();
     assert!(
@@ -3819,7 +3796,6 @@ fn cmd_apply_from_flag_parses() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
     let args = ApplyArgs {
         from: Some("https://github.com/example/config.git".to_string()),
@@ -3836,7 +3812,7 @@ fn cmd_apply_from_flag_parses() {
     // cmd_apply should attempt to resolve the --from URL.
     // The URL is unreachable so this will fail — but it must fail because
     // the URL was attempted (resolve_from path), not because --from was ignored.
-    let result = super::apply::cmd_apply(&cli, &printer, &v2_printer, &args);
+    let result = super::apply::cmd_apply(&cli, &v2_printer, &args);
     // Either succeeds (local config found) or fails on the URL — both prove --from was wired up
     if let Err(ref e) = result {
         let msg = e.to_string();
@@ -3862,7 +3838,7 @@ fn cmd_apply_dry_run_with_phase_filter() {
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::apply::cmd_apply(&h.cli(), h.printer(), h.v2_printer(), &args).unwrap();
+    super::apply::cmd_apply(&h.cli(), h.v2_printer(), &args).unwrap();
     h.assert_header("Plan");
     let output = h.output();
     assert!(
@@ -3889,7 +3865,7 @@ fn cmd_apply_dry_run_with_skip() {
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::apply::cmd_apply(&h.cli(), h.printer(), h.v2_printer(), &args).unwrap();
+    super::apply::cmd_apply(&h.cli(), h.v2_printer(), &args).unwrap();
     h.assert_header("Plan");
     let output = h.output();
     assert!(
@@ -3912,7 +3888,7 @@ fn cmd_apply_dry_run_with_only() {
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::apply::cmd_apply(&h.cli(), h.printer(), h.v2_printer(), &args).unwrap();
+    super::apply::cmd_apply(&h.cli(), h.v2_printer(), &args).unwrap();
     h.assert_header("Plan");
     let output = h.output();
     assert!(
@@ -3938,7 +3914,7 @@ fn cmd_apply_real_with_empty_profile() {
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::apply::cmd_apply(&h.cli(), h.printer(), h.v2_printer(), &args).unwrap();
+    super::apply::cmd_apply(&h.cli(), h.v2_printer(), &args).unwrap();
     h.assert_header("Apply");
     h.assert_output_contains("Nothing to do");
 
@@ -3962,7 +3938,7 @@ fn cmd_status_after_apply() {
     std::fs::write(config_dir.path().join("cfgd.yaml"), "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: empty\n").unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (_printer, buf) = Printer::for_test();
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
@@ -3977,10 +3953,10 @@ fn cmd_status_after_apply() {
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::apply::cmd_apply(&cli, &printer, &v2_printer, &args).unwrap();
+    super::apply::cmd_apply(&cli, &v2_printer, &args).unwrap();
     buf.lock().unwrap().clear();
 
-    super::status::cmd_status(&cli, &printer, &v2_printer, None, false).unwrap();
+    super::status::cmd_status(&cli, &v2_printer, None, false).unwrap();
     drop(v2_printer);
     let mut output = buf.lock().unwrap().clone();
     output.push_str(&v2_buf.lock().unwrap());
@@ -4016,7 +3992,7 @@ fn cmd_log_after_apply() {
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::apply::cmd_apply(&cli, &printer, &v2_printer, &args).unwrap();
+    super::apply::cmd_apply(&cli, &v2_printer, &args).unwrap();
     buf.lock().unwrap().clear();
 
     let (log_v2_printer, log_v2_buf) = test_v2_printer_capture();
@@ -4036,14 +4012,14 @@ fn cmd_log_after_apply() {
 #[test]
 fn cmd_verify_empty_profile() {
     let h = CliTestHarness::builder().build();
-    super::verify::cmd_verify(&h.cli(), h.printer(), h.v2_printer(), None, false).unwrap();
+    super::verify::cmd_verify(&h.cli(), h.v2_printer(), None, false).unwrap();
     h.assert_header("Verify");
 }
 
 #[test]
 fn cmd_diff_empty_profile() {
     let h = CliTestHarness::builder().build();
-    super::diff::cmd_diff(&h.cli(), h.printer(), h.v2_printer(), None, false).unwrap();
+    super::diff::cmd_diff(&h.cli(), h.v2_printer(), None, false).unwrap();
     h.assert_header("Diff");
 }
 
@@ -4072,7 +4048,7 @@ fn cmd_apply_dry_run_with_files() {
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (_printer, buf) = Printer::for_test();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = ApplyArgs {
         from: None,
@@ -4086,7 +4062,7 @@ fn cmd_apply_dry_run_with_files() {
         context: "apply".to_string(),
     };
 
-    let result = super::apply::cmd_apply(&cli, &printer, &v2_printer, &args);
+    let result = super::apply::cmd_apply(&cli, &v2_printer, &args);
     assert!(
         result.is_ok(),
         "dry-run apply with files should succeed: {:?}",
@@ -4130,7 +4106,6 @@ fn cmd_apply_creates_file() {
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
     let args = ApplyArgs {
         from: None,
@@ -4144,7 +4119,7 @@ fn cmd_apply_creates_file() {
         context: "apply".to_string(),
     };
 
-    let result = super::apply::cmd_apply(&cli, &printer, &v2_printer, &args);
+    let result = super::apply::cmd_apply(&cli, &v2_printer, &args);
     assert!(
         result.is_ok(),
         "apply should succeed and create the target file: {:?}",
@@ -4178,7 +4153,7 @@ fn cmd_apply_idempotent() {
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (_printer, buf) = Printer::for_test();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = ApplyArgs {
         from: None,
@@ -4193,7 +4168,7 @@ fn cmd_apply_idempotent() {
     };
 
     // First apply
-    super::apply::cmd_apply(&cli, &printer, &v2_printer, &args).unwrap();
+    super::apply::cmd_apply(&cli, &v2_printer, &args).unwrap();
     assert!(target.exists());
 
     // Clear buffers before second apply
@@ -4201,7 +4176,7 @@ fn cmd_apply_idempotent() {
     v2_buf.lock().unwrap().clear();
 
     // Second apply — should succeed with nothing to do
-    let result = super::apply::cmd_apply(&cli, &printer, &v2_printer, &args);
+    let result = super::apply::cmd_apply(&cli, &v2_printer, &args);
     assert!(
         result.is_ok(),
         "second apply (idempotent) should succeed with nothing to do: {:?}",
@@ -4242,10 +4217,10 @@ fn cmd_diff_with_files() {
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (_printer, buf) = Printer::for_test();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
 
-    let result = super::diff::cmd_diff(&cli, &printer, &v2_printer, None, false);
+    let result = super::diff::cmd_diff(&cli, &v2_printer, None, false);
     assert!(result.is_ok(), "diff failed: {:?}", result.err());
 
     drop(v2_printer);
@@ -4260,7 +4235,7 @@ fn cmd_diff_with_files() {
 #[test]
 fn cmd_status_structured_output() {
     let h = CliTestHarness::builder().json().build();
-    super::status::cmd_status(&h.cli(), h.printer(), h.v2_printer(), None, false).unwrap();
+    super::status::cmd_status(&h.cli(), h.v2_printer(), None, false).unwrap();
     let parsed = h.json_output();
     assert!(
         parsed.get("lastApply").is_some() || parsed.get("modules").is_some(),
@@ -4450,9 +4425,9 @@ fn execute_completions_bash() {
         }),
         ..test_cli(dir.path())
     };
+    let (printer, _) = Printer::for_test();
     // Completions write directly to stdout via clap_complete, not through Printer.
     // We verify execution succeeds; output content is clap_complete's responsibility.
-    let printer = test_printer();
     let result = super::execute(&cli, &printer, &test_v2_printer());
     assert!(
         result.is_ok(),
@@ -4470,7 +4445,7 @@ fn execute_completions_zsh() {
         }),
         ..test_cli(dir.path())
     };
-    let printer = test_printer();
+    let (printer, _) = Printer::for_test();
     let result = super::execute(&cli, &printer, &test_v2_printer());
     assert!(result.is_ok(), "zsh completions failed: {:?}", result.err());
 }
@@ -4484,7 +4459,7 @@ fn execute_completions_fish() {
         }),
         ..test_cli(dir.path())
     };
-    let printer = test_printer();
+    let (printer, _) = Printer::for_test();
     let result = super::execute(&cli, &printer, &test_v2_printer());
     assert!(
         result.is_ok(),
@@ -4609,7 +4584,7 @@ fn cmd_apply_with_module_filter() {
     .unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (_printer, buf) = Printer::for_test();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = ApplyArgs {
         from: None,
@@ -4623,7 +4598,7 @@ fn cmd_apply_with_module_filter() {
         context: "apply".to_string(),
     };
 
-    let result = super::apply::cmd_apply(&cli, &printer, &v2_printer, &args);
+    let result = super::apply::cmd_apply(&cli, &v2_printer, &args);
     assert!(result.is_ok(), "apply failed: {:?}", result.err());
 
     drop(v2_printer);
@@ -4647,7 +4622,7 @@ fn cmd_apply_with_env_vars() {
     .unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (_printer, buf) = Printer::for_test();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = ApplyArgs {
         from: None,
@@ -4661,7 +4636,7 @@ fn cmd_apply_with_env_vars() {
         context: "apply".to_string(),
     };
 
-    let result = super::apply::cmd_apply(&cli, &printer, &v2_printer, &args);
+    let result = super::apply::cmd_apply(&cli, &v2_printer, &args);
     assert!(
         result.is_ok(),
         "apply should succeed when profile contains env vars: {:?}",
@@ -4682,7 +4657,6 @@ fn cmd_apply_with_env_vars() {
     }
 
     // Verify the profile was loaded with env vars by loading config+profile
-    let _ = &printer;
     let (_, _, resolved) = super::load_config_and_profile_v2(&cli).unwrap();
     assert!(
         resolved.merged.env.iter().any(|e| e.name == "EDITOR"),
@@ -4712,12 +4686,12 @@ fn cmd_status_with_modules() {
     .unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (_printer, buf) = Printer::for_test();
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
     assert!(
-        super::status::cmd_status(&cli, &printer, &v2_printer, None, false).is_ok(),
+        super::status::cmd_status(&cli, &v2_printer, None, false).is_ok(),
         "status should succeed when profile references modules"
     );
 
@@ -4745,7 +4719,7 @@ fn cmd_status_with_drift_events() {
     std::fs::write(config_dir.path().join("cfgd.yaml"), empty_config).unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (_printer, buf) = Printer::for_test();
     let v2_printer = test_v2_printer();
 
     let args = ApplyArgs {
@@ -4759,7 +4733,7 @@ fn cmd_status_with_drift_events() {
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::apply::cmd_apply(&cli, &printer, &v2_printer, &args).unwrap();
+    super::apply::cmd_apply(&cli, &v2_printer, &args).unwrap();
 
     // Record a drift event
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
@@ -4778,7 +4752,7 @@ fn cmd_status_with_drift_events() {
 
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
-    super::status::cmd_status(&cli, &printer, &v2_printer, None, false).unwrap();
+    super::status::cmd_status(&cli, &v2_printer, None, false).unwrap();
     drop(v2_printer);
 
     let mut output = buf.lock().unwrap().clone();
@@ -4982,7 +4956,7 @@ fn execute_profile_switch() {
         }),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let printer = test_printer();
+    let (printer, _) = Printer::for_test();
 
     assert!(
         super::execute(&cli, &printer, &test_v2_printer()).is_ok(),
@@ -5021,6 +4995,7 @@ fn execute_module_list() {
 
 #[test]
 fn execute_workflow_generate() {
+    let (printer, _) = Printer::for_test();
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = Cli {
@@ -5029,7 +5004,6 @@ fn execute_workflow_generate() {
         }),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let printer = test_printer();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
 
     super::execute(&cli, &printer, &v2_printer).unwrap();
@@ -5088,7 +5062,7 @@ fn cmd_apply_dry_run_each_phase() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let v2_printer = test_v2_printer();
 
     let all_phases = [
@@ -5113,7 +5087,7 @@ fn cmd_apply_dry_run_each_phase() {
             skip_scripts: false,
             context: "apply".to_string(),
         };
-        let result = super::apply::cmd_apply(&cli, &printer, &v2_printer, &args);
+        let result = super::apply::cmd_apply(&cli, &v2_printer, &args);
         assert!(
             result.is_ok(),
             "dry-run failed for phase: {}",
@@ -5138,7 +5112,7 @@ fn cmd_verify_after_apply_with_env() {
     .unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let v2_printer = test_v2_printer();
 
     let args = ApplyArgs {
@@ -5152,11 +5126,11 @@ fn cmd_verify_after_apply_with_env() {
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::apply::cmd_apply(&cli, &printer, &v2_printer, &args).unwrap();
+    super::apply::cmd_apply(&cli, &v2_printer, &args).unwrap();
 
     let (verify_v2_printer, verify_v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
-    super::verify::cmd_verify(&cli, &printer, &verify_v2_printer, None, false).unwrap();
+    super::verify::cmd_verify(&cli, &verify_v2_printer, None, false).unwrap();
     verify_v2_printer.flush();
 
     let output = verify_v2_buf.lock().unwrap();
@@ -5217,7 +5191,7 @@ fn cmd_plan_empty_profile() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = PlanArgs {
         from: None,
@@ -5229,7 +5203,7 @@ fn cmd_plan_empty_profile() {
         context: "apply".to_string(),
     };
 
-    super::plan::cmd_plan(&cli, &printer, &v2_printer, &args).unwrap();
+    super::plan::cmd_plan(&cli, &v2_printer, &args).unwrap();
     v2_printer.flush();
 
     let output = v2_buf.lock().unwrap();
@@ -5244,7 +5218,7 @@ fn cmd_plan_reconcile_context() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = PlanArgs {
         from: None,
@@ -5256,7 +5230,7 @@ fn cmd_plan_reconcile_context() {
         context: "reconcile".to_string(),
     };
 
-    super::plan::cmd_plan(&cli, &printer, &v2_printer, &args).unwrap();
+    super::plan::cmd_plan(&cli, &v2_printer, &args).unwrap();
     v2_printer.flush();
 
     let output = v2_buf.lock().unwrap();
@@ -5271,7 +5245,6 @@ fn cmd_plan_invalid_context() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
     let args = PlanArgs {
         from: None,
@@ -5283,7 +5256,7 @@ fn cmd_plan_invalid_context() {
         context: "bogus".to_string(),
     };
 
-    let result = super::plan::cmd_plan(&cli, &printer, &v2_printer, &args);
+    let result = super::plan::cmd_plan(&cli, &v2_printer, &args);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("Unknown context"));
 }
@@ -5293,7 +5266,7 @@ fn cmd_plan_with_phase_filter() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = PlanArgs {
         from: None,
@@ -5305,7 +5278,7 @@ fn cmd_plan_with_phase_filter() {
         context: "apply".to_string(),
     };
 
-    super::plan::cmd_plan(&cli, &printer, &v2_printer, &args).unwrap();
+    super::plan::cmd_plan(&cli, &v2_printer, &args).unwrap();
     v2_printer.flush();
     let output = v2_buf.lock().unwrap();
     assert!(
@@ -5323,7 +5296,7 @@ fn cmd_plan_with_skip_filter() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = PlanArgs {
         from: None,
@@ -5335,7 +5308,7 @@ fn cmd_plan_with_skip_filter() {
         context: "apply".to_string(),
     };
 
-    super::plan::cmd_plan(&cli, &printer, &v2_printer, &args).unwrap();
+    super::plan::cmd_plan(&cli, &v2_printer, &args).unwrap();
     v2_printer.flush();
     let output = v2_buf.lock().unwrap();
     assert!(
@@ -5349,7 +5322,7 @@ fn cmd_plan_with_only_filter() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = PlanArgs {
         from: None,
@@ -5361,7 +5334,7 @@ fn cmd_plan_with_only_filter() {
         context: "apply".to_string(),
     };
 
-    super::plan::cmd_plan(&cli, &printer, &v2_printer, &args).unwrap();
+    super::plan::cmd_plan(&cli, &v2_printer, &args).unwrap();
     v2_printer.flush();
     let output = v2_buf.lock().unwrap();
     assert!(
@@ -5375,7 +5348,7 @@ fn cmd_plan_with_skip_scripts() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = PlanArgs {
         from: None,
@@ -5387,7 +5360,7 @@ fn cmd_plan_with_skip_scripts() {
         context: "apply".to_string(),
     };
 
-    super::plan::cmd_plan(&cli, &printer, &v2_printer, &args).unwrap();
+    super::plan::cmd_plan(&cli, &v2_printer, &args).unwrap();
     v2_printer.flush();
     let output = v2_buf.lock().unwrap();
     assert!(
@@ -5407,7 +5380,7 @@ fn cmd_plan_with_module_filter() {
     );
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = PlanArgs {
         from: None,
@@ -5419,7 +5392,7 @@ fn cmd_plan_with_module_filter() {
         context: "apply".to_string(),
     };
 
-    super::plan::cmd_plan(&cli, &printer, &v2_printer, &args).unwrap();
+    super::plan::cmd_plan(&cli, &v2_printer, &args).unwrap();
     v2_printer.flush();
     let output = v2_buf.lock().unwrap();
     assert!(
@@ -5463,7 +5436,7 @@ fn cmd_rollback_after_file_apply() {
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (_printer, buf) = Printer::for_test();
     let v2_printer = test_v2_printer();
 
     // Apply to create the file
@@ -5478,7 +5451,7 @@ fn cmd_rollback_after_file_apply() {
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::apply::cmd_apply(&cli, &printer, &v2_printer, &args).unwrap();
+    super::apply::cmd_apply(&cli, &v2_printer, &args).unwrap();
     assert!(target.exists());
 
     // Get the apply ID from history
@@ -5540,7 +5513,7 @@ fn apply_one_file_and_record(
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let v2_printer = test_v2_printer();
 
     let args = ApplyArgs {
@@ -5554,7 +5527,7 @@ fn apply_one_file_and_record(
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::apply::cmd_apply(&cli, &printer, &v2_printer, &args).unwrap();
+    super::apply::cmd_apply(&cli, &v2_printer, &args).unwrap();
 
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
     let history = state.history(1).unwrap();
@@ -5727,6 +5700,7 @@ fn cmd_compliance_history_with_since() {
 
 #[test]
 fn cmd_compliance_history_invalid_since() {
+    let (_printer, _) = Printer::for_test();
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
@@ -5880,8 +5854,8 @@ fn empty_resolved_profile_contains_module_name() {
 
 #[test]
 fn cmd_log_show_output_nonexistent_apply() {
+    let (printer, _) = Printer::for_test();
     let state_dir = tempfile::tempdir().unwrap();
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     // show_output for a nonexistent apply ID should fail
@@ -5903,7 +5877,7 @@ fn cmd_apply_dry_run_with_skip_scripts() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (_printer, buf) = Printer::for_test();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = ApplyArgs {
         from: None,
@@ -5917,7 +5891,7 @@ fn cmd_apply_dry_run_with_skip_scripts() {
         context: "apply".to_string(),
     };
 
-    let result = super::apply::cmd_apply(&cli, &printer, &v2_printer, &args);
+    let result = super::apply::cmd_apply(&cli, &v2_printer, &args);
     assert!(
         result.is_ok(),
         "dry-run apply should succeed with --skip-scripts flag: {:?}",
@@ -5967,13 +5941,13 @@ fn execute_plan_command() {
 
 #[test]
 fn execute_compliance_snapshot() {
+    let (printer, _) = Printer::for_test();
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = Cli {
         command: Some(Command::Compliance { command: None }),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let printer = test_printer();
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
@@ -5988,6 +5962,7 @@ fn execute_compliance_snapshot() {
 
 #[test]
 fn execute_compliance_export() {
+    let (printer, _) = Printer::for_test();
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = Cli {
@@ -5996,7 +5971,6 @@ fn execute_compliance_export() {
         }),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let printer = test_printer();
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
@@ -6013,6 +5987,7 @@ fn execute_compliance_export() {
 
 #[test]
 fn execute_compliance_history() {
+    let (printer, _) = Printer::for_test();
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = Cli {
@@ -6021,7 +5996,6 @@ fn execute_compliance_history() {
         }),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let printer = test_printer();
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
@@ -6036,6 +6010,7 @@ fn execute_compliance_history() {
 
 #[test]
 fn execute_rollback_invalid() {
+    let (printer, _) = Printer::for_test();
     let state_dir = tempfile::tempdir().unwrap();
     let dir = tempfile::tempdir().unwrap();
 
@@ -6046,7 +6021,6 @@ fn execute_rollback_invalid() {
         }),
         ..test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let printer = test_printer();
 
     let result = super::execute(&cli, &printer, &test_v2_printer());
     let err = result.unwrap_err();
@@ -6095,7 +6069,7 @@ fn cmd_plan_structured_json() {
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (_printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
     let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
         cfgd_core::output_v2::OutputFormat::Json,
     );
@@ -6110,7 +6084,7 @@ fn cmd_plan_structured_json() {
         context: "apply".to_string(),
     };
 
-    super::plan::cmd_plan(&cli, &printer, &v2_printer, &args).unwrap();
+    super::plan::cmd_plan(&cli, &v2_printer, &args).unwrap();
     v2_printer.flush();
 
     let output = v2_buf.lock().unwrap();
@@ -6143,12 +6117,12 @@ fn cmd_verify_structured_json() {
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (_printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
     let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
         cfgd_core::output_v2::OutputFormat::Json,
     );
 
-    super::verify::cmd_verify(&cli, &printer, &v2_printer, None, false).unwrap();
+    super::verify::cmd_verify(&cli, &v2_printer, None, false).unwrap();
     v2_printer.flush();
 
     let output = v2_buf.lock().unwrap();
@@ -6183,12 +6157,12 @@ fn cmd_doctor_structured_json() {
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (_printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
     let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
         cfgd_core::output_v2::OutputFormat::Json,
     );
 
-    super::doctor::cmd_doctor(&cli, &printer, &v2_printer).unwrap();
+    super::doctor::cmd_doctor(&cli, &v2_printer).unwrap();
     v2_printer.flush();
 
     let output = v2_buf.lock().unwrap();
@@ -6294,10 +6268,10 @@ fn cmd_diff_with_module_filter() {
     );
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (_printer, buf) = Printer::for_test();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
 
-    let result = super::diff::cmd_diff(&cli, &printer, &v2_printer, Some("diff-mod"), false);
+    let result = super::diff::cmd_diff(&cli, &v2_printer, Some("diff-mod"), false);
     assert!(
         result.is_ok(),
         "diff should succeed when filtering to a specific module: {:?}",
@@ -6319,12 +6293,12 @@ fn cmd_verify_module_not_found() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
 
     // Nonexistent module should succeed gracefully (empty results, exit 0)
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
-    let result = super::verify::cmd_verify(&cli, &printer, &v2_printer, Some("nonexistent"), false);
+    let result = super::verify::cmd_verify(&cli, &v2_printer, Some("nonexistent"), false);
     assert!(
         result.is_ok(),
         "verify should handle nonexistent module gracefully: {:?}",
@@ -6359,7 +6333,7 @@ fn cmd_plan_module_with_packages() {
     .unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = PlanArgs {
         from: None,
@@ -6371,7 +6345,7 @@ fn cmd_plan_module_with_packages() {
         context: "apply".to_string(),
     };
 
-    let result = super::plan::cmd_plan(&cli, &printer, &v2_printer, &args);
+    let result = super::plan::cmd_plan(&cli, &v2_printer, &args);
     assert!(
         result.is_ok(),
         "plan should succeed when module contains packages: {:?}",
@@ -6521,11 +6495,11 @@ fn module_list_empty_config_dir() {
     std::fs::create_dir_all(dir.path().join("modules")).unwrap();
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    module::cmd_module_list(&cli, &printer, &v2_printer).unwrap();
+    module::cmd_module_list(&cli, &v2_printer).unwrap();
     drop(v2_printer);
 
     let output = v2_buf.lock().unwrap();
@@ -6551,11 +6525,11 @@ fn module_list_with_modules() {
 
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    module::cmd_module_list(&cli, &printer, &v2_printer).unwrap();
+    module::cmd_module_list(&cli, &v2_printer).unwrap();
     drop(v2_printer);
 
     let output = v2_buf.lock().unwrap();
@@ -6568,11 +6542,11 @@ fn module_list_no_modules_dir() {
     let dir = tempfile::tempdir().unwrap();
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    module::cmd_module_list(&cli, &printer, &v2_printer).unwrap();
+    module::cmd_module_list(&cli, &v2_printer).unwrap();
     drop(v2_printer);
 
     let output = v2_buf.lock().unwrap();
@@ -6599,11 +6573,11 @@ fn module_list_with_config_and_profile() {
 
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    module::cmd_module_list(&cli, &printer, &v2_printer).unwrap();
+    module::cmd_module_list(&cli, &v2_printer).unwrap();
     drop(v2_printer);
 
     let output = v2_buf.lock().unwrap();
@@ -6618,10 +6592,9 @@ fn module_show_not_found() {
     std::fs::create_dir_all(dir.path().join("modules")).unwrap();
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
-    let result = module::cmd_module_show(&cli, &printer, &v2_printer, "nonexistent", false);
+    let result = module::cmd_module_show(&cli, &v2_printer, "nonexistent", false);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -6679,11 +6652,11 @@ spec:
 
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    module::cmd_module_show(&cli, &printer, &v2_printer, "dev-tools", false).unwrap();
+    module::cmd_module_show(&cli, &v2_printer, "dev-tools", false).unwrap();
     drop(v2_printer);
 
     let output = v2_buf.lock().unwrap();
@@ -6721,11 +6694,11 @@ spec:
 
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    module::cmd_module_show(&cli, &printer, &v2_printer, "secrets-mod", false).unwrap();
+    module::cmd_module_show(&cli, &v2_printer, "secrets-mod", false).unwrap();
     {
         let output = v2_buf.lock().unwrap();
         assert!(output.contains("API_KEY"), "show should list env var name");
@@ -6733,7 +6706,7 @@ spec:
 
     // With show_values=true
     v2_buf.lock().unwrap().clear();
-    module::cmd_module_show(&cli, &printer, &v2_printer, "secrets-mod", true).unwrap();
+    module::cmd_module_show(&cli, &v2_printer, "secrets-mod", true).unwrap();
     drop(v2_printer);
     let output = v2_buf.lock().unwrap();
     assert!(
@@ -6752,10 +6725,9 @@ fn module_show_suggests_available_modules() {
     );
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
-    let result = module::cmd_module_show(&cli, &printer, &v2_printer, "emacs", false);
+    let result = module::cmd_module_show(&cli, &v2_printer, "emacs", false);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -6781,11 +6753,11 @@ spec:
 
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    module::cmd_module_show(&cli, &printer, &v2_printer, "scripted", false).unwrap();
+    module::cmd_module_show(&cli, &v2_printer, "scripted", false).unwrap();
     drop(v2_printer);
 
     let output = v2_buf.lock().unwrap();
@@ -6806,14 +6778,13 @@ spec:
 fn module_create_minimal() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     let args = ModuleCreateArgs {
         description: Some("Minimal module".to_string()),
         ..test_module_create_args("minimal")
     };
-    module::cmd_module_create(&cli, &printer, &v2_printer, &args).unwrap();
+    module::cmd_module_create(&cli, &v2_printer, &args).unwrap();
 
     let module_yaml = dir
         .path()
@@ -6833,7 +6804,6 @@ fn module_create_minimal() {
 fn module_create_with_env_and_aliases() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     let args = ModuleCreateArgs {
@@ -6842,7 +6812,7 @@ fn module_create_with_env_and_aliases() {
         aliases: vec!["ll=ls -la".to_string(), "gs=git status".to_string()],
         ..test_module_create_args("env-mod")
     };
-    module::cmd_module_create(&cli, &printer, &v2_printer, &args).unwrap();
+    module::cmd_module_create(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "env-mod").unwrap();
     assert_eq!(doc.spec.env.len(), 2);
@@ -6859,14 +6829,13 @@ fn module_create_with_env_and_aliases() {
 fn module_create_with_depends() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     let args = ModuleCreateArgs {
         depends: vec!["base".to_string(), "core".to_string()],
         ..test_module_create_args("dep-mod")
     };
-    module::cmd_module_create(&cli, &printer, &v2_printer, &args).unwrap();
+    module::cmd_module_create(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "dep-mod").unwrap();
     assert_eq!(doc.spec.depends, vec!["base", "core"]);
@@ -6876,14 +6845,13 @@ fn module_create_with_depends() {
 fn module_create_with_post_apply_normalizes_escapes() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     let args = ModuleCreateArgs {
         post_apply: vec!["echo \\!done".to_string()],
         ..test_module_create_args("script-mod")
     };
-    module::cmd_module_create(&cli, &printer, &v2_printer, &args).unwrap();
+    module::cmd_module_create(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "script-mod").unwrap();
     let scripts = doc.spec.scripts.unwrap();
@@ -6896,11 +6864,10 @@ fn module_create_with_post_apply_normalizes_escapes() {
 fn module_create_rejects_invalid_name() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     let args = test_module_create_args(".bad-name");
-    let result = module::cmd_module_create(&cli, &printer, &v2_printer, &args);
+    let result = module::cmd_module_create(&cli, &v2_printer, &args);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -6921,7 +6888,6 @@ fn module_create_with_duplicate_file_basenames_fails() {
     std::fs::write(dir_b.join("config.toml"), "b").unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     let args = ModuleCreateArgs {
@@ -6931,7 +6897,7 @@ fn module_create_with_duplicate_file_basenames_fails() {
         ],
         ..test_module_create_args("dup-files")
     };
-    let result = module::cmd_module_create(&cli, &printer, &v2_printer, &args);
+    let result = module::cmd_module_create(&cli, &v2_printer, &args);
     assert!(result.is_err());
     assert!(
         result
@@ -7143,9 +7109,7 @@ fn module_update_no_changes() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
-    let _ = &printer;
 
     // No flags at all — should print "no changes" and succeed
     let args = empty_module_update_args("noop-mod");
@@ -7166,9 +7130,7 @@ fn module_update_no_changes() {
 fn module_update_nonexistent_module_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
-    let _ = &printer;
 
     let args = empty_module_update_args("nonexistent");
     let result = module::cmd_module_update_local(&cli, &v2_printer, &args);
@@ -7276,9 +7238,7 @@ fn module_update_remove_nonexistent_warns() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
-    let _ = &printer;
 
     // Try removing items that don't exist — should still succeed (just warns)
     let args = ModuleUpdateArgs {
@@ -7402,6 +7362,7 @@ fn module_delete_restores_symlinked_files() {
 
 #[test]
 fn module_export_devcontainer_via_wrapper() {
+    let (_printer, _) = Printer::for_test();
     let dir = tempfile::tempdir().unwrap();
     create_module_in_dir(
         dir.path(),
@@ -7418,12 +7379,10 @@ spec:
 
     let output = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     let result = module::cmd_module_export(
         &cli,
-        &printer,
         &v2_printer,
         "export-mod",
         &ExportFormat::Devcontainer,
@@ -7460,15 +7419,14 @@ spec:
 
 #[test]
 fn module_export_nonexistent_module() {
+    let (_printer, _) = Printer::for_test();
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("modules")).unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
 
     let v2_printer = test_v2_printer();
     let result = module::cmd_module_export(
         &cli,
-        &printer,
         &v2_printer,
         "nonexistent",
         &ExportFormat::Devcontainer,
@@ -7484,6 +7442,7 @@ fn module_export_nonexistent_module() {
 
 #[test]
 fn module_export_devcontainer_with_env_and_depends() {
+    let (_printer, _) = Printer::for_test();
     let dir = tempfile::tempdir().unwrap();
     create_module_in_dir(
         dir.path(),
@@ -7511,12 +7470,10 @@ spec:
 
     let output = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     module::cmd_module_export(
         &cli,
-        &printer,
         &v2_printer,
         "full-mod",
         &ExportFormat::Devcontainer,
@@ -8046,14 +8003,13 @@ fn module_keys_list_with_pub_key() {
 fn module_create_with_manager_prefix_packages() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     let args = ModuleCreateArgs {
         packages: vec!["brew:ripgrep".to_string(), "cargo:bat".to_string()],
         ..test_module_create_args("mgr-mod")
     };
-    module::cmd_module_create(&cli, &printer, &v2_printer, &args).unwrap();
+    module::cmd_module_create(&cli, &v2_printer, &args).unwrap();
 
     let (doc, _) = module::load_module_document(dir.path(), "mgr-mod").unwrap();
     assert_eq!(doc.spec.packages.len(), 2);
@@ -8071,12 +8027,12 @@ fn module_list_structured_output_empty() {
     std::fs::create_dir_all(dir.path().join("modules")).unwrap();
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let (printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (_printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
     let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
         cfgd_core::output_v2::OutputFormat::Json,
     );
 
-    module::cmd_module_list(&cli, &printer, &v2_printer).unwrap();
+    module::cmd_module_list(&cli, &v2_printer).unwrap();
     drop(v2_printer);
 
     let output = v2_buf.lock().unwrap();
@@ -8095,12 +8051,12 @@ fn module_show_structured_output() {
     );
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let (printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (_printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
     let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
         cfgd_core::output_v2::OutputFormat::Json,
     );
 
-    module::cmd_module_show(&cli, &printer, &v2_printer, "json-mod", false).unwrap();
+    module::cmd_module_show(&cli, &v2_printer, "json-mod", false).unwrap();
     drop(v2_printer);
 
     let output = v2_buf.lock().unwrap();
@@ -8151,9 +8107,7 @@ fn load_config_and_profile_default_profile() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
 
-    let _ = &printer;
     let result = super::load_config_and_profile_v2(&cli);
     assert!(
         result.is_ok(),
@@ -8173,9 +8127,7 @@ fn load_config_and_profile_with_override() {
 
     let mut cli = test_cli(dir.path());
     cli.profile = Some("work".to_string());
-    let printer = test_printer();
 
-    let _ = &printer;
     let result = super::load_config_and_profile_v2(&cli);
     assert!(
         result.is_ok(),
@@ -8193,9 +8145,7 @@ fn load_config_and_profile_with_override() {
 fn load_config_and_profile_missing_config_errors() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_printer();
 
-    let _ = &printer;
     let result = super::load_config_and_profile_v2(&cli);
     let err = result.unwrap_err();
     let msg = err.to_string();
@@ -8215,9 +8165,7 @@ fn load_config_and_profile_missing_profile_errors() {
         .unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_printer();
 
-    let _ = &printer;
     let result = super::load_config_and_profile_v2(&cli);
     let err = result.unwrap_err();
     let msg = err.to_string();
@@ -8231,7 +8179,7 @@ fn load_config_and_profile_missing_profile_errors() {
 
 #[test]
 fn print_apply_result_in_progress() {
-    let printer = test_printer();
+    let (printer, _) = Printer::for_test();
     let result = cfgd_core::reconciler::ApplyResult {
         status: cfgd_core::state::ApplyStatus::InProgress,
         action_results: vec![],
@@ -9368,8 +9316,8 @@ fn cmd_workflow_generate_no_overwrite_without_force() {
 
 #[test]
 fn cmd_log_show_output_nonexistent_apply_via_dispatch() {
+    let (printer, _) = Printer::for_test();
     let state_dir = tempfile::tempdir().unwrap();
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     // Nonexistent apply ID should fail (routes through cmd_log → cmd_log_show_output)
@@ -9445,7 +9393,7 @@ fn cmd_apply_module_only_no_profile() {
     );
 
     let cli = test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (_printer, buf) = Printer::for_test();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = ApplyArgs {
         from: None,
@@ -9459,7 +9407,7 @@ fn cmd_apply_module_only_no_profile() {
         context: "apply".to_string(),
     };
 
-    let result = super::apply::cmd_apply(&cli, &printer, &v2_printer, &args);
+    let result = super::apply::cmd_apply(&cli, &v2_printer, &args);
     assert!(
         result.is_ok(),
         "dry-run apply should succeed with --module flag and no profile configured: {:?}",
@@ -9494,7 +9442,7 @@ fn cmd_plan_module_only_no_profile() {
     );
 
     let cli = test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = PlanArgs {
         from: None,
@@ -9506,7 +9454,7 @@ fn cmd_plan_module_only_no_profile() {
         context: "apply".to_string(),
     };
 
-    let result = super::plan::cmd_plan(&cli, &printer, &v2_printer, &args);
+    let result = super::plan::cmd_plan(&cli, &v2_printer, &args);
     assert!(
         result.is_ok(),
         "plan should succeed with --module flag and no profile configured: {:?}",
@@ -9623,13 +9571,13 @@ fn execute_explain_recursive() {
 
 #[test]
 fn execute_compliance_command() {
+    let (printer, _) = Printer::for_test();
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = Cli {
         command: Some(Command::Compliance { command: None }),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let printer = test_printer();
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
@@ -9644,6 +9592,7 @@ fn execute_compliance_command() {
 
 #[test]
 fn execute_source_list() {
+    let (printer, _) = Printer::for_test();
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = Cli {
@@ -9652,7 +9601,6 @@ fn execute_source_list() {
         }),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let printer = test_printer();
     let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
 
     super::execute(&cli, &printer, &v2_printer).unwrap();
@@ -9746,7 +9694,7 @@ fn cmd_apply_with_aliases() {
     .unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (_printer, buf) = Printer::for_test();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = ApplyArgs {
         from: None,
@@ -9760,7 +9708,7 @@ fn cmd_apply_with_aliases() {
         context: "apply".to_string(),
     };
 
-    let result = super::apply::cmd_apply(&cli, &printer, &v2_printer, &args);
+    let result = super::apply::cmd_apply(&cli, &v2_printer, &args);
     assert!(
         result.is_ok(),
         "dry-run apply should succeed when profile contains shell aliases: {:?}",
@@ -9797,12 +9745,12 @@ fn cmd_status_module_structured_output() {
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (_printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
     let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
         cfgd_core::output_v2::OutputFormat::Json,
     );
 
-    super::status::cmd_status(&cli, &printer, &v2_printer, Some("json-mod"), false).unwrap();
+    super::status::cmd_status(&cli, &v2_printer, Some("json-mod"), false).unwrap();
     drop(v2_printer);
 
     let output = v2_buf.lock().unwrap().clone();
@@ -9825,12 +9773,12 @@ fn cmd_verify_structured_output() {
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (_printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
     let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
         cfgd_core::output_v2::OutputFormat::Json,
     );
 
-    super::verify::cmd_verify(&cli, &printer, &v2_printer, None, false).unwrap();
+    super::verify::cmd_verify(&cli, &v2_printer, None, false).unwrap();
     v2_printer.flush();
 
     let output = v2_buf.lock().unwrap();
@@ -9865,7 +9813,7 @@ fn cmd_plan_structured_output() {
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (_printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
     let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
         cfgd_core::output_v2::OutputFormat::Json,
     );
@@ -9879,7 +9827,7 @@ fn cmd_plan_structured_output() {
         context: "apply".to_string(),
     };
 
-    super::plan::cmd_plan(&cli, &printer, &v2_printer, &args).unwrap();
+    super::plan::cmd_plan(&cli, &v2_printer, &args).unwrap();
     v2_printer.flush();
 
     let output = v2_buf.lock().unwrap();
@@ -9903,8 +9851,8 @@ fn cmd_plan_structured_output() {
 
 #[test]
 fn cmd_log_show_output_for_nonexistent_apply() {
+    let (printer, _) = Printer::for_test();
     let state_dir = tempfile::tempdir().unwrap();
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     // Nonexistent apply ID should fail
@@ -10442,7 +10390,7 @@ fn cmd_apply_dry_run_with_skip_and_only() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (_printer, buf) = Printer::for_test();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
     let args = ApplyArgs {
         from: None,
@@ -10456,7 +10404,7 @@ fn cmd_apply_dry_run_with_skip_and_only() {
         context: "apply".to_string(),
     };
 
-    let result = super::apply::cmd_apply(&cli, &printer, &v2_printer, &args);
+    let result = super::apply::cmd_apply(&cli, &v2_printer, &args);
     assert!(
         result.is_ok(),
         "dry-run apply should succeed with both --skip and --only filters: {:?}",
@@ -10497,7 +10445,7 @@ fn cmd_plan_module_structured_output() {
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+    let (_printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
     let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
         cfgd_core::output_v2::OutputFormat::Json,
     );
@@ -10511,7 +10459,7 @@ fn cmd_plan_module_structured_output() {
         context: "apply".to_string(),
     };
 
-    super::plan::cmd_plan(&cli, &printer, &v2_printer, &args).unwrap();
+    super::plan::cmd_plan(&cli, &v2_printer, &args).unwrap();
     v2_printer.flush();
 
     let output = v2_buf.lock().unwrap();
@@ -10744,11 +10692,11 @@ fn cmd_doctor_without_config_succeeds() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
     let cli = test_cli(dir.path());
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    super::doctor::cmd_doctor(&cli, &printer, &v2_printer).unwrap();
+    super::doctor::cmd_doctor(&cli, &v2_printer).unwrap();
     v2_printer.flush();
 
     let output = v2_buf.lock().unwrap();
@@ -10759,11 +10707,11 @@ fn cmd_doctor_without_config_succeeds() {
 fn cmd_doctor_with_rich_config() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, _buf) = Printer::for_test();
+    let (_printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    super::doctor::cmd_doctor(&cli, &printer, &v2_printer).unwrap();
+    super::doctor::cmd_doctor(&cli, &v2_printer).unwrap();
     v2_printer.flush();
 
     let output = v2_buf.lock().unwrap();
@@ -10780,9 +10728,7 @@ fn cmd_doctor_with_rich_config() {
 fn load_config_and_profile_returns_correct_config() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
 
-    let _ = &printer;
     let (cfg, _, resolved) = super::load_config_and_profile_v2(&cli).unwrap();
     assert_eq!(cfg.metadata.name, "t");
     assert!(
@@ -10798,9 +10744,7 @@ fn load_config_and_profile_missing_profile_fails() {
         profile: Some("nonexistent".to_string()),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let printer = test_printer();
 
-    let _ = &printer;
     let result = super::load_config_and_profile_v2(&cli);
     let err = result.unwrap_err();
     let msg = err.to_string();
@@ -10840,7 +10784,7 @@ fn cmd_plan_invalid_context_fails() {
         skip_scripts: false,
         context: "invalid".to_string(),
     };
-    let result = super::plan::cmd_plan(&h.cli(), h.printer(), h.v2_printer(), &args);
+    let result = super::plan::cmd_plan(&h.cli(), h.v2_printer(), &args);
     assert_error_contains(&result, "Unknown context");
 }
 
@@ -10856,7 +10800,7 @@ fn cmd_plan_with_skip_filters_actions() {
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::plan::cmd_plan(&h.cli(), h.printer(), h.v2_printer(), &args).unwrap();
+    super::plan::cmd_plan(&h.cli(), h.v2_printer(), &args).unwrap();
     let output = h.output();
     assert!(
         output.contains("Plan") || output.contains("Phase"),
@@ -10869,14 +10813,7 @@ fn cmd_plan_with_skip_filters_actions() {
 #[test]
 fn cmd_diff_module_not_found_succeeds() {
     let h = CliTestHarness::builder().build();
-    super::diff::cmd_diff(
-        &h.cli(),
-        h.printer(),
-        h.v2_printer(),
-        Some("nonexistent"),
-        false,
-    )
-    .unwrap();
+    super::diff::cmd_diff(&h.cli(), h.v2_printer(), Some("nonexistent"), false).unwrap();
     let output = h.output();
     assert!(
         output.contains("not found") || output.contains("Diff"),
@@ -10889,14 +10826,7 @@ fn cmd_diff_with_module() {
     let h = CliTestHarness::builder()
             .module("diff-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-mod\nspec:\n  packages: []\n")
             .build();
-    super::diff::cmd_diff(
-        &h.cli(),
-        h.printer(),
-        h.v2_printer(),
-        Some("diff-mod"),
-        false,
-    )
-    .unwrap();
+    super::diff::cmd_diff(&h.cli(), h.v2_printer(), Some("diff-mod"), false).unwrap();
     let output = h.output();
     assert!(
         output.contains("Diff") || output.contains("diff-mod"),
@@ -10911,14 +10841,7 @@ fn cmd_verify_with_module_filter() {
     let h = CliTestHarness::builder()
             .module("verify-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: verify-mod\nspec:\n  packages: []\n")
             .build();
-    super::verify::cmd_verify(
-        &h.cli(),
-        h.printer(),
-        h.v2_printer(),
-        Some("verify-mod"),
-        false,
-    )
-    .unwrap();
+    super::verify::cmd_verify(&h.cli(), h.v2_printer(), Some("verify-mod"), false).unwrap();
     let output = h.output();
     assert!(
         output.contains("Verify") || output.contains("verify-mod"),
@@ -10968,7 +10891,7 @@ fn cmd_apply_real_records_state() {
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::apply::cmd_apply(&h.cli(), h.printer(), h.v2_printer(), &args).unwrap();
+    super::apply::cmd_apply(&h.cli(), h.v2_printer(), &args).unwrap();
 
     let state = StateStore::open(&h.state_path().join("cfgd.db")).unwrap();
     let last = state.last_apply().unwrap();
@@ -10999,7 +10922,7 @@ fn cmd_apply_with_skip_and_only() {
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::apply::cmd_apply(&h.cli(), h.printer(), h.v2_printer(), &args).unwrap();
+    super::apply::cmd_apply(&h.cli(), h.v2_printer(), &args).unwrap();
     let output = h.output();
     assert!(
         output.contains("Apply")
@@ -11024,7 +10947,7 @@ fn cmd_apply_skip_scripts_flag() {
         skip_scripts: true,
         context: "apply".to_string(),
     };
-    super::apply::cmd_apply(&h.cli(), h.printer(), h.v2_printer(), &args).unwrap();
+    super::apply::cmd_apply(&h.cli(), h.v2_printer(), &args).unwrap();
     let output = h.output();
     assert!(
         output.contains("Apply")
@@ -11049,7 +10972,7 @@ fn cmd_apply_invalid_context_fails() {
         skip_scripts: false,
         context: "bogus".to_string(),
     };
-    let result = super::apply::cmd_apply(&h.cli(), h.printer(), h.v2_printer(), &args);
+    let result = super::apply::cmd_apply(&h.cli(), h.v2_printer(), &args);
     let err = result
         .expect_err("apply with unknown context must fail before any reconcile work runs")
         .to_string();
@@ -11077,7 +11000,7 @@ fn cmd_apply_reconcile_context_threads_through() {
         skip_scripts: false,
         context: "reconcile".to_string(),
     };
-    super::apply::cmd_apply(&h.cli(), h.printer(), h.v2_printer(), &args).unwrap();
+    super::apply::cmd_apply(&h.cli(), h.v2_printer(), &args).unwrap();
     h.assert_header("Plan");
     let output = h.output();
     assert!(
@@ -11549,8 +11472,8 @@ fn cmd_module_search_no_registries_structured() {
 
 #[test]
 fn cmd_module_build_no_module_yaml_fails() {
+    let (printer, _) = Printer::for_test();
     let dir = tempfile::tempdir().unwrap();
-    let printer = test_printer();
     let v2_printer = test_v2_printer();
 
     let result = module::cmd_module_build(
@@ -11649,7 +11572,7 @@ fn cmd_module_add_from_registry_not_configured_fails() {
 #[test]
 fn cmd_status_module_not_found_output() {
     let h = CliTestHarness::builder().build();
-    super::status::cmd_status_module(&h.cli(), h.printer(), h.v2_printer(), "nonexistent").unwrap();
+    super::status::cmd_status_module(&h.cli(), h.v2_printer(), "nonexistent").unwrap();
     h.assert_output_contains("nonexistent");
     h.assert_output_contains("not found");
 }
@@ -11657,7 +11580,7 @@ fn cmd_status_module_not_found_output() {
 #[test]
 fn cmd_status_module_not_found_json() {
     let h = CliTestHarness::builder().json().build();
-    super::status::cmd_status_module(&h.cli(), h.printer(), h.v2_printer(), "ghost-mod").unwrap();
+    super::status::cmd_status_module(&h.cli(), h.v2_printer(), "ghost-mod").unwrap();
     let parsed = h.json_output();
     assert_eq!(parsed["name"], "ghost-mod");
     assert_eq!(parsed["status"], "not found");
@@ -11670,7 +11593,7 @@ fn cmd_status_module_found_output() {
     let h = CliTestHarness::builder()
             .module("my-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: my-mod\nspec:\n  packages:\n    - name: ripgrep\n  files: []\n")
             .build();
-    super::status::cmd_status_module(&h.cli(), h.printer(), h.v2_printer(), "my-mod").unwrap();
+    super::status::cmd_status_module(&h.cli(), h.v2_printer(), "my-mod").unwrap();
     h.assert_output_contains("my-mod");
     // Status shows package count, not individual package names
     h.assert_output_contains("1");
@@ -11682,7 +11605,7 @@ fn cmd_status_module_found_json() {
             .json()
             .module("my-mod", "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: my-mod\nspec:\n  packages:\n    - name: ripgrep\n  files: []\n  depends:\n    - base\n")
             .build();
-    super::status::cmd_status_module(&h.cli(), h.printer(), h.v2_printer(), "my-mod").unwrap();
+    super::status::cmd_status_module(&h.cli(), h.v2_printer(), "my-mod").unwrap();
     let parsed = h.json_output();
     assert_eq!(parsed["name"], "my-mod");
     assert_eq!(parsed["packages"], 1);
@@ -11896,7 +11819,7 @@ fn cmd_compliance_history_json() {
 #[test]
 fn json_schema_status() {
     let h = CliTestHarness::builder().json().build();
-    super::status::cmd_status(&h.cli(), h.printer(), h.v2_printer(), None, false).unwrap();
+    super::status::cmd_status(&h.cli(), h.v2_printer(), None, false).unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(
         &parsed,
@@ -11920,7 +11843,7 @@ fn json_schema_status_module() {
         .json()
         .module("test-mod", SIMPLE_MODULE_YAML)
         .build();
-    super::status::cmd_status_module(&h.cli(), h.printer(), h.v2_printer(), "test-mod").unwrap();
+    super::status::cmd_status_module(&h.cli(), h.v2_printer(), "test-mod").unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(
         &parsed,
@@ -11961,7 +11884,7 @@ fn json_schema_plan() {
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    super::plan::cmd_plan(&h.cli(), h.printer(), h.v2_printer(), &args).unwrap();
+    super::plan::cmd_plan(&h.cli(), h.v2_printer(), &args).unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(&parsed, &["context", "phases", "totalActions"]);
     assert_json_field_type(&parsed, "context", "string");
@@ -11982,7 +11905,7 @@ fn json_schema_config_show() {
 #[test]
 fn json_schema_doctor() {
     let h = CliTestHarness::builder().json().build();
-    super::doctor::cmd_doctor(&h.cli(), h.printer(), h.v2_printer()).unwrap();
+    super::doctor::cmd_doctor(&h.cli(), h.v2_printer()).unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(
         &parsed,
@@ -11996,7 +11919,7 @@ fn json_schema_doctor() {
 #[test]
 fn json_schema_verify() {
     let h = CliTestHarness::builder().json().build();
-    super::verify::cmd_verify(&h.cli(), h.printer(), h.v2_printer(), None, false).unwrap();
+    super::verify::cmd_verify(&h.cli(), h.v2_printer(), None, false).unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(&parsed, &["passCount", "failCount", "results"]);
     assert_json_field_type(&parsed, "passCount", "number");
@@ -14042,7 +13965,6 @@ spec:
     }));
     let result = super::plan::cmd_plan(
         &cli,
-        h.printer(),
         h.v2_printer(),
         &PlanArgs {
             from: None,
@@ -14103,7 +14025,7 @@ spec:
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    let result = super::plan::cmd_plan(&h.cli(), h.printer(), h.v2_printer(), &args);
+    let result = super::plan::cmd_plan(&h.cli(), h.v2_printer(), &args);
     assert!(
         result.is_ok(),
         "module-only plan should succeed: {:?}",
@@ -14159,7 +14081,7 @@ spec:
         skip_scripts: false,
         context: "apply".to_string(),
     };
-    let result = super::plan::cmd_plan(&h.cli(), h.printer(), h.v2_printer(), &args);
+    let result = super::plan::cmd_plan(&h.cli(), h.v2_printer(), &args);
     assert!(
         result.is_ok(),
         "JSON plan should succeed: {:?}",
@@ -14212,8 +14134,7 @@ spec:
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: base-mod\nspec:\n  packages: []\n",
     );
 
-    let result =
-        super::status::cmd_status_module(&h.cli(), h.printer(), h.v2_printer(), "status-mod");
+    let result = super::status::cmd_status_module(&h.cli(), h.v2_printer(), "status-mod");
     assert!(
         result.is_ok(),
         "cmd_status_module should succeed: {:?}",
@@ -14263,8 +14184,7 @@ spec:
         .module("json-status-mod", module_yaml)
         .build();
 
-    let result =
-        super::status::cmd_status_module(&h.cli(), h.printer(), h.v2_printer(), "json-status-mod");
+    let result = super::status::cmd_status_module(&h.cli(), h.v2_printer(), "json-status-mod");
     assert!(
         result.is_ok(),
         "JSON module status should succeed: {:?}",
@@ -14286,8 +14206,7 @@ spec:
 fn cmd_status_module_json_output_not_found() {
     let h = CliTestHarness::builder().json().build();
 
-    let result =
-        super::status::cmd_status_module(&h.cli(), h.printer(), h.v2_printer(), "nonexistent-mod");
+    let result = super::status::cmd_status_module(&h.cli(), h.v2_printer(), "nonexistent-mod");
     assert!(result.is_ok(), "missing module JSON status should succeed");
 
     let json = h.json_output();
@@ -14456,7 +14375,7 @@ fn build_registry_with_no_config_uses_defaults() {
 #[test]
 fn cmd_diff_full_profile_shows_all_sections() {
     let h = CliTestHarness::builder().build();
-    let result = super::diff::cmd_diff(&h.cli(), h.printer(), h.v2_printer(), None, false);
+    let result = super::diff::cmd_diff(&h.cli(), h.v2_printer(), None, false);
     assert!(
         result.is_ok(),
         "diff with default profile should succeed: {:?}",
@@ -14489,13 +14408,7 @@ fn cmd_diff_full_profile_shows_all_sections() {
 #[test]
 fn cmd_diff_module_not_found_shows_info() {
     let h = CliTestHarness::builder().build();
-    let result = super::diff::cmd_diff(
-        &h.cli(),
-        h.printer(),
-        h.v2_printer(),
-        Some("nonexistent-mod"),
-        false,
-    );
+    let result = super::diff::cmd_diff(&h.cli(), h.v2_printer(), Some("nonexistent-mod"), false);
     assert!(
         result.is_ok(),
         "diff with missing module should succeed gracefully"
@@ -14532,13 +14445,7 @@ spec:
         .join("files");
     std::fs::write(module_files.join("my-config"), "new config content\n").unwrap();
 
-    let result = super::diff::cmd_diff(
-        &h.cli(),
-        h.printer(),
-        h.v2_printer(),
-        Some("diff-mod"),
-        false,
-    );
+    let result = super::diff::cmd_diff(&h.cli(), h.v2_printer(), Some("diff-mod"), false);
     assert!(
         result.is_ok(),
         "module diff should succeed: {:?}",
@@ -14572,7 +14479,7 @@ spec:
 #[test]
 fn cmd_status_with_sources_shows_source_section() {
     let h = CliTestHarness::builder().rich_config().build();
-    let result = super::status::cmd_status(&h.cli(), h.printer(), h.v2_printer(), None, false);
+    let result = super::status::cmd_status(&h.cli(), h.v2_printer(), None, false);
     assert!(
         result.is_ok(),
         "status with sources should succeed: {:?}",
@@ -15705,7 +15612,7 @@ fn cmd_doctor_with_invalid_config_shows_error_but_succeeds() {
         .config("this is not valid yaml: [[[")
         .build();
 
-    let result = super::doctor::cmd_doctor(&h.cli(), h.printer(), h.v2_printer());
+    let result = super::doctor::cmd_doctor(&h.cli(), h.v2_printer());
     assert!(
         result.is_ok(),
         "doctor should succeed even with invalid config"
@@ -15727,7 +15634,7 @@ fn cmd_doctor_with_invalid_config_shows_error_but_succeeds() {
 fn cmd_doctor_json_has_all_top_level_fields() {
     let h = CliTestHarness::builder().json().build();
 
-    super::doctor::cmd_doctor(&h.cli(), h.printer(), h.v2_printer()).unwrap();
+    super::doctor::cmd_doctor(&h.cli(), h.v2_printer()).unwrap();
 
     let parsed = h.json_output();
     assert_json_has_fields(
@@ -15753,7 +15660,7 @@ fn cmd_doctor_json_has_all_top_level_fields() {
 fn cmd_doctor_json_config_section_has_expected_fields() {
     let h = CliTestHarness::builder().json().build();
 
-    super::doctor::cmd_doctor(&h.cli(), h.printer(), h.v2_printer()).unwrap();
+    super::doctor::cmd_doctor(&h.cli(), h.v2_printer()).unwrap();
 
     let parsed = h.json_output();
     let config = &parsed["config"];
@@ -15783,7 +15690,7 @@ spec:
         .module("test-mod", SIMPLE_MODULE_YAML)
         .build();
 
-    super::doctor::cmd_doctor(&h.cli(), h.printer(), h.v2_printer()).unwrap();
+    super::doctor::cmd_doctor(&h.cli(), h.v2_printer()).unwrap();
 
     let output = h.output();
     assert!(
@@ -15813,7 +15720,7 @@ spec:
         .profile("default", profile_with_missing_module)
         .build();
 
-    super::doctor::cmd_doctor(&h.cli(), h.printer(), h.v2_printer()).unwrap();
+    super::doctor::cmd_doctor(&h.cli(), h.v2_printer()).unwrap();
 
     let output = h.output();
     assert!(
@@ -15874,7 +15781,7 @@ fn cmd_doctor_declares_every_supported_package_manager() {
         .profile("default", ALL_MANAGERS_PROFILE_YAML)
         .json()
         .build();
-    super::doctor::cmd_doctor(&h.cli(), h.printer(), h.v2_printer()).unwrap();
+    super::doctor::cmd_doctor(&h.cli(), h.v2_printer()).unwrap();
 
     let parsed = h.json_output();
     let managers = parsed["packageManagers"]
@@ -15933,7 +15840,7 @@ fn cmd_doctor_shows_config_sources_section_when_sources_declared() {
     // — so the "Config Sources" section should render with the "not cached"
     // warning arm (doctor.rs lines 415-439).
     let h = CliTestHarness::builder().rich_config().build();
-    super::doctor::cmd_doctor(&h.cli(), h.printer(), h.v2_printer()).unwrap();
+    super::doctor::cmd_doctor(&h.cli(), h.v2_printer()).unwrap();
 
     let output = h.output();
     assert!(
@@ -15968,7 +15875,7 @@ spec:
         .json()
         .build();
 
-    super::doctor::cmd_doctor(&h.cli(), h.printer(), h.v2_printer()).unwrap();
+    super::doctor::cmd_doctor(&h.cli(), h.v2_printer()).unwrap();
 
     let parsed = h.json_output();
     let modules = parsed["modules"]

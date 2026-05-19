@@ -18,7 +18,6 @@ use std::path::{Path, PathBuf};
 
 use cfgd::cli::diff::{build_diff_doc, cmd_diff};
 use cfgd::cli::output_types::{DiffOutput, DiffSummary, PackageDrift, SystemDriftOutput};
-use cfgd_core::output::Printer as PrinterV1;
 use cfgd_core::output_v2::{Doc, Printer, Role};
 use pretty_assertions::assert_eq;
 
@@ -149,10 +148,9 @@ fn diff_no_drift_human() {
     let (config_dir, state_dir, target) = no_drift_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
-    cmd_diff(&cli, &old_printer, &v2_printer, None, false).unwrap();
+    cmd_diff(&cli, &v2_printer, None, false).unwrap();
     drop(v2_printer);
 
     let normalized = normalize(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
@@ -193,10 +191,9 @@ fn diff_file_drift_human() {
     let (config_dir, state_dir, target) = file_drift_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
-    cmd_diff(&cli, &old_printer, &v2_printer, None, false).unwrap();
+    cmd_diff(&cli, &v2_printer, None, false).unwrap();
     drop(v2_printer);
 
     let normalized = normalize(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
@@ -212,10 +209,9 @@ fn diff_package_drift_human() {
     let (config_dir, state_dir, target) = package_drift_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
-    cmd_diff(&cli, &old_printer, &v2_printer, None, false).unwrap();
+    cmd_diff(&cli, &v2_printer, None, false).unwrap();
     drop(v2_printer);
 
     let normalized = normalize(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
@@ -264,10 +260,9 @@ fn diff_module_only_human() {
     let (config_dir, state_dir) = module_only_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
-    cmd_diff(&cli, &old_printer, &v2_printer, Some("diff-mod"), false).unwrap();
+    cmd_diff(&cli, &v2_printer, Some("diff-mod"), false).unwrap();
     drop(v2_printer);
 
     let normalized = normalize(&cap.human(), config_dir.path(), &[]);

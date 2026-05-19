@@ -183,7 +183,7 @@ pub fn fetch_git_source(
     git_src: &GitSource,
     cache_base: &Path,
     module_name: &str,
-    printer: &crate::output::Printer,
+    printer: &crate::output_v2::Printer,
 ) -> Result<PathBuf> {
     let cache_dir = git_cache_dir(cache_base, &git_src.repo_url);
 
@@ -223,7 +223,7 @@ pub(super) fn clone_repo(
     dest: &Path,
     git_src: &GitSource,
     module_name: &str,
-    printer: &crate::output::Printer,
+    printer: &crate::output_v2::Printer,
 ) -> Result<()> {
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| ModuleError::GitFetchFailed {
@@ -240,7 +240,7 @@ pub(super) fn clone_repo(
     cmd.stderr(std::process::Stdio::piped());
 
     let label = format!("Cloning module '{}'", module_name);
-    let cli_result = printer.run_with_output(&mut cmd, &label);
+    let cli_result = printer.run(&mut cmd, &label);
     if matches!(&cli_result, Ok(output) if output.status.success()) {
         return Ok(());
     }
@@ -252,7 +252,7 @@ pub(super) fn clone_repo(
     }
 
     // Fall back to libgit2 with spinner.
-    let spinner = printer.spinner(&format!("Cloning module '{}' (libgit2)...", module_name));
+    let spinner = printer.spinner(format!("Cloning module '{}' (libgit2)...", module_name));
 
     let result = git2::build::RepoBuilder::new()
         .fetch_options(git_fetch_options())
@@ -263,7 +263,19 @@ pub(super) fn clone_repo(
             message: e.to_string(),
         });
 
-    spinner.finish_and_clear();
+    match &result {
+        Ok(_) => {
+            let _ = spinner.finish_ok(format!("Cloned module '{}' (libgit2)", module_name));
+        }
+        Err(e) => {
+            let _ = spinner
+                .finish_fail(format!(
+                    "Failed to clone module '{}' (libgit2)",
+                    module_name
+                ))
+                .detail(e.to_string());
+        }
+    }
     result?;
 
     Ok(())
@@ -273,7 +285,7 @@ pub(super) fn fetch_existing_repo(
     repo_path: &Path,
     git_src: &GitSource,
     module_name: &str,
-    printer: &crate::output::Printer,
+    printer: &crate::output_v2::Printer,
 ) -> Result<()> {
     // Try git CLI first with live progress output.
     let mut cmd = crate::git_cmd_safe(Some(&git_src.repo_url), None);
@@ -282,13 +294,13 @@ pub(super) fn fetch_existing_repo(
     cmd.stderr(std::process::Stdio::piped());
 
     let label = format!("Fetching module '{}'", module_name);
-    let cli_result = printer.run_with_output(&mut cmd, &label);
+    let cli_result = printer.run(&mut cmd, &label);
     if matches!(&cli_result, Ok(output) if output.status.success()) {
         return Ok(());
     }
 
     // Fall back to libgit2 with spinner.
-    let spinner = printer.spinner(&format!("Fetching module '{}' (libgit2)...", module_name));
+    let spinner = printer.spinner(format!("Fetching module '{}' (libgit2)...", module_name));
 
     let repo = open_repo(repo_path, module_name, &git_src.repo_url)?;
 
@@ -314,7 +326,19 @@ pub(super) fn fetch_existing_repo(
             message: format!("fetch failed: {e}"),
         });
 
-    spinner.finish_and_clear();
+    match &fetch_result {
+        Ok(_) => {
+            let _ = spinner.finish_ok(format!("Fetched module '{}' (libgit2)", module_name));
+        }
+        Err(e) => {
+            let _ = spinner
+                .finish_fail(format!(
+                    "Failed to fetch module '{}' (libgit2)",
+                    module_name
+                ))
+                .detail(e.to_string());
+        }
+    }
     fetch_result?;
 
     Ok(())

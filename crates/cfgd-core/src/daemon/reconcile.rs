@@ -286,14 +286,13 @@ pub(crate) fn handle_reconcile(
             .collect();
         let cache_base = crate::modules::default_module_cache_dir()
             .unwrap_or_else(|_| config_dir.join(".module-cache"));
-        let quiet_printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
         match crate::modules::resolve_modules(
             &resolved.merged.modules,
             &config_dir,
             &cache_base,
             &platform,
             &mgr_map,
-            &quiet_printer,
+            printer,
         ) {
             Ok(m) => m,
             Err(e) => {

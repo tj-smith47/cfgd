@@ -4,7 +4,6 @@ use cfgd_core::output_v2::{Doc, Role};
 
 pub fn cmd_apply(
     cli: &Cli,
-    printer: &Printer,
     v2_printer: &cfgd_core::output_v2::Printer,
     args: &ApplyArgs,
 ) -> anyhow::Result<()> {
@@ -128,7 +127,7 @@ pub fn cmd_apply(
             &cache_base,
             &platform,
             &mgr_map,
-            printer,
+            v2_printer,
         ) {
             Ok(mods) => mods,
             Err(e) if module_filter.is_some() => {

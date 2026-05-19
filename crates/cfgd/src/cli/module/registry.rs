@@ -1098,11 +1098,11 @@ pub(super) fn ensure_module_in_profile_doc(
     true
 }
 
-/// Construct a Quiet v1 Printer for outbound `cfgd_core::modules::*` library
-/// calls. The lib still owns its progress surface through `&Printer`; this
-/// CLI module already owns the user-facing v2 spinner / status above the
-/// call, so the lib's v1 emissions are suppressed (inversion of control —
-/// v2 owns the user-facing surface, the lib gets a non-emitting sink).
-fn null_lib_printer() -> Printer {
-    Printer::new(cfgd_core::output::Verbosity::Quiet)
+/// Construct a Quiet Printer for outbound `cfgd_core::modules::*` library
+/// calls. The lib owns its own progress surface; this CLI module already
+/// drives the user-facing v2 spinner / status above the call, so the lib's
+/// emissions are suppressed (inversion of control — the CLI owns the
+/// user-facing surface, the lib gets a non-emitting sink).
+fn null_lib_printer() -> cfgd_core::output_v2::Printer {
+    cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet)
 }

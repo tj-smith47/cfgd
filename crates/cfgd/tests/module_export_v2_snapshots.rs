@@ -82,11 +82,9 @@ fn module_export_happy_human() {
     let (config_dir, state_dir, output_dir) = module_export_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (v2_printer, cap) = Printer::for_test_doc();
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
 
     module::cmd_module_export(
         &cli,
-        &printer,
         &v2_printer,
         "export-mod",
         &cfgd::cli::ExportFormat::Devcontainer,
@@ -112,11 +110,9 @@ fn module_export_happy_json() {
     let (config_dir, state_dir, output_dir) = module_export_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (v2_printer, cap) = Printer::for_test_doc();
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
 
     module::cmd_module_export(
         &cli,
-        &printer,
         &v2_printer,
         "export-mod",
         &cfgd::cli::ExportFormat::Devcontainer,
@@ -141,11 +137,9 @@ fn module_export_not_found_human() {
     let (config_dir, state_dir, output_dir) = module_export_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (v2_printer, cap) = Printer::for_test_doc();
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
 
     let result = module::cmd_module_export(
         &cli,
-        &printer,
         &v2_printer,
         "ghost",
         &cfgd::cli::ExportFormat::Devcontainer,

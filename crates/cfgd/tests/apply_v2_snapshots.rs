@@ -27,7 +27,6 @@ use std::path::Path;
 
 use cfgd::cli::apply::{build_apply_doc, cmd_apply};
 use cfgd::cli::output_types::ApplyOutput;
-use cfgd_core::output::Printer as PrinterV1;
 use cfgd_core::output_v2::{Doc, Printer, Role};
 use pretty_assertions::assert_eq;
 
@@ -116,11 +115,10 @@ fn apply_happy_human() {
     let (config_dir, state_dir, target) = tiny_profile_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
     let args = apply_args();
 
-    cmd_apply(&cli, &old_printer, &v2_printer, &args).unwrap();
+    cmd_apply(&cli, &v2_printer, &args).unwrap();
     drop(v2_printer);
 
     let normalized =
@@ -153,11 +151,10 @@ fn apply_dry_run_human() {
     let (config_dir, state_dir, target) = tiny_profile_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
     let args = apply_args_dry_run();
 
-    cmd_apply(&cli, &old_printer, &v2_printer, &args).unwrap();
+    cmd_apply(&cli, &v2_printer, &args).unwrap();
     drop(v2_printer);
 
     assert!(!target.exists(), "dry-run must not create the target file");
@@ -191,11 +188,10 @@ fn apply_with_failures_human() {
     let (config_dir, state_dir, target_ok, target_fail) = profile_with_one_failure_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
     let args = apply_args();
 
-    cmd_apply(&cli, &old_printer, &v2_printer, &args).unwrap();
+    cmd_apply(&cli, &v2_printer, &args).unwrap();
     drop(v2_printer);
 
     assert!(target_ok.exists(), "first file action must succeed");

@@ -53,9 +53,8 @@ fn init_happy_human() {
         apply_modules: &[],
     };
 
-    let (old_printer, _sink) = cfgd_core::output::Printer::for_test();
     let (printer, cap) = Printer::for_test_doc();
-    cmd_init(&old_printer, &printer, &args).unwrap();
+    cmd_init(&printer, &args).unwrap();
     drop(printer);
 
     // Replace the tempdir-rooted target with a stable placeholder so the
@@ -84,9 +83,8 @@ fn init_happy_json() {
         apply_modules: &[],
     };
 
-    let (old_printer, _sink) = cfgd_core::output::Printer::for_test();
     let (printer, cap) = Printer::for_test_doc();
-    cmd_init(&old_printer, &printer, &args).unwrap();
+    cmd_init(&printer, &args).unwrap();
     drop(printer);
 
     let mut json = cap.json().expect("init emits a Doc with payload");
@@ -127,9 +125,8 @@ fn init_already_initialized_human() {
         apply_modules: &[],
     };
 
-    let (old_printer, _sink) = cfgd_core::output::Printer::for_test();
     let (printer, cap) = Printer::for_test_doc();
-    cmd_init(&old_printer, &printer, &args).unwrap();
+    cmd_init(&printer, &args).unwrap();
     drop(printer);
 
     let human = cap.human().replace(&target_str, "<TARGET_DIR>");
@@ -198,9 +195,8 @@ fn init_with_apply_renders_apply_status_streaming() {
         apply_modules: &[],
     };
 
-    let (old_printer, _sink) = cfgd_core::output::Printer::for_test();
     let (printer, cap) = Printer::for_test_doc();
-    let result = cmd_init(&old_printer, &printer, &args);
+    let result = cmd_init(&printer, &args);
     drop(printer);
     // SAFETY: serialized via #[serial].
     unsafe {

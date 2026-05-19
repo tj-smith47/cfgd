@@ -8,7 +8,8 @@ use crate::config::{
 use crate::platform::Platform;
 use crate::providers::{PackageManager, StubPackageManager as MockManager};
 use crate::test_helpers::{
-    linux_ubuntu_platform, macos_platform, make_manager_map, make_test_modules, test_printer,
+    linux_ubuntu_platform, macos_platform, make_manager_map, make_test_modules,
+    test_printer_v2 as test_printer,
 };
 
 // Cross-cutting tests reach into private helpers of submodules; expose them.
@@ -3546,7 +3547,7 @@ mod git_fixture_tests {
         TagSignatureStatus, check_tag_signature, fetch_git_source, get_head_commit_sha, open_repo,
     };
     use crate::modules::GitSource;
-    use crate::output::Printer;
+    use crate::output_v2::Printer;
     use std::path::Path;
 
     fn init_repo_with_commit(dir: &Path) -> (git2::Repository, git2::Oid) {

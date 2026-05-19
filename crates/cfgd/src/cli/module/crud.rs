@@ -3,7 +3,6 @@ use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
 pub fn cmd_module_create(
     cli: &Cli,
-    printer: &Printer,
     v2_printer: &PrinterV2,
     args: &ModuleCreateArgs,
 ) -> anyhow::Result<()> {
@@ -268,7 +267,7 @@ pub fn cmd_module_create(
             &cache_base,
             &platform,
             &mgr_map,
-            printer,
+            v2_printer,
         )?;
 
         let resolved = config::ResolvedProfile {

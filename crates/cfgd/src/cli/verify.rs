@@ -11,7 +11,6 @@ pub struct VerifyOutput {
 
 pub(super) fn cmd_verify(
     cli: &Cli,
-    printer: &Printer,
     v2_printer: &PrinterV2,
     module_filter: Option<&str>,
     exit_code: bool,
@@ -31,7 +30,7 @@ pub(super) fn cmd_verify(
             &cache_base,
             &platform,
             &mgr_map,
-            printer,
+            v2_printer,
         )
         .unwrap_or_default();
         (resolved, mods, registry)

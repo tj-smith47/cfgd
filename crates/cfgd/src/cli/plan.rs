@@ -2,7 +2,6 @@ use super::*;
 
 pub fn cmd_plan(
     cli: &Cli,
-    printer: &Printer,
     v2_printer: &cfgd_core::output_v2::Printer,
     args: &PlanArgs,
 ) -> anyhow::Result<()> {
@@ -112,7 +111,7 @@ pub fn cmd_plan(
             &cache_base,
             &platform,
             &mgr_map,
-            printer,
+            v2_printer,
         ) {
             Ok(mods) => mods,
             Err(e) if module_filter.is_some() => {

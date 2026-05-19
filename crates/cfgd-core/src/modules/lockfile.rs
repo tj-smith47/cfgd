@@ -130,7 +130,7 @@ pub fn load_locked_modules(
     config_dir: &Path,
     cache_base: &Path,
     modules: &mut HashMap<String, LoadedModule>,
-    printer: &crate::output::Printer,
+    printer: &crate::output_v2::Printer,
 ) -> Result<()> {
     let lockfile = load_lockfile(config_dir)?;
 
@@ -168,7 +168,7 @@ pub fn load_locked_modules(
 pub fn load_all_modules(
     config_dir: &Path,
     cache_base: &Path,
-    printer: &crate::output::Printer,
+    printer: &crate::output_v2::Printer,
 ) -> Result<HashMap<String, LoadedModule>> {
     let mut modules = load_modules(config_dir)?;
     load_locked_modules(config_dir, cache_base, &mut modules, printer)?;

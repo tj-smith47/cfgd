@@ -23,7 +23,6 @@ use std::path::Path;
 
 use cfgd::cli::output_types::{PlanActionOutput, PlanOutput, PlanPhaseOutput};
 use cfgd::cli::plan::cmd_plan;
-use cfgd_core::output::Printer as PrinterV1;
 use cfgd_core::output_v2::{Doc, Printer};
 use pretty_assertions::assert_eq;
 
@@ -71,11 +70,10 @@ fn plan_happy_human() {
     let (config_dir, state_dir, target) = tiny_profile_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
     let args = plan_args();
 
-    cmd_plan(&cli, &old_printer, &v2_printer, &args).unwrap();
+    cmd_plan(&cli, &v2_printer, &args).unwrap();
     drop(v2_printer);
 
     let normalized =
@@ -109,11 +107,10 @@ fn plan_empty_human() {
     let (config_dir, state_dir) = empty_profile_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
     let args = plan_args();
 
-    cmd_plan(&cli, &old_printer, &v2_printer, &args).unwrap();
+    cmd_plan(&cli, &v2_printer, &args).unwrap();
     drop(v2_printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path(), &[]);
@@ -136,11 +133,10 @@ fn plan_module_only_human() {
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
     let args = plan_args_module("nettools");
 
-    cmd_plan(&cli, &old_printer, &v2_printer, &args).unwrap();
+    cmd_plan(&cli, &v2_printer, &args).unwrap();
     drop(v2_printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path(), &[]);
@@ -156,11 +152,10 @@ fn plan_with_pending_human() {
     let (config_dir, state_dir, target) = state_with_pending_decision_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
     let args = plan_args();
 
-    cmd_plan(&cli, &old_printer, &v2_printer, &args).unwrap();
+    cmd_plan(&cli, &v2_printer, &args).unwrap();
     drop(v2_printer);
 
     let normalized =
