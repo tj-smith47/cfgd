@@ -22,10 +22,18 @@ tasks:
     cmds:
       - task --list
 
+  _check:tmp-headroom:
+    internal: true
+    desc: "Precondition: /tmp under 50% full — tmpfs pressure here OOMs the cargo linker."
+    preconditions:
+      - sh: '[ "$(df --output=pcent /tmp | tail -1 | tr -dc 0-9)" -lt 50 ]'
+        msg: "/tmp is over 50% full — cargo will OOM under tmpfs RAM pressure. Run `du -sh /tmp/*/ | sort -hr | head` to find offenders and clean them. Write all scratch / debug / download files to `/opt/repos/.det-debug/` or `~/.cache/`, NEVER `/tmp`."
+
   # --- Build ---
 
   build:
     desc: Build all binaries in release mode
+    deps: [_check:tmp-headroom]
     sources:
       - "crates/**/src/**/*.rs"
       - "Cargo.toml"
@@ -37,11 +45,13 @@ tasks:
 
   build:dev:
     desc: Build all binaries in debug mode
+    deps: [_check:tmp-headroom]
     cmds:
       - cargo build
 
   install:
     desc: Install cfgd binary to cargo bin
+    deps: [_check:tmp-headroom]
     cmds:
       - cargo install --path crates/cfgd
 
@@ -67,16 +77,19 @@ tasks:
 
   clippy:
     desc: Run clippy linter
+    deps: [_check:tmp-headroom]
     cmds:
       - cargo clippy -- -D warnings
 
   test:
     desc: Run all tests
+    deps: [_check:tmp-headroom]
     cmds:
       - cargo test
 
   test:crate:
     desc: Run tests for a specific crate
+    deps: [_check:tmp-headroom]
     cmds:
       - cargo test -p {{.CLI_ARGS}}
 
@@ -92,6 +105,7 @@ tasks:
 
   package:
     desc: Dry-run package all publishable crates
+    deps: [_check:tmp-headroom]
     cmds:
       - cargo package --workspace --no-verify --allow-dirty
 
@@ -265,6 +279,7 @@ tasks:
 
   release:local:
     desc: Build release archive locally
+    deps: [_check:tmp-headroom]
     cmds:
       - cargo build --release --bin cfgd
       - tar -czf "cfgd-{{.VERSION_NUM}}-{{.OS}}-{{.ARCH}}.tar.gz" -C target/release cfgd
