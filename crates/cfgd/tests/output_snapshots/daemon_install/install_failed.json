@@ -1,4 +1,6 @@
 {
   "error": "install_failed",
-  "name": "cfgd"
+  "name": "cfgd",
+  "platform": "linux",
+  "service": "cfgd.service"
 }

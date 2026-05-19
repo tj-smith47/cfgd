@@ -26,10 +26,9 @@
 //!     `error_doc("cfgd", "uninstall_failed", ...)`.
 //!
 //! `cfgd daemon` (foreground `Run`) and `cfgd daemon service` have no
-//! snapshots. The reconcile loop runs forever and its user-visible surface is
-//! v1 until F4b migrates `cfgd_core::daemon::run_daemon`; the Windows service
-//! entry point is a background process with no user-facing emit. Both gain
-//! snapshots when F4b lands.
+//! snapshots. The reconcile loop runs forever via a lib-owned printer (no
+//! tractable way to snapshot a never-returning happy path); the Windows
+//! service entry point is a background process with no user-facing emit.
 //!
 //! Goldens live under `tests/output_snapshots/daemon_{status,install,uninstall}/`.
 //! Regenerate with:
@@ -276,7 +275,7 @@ fn daemon_install_install_failed_human() {
         "cfgd",
         "install_failed",
         "Failed to install daemon service: permission denied",
-        serde_json::Value::Null,
+        serde_json::json!({ "platform": "linux", "service": "cfgd.service" }),
     ));
     drop(printer);
     cap.assert_human_snapshot_in(
@@ -292,12 +291,14 @@ fn daemon_install_install_failed_json() {
         "cfgd",
         "install_failed",
         "Failed to install daemon service: permission denied",
-        serde_json::Value::Null,
+        serde_json::json!({ "platform": "linux", "service": "cfgd.service" }),
     ));
     drop(printer);
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["error"], "install_failed");
     assert_eq!(json["name"], "cfgd");
+    assert_eq!(json["platform"], "linux");
+    assert_eq!(json["service"], "cfgd.service");
     cap.assert_json_snapshot_in(
         Path::new(SNAPSHOT_ROOT),
         "daemon_install/install_failed.json",

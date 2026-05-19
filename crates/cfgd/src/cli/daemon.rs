@@ -26,7 +26,6 @@ pub struct DaemonUninstallOutput {
 
 pub(super) fn cmd_daemon(
     cli: &Cli,
-    printer: &Printer,
     v2_printer: &PrinterV2,
     command: Option<&DaemonCommand>,
 ) -> anyhow::Result<()> {
@@ -38,11 +37,8 @@ pub(super) fn cmd_daemon(
         Some(DaemonCommand::Run) | None => {}
     }
 
-    // Run daemon in foreground. The reconcile loop's user-visible surface still
-    // flows through the legacy `Printer`; F4b migrates `run_daemon` end-to-end.
     let config_path = std::fs::canonicalize(&cli.config).unwrap_or_else(|_| cli.config.clone());
     let profile_override = cli.profile.clone();
-    let _ = printer; // keep parameter live until F4b drops it
     let printer = std::sync::Arc::new(cfgd_core::output::Printer::new(if cli.quiet {
         cfgd_core::output::Verbosity::Quiet
     } else if cli.verbose > 0 {
@@ -58,7 +54,15 @@ pub(super) fn cmd_daemon(
         cfgd_core::daemon::run_daemon(config_path, profile_override, printer, hooks).await
     });
     rt.shutdown_timeout(std::time::Duration::from_secs(2));
-    result?;
+    if let Err(e) = result {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            "cfgd",
+            "runtime_failed",
+            format!("Daemon reconcile loop failed: {}", e),
+            serde_json::Value::Null,
+        ));
+        return Err(e.into());
+    }
 
     Ok(())
 }
@@ -154,12 +158,20 @@ pub fn build_daemon_status_doc(status: Option<&cfgd_core::daemon::DaemonStatusRe
 }
 
 pub(super) fn cmd_daemon_install(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
+    let (platform, service) = if cfg!(windows) {
+        ("windows", "cfgd")
+    } else if cfg!(target_os = "macos") {
+        ("macos", "com.cfgd.daemon")
+    } else {
+        ("linux", "cfgd.service")
+    };
+
     if let Err(e) = cfgd_core::daemon::install_service(&cli.config, cli.profile.as_deref()) {
         v2_printer.emit(cfgd_core::output_v2::error_doc(
             "cfgd",
             "install_failed",
             format!("Failed to install daemon service: {}", e),
-            serde_json::Value::Null,
+            serde_json::json!({ "platform": platform, "service": service }),
         ));
         return Err(e.into());
     }
