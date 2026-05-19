@@ -409,7 +409,7 @@ pub(crate) fn handle_reconcile(
                     actions = effective_total,
                     "drift policy is Auto — applying actions"
                 );
-                let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+                let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
                 match reconciler.apply(
                     &plan,
                     &resolved,

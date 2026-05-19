@@ -315,7 +315,7 @@ pub fn cmd_module_create(
                 &plan,
                 &resolved,
                 &config_dir,
-                printer,
+                v2_printer,
                 None,
                 &[],
                 cfgd_core::reconciler::ReconcileContext::Apply,

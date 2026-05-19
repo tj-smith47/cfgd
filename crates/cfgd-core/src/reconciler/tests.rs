@@ -9,7 +9,7 @@ use crate::providers::PackageManager;
 use crate::providers::StubPackageManager as MockPackageManager;
 use crate::test_helpers::{
     MockSecretBackend, MockSecretProvider, MockSystemConfigurator, make_empty_resolved,
-    make_resolved_module, test_printer, test_state,
+    make_resolved_module, test_printer, test_printer_v2, test_state,
 };
 
 #[test]
@@ -144,7 +144,7 @@ fn apply_empty_plan_records_success() {
         )
         .unwrap();
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -646,7 +646,7 @@ fn module_state_stored_after_apply() {
         )
         .unwrap();
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let _result = reconciler
         .apply(
             &plan,
@@ -1761,7 +1761,7 @@ fn apply_package_install_calls_mock_and_records_state() {
         )
         .unwrap();
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -1818,7 +1818,7 @@ fn apply_package_uninstall_calls_mock() {
         )
         .unwrap();
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -1859,7 +1859,7 @@ fn apply_empty_plan_records_success_in_state_store() {
         )
         .unwrap();
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -1901,7 +1901,7 @@ fn apply_records_correct_apply_id() {
             ReconcileContext::Apply,
         )
         .unwrap();
-    let printer = test_printer();
+    let printer = test_printer_v2();
 
     // First apply
     let result1 = reconciler
@@ -2093,7 +2093,7 @@ fn apply_full_flow_plan_apply_verify_consistent() {
     assert!(!plan.is_empty());
 
     // Apply
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -2151,7 +2151,7 @@ fn apply_records_summary_json() {
             ReconcileContext::Apply,
         )
         .unwrap();
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -2203,7 +2203,7 @@ fn apply_with_phase_filter_only_runs_matching_phase() {
         )
         .unwrap();
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
 
     // Apply with filter set to Env phase — should skip Packages
     let result = reconciler
@@ -2251,7 +2251,7 @@ fn apply_with_phase_filter_runs_only_packages() {
         )
         .unwrap();
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
 
     // Apply with filter set to Packages phase — should run the install
     let result = reconciler
@@ -2304,7 +2304,7 @@ fn apply_file_create_action_writes_file() {
         )
         .unwrap();
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -2365,7 +2365,7 @@ fn apply_multiple_package_actions_all_succeed() {
         )
         .unwrap();
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -2414,7 +2414,7 @@ fn apply_package_skip_action_succeeds() {
         )
         .unwrap();
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -3063,7 +3063,7 @@ fn apply_partial_when_some_actions_fail() {
         )
         .unwrap();
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -3114,7 +3114,7 @@ fn apply_failed_when_all_actions_fail() {
         )
         .unwrap();
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -3176,7 +3176,7 @@ fn apply_continue_on_error_post_script_continues() {
         )
         .unwrap();
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -3230,7 +3230,7 @@ fn apply_continue_on_error_false_pre_script_aborts() {
         )
         .unwrap();
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler.apply(
         &plan,
         &resolved,
@@ -3273,7 +3273,7 @@ fn apply_continue_on_error_default_post_script_continues() {
         )
         .unwrap();
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -3333,7 +3333,7 @@ fn apply_on_change_script_runs_when_changes_occur() {
         )
         .unwrap();
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -3385,7 +3385,7 @@ fn apply_on_change_script_does_not_run_when_no_changes() {
         )
         .unwrap();
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -4287,7 +4287,7 @@ fn apply_on_change_skipped_when_skip_scripts_true() {
         )
         .unwrap();
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     // skip_scripts = true
     let result = reconciler
         .apply(
@@ -4393,7 +4393,7 @@ fn apply_package_bootstrap_makes_manager_available() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -4439,7 +4439,7 @@ fn apply_package_bootstrap_unknown_manager_errors() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -4478,7 +4478,7 @@ fn apply_package_install_unknown_manager_errors() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -4515,7 +4515,7 @@ fn apply_package_uninstall_unknown_manager_errors() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -4586,7 +4586,7 @@ fn apply_secret_decrypt_writes_decrypted_file() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -4640,7 +4640,7 @@ fn apply_secret_decrypt_no_backend_errors() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -4685,7 +4685,7 @@ fn apply_secret_resolve_writes_provider_value_to_file() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -4735,7 +4735,7 @@ fn apply_secret_resolve_unknown_provider_errors() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -4766,7 +4766,7 @@ fn apply_secret_resolve_env_collects_env_vars() {
         MockSecretProvider::new("vault").with_resolve_result("env-secret-value"),
     ));
     let reconciler = Reconciler::new(&registry, &state);
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let tmp = tempfile::tempdir().unwrap();
 
     let mut collector: Vec<(String, String)> = Vec::new();
@@ -4812,7 +4812,7 @@ fn apply_secret_resolve_env_unknown_provider_errors() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -4849,7 +4849,7 @@ fn apply_secret_skip_succeeds() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -4895,7 +4895,7 @@ fn apply_file_delete_action_removes_file() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -4942,7 +4942,7 @@ fn apply_file_set_permissions_action() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -4989,7 +4989,7 @@ fn apply_file_skip_action_succeeds() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -5038,7 +5038,7 @@ fn apply_file_update_action_overwrites_target() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -5100,7 +5100,7 @@ fn apply_system_set_value_calls_configurator() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -5144,7 +5144,7 @@ fn apply_system_skip_logs_warning() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -5248,7 +5248,7 @@ fn apply_module_install_packages_calls_manager() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -5332,7 +5332,7 @@ fn apply_module_deploy_files_creates_target() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -5411,7 +5411,7 @@ fn apply_module_deploy_files_symlink_strategy() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -5453,7 +5453,7 @@ fn apply_module_skip_reports_skipped() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -5528,7 +5528,7 @@ fn apply_module_install_packages_bootstraps_when_needed() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -5803,7 +5803,7 @@ fn apply_script_action_executes_and_records_output() {
         )
         .unwrap();
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -5870,7 +5870,7 @@ fn apply_module_run_script_executes_in_module_dir() {
         warnings: vec![],
     };
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -6731,7 +6731,7 @@ fn apply_module_deploy_files_hardlink_strategy() {
         dir: dir.path().to_path_buf(),
     }];
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -6821,7 +6821,7 @@ fn apply_module_deploy_files_copy_strategy() {
         dir: dir.path().to_path_buf(),
     }];
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -6911,7 +6911,7 @@ fn apply_module_deploy_files_directory_copy_strategy() {
         dir: dir.path().to_path_buf(),
     }];
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -6990,7 +6990,7 @@ fn apply_module_deploy_files_overwrites_existing_file() {
         dir: dir.path().to_path_buf(),
     }];
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -7068,7 +7068,7 @@ fn apply_module_on_change_script_runs_when_module_has_changes() {
         dir: dir.path().to_path_buf(),
     }];
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,
@@ -7125,7 +7125,7 @@ fn apply_module_on_change_script_does_not_run_when_no_changes() {
         dir: dir.path().to_path_buf(),
     }];
 
-    let printer = test_printer();
+    let printer = test_printer_v2();
     let result = reconciler
         .apply(
             &plan,

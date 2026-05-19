@@ -1606,7 +1606,6 @@ fn cmd_init_with_theme_and_name_together() {
 #[test]
 fn apply_plan_empty_plan_reports_nothing_to_do() {
     let dir = tempfile::tempdir().unwrap();
-    let (printer, _buf) = Printer::for_test();
     let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
 
     let registry = super::build_registry_with_config(None);
@@ -1631,7 +1630,6 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
         dir.path(),
         false,
         false,
-        &printer,
         &v2_printer,
     );
     assert!(result.is_ok());
@@ -1919,7 +1917,6 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
     // contract that a declined apply does NOT touch the reconciler or hit
     // the state-store apply lock.
     let dir = tempfile::tempdir().unwrap();
-    let (printer, _buf) = Printer::for_test();
     let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
 
     let registry = super::build_registry_with_config(None);
@@ -1951,7 +1948,6 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
         dir.path(),
         false, // dry_run
         false, // yes — exercises the prompt arm
-        &printer,
         &v2_printer,
     );
     assert!(result.is_ok(), "declined prompt should still return Ok");
@@ -1982,7 +1978,6 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
     // observed (no "Skipped" output) and that apply completed without panic.
     let dir = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(dir.path());
-    let (printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) = PrinterV2::for_test_with_prompt_responses(vec![
         cfgd_core::output_v2::PromptAnswer::Confirm(true),
     ]);
@@ -2016,7 +2011,6 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
         dir.path(),
         false,
         false,
-        &printer,
         &v2_printer,
     );
     assert!(
@@ -2044,7 +2038,6 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
     // existing yes-branch test.
     let dir = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(dir.path());
-    let (printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) = PrinterV2::for_test_with_prompt_responses_at(
         vec![cfgd_core::output_v2::PromptAnswer::Confirm(false)],
         V2Verbosity::Normal,
@@ -2084,7 +2077,6 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
         dir.path(),
         false,
         false,
-        &printer,
         &v2_printer,
     );
     assert!(
@@ -2105,7 +2097,6 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
 #[test]
 fn apply_plan_dry_run_skips_apply() {
     let dir = tempfile::tempdir().unwrap();
-    let (printer, _buf) = Printer::for_test();
     let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
 
     let registry = super::build_registry_with_config(None);
@@ -2140,7 +2131,6 @@ fn apply_plan_dry_run_skips_apply() {
         dir.path(),
         true, // dry_run
         false,
-        &printer,
         &v2_printer,
     );
     assert!(result.is_ok());

@@ -1,6 +1,6 @@
 use crate::config::MergedProfile;
 use crate::errors::Result;
-use crate::output::Printer;
+use crate::output_v2::{Printer, Role};
 
 use super::types::SystemAction;
 
@@ -22,7 +22,9 @@ impl<'a> super::Reconciler<'a> {
                 if let Some(desired_value) = profile.system.get(configurator.as_str()) {
                     for sc in self.registry.available_system_configurators() {
                         if sc.name() == configurator {
-                            sc.apply(desired_value, printer)?;
+                            let v1_forwarder =
+                                crate::output::Printer::new(crate::output::Verbosity::Quiet);
+                            sc.apply(desired_value, &v1_forwarder)?;
                             return Ok(format!(
                                 "system:{}.{} ({} → {})",
                                 configurator, key, current, desired
@@ -37,7 +39,7 @@ impl<'a> super::Reconciler<'a> {
                 reason,
                 ..
             } => {
-                printer.warning(&format!("{}: {}", configurator, reason));
+                printer.status_simple(Role::Warn, format!("{}: {}", configurator, reason));
                 Ok(format!("system:{} (skipped)", configurator))
             }
         }

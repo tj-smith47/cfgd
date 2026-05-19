@@ -546,6 +546,14 @@ pub fn test_printer() -> Printer {
     Printer::new(Verbosity::Quiet)
 }
 
+/// Create a quiet v2 `Printer` for tests that exercise the v2 reconciler
+/// entry surface (`Reconciler::apply`, `Reconciler::apply_action`, and
+/// per-action helpers in `apply.rs` / `modules.rs` / `packages.rs` /
+/// `secrets.rs` / `system.rs`).
+pub fn test_printer_v2() -> crate::output_v2::Printer {
+    crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet)
+}
+
 // ---------------------------------------------------------------------------
 // FileStrategy re-export for convenience
 // ---------------------------------------------------------------------------

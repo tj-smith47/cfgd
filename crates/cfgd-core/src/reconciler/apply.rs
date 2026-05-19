@@ -1,7 +1,7 @@
 use crate::config::ResolvedProfile;
 use crate::errors::{ConfigError, Result};
 use crate::modules::ResolvedModule;
-use crate::output::Printer;
+use crate::output_v2::{Printer, Role};
 use crate::state::ApplyStatus;
 
 use super::format::{format_action_description, parse_resource_from_description};
@@ -197,21 +197,21 @@ impl<'a> super::Reconciler<'a> {
                         };
 
                         if continue_on_err {
-                            printer.warning(&format!(
-                                "[{}/{}] Script failed (continueOnError): {} — {}",
-                                action_idx + 1,
-                                total,
-                                desc,
-                                e
-                            ));
+                            printer.status_simple(
+                                Role::Warn,
+                                format!(
+                                    "[{}/{}] Script failed (continueOnError): {} — {}",
+                                    action_idx + 1,
+                                    total,
+                                    desc,
+                                    e
+                                ),
+                            );
                         } else {
-                            printer.error(&format!(
-                                "[{}/{}] Failed: {} — {}",
-                                action_idx + 1,
-                                total,
-                                desc,
-                                e
-                            ));
+                            printer.status_simple(
+                                Role::Fail,
+                                format!("[{}/{}] Failed: {} — {}", action_idx + 1, total, desc, e),
+                            );
                         }
                         if let Some(jid) = journal_id
                             && let Err(je) = self.state.journal_fail(jid, &e.to_string())
@@ -260,9 +260,10 @@ impl<'a> super::Reconciler<'a> {
                 module_actions,
                 &secret_env_collector,
             );
+            let v1_forwarder = crate::output::Printer::new(crate::output::Verbosity::Quiet);
             for env_action in &env_actions {
                 if let Action::Env(ea) = env_action {
-                    match Self::apply_env_action(ea, printer) {
+                    match Self::apply_env_action(ea, &v1_forwarder) {
                         Ok(desc) => {
                             let changed = !desc.contains(":skipped");
                             results.push(ActionResult {
@@ -274,7 +275,10 @@ impl<'a> super::Reconciler<'a> {
                             });
                         }
                         Err(e) => {
-                            printer.error(&format!("Failed to write secret env vars: {}", e));
+                            printer.status_simple(
+                                Role::Fail,
+                                format!("Failed to write secret env vars: {}", e),
+                            );
                             results.push(ActionResult {
                                 phase: PhaseName::Secrets.as_str().to_string(),
                                 description: "env:write:secret-envs".to_string(),
@@ -304,13 +308,14 @@ impl<'a> super::Reconciler<'a> {
                 None,
                 None,
             );
+            let v1_forwarder = crate::output::Printer::new(crate::output::Verbosity::Quiet);
             for entry in &resolved.merged.scripts.on_change {
                 match execute_script(
                     entry,
                     config_dir,
                     &env_vars,
                     crate::PROFILE_SCRIPT_TIMEOUT,
-                    printer,
+                    &v1_forwarder,
                 ) {
                     Ok((desc, changed, _)) => {
                         results.push(ActionResult {
@@ -366,9 +371,15 @@ impl<'a> super::Reconciler<'a> {
                     Some(&module.dir),
                 );
                 let working = &module.dir;
+                let v1_forwarder = crate::output::Printer::new(crate::output::Verbosity::Quiet);
                 for entry in &module.on_change_scripts {
-                    match execute_script(entry, working, &env_vars, MODULE_SCRIPT_TIMEOUT, printer)
-                    {
+                    match execute_script(
+                        entry,
+                        working,
+                        &env_vars,
+                        MODULE_SCRIPT_TIMEOUT,
+                        &v1_forwarder,
+                    ) {
                         Ok((desc, changed, _)) => {
                             results.push(ActionResult {
                                 phase: "modules".to_string(),
@@ -492,14 +503,17 @@ impl<'a> super::Reconciler<'a> {
                 .apply_system_action(sys, &resolved.merged, printer)
                 .map(|d| (d, None)),
             Action::Package(pkg) => self.apply_package_action(pkg, printer).map(|d| (d, None)),
-            Action::File(file) => self
-                .apply_file_action(file, &resolved.merged, config_dir, printer)
-                .map(|d| (d, None)),
+            Action::File(file) => {
+                let v1_forwarder = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+                self.apply_file_action(file, &resolved.merged, config_dir, &v1_forwarder)
+                    .map(|d| (d, None))
+            }
             Action::Secret(secret) => self
                 .apply_secret_action(secret, config_dir, printer, secret_env_collector)
                 .map(|d| (d, None)),
             Action::Script(script) => {
-                self.apply_script_action(script, resolved, config_dir, printer, context)
+                let v1_forwarder = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+                self.apply_script_action(script, resolved, config_dir, &v1_forwarder, context)
             }
             Action::Module(module) => self
                 .apply_module_action(
@@ -512,7 +526,10 @@ impl<'a> super::Reconciler<'a> {
                     module_actions,
                 )
                 .map(|d| (d, None)),
-            Action::Env(env) => Self::apply_env_action(env, printer).map(|d| (d, None)),
+            Action::Env(env) => {
+                let v1_forwarder = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+                Self::apply_env_action(env, &v1_forwarder).map(|d| (d, None))
+            }
         }
     }
 }

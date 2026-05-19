@@ -185,7 +185,6 @@ pub fn cmd_init(
                 &target_dir,
                 args.dry_run,
                 args.yes,
-                printer,
                 v2_printer,
             )?;
         } else {
@@ -280,7 +279,6 @@ pub fn cmd_init(
                 &target_dir,
                 args.dry_run,
                 args.yes,
-                printer,
                 v2_printer,
             )?;
         }
@@ -366,10 +364,7 @@ pub(super) fn is_module_only_apply(apply_profile: Option<&str>, apply_modules: &
     !apply_modules.is_empty() && apply_profile.is_none()
 }
 
-/// Show plan, prompt for confirmation, and apply. Threads both printers
-/// because the function's own output flips to v2 while the reconciler's
-/// `apply` call still requires the legacy Printer (F3 retires that arg).
-#[allow(clippy::too_many_arguments)]
+/// Show plan, prompt for confirmation, and apply.
 pub(super) fn apply_plan(
     plan: &cfgd_core::reconciler::Plan,
     reconciler: &cfgd_core::reconciler::Reconciler<'_>,
@@ -377,7 +372,6 @@ pub(super) fn apply_plan(
     config_dir: &Path,
     dry_run: bool,
     yes: bool,
-    printer: &Printer,
     v2_printer: &PrinterV2,
 ) -> anyhow::Result<()> {
     let total = plan.total_actions();
@@ -411,7 +405,7 @@ pub(super) fn apply_plan(
         plan,
         resolved,
         config_dir,
-        printer,
+        v2_printer,
         None,
         &[],
         cfgd_core::reconciler::ReconcileContext::Apply,

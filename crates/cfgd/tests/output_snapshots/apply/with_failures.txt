@@ -7,4 +7,6 @@ Plan preview
     - create <TARGET_OK>
     - create <TARGET_FAIL>
 
+✗ [2/2] Failed: file:create:<TARGET_FAIL> — file error: io error on <CONFIG_DIR>/blocker: File exists (os error 17)
+
 ⚠ Apply partially complete — 1 succeeded, 1 failed (XXs)

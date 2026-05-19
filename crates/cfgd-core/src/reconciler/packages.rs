@@ -1,5 +1,5 @@
 use crate::errors::Result;
-use crate::output::Printer;
+use crate::output_v2::{Printer, Role};
 use crate::providers::PackageAction;
 
 impl<'a> super::Reconciler<'a> {
@@ -13,7 +13,9 @@ impl<'a> super::Reconciler<'a> {
                 // Find in ALL managers (not just available — it isn't available yet)
                 for pm in &self.registry.package_managers {
                     if pm.name() == manager {
-                        pm.bootstrap(printer)?;
+                        let v1_forwarder =
+                            crate::output::Printer::new(crate::output::Verbosity::Quiet);
+                        pm.bootstrap(&v1_forwarder)?;
                         if !pm.is_available() {
                             return Err(crate::errors::PackageError::BootstrapFailed {
                                 manager: manager.clone(),
@@ -34,7 +36,9 @@ impl<'a> super::Reconciler<'a> {
             } => {
                 for pm in self.registry.available_package_managers() {
                     if pm.name() == manager {
-                        pm.install(packages, printer)?;
+                        let v1_forwarder =
+                            crate::output::Printer::new(crate::output::Verbosity::Quiet);
+                        pm.install(packages, &v1_forwarder)?;
                         return Ok(format!(
                             "package:{}:install:{}",
                             manager,
@@ -52,7 +56,9 @@ impl<'a> super::Reconciler<'a> {
             } => {
                 for pm in self.registry.available_package_managers() {
                     if pm.name() == manager {
-                        pm.uninstall(packages, printer)?;
+                        let v1_forwarder =
+                            crate::output::Printer::new(crate::output::Verbosity::Quiet);
+                        pm.uninstall(packages, &v1_forwarder)?;
                         return Ok(format!(
                             "package:{}:uninstall:{}",
                             manager,
@@ -68,7 +74,7 @@ impl<'a> super::Reconciler<'a> {
             PackageAction::Skip {
                 manager, reason, ..
             } => {
-                printer.warning(&format!("{}: {}", manager, reason));
+                printer.status_simple(Role::Warn, format!("{}: {}", manager, reason));
                 Ok(format!("package:{}:skip", manager))
             }
         }

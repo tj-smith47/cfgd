@@ -292,7 +292,7 @@ pub fn cmd_apply(
         &plan,
         &effective_resolved,
         &config_dir,
-        printer,
+        v2_printer,
         phase_filter.as_ref(),
         &resolved_modules,
         reconcile_context,

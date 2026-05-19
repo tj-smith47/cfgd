@@ -2,7 +2,7 @@ use crate::config::{ResolvedProfile, ScriptEntry};
 use crate::errors::{ConfigError, Result};
 use crate::expand_tilde;
 use crate::modules::ResolvedModule;
-use crate::output::Printer;
+use crate::output_v2::{Printer, Role};
 
 use super::scripts::{MODULE_SCRIPT_TIMEOUT, build_script_env, execute_script};
 use super::types::{ModuleAction, ModuleActionKind, ReconcileContext, ScriptPhase};
@@ -51,12 +51,14 @@ impl<'a> super::Reconciler<'a> {
                                 );
                                 let script_entry = ScriptEntry::Simple(script_content.clone());
                                 let working = module_dir.as_deref().unwrap_or(config_dir);
+                                let v1_forwarder =
+                                    crate::output::Printer::new(crate::output::Verbosity::Quiet);
                                 execute_script(
                                     &script_entry,
                                     working,
                                     &env_vars,
                                     MODULE_SCRIPT_TIMEOUT,
-                                    printer,
+                                    &v1_forwarder,
                                 )
                                 .map_err(|_| {
                                     crate::errors::CfgdError::Config(ConfigError::Invalid {
@@ -77,9 +79,11 @@ impl<'a> super::Reconciler<'a> {
                             .find(|m| m.name() == first.manager);
 
                         if let Some(pm) = pm {
+                            let v1_forwarder =
+                                crate::output::Printer::new(crate::output::Verbosity::Quiet);
                             // Bootstrap if needed
                             if !pm.is_available() && pm.can_bootstrap() {
-                                pm.bootstrap(printer)?;
+                                pm.bootstrap(&v1_forwarder)?;
 
                                 // Persist bootstrapped manager's PATH to ~/.cfgd.env
                                 let path_dirs = pm.path_dirs();
@@ -120,10 +124,10 @@ impl<'a> super::Reconciler<'a> {
 
                             // Update package index before installing
                             if pm.is_available() {
-                                pm.update(printer)?;
+                                pm.update(&v1_forwarder)?;
                             }
 
-                            pm.install(&pkg_names, printer)?;
+                            pm.install(&pkg_names, &v1_forwarder)?;
                         }
                     }
                 }
@@ -211,11 +215,14 @@ impl<'a> super::Reconciler<'a> {
                     )?;
                 }
 
-                printer.success(&format!(
-                    "Module {}: deployed {} file(s)",
-                    action.module_name,
-                    files.len()
-                ));
+                printer.status_simple(
+                    Role::Ok,
+                    format!(
+                        "Module {}: deployed {} file(s)",
+                        action.module_name,
+                        files.len()
+                    ),
+                );
 
                 Ok(format!(
                     "module:{}:files:{}",
@@ -242,15 +249,22 @@ impl<'a> super::Reconciler<'a> {
                 );
 
                 let working = module_dir.as_deref().unwrap_or(config_dir);
-                execute_script(script, working, &env_vars, MODULE_SCRIPT_TIMEOUT, printer)?;
+                let v1_forwarder = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+                execute_script(
+                    script,
+                    working,
+                    &env_vars,
+                    MODULE_SCRIPT_TIMEOUT,
+                    &v1_forwarder,
+                )?;
 
                 Ok(format!("module:{}:script", action.module_name))
             }
             ModuleActionKind::Skip { reason } => {
-                printer.warning(&format!(
-                    "Module {}: skipped — {}",
-                    action.module_name, reason
-                ));
+                printer.status_simple(
+                    Role::Warn,
+                    format!("Module {}: skipped — {}", action.module_name, reason),
+                );
                 Ok(format!("module:{}:skip", action.module_name))
             }
         }
