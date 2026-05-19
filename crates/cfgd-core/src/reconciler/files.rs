@@ -11,13 +11,11 @@ impl<'a> super::Reconciler<'a> {
         action: &FileAction,
         profile: &MergedProfile,
         config_dir: &std::path::Path,
-        _printer: &Printer,
+        printer: &Printer,
     ) -> Result<String> {
         if let Some(ref fm) = self.registry.file_manager {
-            let v1_forwarder = crate::output::Printer::new(crate::output::Verbosity::Quiet);
-            fm.apply(&[action.clone_action()], &v1_forwarder)?;
+            fm.apply(&[action.clone_action()], printer)?;
         } else {
-            // Fallback: use CfgdFileManager directly via the existing files module logic
             apply_file_action_direct(action, config_dir, profile)?;
         }
 

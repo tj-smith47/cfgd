@@ -31,13 +31,13 @@ pub fn cmd_diff(
     let mut has_system_drift = false;
 
     let has_file_drift = {
-        let files_sec = v2_printer.section("Files");
+        v2_printer.status_simple(Role::Info, "Files");
         let fm = CfgdFileManager::new(&config_dir, &resolved)?;
-        let drift = fm.diff(&resolved.merged, printer)?;
+        let drift = fm.diff(&resolved.merged, v2_printer)?;
         if drift {
-            files_sec.status_simple(Role::Warn, "File drift detected");
+            v2_printer.status_simple(Role::Warn, "File drift detected");
         } else {
-            files_sec.status_simple(Role::Ok, "No file drift");
+            v2_printer.status_simple(Role::Ok, "No file drift");
         }
         drift
     };

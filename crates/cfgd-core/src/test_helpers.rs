@@ -12,6 +12,7 @@ use secrecy::SecretString;
 
 use crate::errors::{CfgdError, FileError, SecretError};
 use crate::output::{Printer, Verbosity};
+use crate::output_v2::Printer as PrinterV2;
 use crate::providers::{
     FileAction, FileDiff, FileLayer, FileTree, SecretBackend, SecretProvider, SystemConfigurator,
     SystemDrift,
@@ -74,7 +75,7 @@ impl crate::providers::FileManager for MockFileManager {
         Ok(Vec::new())
     }
 
-    fn apply(&self, actions: &[FileAction], _printer: &Printer) -> crate::errors::Result<()> {
+    fn apply(&self, actions: &[FileAction], _printer: &PrinterV2) -> crate::errors::Result<()> {
         self.apply_calls
             .lock()
             .unwrap()
@@ -543,9 +544,9 @@ pub fn init_test_git_repo(dir: &Path) {
 
 /// Create a quiet `Printer` suitable for tests (suppresses terminal output).
 /// Returns the [`crate::output::Printer`] type — used by mock trait impls
-/// (`MockPackageManager`, `MockSecretBackend`, `MockSystemConfigurator`,
-/// `MockFileManager`) whose method signatures take this type, plus
-/// reconciler helpers that still accept it.
+/// (`MockPackageManager`, `MockSecretBackend`, `MockSystemConfigurator`)
+/// whose method signatures take this type, plus reconciler helpers that
+/// still accept it.
 pub fn test_printer() -> Printer {
     Printer::new(Verbosity::Quiet)
 }
@@ -1158,7 +1159,7 @@ mod tests {
             origin_source: "test-origin".into(),
             priority: 0,
         }];
-        let printer = test_printer();
+        let printer = test_printer_v2();
 
         let tree = fm.scan_source(&layers).unwrap();
         assert!(tree.files.is_empty());
@@ -1178,7 +1179,7 @@ mod tests {
     #[test]
     fn mock_file_manager_can_fail() {
         let fm = MockFileManager::new();
-        let printer = test_printer();
+        let printer = test_printer_v2();
         fm.set_fail_apply(true);
         let result = fm.apply(&[], &printer);
         let err_msg = format!("{}", result.unwrap_err());

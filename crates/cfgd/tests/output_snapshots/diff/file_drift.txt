@@ -3,7 +3,11 @@ Diff
   Profile  tiny
 
 Files
-  ⚠ File drift detected
+
+<TARGET> (new file)
+hello world
+
+⚠ File drift detected
 
 Packages
   ✓ No package drift

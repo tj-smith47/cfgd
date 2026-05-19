@@ -6,7 +6,7 @@ use similar::TextDiff;
 use cfgd_core::config::{EncryptionMode, FileStrategy, ManagedFileSpec, MergedProfile};
 use cfgd_core::errors::{FileError, Result};
 use cfgd_core::expand_tilde;
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 use cfgd_core::providers::FileAction;
 
 use super::is_file_encrypted;
@@ -198,7 +198,10 @@ impl super::CfgdFileManager {
             let target_path = expand_tilde(&managed.target);
 
             if !source_path.exists() {
-                printer.warning(&format!("Source not found: {}", source_path.display()));
+                printer.status_simple(
+                    Role::Warn,
+                    format!("Source not found: {}", source_path.display()),
+                );
                 continue;
             }
 
@@ -220,22 +223,15 @@ impl super::CfgdFileManager {
 
                 if rendered_content != target_content {
                     has_diffs = true;
-                    printer.subheader(&format!("{}", target_path.display()));
-
+                    printer.status_simple(Role::Info, format!("{}", target_path.display()));
                     printer.diff(&target_content, &rendered_content);
-                    printer.newline();
                 }
             } else {
                 has_diffs = true;
-                printer.subheader(&format!("{} (new file)", target_path.display()));
+                printer.status_simple(Role::Info, format!("{} (new file)", target_path.display()));
                 let lang = detect_language(&target_path);
                 printer.syntax_highlight(&rendered_content, &lang);
-                printer.newline();
             }
-        }
-
-        if !has_diffs {
-            printer.success("All files match desired state");
         }
 
         Ok(has_diffs)

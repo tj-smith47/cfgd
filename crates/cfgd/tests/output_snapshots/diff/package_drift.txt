@@ -3,7 +3,8 @@ Diff
   Profile  tiny
 
 Files
-  ✓ No file drift
+
+✓ No file drift
 
 Packages
   ⚠ drift-mgr: missing — drifted-pkg
