@@ -384,7 +384,6 @@ pub(in crate::cli) fn set_nested_yaml_value(
 // --- Plan integration with sources (Phase 9) ---
 
 /// Compose sources with local profile for plan generation.
-// TEMP (R3 removes)
 #[allow(dead_code)]
 pub(in crate::cli) fn compose_with_sources(
     cli: &Cli,
@@ -405,7 +404,8 @@ pub(in crate::cli) fn compose_with_sources(
     let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
-    mgr.load_sources(&cfg.spec.sources, printer)?;
+    let v2_local = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    mgr.load_sources(&cfg.spec.sources, &v2_local)?;
 
     let mut inputs = Vec::new();
     for source_spec in &cfg.spec.sources {
@@ -545,14 +545,7 @@ pub(in crate::cli) fn compose_with_sources_v2(
     let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
-    // TEMP (R3 removes): SourceManager::load_sources still takes old Printer.
-    let legacy_verbosity = match printer.verbosity() {
-        cfgd_core::output_v2::Verbosity::Quiet => cfgd_core::output::Verbosity::Quiet,
-        cfgd_core::output_v2::Verbosity::Normal => cfgd_core::output::Verbosity::Normal,
-        cfgd_core::output_v2::Verbosity::Verbose => cfgd_core::output::Verbosity::Verbose,
-    };
-    let legacy_printer = Printer::new(legacy_verbosity);
-    mgr.load_sources(&cfg.spec.sources, &legacy_printer)?;
+    mgr.load_sources(&cfg.spec.sources, printer)?;
 
     let mut inputs = Vec::new();
     for source_spec in &cfg.spec.sources {

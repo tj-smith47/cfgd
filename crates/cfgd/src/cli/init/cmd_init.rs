@@ -50,13 +50,7 @@ pub fn cmd_init(
     let from_used = args.from.is_some();
     let target_dir = if let Some(from) = args.from {
         let explicit_path = args.path.map(|p| cfgd_core::expand_tilde(Path::new(p)));
-        resolve_from(
-            from,
-            explicit_path.as_deref(),
-            args.branch,
-            printer,
-            v2_printer,
-        )?
+        resolve_from(from, explicit_path.as_deref(), args.branch, v2_printer)?
     } else {
         match args.path {
             Some(p) => cfgd_core::expand_tilde(Path::new(p)),
@@ -89,7 +83,7 @@ pub fn cmd_init(
     // Only clone here if resolve_from didn't handle it (non-git --from or no --from).
     if let Some(url) = args.from.filter(|f| is_git_source(f)) {
         if !target_dir.join(".git").exists() {
-            clone_into(&target_dir, url, args.branch, printer, v2_printer)?;
+            clone_into(&target_dir, url, args.branch, v2_printer)?;
         }
         // If --theme was specified and the cloned repo has a cfgd.yaml, set the theme
         if let Some(theme) = args.theme {

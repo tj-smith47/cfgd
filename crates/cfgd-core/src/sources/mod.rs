@@ -13,7 +13,7 @@ use crate::config::{
     ConfigSourceDocument, OriginSpec, OriginType, ProfileDocument, SourceSpec, parse_config_source,
 };
 use crate::errors::{Result, SourceError};
-use crate::output::Printer;
+use crate::output_v2::{Printer, Role};
 
 const SOURCE_MANIFEST_FILE: &str = "cfgd-source.yaml";
 const PROFILES_DIR: &str = "profiles";
@@ -69,7 +69,10 @@ impl SourceManager {
             match self.load_source(spec, printer) {
                 Ok(()) => loaded += 1,
                 Err(e) => {
-                    printer.warning(&format!("Failed to load source '{}': {}", spec.name, e));
+                    printer.status_simple(
+                        Role::Warn,
+                        format!("Failed to load source '{}': {}", spec.name, e),
+                    );
                 }
             }
         }
@@ -158,12 +161,12 @@ impl SourceManager {
         cmd.stderr(std::process::Stdio::piped());
 
         let label = format!("Fetching source '{}'", spec.name);
-        let cli_result = printer.run_with_output(&mut cmd, &label);
+        let cli_result = printer.run(&mut cmd, &label);
         let cli_ok = matches!(&cli_result, Ok(output) if output.status.success());
 
         if !cli_ok {
             // Fall back to libgit2 with spinner
-            let spinner = printer.spinner(&format!("Fetching source '{}' (libgit2)...", spec.name));
+            let spinner = printer.spinner(format!("Fetching source '{}' (libgit2)...", spec.name));
 
             let repo = Repository::open(source_dir).map_err(|e| SourceError::GitError {
                 name: spec.name.clone(),
@@ -189,7 +192,16 @@ impl SourceManager {
                     message: e.to_string(),
                 });
 
-            spinner.finish_and_clear();
+            match &fetch_result {
+                Ok(_) => {
+                    let _ = spinner.finish_ok(format!("Fetched source '{}' (libgit2)", spec.name));
+                }
+                Err(e) => {
+                    let _ = spinner
+                        .finish_fail(format!("Failed to fetch source '{}' (libgit2)", spec.name))
+                        .detail(e.to_string());
+                }
+            }
             fetch_result?;
         }
 
@@ -275,7 +287,7 @@ impl SourceManager {
         cmd.stderr(std::process::Stdio::piped());
 
         let label = format!("Cloning source '{}'", spec.name);
-        let cli_result = printer.run_with_output(&mut cmd, &label);
+        let cli_result = printer.run(&mut cmd, &label);
         if matches!(&cli_result, Ok(output) if output.status.success()) {
             // Restrict cloned directory to owner-only access
             let _ = crate::set_file_permissions(source_dir, 0o700);
@@ -286,7 +298,7 @@ impl SourceManager {
         let _ = std::fs::remove_dir_all(source_dir);
 
         // Fall back to libgit2 with spinner
-        let spinner = printer.spinner(&format!("Cloning source '{}' (libgit2)...", spec.name));
+        let spinner = printer.spinner(format!("Cloning source '{}' (libgit2)...", spec.name));
 
         let mut fo = FetchOptions::new();
         if spec.origin.url.starts_with("git@") || spec.origin.url.starts_with("ssh://") {
@@ -309,7 +321,16 @@ impl SourceManager {
                     message: e.to_string(),
                 });
 
-        spinner.finish_and_clear();
+        match &clone_result {
+            Ok(_) => {
+                let _ = spinner.finish_ok(format!("Cloned source '{}' (libgit2)", spec.name));
+            }
+            Err(e) => {
+                let _ = spinner
+                    .finish_fail(format!("Failed to clone source '{}' (libgit2)", spec.name))
+                    .detail(e.to_string());
+            }
+        }
         clone_result?;
 
         // Restrict cloned directory to owner-only access
@@ -689,7 +710,7 @@ pub fn git_clone_with_fallback(
     cmd.stderr(std::process::Stdio::piped());
 
     let label = format!("Cloning {}", url);
-    let cli_result = printer.run_with_output(&mut cmd, &label);
+    let cli_result = printer.run(&mut cmd, &label);
     if matches!(&cli_result, Ok(output) if output.status.success()) {
         return Ok(());
     }
@@ -716,7 +737,16 @@ pub fn git_clone_with_fallback(
         .map(|_| ())
         .map_err(|e| format!("Failed to clone {}: {}", url, e));
 
-    spinner.finish_and_clear();
+    match &result {
+        Ok(_) => {
+            let _ = spinner.finish_ok(format!("Cloned {} (libgit2)", url));
+        }
+        Err(msg) => {
+            let _ = spinner
+                .finish_fail(format!("Failed to clone {} (libgit2)", url))
+                .detail(msg.clone());
+        }
+    }
     result
 }
 

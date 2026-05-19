@@ -31,7 +31,7 @@ pub fn cmd_plan(
         } else {
             None
         };
-        init::resolve_from(from, target, "master", printer, v2_printer)?;
+        init::resolve_from(from, target, "master", v2_printer)?;
     }
 
     v2_printer.heading("Plan");

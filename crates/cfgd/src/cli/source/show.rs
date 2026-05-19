@@ -167,12 +167,7 @@ fn append_policy_items(mut s: SectionBuilder, items: &PolicyItems) -> SectionBui
     s
 }
 
-pub fn cmd_source_show(
-    cli: &Cli,
-    printer: &Printer,
-    v2_printer: &PrinterV2,
-    name: &str,
-) -> anyhow::Result<()> {
+pub fn cmd_source_show(cli: &Cli, v2_printer: &PrinterV2, name: &str) -> anyhow::Result<()> {
     let config_path = cli.config.clone();
     let cfg = config::load_config(&config_path)?;
 
@@ -217,7 +212,8 @@ pub fn cmd_source_show(
     let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
-    if let Err(e) = mgr.load_source(source_spec, printer) {
+    let v2_local = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    if let Err(e) = mgr.load_source(source_spec, &v2_local) {
         v2_printer.status_simple(Role::Warn, format!("Failed to load source manifest: {}", e));
     }
     let manifest = mgr.get(name).map(|c| &c.manifest);

@@ -454,13 +454,11 @@ fn resolve_from_local_path_with_config() {
     )
     .unwrap();
 
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
     let v2_printer = v2_quiet();
     let result = resolve_from(
         &dir.path().display().to_string(),
         None,
         "master",
-        &printer,
         &v2_printer,
     );
     assert!(result.is_ok());
@@ -472,13 +470,11 @@ fn resolve_from_local_path_missing_config_errors() {
     let dir = tempfile::tempdir().unwrap();
     // No cfgd.yaml
 
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
     let v2_printer = v2_quiet();
     let result = resolve_from(
         &dir.path().display().to_string(),
         None,
         "master",
-        &printer,
         &v2_printer,
     );
     assert!(result.is_err());
@@ -489,13 +485,11 @@ fn resolve_from_local_path_missing_config_errors() {
 fn resolve_from_nonexistent_path_errors() {
     let dir = tempfile::tempdir().unwrap();
     let nonexistent = dir.path().join("does-not-exist");
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
     let v2_printer = v2_quiet();
     let result = resolve_from(
         &nonexistent.display().to_string(),
         None,
         "master",
-        &printer,
         &v2_printer,
     );
     assert!(result.is_err());
@@ -657,13 +651,11 @@ fn clone_into_local_repo() {
     let target = dir.path().join("clone");
     std::fs::create_dir_all(&target).unwrap();
 
-    let (printer, _buf) = Printer::for_test();
     let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
     clone_into(
         &target,
         &origin.display().to_string(),
         "master",
-        &printer,
         &v2_printer,
     )
     .unwrap();
@@ -686,14 +678,12 @@ fn clone_into_skips_if_already_cloned() {
     let target = dir.path().join("clone");
     std::fs::create_dir_all(target.join(".git")).unwrap();
 
-    let (printer, _buf) = Printer::for_test();
     let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
     // Should return Ok without actually cloning
     clone_into(
         &target,
         "https://example.com/nonexistent",
         "master",
-        &printer,
         &v2_printer,
     )
     .unwrap();
@@ -728,13 +718,11 @@ fn resolve_from_git_source_local_repo() {
         .unwrap();
 
     let target = dir.path().join("target");
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
     let v2_printer = v2_quiet();
     let result = resolve_from(
         &origin.display().to_string(),
         Some(&target),
         "master",
-        &printer,
         &v2_printer,
     )
     .unwrap();
@@ -760,14 +748,12 @@ fn resolve_from_already_initialized_git_source() {
     )
     .unwrap();
 
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
     let v2_printer = v2_quiet();
     // Using a git URL (https://) triggers the git source path
     let result = resolve_from(
         "https://example.com/repo.git",
         Some(&target),
         "master",
-        &printer,
         &v2_printer,
     );
     assert!(result.is_ok());
@@ -1022,13 +1008,11 @@ fn resolve_from_local_path_valid() {
     )
     .unwrap();
 
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
     let v2_printer = v2_quiet();
     let result = resolve_from(
         &dir.path().display().to_string(),
         None,
         "master",
-        &printer,
         &v2_printer,
     )
     .unwrap();
@@ -1038,14 +1022,12 @@ fn resolve_from_local_path_valid() {
 #[test]
 fn resolve_from_local_path_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
     let v2_printer = v2_quiet();
 
     let err = resolve_from(
         &dir.path().display().to_string(),
         None,
         "master",
-        &printer,
         &v2_printer,
     )
     .unwrap_err();
@@ -1057,16 +1039,8 @@ fn resolve_from_local_path_no_config_fails() {
 
 #[test]
 fn resolve_from_nonexistent_path_fails() {
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
     let v2_printer = v2_quiet();
-    let err = resolve_from(
-        "/nonexistent/path/xyz",
-        None,
-        "master",
-        &printer,
-        &v2_printer,
-    )
-    .unwrap_err();
+    let err = resolve_from("/nonexistent/path/xyz", None, "master", &v2_printer).unwrap_err();
     assert!(
         err.to_string().contains("does not exist"),
         "should report path does not exist, got: {err}"
@@ -1402,16 +1376,9 @@ fn resolve_from_local_path_returns_canonicalized_path() {
     )
     .unwrap();
 
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
     let v2_printer = v2_quiet();
-    let result = resolve_from(
-        &dir.path().display().to_string(),
-        None,
-        "main",
-        &printer,
-        &v2_printer,
-    )
-    .unwrap();
+    let result =
+        resolve_from(&dir.path().display().to_string(), None, "main", &v2_printer).unwrap();
     // The result should be a valid path containing cfgd.yaml
     assert!(result.join("cfgd.yaml").exists());
 }
@@ -1440,13 +1407,11 @@ fn resolve_from_git_source_with_target_creates_dir() {
     let target = dir.path().join("new-target");
     assert!(!target.exists());
 
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
     let v2_printer = v2_quiet();
     let result = resolve_from(
         &origin.display().to_string(),
         Some(&target),
         "master",
-        &printer,
         &v2_printer,
     )
     .unwrap();
@@ -1831,16 +1796,8 @@ fn clone_into_skips_existing_git_dir() {
     let target = dir.path().join("already-cloned");
     git2::Repository::init(&target).unwrap();
 
-    let (printer, _buf) = Printer::for_test();
     let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
-    clone_into(
-        &target,
-        "https://example.com/repo.git",
-        "main",
-        &printer,
-        &v2_printer,
-    )
-    .unwrap();
+    clone_into(&target, "https://example.com/repo.git", "main", &v2_printer).unwrap();
 
     drop(v2_printer);
     let output = v2_cap.human();

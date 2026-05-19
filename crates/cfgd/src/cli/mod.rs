@@ -1565,7 +1565,7 @@ pub fn execute(
                 }
             },
         },
-        Command::Sync => sync::cmd_sync(cli, printer, v2_printer),
+        Command::Sync => sync::cmd_sync(cli, v2_printer),
         Command::Pull => pull::cmd_pull(cli, printer, v2_printer),
         Command::Daemon { command } => daemon::cmd_daemon(cli, v2_printer, command.as_ref()),
         Command::Secret { command } => match command {
@@ -1575,12 +1575,12 @@ pub fn execute(
             SecretCommand::Init => secret::cmd_secret_init(cli, v2_printer),
         },
         Command::Source { command } => match command {
-            SourceCommand::Add(args) => source::cmd_source_add(cli, printer, v2_printer, args),
+            SourceCommand::Add(args) => source::cmd_source_add(cli, v2_printer, args),
             SourceCommand::Priority { name, value } => {
                 source::cmd_source_priority(cli, v2_printer, name, *value)
             }
             SourceCommand::List => source::cmd_source_list(cli, v2_printer),
-            SourceCommand::Show { name } => source::cmd_source_show(cli, printer, v2_printer, name),
+            SourceCommand::Show { name } => source::cmd_source_show(cli, v2_printer, name),
             SourceCommand::Remove {
                 name,
                 keep_all,
@@ -1594,7 +1594,7 @@ pub fn execute(
                 *remove_all,
             ),
             SourceCommand::Update { name } => {
-                source::cmd_source_update(cli, printer, v2_printer, name.as_deref())
+                source::cmd_source_update(cli, v2_printer, name.as_deref())
             }
             SourceCommand::Override {
                 source,
@@ -1610,7 +1610,7 @@ pub fn execute(
                 value.as_deref(),
             ),
             SourceCommand::Replace { old_name, new_url } => {
-                source::cmd_source_replace(cli, printer, v2_printer, old_name, new_url)
+                source::cmd_source_replace(cli, v2_printer, old_name, new_url)
             }
             SourceCommand::Edit => source::cmd_source_edit(cli, v2_printer),
             SourceCommand::Create {

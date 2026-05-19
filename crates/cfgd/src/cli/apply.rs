@@ -35,7 +35,7 @@ pub fn cmd_apply(
         } else {
             None
         };
-        init::resolve_from(from, target, "master", printer, v2_printer)?;
+        init::resolve_from(from, target, "master", v2_printer)?;
     }
 
     let dry_run = args.dry_run;

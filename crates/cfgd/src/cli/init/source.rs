@@ -2,8 +2,6 @@ use std::path::Path;
 
 use cfgd_core::output_v2::{Printer as PrinterV2, Role};
 
-use super::*;
-
 /// Returns true if the value is a clonable git source (URL or local git repo).
 pub(super) fn is_git_source(value: &str) -> bool {
     // Remote URLs
@@ -28,7 +26,6 @@ pub(crate) fn resolve_from(
     from: &str,
     target: Option<&Path>,
     branch: &str,
-    printer: &Printer,
     v2_printer: &PrinterV2,
 ) -> anyhow::Result<std::path::PathBuf> {
     if is_git_source(from) {
@@ -37,7 +34,7 @@ pub(crate) fn resolve_from(
             .unwrap_or_else(cfgd_core::default_config_dir);
         if !dest.join("cfgd.yaml").exists() {
             std::fs::create_dir_all(&dest)?;
-            clone_into(&dest, from, branch, printer, v2_printer)?;
+            clone_into(&dest, from, branch, v2_printer)?;
         } else {
             v2_printer.status_simple(
                 Role::Info,
@@ -62,7 +59,6 @@ pub(super) fn clone_into(
     target_dir: &Path,
     url: &str,
     branch: &str,
-    printer: &Printer,
     v2_printer: &PrinterV2,
 ) -> anyhow::Result<()> {
     // If target already has .git, it's already cloned — nothing to do.
@@ -71,7 +67,7 @@ pub(super) fn clone_into(
         return Ok(());
     }
 
-    cfgd_core::sources::git_clone_with_fallback(url, target_dir, printer)
+    cfgd_core::sources::git_clone_with_fallback(url, target_dir, v2_printer)
         .map_err(|e| anyhow::anyhow!("Clone failed: {}", e))?;
 
     v2_printer.status_simple(Role::Ok, format!("Cloned to {}", target_dir.display()));

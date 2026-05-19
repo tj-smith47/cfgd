@@ -20,7 +20,6 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::source::cmd_source_add;
-use cfgd_core::output::{Printer as PrinterV1, Verbosity};
 use cfgd_core::output_v2::Printer;
 use serial_test::serial;
 
@@ -77,12 +76,11 @@ fn source_add_happy_human() {
     let url = format!("file://{}", bare.display());
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let v1_printer = PrinterV1::new(Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
     let mut args = source_add_args(url);
     args.name = Some("team-config".into());
 
-    cmd_source_add(&cli, &v1_printer, &v2_printer, &args).unwrap();
+    cmd_source_add(&cli, &v2_printer, &args).unwrap();
     drop(v2_printer);
 
     let stripped = normalize_bare(&strip_ansi(&cap.human()), &bare, bare_root.path());
@@ -99,12 +97,11 @@ fn source_add_happy_json() {
     let url = format!("file://{}", bare.display());
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let v1_printer = PrinterV1::new(Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
     let mut args = source_add_args(url);
     args.name = Some("team-config".into());
 
-    cmd_source_add(&cli, &v1_printer, &v2_printer, &args).unwrap();
+    cmd_source_add(&cli, &v2_printer, &args).unwrap();
     drop(v2_printer);
 
     let json = cap.json().expect("doc captured json");
@@ -123,12 +120,11 @@ fn source_add_already_exists_human() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let v1_printer = PrinterV1::new(Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
     let mut args = source_add_args("https://github.com/team/config");
     args.name = Some("team-config".into());
 
-    let result = cmd_source_add(&cli, &v1_printer, &v2_printer, &args);
+    let result = cmd_source_add(&cli, &v2_printer, &args);
     assert!(result.is_err());
     drop(v2_printer);
 
@@ -157,12 +153,11 @@ fn source_add_clone_failure_human() {
     let url = format!("file://{}", bogus.display());
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let v1_printer = PrinterV1::new(Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
     let mut args = source_add_args(url);
     args.name = Some("doomed-src".into());
 
-    let result = cmd_source_add(&cli, &v1_printer, &v2_printer, &args);
+    let result = cmd_source_add(&cli, &v2_printer, &args);
     assert!(result.is_err(), "cmd_source_add must fail on bogus URL");
     drop(v2_printer);
 
@@ -193,12 +188,11 @@ fn source_add_bridge_one_blank_line() {
     let url = format!("file://{}", bare.display());
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let v1_printer = PrinterV1::new(Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
     let mut args = source_add_args(url);
     args.name = Some("bridge-src".into());
 
-    cmd_source_add(&cli, &v1_printer, &v2_printer, &args).unwrap();
+    cmd_source_add(&cli, &v2_printer, &args).unwrap();
     drop(v2_printer);
 
     let combined = cap.human();

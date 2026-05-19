@@ -20,7 +20,6 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::source::{cmd_source_add, cmd_source_replace};
-use cfgd_core::output::{Printer as PrinterV1, Verbosity};
 use cfgd_core::output_v2::Printer;
 use serial_test::serial;
 
@@ -77,17 +76,16 @@ fn source_replace_happy_human() {
     let url_new = format!("file://{}", bare_new.display());
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let v1_printer = PrinterV1::new(Verbosity::Quiet);
 
     // Seed the initial subscription via cmd_source_add (matches add fixture).
     let (v2_add, _add_cap) = Printer::for_test_doc();
     let mut args = source_add_args(url_old);
     args.name = Some("replace-old".into());
-    cmd_source_add(&cli, &v1_printer, &v2_add, &args).expect("seed source");
+    cmd_source_add(&cli, &v2_add, &args).expect("seed source");
     drop(v2_add);
 
     let (v2_printer, cap) = Printer::for_test_doc();
-    cmd_source_replace(&cli, &v1_printer, &v2_printer, "replace-old", &url_new).unwrap();
+    cmd_source_replace(&cli, &v2_printer, "replace-old", &url_new).unwrap();
     drop(v2_printer);
 
     let stripped = normalize_bare(
@@ -131,12 +129,10 @@ fn source_replace_happy_human() {
 fn source_replace_not_found_human() {
     let (config_dir, state_dir) = source_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let v1_printer = PrinterV1::new(Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
     let result = cmd_source_replace(
         &cli,
-        &v1_printer,
         &v2_printer,
         "missing",
         "https://github.com/team/new.git",

@@ -5051,10 +5051,10 @@ fn cmd_sync_no_sources() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = Printer::for_test();
+    let (_printer, buf) = Printer::for_test();
     let (v2_printer, v2_buf) = test_v2_printer_capture();
 
-    super::sync::cmd_sync(&cli, &printer, &v2_printer).unwrap();
+    super::sync::cmd_sync(&cli, &v2_printer).unwrap();
 
     let output = combine_buffers(&buf, &v2_buf);
     assert!(
@@ -8952,9 +8952,8 @@ fn cmd_source_show_not_found() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_printer();
 
-    let result = super::source::cmd_source_show(&cli, &printer, &test_v2_printer(), "nonexistent");
+    let result = super::source::cmd_source_show(&cli, &test_v2_printer(), "nonexistent");
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -8988,11 +8987,10 @@ spec:
     );
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    super::source::cmd_source_show(&cli, &printer, &v2_printer, "team-config").unwrap();
+    super::source::cmd_source_show(&cli, &v2_printer, "team-config").unwrap();
     drop(v2_printer);
 
     let output = v2_buf.lock().unwrap();
@@ -11308,11 +11306,10 @@ fn cmd_source_priority_updates_config() {
 fn cmd_source_show_exists() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, _buf) = Printer::for_test();
     let (v2_printer, v2_buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
-    let result = super::source::cmd_source_show(&cli, &printer, &v2_printer, "team-config");
+    let result = super::source::cmd_source_show(&cli, &v2_printer, "team-config");
     assert!(
         result.is_ok(),
         "source show should succeed: {:?}",
@@ -11334,12 +11331,11 @@ fn cmd_source_show_structured_json() {
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, _buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
     let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
         cfgd_core::output_v2::OutputFormat::Json,
     );
 
-    super::source::cmd_source_show(&cli, &printer, &v2_printer, "team-config").unwrap();
+    super::source::cmd_source_show(&cli, &v2_printer, "team-config").unwrap();
     drop(v2_printer);
 
     let output = v2_buf.lock().unwrap();
@@ -11725,7 +11721,7 @@ fn cmd_source_add_duplicate_fails() {
         version_pin: None,
         yes: true,
     };
-    let result = super::source::cmd_source_add(&h.cli(), h.printer(), h.v2_printer(), &args);
+    let result = super::source::cmd_source_add(&h.cli(), h.v2_printer(), &args);
     assert_error_contains(&result, "already exists");
 }
 
@@ -11752,7 +11748,7 @@ fn cmd_pull_non_git_dir_shows_warning() {
 #[test]
 fn cmd_sync_non_git_dir_shows_output() {
     let h = CliTestHarness::builder().build();
-    super::sync::cmd_sync(&h.cli(), h.printer(), h.v2_printer()).unwrap();
+    super::sync::cmd_sync(&h.cli(), h.v2_printer()).unwrap();
     h.assert_header("Sync");
 }
 
@@ -11808,7 +11804,7 @@ fn cmd_config_edit_with_invalid_config_and_prompt_declined_breaks_with_warning()
 #[test]
 fn cmd_source_update_no_sources_succeeds() {
     let h = CliTestHarness::builder().build();
-    super::source::cmd_source_update(&h.cli(), h.printer(), h.v2_printer(), None).unwrap();
+    super::source::cmd_source_update(&h.cli(), h.v2_printer(), None).unwrap();
     h.assert_header("Update Sources");
     h.assert_output_contains("No sources configured");
 }
@@ -11817,12 +11813,7 @@ fn cmd_source_update_no_sources_succeeds() {
 fn cmd_source_update_named_not_found_fails() {
     // Need a config with sources so it doesn't take the "no sources" early return
     let h = CliTestHarness::builder().rich_config().build();
-    let result = super::source::cmd_source_update(
-        &h.cli(),
-        h.printer(),
-        h.v2_printer(),
-        Some("nonexistent"),
-    );
+    let result = super::source::cmd_source_update(&h.cli(), h.v2_printer(), Some("nonexistent"));
     assert_error_contains(&result, "not found");
 }
 
@@ -11835,7 +11826,6 @@ fn cmd_source_replace_nonexistent_fails() {
     let h = CliTestHarness::builder().build();
     let result = super::source::cmd_source_replace(
         &h.cli(),
-        h.printer(),
         h.v2_printer(),
         "nonexistent",
         "https://github.com/new/config.git",
@@ -12038,7 +12028,7 @@ fn json_schema_source_list() {
 #[test]
 fn json_schema_source_show() {
     let h = CliTestHarness::builder().json().rich_config().build();
-    super::source::cmd_source_show(&h.cli(), h.printer(), h.v2_printer(), "team-config").unwrap();
+    super::source::cmd_source_show(&h.cli(), h.v2_printer(), "team-config").unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(&parsed, &["name", "url"]);
 }
@@ -15200,7 +15190,7 @@ fn cmd_source_list_structured_json_includes_state_info() {
 fn cmd_source_show_displays_all_key_fields() {
     let h = CliTestHarness::builder().rich_config().build();
 
-    super::source::cmd_source_show(&h.cli(), h.printer(), h.v2_printer(), "team-config").unwrap();
+    super::source::cmd_source_show(&h.cli(), h.v2_printer(), "team-config").unwrap();
 
     let output = h.output();
     assert!(
@@ -15252,7 +15242,7 @@ fn cmd_source_show_with_state_shows_status_section() {
         )
         .unwrap();
 
-    super::source::cmd_source_show(&h.cli(), h.printer(), h.v2_printer(), "team-config").unwrap();
+    super::source::cmd_source_show(&h.cli(), h.v2_printer(), "team-config").unwrap();
 
     let output = h.output();
     assert!(
@@ -15289,7 +15279,7 @@ fn cmd_source_show_with_managed_resources_shows_table() {
         .upsert_managed_resource("file", "~/.bashrc", "team-config", None, None)
         .unwrap();
 
-    super::source::cmd_source_show(&h.cli(), h.printer(), h.v2_printer(), "team-config").unwrap();
+    super::source::cmd_source_show(&h.cli(), h.v2_printer(), "team-config").unwrap();
 
     let output = h.output();
     assert!(
@@ -15314,7 +15304,7 @@ fn cmd_source_show_json_includes_managed_resources() {
         .upsert_managed_resource("env", "EDITOR", "team-config", None, None)
         .unwrap();
 
-    super::source::cmd_source_show(&h.cli(), h.printer(), h.v2_printer(), "team-config").unwrap();
+    super::source::cmd_source_show(&h.cli(), h.v2_printer(), "team-config").unwrap();
 
     let parsed = h.json_output();
     assert_eq!(parsed["name"], "team-config");
@@ -16381,7 +16371,7 @@ spec:
 "#;
     let h = CliTestHarness::builder().config(config_with_source).build();
     // The update should succeed overall (errors per source are printed, not propagated)
-    super::source::cmd_source_update(&h.cli(), h.printer(), h.v2_printer(), None).unwrap();
+    super::source::cmd_source_update(&h.cli(), h.v2_printer(), None).unwrap();
     h.assert_header("Update Sources");
     h.assert_output_contains("Failed to update source 'my-source'");
 }
@@ -16412,7 +16402,7 @@ spec:
 "#;
     let h = CliTestHarness::builder().config(config_with_source).build();
     // Update only 'alpha'; 'beta' should not appear in output
-    super::source::cmd_source_update(&h.cli(), h.printer(), h.v2_printer(), Some("alpha")).unwrap();
+    super::source::cmd_source_update(&h.cli(), h.v2_printer(), Some("alpha")).unwrap();
     h.assert_output_contains("Failed to update source 'alpha'");
     let output = h.output();
     assert!(
@@ -16449,7 +16439,6 @@ spec:
     // Replace will display the header and remove old source, then fail on clone
     let result = super::source::cmd_source_replace(
         &h.cli(),
-        h.printer(),
         h.v2_printer(),
         "old-source",
         "file:///nonexistent/new-config.git",
@@ -16640,7 +16629,7 @@ fn cmd_sync_non_git_shows_pull_warning_and_sync_header() {
     // A tempdir is not a git repo, so git_pull_sync will fail with a
     // warning. The test verifies both the header and the pull-failure warning path.
     let h = CliTestHarness::builder().build();
-    super::sync::cmd_sync(&h.cli(), h.printer(), h.v2_printer()).unwrap();
+    super::sync::cmd_sync(&h.cli(), h.v2_printer()).unwrap();
     h.assert_header("Sync");
     let output = h.output();
     // Spinner section appears with the pulling message; final state is "Pull
@@ -16673,7 +16662,7 @@ spec:
         priority: 100
 "#;
     let h = CliTestHarness::builder().config(config_with_source).build();
-    super::sync::cmd_sync(&h.cli(), h.printer(), h.v2_printer()).unwrap();
+    super::sync::cmd_sync(&h.cli(), h.v2_printer()).unwrap();
     h.assert_header("Sync");
     // When sources are configured, the Sources subheader should appear
     h.assert_output_contains("Sources");
@@ -17054,8 +17043,7 @@ mod cmd_source_add_local {
                 name: Some("local-team".to_string()),
                 ..empty_source_args(url.clone())
             };
-            let result =
-                super::source::cmd_source_add(&h.cli(), h.printer(), h.v2_printer(), &args);
+            let result = super::source::cmd_source_add(&h.cli(), h.v2_printer(), &args);
             assert!(result.is_ok(), "cmd_source_add should succeed: {result:?}");
             // Source row added to cfgd.yaml.
             let cfg_after = std::fs::read_to_string(h.config_path().join("cfgd.yaml")).unwrap();
@@ -17083,8 +17071,7 @@ mod cmd_source_add_local {
                 version_pin: Some("~1".to_string()),
                 ..empty_source_args(url)
             };
-            let result =
-                super::source::cmd_source_add(&h.cli(), h.printer(), h.v2_printer(), &args);
+            let result = super::source::cmd_source_add(&h.cli(), h.v2_printer(), &args);
             assert!(result.is_ok(), "cmd_source_add should succeed: {result:?}");
             let cfg_after = std::fs::read_to_string(h.config_path().join("cfgd.yaml")).unwrap();
             assert!(
@@ -17110,8 +17097,7 @@ mod cmd_source_add_local {
                 accept_recommended: true,
                 ..empty_source_args(url)
             };
-            let result =
-                super::source::cmd_source_add(&h.cli(), h.printer(), h.v2_printer(), &args);
+            let result = super::source::cmd_source_add(&h.cli(), h.v2_printer(), &args);
             assert!(result.is_ok(), "cmd_source_add should succeed: {result:?}");
             let cfg_after = std::fs::read_to_string(h.config_path().join("cfgd.yaml")).unwrap();
             assert!(
@@ -17146,14 +17132,14 @@ mod cmd_source_add_local {
                 ..empty_source_args(url.clone())
             };
             // First add succeeds.
-            let r1 = super::source::cmd_source_add(&h.cli(), h.printer(), h.v2_printer(), &args);
+            let r1 = super::source::cmd_source_add(&h.cli(), h.v2_printer(), &args);
             assert!(r1.is_ok(), "first add should succeed: {r1:?}");
             // Second add against the same name fails with the "already exists" message.
             let args2 = SourceAddArgs {
                 name: Some("dup-name".to_string()),
                 ..empty_source_args(url)
             };
-            let r2 = super::source::cmd_source_add(&h.cli(), h.printer(), h.v2_printer(), &args2);
+            let r2 = super::source::cmd_source_add(&h.cli(), h.v2_printer(), &args2);
             let err = r2.expect_err("duplicate source name should fail");
             assert!(
                 err.to_string().to_lowercase().contains("already exists"),
@@ -17255,8 +17241,7 @@ mod cmd_source_add_local {
                 profile: None, // <- trigger auto-detect branch
                 ..empty_source_args(url)
             };
-            let result =
-                super::source::cmd_source_add(&h.cli(), h.printer(), h.v2_printer(), &args);
+            let result = super::source::cmd_source_add(&h.cli(), h.v2_printer(), &args);
             assert!(result.is_ok(), "cmd_source_add should succeed: {result:?}");
             let cfg_after = std::fs::read_to_string(h.config_path().join("cfgd.yaml")).unwrap();
             assert!(
@@ -17314,8 +17299,7 @@ mod cmd_source_add_local {
                 profile: None,
                 ..empty_source_args(url)
             };
-            let result =
-                super::source::cmd_source_add(&h.cli(), h.printer(), h.v2_printer(), &args);
+            let result = super::source::cmd_source_add(&h.cli(), h.v2_printer(), &args);
             let err = result.expect_err("empty provides.profiles must fail in source load");
             assert!(
                 err.to_string().to_lowercase().contains("no profiles"),
@@ -17352,8 +17336,7 @@ mod cmd_source_add_local {
                 branch: Some(actual_branch.clone()),
                 ..empty_source_args(url)
             };
-            let result =
-                super::source::cmd_source_add(&h.cli(), h.printer(), h.v2_printer(), &args);
+            let result = super::source::cmd_source_add(&h.cli(), h.v2_printer(), &args);
             assert!(result.is_ok(), "cmd_source_add should succeed: {result:?}");
             let cfg_after = std::fs::read_to_string(h.config_path().join("cfgd.yaml")).unwrap();
             assert!(
@@ -17384,13 +17367,13 @@ mod cmd_source_add_local {
                 name: Some("upd-src".to_string()),
                 ..empty_source_args(url)
             };
-            super::source::cmd_source_add(&h.cli(), h.printer(), h.v2_printer(), &add_args)
+            super::source::cmd_source_add(&h.cli(), h.v2_printer(), &add_args)
                 .expect("cmd_source_add precondition should succeed");
 
             // No name → updates every source. Drives the
             // `mgr.get(...).is_some()` happy path + upsert_config_source +
             // "Updated source" success line.
-            super::source::cmd_source_update(&h.cli(), h.printer(), h.v2_printer(), None)
+            super::source::cmd_source_update(&h.cli(), h.v2_printer(), None)
                 .expect("cmd_source_update should succeed against the staged source");
 
             h.assert_output_contains("Updated source 'upd-src'");
@@ -17419,7 +17402,6 @@ mod cmd_source_add_local {
             let url_b = format!("file://{}", bare_b.display());
             super::source::cmd_source_add(
                 &h.cli(),
-                h.printer(),
                 h.v2_printer(),
                 &SourceAddArgs {
                     name: Some("src-a".to_string()),
@@ -17429,7 +17411,6 @@ mod cmd_source_add_local {
             .unwrap();
             super::source::cmd_source_add(
                 &h.cli(),
-                h.printer(),
                 h.v2_printer(),
                 &SourceAddArgs {
                     name: Some("src-b".to_string()),
@@ -17447,7 +17428,7 @@ mod cmd_source_add_local {
             // source. The post-update slice must contain src-b AND must NOT
             // mention src-a; without the second assertion the test would
             // pass even if the name filter was wired to update everything.
-            super::source::cmd_source_update(&h.cli(), h.printer(), h.v2_printer(), Some("src-b"))
+            super::source::cmd_source_update(&h.cli(), h.v2_printer(), Some("src-b"))
                 .expect("named update should succeed");
 
             let full = h.output();
@@ -17524,7 +17505,6 @@ mod cmd_source_add_local {
             let url = format!("file://{}", bare.display());
             super::source::cmd_source_add(
                 &h.cli(),
-                h.printer(),
                 h.v2_printer(),
                 &SourceAddArgs {
                     name: Some("shown-src".to_string()),
@@ -17551,16 +17531,11 @@ mod cmd_source_add_local {
             // Err → continue. The cache nevertheless got the v2 manifest
             // written by SourceManager::load_source BEFORE the permission
             // check ran, so cmd_source_show can render its policy section.
-            super::source::cmd_source_update(
-                &h.cli(),
-                h.printer(),
-                h.v2_printer(),
-                Some("shown-src"),
-            )
-            .expect("cmd_source_update");
+            super::source::cmd_source_update(&h.cli(), h.v2_printer(), Some("shown-src"))
+                .expect("cmd_source_update");
 
             let baseline_len = h.output().len();
-            super::source::cmd_source_show(&h.cli(), h.printer(), h.v2_printer(), "shown-src")
+            super::source::cmd_source_show(&h.cli(), h.v2_printer(), "shown-src")
                 .expect("cmd_source_show");
             let full = h.output();
             let show_out = &full[baseline_len..];
@@ -17614,7 +17589,6 @@ mod cmd_source_add_local {
             let url = format!("file://{}", bare.display());
             super::source::cmd_source_add(
                 &h.cli(),
-                h.printer(),
                 h.v2_printer(),
                 &SourceAddArgs {
                     name: Some("perm-src".to_string()),
@@ -17633,13 +17607,8 @@ mod cmd_source_add_local {
             push_replacement_manifest(&scratch, &bare, v2);
 
             let baseline_len = h.output().len();
-            super::source::cmd_source_update(
-                &h.cli(),
-                h.printer(),
-                h.v2_printer(),
-                Some("perm-src"),
-            )
-            .expect("cmd_source_update should not bubble up the cancelled prompt");
+            super::source::cmd_source_update(&h.cli(), h.v2_printer(), Some("perm-src"))
+                .expect("cmd_source_update should not bubble up the cancelled prompt");
 
             let full = h.output();
             let update_out = &full[baseline_len..];
@@ -17678,7 +17647,6 @@ mod cmd_source_add_local {
             let url = format!("file://{}", bare.display());
             super::source::cmd_source_add(
                 &h.cli(),
-                h.printer(),
                 h.v2_printer(),
                 &SourceAddArgs {
                     name: Some("doomed-src".to_string()),
@@ -17695,13 +17663,8 @@ mod cmd_source_add_local {
                 std::fs::remove_dir_all(&cache_dir).unwrap();
             }
 
-            super::source::cmd_source_update(
-                &h.cli(),
-                h.printer(),
-                h.v2_printer(),
-                Some("doomed-src"),
-            )
-            .expect("cmd_source_update should not bubble up a fetch failure");
+            super::source::cmd_source_update(&h.cli(), h.v2_printer(), Some("doomed-src"))
+                .expect("cmd_source_update should not bubble up a fetch failure");
 
             h.assert_output_contains("Failed to update source 'doomed-src'");
 

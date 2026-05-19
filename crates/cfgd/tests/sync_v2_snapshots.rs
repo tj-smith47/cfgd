@@ -7,7 +7,6 @@ use std::path::Path;
 
 use cfgd::cli::output_types::{SourceSyncOutput, SyncOutput};
 use cfgd::cli::sync::{build_sync_doc, cmd_sync};
-use cfgd_core::output::Printer as PrinterV1;
 use cfgd_core::output_v2::{Doc, Printer, Role};
 use cfgd_core::test_helpers::EnvVarGuard;
 use pretty_assertions::assert_eq;
@@ -84,10 +83,9 @@ fn sync_happy_human() {
     let (_workspace, config_dir, state_dir, _branch_a, _branch_b) = two_source_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
-    cmd_sync(&cli, &old_printer, &v2_printer).unwrap();
+    cmd_sync(&cli, &v2_printer).unwrap();
     drop(v2_printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
@@ -120,10 +118,9 @@ fn sync_no_sources_human() {
     let (config_dir, state_dir, _target) = tiny_profile_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
-    cmd_sync(&cli, &old_printer, &v2_printer).unwrap();
+    cmd_sync(&cli, &v2_printer).unwrap();
     drop(v2_printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
@@ -140,14 +137,13 @@ fn sync_perm_changes_rejection_human() {
     let (_workspace, config_dir, state_dir, _branch) = permission_change_source_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     use cfgd_core::output_v2::{PromptAnswer, Verbosity as V2Verbosity};
     let (v2_printer, v2_buf) = Printer::for_test_with_prompt_responses_at(
         vec![PromptAnswer::Confirm(false)],
         V2Verbosity::Normal,
     );
 
-    cmd_sync(&cli, &old_printer, &v2_printer).unwrap();
+    cmd_sync(&cli, &v2_printer).unwrap();
     v2_printer.flush();
     drop(v2_printer);
 
@@ -166,14 +162,13 @@ fn sync_perm_changes_accept_human() {
     let (_workspace, config_dir, state_dir, _branch) = permission_change_source_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     use cfgd_core::output_v2::{PromptAnswer, Verbosity as V2Verbosity};
     let (v2_printer, v2_buf) = Printer::for_test_with_prompt_responses_at(
         vec![PromptAnswer::Confirm(true)],
         V2Verbosity::Normal,
     );
 
-    cmd_sync(&cli, &old_printer, &v2_printer).unwrap();
+    cmd_sync(&cli, &v2_printer).unwrap();
     v2_printer.flush();
     drop(v2_printer);
 
@@ -197,10 +192,9 @@ fn sync_source_failure_human() {
     let (config_dir, state_dir) = unreachable_source_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
-    cmd_sync(&cli, &old_printer, &v2_printer).unwrap();
+    cmd_sync(&cli, &v2_printer).unwrap();
     drop(v2_printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());

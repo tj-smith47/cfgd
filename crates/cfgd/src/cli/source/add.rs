@@ -3,7 +3,6 @@ use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
 pub fn cmd_source_add(
     cli: &Cli,
-    printer: &Printer,
     v2_printer: &PrinterV2,
     args: &SourceAddArgs,
 ) -> anyhow::Result<()> {
@@ -60,11 +59,11 @@ pub fn cmd_source_add(
         );
     }
     let spec = SourceManager::build_source_spec(&source_name, url, profile);
-    // Hybrid lib-call: cfgd_core::sources keeps the v1 Printer until F4b.
+    let v2_local = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
     // Surface lib-side load failure as a load_failed Doc so structured
     // consumers see the same {"error": "load_failed", ...} shape as the
     // "Ok-but-no-cache-entry" fallback below.
-    if let Err(e) = mgr.load_source(&spec, printer) {
+    if let Err(e) = mgr.load_source(&spec, &v2_local) {
         v2_printer.emit(cfgd_core::output_v2::error_doc(
             &source_name,
             "load_failed",

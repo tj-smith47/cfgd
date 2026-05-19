@@ -3,7 +3,6 @@ use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
 pub fn cmd_source_replace(
     cli: &Cli,
-    printer: &Printer,
     v2_printer: &PrinterV2,
     old_name: &str,
     new_url: &str,
@@ -23,7 +22,6 @@ pub fn cmd_source_replace(
     // Add new source with same name, carrying over profile and priority
     cmd_source_add(
         cli,
-        printer,
         v2_printer,
         &SourceAddArgs {
             url: new_url.to_string(),
