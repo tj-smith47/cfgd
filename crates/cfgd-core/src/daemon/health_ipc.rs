@@ -173,9 +173,9 @@ where
 
 /// Connect to the daemon IPC endpoint. Returns `None` if the daemon is not reachable.
 pub(crate) fn connect_daemon_ipc() -> Option<IpcStream> {
+    let path = super::resolve_default_ipc_path();
     #[cfg(unix)]
     {
-        let path = PathBuf::from(DEFAULT_IPC_PATH);
         if !path.exists() {
             return None;
         }
@@ -188,7 +188,7 @@ pub(crate) fn connect_daemon_ipc() -> Option<IpcStream> {
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .open(DEFAULT_IPC_PATH)
+            .open(&path)
             .ok()?;
         Some(IpcStream::Pipe(file))
     }

@@ -66,6 +66,17 @@ const DEBOUNCE_MS: u64 = 500;
 const DEFAULT_IPC_PATH: &str = "/tmp/cfgd.sock";
 #[cfg(windows)]
 const DEFAULT_IPC_PATH: &str = r"\\.\pipe\cfgd";
+
+/// Resolve the daemon IPC endpoint when no explicit override is supplied.
+/// Honors `CFGD_DAEMON_IPC_PATH` so test harnesses and operators can isolate
+/// the socket from `DEFAULT_IPC_PATH`. Used by both the server-side bind
+/// (`run_daemon_with`) and the client-side connect (`connect_daemon_ipc`)
+/// so the two stay in sync.
+pub(crate) fn resolve_default_ipc_path() -> PathBuf {
+    std::env::var_os("CFGD_DAEMON_IPC_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_IPC_PATH))
+}
 const DEFAULT_RECONCILE_SECS: u64 = 300; // 5m
 const DEFAULT_SYNC_SECS: u64 = 300; // 5m
 #[cfg(unix)]
@@ -541,7 +552,7 @@ pub(super) async fn run_daemon_with(
     let ipc_path = overrides
         .ipc_path
         .clone()
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_IPC_PATH));
+        .unwrap_or_else(resolve_default_ipc_path);
     check_already_running(&ipc_path)?;
 
     // Start health server (skippable in tests that don't need /healthz).
