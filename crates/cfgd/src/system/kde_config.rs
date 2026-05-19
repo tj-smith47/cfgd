@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
@@ -135,10 +135,13 @@ impl SystemConfigurator for KdeConfigConfigurator {
                     };
                     let val_str = yaml_value_to_string(value);
 
-                    printer.info(&format!(
-                        "{} --file {} --group {} --key {} {}",
-                        write_cmd, file, group, key_str, val_str
-                    ));
+                    printer.status_simple(
+                        Role::Info,
+                        format!(
+                            "{} --file {} --group {} --key {} {}",
+                            write_cmd, file, group, key_str, val_str
+                        ),
+                    );
 
                     let type_flag = match value {
                         serde_yaml::Value::Bool(_) => Some("bool"),
@@ -156,14 +159,17 @@ impl SystemConfigurator for KdeConfigConfigurator {
                         .map_err(cfgd_core::errors::CfgdError::Io)?;
 
                     if !output.status.success() {
-                        printer.warning(&format!(
-                            "{} failed for {}.{}.{}: {}",
-                            write_cmd,
-                            file,
-                            group,
-                            key_str,
-                            cfgd_core::stderr_lossy_trimmed(&output)
-                        ));
+                        printer.status_simple(
+                            Role::Warn,
+                            format!(
+                                "{} failed for {}.{}.{}: {}",
+                                write_cmd,
+                                file,
+                                group,
+                                key_str,
+                                cfgd_core::stderr_lossy_trimmed(&output)
+                            ),
+                        );
                     }
                 }
             }
@@ -199,7 +205,7 @@ mod tests {
 
     #[test]
     fn kde_apply_empty_mapping_is_noop() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let kc = KdeConfigConfigurator;
         let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
         kc.apply(&yaml, &printer).unwrap();
@@ -207,7 +213,7 @@ mod tests {
 
     #[test]
     fn kde_apply_non_mapping_is_noop() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let kc = KdeConfigConfigurator;
         let yaml = serde_yaml::Value::String("not a mapping".into());
         kc.apply(&yaml, &printer).unwrap();
@@ -215,7 +221,7 @@ mod tests {
 
     #[test]
     fn kde_apply_skips_non_string_file_key() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let kc = KdeConfigConfigurator;
         let mut outer = serde_yaml::Mapping::new();
         outer.insert(
@@ -228,7 +234,7 @@ mod tests {
 
     #[test]
     fn kde_apply_skips_groups_non_mapping() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let kc = KdeConfigConfigurator;
         let mut outer = serde_yaml::Mapping::new();
         outer.insert(
@@ -241,7 +247,7 @@ mod tests {
 
     #[test]
     fn kde_apply_skips_non_string_group_key() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let kc = KdeConfigConfigurator;
         let mut groups = serde_yaml::Mapping::new();
         groups.insert(
@@ -259,7 +265,7 @@ mod tests {
 
     #[test]
     fn kde_apply_skips_keys_non_mapping() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let kc = KdeConfigConfigurator;
         let mut groups = serde_yaml::Mapping::new();
         groups.insert(
@@ -277,7 +283,7 @@ mod tests {
 
     #[test]
     fn kde_apply_skips_non_string_key_in_group() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let kc = KdeConfigConfigurator;
         let mut keys = serde_yaml::Mapping::new();
         keys.insert(

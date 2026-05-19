@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
@@ -103,12 +103,15 @@ impl WindowsRegistryConfigurator {
             .map_err(cfgd_core::errors::CfgdError::Io)?;
 
         if !output.status.success() {
-            printer.warning(&format!(
-                "reg add failed for {}\\{}: {}",
-                key_path,
-                value_name,
-                cfgd_core::stderr_lossy_trimmed(&output)
-            ));
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "reg add failed for {}\\{}: {}",
+                    key_path,
+                    value_name,
+                    cfgd_core::stderr_lossy_trimmed(&output)
+                ),
+            );
         }
         Ok(())
     }
@@ -198,7 +201,10 @@ impl SystemConfigurator for WindowsRegistryConfigurator {
                 };
                 let desired_str = yaml_value_with_numeric_bools(desired_val);
                 Self::write_reg_value(key_path, name, &desired_str, printer)?;
-                printer.success(&format!("Set {}\\{} = {}", key_path, name, desired_str));
+                printer.status_simple(
+                    Role::Ok,
+                    format!("Set {}\\{} = {}", key_path, name, desired_str),
+                );
             }
         }
 
@@ -430,7 +436,7 @@ mod tests {
 
     #[test]
     fn registry_apply_empty_mapping_is_noop() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let wrc = WindowsRegistryConfigurator;
         let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
         wrc.apply(&yaml, &printer).unwrap();
@@ -438,7 +444,7 @@ mod tests {
 
     #[test]
     fn registry_apply_non_mapping_is_noop() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let wrc = WindowsRegistryConfigurator;
         let yaml = serde_yaml::Value::String("not a mapping".into());
         wrc.apply(&yaml, &printer).unwrap();
@@ -446,7 +452,7 @@ mod tests {
 
     #[test]
     fn registry_apply_skips_non_string_key_path() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let wrc = WindowsRegistryConfigurator;
         let mut outer = serde_yaml::Mapping::new();
         outer.insert(
@@ -459,7 +465,7 @@ mod tests {
 
     #[test]
     fn registry_apply_skips_inner_non_mapping() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let wrc = WindowsRegistryConfigurator;
         let mut outer = serde_yaml::Mapping::new();
         outer.insert(
@@ -472,7 +478,7 @@ mod tests {
 
     #[test]
     fn registry_apply_skips_non_string_value_name() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let wrc = WindowsRegistryConfigurator;
         let mut inner = serde_yaml::Mapping::new();
         inner.insert(
@@ -490,7 +496,7 @@ mod tests {
 
     #[test]
     fn registry_write_reg_value_noop_on_non_windows() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         // On non-Windows, write_reg_value returns Ok(()) immediately
         WindowsRegistryConfigurator::write_reg_value(r"HKCU\Test", "TestValue", "42", &printer)
             .unwrap();

@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
@@ -324,14 +324,20 @@ impl EnvironmentConfigurator {
             match result {
                 Ok(output) if output.status.success() => {}
                 Ok(output) => {
-                    printer.warning(&format!(
-                        "launchctl setenv {} failed: {}",
-                        key,
-                        cfgd_core::stderr_lossy_trimmed(&output)
-                    ));
+                    printer.status_simple(
+                        Role::Warn,
+                        format!(
+                            "launchctl setenv {} failed: {}",
+                            key,
+                            cfgd_core::stderr_lossy_trimmed(&output)
+                        ),
+                    );
                 }
                 Err(e) => {
-                    printer.warning(&format!("launchctl setenv {} failed: {}", key, e));
+                    printer.status_simple(
+                        Role::Warn,
+                        format!("launchctl setenv {} failed: {}", key, e),
+                    );
                 }
             }
         }
@@ -376,10 +382,10 @@ impl EnvironmentConfigurator {
             Ok(output) => {
                 // setx writes error messages to stdout, not stderr
                 let stdout = cfgd_core::stdout_lossy_trimmed(&output);
-                printer.warning(&format!("setx {} failed: {}", name, stdout));
+                printer.status_simple(Role::Warn, format!("setx {} failed: {}", name, stdout));
             }
             Err(e) => {
-                printer.warning(&format!("setx {} failed: {}", name, e));
+                printer.status_simple(Role::Warn, format!("setx {} failed: {}", name, e));
             }
         }
     }
@@ -452,38 +458,49 @@ impl SystemConfigurator for EnvironmentConfigurator {
             return Ok(());
         }
 
-        printer.info(&format!(
-            "Managing {} environment variable(s)",
-            managed.len()
-        ));
+        printer.status_simple(
+            Role::Info,
+            format!("Managing {} environment variable(s)", managed.len()),
+        );
 
         if cfg!(windows) {
             for (key, value) in &managed {
                 Self::windows_set_var(key, value, printer);
             }
-            printer.success(&format!(
-                "Set {} user environment variable(s) via setx",
-                managed.len()
-            ));
+            printer.status_simple(
+                Role::Ok,
+                format!(
+                    "Set {} user environment variable(s) via setx",
+                    managed.len()
+                ),
+            );
         } else if cfg!(target_os = "macos") {
             // macOS: ~/.config/cfgd/env.sh for shells
             match Self::macos_write_env_sh(&managed) {
                 Ok(()) => {
-                    printer.success(&format!("Updated {}", Self::macos_env_sh_path().display()));
-                    printer.info("Add to your shell rc: . ~/.config/cfgd/env.sh");
+                    printer.status_simple(
+                        Role::Ok,
+                        format!("Updated {}", Self::macos_env_sh_path().display()),
+                    );
+                    printer
+                        .status_simple(Role::Info, "Add to your shell rc: . ~/.config/cfgd/env.sh");
                 }
                 Err(e) => {
-                    printer.warning(&format!("Failed to write env.sh: {}", e));
+                    printer.status_simple(Role::Warn, format!("Failed to write env.sh: {}", e));
                 }
             }
 
             // macOS: launchd plist for GUI apps
             match Self::macos_write_launchd_plist(&managed) {
                 Ok(()) => {
-                    printer.success(&format!("Updated {}", Self::macos_plist_path().display()));
+                    printer.status_simple(
+                        Role::Ok,
+                        format!("Updated {}", Self::macos_plist_path().display()),
+                    );
                 }
                 Err(e) => {
-                    printer.warning(&format!("Failed to write launchd plist: {}", e));
+                    printer
+                        .status_simple(Role::Warn, format!("Failed to write launchd plist: {}", e));
                 }
             }
 
@@ -493,26 +510,32 @@ impl SystemConfigurator for EnvironmentConfigurator {
             // Linux: /etc/environment
             match Self::linux_write_etc_environment(&managed) {
                 Ok(()) => {
-                    printer.success(&format!("Updated {}", LINUX_ETC_ENVIRONMENT));
+                    printer.status_simple(Role::Ok, format!("Updated {}", LINUX_ETC_ENVIRONMENT));
                 }
                 Err(e) => {
-                    printer.warning(&format!(
-                        "Failed to update {} (may need root): {}",
-                        LINUX_ETC_ENVIRONMENT, e
-                    ));
+                    printer.status_simple(
+                        Role::Warn,
+                        format!(
+                            "Failed to update {} (may need root): {}",
+                            LINUX_ETC_ENVIRONMENT, e
+                        ),
+                    );
                 }
             }
 
             // Linux: /etc/profile.d/cfgd-env.sh
             match Self::linux_write_profile_d(&managed) {
                 Ok(()) => {
-                    printer.success(&format!("Updated {}", LINUX_PROFILE_D));
+                    printer.status_simple(Role::Ok, format!("Updated {}", LINUX_PROFILE_D));
                 }
                 Err(e) => {
-                    printer.warning(&format!(
-                        "Failed to update {} (may need root): {}",
-                        LINUX_PROFILE_D, e
-                    ));
+                    printer.status_simple(
+                        Role::Warn,
+                        format!(
+                            "Failed to update {} (may need root): {}",
+                            LINUX_PROFILE_D, e
+                        ),
+                    );
                 }
             }
         }

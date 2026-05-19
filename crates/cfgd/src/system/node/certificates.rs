@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
 // ---------------------------------------------------------------------------
@@ -137,17 +137,20 @@ impl SystemConfigurator for CertificateConfigurator {
                         let meta = fs::metadata(path)?;
                         let current_mode = cfgd_core::file_permissions_mode(&meta);
                         if current_mode != Some(desired_mode) {
-                            printer.info(&format!(
-                                "Setting permissions {:04o} on {} ({})",
-                                desired_mode, path_str, name
-                            ));
+                            printer.status_simple(
+                                Role::Info,
+                                format!(
+                                    "Setting permissions {:04o} on {} ({})",
+                                    desired_mode, path_str, name
+                                ),
+                            );
                             cfgd_core::set_file_permissions(path, desired_mode)?;
                         }
                     } else {
-                        printer.warning(&format!(
-                            "Certificate file missing: {} ({})",
-                            path_str, name
-                        ));
+                        printer.status_simple(
+                            Role::Warn,
+                            format!("Certificate file missing: {} ({})", path_str, name),
+                        );
                     }
                 }
             }

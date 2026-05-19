@@ -78,7 +78,7 @@ pub trait SystemConfigurator: Send + Sync {
     fn diff(&self, desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>>;
 
     /// Apply desired state
-    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()>;
+    fn apply(&self, desired: &serde_yaml::Value, printer: &PrinterV2) -> Result<()>;
 }
 
 // --- FileManager trait ---

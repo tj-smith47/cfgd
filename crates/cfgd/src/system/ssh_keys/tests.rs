@@ -1,5 +1,4 @@
 use super::*;
-use cfgd_core::output::Verbosity;
 use std::os::unix::fs::PermissionsExt;
 use tempfile::TempDir;
 
@@ -167,7 +166,7 @@ fn apply_generates_key() {
 
     let desired = make_desired(&[("default", "ed25519", Some(&key_path.display().to_string()))]);
 
-    let printer = Printer::new(Verbosity::Quiet);
+    let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
     let c = SshKeysConfigurator;
     c.apply(&desired, &printer).unwrap();
 
@@ -189,7 +188,7 @@ fn apply_creates_parent_dir_with_700() {
 
     let desired = make_desired(&[("default", "ed25519", Some(&key_path.display().to_string()))]);
 
-    let printer = Printer::new(Verbosity::Quiet);
+    let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
     let c = SshKeysConfigurator;
     c.apply(&desired, &printer).unwrap();
 

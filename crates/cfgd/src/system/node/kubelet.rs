@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cfgd_core::errors::{CfgdError, Result};
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
 use super::super::{diff_yaml_mapping, yaml_value_to_string};
@@ -128,11 +128,14 @@ impl SystemConfigurator for KubeletConfigurator {
                 Some(k) => k,
                 None => continue,
             };
-            printer.info(&format!(
-                "kubelet: setting {} = {}",
-                key_str,
-                yaml_value_to_string(desired_val)
-            ));
+            printer.status_simple(
+                Role::Info,
+                format!(
+                    "kubelet: setting {} = {}",
+                    key_str,
+                    yaml_value_to_string(desired_val)
+                ),
+            );
             current_map.insert(
                 serde_yaml::Value::String(key_str.to_string()),
                 desired_val.clone(),
@@ -163,17 +166,26 @@ impl SystemConfigurator for KubeletConfigurator {
 
         cfgd_core::atomic_write_str(&config_path, &content)?;
 
-        printer.info("Restarting kubelet");
+        printer.status_simple(Role::Info, "Restarting kubelet");
         if let Err(e) = Self::restart_kubelet() {
             if let Some(ref state) = backup
                 && !state.is_symlink
                 && !state.oversized
             {
-                printer.warning("kubelet restart failed — restoring previous config");
+                printer.status_simple(
+                    Role::Warn,
+                    "kubelet restart failed — restoring previous config",
+                );
                 if let Err(re) = cfgd_core::atomic_write(&config_path, &state.content) {
-                    printer.warning(&format!("rollback: failed to restore config: {}", re));
+                    printer.status_simple(
+                        Role::Warn,
+                        format!("rollback: failed to restore config: {}", re),
+                    );
                 } else if let Err(re) = Self::restart_kubelet() {
-                    printer.warning(&format!("rollback: kubelet restart also failed: {}", re));
+                    printer.status_simple(
+                        Role::Warn,
+                        format!("rollback: kubelet restart also failed: {}", re),
+                    );
                 }
             }
             return Err(e);

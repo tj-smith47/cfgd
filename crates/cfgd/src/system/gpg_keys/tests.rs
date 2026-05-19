@@ -709,7 +709,7 @@ fn configurator_name_is_gpg_keys() {
 #[test]
 fn apply_non_sequence_is_noop() {
     let c = GpgKeysConfigurator;
-    let (printer, _) = cfgd_core::output::Printer::for_test();
+    let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
     let desired = serde_yaml::Value::String("not a sequence".into());
     let result = c.apply(&desired, &printer);
     assert!(
@@ -721,7 +721,7 @@ fn apply_non_sequence_is_noop() {
 #[test]
 fn apply_empty_sequence_is_noop() {
     let c = GpgKeysConfigurator;
-    let (printer, _) = cfgd_core::output::Printer::for_test();
+    let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
     let desired = serde_yaml::Value::Sequence(Vec::new());
     let result = c.apply(&desired, &printer);
     assert!(
@@ -733,7 +733,7 @@ fn apply_empty_sequence_is_noop() {
 #[test]
 fn apply_unparseable_entries_skipped() {
     let c = GpgKeysConfigurator;
-    let (printer, _) = cfgd_core::output::Printer::for_test();
+    let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
     let desired: serde_yaml::Value = serde_yaml::from_str(
         r#"
 - displayName: "Missing required fields"
@@ -752,7 +752,7 @@ fn apply_unparseable_entries_skipped() {
 mod gpg_shim {
     use super::*;
     use cfgd_core::providers::SystemConfigurator;
-    use cfgd_core::test_helpers::{ToolShim, test_printer};
+    use cfgd_core::test_helpers::{ToolShim, test_printer_v2};
     use serial_test::serial;
 
     const SHIM_ENV: &str = "CFGD_GPG_BIN";
@@ -859,7 +859,7 @@ uid:u::::1700000000::HASH2::Jane <jane@work.com>::::::::::0:
         // Empty stdout for every call: query → no keys; gen-key → success;
         // post-gen query → no keys (apply prints a warning but returns Ok).
         let s = ToolShim::install(SHIM_ENV, 0, "", "");
-        let p = test_printer();
+        let p = test_printer_v2();
         let desired: serde_yaml::Value = serde_yaml::from_str(
             r#"
 - name: work-signing
@@ -895,7 +895,7 @@ uid:u::::1700000000::HASH2::Jane <jane@work.com>::::::::::0:
         // gen-key invocation see the failure. Initial query at exit 1 is
         // already an error path (query returns Err for any non-zero/!=2).
         let _s = ToolShim::install(SHIM_ENV, 1, "", "gpg: agent unavailable");
-        let p = test_printer();
+        let p = test_printer_v2();
         let desired: serde_yaml::Value = serde_yaml::from_str(
             r#"
 - name: work-signing

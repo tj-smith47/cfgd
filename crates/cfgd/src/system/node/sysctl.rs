@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cfgd_core::errors::{CfgdError, Result};
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
 use super::super::{diff_yaml_mapping, yaml_value_with_numeric_bools};
@@ -140,17 +140,17 @@ impl SystemConfigurator for SysctlConfigurator {
             };
             let desired_val = yaml_value_with_numeric_bools(value);
 
-            printer.info(&format!("sysctl -w {}={}", key_str, desired_val));
+            printer.status_simple(Role::Info, format!("sysctl -w {}={}", key_str, desired_val));
 
             Self::write_sysctl(key_str, &desired_val)?;
             all_entries.insert(key_str, desired_val);
         }
 
         if let Err(e) = Self::persist_all_sysctls(&all_entries) {
-            printer.warning(&format!(
-                "Failed to persist sysctls: {} (runtime values applied)",
-                e
-            ));
+            printer.status_simple(
+                Role::Warn,
+                format!("Failed to persist sysctls: {} (runtime values applied)", e),
+            );
         }
 
         Ok(())

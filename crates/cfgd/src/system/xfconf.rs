@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
@@ -69,10 +69,10 @@ impl SystemConfigurator for XfconfConfigurator {
 
                 let val_str = yaml_value_to_string(desired_value);
 
-                printer.info(&format!(
-                    "xfconf-query -c {} -p {} -s {}",
-                    channel, property, val_str
-                ));
+                printer.status_simple(
+                    Role::Info,
+                    format!("xfconf-query -c {} -p {} -s {}", channel, property, val_str),
+                );
 
                 let output = Command::new("xfconf-query")
                     .args(["-c", channel, "-p", property, "-s", &val_str])
@@ -102,12 +102,15 @@ impl SystemConfigurator for XfconfConfigurator {
                         .map_err(cfgd_core::errors::CfgdError::Io)?;
 
                     if !create_output.status.success() {
-                        printer.warning(&format!(
-                            "xfconf-query set failed for {}.{}: {}",
-                            channel,
-                            property,
-                            cfgd_core::stderr_lossy_trimmed(&create_output)
-                        ));
+                        printer.status_simple(
+                            Role::Warn,
+                            format!(
+                                "xfconf-query set failed for {}.{}: {}",
+                                channel,
+                                property,
+                                cfgd_core::stderr_lossy_trimmed(&create_output)
+                            ),
+                        );
                     }
                 }
             }
@@ -130,7 +133,7 @@ mod tests {
 
     #[test]
     fn xfconf_apply_empty_mapping_is_noop() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let xc = XfconfConfigurator;
         let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
         xc.apply(&yaml, &printer).unwrap();
@@ -138,7 +141,7 @@ mod tests {
 
     #[test]
     fn xfconf_apply_non_mapping_is_noop() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let xc = XfconfConfigurator;
         let yaml = serde_yaml::Value::String("not a mapping".into());
         xc.apply(&yaml, &printer).unwrap();
@@ -146,7 +149,7 @@ mod tests {
 
     #[test]
     fn xfconf_apply_skips_non_string_channel_key() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let xc = XfconfConfigurator;
         let mut outer = serde_yaml::Mapping::new();
         outer.insert(
@@ -159,7 +162,7 @@ mod tests {
 
     #[test]
     fn xfconf_apply_skips_inner_non_mapping() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let xc = XfconfConfigurator;
         let mut outer = serde_yaml::Mapping::new();
         outer.insert(
@@ -172,7 +175,7 @@ mod tests {
 
     #[test]
     fn xfconf_apply_skips_non_string_property_key() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let xc = XfconfConfigurator;
         let mut inner = serde_yaml::Mapping::new();
         inner.insert(

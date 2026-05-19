@@ -22,9 +22,7 @@ impl<'a> super::Reconciler<'a> {
                 if let Some(desired_value) = profile.system.get(configurator.as_str()) {
                     for sc in self.registry.available_system_configurators() {
                         if sc.name() == configurator {
-                            let v1_forwarder =
-                                crate::output::Printer::new(crate::output::Verbosity::Quiet);
-                            sc.apply(desired_value, &v1_forwarder)?;
+                            sc.apply(desired_value, printer)?;
                             return Ok(format!(
                                 "system:{}.{} ({} → {})",
                                 configurator, key, current, desired

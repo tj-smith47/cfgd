@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cfgd_core::errors::{CfgdError, Result};
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
 use super::super::{diff_yaml_mapping, yaml_value_to_string};
@@ -120,10 +120,10 @@ impl SystemConfigurator for ContainerdConfigurator {
             };
             let desired_str = yaml_value_to_string(desired_val);
 
-            printer.info(&format!(
-                "containerd: setting {} = {}",
-                key_str, desired_str
-            ));
+            printer.status_simple(
+                Role::Info,
+                format!("containerd: setting {} = {}", key_str, desired_str),
+            );
             set_toml_value(&mut current, key_str, desired_val);
         }
 
@@ -151,18 +151,27 @@ impl SystemConfigurator for ContainerdConfigurator {
 
         cfgd_core::atomic_write_str(&config_path, &content)?;
 
-        printer.info("Restarting containerd");
+        printer.status_simple(Role::Info, "Restarting containerd");
         if let Err(e) = Self::restart_containerd() {
             // Restart failed — attempt rollback
             if let Some(ref state) = backup
                 && !state.is_symlink
                 && !state.oversized
             {
-                printer.warning("containerd restart failed — restoring previous config");
+                printer.status_simple(
+                    Role::Warn,
+                    "containerd restart failed — restoring previous config",
+                );
                 if let Err(re) = cfgd_core::atomic_write(&config_path, &state.content) {
-                    printer.warning(&format!("rollback: failed to restore config: {}", re));
+                    printer.status_simple(
+                        Role::Warn,
+                        format!("rollback: failed to restore config: {}", re),
+                    );
                 } else if let Err(re) = Self::restart_containerd() {
-                    printer.warning(&format!("rollback: containerd restart also failed: {}", re));
+                    printer.status_simple(
+                        Role::Warn,
+                        format!("rollback: containerd restart also failed: {}", re),
+                    );
                 }
             }
             return Err(e);

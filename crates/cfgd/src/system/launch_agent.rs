@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
@@ -96,7 +96,10 @@ impl SystemConfigurator for LaunchAgentConfigurator {
             let plist_content = generate_launch_agent_plist(name, program, &args, run_at_load);
             let plist_path = launch_agent_plist_path(name);
 
-            printer.info(&format!("Writing launch agent: {}", plist_path.display()));
+            printer.status_simple(
+                Role::Info,
+                format!("Writing launch agent: {}", plist_path.display()),
+            );
 
             cfgd_core::atomic_write_str(&plist_path, &plist_content)?;
 
@@ -114,11 +117,14 @@ impl SystemConfigurator for LaunchAgentConfigurator {
                 .map_err(cfgd_core::errors::CfgdError::Io)?;
 
             if !output.status.success() {
-                printer.warning(&format!(
-                    "launchctl load failed for {}: {}",
-                    name,
-                    cfgd_core::stderr_lossy_trimmed(&output)
-                ));
+                printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "launchctl load failed for {}: {}",
+                        name,
+                        cfgd_core::stderr_lossy_trimmed(&output)
+                    ),
+                );
             }
         }
 
@@ -405,7 +411,7 @@ mod tests {
 
     #[test]
     fn launch_agent_apply_empty_sequence_is_noop() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let la = LaunchAgentConfigurator;
         let yaml = serde_yaml::Value::Sequence(Vec::new());
         la.apply(&yaml, &printer).unwrap();
@@ -413,7 +419,7 @@ mod tests {
 
     #[test]
     fn launch_agent_apply_non_sequence_is_noop() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let la = LaunchAgentConfigurator;
         let yaml = serde_yaml::Value::String("not a sequence".into());
         la.apply(&yaml, &printer).unwrap();
@@ -421,7 +427,7 @@ mod tests {
 
     #[test]
     fn launch_agent_apply_skips_agents_without_name() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let la = LaunchAgentConfigurator;
         let mut agent = serde_yaml::Mapping::new();
         agent.insert(

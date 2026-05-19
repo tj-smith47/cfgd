@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
@@ -79,10 +79,10 @@ impl SystemConfigurator for GsettingsConfigurator {
 
                 let gsettings_val = yaml_value_to_string(desired_value);
 
-                printer.info(&format!(
-                    "gsettings set {} {} {}",
-                    schema, key_str, gsettings_val
-                ));
+                printer.status_simple(
+                    Role::Info,
+                    format!("gsettings set {} {} {}", schema, key_str, gsettings_val),
+                );
 
                 let output = Command::new("gsettings")
                     .args(["set", schema, key_str, &gsettings_val])
@@ -90,12 +90,15 @@ impl SystemConfigurator for GsettingsConfigurator {
                     .map_err(cfgd_core::errors::CfgdError::Io)?;
 
                 if !output.status.success() {
-                    printer.warning(&format!(
-                        "gsettings set failed for {}.{}: {}",
-                        schema,
-                        key_str,
-                        cfgd_core::stderr_lossy_trimmed(&output)
-                    ));
+                    printer.status_simple(
+                        Role::Warn,
+                        format!(
+                            "gsettings set failed for {}.{}: {}",
+                            schema,
+                            key_str,
+                            cfgd_core::stderr_lossy_trimmed(&output)
+                        ),
+                    );
                 }
             }
         }
@@ -162,7 +165,7 @@ mod tests {
 
     #[test]
     fn gsettings_apply_empty_mapping_is_noop() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let gc = GsettingsConfigurator;
         let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
         gc.apply(&yaml, &printer).unwrap();
@@ -170,7 +173,7 @@ mod tests {
 
     #[test]
     fn gsettings_apply_non_mapping_is_noop() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let gc = GsettingsConfigurator;
         let yaml = serde_yaml::Value::String("not a mapping".into());
         gc.apply(&yaml, &printer).unwrap();
@@ -178,7 +181,7 @@ mod tests {
 
     #[test]
     fn gsettings_apply_skips_non_string_schema_key() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let gc = GsettingsConfigurator;
         let mut outer = serde_yaml::Mapping::new();
         outer.insert(
@@ -191,7 +194,7 @@ mod tests {
 
     #[test]
     fn gsettings_apply_skips_inner_non_mapping() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let gc = GsettingsConfigurator;
         let mut outer = serde_yaml::Mapping::new();
         outer.insert(
@@ -204,7 +207,7 @@ mod tests {
 
     #[test]
     fn gsettings_apply_skips_non_string_key() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let gc = GsettingsConfigurator;
         let mut inner = serde_yaml::Mapping::new();
         inner.insert(

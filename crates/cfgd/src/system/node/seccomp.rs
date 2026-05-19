@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
 use super::format::json_equal;
@@ -128,17 +128,23 @@ impl SystemConfigurator for SeccompConfigurator {
 
             let profile_path = profiles_dir.join(file);
             if cfgd_core::validate_no_traversal(std::path::Path::new(file)).is_err() {
-                printer.warning(&format!(
-                    "Skipping seccomp profile {}: path traversal in file name",
-                    name
-                ));
+                printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "Skipping seccomp profile {}: path traversal in file name",
+                        name
+                    ),
+                );
                 continue;
             }
-            printer.info(&format!(
-                "Writing seccomp profile {}: {}",
-                name,
-                profile_path.display()
-            ));
+            printer.status_simple(
+                Role::Info,
+                format!(
+                    "Writing seccomp profile {}: {}",
+                    name,
+                    profile_path.display()
+                ),
+            );
             cfgd_core::atomic_write_str(&profile_path, content)?;
         }
 

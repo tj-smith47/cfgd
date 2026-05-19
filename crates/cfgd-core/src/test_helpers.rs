@@ -311,7 +311,11 @@ impl SystemConfigurator for MockSystemConfigurator {
             .collect())
     }
 
-    fn apply(&self, desired: &serde_yaml::Value, _printer: &Printer) -> crate::errors::Result<()> {
+    fn apply(
+        &self,
+        desired: &serde_yaml::Value,
+        _printer: &PrinterV2,
+    ) -> crate::errors::Result<()> {
         self.apply_calls.lock().unwrap().push(desired.clone());
         if *self.fail_apply.lock().unwrap() {
             return Err(CfgdError::Io(std::io::Error::other(
@@ -1252,7 +1256,7 @@ mod tests {
     #[test]
     fn mock_system_configurator_apply_records() {
         let sc = MockSystemConfigurator::new("sysctl");
-        let printer = test_printer();
+        let printer = test_printer_v2();
         let desired = serde_yaml::Value::String("test".into());
         sc.apply(&desired, &printer).unwrap();
         assert_eq!(sc.apply_calls.lock().unwrap().len(), 1);
@@ -1261,7 +1265,7 @@ mod tests {
     #[test]
     fn mock_system_configurator_can_fail() {
         let sc = MockSystemConfigurator::new("sysctl");
-        let printer = test_printer();
+        let printer = test_printer_v2();
         sc.set_fail_apply(true);
         let result = sc.apply(&serde_yaml::Value::Null, &printer);
         let err_msg = format!("{}", result.unwrap_err());

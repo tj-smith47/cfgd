@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
@@ -75,10 +75,13 @@ impl SystemConfigurator for MacosDefaultsConfigurator {
 
                 let (value_type, value_str) = yaml_value_to_defaults_type(desired_value);
 
-                printer.info(&format!(
-                    "defaults write {} {} -{} {}",
-                    domain, key_str, value_type, value_str
-                ));
+                printer.status_simple(
+                    Role::Info,
+                    format!(
+                        "defaults write {} {} -{} {}",
+                        domain, key_str, value_type, value_str
+                    ),
+                );
 
                 let output = Command::new("defaults")
                     .args(["write", domain, key_str])
@@ -88,12 +91,15 @@ impl SystemConfigurator for MacosDefaultsConfigurator {
                     .map_err(cfgd_core::errors::CfgdError::Io)?;
 
                 if !output.status.success() {
-                    printer.warning(&format!(
-                        "defaults write failed for {}.{}: {}",
-                        domain,
-                        key_str,
-                        cfgd_core::stderr_lossy_trimmed(&output)
-                    ));
+                    printer.status_simple(
+                        Role::Warn,
+                        format!(
+                            "defaults write failed for {}.{}: {}",
+                            domain,
+                            key_str,
+                            cfgd_core::stderr_lossy_trimmed(&output)
+                        ),
+                    );
                 }
             }
         }
@@ -267,7 +273,7 @@ mod tests {
 
     #[test]
     fn macos_defaults_apply_empty_mapping_is_noop() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let md = MacosDefaultsConfigurator;
         let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
         md.apply(&yaml, &printer).unwrap();
@@ -275,7 +281,7 @@ mod tests {
 
     #[test]
     fn macos_defaults_apply_non_mapping_is_noop() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let md = MacosDefaultsConfigurator;
         let yaml = serde_yaml::Value::String("not a mapping".into());
         md.apply(&yaml, &printer).unwrap();
@@ -283,7 +289,7 @@ mod tests {
 
     #[test]
     fn macos_defaults_apply_skips_non_string_domain_key() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let md = MacosDefaultsConfigurator;
         let mut outer = serde_yaml::Mapping::new();
         outer.insert(
@@ -296,7 +302,7 @@ mod tests {
 
     #[test]
     fn macos_defaults_apply_skips_inner_non_mapping() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let md = MacosDefaultsConfigurator;
         let mut outer = serde_yaml::Mapping::new();
         outer.insert(
@@ -309,7 +315,7 @@ mod tests {
 
     #[test]
     fn macos_defaults_apply_skips_non_string_key_inside_domain() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let md = MacosDefaultsConfigurator;
         let mut inner = serde_yaml::Mapping::new();
         inner.insert(

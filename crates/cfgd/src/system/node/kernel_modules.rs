@@ -3,7 +3,7 @@ use std::path::Path;
 use std::process::Command;
 
 use cfgd_core::errors::{CfgdError, Result};
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
 // ---------------------------------------------------------------------------
@@ -152,15 +152,15 @@ impl SystemConfigurator for KernelModuleConfigurator {
                 continue;
             }
 
-            printer.info(&format!("modprobe {}", module));
+            printer.status_simple(Role::Info, format!("modprobe {}", module));
             Self::load_module(module)?;
         }
 
         if let Err(e) = Self::persist_modules(&desired_names) {
-            printer.warning(&format!(
-                "Failed to persist modules: {} (runtime loaded)",
-                e
-            ));
+            printer.status_simple(
+                Role::Warn,
+                format!("Failed to persist modules: {} (runtime loaded)", e),
+            );
         }
 
         Ok(())

@@ -7441,7 +7441,7 @@ fn verify_system_configurator_reports_drift() {
                 },
             ])
         }
-        fn apply(&self, _: &serde_yaml::Value, _: &Printer) -> crate::errors::Result<()> {
+        fn apply(&self, _: &serde_yaml::Value, _: &PrinterV2) -> crate::errors::Result<()> {
             Ok(())
         }
     }
@@ -7527,7 +7527,7 @@ fn verify_system_configurator_reports_healthy_when_no_drift() {
         ) -> crate::errors::Result<Vec<crate::providers::SystemDrift>> {
             Ok(vec![])
         }
-        fn apply(&self, _: &serde_yaml::Value, _: &Printer) -> crate::errors::Result<()> {
+        fn apply(&self, _: &serde_yaml::Value, _: &PrinterV2) -> crate::errors::Result<()> {
             Ok(())
         }
     }

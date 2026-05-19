@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cfgd_core::errors::{CfgdError, Result};
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
 // ---------------------------------------------------------------------------
@@ -157,10 +157,13 @@ impl SystemConfigurator for AppArmorConfigurator {
                 None => continue,
             };
             if cfgd_core::validate_no_traversal(&path).is_err() {
-                printer.warning(&format!(
-                    "Skipping AppArmor profile {}: path traversal detected",
-                    name
-                ));
+                printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "Skipping AppArmor profile {}: path traversal detected",
+                        name
+                    ),
+                );
                 continue;
             }
 
@@ -168,11 +171,14 @@ impl SystemConfigurator for AppArmorConfigurator {
                 if let Some(parent) = path.parent() {
                     fs::create_dir_all(parent)?;
                 }
-                printer.info(&format!("Writing AppArmor profile: {}", path.display()));
+                printer.status_simple(
+                    Role::Info,
+                    format!("Writing AppArmor profile: {}", path.display()),
+                );
                 cfgd_core::atomic_write_str(&path, content)?;
             }
 
-            printer.info(&format!("Loading AppArmor profile: {}", name));
+            printer.status_simple(Role::Info, format!("Loading AppArmor profile: {}", name));
             Self::load_profile(&path)?;
         }
 

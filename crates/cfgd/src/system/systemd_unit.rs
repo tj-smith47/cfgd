@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
@@ -100,18 +100,25 @@ impl SystemConfigurator for SystemdUnitConfigurator {
             // Copy unit file if specified
             if let Some(unit_file) = unit.get("unitFile").and_then(|v| v.as_str()) {
                 let dest = format!("/etc/systemd/system/{}", name);
-                printer.info(&format!("Installing unit file: {} → {}", unit_file, dest));
+                printer.status_simple(
+                    Role::Info,
+                    format!("Installing unit file: {} → {}", unit_file, dest),
+                );
 
                 match std::fs::read(unit_file) {
                     Ok(content) => {
                         if let Err(e) =
                             cfgd_core::atomic_write(std::path::Path::new(&dest), &content)
                         {
-                            printer.warning(&format!("Failed to install unit file: {}", e));
+                            printer.status_simple(
+                                Role::Warn,
+                                format!("Failed to install unit file: {}", e),
+                            );
                         }
                     }
                     Err(e) => {
-                        printer.warning(&format!("Failed to read unit file: {}", e));
+                        printer
+                            .status_simple(Role::Warn, format!("Failed to read unit file: {}", e));
                     }
                 }
 
@@ -123,7 +130,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
 
             // Enable/disable
             let action = if desired_enabled { "enable" } else { "disable" };
-            printer.info(&format!("systemctl {} {}", action, name));
+            printer.status_simple(Role::Info, format!("systemctl {} {}", action, name));
 
             let output = Command::new("systemctl")
                 .args([action, name])
@@ -131,12 +138,15 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                 .map_err(cfgd_core::errors::CfgdError::Io)?;
 
             if !output.status.success() {
-                printer.warning(&format!(
-                    "systemctl {} {} failed: {}",
-                    action,
-                    name,
-                    cfgd_core::stderr_lossy_trimmed(&output)
-                ));
+                printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "systemctl {} {} failed: {}",
+                        action,
+                        name,
+                        cfgd_core::stderr_lossy_trimmed(&output)
+                    ),
+                );
             }
         }
 
@@ -253,7 +263,7 @@ mod tests {
 
     #[test]
     fn systemd_apply_empty_sequence_is_noop() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let su = SystemdUnitConfigurator;
         let yaml = serde_yaml::Value::Sequence(Vec::new());
         su.apply(&yaml, &printer).unwrap();
@@ -261,7 +271,7 @@ mod tests {
 
     #[test]
     fn systemd_apply_non_sequence_is_noop() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let su = SystemdUnitConfigurator;
         let yaml = serde_yaml::Value::String("not a sequence".into());
         su.apply(&yaml, &printer).unwrap();
@@ -269,7 +279,7 @@ mod tests {
 
     #[test]
     fn systemd_apply_skips_units_without_name() {
-        let (printer, _output) = cfgd_core::output::Printer::for_test();
+        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
         let su = SystemdUnitConfigurator;
         let mut unit = serde_yaml::Mapping::new();
         unit.insert(

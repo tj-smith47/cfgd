@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
@@ -327,25 +327,27 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                     entry.start_type.as_deref(),
                 ) {
                     if let Some(raw) = unknown_start {
-                        printer.warning(&format!(
-                            "Unknown start type '{}' for service {}, using 'demand'",
-                            raw, entry.name
-                        ));
+                        printer.status_simple(
+                            Role::Warn,
+                            format!(
+                                "Unknown start type '{}' for service {}, using 'demand'",
+                                raw, entry.name
+                            ),
+                        );
                     }
                     let output = Command::new("sc.exe")
                         .args(&args)
                         .output()
                         .map_err(cfgd_core::errors::CfgdError::Io)?;
                     if output.status.success() {
-                        printer.success(&format!("Created service {}", entry.name));
+                        printer.status_simple(Role::Ok, format!("Created service {}", entry.name));
                         exists = true;
                     } else {
                         let stdout = String::from_utf8_lossy(&output.stdout);
-                        printer.warning(&format!(
-                            "Failed to create service {}: {}",
-                            entry.name,
-                            stdout.trim()
-                        ));
+                        printer.status_simple(
+                            Role::Warn,
+                            format!("Failed to create service {}: {}", entry.name, stdout.trim()),
+                        );
                     }
                 }
             } else if let Some(config_args) = sc_config_args(
@@ -360,11 +362,14 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                     .map_err(cfgd_core::errors::CfgdError::Io)?;
                 if !output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout);
-                    printer.warning(&format!(
-                        "Failed to configure service {}: {}",
-                        entry.name,
-                        stdout.trim()
-                    ));
+                    printer.status_simple(
+                        Role::Warn,
+                        format!(
+                            "Failed to configure service {}: {}",
+                            entry.name,
+                            stdout.trim()
+                        ),
+                    );
                 }
             }
 
@@ -382,14 +387,14 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                             .output()
                             .map_err(cfgd_core::errors::CfgdError::Io)?;
                         if output.status.success() {
-                            printer.success(&format!("Started service {}", entry.name));
+                            printer
+                                .status_simple(Role::Ok, format!("Started service {}", entry.name));
                         } else {
                             let stdout = String::from_utf8_lossy(&output.stdout);
-                            printer.warning(&format!(
-                                "Failed to start {}: {}",
-                                entry.name,
-                                stdout.trim()
-                            ));
+                            printer.status_simple(
+                                Role::Warn,
+                                format!("Failed to start {}: {}", entry.name, stdout.trim()),
+                            );
                         }
                     }
                     "stopped" if current_state.as_deref() != Some("stopped") => {
@@ -398,14 +403,14 @@ impl SystemConfigurator for WindowsServiceConfigurator {
                             .output()
                             .map_err(cfgd_core::errors::CfgdError::Io)?;
                         if output.status.success() {
-                            printer.success(&format!("Stopped service {}", entry.name));
+                            printer
+                                .status_simple(Role::Ok, format!("Stopped service {}", entry.name));
                         } else {
                             let stdout = String::from_utf8_lossy(&output.stdout);
-                            printer.warning(&format!(
-                                "Failed to stop {}: {}",
-                                entry.name,
-                                stdout.trim()
-                            ));
+                            printer.status_simple(
+                                Role::Warn,
+                                format!("Failed to stop {}: {}", entry.name, stdout.trim()),
+                            );
                         }
                     }
                     _ => {}

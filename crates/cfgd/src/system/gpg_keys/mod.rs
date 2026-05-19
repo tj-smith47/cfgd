@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use cfgd_core::errors::{CfgdError, Result};
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
 /// Test seam env var for redirecting `gpg` invocations to a shim binary.
@@ -421,26 +421,35 @@ impl SystemConfigurator for GpgKeysConfigurator {
                     .find(|k| !k.is_expired())
                     .map(|k| k.fingerprint.as_str())
                     .unwrap_or("unknown");
-                printer.info(&format!(
-                    "gpgKeys: {} <{}> already present ({}), skipping",
-                    spec.real_name, spec.email, fingerprint
-                ));
+                printer.status_simple(
+                    Role::Info,
+                    format!(
+                        "gpgKeys: {} <{}> already present ({}), skipping",
+                        spec.real_name, spec.email, fingerprint
+                    ),
+                );
                 continue;
             }
 
             if !matching.is_empty() {
                 // All matching keys are expired — warn but still generate
-                printer.warning(&format!(
-                    "gpgKeys: existing key(s) for {} <{}> are expired; generating new key",
-                    spec.real_name, spec.email
-                ));
+                printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "gpgKeys: existing key(s) for {} <{}> are expired; generating new key",
+                        spec.real_name, spec.email
+                    ),
+                );
             }
 
             // Generate key via gpg --batch --gen-key with a parameter file written to a temp file
-            printer.info(&format!(
-                "gpgKeys: generating {:?} key for {} <{}>",
-                spec.key_type, spec.real_name, spec.email
-            ));
+            printer.status_simple(
+                Role::Info,
+                format!(
+                    "gpgKeys: generating {:?} key for {} <{}>",
+                    spec.key_type, spec.real_name, spec.email
+                ),
+            );
 
             let param = build_param_file(&spec);
 
@@ -456,9 +465,9 @@ impl SystemConfigurator for GpgKeysConfigurator {
             cmd.args(["--batch", "--gen-key", param_path.to_str().unwrap_or("")]);
 
             let output = printer
-                .run_with_output(
+                .run(
                     &mut cmd,
-                    &format!("Generating GPG key for {} <{}>", spec.real_name, spec.email),
+                    format!("Generating GPG key for {} <{}>", spec.real_name, spec.email),
                 )
                 .map_err(CfgdError::Io)?;
 
@@ -481,15 +490,21 @@ impl SystemConfigurator for GpgKeysConfigurator {
                 .find(|k| !k.is_expired());
 
             if let Some(k) = new_key {
-                printer.success(&format!(
-                    "gpgKeys: generated key for {} <{}> — fingerprint {}",
-                    spec.real_name, spec.email, k.fingerprint
-                ));
+                printer.status_simple(
+                    Role::Ok,
+                    format!(
+                        "gpgKeys: generated key for {} <{}> — fingerprint {}",
+                        spec.real_name, spec.email, k.fingerprint
+                    ),
+                );
             } else {
-                printer.warning(&format!(
-                    "gpgKeys: key generated for {} <{}> but failed to confirm fingerprint",
-                    spec.real_name, spec.email
-                ));
+                printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "gpgKeys: key generated for {} <{}> but failed to confirm fingerprint",
+                        spec.real_name, spec.email
+                    ),
+                );
             }
         }
 

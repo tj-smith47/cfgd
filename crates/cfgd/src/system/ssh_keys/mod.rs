@@ -5,7 +5,7 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 
 use cfgd_core::errors::{CfgdError, Result};
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
 // ---------------------------------------------------------------------------
@@ -136,7 +136,10 @@ impl SshKeysConfigurator {
             None => return Ok(()),
         };
         if !dir.exists() {
-            printer.info(&format!("Creating SSH directory: {}", dir.display()));
+            printer.status_simple(
+                Role::Info,
+                format!("Creating SSH directory: {}", dir.display()),
+            );
             fs::create_dir_all(dir)?;
             cfgd_core::set_file_permissions(dir, 0o700)?;
         }
@@ -145,12 +148,15 @@ impl SshKeysConfigurator {
 
     /// Generate an SSH key pair using `ssh-keygen`.
     fn generate_key(spec: &SshKeySpec, path: &Path, printer: &Printer) -> Result<()> {
-        printer.info(&format!(
-            "Generating {} SSH key '{}' at {}",
-            spec.key_type,
-            spec.name,
-            path.display()
-        ));
+        printer.status_simple(
+            Role::Info,
+            format!(
+                "Generating {} SSH key '{}' at {}",
+                spec.key_type,
+                spec.name,
+                path.display()
+            ),
+        );
 
         let mut cmd = Command::new("ssh-keygen");
         cmd.arg("-t").arg(&spec.key_type);
@@ -190,11 +196,14 @@ impl SshKeysConfigurator {
     /// Apply correct permissions to a private key file.
     fn apply_permissions(spec: &SshKeySpec, path: &Path, printer: &Printer) -> Result<()> {
         let mode = spec.permissions_mode()?;
-        printer.info(&format!(
-            "Setting permissions {} on {}",
-            spec.permissions,
-            path.display()
-        ));
+        printer.status_simple(
+            Role::Info,
+            format!(
+                "Setting permissions {} on {}",
+                spec.permissions,
+                path.display()
+            ),
+        );
         cfgd_core::set_file_permissions(path, mode)?;
         Ok(())
     }
@@ -266,10 +275,13 @@ impl SystemConfigurator for SshKeysConfigurator {
 
             // Warn about unsupported passphrase field
             if spec.passphrase.is_some() {
-                printer.warning(&format!(
-                    "SSH key '{}': passphrase field is not yet supported; key will be generated without passphrase",
-                    spec.name
-                ));
+                printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "SSH key '{}': passphrase field is not yet supported; key will be generated without passphrase",
+                        spec.name
+                    ),
+                );
             }
 
             // Ensure parent directory exists with mode 700
@@ -295,14 +307,17 @@ impl SystemConfigurator for SshKeysConfigurator {
                 if let Some(actual_type) = Self::detect_key_type(&path)
                     && actual_type != spec.key_type
                 {
-                    printer.warning(&format!(
-                        "SSH key '{}' at {} is type '{}' but '{}' is desired; \
-                         cfgd will not overwrite an existing key — remove it manually to regenerate",
-                        spec.name,
-                        path.display(),
-                        actual_type,
-                        spec.key_type
-                    ));
+                    printer.status_simple(
+                        Role::Warn,
+                        format!(
+                            "SSH key '{}' at {} is type '{}' but '{}' is desired; \
+                             cfgd will not overwrite an existing key — remove it manually to regenerate",
+                            spec.name,
+                            path.display(),
+                            actual_type,
+                            spec.key_type
+                        ),
+                    );
                 }
             }
         }

@@ -454,7 +454,7 @@ fn parse_sc_state_state_line_with_extra_whitespace() {
 
 #[test]
 fn service_apply_empty_sequence_is_noop() {
-    let (printer, _output) = cfgd_core::output::Printer::for_test();
+    let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
     let wsc = WindowsServiceConfigurator;
     let yaml = serde_yaml::Value::Sequence(Vec::new());
     wsc.apply(&yaml, &printer).unwrap();
@@ -462,7 +462,7 @@ fn service_apply_empty_sequence_is_noop() {
 
 #[test]
 fn service_apply_non_sequence_is_noop() {
-    let (printer, _output) = cfgd_core::output::Printer::for_test();
+    let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
     let wsc = WindowsServiceConfigurator;
     let yaml = serde_yaml::Value::String("not a sequence".into());
     wsc.apply(&yaml, &printer).unwrap();
