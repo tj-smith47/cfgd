@@ -77,9 +77,9 @@ pub fn cmd_module_add_from_registry(
                 ),
             );
             // Fetch the registry repo so we can read tags. The lib call
-            // takes &Printer; the null sink suppresses its v1 progress so
-            // this command's v2 status surface above owns the user-facing
-            // line.
+            // takes a v2 Printer; the Quiet sink suppresses the lib's
+            // progress emissions so this command's v2 status surface above
+            // owns the user-facing line (inversion of control).
             let printer = null_lib_printer();
             modules::fetch_registry_modules(registry_entry, &cache_base, &printer)?;
             match modules::latest_module_version(registry_entry, &reg_ref.module, &cache_base)? {
@@ -137,9 +137,9 @@ pub fn cmd_module_add_remote(
     let config_dir = config_dir(cli);
     let cache_base = modules::default_module_cache_dir()?;
 
-    // Streaming: clone-fetch spinner. The lib call takes &Printer; the
-    // null sink suppresses its v1 progress so the v2 spinner owns the
-    // user-facing surface.
+    // Streaming: clone-fetch spinner. The lib call takes a v2 Printer; the
+    // Quiet sink suppresses the lib's progress emissions so the v2 spinner
+    // owns the user-facing surface (inversion of control).
     let sp = v2_printer.spinner(format!("Fetching {}", url));
     let printer = null_lib_printer();
     let fetched = match modules::fetch_remote_module(url, &cache_base, &printer) {
