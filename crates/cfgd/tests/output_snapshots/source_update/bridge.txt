@@ -4,7 +4,7 @@ Update Sources
 
   From file://<BARE_ROOT>/bridge-upd-source
    * branch            master     -> FETCH_HEAD
-✓ Fetching source 'bridge-upd' (0.0s)
+✓ Fetching source 'bridge-upd'
 
 Source 'bridge-upd'
   ✓ Updated source 'bridge-upd'

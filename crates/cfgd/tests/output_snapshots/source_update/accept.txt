@@ -4,8 +4,8 @@ Update Sources
 
   From file://<BARE_ROOT>/accept-src-source
    * branch            master     -> FETCH_HEAD
-     0e44552..88b2eab  master     -> origin/master
-✓ Fetching source 'accept-src' (0.0s)
+     <SHA>..<SHA>  master     -> origin/master
+✓ Fetching source 'accept-src'
 
 Source 'accept-src' update changes permissions
   ⚠ Required items increased from 0 to 2

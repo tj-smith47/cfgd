@@ -2,8 +2,8 @@ Add Config Source
 
 ◐ Cloning source 'bridge-src'
 
-  Cloning into '/tmp/.tmpuQ5KdC/sources/bridge-src'...
-✓ Cloning source 'bridge-src' (0.0s)
+  Cloning into '<STATE_DIR>/sources/bridge-src'...
+✓ Cloning source 'bridge-src'
 
 Source Manifest
   Name      bridge-src

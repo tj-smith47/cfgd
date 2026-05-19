@@ -65,10 +65,83 @@ fn assert_snapshot(base: &Path, name: &str, actual: &str) {
     pretty_assertions::assert_eq!(actual, expected, "snapshot mismatch: {name}");
 }
 
-fn normalize_bare(raw: &str, bare: &std::path::Path, bare_root: &std::path::Path) -> String {
+fn normalize_paths(
+    raw: &str,
+    bare: &std::path::Path,
+    bare_root: &std::path::Path,
+    config_dir: &std::path::Path,
+    state_dir: &std::path::Path,
+) -> String {
     let mut out = raw.to_string();
     out = out.replace(&bare.to_string_lossy().to_string(), "<BARE>");
     out = out.replace(&bare_root.to_string_lossy().to_string(), "<BARE_ROOT>");
+    out = out.replace(&config_dir.to_string_lossy().to_string(), "<CONFIG_DIR>");
+    out = out.replace(&state_dir.to_string_lossy().to_string(), "<STATE_DIR>");
+    strip_git_sha_ranges(strip_spinner_duration(out))
+}
+
+/// Normalize git short-SHA ranges like `56f028c..865147c` to `<SHA>..<SHA>` so
+/// goldens that include `git fetch` output stay stable across repo regenerations.
+fn strip_git_sha_ranges(s: String) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s.as_str();
+    while let Some(idx) = rest.find("..") {
+        // Look back for a run of hex digits (the "from" SHA).
+        let prefix = &rest[..idx];
+        let from_start = prefix
+            .rfind(|c: char| !c.is_ascii_hexdigit())
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let from_len = prefix.len() - from_start;
+        // Look forward for a run of hex digits (the "to" SHA).
+        let after = &rest[idx + 2..];
+        let to_len = after
+            .find(|c: char| !c.is_ascii_hexdigit())
+            .unwrap_or(after.len());
+        if (7..=40).contains(&from_len) && (7..=40).contains(&to_len) {
+            out.push_str(&prefix[..from_start]);
+            out.push_str("<SHA>..<SHA>");
+            rest = &after[to_len..];
+            continue;
+        }
+        out.push_str(prefix);
+        out.push_str("..");
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Strip non-deterministic spinner finish durations like ` (0.0s)` so goldens
+/// survive runtime variance.
+fn strip_spinner_duration(s: String) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s.as_str();
+    while let Some(idx) = rest.find(" (") {
+        out.push_str(&rest[..idx]);
+        let after = &rest[idx + 2..];
+        let digit_end = after
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(after.len());
+        if digit_end > 0 && after.as_bytes().get(digit_end).copied() == Some(b'.') {
+            let frac_start = digit_end + 1;
+            let frac_rest = &after[frac_start..];
+            let frac_end = frac_rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(frac_rest.len());
+            let total = frac_start + frac_end;
+            if frac_end > 0
+                && after.as_bytes().get(total).copied() == Some(b's')
+                && after.as_bytes().get(total + 1).copied() == Some(b')')
+            {
+                rest = &after[total + 2..];
+                continue;
+            }
+        }
+        out.push_str(" (");
+        rest = after;
+    }
+    out.push_str(rest);
     out
 }
 
@@ -136,7 +209,13 @@ fn source_update_happy_human() {
     cmd_source_update(&cli, &v2_printer, Some("upd-src")).unwrap();
     drop(v2_printer);
 
-    let stripped = normalize_bare(&strip_ansi(&cap.human()), &bare, bare_root.path());
+    let stripped = normalize_paths(
+        &strip_ansi(&cap.human()),
+        &bare,
+        bare_root.path(),
+        config_dir.path(),
+        state_dir.path(),
+    );
     assert_snapshot(
         Path::new(SNAPSHOT_ROOT),
         "source_update/happy.txt",
@@ -215,7 +294,13 @@ fn source_update_accept_human() {
     cmd_source_update(&cli, &v2_printer, Some("accept-src")).unwrap();
     drop(v2_printer);
 
-    let stripped = normalize_bare(&strip_ansi(&cap.human()), &bare, bare_root.path());
+    let stripped = normalize_paths(
+        &strip_ansi(&cap.human()),
+        &bare,
+        bare_root.path(),
+        config_dir.path(),
+        state_dir.path(),
+    );
     assert_snapshot(
         Path::new(SNAPSHOT_ROOT),
         "source_update/accept.txt",
@@ -253,7 +338,13 @@ fn source_update_rejection_human() {
     cmd_source_update(&cli, &v2_printer, Some("reject-src")).unwrap();
     drop(v2_printer);
 
-    let stripped = normalize_bare(&strip_ansi(&cap.human()), &bare, bare_root.path());
+    let stripped = normalize_paths(
+        &strip_ansi(&cap.human()),
+        &bare,
+        bare_root.path(),
+        config_dir.path(),
+        state_dir.path(),
+    );
     assert_snapshot(
         Path::new(SNAPSHOT_ROOT),
         "source_update/rejection.txt",
@@ -295,7 +386,13 @@ fn source_update_bridge_one_blank_line() {
         "bridge has duplicate blank line: {combined}"
     );
 
-    let stripped = normalize_bare(&strip_ansi(&combined), &bare, bare_root.path());
+    let stripped = normalize_paths(
+        &strip_ansi(&combined),
+        &bare,
+        bare_root.path(),
+        config_dir.path(),
+        state_dir.path(),
+    );
     assert_snapshot(
         Path::new(SNAPSHOT_ROOT),
         "source_update/bridge.txt",

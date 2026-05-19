@@ -4,7 +4,7 @@ Update Sources
 
   From file://<BARE_ROOT>/upd-src-source
    * branch            master     -> FETCH_HEAD
-✓ Fetching source 'upd-src' (0.0s)
+✓ Fetching source 'upd-src'
 
 Source 'upd-src'
   ✓ Updated source 'upd-src'

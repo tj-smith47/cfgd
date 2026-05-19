@@ -4,8 +4,8 @@ Update Sources
 
   From file://<BARE_ROOT>/reject-src-source
    * branch            master     -> FETCH_HEAD
-     e48130e..dc429e2  master     -> origin/master
-✓ Fetching source 'reject-src' (0.0s)
+     <SHA>..<SHA>  master     -> origin/master
+✓ Fetching source 'reject-src'
 
 Source 'reject-src' update changes permissions
   ⚠ Required items increased from 0 to 2

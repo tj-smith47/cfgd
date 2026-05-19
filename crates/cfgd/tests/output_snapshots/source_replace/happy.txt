@@ -10,7 +10,7 @@ Add Config Source
 
   From file://<BARE_ROOT>/replace-old-source
    * branch            master     -> FETCH_HEAD
-✓ Fetching source 'replace-old' (0.0s)
+✓ Fetching source 'replace-old'
 
 Source Manifest
   Name      replace-old

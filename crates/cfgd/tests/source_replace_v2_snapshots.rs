@@ -61,6 +61,39 @@ fn normalize_bare(raw: &str, bares: &[(&std::path::Path, &str)]) -> String {
     for (path, label) in bares {
         out = out.replace(&path.to_string_lossy().to_string(), label);
     }
+    strip_spinner_duration(out)
+}
+
+/// Strip non-deterministic spinner finish durations like ` (0.0s)` so goldens
+/// survive runtime variance.
+fn strip_spinner_duration(s: String) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s.as_str();
+    while let Some(idx) = rest.find(" (") {
+        out.push_str(&rest[..idx]);
+        let after = &rest[idx + 2..];
+        let digit_end = after
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(after.len());
+        if digit_end > 0 && after.as_bytes().get(digit_end).copied() == Some(b'.') {
+            let frac_start = digit_end + 1;
+            let frac_rest = &after[frac_start..];
+            let frac_end = frac_rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(frac_rest.len());
+            let total = frac_start + frac_end;
+            if frac_end > 0
+                && after.as_bytes().get(total).copied() == Some(b's')
+                && after.as_bytes().get(total + 1).copied() == Some(b')')
+            {
+                rest = &after[total + 2..];
+                continue;
+            }
+        }
+        out.push_str(" (");
+        rest = after;
+    }
+    out.push_str(rest);
     out
 }
 
@@ -94,6 +127,8 @@ fn source_replace_happy_human() {
             (&bare_old, "<BARE_OLD>"),
             (&bare_new, "<BARE_NEW>"),
             (bare_root.path(), "<BARE_ROOT>"),
+            (config_dir.path(), "<CONFIG_DIR>"),
+            (state_dir.path(), "<STATE_DIR>"),
         ],
     );
     assert_snapshot(
