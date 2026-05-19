@@ -18,6 +18,7 @@ pub mod server_client;
 pub mod sources;
 pub mod state;
 
+#[cfg(any(test, feature = "test-helpers"))]
 pub mod test_helpers;
 pub mod upgrade;
 
