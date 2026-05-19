@@ -158,6 +158,10 @@ pub fn build_daemon_status_doc(status: Option<&cfgd_core::daemon::DaemonStatusRe
 }
 
 pub(super) fn cmd_daemon_install(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
+    // Runtime cfg! so the install_failed error_doc has the platform+service
+    // strings available before the lib call. The success payload uses
+    // compile-time #[cfg] further down because the Windows branch loads
+    // platform-specific config that cannot link on other targets.
     let (platform, service) = if cfg!(windows) {
         ("windows", "cfgd")
     } else if cfg!(target_os = "macos") {
