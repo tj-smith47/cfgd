@@ -8958,14 +8958,18 @@ mod harness {
         );
     }
 
-    // ----- v2 snapshot floor -----
+    // ----- Loop-surface snapshot floor -----
     //
-    // The v2 capture sees only the loop's own surface (startup banner, SIGHUP
-    // reload chatter, shutdown messages). Per-action reconcile output emitted
-    // from `daemon::reconcile` callees is still v1 in F4b and is invisible to
-    // the v2 buffer here.
+    // These tests capture only what the daemon's own Printer writes:
+    // startup banner, SIGHUP reload chatter, shutdown messages. Per-action
+    // reconcile output is emitted by `daemon::reconcile` through separate
+    // short-lived printers (currently fully-qualified to the legacy
+    // `crate::output::*` for callees that haven't migrated yet) and is
+    // invisible to the buffer below.
 
-    const SNAPSHOT_DIR: &str = "src/daemon/snapshots";
+    fn snapshot_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/snapshots")
+    }
 
     fn strip_ansi(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
@@ -8990,7 +8994,7 @@ mod harness {
     }
 
     fn assert_snapshot(name: &str, actual: &str) {
-        let base = Path::new(SNAPSHOT_DIR);
+        let base = snapshot_dir();
         let path = base.join(name);
         if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !path.exists() {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -9048,12 +9052,12 @@ mod harness {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[serial_test::serial]
     async fn snapshot_drift_event() {
-        // A file-change tick walks handle_file_change_tick → drift recording
-        // → notifier path. The notifier writes via tracing/stdout, not the v2
-        // Printer, so this snapshot is shape-identical to the clean cycle —
-        // its value is regression coverage that the drift path doesn't leak
-        // extra v2 emits into the loop's own surface and that the daemon
-        // survives the drift codepath and shuts down cleanly.
+        // A file-change tick walks handle_file_change_tick → drift recording →
+        // notifier path. The notifier writes via tracing/stdout, not through the
+        // loop's Printer, so this snapshot is shape-identical to the clean cycle.
+        // Its value is regression coverage that the drift path doesn't write to
+        // the loop's surface and that the daemon survives the drift codepath and
+        // shuts down cleanly.
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);

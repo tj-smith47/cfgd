@@ -26,9 +26,12 @@
 //!     `error_doc("cfgd", "uninstall_failed", ...)`.
 //!
 //! `cfgd daemon` (foreground `Run`) and `cfgd daemon service` have no
-//! snapshots. The reconcile loop runs forever via a lib-owned printer (no
-//! tractable way to snapshot a never-returning happy path); the Windows
-//! service entry point is a background process with no user-facing emit.
+//! snapshots from this integration test. The reconcile loop is a
+//! never-returning happy path from the CLI boundary; the Windows service
+//! entry point is a background process with no user-facing emit. The
+//! foreground loop's own output surface (startup banner, drift events,
+//! shutdown) is snapshotted lib-side at
+//! `crates/cfgd-core/src/daemon/snapshots/`.
 //!
 //! Goldens live under `tests/output_snapshots/daemon_{status,install,uninstall}/`.
 //! Regenerate with:
