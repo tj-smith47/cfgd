@@ -1,0 +1,3 @@
+✗ [2/2] Failed: package:apt:install:curl — package error: apt install failed: simulated install failure
+
+⚠ Apply partial

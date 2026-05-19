@@ -7576,3 +7576,222 @@ fn verify_system_configurator_reports_healthy_when_no_drift() {
     );
     assert_eq!(sysctl_results[0].resource_id, "sysctl");
 }
+
+// ----- §17.2 streaming → buffered bridge floor -----
+//
+// `Reconciler::apply` streams per-action status via `status_simple` (warn/fail
+// lines with `[N/M]` prefixes; see apply.rs:200/211/277). Callers that want a
+// buffered summary (e.g. `cmd_apply`'s `ApplyOutput`) emit a `Doc` on the same
+// `Printer` right after. The renderer's blank-line accounting must produce
+// exactly one blank line between the last streaming line and the buffered
+// Doc's first visible line — zero blanks would let the spinner's tail bleed
+// into the summary; two would leave a visual gap.
+//
+// These tests drive `Reconciler::apply` end-to-end through a `for_test_doc`
+// capture and assert the seam character-by-character plus pin host-stable
+// goldens beside the daemon snapshot floor.
+
+mod bridge {
+    use super::super::Reconciler;
+    use super::*;
+    use crate::output_v2::{Doc, Printer as PrinterV2, Role};
+
+    fn snapshot_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reconciler/snapshots")
+    }
+
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' && chars.peek() == Some(&'[') {
+                chars.next();
+                for inner in chars.by_ref() {
+                    if inner == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    fn assert_snapshot(name: &str, actual: &str) {
+        let path = snapshot_dir().join(name);
+        if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !path.exists() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, actual).unwrap();
+            return;
+        }
+        let expected = std::fs::read_to_string(&path).unwrap();
+        pretty_assertions::assert_eq!(actual, &expected, "snapshot mismatch: {name}");
+    }
+
+    /// Build `ApplyOutput`-shaped payload locally (cfgd-core can't depend on
+    /// `cfgd`'s `cli::apply::ApplyOutput`). The payload exists only to give
+    /// the buffered Doc a JSON shape; the bridge invariant cares about the
+    /// human render, which `with_data` does not contribute to.
+    #[derive(serde::Serialize)]
+    struct ApplySummary {
+        total: usize,
+        succeeded: usize,
+        failed: usize,
+    }
+
+    /// Drive a mixed-result apply (1 ok + 1 fail), then emit a buffered Doc
+    /// carrying the summary. Returns the captured human surface (ANSI-stripped).
+    fn run_mixed_apply_then_emit_summary() -> String {
+        let state = test_state();
+        let mut registry = ProviderRegistry::new();
+        registry
+            .package_managers
+            .push(Box::new(TrackingPackageManager::new("brew")));
+        registry
+            .package_managers
+            .push(Box::new(FailingPackageManager::new("apt")));
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let pkg_actions = vec![
+            PackageAction::Install {
+                manager: "brew".to_string(),
+                packages: vec!["jq".to_string()],
+                origin: "local".to_string(),
+            },
+            PackageAction::Install {
+                manager: "apt".to_string(),
+                packages: vec!["curl".to_string()],
+                origin: "local".to_string(),
+            },
+        ];
+        let plan = reconciler
+            .plan(
+                &resolved,
+                Vec::new(),
+                pkg_actions,
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+
+        let (v2_printer, cap) = PrinterV2::for_test_doc();
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                std::path::Path::new("."),
+                &v2_printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        // Buffered summary on the SAME printer — this is the seam under test.
+        let summary = ApplySummary {
+            total: result.action_results.len(),
+            succeeded: result.succeeded(),
+            failed: result.failed(),
+        };
+        let doc = Doc::new()
+            .status(Role::Warn, "Apply partial")
+            .with_data(&summary);
+        v2_printer.emit(doc);
+        drop(v2_printer);
+
+        strip_ansi(&cap.human())
+    }
+
+    /// Drive a clean apply (1 successful install), then emit the buffered
+    /// summary. The reconciler emits no per-action lines for success paths,
+    /// so the seam is between the (empty) streaming surface and the
+    /// buffered Doc — exercises the "no preceding content" branch of the
+    /// renderer's blank-line accounting.
+    fn run_clean_apply_then_emit_summary() -> String {
+        let state = test_state();
+        let mut registry = ProviderRegistry::new();
+        registry
+            .package_managers
+            .push(Box::new(TrackingPackageManager::new("brew")));
+
+        let reconciler = Reconciler::new(&registry, &state);
+        let resolved = make_empty_resolved();
+
+        let pkg_actions = vec![PackageAction::Install {
+            manager: "brew".to_string(),
+            packages: vec!["ripgrep".to_string()],
+            origin: "local".to_string(),
+        }];
+        let plan = reconciler
+            .plan(
+                &resolved,
+                Vec::new(),
+                pkg_actions,
+                Vec::new(),
+                ReconcileContext::Apply,
+            )
+            .unwrap();
+
+        let (v2_printer, cap) = PrinterV2::for_test_doc();
+        let result = reconciler
+            .apply(
+                &plan,
+                &resolved,
+                std::path::Path::new("."),
+                &v2_printer,
+                None,
+                &[],
+                ReconcileContext::Apply,
+                false,
+            )
+            .unwrap();
+
+        let summary = ApplySummary {
+            total: result.action_results.len(),
+            succeeded: result.succeeded(),
+            failed: result.failed(),
+        };
+        let doc = Doc::new()
+            .status(Role::Ok, "Apply complete")
+            .with_data(&summary);
+        v2_printer.emit(doc);
+        drop(v2_printer);
+
+        strip_ansi(&cap.human())
+    }
+
+    #[test]
+    fn bridge_invariant_apply_cycle() {
+        let captured = run_mixed_apply_then_emit_summary();
+
+        // §17.2: exactly one blank line at the streaming → buffered seam.
+        assert!(
+            captured.contains("\n\n"),
+            "bridge missing blank line:\n{captured}"
+        );
+        assert!(
+            !captured.contains("\n\n\n"),
+            "bridge has duplicate blank line:\n{captured}"
+        );
+
+        // Lock the human shape so a renderer regression in blank-line
+        // accounting tips both the structural assertion AND the golden.
+        assert_snapshot("bridge.txt", &captured);
+    }
+
+    #[test]
+    fn snapshot_mixed_apply_cycle() {
+        let captured = run_mixed_apply_then_emit_summary();
+        assert_snapshot("mixed_apply_cycle.txt", &captured);
+    }
+
+    #[test]
+    fn snapshot_clean_apply_cycle() {
+        let captured = run_clean_apply_then_emit_summary();
+        assert_snapshot("clean_apply_cycle.txt", &captured);
+    }
+}
