@@ -793,8 +793,9 @@ pub(super) fn format_interval_lines(
     intervals
 }
 
-/// Emit the four-line startup banner: health endpoint, interval summary,
-/// run hint, trailing blank. Pure-output; testable via `Printer::for_test()`.
+/// Emit the three-line startup banner: health endpoint, interval summary,
+/// run hint. Pure-output; testable via `Printer::for_test_at(Verbosity::Normal)`
+/// (Quiet suppresses Ok/Info statuses).
 pub(super) fn print_startup_banner(printer: &Printer, intervals: &[String], ipc_path: &str) {
     printer.status_simple(Role::Ok, format!("Health: {}", ipc_path));
     printer.status_simple(Role::Ok, format!("Intervals: {}", intervals.join(", ")));
