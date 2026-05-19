@@ -20,32 +20,30 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, v2_printer: &PrinterV2) -> anyh
     let profiles_dir = config_dir.join("profiles");
     let profile_path = profiles_dir.join(format!("{}.yaml", name));
     if !profile_path.exists() {
-        // List available profiles for the error message
         let available = super::list_yaml_stems(&profiles_dir).unwrap_or_default();
-        let hint = if available.is_empty() {
-            String::new()
-        } else {
-            format!("\nAvailable profiles: {}", available.join(", "))
-        };
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        let mut doc = cfgd_core::output_v2::error_doc(
             name,
             "not_found",
-            format!(
-                "Profile '{}' not found at {}{}",
-                name,
-                profile_path.display(),
-                hint
-            ),
+            format!("Profile '{}' not found at {}", name, profile_path.display()),
             serde_json::json!({
                 "profilePath": profile_path.display().to_string(),
                 "available": available,
             }),
-        ));
+        );
+        if !available.is_empty() {
+            doc = doc.hint(format!("Available profiles: {}", available.join(", ")));
+        }
+        v2_printer.emit(doc);
+        let bail_hint = if available.is_empty() {
+            String::new()
+        } else {
+            format!("\nAvailable profiles: {}", available.join(", "))
+        };
         anyhow::bail!(
             "Profile '{}' not found at {}{}",
             name,
             profile_path.display(),
-            hint
+            bail_hint
         );
     }
 

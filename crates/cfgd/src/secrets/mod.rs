@@ -264,7 +264,9 @@ pub fn check_secrets_health(
 
     let (sops_available, sops_version) = match sops_output {
         Ok(output) if output.status.success() => {
-            (true, Some(cfgd_core::stdout_lossy_trimmed(&output)))
+            let trimmed = cfgd_core::stdout_lossy_trimmed(&output);
+            let first_line = trimmed.lines().next().unwrap_or("").to_string();
+            (true, Some(first_line))
         }
         _ => (false, None),
     };

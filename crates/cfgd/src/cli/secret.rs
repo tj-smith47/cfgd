@@ -1,15 +1,20 @@
 use super::*;
 use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
+fn first_line(s: &str) -> String {
+    s.lines().next().unwrap_or("").to_string()
+}
+
 pub fn cmd_secret_encrypt(cli: &Cli, v2_printer: &PrinterV2, file: &Path) -> anyhow::Result<()> {
     let backend = match get_secret_backend(cli, file) {
         Ok(b) => b,
         Err(e) => {
+            let full = format!("{}", e);
             v2_printer.emit(cfgd_core::output_v2::error_doc(
                 &file.display().to_string(),
                 "backend_unavailable",
-                format!("{}", e),
-                serde_json::json!({ "path": file.display().to_string() }),
+                first_line(&full),
+                serde_json::json!({ "path": file.display().to_string(), "detail": full }),
             ));
             return Err(e);
         }
@@ -17,13 +22,15 @@ pub fn cmd_secret_encrypt(cli: &Cli, v2_printer: &PrinterV2, file: &Path) -> any
     let backend_name = backend.name().to_string();
 
     if let Err(e) = backend.encrypt_file(file) {
+        let full = format!("{}", e);
         v2_printer.emit(cfgd_core::output_v2::error_doc(
             &file.display().to_string(),
             "encryption_failed",
-            format!("{}", e),
+            first_line(&full),
             serde_json::json!({
                 "path": file.display().to_string(),
                 "backend": backend_name,
+                "detail": full,
             }),
         ));
         return Err(e.into());
@@ -48,11 +55,12 @@ pub fn cmd_secret_decrypt(cli: &Cli, v2_printer: &PrinterV2, file: &Path) -> any
     let backend = match get_secret_backend(cli, file) {
         Ok(b) => b,
         Err(e) => {
+            let full = format!("{}", e);
             v2_printer.emit(cfgd_core::output_v2::error_doc(
                 &file.display().to_string(),
                 "backend_unavailable",
-                format!("{}", e),
-                serde_json::json!({ "path": file.display().to_string() }),
+                first_line(&full),
+                serde_json::json!({ "path": file.display().to_string(), "detail": full }),
             ));
             return Err(e);
         }
@@ -62,13 +70,15 @@ pub fn cmd_secret_decrypt(cli: &Cli, v2_printer: &PrinterV2, file: &Path) -> any
     let decrypted = match backend.decrypt_file(file) {
         Ok(d) => d,
         Err(e) => {
+            let full = format!("{}", e);
             v2_printer.emit(cfgd_core::output_v2::error_doc(
                 &file.display().to_string(),
                 "decryption_failed",
-                format!("{}", e),
+                first_line(&full),
                 serde_json::json!({
                     "path": file.display().to_string(),
                     "backend": backend_name,
+                    "detail": full,
                 }),
             ));
             return Err(e.into());
@@ -112,11 +122,12 @@ pub fn cmd_secret_edit(cli: &Cli, v2_printer: &PrinterV2, file: &Path) -> anyhow
     let backend = match get_secret_backend(cli, file) {
         Ok(b) => b,
         Err(e) => {
+            let full = format!("{}", e);
             v2_printer.emit(cfgd_core::output_v2::error_doc(
                 &file.display().to_string(),
                 "backend_unavailable",
-                format!("{}", e),
-                serde_json::json!({ "path": file.display().to_string() }),
+                first_line(&full),
+                serde_json::json!({ "path": file.display().to_string(), "detail": full }),
             ));
             return Err(e);
         }
@@ -124,13 +135,15 @@ pub fn cmd_secret_edit(cli: &Cli, v2_printer: &PrinterV2, file: &Path) -> anyhow
     let backend_name = backend.name().to_string();
 
     if let Err(e) = backend.edit_file(file) {
+        let full = format!("{}", e);
         v2_printer.emit(cfgd_core::output_v2::error_doc(
             &file.display().to_string(),
             "edit_failed",
-            format!("{}", e),
+            first_line(&full),
             serde_json::json!({
                 "path": file.display().to_string(),
                 "backend": backend_name,
+                "detail": full,
             }),
         ));
         return Err(e.into());
@@ -167,11 +180,15 @@ pub fn cmd_secret_init(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> 
     let key_path = match secrets::init_age_key(&config_dir) {
         Ok(p) => p,
         Err(e) => {
+            let full = format!("{}", e);
             v2_printer.emit(cfgd_core::output_v2::error_doc(
                 "age",
                 "backend_unavailable",
-                format!("{}", e),
-                serde_json::json!({ "configDir": config_dir.display().to_string() }),
+                first_line(&full),
+                serde_json::json!({
+                    "configDir": config_dir.display().to_string(),
+                    "detail": full,
+                }),
             ));
             return Err(e.into());
         }

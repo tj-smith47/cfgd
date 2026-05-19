@@ -163,6 +163,11 @@ impl Renderer {
     /// recursing back into `flush_kv_buffer_internal`.
     pub(crate) fn write_line(&self, w: &dyn Writer, depth: usize, body: &str) {
         self.flush_kv_buffer_internal(w);
+        debug_assert!(
+            !body.contains('\n'),
+            "Renderer::write_line received body with embedded newline: {body:?}. \
+             Callers must pre-split multi-line content (see render_note for the canonical pattern)."
+        );
         // Callers must pre-split multi-line content; we normalize embedded \n
         // defensively to keep the §13 blank-line accounting honest if they
         // don't. The sink appends its own trailing newline per call; any
