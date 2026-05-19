@@ -101,8 +101,7 @@ pub(crate) fn discover_managed_paths(
 // --- Reconciliation Handler ---
 
 /// Collaborators threaded into every `handle_reconcile` call. Bundled to keep
-/// the function-arity clippy lint quiet and so the signature mirrors the
-/// `DaemonLoopContext` it is built from in `runner.rs`.
+/// the function-arity clippy lint quiet.
 pub(crate) struct ReconcileCtx<'a> {
     pub state: &'a Arc<Mutex<DaemonState>>,
     pub notifier: &'a Arc<Notifier>,

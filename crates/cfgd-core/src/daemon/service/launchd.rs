@@ -12,14 +12,13 @@ pub(crate) fn generate_launchd_plist(
         format!("<string>{}</string>", binary.display()),
         "<string>--config</string>".to_string(),
         format!("<string>{}</string>", config_path.display()),
-        "<string>--quiet</string>".to_string(),
-        "<string>daemon</string>".to_string(),
     ];
-
     if let Some(p) = profile {
         args.push("<string>--profile</string>".to_string());
         args.push(format!("<string>{}</string>", p));
     }
+    args.push("<string>--quiet</string>".to_string());
+    args.push("<string>daemon</string>".to_string());
 
     let args_xml = args.join("\n            ");
     let label = LAUNCHD_LABEL;

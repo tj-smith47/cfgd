@@ -1,6 +1,24 @@
 use super::*;
 use crate::test_helpers::test_state;
 
+fn quiet_reconcile_ctx<'a>(
+    state: &'a Arc<Mutex<DaemonState>>,
+    notifier: &'a Arc<Notifier>,
+    notify_on_drift: bool,
+    hooks: &'a dyn DaemonHooks,
+    state_dir: &'a Path,
+    printer: &'a crate::output_v2::Printer,
+) -> ReconcileCtx<'a> {
+    ReconcileCtx {
+        state,
+        notifier,
+        notify_on_drift,
+        hooks,
+        state_dir_override: Some(state_dir),
+        printer,
+    }
+}
+
 #[test]
 fn parse_duration_seconds() {
     assert_eq!(parse_duration_or_default("30s"), Duration::from_secs(30));
@@ -4373,26 +4391,22 @@ fn generate_launchd_plist_with_profile() {
         plist.contains("<string>work</string>"),
         "plist with profile should contain the profile name"
     );
-    // Verify order: --config before --quiet before daemon before --profile
+    // Verify order: --config before --profile before --quiet before daemon
     let config_pos = plist.find("<string>--config</string>").unwrap();
     let quiet_pos = plist.find("<string>--quiet</string>").unwrap();
     let daemon_pos = plist.find("<string>daemon</string>").unwrap();
     let profile_pos = plist.find("<string>--profile</string>").unwrap();
     assert!(
-        config_pos < daemon_pos,
-        "--config should appear before daemon"
+        config_pos < profile_pos,
+        "--config should appear before --profile"
     );
     assert!(
-        config_pos < quiet_pos,
-        "--config should appear before --quiet"
+        profile_pos < quiet_pos,
+        "--profile should appear before --quiet"
     );
     assert!(
         quiet_pos < daemon_pos,
         "--quiet should appear before daemon"
-    );
-    assert!(
-        daemon_pos < profile_pos,
-        "daemon should appear before --profile"
     );
 }
 
@@ -4734,14 +4748,7 @@ fn handle_reconcile_with_no_config_file() {
     handle_reconcile(
         Path::new("/nonexistent/path/config.yaml"),
         None,
-        ReconcileCtx {
-            state: &state,
-            notifier: &notifier,
-            notify_on_drift: false,
-            hooks: &NoopHooks,
-            state_dir_override: Some(&state_dir),
-            printer: &printer,
-        },
+        quiet_reconcile_ctx(&state, &notifier, false, &NoopHooks, &state_dir, &printer),
     );
     // If we got here without panic, the function handled the missing config gracefully.
     // Verify the state wasn't updated (no reconciliation occurred).
@@ -4807,14 +4814,7 @@ fn handle_reconcile_with_no_profile() {
     handle_reconcile(
         &config_path,
         None,
-        ReconcileCtx {
-            state: &state,
-            notifier: &notifier,
-            notify_on_drift: false,
-            hooks: &NoopHooks,
-            state_dir_override: Some(&state_dir),
-            printer: &printer,
-        },
+        quiet_reconcile_ctx(&state, &notifier, false, &NoopHooks, &state_dir, &printer),
     );
     // Should not have updated state since no profile was available
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -5250,14 +5250,7 @@ async fn handle_reconcile_with_valid_config_records_drift_events() {
         handle_reconcile(
             &cp,
             None,
-            ReconcileCtx {
-                state: &st,
-                notifier: &not,
-                notify_on_drift: false,
-                hooks: &DriftHooks,
-                state_dir_override: Some(&sd),
-                printer: &printer,
-            },
+            quiet_reconcile_ctx(&st, &not, false, &DriftHooks, &sd, &printer),
         );
     })
     .await
@@ -5359,14 +5352,7 @@ async fn handle_reconcile_notify_only_drift_policy_does_not_apply() {
         handle_reconcile(
             &cp,
             None,
-            ReconcileCtx {
-                state: &st,
-                notifier: &not,
-                notify_on_drift: false,
-                hooks: &NotifyOnlyHooks,
-                state_dir_override: Some(&sd),
-                printer: &printer,
-            },
+            quiet_reconcile_ctx(&st, &not, false, &NotifyOnlyHooks, &sd, &printer),
         );
     })
     .await
@@ -5450,14 +5436,7 @@ async fn handle_reconcile_no_drift_when_no_actions() {
         handle_reconcile(
             &cp,
             None,
-            ReconcileCtx {
-                state: &st,
-                notifier: &not,
-                notify_on_drift: false,
-                hooks: &NoDriftHooks,
-                state_dir_override: Some(&sd),
-                printer: &printer,
-            },
+            quiet_reconcile_ctx(&st, &not, false, &NoDriftHooks, &sd, &printer),
         );
     })
     .await
@@ -5543,14 +5522,7 @@ async fn handle_reconcile_with_profile_override() {
         handle_reconcile(
             &cp,
             Some("default"),
-            ReconcileCtx {
-                state: &st,
-                notifier: &not,
-                notify_on_drift: false,
-                hooks: &EmptyHooks,
-                state_dir_override: Some(&sd),
-                printer: &printer,
-            },
+            quiet_reconcile_ctx(&st, &not, false, &EmptyHooks, &sd, &printer),
         );
     })
     .await
@@ -5646,14 +5618,7 @@ async fn handle_reconcile_multiple_actions_records_all_drift() {
         handle_reconcile(
             &cp,
             None,
-            ReconcileCtx {
-                state: &st,
-                notifier: &not,
-                notify_on_drift: false,
-                hooks: &MultiDriftHooks,
-                state_dir_override: Some(&sd),
-                printer: &printer,
-            },
+            quiet_reconcile_ctx(&st, &not, false, &MultiDriftHooks, &sd, &printer),
         );
     })
     .await
@@ -5769,14 +5734,7 @@ async fn handle_reconcile_auto_policy_with_drift_invokes_apply_success() {
         handle_reconcile(
             &cp,
             None,
-            ReconcileCtx {
-                state: &st,
-                notifier: &not,
-                notify_on_drift: true,
-                hooks: &hooks,
-                state_dir_override: Some(&sd),
-                printer: &printer,
-            },
+            quiet_reconcile_ctx(&st, &not, true, &hooks, &sd, &printer),
         );
     })
     .await
@@ -5838,14 +5796,7 @@ async fn handle_reconcile_auto_policy_apply_failure_notifies() {
         handle_reconcile(
             &cp,
             None,
-            ReconcileCtx {
-                state: &st,
-                notifier: &not,
-                notify_on_drift: true,
-                hooks: &hooks,
-                state_dir_override: Some(&sd),
-                printer: &printer,
-            },
+            quiet_reconcile_ctx(&st, &not, true, &hooks, &sd, &printer),
         );
     })
     .await
@@ -5938,14 +5889,7 @@ async fn handle_reconcile_runs_on_drift_scripts() {
         handle_reconcile(
             &cp,
             None,
-            ReconcileCtx {
-                state: &st,
-                notifier: &not,
-                notify_on_drift: false,
-                hooks: &PkgDriftHooks,
-                state_dir_override: Some(&sd),
-                printer: &printer,
-            },
+            quiet_reconcile_ctx(&st, &not, false, &PkgDriftHooks, &sd, &printer),
         );
     })
     .await
@@ -6029,14 +5973,7 @@ async fn handle_reconcile_notify_only_with_notify_on_drift_sends_notification() 
         handle_reconcile(
             &cp,
             None,
-            ReconcileCtx {
-                state: &st,
-                notifier: &not,
-                notify_on_drift: true,
-                hooks: &PkgDriftHooks,
-                state_dir_override: Some(&sd),
-                printer: &printer,
-            },
+            quiet_reconcile_ctx(&st, &not, true, &PkgDriftHooks, &sd, &printer),
         );
     })
     .await
@@ -6295,6 +6232,23 @@ fn generate_launchd_plist_includes_profile_flag() {
     assert!(
         plist.contains("<string>--quiet</string>"),
         "should contain --quiet flag"
+    );
+    // Strict ordering: --config < --profile < --quiet < daemon (parity with systemd).
+    let config_pos = plist.find("<string>--config</string>").unwrap();
+    let profile_pos = plist.find("<string>--profile</string>").unwrap();
+    let quiet_pos = plist.find("<string>--quiet</string>").unwrap();
+    let daemon_pos = plist.find("<string>daemon</string>").unwrap();
+    assert!(
+        config_pos < profile_pos,
+        "--config should appear before --profile"
+    );
+    assert!(
+        profile_pos < quiet_pos,
+        "--profile should appear before --quiet"
+    );
+    assert!(
+        quiet_pos < daemon_pos,
+        "--quiet should appear before daemon"
     );
 }
 
@@ -9492,14 +9446,7 @@ async fn handle_reconcile_warns_when_module_resolution_fails_and_continues() {
         handle_reconcile(
             &cp,
             None,
-            ReconcileCtx {
-                state: &st,
-                notifier: &not,
-                notify_on_drift: false,
-                hooks: &EmptyPlanHooks,
-                state_dir_override: Some(&sd),
-                printer: &printer,
-            },
+            quiet_reconcile_ctx(&st, &not, false, &EmptyPlanHooks, &sd, &printer),
         );
     })
     .await
@@ -9545,14 +9492,7 @@ async fn handle_reconcile_resolves_non_empty_modules_when_module_dir_exists() {
         handle_reconcile(
             &cp,
             None,
-            ReconcileCtx {
-                state: &st,
-                notifier: &not,
-                notify_on_drift: false,
-                hooks: &EmptyPlanHooks,
-                state_dir_override: Some(&sd),
-                printer: &printer,
-            },
+            quiet_reconcile_ctx(&st, &not, false, &EmptyPlanHooks, &sd, &printer),
         );
     })
     .await
@@ -9619,14 +9559,7 @@ async fn handle_reconcile_auto_apply_with_sources_processes_decisions_and_resolv
         handle_reconcile(
             &cp,
             None,
-            ReconcileCtx {
-                state: &st,
-                notifier: &not,
-                notify_on_drift: false,
-                hooks: &EmptyPlanHooks,
-                state_dir_override: Some(&sd),
-                printer: &printer,
-            },
+            quiet_reconcile_ctx(&st, &not, false, &EmptyPlanHooks, &sd, &printer),
         );
     })
     .await
