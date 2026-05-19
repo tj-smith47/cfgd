@@ -1,5 +1,10 @@
 Add Config Source
 
+◐ Cloning source 'team-config'
+
+  Cloning into '/tmp/.tmp5HsaUb/sources/team-config'...
+✓ Cloning source 'team-config' (0.0s)
+
 Source Manifest
   Name      team-config
   Version   1.0.0

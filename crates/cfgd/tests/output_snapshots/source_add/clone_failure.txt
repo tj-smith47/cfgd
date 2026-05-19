@@ -1,3 +1,15 @@
 Add Config Source
 
+◐ Cloning source 'doomed-src'
+
+  Cloning into '/tmp/.tmpblmWJb/sources/doomed-src'...
+  fatal: '<BARE>' does not appear to be a git repository
+  fatal: Could not read from remote repository.
+  
+  Please make sure you have the correct access rights
+  and the repository exists.
+✗ Cloning source 'doomed-src' (0.0s)
+
+✗ Failed to clone source 'doomed-src' (libgit2) — failed to fetch source 'doomed-src': failed to resolve path '<BARE>': No such file or directory; class=Os (2)
+
 ✗ Failed to load source 'doomed-src': source error: failed to fetch source 'doomed-src': failed to resolve path '<BARE>': No such file or directory; class=Os (2)

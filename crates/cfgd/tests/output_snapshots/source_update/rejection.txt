@@ -1,5 +1,12 @@
 Update Sources
 
+◐ Fetching source 'reject-src'
+
+  From file://<BARE_ROOT>/reject-src-source
+   * branch            master     -> FETCH_HEAD
+     e48130e..dc429e2  master     -> origin/master
+✓ Fetching source 'reject-src' (0.0s)
+
 Source 'reject-src' update changes permissions
   ⚠ Required items increased from 0 to 2
   Skipped source 'reject-src' (permission changes rejected)

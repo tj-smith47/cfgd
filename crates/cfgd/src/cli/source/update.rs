@@ -23,7 +23,6 @@ pub fn cmd_source_update(
     let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
-    let v2_local = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
     let state = open_state_store(cli.state_dir.as_deref())?;
 
     let sources_to_update: Vec<&config::SourceSpec> = if let Some(name) = name {
@@ -63,7 +62,7 @@ pub fn cmd_source_update(
             None
         };
 
-        match mgr.load_source(source, &v2_local) {
+        match mgr.load_source(source, v2_printer) {
             Ok(()) => {
                 if let Some(cached) = mgr.get(&source.name) {
                     // Detect permission-expanding changes between old and new manifests

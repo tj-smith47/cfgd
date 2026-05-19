@@ -1,5 +1,12 @@
 Update Sources
 
+◐ Fetching source 'accept-src'
+
+  From file://<BARE_ROOT>/accept-src-source
+   * branch            master     -> FETCH_HEAD
+     0e44552..88b2eab  master     -> origin/master
+✓ Fetching source 'accept-src' (0.0s)
+
 Source 'accept-src' update changes permissions
   ⚠ Required items increased from 0 to 2
   ✓ Updated source 'accept-src'

@@ -6,6 +6,12 @@ Remove Source: replace-old
 
 Add Config Source
 
+◐ Fetching source 'replace-old'
+
+  From file://<BARE_ROOT>/replace-old-source
+   * branch            master     -> FETCH_HEAD
+✓ Fetching source 'replace-old' (0.0s)
+
 Source Manifest
   Name      replace-old
   Version   1.0.0

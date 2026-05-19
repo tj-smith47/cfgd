@@ -1,5 +1,10 @@
 Add Config Source
 
+◐ Cloning source 'bridge-src'
+
+  Cloning into '/tmp/.tmpuQ5KdC/sources/bridge-src'...
+✓ Cloning source 'bridge-src' (0.0s)
+
 Source Manifest
   Name      bridge-src
   Version   1.0.0
