@@ -100,15 +100,31 @@ pub(crate) fn discover_managed_paths(
 
 // --- Reconciliation Handler ---
 
+/// Collaborators threaded into every `handle_reconcile` call. Bundled to keep
+/// the function-arity clippy lint quiet and so the signature mirrors the
+/// `DaemonLoopContext` it is built from in `runner.rs`.
+pub(crate) struct ReconcileCtx<'a> {
+    pub state: &'a Arc<Mutex<DaemonState>>,
+    pub notifier: &'a Arc<Notifier>,
+    pub notify_on_drift: bool,
+    pub hooks: &'a dyn DaemonHooks,
+    pub state_dir_override: Option<&'a Path>,
+    pub printer: &'a crate::output_v2::Printer,
+}
+
 pub(crate) fn handle_reconcile(
     config_path: &Path,
     profile_override: Option<&str>,
-    state: &Arc<Mutex<DaemonState>>,
-    notifier: &Arc<Notifier>,
-    notify_on_drift: bool,
-    hooks: &dyn DaemonHooks,
-    state_dir_override: Option<&Path>,
+    ctx: ReconcileCtx<'_>,
 ) {
+    let ReconcileCtx {
+        state,
+        notifier,
+        notify_on_drift,
+        hooks,
+        state_dir_override,
+        printer,
+    } = ctx;
     tracing::info!("running reconciliation check");
 
     // Try to acquire the apply lock (non-blocking). If a CLI apply is in
@@ -365,7 +381,6 @@ pub(crate) fn handle_reconcile(
                 None,
                 None,
             );
-            let printer = crate::output_v2::Printer::quiet();
             let default_timeout = crate::PROFILE_SCRIPT_TIMEOUT;
             for entry in &scripts.on_drift {
                 match crate::reconciler::execute_script(
@@ -373,7 +388,7 @@ pub(crate) fn handle_reconcile(
                     &config_dir,
                     &script_env,
                     default_timeout,
-                    &printer,
+                    printer,
                 ) {
                     Ok((desc, _, _)) => {
                         tracing::info!(script = %desc, "onDrift script completed");
@@ -409,12 +424,11 @@ pub(crate) fn handle_reconcile(
                     actions = effective_total,
                     "drift policy is Auto — applying actions"
                 );
-                let printer = crate::output_v2::Printer::quiet();
                 match reconciler.apply(
                     &plan,
                     &resolved,
                     &config_dir,
-                    &printer,
+                    printer,
                     None,
                     &resolved_modules_ref,
                     crate::reconciler::ReconcileContext::Reconcile,

@@ -65,15 +65,6 @@ impl Printer {
         Self::with_format(verbosity, None, OutputFormat::Table)
     }
 
-    /// Convenience for callers that need a self-quieting Printer for a
-    /// fire-and-forget callee whose status output should not surface to
-    /// the parent's terminal (e.g. daemon-driven background applies and
-    /// onDrift script invocations). Equivalent to `Printer::new(Verbosity::Quiet)`
-    /// but readable at the call site and easy to grep.
-    pub fn quiet() -> Self {
-        Self::new(Verbosity::Quiet)
-    }
-
     pub fn with_theme_name(verbosity: Verbosity, theme_name: Option<&str>) -> Self {
         Self::with_format(verbosity, theme_name, OutputFormat::Table)
     }

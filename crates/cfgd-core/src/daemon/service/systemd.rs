@@ -8,13 +8,13 @@ pub(crate) fn generate_systemd_unit(
     profile: Option<&str>,
 ) -> String {
     let mut exec_start = format!(
-        "{} --config {} daemon",
+        "{} --config {} --quiet daemon",
         binary.display(),
         config_path.display()
     );
     if let Some(p) = profile {
         exec_start = format!(
-            "{} --config {} --profile {} daemon",
+            "{} --config {} --profile {} --quiet daemon",
             binary.display(),
             config_path.display(),
             p

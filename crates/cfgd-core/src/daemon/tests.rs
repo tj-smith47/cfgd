@@ -4317,6 +4317,19 @@ fn generate_launchd_plist_contains_correct_structure() {
         "plist should contain config path"
     );
     assert!(
+        plist.contains("<string>--quiet</string>"),
+        "plist should contain --quiet flag"
+    );
+    let config_pos = plist
+        .find("<string>/Users/testuser/.config/cfgd/config.yaml</string>")
+        .unwrap();
+    let quiet_pos = plist.find("<string>--quiet</string>").unwrap();
+    let daemon_pos = plist.find("<string>daemon</string>").unwrap();
+    assert!(
+        config_pos < quiet_pos && quiet_pos < daemon_pos,
+        "--quiet should appear between config path and daemon"
+    );
+    assert!(
         plist.contains("<string>daemon</string>"),
         "plist should contain daemon subcommand"
     );
@@ -4360,13 +4373,22 @@ fn generate_launchd_plist_with_profile() {
         plist.contains("<string>work</string>"),
         "plist with profile should contain the profile name"
     );
-    // Verify order: --config before daemon before --profile
+    // Verify order: --config before --quiet before daemon before --profile
     let config_pos = plist.find("<string>--config</string>").unwrap();
+    let quiet_pos = plist.find("<string>--quiet</string>").unwrap();
     let daemon_pos = plist.find("<string>daemon</string>").unwrap();
     let profile_pos = plist.find("<string>--profile</string>").unwrap();
     assert!(
         config_pos < daemon_pos,
         "--config should appear before daemon"
+    );
+    assert!(
+        config_pos < quiet_pos,
+        "--config should appear before --quiet"
+    );
+    assert!(
+        quiet_pos < daemon_pos,
+        "--quiet should appear before daemon"
     );
     assert!(
         daemon_pos < profile_pos,
@@ -4406,7 +4428,7 @@ fn generate_systemd_unit_contains_correct_structure() {
     );
     assert!(
         unit.contains(
-            "ExecStart=/usr/local/bin/cfgd --config /home/user/.config/cfgd/config.yaml daemon"
+            "ExecStart=/usr/local/bin/cfgd --config /home/user/.config/cfgd/config.yaml --quiet daemon"
         ),
         "unit file should have correct ExecStart"
     );
@@ -4443,7 +4465,7 @@ fn generate_systemd_unit_with_profile() {
 
     assert!(
         unit.contains(
-            "ExecStart=/opt/bin/cfgd --config /etc/cfgd/config.yaml --profile server daemon"
+            "ExecStart=/opt/bin/cfgd --config /etc/cfgd/config.yaml --profile server --quiet daemon"
         ),
         "unit file with profile should include --profile in ExecStart"
     );
@@ -4706,16 +4728,20 @@ fn handle_reconcile_with_no_config_file() {
 
     let tmp = tempfile::tempdir().unwrap();
     let state_dir = tmp.path().to_path_buf();
+    let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
 
     // Passing a nonexistent config path should return gracefully (no panic)
     handle_reconcile(
         Path::new("/nonexistent/path/config.yaml"),
         None,
-        &state,
-        &notifier,
-        false,
-        &NoopHooks,
-        Some(&state_dir),
+        ReconcileCtx {
+            state: &state,
+            notifier: &notifier,
+            notify_on_drift: false,
+            hooks: &NoopHooks,
+            state_dir_override: Some(&state_dir),
+            printer: &printer,
+        },
     );
     // If we got here without panic, the function handled the missing config gracefully.
     // Verify the state wasn't updated (no reconciliation occurred).
@@ -4776,15 +4802,19 @@ fn handle_reconcile_with_no_profile() {
     )
     .unwrap();
 
+    let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
     // No profile override and no profile in config — should return gracefully
     handle_reconcile(
         &config_path,
         None,
-        &state,
-        &notifier,
-        false,
-        &NoopHooks,
-        Some(&state_dir),
+        ReconcileCtx {
+            state: &state,
+            notifier: &notifier,
+            notify_on_drift: false,
+            hooks: &NoopHooks,
+            state_dir_override: Some(&state_dir),
+            printer: &printer,
+        },
     );
     // Should not have updated state since no profile was available
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -5216,7 +5246,19 @@ async fn handle_reconcile_with_valid_config_records_drift_events() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        handle_reconcile(&cp, None, &st, &not, false, &DriftHooks, Some(&sd));
+        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        handle_reconcile(
+            &cp,
+            None,
+            ReconcileCtx {
+                state: &st,
+                notifier: &not,
+                notify_on_drift: false,
+                hooks: &DriftHooks,
+                state_dir_override: Some(&sd),
+                printer: &printer,
+            },
+        );
     })
     .await
     .unwrap();
@@ -5313,7 +5355,19 @@ async fn handle_reconcile_notify_only_drift_policy_does_not_apply() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        handle_reconcile(&cp, None, &st, &not, false, &NotifyOnlyHooks, Some(&sd));
+        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        handle_reconcile(
+            &cp,
+            None,
+            ReconcileCtx {
+                state: &st,
+                notifier: &not,
+                notify_on_drift: false,
+                hooks: &NotifyOnlyHooks,
+                state_dir_override: Some(&sd),
+                printer: &printer,
+            },
+        );
     })
     .await
     .unwrap();
@@ -5392,7 +5446,19 @@ async fn handle_reconcile_no_drift_when_no_actions() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        handle_reconcile(&cp, None, &st, &not, false, &NoDriftHooks, Some(&sd));
+        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        handle_reconcile(
+            &cp,
+            None,
+            ReconcileCtx {
+                state: &st,
+                notifier: &not,
+                notify_on_drift: false,
+                hooks: &NoDriftHooks,
+                state_dir_override: Some(&sd),
+                printer: &printer,
+            },
+        );
     })
     .await
     .unwrap();
@@ -5473,14 +5539,18 @@ async fn handle_reconcile_with_profile_override() {
     let cp = config_path.clone();
     // Override profile to "default" which exists
     tokio::task::spawn_blocking(move || {
+        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
         handle_reconcile(
             &cp,
             Some("default"),
-            &st,
-            &not,
-            false,
-            &EmptyHooks,
-            Some(&sd),
+            ReconcileCtx {
+                state: &st,
+                notifier: &not,
+                notify_on_drift: false,
+                hooks: &EmptyHooks,
+                state_dir_override: Some(&sd),
+                printer: &printer,
+            },
         );
     })
     .await
@@ -5572,7 +5642,19 @@ async fn handle_reconcile_multiple_actions_records_all_drift() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        handle_reconcile(&cp, None, &st, &not, false, &MultiDriftHooks, Some(&sd));
+        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        handle_reconcile(
+            &cp,
+            None,
+            ReconcileCtx {
+                state: &st,
+                notifier: &not,
+                notify_on_drift: false,
+                hooks: &MultiDriftHooks,
+                state_dir_override: Some(&sd),
+                printer: &printer,
+            },
+        );
     })
     .await
     .unwrap();
@@ -5683,7 +5765,19 @@ async fn handle_reconcile_auto_policy_with_drift_invokes_apply_success() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        handle_reconcile(&cp, None, &st, &not, true, &hooks, Some(&sd));
+        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        handle_reconcile(
+            &cp,
+            None,
+            ReconcileCtx {
+                state: &st,
+                notifier: &not,
+                notify_on_drift: true,
+                hooks: &hooks,
+                state_dir_override: Some(&sd),
+                printer: &printer,
+            },
+        );
     })
     .await
     .unwrap();
@@ -5740,7 +5834,19 @@ async fn handle_reconcile_auto_policy_apply_failure_notifies() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        handle_reconcile(&cp, None, &st, &not, true, &hooks, Some(&sd));
+        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        handle_reconcile(
+            &cp,
+            None,
+            ReconcileCtx {
+                state: &st,
+                notifier: &not,
+                notify_on_drift: true,
+                hooks: &hooks,
+                state_dir_override: Some(&sd),
+                printer: &printer,
+            },
+        );
     })
     .await
     .unwrap();
@@ -5828,7 +5934,19 @@ async fn handle_reconcile_runs_on_drift_scripts() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        handle_reconcile(&cp, None, &st, &not, false, &PkgDriftHooks, Some(&sd));
+        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        handle_reconcile(
+            &cp,
+            None,
+            ReconcileCtx {
+                state: &st,
+                notifier: &not,
+                notify_on_drift: false,
+                hooks: &PkgDriftHooks,
+                state_dir_override: Some(&sd),
+                printer: &printer,
+            },
+        );
     })
     .await
     .unwrap();
@@ -5906,8 +6024,20 @@ async fn handle_reconcile_notify_only_with_notify_on_drift_sends_notification() 
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
+        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
         // notify_on_drift = true → notifier.notify() reached
-        handle_reconcile(&cp, None, &st, &not, true, &PkgDriftHooks, Some(&sd));
+        handle_reconcile(
+            &cp,
+            None,
+            ReconcileCtx {
+                state: &st,
+                notifier: &not,
+                notify_on_drift: true,
+                hooks: &PkgDriftHooks,
+                state_dir_override: Some(&sd),
+                printer: &printer,
+            },
+        );
     })
     .await
     .unwrap();
@@ -6115,6 +6245,10 @@ fn generate_launchd_plist_xml_structure_complete() {
         "should contain config path"
     );
     assert!(
+        plist.contains("<string>--quiet</string>"),
+        "should contain --quiet flag"
+    );
+    assert!(
         plist.contains("<string>daemon</string>"),
         "should contain daemon subcommand"
     );
@@ -6157,6 +6291,10 @@ fn generate_launchd_plist_includes_profile_flag() {
     assert!(
         plist.contains("<string>work</string>"),
         "should contain profile name"
+    );
+    assert!(
+        plist.contains("<string>--quiet</string>"),
+        "should contain --quiet flag"
     );
 }
 
@@ -6201,9 +6339,9 @@ fn generate_systemd_unit_complete_structure() {
         "should be wanted by default.target"
     );
 
-    // Verify ExecStart format: binary --config path daemon
+    // Verify ExecStart format: binary --config path --quiet daemon
     let expected_exec = format!(
-        "ExecStart={} --config {} daemon",
+        "ExecStart={} --config {} --quiet daemon",
         binary.display(),
         config.display()
     );
@@ -6227,7 +6365,7 @@ fn generate_systemd_unit_includes_profile() {
     let unit = generate_systemd_unit(binary, config, Some("server"));
 
     let expected_exec = format!(
-        "ExecStart={} --config {} --profile {} daemon",
+        "ExecStart={} --config {} --profile {} --quiet daemon",
         binary.display(),
         config.display(),
         "server"
@@ -9350,7 +9488,19 @@ async fn handle_reconcile_warns_when_module_resolution_fails_and_continues() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        handle_reconcile(&cp, None, &st, &not, false, &EmptyPlanHooks, Some(&sd));
+        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        handle_reconcile(
+            &cp,
+            None,
+            ReconcileCtx {
+                state: &st,
+                notifier: &not,
+                notify_on_drift: false,
+                hooks: &EmptyPlanHooks,
+                state_dir_override: Some(&sd),
+                printer: &printer,
+            },
+        );
     })
     .await
     .unwrap();
@@ -9391,7 +9541,19 @@ async fn handle_reconcile_resolves_non_empty_modules_when_module_dir_exists() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        handle_reconcile(&cp, None, &st, &not, false, &EmptyPlanHooks, Some(&sd));
+        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        handle_reconcile(
+            &cp,
+            None,
+            ReconcileCtx {
+                state: &st,
+                notifier: &not,
+                notify_on_drift: false,
+                hooks: &EmptyPlanHooks,
+                state_dir_override: Some(&sd),
+                printer: &printer,
+            },
+        );
     })
     .await
     .unwrap();
@@ -9453,7 +9615,19 @@ async fn handle_reconcile_auto_apply_with_sources_processes_decisions_and_resolv
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        handle_reconcile(&cp, None, &st, &not, false, &EmptyPlanHooks, Some(&sd));
+        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        handle_reconcile(
+            &cp,
+            None,
+            ReconcileCtx {
+                state: &st,
+                notifier: &not,
+                notify_on_drift: false,
+                hooks: &EmptyPlanHooks,
+                state_dir_override: Some(&sd),
+                printer: &printer,
+            },
+        );
     })
     .await
     .unwrap();

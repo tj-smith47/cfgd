@@ -12,6 +12,7 @@ pub(crate) fn generate_launchd_plist(
         format!("<string>{}</string>", binary.display()),
         "<string>--config</string>".to_string(),
         format!("<string>{}</string>", config_path.display()),
+        "<string>--quiet</string>".to_string(),
         "<string>daemon</string>".to_string(),
     ];
 

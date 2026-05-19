@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, mpsc, oneshot};
 
-use super::reconcile::handle_reconcile;
+use super::reconcile::{ReconcileCtx, handle_reconcile};
 use super::sync::{handle_compliance_snapshot, handle_sync, handle_version_check};
 use super::{
     DEBOUNCE_MS, DaemonHooks, DaemonState, Notifier, ReconcileTask, SourceStatus, SyncTask,
@@ -150,15 +150,19 @@ pub(super) async fn handle_file_change_tick(
         let notify_drift = ctx.notify_on_drift;
         let hk = Arc::clone(&ctx.hooks);
         let state_dir = ctx.state_dir_override.clone();
+        let printer = Arc::clone(&ctx.printer);
         tokio::task::spawn_blocking(move || {
             handle_reconcile(
                 &cp,
                 po.as_deref(),
-                &st,
-                &nt,
-                notify_drift,
-                &*hk,
-                state_dir.as_deref(),
+                ReconcileCtx {
+                    state: &st,
+                    notifier: &nt,
+                    notify_on_drift: notify_drift,
+                    hooks: &*hk,
+                    state_dir_override: state_dir.as_deref(),
+                    printer: &printer,
+                },
             );
         })
         .await
@@ -195,15 +199,19 @@ pub(super) async fn handle_reconcile_tick(
             let notify_drift = ctx.notify_on_drift;
             let hk = Arc::clone(&ctx.hooks);
             let state_dir = ctx.state_dir_override.clone();
+            let printer = Arc::clone(&ctx.printer);
             tokio::task::spawn_blocking(move || {
                 handle_reconcile(
                     &cp,
                     po.as_deref(),
-                    &st,
-                    &nt,
-                    notify_drift,
-                    &*hk,
-                    state_dir.as_deref(),
+                    ReconcileCtx {
+                        state: &st,
+                        notifier: &nt,
+                        notify_on_drift: notify_drift,
+                        hooks: &*hk,
+                        state_dir_override: state_dir.as_deref(),
+                        printer: &printer,
+                    },
                 );
             })
             .await
