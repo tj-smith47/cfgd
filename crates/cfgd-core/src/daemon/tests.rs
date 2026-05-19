@@ -6822,7 +6822,7 @@ mod harness {
     ) {
         let state = Arc::new(Mutex::new(DaemonState::new()));
         let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
-        let (printer, buf) = Printer::for_test();
+        let (printer, buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
         let printer = Arc::new(printer);
         let ctx = DaemonLoopContext {
             state: Arc::clone(&state),
@@ -6923,7 +6923,7 @@ mod harness {
         std::fs::write(&config_path, "::: not yaml :::").unwrap();
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
-        let (printer, buf) = Printer::for_test();
+        let (printer, buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
         runner::apply_sighup_reload(&config_path, &reconcile_secs, &sync_secs, &printer);
         let captured = buf.lock().unwrap().clone();
         assert!(
@@ -6947,7 +6947,7 @@ mod harness {
         .unwrap();
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
-        let (printer, buf) = Printer::for_test();
+        let (printer, buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
         runner::apply_sighup_reload(&config_path, &reconcile_secs, &sync_secs, &printer);
         let captured = buf.lock().unwrap().clone();
         assert!(
@@ -6970,7 +6970,7 @@ mod harness {
         .unwrap();
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
-        let (printer, buf) = Printer::for_test();
+        let (printer, buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
         runner::apply_sighup_reload(&config_path, &reconcile_secs, &sync_secs, &printer);
         let captured = buf.lock().unwrap().clone();
         assert!(
@@ -8297,7 +8297,7 @@ mod harness {
 
     #[test]
     fn print_startup_banner_emits_health_intervals_and_run_hint() {
-        let (printer, buf) = Printer::for_test();
+        let (printer, buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
         super::super::print_startup_banner(
             &printer,
             &["reconcile=30s".to_string(), "compliance=900s".to_string()],
@@ -8478,7 +8478,7 @@ mod harness {
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
         let (triggers, senders) = make_triggers();
-        let (printer, buf) = Printer::for_test();
+        let (printer, buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
         let printer = Arc::new(printer);
         let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
 
@@ -8522,7 +8522,7 @@ mod harness {
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
         let (triggers, senders) = make_triggers();
-        let (printer, _buf) = Printer::for_test();
+        let (printer, _buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
         let printer = Arc::new(printer);
         let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
 
@@ -8567,7 +8567,7 @@ mod harness {
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
         let (triggers, senders) = make_triggers();
-        let (printer, _buf) = Printer::for_test();
+        let (printer, _buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
         let printer = Arc::new(printer);
         let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
 
@@ -8598,7 +8598,7 @@ mod harness {
         // Start with the happy-path config (no daemon spec).
         let config_path = write_happy_path_config(&tmp);
         let (triggers, senders) = make_triggers();
-        let (printer, buf) = Printer::for_test();
+        let (printer, buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
         let printer = Arc::new(printer);
         let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
 
@@ -8647,7 +8647,7 @@ mod harness {
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
         let (triggers, senders) = make_triggers();
-        let (printer, _buf) = Printer::for_test();
+        let (printer, _buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
         let printer = Arc::new(printer);
         let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
 
@@ -8683,7 +8683,7 @@ mod harness {
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
         let (triggers, senders) = make_triggers();
-        let (printer, _buf) = Printer::for_test();
+        let (printer, _buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
         let printer = Arc::new(printer);
         let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
 
@@ -8718,7 +8718,7 @@ mod harness {
         let config_path = write_happy_path_config(&tmp);
         let ipc_path = tmp.path().join("health-on.sock");
         let (triggers, senders) = make_triggers();
-        let (printer, _buf) = Printer::for_test();
+        let (printer, _buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
         let printer = Arc::new(printer);
         let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
 
@@ -8769,7 +8769,7 @@ mod harness {
         let _listener = StdUnixListener::bind(&ipc_path).unwrap();
 
         let (triggers, _senders) = make_triggers();
-        let (printer, _buf) = Printer::for_test();
+        let (printer, _buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
         let printer = Arc::new(printer);
         let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
 

@@ -365,7 +365,7 @@ pub(crate) fn handle_reconcile(
                 None,
                 None,
             );
-            let printer = Printer::new(Verbosity::Quiet);
+            let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
             let default_timeout = crate::PROFILE_SCRIPT_TIMEOUT;
             for entry in &scripts.on_drift {
                 match crate::reconciler::execute_script(
@@ -409,7 +409,7 @@ pub(crate) fn handle_reconcile(
                     actions = effective_total,
                     "drift policy is Auto — applying actions"
                 );
-                let printer = Printer::new(Verbosity::Quiet);
+                let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
                 match reconciler.apply(
                     &plan,
                     &resolved,

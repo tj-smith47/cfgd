@@ -30,7 +30,7 @@ use crate::config::{
     ResolvedProfile,
 };
 use crate::errors::{DaemonError, Result};
-use crate::output::{Printer, Verbosity};
+use crate::output_v2::{Printer, Role};
 use crate::providers::{FileAction, PackageAction, PackageManager, ProviderRegistry};
 use crate::state::StateStore;
 
@@ -510,8 +510,8 @@ pub(super) async fn run_daemon_with(
     hooks: Arc<dyn DaemonHooks>,
     overrides: DaemonRunOverrides,
 ) -> Result<()> {
-    printer.header("Daemon");
-    printer.info("Starting cfgd daemon...");
+    printer.heading("Daemon");
+    printer.status_simple(Role::Info, "Starting cfgd daemon...");
 
     let setup = build_pre_loop_setup(&config_path, profile_override.as_deref(), &*hooks)?;
 
@@ -715,7 +715,7 @@ pub(super) async fn run_daemon_with(
     }
     cleanup_ipc_socket(&ipc_path);
 
-    printer.success("Daemon stopped");
+    printer.status_simple(Role::Ok, "Daemon stopped");
     loop_result
 }
 
@@ -796,10 +796,9 @@ pub(super) fn format_interval_lines(
 /// Emit the four-line startup banner: health endpoint, interval summary,
 /// run hint, trailing blank. Pure-output; testable via `Printer::for_test()`.
 pub(super) fn print_startup_banner(printer: &Printer, intervals: &[String], ipc_path: &str) {
-    printer.success(&format!("Health: {}", ipc_path));
-    printer.success(&format!("Intervals: {}", intervals.join(", ")));
-    printer.info("Daemon running — press Ctrl+C to stop");
-    printer.newline();
+    printer.status_simple(Role::Ok, format!("Health: {}", ipc_path));
+    printer.status_simple(Role::Ok, format!("Intervals: {}", intervals.join(", ")));
+    printer.status_simple(Role::Info, "Daemon running — press Ctrl+C to stop");
 }
 
 /// Synchronous body of the startup server check-in. Resolves the profile,
@@ -921,19 +920,17 @@ async fn wait_for_shutdown(printer: Arc<Printer>) {
         };
         tokio::select! {
             _ = sigterm => {
-                printer.info("Received SIGTERM, shutting down daemon...");
+                printer.status_simple(Role::Info, "Received SIGTERM, shutting down daemon...");
             }
             _ = tokio::signal::ctrl_c() => {
-                printer.newline();
-                printer.info("Shutting down daemon...");
+                printer.status_simple(Role::Info, "Shutting down daemon...");
             }
         }
     }
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
-        printer.newline();
-        printer.info("Shutting down daemon...");
+        printer.status_simple(Role::Info, "Shutting down daemon...");
     }
 }
 

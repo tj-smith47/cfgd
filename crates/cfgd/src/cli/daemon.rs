@@ -39,12 +39,12 @@ pub(super) fn cmd_daemon(
 
     let config_path = std::fs::canonicalize(&cli.config).unwrap_or_else(|_| cli.config.clone());
     let profile_override = cli.profile.clone();
-    let printer = std::sync::Arc::new(cfgd_core::output::Printer::new(if cli.quiet {
-        cfgd_core::output::Verbosity::Quiet
+    let printer = std::sync::Arc::new(cfgd_core::output_v2::Printer::new(if cli.quiet {
+        cfgd_core::output_v2::Verbosity::Quiet
     } else if cli.verbose > 0 {
-        cfgd_core::output::Verbosity::Verbose
+        cfgd_core::output_v2::Verbosity::Verbose
     } else {
-        cfgd_core::output::Verbosity::Normal
+        cfgd_core::output_v2::Verbosity::Normal
     }));
 
     let hooks: std::sync::Arc<dyn cfgd_core::daemon::DaemonHooks> =

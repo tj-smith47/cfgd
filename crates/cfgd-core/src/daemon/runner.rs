@@ -21,7 +21,7 @@ use super::{
 };
 use crate::config::{self, CfgdConfig};
 use crate::errors::{DaemonError, Result};
-use crate::output::Printer;
+use crate::output_v2::{Printer, Role};
 
 pub(super) struct DaemonLoopContext {
     pub state: Arc<Mutex<DaemonState>>,
@@ -324,7 +324,7 @@ pub(super) fn apply_sighup_reload(
     sync_secs: &AtomicU64,
     printer: &Printer,
 ) {
-    printer.info("Reloading configuration (SIGHUP)...");
+    printer.status_simple(Role::Info, "Reloading configuration (SIGHUP)...");
     match config::load_config(config_path) {
         Ok(new_cfg) => {
             let (new_reconcile, new_sync) = compute_sighup_intervals(&new_cfg);
@@ -338,13 +338,16 @@ pub(super) fn apply_sighup_reload(
                 changed.push(format!("sync={:?}", d));
             }
             if changed.is_empty() {
-                printer.info("Config validated; no timer changes detected");
+                printer.status_simple(Role::Info, "Config validated; no timer changes detected");
             } else {
-                printer.success(&format!("Timer intervals reloaded: {}", changed.join(", ")));
+                printer.status_simple(
+                    Role::Ok,
+                    format!("Timer intervals reloaded: {}", changed.join(", ")),
+                );
             }
         }
         Err(e) => {
-            printer.warning(&format!("Config reload failed: {}", e));
+            printer.status_simple(Role::Warn, format!("Config reload failed: {}", e));
         }
     }
 }
