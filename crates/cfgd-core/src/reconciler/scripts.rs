@@ -249,13 +249,13 @@ pub(crate) fn execute_script(
                 if !status.success() {
                     let exit_code = status.code().unwrap_or(-1);
                     pb.finish_fail(format!("{} (exit {})", run_str, exit_code));
+                    let base = format!("script '{}' failed (exit {})", run_str, exit_code);
+                    let message = match captured.as_deref().filter(|s| !s.is_empty()) {
+                        Some(c) => format!("{base}\n{c}"),
+                        None => base,
+                    };
                     return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
-                        message: format!(
-                            "script '{}' failed (exit {})\n{}",
-                            run_str,
-                            exit_code,
-                            captured.as_deref().unwrap_or("")
-                        ),
+                        message,
                     }));
                 }
 
@@ -299,14 +299,18 @@ pub(crate) fn execute_script(
                         .and_then(|m| m.into_inner().ok())
                         .unwrap_or_default();
                     let captured = combine_script_output(&stdout_str, &stderr_str);
+                    let base = format!(
+                        "script '{}' {} after {}s",
+                        run_str,
+                        reason,
+                        duration.as_secs()
+                    );
+                    let message = match captured.as_deref().filter(|s| !s.is_empty()) {
+                        Some(c) => format!("{base}\n{c}"),
+                        None => base,
+                    };
                     return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
-                        message: format!(
-                            "script '{}' {} after {}s\n{}",
-                            run_str,
-                            reason,
-                            duration.as_secs(),
-                            captured.as_deref().unwrap_or("")
-                        ),
+                        message,
                     }));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));

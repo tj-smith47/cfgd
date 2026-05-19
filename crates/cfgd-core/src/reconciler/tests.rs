@@ -7794,6 +7794,10 @@ mod bridge {
         // finish_fail → continueOnError Warn pair.
         let mixed = run_mixed_apply_then_emit_summary();
         assert!(
+            mixed.contains("\n\n"),
+            "mixed-apply-cycle missing blank line at seam:\n{mixed}"
+        );
+        assert!(
             !mixed.contains("\n\n\n"),
             "mixed-apply-cycle has duplicate blank line:\n{mixed}"
         );
