@@ -4,5 +4,4 @@
 
 ⚠ [1/1] Script failed (continueOnError): script:postApply:exit 42 — config error: invalid config: script 'exit 42' failed (exit 42)
 
-
 ⚠ Apply partial

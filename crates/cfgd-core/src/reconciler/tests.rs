@@ -7770,6 +7770,7 @@ mod bridge {
     }
 
     #[test]
+    #[cfg(unix)]
     fn bridge_invariant_apply_cycle() {
         let captured = run_minimal_bridge();
 
@@ -7786,6 +7787,25 @@ mod bridge {
         // Lock the human shape so a renderer regression in blank-line
         // accounting tips both the structural assertion AND the golden.
         assert_snapshot("bridge.txt", &captured);
+
+        // Mixed-apply seam — same invariant: exactly one blank line between
+        // the last streaming line and the buffered Doc's first visible line,
+        // even when the preceding streaming sequence includes a spinner
+        // finish_fail → continueOnError Warn pair.
+        let mixed = run_mixed_apply_then_emit_summary();
+        assert!(
+            !mixed.contains("\n\n\n"),
+            "mixed-apply-cycle has duplicate blank line:\n{mixed}"
+        );
+
+        // Clean-cycle seam — no preceding streaming lines, only the buffered
+        // Doc. Guards against the renderer emitting a leading blank when no
+        // prior emission has happened.
+        let clean = run_clean_apply_then_emit_summary();
+        assert!(
+            !clean.contains("\n\n\n"),
+            "clean-apply-cycle has duplicate blank line:\n{clean}"
+        );
     }
 
     #[test]

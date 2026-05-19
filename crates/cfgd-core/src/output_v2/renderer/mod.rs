@@ -163,6 +163,15 @@ impl Renderer {
     /// recursing back into `flush_kv_buffer_internal`.
     pub(crate) fn write_line(&self, w: &dyn Writer, depth: usize, body: &str) {
         self.flush_kv_buffer_internal(w);
+        // The sink appends its own trailing newline per call; any newlines
+        // already in `body` would smuggle physical line breaks past the
+        // blank-line accounting (e.g. a Status subject ending with `\n` would
+        // produce a stray blank between this emission and the next, breaking
+        // the §13 one-blank-between-siblings invariant). Strip trailing
+        // newlines and split internal ones into separate sink writes at the
+        // same depth — `render_note` is the only intentional multi-line path
+        // and pre-splits before calling here.
+        let trimmed = body.trim_end_matches(['\n', '\r']);
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if s.leading {
             s.leading = false;
@@ -175,7 +184,9 @@ impl Renderer {
         // sets the flag back true after this call returns.
         s.last_was_top_heading = false;
         let prefix = "  ".repeat(depth);
-        w.write_line(&format!("{}{}", prefix, body));
+        for line in trimmed.split('\n') {
+            w.write_line(&format!("{}{}", prefix, line));
+        }
     }
 
     /// Inner kv-buffer flush invoked from `write_line`. Does NOT recurse — it
