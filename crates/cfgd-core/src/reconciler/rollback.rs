@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::errors::Result;
-use crate::output::Printer;
+use crate::output_v2::{Printer, Role};
 use crate::state::ApplyStatus;
 
 use super::restore::{RestoreOutcome, restore_file_from_backup};
@@ -117,11 +117,10 @@ impl<'a> super::Reconciler<'a> {
                 let target = std::path::Path::new(actual_path);
                 if target.exists() {
                     if let Err(e) = std::fs::remove_file(target) {
-                        printer.warning(&format!(
-                            "rollback: failed to remove {}: {}",
-                            target.display(),
-                            e
-                        ));
+                        printer.status_simple(
+                            Role::Warn,
+                            format!("rollback: failed to remove {}: {}", target.display(), e),
+                        );
                     } else {
                         files_removed += 1;
                     }

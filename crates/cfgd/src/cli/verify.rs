@@ -42,7 +42,7 @@ pub(super) fn cmd_verify(
         (resolved, Vec::new(), registry)
     };
 
-    let results = reconciler::verify(&resolved, &registry, &state, printer, &resolved_modules)?;
+    let results = reconciler::verify(&resolved, &registry, &state, v2_printer, &resolved_modules)?;
     let pass_count = results.iter().filter(|r| r.matches).count();
     let fail_count = results.iter().filter(|r| !r.matches).count();
     let has_drift = fail_count > 0;

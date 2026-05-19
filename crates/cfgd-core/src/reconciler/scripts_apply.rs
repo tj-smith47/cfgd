@@ -1,6 +1,6 @@
 use crate::config::ResolvedProfile;
 use crate::errors::Result;
-use crate::output::Printer;
+use crate::output_v2::Printer;
 
 use super::scripts::{build_script_env, execute_script};
 use super::types::{ReconcileContext, ScriptAction};

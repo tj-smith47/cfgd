@@ -1,6 +1,6 @@
 use crate::config::ScriptEntry;
 use crate::errors::{ConfigError, Result};
-use crate::output::Printer;
+use crate::output_v2::Printer;
 
 use super::types::{ReconcileContext, ScriptPhase};
 
@@ -247,8 +247,8 @@ pub(crate) fn execute_script(
                 let captured = combine_script_output(&stdout_str, &stderr_str);
 
                 if !status.success() {
-                    pb.finish_and_clear();
                     let exit_code = status.code().unwrap_or(-1);
+                    pb.finish_fail(format!("{} (exit {})", run_str, exit_code));
                     return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
                         message: format!(
                             "script '{}' failed (exit {})\n{}",
@@ -260,8 +260,7 @@ pub(crate) fn execute_script(
                 }
 
                 let elapsed = start.elapsed();
-                pb.finish_and_clear();
-                printer.success(&format!("{} ({}s)", run_str, elapsed.as_secs()));
+                pb.finish_ok(format!("{} ({}s)", run_str, elapsed.as_secs()));
                 return Ok((label, true, captured));
             }
             None => {
@@ -281,7 +280,12 @@ pub(crate) fn execute_script(
                     }
                 }
                 if let Some((reason, duration)) = kill_reason {
-                    pb.finish_and_clear();
+                    pb.finish_fail(format!(
+                        "{} {} after {}s",
+                        run_str,
+                        reason,
+                        duration.as_secs()
+                    ));
                     kill_script_child(&mut child);
                     // Join reader threads so we capture partial output
                     let _ = stdout_handle.join();

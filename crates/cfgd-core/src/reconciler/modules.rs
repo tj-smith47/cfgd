@@ -51,14 +51,12 @@ impl<'a> super::Reconciler<'a> {
                                 );
                                 let script_entry = ScriptEntry::Simple(script_content.clone());
                                 let working = module_dir.as_deref().unwrap_or(config_dir);
-                                let v1_forwarder =
-                                    crate::output::Printer::new(crate::output::Verbosity::Quiet);
                                 execute_script(
                                     &script_entry,
                                     working,
                                     &env_vars,
                                     MODULE_SCRIPT_TIMEOUT,
-                                    &v1_forwarder,
+                                    printer,
                                 )
                                 .map_err(|_| {
                                     crate::errors::CfgdError::Config(ConfigError::Invalid {
@@ -249,14 +247,7 @@ impl<'a> super::Reconciler<'a> {
                 );
 
                 let working = module_dir.as_deref().unwrap_or(config_dir);
-                let v1_forwarder = crate::output::Printer::new(crate::output::Verbosity::Quiet);
-                execute_script(
-                    script,
-                    working,
-                    &env_vars,
-                    MODULE_SCRIPT_TIMEOUT,
-                    &v1_forwarder,
-                )?;
+                execute_script(script, working, &env_vars, MODULE_SCRIPT_TIMEOUT, printer)?;
 
                 Ok(format!("module:{}:script", action.module_name))
             }

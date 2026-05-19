@@ -3,7 +3,6 @@ use super::*;
 use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
 pub fn cmd_rollback(
-    printer: &Printer,
     v2_printer: &PrinterV2,
     apply_id: i64,
     yes: bool,
@@ -91,7 +90,7 @@ pub fn cmd_rollback(
     let reconciler = Reconciler::new(&registry, &state);
     let result = {
         let rb_sec = v2_printer.section("Restoring");
-        let r = reconciler.rollback_apply(apply_id, printer)?;
+        let r = reconciler.rollback_apply(apply_id, v2_printer)?;
         let processed = r.files_restored + r.files_removed;
         let (role, msg) = if processed == 0 {
             (Role::Info, "No files affected".to_string())

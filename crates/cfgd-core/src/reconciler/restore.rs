@@ -1,3 +1,4 @@
+use crate::output_v2::Role;
 use crate::providers::FileAction;
 
 use super::types::{Action, EnvAction};
@@ -14,7 +15,7 @@ pub(super) enum RestoreOutcome {
 pub(super) fn restore_file_from_backup(
     target: &std::path::Path,
     bk: &crate::state::FileBackupRecord,
-    printer: &crate::output::Printer,
+    printer: &crate::output_v2::Printer,
 ) -> RestoreOutcome {
     // Backup has content — write it (works for both regular files and symlink snapshots
     // where the resolved content was captured)
@@ -33,11 +34,10 @@ pub(super) fn restore_file_from_backup(
             let _ = std::fs::create_dir_all(parent);
         }
         if let Err(e) = crate::atomic_write(target, &bk.content) {
-            printer.warning(&format!(
-                "rollback: failed to restore {}: {}",
-                target.display(),
-                e
-            ));
+            printer.status_simple(
+                Role::Warn,
+                format!("rollback: failed to restore {}: {}", target.display(), e),
+            );
             return RestoreOutcome::Failed;
         }
         // Restore permissions if recorded
@@ -53,11 +53,14 @@ pub(super) fn restore_file_from_backup(
     {
         let _ = std::fs::remove_file(target);
         if let Err(e) = crate::create_symlink(std::path::Path::new(link_target), target) {
-            printer.warning(&format!(
-                "rollback: failed to restore symlink {}: {}",
-                target.display(),
-                e
-            ));
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "rollback: failed to restore symlink {}: {}",
+                    target.display(),
+                    e
+                ),
+            );
             return RestoreOutcome::Failed;
         }
         return RestoreOutcome::Restored;
@@ -66,11 +69,10 @@ pub(super) fn restore_file_from_backup(
     // Empty content, not symlink, not oversized — file didn't exist before
     if bk.content.is_empty() && !bk.was_symlink && !bk.oversized && target.exists() {
         if let Err(e) = std::fs::remove_file(target) {
-            printer.warning(&format!(
-                "rollback: failed to remove {}: {}",
-                target.display(),
-                e
-            ));
+            printer.status_simple(
+                Role::Warn,
+                format!("rollback: failed to remove {}: {}", target.display(), e),
+            );
             return RestoreOutcome::Failed;
         }
         return RestoreOutcome::Removed;

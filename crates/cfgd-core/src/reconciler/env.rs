@@ -1,6 +1,6 @@
 use crate::errors::Result;
 use crate::modules::ResolvedModule;
-use crate::output::Printer;
+use crate::output_v2::{Printer, Role};
 
 use super::env_files::{
     detect_rc_env_conflicts, fish_in_use, generate_env_file_content, generate_fish_env_content,
@@ -143,7 +143,7 @@ impl<'a> super::Reconciler<'a> {
                     return Ok(format!("env:write:{}:skipped", path.display()));
                 }
                 crate::atomic_write_str(path, content)?;
-                printer.success(&format!("Wrote {}", path.display()));
+                printer.status_simple(Role::Ok, format!("Wrote {}", path.display()));
                 Ok(format!("env:write:{}", path.display()))
             }
             EnvAction::InjectSourceLine { rc_path, line } => {
@@ -166,7 +166,10 @@ impl<'a> super::Reconciler<'a> {
                 content.push_str(line);
                 content.push('\n');
                 crate::atomic_write_str(rc_path, &content)?;
-                printer.success(&format!("Injected source line into {}", rc_path.display()));
+                printer.status_simple(
+                    Role::Ok,
+                    format!("Injected source line into {}", rc_path.display()),
+                );
                 Ok(format!("env:inject:{}", rc_path.display()))
             }
         }

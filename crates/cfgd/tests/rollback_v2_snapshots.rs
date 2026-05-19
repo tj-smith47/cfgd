@@ -14,7 +14,6 @@ use std::path::Path;
 
 use cfgd::cli::output_types::RollbackOutput;
 use cfgd::cli::rollback::{build_rollback_doc, cmd_rollback};
-use cfgd_core::output::Printer as PrinterV1;
 use cfgd_core::output_v2::{Doc, Printer, PromptAnswer, Role, Verbosity as V2Verbosity};
 use pretty_assertions::assert_eq;
 
@@ -32,17 +31,9 @@ const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 fn rollback_happy_human() {
     let (_workspace, state_dir, target, apply_id) = rollback_state_with_backups_setup();
 
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
-    cmd_rollback(
-        &old_printer,
-        &v2_printer,
-        apply_id,
-        true,
-        Some(state_dir.path()),
-    )
-    .unwrap();
+    cmd_rollback(&v2_printer, apply_id, true, Some(state_dir.path())).unwrap();
     drop(v2_printer);
 
     let normalized = cap
@@ -80,17 +71,9 @@ fn rollback_happy_json() {
 fn rollback_no_changes_human() {
     let (state_dir, apply_id) = rollback_state_no_changes_setup();
 
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
-    cmd_rollback(
-        &old_printer,
-        &v2_printer,
-        apply_id,
-        true,
-        Some(state_dir.path()),
-    )
-    .unwrap();
+    cmd_rollback(&v2_printer, apply_id, true, Some(state_dir.path())).unwrap();
     drop(v2_printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -110,20 +93,12 @@ fn rollback_no_changes_human() {
 fn rollback_accept_human() {
     let (_workspace, state_dir, target, apply_id) = rollback_state_with_backups_setup();
 
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, v2_buf) = Printer::for_test_with_prompt_responses_at(
         vec![PromptAnswer::Confirm(true)],
         V2Verbosity::Normal,
     );
 
-    cmd_rollback(
-        &old_printer,
-        &v2_printer,
-        apply_id,
-        false,
-        Some(state_dir.path()),
-    )
-    .unwrap();
+    cmd_rollback(&v2_printer, apply_id, false, Some(state_dir.path())).unwrap();
     v2_printer.flush();
     drop(v2_printer);
 
@@ -139,20 +114,12 @@ fn rollback_accept_human() {
 fn rollback_aborted_human() {
     let (_workspace, state_dir, target, apply_id) = rollback_state_with_backups_setup();
 
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, v2_buf) = Printer::for_test_with_prompt_responses_at(
         vec![PromptAnswer::Confirm(false)],
         V2Verbosity::Normal,
     );
 
-    cmd_rollback(
-        &old_printer,
-        &v2_printer,
-        apply_id,
-        false,
-        Some(state_dir.path()),
-    )
-    .unwrap();
+    cmd_rollback(&v2_printer, apply_id, false, Some(state_dir.path())).unwrap();
     v2_printer.flush();
     drop(v2_printer);
 
@@ -171,17 +138,9 @@ fn rollback_aborted_human() {
 fn rollback_non_file_actions_human() {
     let (state_dir, apply_id) = rollback_state_with_non_file_actions_setup();
 
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
-    cmd_rollback(
-        &old_printer,
-        &v2_printer,
-        apply_id,
-        true,
-        Some(state_dir.path()),
-    )
-    .unwrap();
+    cmd_rollback(&v2_printer, apply_id, true, Some(state_dir.path())).unwrap();
     drop(v2_printer);
 
     let stripped = strip_ansi(&cap.human());
