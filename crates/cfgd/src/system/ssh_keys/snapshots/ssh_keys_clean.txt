@@ -1,0 +1,7 @@
+Creating SSH directory: <TMPDIR>/.ssh
+
+Generating ed25519 SSH key 'default' at <TMPDIR>/.ssh/id_ed25519
+
+Setting permissions 600 on <TMPDIR>/.ssh/id_ed25519
+
+✓ SSH keys applied

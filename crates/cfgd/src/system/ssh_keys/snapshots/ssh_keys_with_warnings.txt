@@ -1,0 +1,3 @@
+⚠ SSH key 'default' at <TMPDIR>/.ssh/id_ed25519 is type 'rsa' but 'ed25519' is desired; cfgd will not overwrite an existing key — remove it manually to regenerate
+
+⚠ SSH keys applied with warnings

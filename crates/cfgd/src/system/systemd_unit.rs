@@ -289,4 +289,122 @@ mod tests {
         let yaml = serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(unit)]);
         su.apply(&yaml, &printer).unwrap();
     }
+
+    #[cfg(unix)]
+    mod bridge {
+        use super::*;
+        use cfgd_core::output_v2::test_capture::{assert_snapshot_at, strip_ansi};
+        use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+
+        fn snapshot_dir() -> std::path::PathBuf {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/system/snapshots")
+        }
+
+        fn assert_snapshot(name: &str, actual: &str) {
+            assert_snapshot_at(&snapshot_dir(), name, actual);
+        }
+
+        fn normalize_paths(raw: &str, tmpdir: &std::path::Path) -> String {
+            raw.replace(&tmpdir.to_string_lossy().to_string(), "<TMPDIR>")
+        }
+
+        /// Normalize the variable part of systemctl failure messages so goldens
+        /// are stable across D-Bus availability states. Lines matching
+        /// `"systemctl <action> <name> failed: <msg>"` have the suffix after
+        /// "failed: " replaced with "<SYSTEMCTL_ERROR>".
+        fn normalize_systemctl_errors(s: &str) -> String {
+            s.lines()
+                .map(|line| {
+                    if line.contains("systemctl ") && line.contains(" failed: ") {
+                        let needle = " failed: ";
+                        if let Some(pos) = line.find(needle) {
+                            return format!("{}{}<SYSTEMCTL_ERROR>", &line[..pos], needle);
+                        }
+                    }
+                    line.to_string()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                + if s.ends_with('\n') { "\n" } else { "" }
+        }
+
+        #[derive(serde::Serialize)]
+        struct UnitApplySummary {
+            units_processed: usize,
+        }
+
+        #[test]
+        fn snapshot_systemd_unit_clean() {
+            let yaml: serde_yaml::Value = serde_yaml::from_str(
+                r#"
+- name: cfgd-snap-test.service
+  enabled: false
+"#,
+            )
+            .unwrap();
+
+            let (printer, cap) = PrinterV2::for_test_doc();
+            let su = SystemdUnitConfigurator;
+            su.apply(&yaml, &printer).unwrap();
+
+            let summary = UnitApplySummary { units_processed: 1 };
+            let doc = Doc::new()
+                .status(Role::Ok, "systemd units applied")
+                .with_data(&summary);
+            printer.emit(doc);
+            drop(printer);
+
+            let raw = strip_ansi(&cap.human());
+            let captured = normalize_systemctl_errors(&raw);
+
+            assert!(
+                captured.contains("\n\n"),
+                "systemd_unit_clean missing blank line at seam:\n{captured}"
+            );
+            assert!(
+                !captured.contains("\n\n\n"),
+                "systemd_unit_clean has duplicate blank line:\n{captured}"
+            );
+
+            assert_snapshot("systemd_unit_clean.txt", &captured);
+        }
+
+        #[test]
+        fn snapshot_systemd_unit_with_warnings() {
+            let tmp = tempfile::tempdir().unwrap();
+            let nonexistent_unit_file = tmp.path().join("test.service");
+
+            let yaml_str = format!(
+                "- name: cfgd-snap-warn.service\n  enabled: true\n  unitFile: {}\n",
+                nonexistent_unit_file.display()
+            );
+            let yaml: serde_yaml::Value = serde_yaml::from_str(&yaml_str).unwrap();
+
+            let (printer, cap) = PrinterV2::for_test_doc();
+            let su = SystemdUnitConfigurator;
+            su.apply(&yaml, &printer).unwrap();
+
+            let summary = UnitApplySummary { units_processed: 1 };
+            let doc = Doc::new()
+                .status(Role::Warn, "systemd units applied with warnings")
+                .with_data(&summary);
+            printer.emit(doc);
+            drop(printer);
+
+            let raw = strip_ansi(&cap.human());
+            let path_normalized = normalize_paths(&raw, tmp.path());
+            let captured = normalize_systemctl_errors(&path_normalized);
+
+            assert!(
+                captured.contains("\n\n"),
+                "systemd_unit_with_warnings missing blank line at seam:\n{captured}"
+            );
+            assert!(
+                !captured.contains("\n\n\n"),
+                "systemd_unit_with_warnings has duplicate blank line:\n{captured}"
+            );
+
+            assert_snapshot("systemd_unit_with_warnings.txt", &captured);
+        }
+    }
 }

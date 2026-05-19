@@ -2,6 +2,112 @@ use super::*;
 use std::os::unix::fs::PermissionsExt;
 use tempfile::TempDir;
 
+mod bridge {
+    use super::*;
+    use cfgd_core::output_v2::test_capture::{assert_snapshot_at, strip_ansi};
+    use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+
+    fn snapshot_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/system/ssh_keys/snapshots")
+    }
+
+    fn assert_snapshot(name: &str, actual: &str) {
+        assert_snapshot_at(&snapshot_dir(), name, actual);
+    }
+
+    fn normalize_paths(raw: &str, tmpdir: &std::path::Path) -> String {
+        raw.replace(&tmpdir.to_string_lossy().to_string(), "<TMPDIR>")
+    }
+
+    #[derive(serde::Serialize)]
+    struct KeyApplySummary {
+        name: String,
+        applied: bool,
+    }
+
+    #[test]
+    fn snapshot_ssh_keys_clean() {
+        let tmp = TempDir::new().unwrap();
+        let ssh_dir = tmp.path().join(".ssh");
+        let key_path = ssh_dir.join("id_ed25519");
+
+        let desired =
+            make_desired(&[("default", "ed25519", Some(&key_path.display().to_string()))]);
+
+        let (printer, cap) = PrinterV2::for_test_doc();
+        let c = SshKeysConfigurator;
+        c.apply(&desired, &printer).unwrap();
+
+        let summary = KeyApplySummary {
+            name: "default".to_string(),
+            applied: true,
+        };
+        let doc = Doc::new()
+            .status(Role::Ok, "SSH keys applied")
+            .with_data(&summary);
+        printer.emit(doc);
+        drop(printer);
+
+        let raw = strip_ansi(&cap.human());
+        let captured = normalize_paths(&raw, tmp.path());
+
+        assert!(
+            captured.contains("\n\n"),
+            "ssh_keys_clean missing blank line at seam:\n{captured}"
+        );
+        assert!(
+            !captured.contains("\n\n\n"),
+            "ssh_keys_clean has duplicate blank line:\n{captured}"
+        );
+
+        assert_snapshot("ssh_keys_clean.txt", &captured);
+    }
+
+    #[test]
+    fn snapshot_ssh_keys_with_warnings() {
+        let tmp = TempDir::new().unwrap();
+        let ssh_dir = tmp.path().join(".ssh");
+        fs::create_dir_all(&ssh_dir).unwrap();
+        let key_path = ssh_dir.join("id_ed25519");
+
+        fs::write(&key_path, b"FAKE PRIVATE KEY").unwrap();
+        let pub_path = ssh_dir.join("id_ed25519.pub");
+        fs::write(&pub_path, b"ssh-rsa AAAA fake-key comment\n").unwrap();
+        fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let desired =
+            make_desired_with_perms("default", "ed25519", &key_path.display().to_string(), "600");
+
+        let (printer, cap) = PrinterV2::for_test_doc();
+        let c = SshKeysConfigurator;
+        c.apply(&desired, &printer).unwrap();
+
+        let summary = KeyApplySummary {
+            name: "default".to_string(),
+            applied: true,
+        };
+        let doc = Doc::new()
+            .status(Role::Warn, "SSH keys applied with warnings")
+            .with_data(&summary);
+        printer.emit(doc);
+        drop(printer);
+
+        let raw = strip_ansi(&cap.human());
+        let captured = normalize_paths(&raw, tmp.path());
+
+        assert!(
+            captured.contains("\n\n"),
+            "ssh_keys_with_warnings missing blank line at seam:\n{captured}"
+        );
+        assert!(
+            !captured.contains("\n\n\n"),
+            "ssh_keys_with_warnings has duplicate blank line:\n{captured}"
+        );
+
+        assert_snapshot("ssh_keys_with_warnings.txt", &captured);
+    }
+}
+
 fn make_desired(entries: &[(&str, &str, Option<&str>)]) -> serde_yaml::Value {
     // entries: (name, type, optional path override)
     let mut seq = Vec::new();
