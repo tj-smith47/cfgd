@@ -7577,19 +7577,13 @@ fn verify_system_configurator_reports_healthy_when_no_drift() {
     assert_eq!(sysctl_results[0].resource_id, "sysctl");
 }
 
-// ----- §17.2 streaming → buffered bridge floor -----
-//
 // `Reconciler::apply` streams per-action status via `status_simple` (warn/fail
-// lines with `[N/M]` prefixes; see apply.rs:200/211/277). Callers that want a
-// buffered summary (e.g. `cmd_apply`'s `ApplyOutput`) emit a `Doc` on the same
-// `Printer` right after. The renderer's blank-line accounting must produce
-// exactly one blank line between the last streaming line and the buffered
-// Doc's first visible line — zero blanks would let the spinner's tail bleed
-// into the summary; two would leave a visual gap.
-//
-// These tests drive `Reconciler::apply` end-to-end through a `for_test_doc`
-// capture and assert the seam character-by-character plus pin host-stable
-// goldens beside the daemon snapshot floor.
+// lines with `[N/M]` prefixes). Callers that want a buffered summary (e.g.
+// `cmd_apply`'s `ApplyOutput`) emit a `Doc` on the same `Printer` right after.
+// The renderer's blank-line accounting must produce exactly one blank line
+// between the last streaming line and the buffered Doc's first visible line —
+// zero blanks would let the spinner's tail bleed into the summary; two would
+// leave a visual gap.
 
 mod bridge {
     use super::super::Reconciler;
@@ -7640,8 +7634,24 @@ mod bridge {
         failed: usize,
     }
 
-    /// Drive a mixed-result apply (1 ok + 1 fail), then emit a buffered Doc
-    /// carrying the summary. Returns the captured human surface (ANSI-stripped).
+    /// Minimal seam fixture: one streaming status line + one buffered Doc.
+    /// Does NOT drive the reconciler — keeps `bridge.txt` distinct from
+    /// (and far smaller than) the cycle goldens so a regression in the seam
+    /// itself tips a fixture that has nothing else moving.
+    fn run_minimal_bridge() -> String {
+        let (v2_printer, cap) = PrinterV2::for_test_doc();
+        v2_printer.status_simple(Role::Ok, "[1/1] Wrote /etc/hosts");
+        let doc = Doc::new().status(Role::Ok, "Apply complete");
+        v2_printer.emit(doc);
+        drop(v2_printer);
+        strip_ansi(&cap.human())
+    }
+
+    /// Drive a mixed-result apply (1 ok package + 1 continueOnError-warning
+    /// post-script + 1 hard package failure), then emit a buffered Doc
+    /// carrying the summary. Returns the captured human surface
+    /// (ANSI-stripped).
+    #[cfg(unix)]
     fn run_mixed_apply_then_emit_summary() -> String {
         let state = test_state();
         let mut registry = ProviderRegistry::new();
@@ -7653,7 +7663,16 @@ mod bridge {
             .push(Box::new(FailingPackageManager::new("apt")));
 
         let reconciler = Reconciler::new(&registry, &state);
-        let resolved = make_empty_resolved();
+        let mut resolved = make_empty_resolved();
+
+        // Post-apply script that fails with continueOnError=true → exercises
+        // the Role::Warn branch in apply.rs (continueOnError-warning).
+        resolved.merged.scripts.post_apply = vec![ScriptEntry::Full {
+            run: "exit 42".to_string(),
+            timeout: Some("5s".to_string()),
+            idle_timeout: None,
+            continue_on_error: Some(true),
+        }];
 
         let pkg_actions = vec![
             PackageAction::Install {
@@ -7706,35 +7725,21 @@ mod bridge {
         strip_ansi(&cap.human())
     }
 
-    /// Drive a clean apply (1 successful install), then emit the buffered
-    /// summary. The reconciler emits no per-action lines for success paths,
-    /// so the seam is between the (empty) streaming surface and the
-    /// buffered Doc — exercises the "no preceding content" branch of the
-    /// renderer's blank-line accounting.
+    /// Drive a clean apply with an EMPTY plan — no actions, no per-action
+    /// streaming lines, just the buffered "0 changes" summary Doc. Captures
+    /// the "no preceding content" branch of the renderer's blank-line
+    /// accounting.
     fn run_clean_apply_then_emit_summary() -> String {
         let state = test_state();
-        let mut registry = ProviderRegistry::new();
-        registry
-            .package_managers
-            .push(Box::new(TrackingPackageManager::new("brew")));
-
+        let registry = ProviderRegistry::new();
         let reconciler = Reconciler::new(&registry, &state);
         let resolved = make_empty_resolved();
 
-        let pkg_actions = vec![PackageAction::Install {
-            manager: "brew".to_string(),
-            packages: vec!["ripgrep".to_string()],
-            origin: "local".to_string(),
-        }];
-        let plan = reconciler
-            .plan(
-                &resolved,
-                Vec::new(),
-                pkg_actions,
-                Vec::new(),
-                ReconcileContext::Apply,
-            )
-            .unwrap();
+        // Empty plan — no actions in any phase.
+        let plan = crate::reconciler::Plan {
+            phases: Vec::new(),
+            warnings: Vec::new(),
+        };
 
         let (v2_printer, cap) = PrinterV2::for_test_doc();
         let result = reconciler
@@ -7756,7 +7761,7 @@ mod bridge {
             failed: result.failed(),
         };
         let doc = Doc::new()
-            .status(Role::Ok, "Apply complete")
+            .status(Role::Ok, "Apply complete — 0 changes")
             .with_data(&summary);
         v2_printer.emit(doc);
         drop(v2_printer);
@@ -7766,9 +7771,9 @@ mod bridge {
 
     #[test]
     fn bridge_invariant_apply_cycle() {
-        let captured = run_mixed_apply_then_emit_summary();
+        let captured = run_minimal_bridge();
 
-        // §17.2: exactly one blank line at the streaming → buffered seam.
+        // Exactly one blank line at the streaming → buffered seam.
         assert!(
             captured.contains("\n\n"),
             "bridge missing blank line:\n{captured}"
@@ -7784,6 +7789,7 @@ mod bridge {
     }
 
     #[test]
+    #[cfg(unix)]
     fn snapshot_mixed_apply_cycle() {
         let captured = run_mixed_apply_then_emit_summary();
         assert_snapshot("mixed_apply_cycle.txt", &captured);
