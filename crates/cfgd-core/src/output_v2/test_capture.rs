@@ -202,7 +202,7 @@ impl DocCapture {
     /// crates that store snapshots elsewhere (e.g. `tests/output_snapshots/`).
     pub fn assert_human_snapshot_in(&self, base: &std::path::Path, name: &str) {
         let actual = strip_ansi(&self.human());
-        snapshot_assert(base, name, &actual);
+        assert_snapshot_at(base, name, &actual);
     }
 
     pub fn assert_json_snapshot_in(&self, base: &std::path::Path, name: &str) {
@@ -210,11 +210,11 @@ impl DocCapture {
             .json()
             .map(|v| serde_json::to_string_pretty(&v).unwrap())
             .unwrap_or_default();
-        snapshot_assert(base, name, &actual);
+        assert_snapshot_at(base, name, &actual);
     }
 }
 
-fn snapshot_assert(base: &std::path::Path, name: &str, actual: &str) {
+pub fn assert_snapshot_at(base: &std::path::Path, name: &str, actual: &str) {
     let path = base.join(name);
     if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !path.exists() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -230,7 +230,7 @@ fn snapshot_assert(base: &std::path::Path, name: &str, actual: &str) {
 /// feature-gated (not test-gated) — `crate::output_v2::tests` is only present
 /// under `#[cfg(test)]` and is unreachable from a `cargo build
 /// --features test-helpers` compile of this module.
-fn strip_ansi(s: &str) -> String {
+pub fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {

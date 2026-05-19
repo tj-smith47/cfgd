@@ -9059,26 +9059,10 @@ mod harness {
     // `crate::output::*` for callees that haven't migrated yet) and is
     // invisible to the buffer below.
 
+    use crate::output_v2::test_capture::{assert_snapshot_at, strip_ansi};
+
     fn snapshot_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/snapshots")
-    }
-
-    fn strip_ansi(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        let mut chars = s.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '\u{1b}' && chars.peek() == Some(&'[') {
-                chars.next();
-                for inner in chars.by_ref() {
-                    if inner == 'm' {
-                        break;
-                    }
-                }
-            } else {
-                out.push(c);
-            }
-        }
-        out
     }
 
     fn normalize_ipc(raw: &str, ipc_path: &Path) -> String {
@@ -9086,15 +9070,7 @@ mod harness {
     }
 
     fn assert_snapshot(name: &str, actual: &str) {
-        let base = snapshot_dir();
-        let path = base.join(name);
-        if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !path.exists() {
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, actual).unwrap();
-            return;
-        }
-        let expected = std::fs::read_to_string(&path).unwrap();
-        pretty_assertions::assert_eq!(actual, &expected, "snapshot mismatch: {name}");
+        assert_snapshot_at(&snapshot_dir(), name, actual);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
