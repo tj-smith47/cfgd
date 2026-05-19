@@ -70,12 +70,10 @@ pub fn build_enroll_error_doc(kind: &'static str, payload: serde_json::Value) ->
 // cfgd enroll — unified enrollment (token + key-based)
 // ─────────────────────────────────────────────────────
 
-/// Run the unified enrollment flow. Threads both printers because the
-/// command's own output flips to v2 while `ServerClient::enroll` /
-/// `request_challenge` / `submit_verification` still require the legacy
-/// Printer (F3/F4 retire that arg).
+/// Run the unified enrollment flow. All emits route through `v2_printer`,
+/// including the `ServerClient::enroll` / `request_challenge` /
+/// `submit_verification` calls now that server_client is on v2.
 pub(crate) fn cmd_enroll(
-    printer: &Printer,
     v2_printer: &PrinterV2,
     server_url: &str,
     token: Option<&str>,
@@ -103,7 +101,7 @@ pub(crate) fn cmd_enroll(
         );
 
         let resp = client
-            .enroll(token, printer)
+            .enroll(token, v2_printer)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
 
         return finish_enrollment(v2_printer, server_url, &device_id, resp);
@@ -164,7 +162,7 @@ pub(crate) fn cmd_enroll(
 
     // Challenge-response
     let challenge = client
-        .request_challenge(&username, printer)
+        .request_challenge(&username, v2_printer)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     v2_printer.kv("Challenge ID", &challenge.challenge_id);
@@ -192,7 +190,7 @@ pub(crate) fn cmd_enroll(
             &challenge.challenge_id,
             &signature,
             key_type.as_str(),
-            printer,
+            v2_printer,
         )
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 

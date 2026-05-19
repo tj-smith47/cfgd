@@ -5,7 +5,6 @@ use cfgd_core::server_client::{DeviceCredential, ServerClient};
 
 pub fn cmd_checkin(
     cli: &Cli,
-    printer: &Printer,
     v2_printer: &PrinterV2,
     server_url: &str,
     api_key: Option<&str>,
@@ -58,10 +57,9 @@ pub fn cmd_checkin(
     };
 
     let resp = {
-        let net_sec = v2_printer.section("Checkin");
-        let sp = net_sec.spinner("Posting to gateway");
+        let sp = v2_printer.spinner("Posting to gateway");
         let result = client
-            .checkin(&config_hash, compliance_summary, printer)
+            .checkin(&config_hash, compliance_summary, v2_printer)
             .map_err(|e| anyhow::anyhow!("{}", e));
         match &result {
             Ok(resp) => {
@@ -111,7 +109,7 @@ pub fn cmd_checkin(
     let drift_status = if !all_drifts.is_empty() {
         let sp = v2_printer.spinner("Reporting drift");
         let res = client
-            .report_drift(&all_drifts, printer)
+            .report_drift(&all_drifts, v2_printer)
             .map_err(|e| anyhow::anyhow!("{}", e));
         match &res {
             Ok(()) => {

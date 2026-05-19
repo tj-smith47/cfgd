@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_helpers::test_printer;
+use crate::test_helpers::test_printer_v2 as test_printer;
 
 #[test]
 fn server_client_strips_trailing_slash() {
@@ -566,4 +566,156 @@ fn checkin_no_api_key_omits_auth_header() {
     let result = client.checkin("hash", None, &printer);
     assert!(result.is_ok());
     mock.assert();
+}
+
+// ===========================================================================
+// Streaming → buffered Doc bridge snapshots for server_client
+// ===========================================================================
+//
+// `ServerClient::{checkin,report_drift}` emit a single streaming `status_simple`
+// line on the supplied `&output_v2::Printer`. Callers (e.g. `cli::checkin`)
+// then emit a buffered `Doc` on the same printer. The renderer must produce
+// exactly one blank line between the last streaming line and the buffered
+// Doc's first visible line. These snapshots lock the human shape of that
+// seam for the two server_client surfaces.
+
+#[cfg(unix)]
+mod bridge {
+    use super::*;
+    use crate::output_v2::{Doc, Printer as PrinterV2, Role};
+
+    fn snapshot_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server_client/snapshots")
+    }
+
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' && chars.peek() == Some(&'[') {
+                chars.next();
+                for inner in chars.by_ref() {
+                    if inner == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    fn assert_snapshot(name: &str, actual: &str) {
+        let path = snapshot_dir().join(name);
+        if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !path.exists() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, actual).unwrap();
+            return;
+        }
+        let expected = std::fs::read_to_string(&path).unwrap();
+        pretty_assertions::assert_eq!(actual, &expected, "snapshot mismatch: {name}");
+    }
+
+    /// Payload shape for buffered summary Docs in the snapshots — kept local
+    /// because cfgd-core can't depend on `cfgd`'s `cli::checkin::CheckinOutput`.
+    /// `with_data` doesn't contribute to the human render the snapshot locks.
+    #[derive(serde::Serialize)]
+    struct CheckinSummary {
+        server_status: String,
+        config_changed: bool,
+    }
+
+    #[derive(serde::Serialize)]
+    struct DriftSummary {
+        drift_count: usize,
+    }
+
+    #[test]
+    fn snapshot_checkin_clean() {
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create();
+
+        let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
+        let (v2_printer, cap) = PrinterV2::for_test_doc();
+        let resp = client.checkin("hash123", None, &v2_printer).unwrap();
+
+        let summary = CheckinSummary {
+            server_status: resp.status.clone(),
+            config_changed: resp.config_changed,
+        };
+        let doc = Doc::new()
+            .status(Role::Ok, format!("server status: {}", resp.status))
+            .with_data(&summary);
+        v2_printer.emit(doc);
+        drop(v2_printer);
+
+        let captured = strip_ansi(&cap.human());
+
+        // §17.2 invariant: exactly one blank line at the streaming → buffered seam.
+        assert!(
+            captured.contains("\n\n"),
+            "checkin_clean missing blank line at seam:\n{captured}"
+        );
+        assert!(
+            !captured.contains("\n\n\n"),
+            "checkin_clean has duplicate blank line:\n{captured}"
+        );
+
+        assert_snapshot("checkin_clean.txt", &captured);
+    }
+
+    #[test]
+    fn snapshot_drift_report() {
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("POST", "/api/v1/devices/dev-1/drift")
+            .with_status(200)
+            .with_body("{}")
+            .create();
+
+        let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
+        let drifts = vec![
+            SystemDrift {
+                key: "file.zshrc".into(),
+                expected: "abc".into(),
+                actual: "xyz".into(),
+            },
+            SystemDrift {
+                key: "pkg.curl".into(),
+                expected: "installed".into(),
+                actual: "missing".into(),
+            },
+        ];
+
+        let (v2_printer, cap) = PrinterV2::for_test_doc();
+        client.report_drift(&drifts, &v2_printer).unwrap();
+
+        let summary = DriftSummary {
+            drift_count: drifts.len(),
+        };
+        let doc = Doc::new()
+            .status(Role::Warn, format!("{} drift items reported", drifts.len()))
+            .with_data(&summary);
+        v2_printer.emit(doc);
+        drop(v2_printer);
+
+        let captured = strip_ansi(&cap.human());
+
+        // §17.2 invariant: exactly one blank line at the streaming → buffered seam.
+        assert!(
+            captured.contains("\n\n"),
+            "drift_report missing blank line at seam:\n{captured}"
+        );
+        assert!(
+            !captured.contains("\n\n\n"),
+            "drift_report has duplicate blank line:\n{captured}"
+        );
+
+        assert_snapshot("drift_report.txt", &captured);
+    }
 }

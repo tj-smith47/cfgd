@@ -2622,7 +2622,6 @@ fn next_steps_lines_are_bare_commands_not_pre_indented() {
 
 mod enroll_mockito {
     use crate::cli::init::enroll::cmd_enroll;
-    use cfgd_core::output::Printer;
     use cfgd_core::output_v2::Printer as PrinterV2;
     use cfgd_core::test_helpers::with_test_env_var;
     use serial_test::serial;
@@ -2651,11 +2650,9 @@ mod enroll_mockito {
                 .with_body(enroll_response_json())
                 .create();
 
-            let (printer, _buf) = Printer::for_test();
             let (v2_printer, cap) = PrinterV2::for_test_doc();
             let url = server.url();
             let result = cmd_enroll(
-                &printer,
                 &v2_printer,
                 &url,
                 Some("bootstrap-token-xyz"),
@@ -2706,11 +2703,9 @@ mod enroll_mockito {
                 .with_body(r#"{"error":"invalid token"}"#)
                 .create();
 
-            let printer = cfgd_core::test_helpers::test_printer();
             let v2_printer = super::v2_quiet();
             let url = server.url();
             let result = cmd_enroll(
-                &printer,
                 &v2_printer,
                 &url,
                 Some("bad-token"),
@@ -2738,12 +2733,11 @@ mod enroll_mockito {
                 .with_body(r#"{"method":"token"}"#)
                 .create();
 
-            let (printer, _buf) = Printer::for_test();
             let v2_printer = super::v2_quiet();
             let url = server.url();
             // No --token but key-based attempted: should error with a
             // pointer to the token form.
-            let result = cmd_enroll(&printer, &v2_printer, &url, None, None, None, Some("alice"));
+            let result = cmd_enroll(&v2_printer, &url, None, None, None, Some("alice"));
             let err = result.unwrap_err().to_string();
             assert!(
                 err.contains("bootstrap token enrollment") || err.contains("--token"),
@@ -2773,10 +2767,9 @@ mod enroll_mockito {
                 .with_body(r#"{"method":"key"}"#)
                 .create();
 
-            let printer = cfgd_core::test_helpers::test_printer();
             let v2_printer = super::v2_quiet();
             let url = server.url();
-            let result = cmd_enroll(&printer, &v2_printer, &url, None, None, None, Some("alice"));
+            let result = cmd_enroll(&v2_printer, &url, None, None, None, Some("alice"));
             let err = result.unwrap_err().to_string();
             assert!(
                 err.contains("no SSH key found"),
@@ -2805,10 +2798,9 @@ mod enroll_mockito {
                 .with_body("internal error")
                 .create();
 
-            let printer = cfgd_core::test_helpers::test_printer();
             let v2_printer = super::v2_quiet();
             let url = server.url();
-            let result = cmd_enroll(&printer, &v2_printer, &url, None, None, None, Some("alice"));
+            let result = cmd_enroll(&v2_printer, &url, None, None, None, Some("alice"));
             let err = result.unwrap_err().to_string();
             assert!(
                 err.contains("enrollment info") || err.contains("500"),
@@ -2842,11 +2834,9 @@ mod enroll_mockito {
                 .with_body(enroll_response_json())
                 .create();
 
-            let (printer, _buf) = Printer::for_test();
             let (v2_printer, cap) = PrinterV2::for_test_doc();
             let url = server.url();
             let result = cmd_enroll(
-                &printer,
                 &v2_printer,
                 &url,
                 Some("bootstrap-token-xyz"),
@@ -2969,18 +2959,9 @@ mod enroll_mockito {
                 .with_body(body)
                 .create();
 
-            let (printer, _buf) = Printer::for_test();
             let (v2_printer, cap) = PrinterV2::for_test_doc();
             let url = server.url();
-            let result = cmd_enroll(
-                &printer,
-                &v2_printer,
-                &url,
-                Some("token"),
-                None,
-                None,
-                Some("alice"),
-            );
+            let result = cmd_enroll(&v2_printer, &url, Some("token"), None, None, Some("alice"));
             assert!(result.is_ok(), "cmd_enroll should succeed: {result:?}");
             m.assert();
             drop(v2_printer);

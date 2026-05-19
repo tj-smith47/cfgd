@@ -12365,14 +12365,7 @@ fn checkin_fails_when_no_profile_configured() {
         "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec: {}\n";
     let h = CliTestHarness::builder().config(no_profile_config).build();
     let v2 = test_v2_printer();
-    let result = super::checkin::cmd_checkin(
-        &h.cli(),
-        h.printer(),
-        &v2,
-        "http://localhost:8080",
-        None,
-        None,
-    );
+    let result = super::checkin::cmd_checkin(&h.cli(), &v2, "http://localhost:8080", None, None);
     assert_error_contains(&result, "no profile configured");
 }
 
@@ -12381,10 +12374,8 @@ fn checkin_fails_when_config_file_missing() {
     let dir = tempfile::tempdir().unwrap();
     // Don't write any config file
     let cli = test_cli(dir.path());
-    let printer = test_printer();
     let v2 = test_v2_printer();
-    let result =
-        super::checkin::cmd_checkin(&cli, &printer, &v2, "http://localhost:8080", None, None);
+    let result = super::checkin::cmd_checkin(&cli, &v2, "http://localhost:8080", None, None);
     assert_error_contains(&result, "config file not found");
 }
 
@@ -12393,14 +12384,7 @@ fn checkin_fails_when_profile_does_not_exist() {
     let bad_profile_config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: nonexistent\n";
     let h = CliTestHarness::builder().config(bad_profile_config).build();
     let v2 = test_v2_printer();
-    let result = super::checkin::cmd_checkin(
-        &h.cli(),
-        h.printer(),
-        &v2,
-        "http://localhost:8080",
-        None,
-        None,
-    );
+    let result = super::checkin::cmd_checkin(&h.cli(), &v2, "http://localhost:8080", None, None);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -16558,7 +16542,6 @@ fn cmd_checkin_server_unreachable() {
     let v2 = test_v2_printer();
     let result = super::checkin::cmd_checkin(
         &h.cli(),
-        h.printer(),
         &v2,
         "http://127.0.0.1:19999",
         Some("test-api-key"),
@@ -16597,11 +16580,9 @@ spec:
     let h = CliTestHarness::builder()
         .config(config_with_compliance)
         .build();
-    let v2 = test_v2_printer();
     let result = super::checkin::cmd_checkin(
         &h.cli(),
-        h.printer(),
-        &v2,
+        h.v2_printer(),
         "http://127.0.0.1:19999",
         None,
         None,

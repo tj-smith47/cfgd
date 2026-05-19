@@ -1,0 +1,3 @@
+Checking in with device gateway
+
+✓ server status: ok

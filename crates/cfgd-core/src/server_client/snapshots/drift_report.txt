@@ -1,0 +1,3 @@
+Reporting 2 drift events to device gateway
+
+⚠ 2 drift items reported

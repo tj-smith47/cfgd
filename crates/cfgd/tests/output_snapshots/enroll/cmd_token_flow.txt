@@ -5,6 +5,8 @@ Token Enrollment
 
 Exchanging bootstrap token for device credential...
 
+Enrolling device with device gateway
+
 ✓ Enrolled as user 'alice'
 
 Team    platform

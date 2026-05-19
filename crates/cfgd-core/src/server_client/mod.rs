@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::compliance::ComplianceSummary;
 use crate::errors::{CfgdError, Result};
-use crate::output::Printer;
+use crate::output_v2::{Printer, Role};
 use crate::providers::SystemDrift;
 
 /// Client for communicating with the device gateway.
@@ -249,7 +249,7 @@ impl ServerClient {
             )))
         })?;
 
-        printer.info("Checking in with device gateway");
+        printer.status_simple(Role::Info, "Checking in with device gateway");
 
         let response_body = self
             .post_with_retry("/api/v1/checkin", &body_json)
@@ -292,10 +292,10 @@ impl ServerClient {
         })?;
 
         let path = format!("/api/v1/devices/{}/drift", self.device_id);
-        printer.info(&format!(
-            "Reporting {} drift events to device gateway",
-            drifts.len()
-        ));
+        printer.status_simple(
+            Role::Info,
+            format!("Reporting {} drift events to device gateway", drifts.len()),
+        );
 
         self.post_with_retry(&path, &body_json).map_err(|e| {
             CfgdError::Io(std::io::Error::new(
@@ -327,7 +327,7 @@ impl ServerClient {
             )))
         })?;
 
-        printer.info("Enrolling device with device gateway");
+        printer.status_simple(Role::Info, "Enrolling device with device gateway");
 
         let response_body = self
             .post_with_retry("/api/v1/enroll", &body_json)
@@ -392,7 +392,7 @@ impl ServerClient {
             )))
         })?;
 
-        printer.info("Requesting enrollment challenge");
+        printer.status_simple(Role::Info, "Requesting enrollment challenge");
 
         let response_body = self
             .post_with_retry("/api/v1/enroll/challenge", &body_json)
@@ -432,7 +432,7 @@ impl ServerClient {
             )))
         })?;
 
-        printer.info("Submitting signed challenge for verification");
+        printer.status_simple(Role::Info, "Submitting signed challenge for verification");
 
         let response_body = self
             .post_with_retry("/api/v1/enroll/verify", &body_json)

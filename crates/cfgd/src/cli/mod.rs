@@ -1663,7 +1663,6 @@ pub fn execute(
             device_id,
         } => checkin::cmd_checkin(
             cli,
-            printer,
             v2_printer,
             server_url,
             api_key.as_deref(),
@@ -1676,7 +1675,6 @@ pub fn execute(
             gpg_key,
             username,
         } => init::cmd_enroll(
-            printer,
             v2_printer,
             server_url,
             token.as_deref(),
