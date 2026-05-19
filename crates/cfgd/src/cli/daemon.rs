@@ -1,21 +1,48 @@
 use super::*;
+use cfgd_core::output_v2::renderer::Table;
+use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+use serde::Serialize;
+
+/// JSON payload for `cfgd daemon install`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DaemonInstallOutput {
+    pub platform: String,
+    pub service: String,
+    pub path: String,
+    pub started: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub windows_event_log: Option<bool>,
+}
+
+/// JSON payload for `cfgd daemon uninstall`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DaemonUninstallOutput {
+    pub platform: String,
+    pub service: String,
+    pub removed: bool,
+}
 
 pub(super) fn cmd_daemon(
     cli: &Cli,
     printer: &Printer,
+    v2_printer: &PrinterV2,
     command: Option<&DaemonCommand>,
 ) -> anyhow::Result<()> {
     match command {
-        Some(DaemonCommand::Status) => return cmd_daemon_status(printer),
-        Some(DaemonCommand::Install) => return cmd_daemon_install(cli, printer),
-        Some(DaemonCommand::Uninstall) => return cmd_daemon_uninstall(printer),
+        Some(DaemonCommand::Status) => return cmd_daemon_status(v2_printer),
+        Some(DaemonCommand::Install) => return cmd_daemon_install(cli, v2_printer),
+        Some(DaemonCommand::Uninstall) => return cmd_daemon_uninstall(v2_printer),
         Some(DaemonCommand::Service) => return cmd_daemon_service(),
         Some(DaemonCommand::Run) | None => {}
     }
 
-    // Run daemon in foreground
+    // Run daemon in foreground. The reconcile loop's user-visible surface still
+    // flows through the legacy `Printer`; F4b migrates `run_daemon` end-to-end.
     let config_path = std::fs::canonicalize(&cli.config).unwrap_or_else(|_| cli.config.clone());
     let profile_override = cli.profile.clone();
+    let _ = printer; // keep parameter live until F4b drops it
     let printer = std::sync::Arc::new(cfgd_core::output::Printer::new(if cli.quiet {
         cfgd_core::output::Verbosity::Quiet
     } else if cli.verbose > 0 {
@@ -36,133 +63,243 @@ pub(super) fn cmd_daemon(
     Ok(())
 }
 
-pub(super) fn cmd_daemon_status(printer: &Printer) -> anyhow::Result<()> {
-    let status = cfgd_core::daemon::query_daemon_status()?;
-    render_daemon_status(printer, status.as_ref());
+pub fn cmd_daemon_status(v2_printer: &PrinterV2) -> anyhow::Result<()> {
+    let status = match cfgd_core::daemon::query_daemon_status() {
+        Ok(s) => s,
+        Err(e) => {
+            v2_printer.emit(cfgd_core::output_v2::error_doc(
+                "cfgd",
+                "status_unavailable",
+                format!("Failed to query daemon status: {}", e),
+                serde_json::Value::Null,
+            ));
+            return Err(e.into());
+        }
+    };
+    v2_printer.emit(build_daemon_status_doc(status.as_ref()));
     Ok(())
 }
 
-/// Render the daemon status (or a "not running" placeholder when `None`) to
-/// `printer`. Pulled out so the structured-output branch and the human-output
-/// branches are testable without standing up a real IPC server.
-pub(super) fn render_daemon_status(
-    printer: &Printer,
-    status: Option<&cfgd_core::daemon::DaemonStatusResponse>,
-) {
-    if printer.is_structured() {
-        match status {
-            Some(s) => printer.write_structured(s),
-            None => printer.write_structured(&cfgd_core::daemon::DaemonStatusResponse {
-                running: false,
-                pid: 0,
-                uptime_secs: 0,
-                last_reconcile: None,
-                last_sync: None,
-                drift_count: 0,
-                sources: vec![],
-                update_available: None,
-                module_reconcile: vec![],
-            }),
-        };
-        return;
+fn placeholder_status() -> cfgd_core::daemon::DaemonStatusResponse {
+    cfgd_core::daemon::DaemonStatusResponse {
+        running: false,
+        pid: 0,
+        uptime_secs: 0,
+        last_reconcile: None,
+        last_sync: None,
+        drift_count: 0,
+        sources: vec![],
+        update_available: None,
+        module_reconcile: vec![],
     }
+}
 
-    printer.header("Daemon Status");
+/// Build the Doc emitted for `cfgd daemon status`. Pulled out so integration
+/// tests can construct the Doc deterministically without standing up IPC.
+pub fn build_daemon_status_doc(status: Option<&cfgd_core::daemon::DaemonStatusResponse>) -> Doc {
+    let mut doc = Doc::new().heading("Daemon Status");
 
     match status {
-        Some(status) => {
-            printer.success("Daemon is running");
-            printer.key_value("PID", &status.pid.to_string());
-            printer.key_value("Uptime", &format!("{}s", status.uptime_secs));
-            printer.key_value("Drift count", &status.drift_count.to_string());
-
-            if let Some(ref last) = status.last_reconcile {
-                printer.key_value("Last reconcile", last);
+        Some(s) => {
+            doc = doc.status(Role::Ok, "Daemon is running");
+            doc = doc.kv_block([
+                ("PID", s.pid.to_string()),
+                ("Uptime", format!("{}s", s.uptime_secs)),
+                ("Drift count", s.drift_count.to_string()),
+            ]);
+            if let Some(ref last) = s.last_reconcile {
+                doc = doc.kv("Last reconcile", last);
             }
-            if let Some(ref last) = status.last_sync {
-                printer.key_value("Last sync", last);
-            }
-
-            if let Some(ref version) = status.update_available {
-                printer.newline();
-                printer.warning(&format!(
-                    "Update available: {} — run 'cfgd upgrade' to install",
-                    version
-                ));
+            if let Some(ref last) = s.last_sync {
+                doc = doc.kv("Last sync", last);
             }
 
-            printer.newline();
-            printer.subheader("Sources");
-            printer.table(
-                &["Name", "Status", "Drift", "Last Sync"],
-                &status
-                    .sources
-                    .iter()
-                    .map(|s| {
-                        vec![
-                            s.name.clone(),
-                            s.status.clone(),
-                            s.drift_count.to_string(),
-                            s.last_sync.clone().unwrap_or_else(|| "-".to_string()),
-                        ]
-                    })
-                    .collect::<Vec<_>>(),
-            );
+            if let Some(ref version) = s.update_available {
+                doc = doc.status(
+                    Role::Warn,
+                    format!(
+                        "Update available: {} — run 'cfgd upgrade' to install",
+                        version
+                    ),
+                );
+            }
+
+            let rows: Vec<Vec<String>> = s
+                .sources
+                .iter()
+                .map(|src| {
+                    vec![
+                        src.name.clone(),
+                        src.status.clone(),
+                        src.drift_count.to_string(),
+                        src.last_sync.clone().unwrap_or_else(|| "-".to_string()),
+                    ]
+                })
+                .collect();
+            let mut table = Table::new(["Name", "Status", "Drift", "Last Sync"]);
+            for row in rows {
+                table = table.row(row);
+            }
+            doc = doc.section("Sources", |sec| sec.table(table));
+            doc.with_data(s)
         }
         None => {
-            printer.warning("Daemon is not running");
-            printer.info("Start with: cfgd daemon");
-            printer.info("Install as service: cfgd daemon install");
+            let placeholder = placeholder_status();
+            doc.status(Role::Warn, "Daemon is not running")
+                .status(Role::Info, "Start with: cfgd daemon")
+                .status(Role::Info, "Install as service: cfgd daemon install")
+                .with_data(&placeholder)
         }
     }
 }
 
-pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    printer.header("Install Daemon Service");
-
-    cfgd_core::daemon::install_service(&cli.config, cli.profile.as_deref())?;
+pub(super) fn cmd_daemon_install(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
+    if let Err(e) = cfgd_core::daemon::install_service(&cli.config, cli.profile.as_deref()) {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            "cfgd",
+            "install_failed",
+            format!("Failed to install daemon service: {}", e),
+            serde_json::Value::Null,
+        ));
+        return Err(e.into());
+    }
 
     #[cfg(windows)]
-    {
-        printer.success("cfgd service installed and started");
-        printer.info("The service will start automatically on boot");
-        printer.info("Logs: %LOCALAPPDATA%\\cfgd\\daemon.log");
+    let payload = {
         let event_log_on = cfgd_core::config::load_config(&cli.config)
             .ok()
             .and_then(|cfg| cfg.spec.daemon)
             .map(|d| d.windows_event_log)
             .unwrap_or(false);
-        if event_log_on {
-            printer.info(
-                "Event Log mirror: Application → Source 'cfgd' (also at the file path above)",
-            );
-        } else {
-            printer.info("Set spec.daemon.windowsEventLog: true in cfgd.yaml + reinstall to mirror logs into the Windows Event Log");
+        DaemonInstallOutput {
+            platform: "windows".to_string(),
+            service: "cfgd".to_string(),
+            path: "%LOCALAPPDATA%\\cfgd\\daemon.log".to_string(),
+            started: true,
+            windows_event_log: Some(event_log_on),
         }
-    }
-    #[cfg(unix)]
-    {
-        print_daemon_install_success(printer);
-    }
+    };
 
+    #[cfg(unix)]
+    let payload = if cfg!(target_os = "macos") {
+        DaemonInstallOutput {
+            platform: "macos".to_string(),
+            service: "com.cfgd.daemon".to_string(),
+            path: "~/Library/LaunchAgents/com.cfgd.daemon.plist".to_string(),
+            started: false,
+            windows_event_log: None,
+        }
+    } else {
+        DaemonInstallOutput {
+            platform: "linux".to_string(),
+            service: "cfgd.service".to_string(),
+            path: "~/.config/systemd/user/cfgd.service".to_string(),
+            started: false,
+            windows_event_log: None,
+        }
+    };
+
+    v2_printer.emit(build_daemon_install_doc(&payload));
     Ok(())
 }
 
-pub(super) fn cmd_daemon_uninstall(printer: &Printer) -> anyhow::Result<()> {
-    printer.header("Uninstall Daemon Service");
+/// Build the Doc emitted for `cfgd daemon install`. Carries the heading,
+/// platform-specific success messages, and `with_data(payload)` so structured
+/// consumers see a stable shape.
+pub fn build_daemon_install_doc(payload: &DaemonInstallOutput) -> Doc {
+    let mut doc = Doc::new().heading("Install Daemon Service");
+    match payload.platform.as_str() {
+        "windows" => {
+            doc = doc
+                .status(Role::Ok, "cfgd service installed and started")
+                .status(Role::Info, "The service will start automatically on boot")
+                .status(Role::Info, format!("Logs: {}", payload.path));
+            if payload.windows_event_log.unwrap_or(false) {
+                doc = doc.status(
+                    Role::Info,
+                    "Event Log mirror: Application → Source 'cfgd' (also at the file path above)",
+                );
+            } else {
+                doc = doc.status(
+                    Role::Info,
+                    "Set spec.daemon.windowsEventLog: true in cfgd.yaml + reinstall to mirror logs into the Windows Event Log",
+                );
+            }
+        }
+        "macos" => {
+            doc = doc
+                .status(
+                    Role::Ok,
+                    format!("Installed launchd service: {}", payload.service),
+                )
+                .status(
+                    Role::Info,
+                    format!("Load with: launchctl load {}", payload.path),
+                );
+        }
+        _ => {
+            doc = doc
+                .status(
+                    Role::Ok,
+                    format!("Installed systemd user service: {}", payload.service),
+                )
+                .status(
+                    Role::Info,
+                    format!(
+                        "Enable with: systemctl --user enable --now {}",
+                        payload.service
+                    ),
+                );
+        }
+    }
+    doc.with_data(payload)
+}
 
-    if cfg!(windows) {
-        printer.info("Stopping and removing Windows Service: cfgd");
+pub(super) fn cmd_daemon_uninstall(v2_printer: &PrinterV2) -> anyhow::Result<()> {
+    let (platform, service) = if cfg!(windows) {
+        ("windows", "cfgd")
     } else if cfg!(target_os = "macos") {
-        printer.info("Unloading: launchctl unload ~/Library/LaunchAgents/com.cfgd.daemon.plist");
+        ("macos", "com.cfgd.daemon")
     } else {
-        printer.info("Stopping: systemctl --user disable --now cfgd.service");
+        ("linux", "cfgd.service")
+    };
+
+    if let Err(e) = cfgd_core::daemon::uninstall_service() {
+        v2_printer.emit(cfgd_core::output_v2::error_doc(
+            "cfgd",
+            "uninstall_failed",
+            format!("Failed to uninstall daemon service: {}", e),
+            serde_json::json!({ "platform": platform, "service": service }),
+        ));
+        return Err(e.into());
     }
 
-    cfgd_core::daemon::uninstall_service()?;
-    printer.success("Daemon service removed");
-
+    let payload = DaemonUninstallOutput {
+        platform: platform.to_string(),
+        service: service.to_string(),
+        removed: true,
+    };
+    v2_printer.emit(build_daemon_uninstall_doc(&payload));
     Ok(())
+}
+
+/// Build the Doc emitted for `cfgd daemon uninstall`.
+pub fn build_daemon_uninstall_doc(payload: &DaemonUninstallOutput) -> Doc {
+    let mut doc = Doc::new().heading("Uninstall Daemon Service");
+    let detail = match payload.platform.as_str() {
+        "windows" => format!("Stopping and removing Windows Service: {}", payload.service),
+        "macos" => format!(
+            "Unloading: launchctl unload ~/Library/LaunchAgents/{}.plist",
+            payload.service
+        ),
+        _ => format!(
+            "Stopping: systemctl --user disable --now {}",
+            payload.service
+        ),
+    };
+    doc = doc.status(Role::Info, detail);
+    doc = doc.status(Role::Ok, "Daemon service removed");
+    doc.with_data(payload)
 }
 
 pub(super) fn cmd_daemon_service() -> anyhow::Result<()> {

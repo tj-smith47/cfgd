@@ -1,0 +1,6 @@
+{
+  "path": "~/.config/systemd/user/cfgd.service",
+  "platform": "linux",
+  "service": "cfgd.service",
+  "started": false
+}

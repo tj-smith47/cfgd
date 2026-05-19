@@ -12169,7 +12169,7 @@ fn cmd_secret_decrypt_file_not_found() {
 #[test]
 fn daemon_status_no_daemon_running_human_output() {
     let h = CliTestHarness::builder().build();
-    super::daemon::cmd_daemon_status(h.printer()).unwrap();
+    super::daemon::cmd_daemon_status(h.v2_printer()).unwrap();
     let output = h.output();
     assert!(
         output.contains("Daemon Status"),
@@ -12192,7 +12192,7 @@ fn daemon_status_no_daemon_running_human_output() {
 #[test]
 fn daemon_status_no_daemon_running_json_output() {
     let h = CliTestHarness::builder().json().build();
-    super::daemon::cmd_daemon_status(h.printer()).unwrap();
+    super::daemon::cmd_daemon_status(h.v2_printer()).unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(
         &parsed,
@@ -12251,7 +12251,7 @@ fn sample_source(
 
 #[test]
 fn render_daemon_status_human_running_with_sources_and_update() {
-    let h = CliTestHarness::builder().build();
+    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
     let status = sample_daemon_status(
         4242,
         3600,
@@ -12262,8 +12262,9 @@ fn render_daemon_status_human_running_with_sources_and_update() {
         ],
         Some("9.9.9".to_string()),
     );
-    super::daemon::render_daemon_status(h.printer(), Some(&status));
-    let output = h.output();
+    printer.emit(super::daemon::build_daemon_status_doc(Some(&status)));
+    drop(printer);
+    let output = cap.human();
     assert!(output.contains("Daemon is running"), "got: {output}");
     assert!(output.contains("4242"), "PID missing: {output}");
     assert!(output.contains("3600s"), "uptime missing: {output}");
@@ -12288,7 +12289,7 @@ fn render_daemon_status_human_running_with_sources_and_update() {
 
 #[test]
 fn render_daemon_status_human_running_without_last_timestamps_skips_rows() {
-    let h = CliTestHarness::builder().build();
+    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
     let status = cfgd_core::daemon::DaemonStatusResponse {
         running: true,
         pid: 1,
@@ -12300,8 +12301,9 @@ fn render_daemon_status_human_running_without_last_timestamps_skips_rows() {
         update_available: None,
         module_reconcile: vec![],
     };
-    super::daemon::render_daemon_status(h.printer(), Some(&status));
-    let output = h.output();
+    printer.emit(super::daemon::build_daemon_status_doc(Some(&status)));
+    drop(printer);
+    let output = cap.human();
     assert!(output.contains("Daemon is running"));
     // When last_reconcile / last_sync are None the rows are not printed
     assert!(
@@ -12320,10 +12322,11 @@ fn render_daemon_status_human_running_without_last_timestamps_skips_rows() {
 
 #[test]
 fn render_daemon_status_json_emits_some_status_shape() {
-    let h = CliTestHarness::builder().json().build();
+    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
     let status = sample_daemon_status(99, 60, 1, vec![sample_source("s1", "ok", 0, None)], None);
-    super::daemon::render_daemon_status(h.printer(), Some(&status));
-    let parsed = h.json_output();
+    printer.emit(super::daemon::build_daemon_status_doc(Some(&status)));
+    drop(printer);
+    let parsed = cap.json().expect("doc captured json");
     assert_eq!(parsed.get("pid").unwrap().as_u64().unwrap(), 99);
     assert_eq!(parsed.get("uptimeSecs").unwrap().as_u64().unwrap(), 60);
     assert_eq!(parsed.get("driftCount").unwrap().as_u64().unwrap(), 1);
@@ -12332,9 +12335,10 @@ fn render_daemon_status_json_emits_some_status_shape() {
 
 #[test]
 fn render_daemon_status_json_emits_placeholder_when_none() {
-    let h = CliTestHarness::builder().json().build();
-    super::daemon::render_daemon_status(h.printer(), None);
-    let parsed = h.json_output();
+    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    printer.emit(super::daemon::build_daemon_status_doc(None));
+    drop(printer);
+    let parsed = cap.json().expect("doc captured json");
     assert_eq!(parsed.get("pid").unwrap().as_u64().unwrap(), 0);
     assert!(!parsed.get("running").unwrap().as_bool().unwrap());
     assert_eq!(parsed.get("uptimeSecs").unwrap().as_u64().unwrap(), 0);
@@ -12346,11 +12350,12 @@ fn render_daemon_status_json_emits_placeholder_when_none() {
 
 #[test]
 fn daemon_uninstall_prints_platform_info_and_succeeds() {
-    let (printer, buf) = Printer::for_test();
+    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
     // On Linux (CI/test env), uninstall_service just removes the unit file
     // if present; in a clean test env there is nothing to remove, so it succeeds.
     let result = super::daemon::cmd_daemon_uninstall(&printer);
-    let output = buf.lock().unwrap().clone();
+    drop(printer);
+    let output = cap.human();
 
     assert!(
         output.contains("Uninstall Daemon Service"),
@@ -12367,44 +12372,10 @@ fn daemon_uninstall_prints_platform_info_and_succeeds() {
     // The call should succeed (no unit file to remove in test env)
     assert!(result.is_ok(), "expected success, got: {:?}", result.err());
 
-    // After success, the completion message is printed
-    let output_after = buf.lock().unwrap().clone();
     assert!(
-        output_after.contains("Daemon service removed"),
-        "expected completion message, got: {output_after}"
+        output.contains("Daemon service removed"),
+        "expected completion message, got: {output}"
     );
-}
-
-// -----------------------------------------------------------------------
-// print_daemon_install_success — platform-specific messages
-// -----------------------------------------------------------------------
-
-#[cfg(unix)]
-#[test]
-fn print_daemon_install_success_linux_messages() {
-    let (printer, buf) = Printer::for_test();
-    super::print_daemon_install_success(&printer);
-    let output = buf.lock().unwrap().clone();
-
-    if cfg!(target_os = "macos") {
-        assert!(
-            output.contains("launchd service"),
-            "expected launchd message on macOS, got: {output}"
-        );
-        assert!(
-            output.contains("launchctl load"),
-            "expected launchctl load hint on macOS, got: {output}"
-        );
-    } else {
-        assert!(
-            output.contains("systemd user service"),
-            "expected systemd message on Linux, got: {output}"
-        );
-        assert!(
-            output.contains("systemctl --user enable --now cfgd.service"),
-            "expected systemctl enable hint on Linux, got: {output}"
-        );
-    }
 }
 
 // -----------------------------------------------------------------------

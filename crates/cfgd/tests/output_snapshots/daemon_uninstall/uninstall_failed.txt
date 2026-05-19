@@ -1,0 +1,1 @@
+✗ Failed to uninstall daemon service: unit file not found

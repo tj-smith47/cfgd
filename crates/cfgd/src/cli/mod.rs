@@ -2,7 +2,7 @@ pub mod apply;
 pub mod checkin;
 pub mod compliance;
 pub mod config_cmd;
-mod daemon;
+pub mod daemon;
 pub mod decide;
 pub mod diff;
 pub mod doctor;
@@ -1567,7 +1567,9 @@ pub fn execute(
         },
         Command::Sync => sync::cmd_sync(cli, printer, v2_printer),
         Command::Pull => pull::cmd_pull(cli, printer, v2_printer),
-        Command::Daemon { command } => daemon::cmd_daemon(cli, printer, command.as_ref()),
+        Command::Daemon { command } => {
+            daemon::cmd_daemon(cli, printer, v2_printer, command.as_ref())
+        }
         Command::Secret { command } => match command {
             SecretCommand::Encrypt { file } => secret::cmd_secret_encrypt(cli, v2_printer, file),
             SecretCommand::Decrypt { file } => secret::cmd_secret_decrypt(cli, v2_printer, file),

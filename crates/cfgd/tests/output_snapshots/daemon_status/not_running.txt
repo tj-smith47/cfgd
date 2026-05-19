@@ -1,0 +1,7 @@
+Daemon Status
+
+⚠ Daemon is not running
+
+Start with: cfgd daemon
+
+Install as service: cfgd daemon install

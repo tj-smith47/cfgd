@@ -1,0 +1,5 @@
+Install Daemon Service
+
+✓ Installed launchd service: com.cfgd.daemon
+
+Load with: launchctl load ~/Library/LaunchAgents/com.cfgd.daemon.plist

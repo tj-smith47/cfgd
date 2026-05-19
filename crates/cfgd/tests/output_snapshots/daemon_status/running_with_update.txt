@@ -1,0 +1,17 @@
+Daemon Status
+
+✓ Daemon is running
+
+PID             4242
+Uptime          3600s
+Drift count     7
+Last reconcile  2026-05-12T10:00:00Z
+Last sync       2026-05-12T09:55:00Z
+
+⚠ Update available: 9.9.9 — run 'cfgd upgrade' to install
+
+Sources
+  Name   Status   Drift  Last Sync           
+  ───────────────────────────────────────────
+  local  active   0      -                   
+  team   syncing  7      2026-05-12T09:00:00Z

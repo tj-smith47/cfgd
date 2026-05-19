@@ -1,0 +1,5 @@
+{
+  "platform": "windows",
+  "removed": true,
+  "service": "cfgd"
+}

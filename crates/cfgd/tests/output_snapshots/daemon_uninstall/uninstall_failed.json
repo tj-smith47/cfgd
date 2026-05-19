@@ -1,0 +1,6 @@
+{
+  "error": "uninstall_failed",
+  "name": "cfgd",
+  "platform": "linux",
+  "service": "cfgd.service"
+}

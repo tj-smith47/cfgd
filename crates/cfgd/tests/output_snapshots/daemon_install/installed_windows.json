@@ -1,0 +1,7 @@
+{
+  "path": "%LOCALAPPDATA%\\cfgd\\daemon.log",
+  "platform": "windows",
+  "service": "cfgd",
+  "started": true,
+  "windowsEventLog": false
+}

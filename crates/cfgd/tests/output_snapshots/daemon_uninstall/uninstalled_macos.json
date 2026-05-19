@@ -1,0 +1,5 @@
+{
+  "platform": "macos",
+  "removed": true,
+  "service": "com.cfgd.daemon"
+}

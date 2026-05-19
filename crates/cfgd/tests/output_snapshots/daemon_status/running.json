@@ -1,0 +1,24 @@
+{
+  "driftCount": 7,
+  "lastReconcile": "2026-05-12T10:00:00Z",
+  "lastSync": "2026-05-12T09:55:00Z",
+  "pid": 4242,
+  "running": true,
+  "sources": [
+    {
+      "driftCount": 0,
+      "lastReconcile": null,
+      "lastSync": null,
+      "name": "local",
+      "status": "active"
+    },
+    {
+      "driftCount": 7,
+      "lastReconcile": null,
+      "lastSync": "2026-05-12T09:00:00Z",
+      "name": "team",
+      "status": "syncing"
+    }
+  ],
+  "uptimeSecs": 3600
+}

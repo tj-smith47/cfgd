@@ -1,0 +1,5 @@
+Uninstall Daemon Service
+
+Stopping and removing Windows Service: cfgd
+
+✓ Daemon service removed

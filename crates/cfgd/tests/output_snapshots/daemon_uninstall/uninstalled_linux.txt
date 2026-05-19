@@ -1,0 +1,5 @@
+Uninstall Daemon Service
+
+Stopping: systemctl --user disable --now cfgd.service
+
+✓ Daemon service removed

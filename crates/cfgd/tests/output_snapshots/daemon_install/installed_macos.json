@@ -1,0 +1,6 @@
+{
+  "path": "~/Library/LaunchAgents/com.cfgd.daemon.plist",
+  "platform": "macos",
+  "service": "com.cfgd.daemon",
+  "started": false
+}

@@ -1,0 +1,5 @@
+{
+  "platform": "linux",
+  "removed": true,
+  "service": "cfgd.service"
+}

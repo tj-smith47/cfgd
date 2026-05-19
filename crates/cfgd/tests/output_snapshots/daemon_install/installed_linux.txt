@@ -1,0 +1,5 @@
+Install Daemon Service
+
+✓ Installed systemd user service: cfgd.service
+
+Enable with: systemctl --user enable --now cfgd.service

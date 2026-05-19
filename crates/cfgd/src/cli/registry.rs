@@ -211,17 +211,6 @@ pub(in crate::cli) fn build_registry_with_config_and_packages(
     registry
 }
 
-#[cfg(unix)]
-pub(in crate::cli) fn print_daemon_install_success(printer: &Printer) {
-    if cfg!(target_os = "macos") {
-        printer.success("Installed launchd service: com.cfgd.daemon");
-        printer.info("Load with: launchctl load ~/Library/LaunchAgents/com.cfgd.daemon.plist");
-    } else {
-        printer.success("Installed systemd user service: cfgd.service");
-        printer.info("Enable with: systemctl --user enable --now cfgd.service");
-    }
-}
-
 pub(in crate::cli) fn open_state_store(state_dir: Option<&Path>) -> anyhow::Result<StateStore> {
     if let Some(dir) = state_dir {
         std::fs::create_dir_all(dir)?;
