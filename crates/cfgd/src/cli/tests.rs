@@ -5493,7 +5493,6 @@ fn cmd_rollback_after_file_apply() {
     // Clear buffer before rollback
     buf.lock().unwrap().clear();
 
-    // Rollback — capture v2 surface; v1 buffer only carries reconciler lib emissions.
     let (v2_printer, v2_buf) = test_v2_printer_capture();
     let result = super::rollback::cmd_rollback(&v2_printer, apply_id, true, Some(state_dir.path()));
     assert!(
