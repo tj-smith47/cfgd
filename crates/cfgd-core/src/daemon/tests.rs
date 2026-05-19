@@ -8957,6 +8957,143 @@ mod harness {
             "404 body should include not-found marker: {resp}"
         );
     }
+
+    // ----- v2 snapshot floor -----
+    //
+    // The v2 capture sees only the loop's own surface (startup banner, SIGHUP
+    // reload chatter, shutdown messages). Per-action reconcile output emitted
+    // from `daemon::reconcile` callees is still v1 in F4b and is invisible to
+    // the v2 buffer here.
+
+    const SNAPSHOT_DIR: &str = "src/daemon/snapshots";
+
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' && chars.peek() == Some(&'[') {
+                chars.next();
+                for inner in chars.by_ref() {
+                    if inner == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    fn normalize_ipc(raw: &str, ipc_path: &Path) -> String {
+        raw.replace(&ipc_path.to_string_lossy().to_string(), "<IPC_PATH>")
+    }
+
+    fn assert_snapshot(name: &str, actual: &str) {
+        let base = Path::new(SNAPSHOT_DIR);
+        let path = base.join(name);
+        if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !path.exists() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, actual).unwrap();
+            return;
+        }
+        let expected = std::fs::read_to_string(&path).unwrap();
+        pretty_assertions::assert_eq!(actual, &expected, "snapshot mismatch: {name}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn snapshot_clean_reconcile_cycle() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = write_happy_path_config(&tmp);
+        let ipc_path = tmp.path().join("daemon-test.sock");
+        let (triggers, senders) = make_triggers();
+        let (printer, buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
+        let printer = Arc::new(printer);
+        let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
+
+        let overrides = super::super::DaemonRunOverrides {
+            ipc_path: Some(ipc_path.clone()),
+            state_dir_override: Some(tmp.path().to_path_buf()),
+            skip_health_server: true,
+            skip_startup_checkin: true,
+            external_triggers: Some(triggers),
+        };
+        let daemon = tokio::spawn(super::super::run_daemon_with(
+            config_path,
+            None,
+            Arc::clone(&printer),
+            hooks,
+            overrides,
+        ));
+
+        tokio::time::sleep(StdDuration::from_millis(20)).await;
+        senders.reconcile_tx.send(()).await.unwrap();
+        tokio::time::sleep(StdDuration::from_millis(150)).await;
+        senders.shutdown_tx.send(()).unwrap();
+
+        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+            .await
+            .expect("daemon shutdown did not complete in time")
+            .expect("daemon join");
+        assert!(result.is_ok(), "daemon should exit Ok, got {:?}", result);
+
+        drop(printer);
+        let raw = buf.lock().unwrap().clone();
+        let actual = normalize_ipc(&strip_ansi(&raw), &ipc_path);
+        assert_snapshot("clean_reconcile_cycle.txt", &actual);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn snapshot_drift_event() {
+        // A file-change tick walks handle_file_change_tick → drift recording
+        // → notifier path. The notifier writes via tracing/stdout, not the v2
+        // Printer, so this snapshot is shape-identical to the clean cycle —
+        // its value is regression coverage that the drift path doesn't leak
+        // extra v2 emits into the loop's own surface and that the daemon
+        // survives the drift codepath and shuts down cleanly.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = write_happy_path_config(&tmp);
+        let ipc_path = tmp.path().join("daemon-test.sock");
+        let (triggers, senders) = make_triggers();
+        let (printer, buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
+        let printer = Arc::new(printer);
+        let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
+
+        let overrides = super::super::DaemonRunOverrides {
+            ipc_path: Some(ipc_path.clone()),
+            state_dir_override: Some(tmp.path().to_path_buf()),
+            skip_health_server: true,
+            skip_startup_checkin: true,
+            external_triggers: Some(triggers),
+        };
+        let daemon = tokio::spawn(super::super::run_daemon_with(
+            config_path.clone(),
+            None,
+            Arc::clone(&printer),
+            hooks,
+            overrides,
+        ));
+
+        tokio::time::sleep(StdDuration::from_millis(20)).await;
+        senders.file_tx.send(config_path).await.unwrap();
+        tokio::time::sleep(StdDuration::from_millis(80)).await;
+        senders.shutdown_tx.send(()).unwrap();
+
+        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+            .await
+            .expect("daemon should shut down in time")
+            .expect("daemon join");
+        assert!(result.is_ok(), "daemon Ok, got {:?}", result);
+
+        drop(printer);
+        let raw = buf.lock().unwrap().clone();
+        let actual = normalize_ipc(&strip_ansi(&raw), &ipc_path);
+        assert_snapshot("drift_event.txt", &actual);
+    }
 }
 
 // ---------------------------------------------------------------------------
