@@ -2977,6 +2977,46 @@ fn kubelet_apply_with_existing_config_triggers_rollback_attempt_after_systemctl_
     );
 }
 
+#[test]
+fn kubelet_error_subject_handles_multiline_systemctl_output() {
+    // Regression for: `Renderer::write_line` debug-asserts on bodies that
+    // contain `\n`. Multi-line systemctl errors (e.g. "Transport endpoint is
+    // not connected\nSee system logs and 'systemctl status kubelet.service'
+    // for details.") used to be pumped straight into `status_simple`'s
+    // subject and would panic in debug builds when the rollback path fired.
+    let err = std::io::Error::other(
+        "Transport endpoint is not connected\n\
+         See system logs and 'systemctl status kubelet.service' for details.",
+    );
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    // Must not panic on the debug-assert in `Renderer::write_line`.
+    super::kubelet::emit_warn_with_error(&printer, "rollback: kubelet restart also failed", &err);
+
+    let captured = buf.lock().unwrap().clone();
+    // First line embedded as the head of the subject.
+    assert!(
+        captured.contains("Transport endpoint is not connected"),
+        "first error line must appear in output: {captured}"
+    );
+    // Second line preserved (joined with em-dash separator).
+    assert!(
+        captured.contains("See system logs"),
+        "second error line must be preserved: {captured}"
+    );
+    // The status line itself must be single-line — no raw `\n` smuggled into
+    // the rendered output between the prefix and the trailing systemctl text.
+    let status_line = captured
+        .lines()
+        .find(|l| l.contains("rollback: kubelet restart also failed"))
+        .expect("warn status line must be present");
+    assert!(
+        status_line.contains("Transport endpoint is not connected"),
+        "subject must collapse onto one physical line: {status_line:?}"
+    );
+}
+
 // --- SysctlConfigurator::apply paths ---
 //
 // apply() at sysctl.rs:128-157 is reachable on Linux without root because
