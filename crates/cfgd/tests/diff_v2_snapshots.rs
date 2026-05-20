@@ -228,7 +228,7 @@ fn diff_package_drift_human() {
 /// integration test, so we anchor the buffered summary's role + payload shape
 /// via the pure Doc constructor. The streaming-side rendering of system
 /// drift status lines is exercised by the `print_package_drift`-shaped
-/// in-module tests (drift.rs) and the F0 renderer bucket-g anchors.
+/// in-module tests (drift.rs) and the renderer bucket-g anchors.
 #[test]
 fn diff_system_drift_human() {
     let output = DiffOutput {

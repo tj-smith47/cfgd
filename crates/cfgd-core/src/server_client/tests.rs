@@ -632,7 +632,7 @@ mod bridge {
 
         let captured = strip_ansi(&cap.human());
 
-        // §17.2 invariant: exactly one blank line at the streaming → buffered seam.
+        // Bridge invariant: exactly one blank line at the streaming → buffered seam.
         assert!(
             captured.contains("\n\n"),
             "checkin_clean missing blank line at seam:\n{captured}"
@@ -682,7 +682,7 @@ mod bridge {
 
         let captured = strip_ansi(&cap.human());
 
-        // §17.2 invariant: exactly one blank line at the streaming → buffered seam.
+        // Bridge invariant: exactly one blank line at the streaming → buffered seam.
         assert!(
             captured.contains("\n\n"),
             "drift_report missing blank line at seam:\n{captured}"

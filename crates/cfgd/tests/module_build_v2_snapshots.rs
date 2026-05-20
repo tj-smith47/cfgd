@@ -5,14 +5,14 @@
 //!     has no `module.yaml`. The happy path requires the OCI builder which
 //!     is exercised in unit tests with controlled fixtures, not snapshot
 //!     coverage here.
-//!   - `module_build/bridge.txt` — §17.2 bridge invariant on the streaming
+//!   - `module_build/bridge.txt` — bridge invariant on the streaming
 //!     build surface (multi-target spinners) → buffered summary Doc.
-//!     Synthetic per the F3 README bridge-synthetic exception: production
+//!     Synthetic under the bridge-synthetic exception: production
 //!     `cmd_module_build` requires the OCI builder + controlled fixtures
-//!     (skopeo + docker layers), so we hand-roll the minimal
-//!     streaming-then-buffered shape. The streaming-side status content is
+//!     (skopeo + docker layers), so the minimal streaming-then-buffered
+//!     shape is hand-rolled. The streaming-side status content is
 //!     deterministic and may diverge from any specific real invocation;
-//!     what's locked is the §17.2 invariant.
+//!     what's locked is the one-blank-line bridge invariant.
 
 mod common;
 

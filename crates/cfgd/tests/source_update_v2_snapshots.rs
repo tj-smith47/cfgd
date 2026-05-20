@@ -16,7 +16,7 @@
 //!     `commit` SHA to `<SHA>` so the golden stays stable across runs.
 //!   - `source_update/rejection.txt` — same fixture, prompt receives
 //!     `Confirm(false)`; emits the "permission changes rejected" skip line.
-//!   - `source_update/bridge.txt` — §17.2 streaming-to-buffered bridge.
+//!   - `source_update/bridge.txt` — streaming-to-buffered bridge invariant.
 //!
 //! Goldens live under `tests/output_snapshots/source_update/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test source_update_v2_snapshots

@@ -6,9 +6,9 @@
 //!   `kube::Api::list`) plus `kubectl exec` / `kubectl patch` subprocesses.
 //!   These are intractable from an integration test that runs under
 //!   `cargo test` on a developer workstation or CI runner that doesn't have
-//!   kubeconfig or `kubectl`. Per the F3 README's "Shimmed surfaces"
-//!   carve-out, the happy paths are covered E2E by `tests/cli_integration.rs`
-//!   and the cluster smoke tests.
+//!   kubeconfig or `kubectl`. Under the shimmed-surface carve-out the happy
+//!   paths are covered E2E by `tests/cli_integration.rs` and the cluster
+//!   smoke tests.
 //!
 //!   What we DO snapshot here are the deterministic validation/error
 //!   branches that never touch kube/kubectl: missing-module, command-required,

@@ -546,7 +546,7 @@ fn test_generate_tool_pipeline_writes_module() {
     let tmp = tempfile::TempDir::new().unwrap();
     let mut session = GenerateSession::new(tmp.path().to_path_buf());
 
-    // Step 1: AI calls get_schema to learn Module format
+    // AI calls get_schema to learn Module format
     let result = dispatch_tool_call(
         "get_schema",
         &serde_json::json!({"kind": "Module"}),
@@ -557,7 +557,7 @@ fn test_generate_tool_pipeline_writes_module() {
     assert!(!result.is_error);
     assert!(result.content.contains("apiVersion"));
 
-    // Step 2: AI calls validate_yaml to check its generated YAML
+    // AI calls validate_yaml to check its generated YAML
     let module_yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: git\nspec:\n  packages:\n    - name: git\n";
     let result = dispatch_tool_call(
         "validate_yaml",
@@ -569,7 +569,7 @@ fn test_generate_tool_pipeline_writes_module() {
     assert!(!result.is_error);
     assert!(result.content.contains("true"));
 
-    // Step 3: AI calls write_module_yaml
+    // AI calls write_module_yaml
     let result = dispatch_tool_call(
         "write_module_yaml",
         &serde_json::json!({"name": "git", "content": module_yaml}),
@@ -579,12 +579,12 @@ fn test_generate_tool_pipeline_writes_module() {
     );
     assert!(!result.is_error);
 
-    // Step 4: Verify file was written
+    // Verify file was written
     let module_path = tmp.path().join("modules/git/module.yaml");
     assert!(module_path.exists());
     assert_eq!(std::fs::read_to_string(&module_path).unwrap(), module_yaml);
 
-    // Step 5: AI calls list_generated to see what it wrote
+    // AI calls list_generated to see what it wrote
     let result = dispatch_tool_call(
         "list_generated",
         &serde_json::json!({}),

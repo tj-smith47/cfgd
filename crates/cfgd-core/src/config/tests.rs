@@ -1800,7 +1800,7 @@ command: "ls -la"
     assert_eq!(alias.command, "ls -la");
 }
 
-// --- Legacy theme-override key warnings (R1.T25) ---
+// --- Legacy theme-override key warnings ---
 
 #[test]
 #[serial_test::serial]

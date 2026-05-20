@@ -10234,8 +10234,6 @@ fn cmd_plan_module_structured_output() {
     assert!(parsed["phases"].is_array(), "phases should be an array");
 }
 
-// --- Phase 1: New test coverage ---
-
 fn setup_rich_test_env() -> (tempfile::TempDir, tempfile::TempDir) {
     let (config_dir, state_dir) = setup_test_env();
     std::fs::write(config_dir.path().join("cfgd.yaml"), RICH_CONFIG_YAML).unwrap();

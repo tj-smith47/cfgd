@@ -72,7 +72,7 @@ fn enroll_next_steps_section_lists_four_commands() {
 fn enroll_not_found_method_human() {
     // Pins the not-found Doc shape emitted when the server reports
     // bootstrap-token enrollment but the CLI was invoked without --token.
-    // Mirrors the F1 not-found pattern: hint + with_data envelope, no
+    // Mirrors the not-found pattern: hint + with_data envelope, no
     // Role::Fail status (main.rs renders the error string).
     let (printer, cap) = Printer::for_test_doc();
     printer.emit(build_enroll_error_doc(

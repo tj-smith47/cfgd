@@ -2575,7 +2575,7 @@ fn mock_manager_installed_packages_empty() {
 // --- parse_scoop_list real-world output ---
 
 // =========================================================================
-// Phase 3a: Additional coverage tests — output verification, error paths
+// Additional coverage — output verification, error paths
 // =========================================================================
 
 // --- print_caveats output verification ---

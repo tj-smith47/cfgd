@@ -8,7 +8,7 @@
 //!   - `source_add/clone_failure.txt` — error-path Doc when the upstream URL
 //!     points to a non-existent local bare repo; `SourceManager::load_source`
 //!     fails and `cmd_source_add` bails after emitting the load-failure Doc.
-//!   - `source_add/bridge.txt` — §17.2 streaming-to-buffered bridge assertion
+//!   - `source_add/bridge.txt` — streaming-to-buffered bridge assertion
 //!     (single blank line between the streaming clone surface and the buffered
 //!     "Subscribed" Doc).
 //!
@@ -198,7 +198,7 @@ fn source_add_clone_failure_human() {
 #[test]
 #[serial]
 fn source_add_bridge_one_blank_line() {
-    // §17.2 bridge invariant: the streaming clone surface (spinners emitted
+    // Bridge invariant: the streaming clone surface (spinners emitted
     // by `SourceManager::load_source`) → buffered "Subscribed" Doc transition
     // has exactly one blank line. Hand-rolled because the Printer captures all
     // human-surface output via the test capture; we only assert on that

@@ -10,9 +10,10 @@
 //!     lockfile rewritten with the new commit + integrity.
 //!
 //! No `bridge.txt`: `cmd_module_upgrade` is buffered-only. Outbound git
-//! fetches go through a null v1 printer (see `null_lib_printer()` in
-//! registry.rs) so the lib's progress noise is suppressed; the user-facing
-//! surface is the final emit. §17.2 doesn't apply.
+//! fetches go through a null printer (see `null_lib_printer()` in
+//! registry.rs) so the library's progress noise is suppressed; the
+//! user-facing surface is the final emit. The bridge invariant does not
+//! apply when there is no streaming surface.
 
 mod common;
 

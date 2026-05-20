@@ -9,7 +9,7 @@
 //!     OCI re-signing happens.
 //!   - `module_keys_rotate/bridge.txt` — per-artifact re-sign spinners
 //!     stream, the buffered "Key rotation complete" Doc follows with
-//!     exactly one blank line between them (§17.2 bridge invariant).
+//!     exactly one blank line between them (one-blank-line bridge invariant).
 
 mod common;
 
@@ -288,7 +288,7 @@ fn module_keys_rotate_happy_json() {
 #[test]
 #[serial]
 fn module_keys_rotate_bridge_one_blank_line() {
-    // §17.2 bridge invariant: with at least one artifact in the list, the
+    // Bridge invariant: with at least one artifact in the list, the
     // re-sign spinner streams before the buffered "Key rotation complete"
     // Doc — the two surfaces must be separated by exactly one blank line.
     //

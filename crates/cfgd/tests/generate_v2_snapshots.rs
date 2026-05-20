@@ -126,10 +126,10 @@ fn generate_scan_only_json_shape() {
 /// summary Doc emits — combined human surface contains exactly one blank
 /// line at the transition. Production `cmd_generate`'s non-scan_only branch
 /// drives a multi-turn Anthropic conversation whose transcript content and
-/// timing are non-deterministic; per the F3 README bridge-synthetic
-/// exception we hand-roll the minimal streaming-then-buffered shape here.
+/// timing are non-deterministic; under the bridge-synthetic exception
+/// the minimal streaming-then-buffered shape is hand-rolled here.
 /// The streaming-side content is deterministic and may diverge from any
-/// specific real invocation; what's locked is the §17.2 invariant.
+/// specific real invocation; what's locked is the one-blank-line invariant.
 #[test]
 fn generate_bridge_one_blank_line() {
     let (printer, cap) = Printer::for_test_doc();

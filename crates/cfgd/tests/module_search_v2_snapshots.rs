@@ -3,15 +3,15 @@
 //! Cases:
 //!   - `module_search/bridge.txt` — per-source spinner streaming surface
 //!     and the buffered Doc summary are separated by exactly one blank
-//!     line (§17.2 bridge invariant).
+//!     line (one-blank-line bridge invariant).
 //!   - `module_search/happy.txt` — query matches a registry fixture; one
 //!     result row in the buffered table.
 //!
 //! `module_search/no_registries.txt` + the `happy_json` JSON-shape check
 //! live alongside the other registry snapshot tests in
-//! `module_registry_v2_snapshots.rs` (legacy grouping). The bridge case is
-//! split out here because the streaming-bearing surface deserves the
-//! standalone §17.2 anchor.
+//! `module_registry_v2_snapshots.rs` (historical grouping). The bridge
+//! case is split out here because the streaming-bearing surface deserves
+//! a standalone bridge anchor.
 
 mod common;
 
@@ -113,7 +113,7 @@ fn write_registry_config(config_dir: &Path, reg_url: &str) {
 #[test]
 #[serial]
 fn module_search_bridge_one_blank_line() {
-    // §17.2 bridge invariant: the per-registry spinner stream and the
+    // Bridge invariant: the per-registry spinner stream and the
     // buffered table Doc must have exactly one blank line between them.
     let (config_dir, _state_dir) = search_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());

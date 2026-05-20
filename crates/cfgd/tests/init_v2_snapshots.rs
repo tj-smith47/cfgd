@@ -16,13 +16,13 @@
 //!     final `printer.emit(...)` carries only the typed payload — no
 //!     buffered human content. This snapshot therefore pins the apply-status
 //!     streaming surface end-to-end, NOT a streaming → buffered human
-//!     transition. The §17.2 invariant under apply data is asserted by the
+//!     transition. The bridge invariant under apply data is asserted by the
 //!     companion `init_apply_then_next_steps_bridge_invariant` test below.
 //!   - `init/apply_then_next_steps.txt` — bridge anchor: a streaming portion
 //!     (heading + status lines mirroring the shape `apply_plan` emits for a
 //!     non-empty plan) followed by a buffered Doc carrying a real
 //!     `section("Next Steps", |s| s.bullet(...))` payload. Asserts the
-//!     §17.2 one-blank-line rule programmatically.
+//!     one-blank-line bridge rule programmatically.
 //!
 //! Goldens live under `tests/output_snapshots/init/`. Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test init_v2_snapshots
@@ -147,11 +147,12 @@ fn init_with_apply_renders_apply_status_streaming() {
     // cmd_init suppresses the "Next steps" section in its trailing
     // `printer.emit(...)`, so the final Doc carries only the InitOutput
     // payload — NOT a buffered human surface. This capture therefore covers
-    // Phase A (scaffold status lines + git-init success) and Phase B (apply
-    // header + "Set active profile" + "Nothing to do" status), with no
-    // buffered human content trailing it. The §17.2 streaming → buffered
-    // one-blank-line invariant under apply data is asserted by the
-    // `init_apply_then_next_steps_bridge_invariant` test below — kept
+    // the scaffold surface (scaffold status lines + git-init success) and
+    // the apply surface (apply header + "Set active profile" + "Nothing to
+    // do" status), with no buffered human content trailing it. The
+    // streaming → buffered one-blank-line invariant under apply data is
+    // asserted by the `init_apply_then_next_steps_bridge_invariant` test
+    // below — kept
     // separate because exercising it requires a buffered Doc with human
     // content, which cmd_init does not emit on the apply branch.
     let tmp = tempfile::tempdir().unwrap();
@@ -227,7 +228,7 @@ fn init_apply_then_next_steps_bridge_invariant() {
     // status_simple lines) and then emitting a buffered Doc carrying a
     // real `section("Next Steps", |s| s.bullet(...))` payload. The
     // snapshot pins the rendered output and the assertions below confirm
-    // the §17.2 invariant: exactly one blank line between the last
+    // the bridge invariant: exactly one blank line between the last
     // streaming line and the first buffered line.
     use cfgd_core::output::{Doc, Role};
 
@@ -255,7 +256,7 @@ fn init_apply_then_next_steps_bridge_invariant() {
 
     let captured = strip_ansi(&cap.human());
 
-    // §17.2 invariant: exactly one blank line between the streaming
+    // Bridge invariant: exactly one blank line between the streaming
     // surface's last line and the buffered Doc's first line. Two newlines
     // in a row means one blank line; three or more means more than one.
     assert!(

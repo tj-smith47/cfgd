@@ -128,10 +128,10 @@ fn upgrade_check_up_to_date_json() {
 /// line at the transition. Production `cmd_upgrade`'s download path requires
 /// a live GitHub release + cosign signature + checksum bundle (covered E2E
 /// by `crates/cfgd-core/src/upgrade/tests.rs::download_and_install_to_*`),
-/// so per the F3 README bridge-synthetic exception we hand-roll the
-/// minimal streaming-then-buffered shape here. The streaming-side status
-/// content is deterministic and may diverge from any specific real
-/// invocation; what's locked is the §17.2 invariant.
+/// so under the bridge-synthetic exception the minimal
+/// streaming-then-buffered shape is hand-rolled here. The streaming-side
+/// status content is deterministic and may diverge from any specific
+/// real invocation; what's locked is the one-blank-line bridge invariant.
 #[test]
 fn upgrade_bridge_one_blank_line() {
     let (printer, cap) = Printer::for_test_doc();

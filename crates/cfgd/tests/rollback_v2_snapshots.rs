@@ -85,9 +85,8 @@ fn rollback_no_changes_human() {
 
 /// `yes=false` + `PromptAnswer::Confirm(true)` drives the accept path:
 /// prompt fires silently, reconciler restores, "Rollback complete" lands.
-/// F3 README §"Accept-confirm-then-success pattern" mandates a snapshot
-/// dedicated to the Confirm(true) branch — the rejection snapshot doesn't
-/// cover it.
+/// The accept-confirm-then-success pattern needs a dedicated snapshot
+/// because the rejection snapshot stops before the success surface emits.
 #[test]
 fn rollback_accept_human() {
     let (_workspace, state_dir, target, apply_id) = rollback_state_with_backups_setup();
@@ -130,7 +129,7 @@ fn rollback_aborted_human() {
 
 /// Seeded state has a non-file (package) action after the target apply.
 /// `cmd_rollback` lists the action under the "Non-file action(s) require
-/// manual review" section with bullets — proves the §1.8 indent-hack closure
+/// manual review" section with bullets — proves the indent-hack closure
 /// at rollback.rs:108 under real data (bullets render at section depth,
 /// not at column 0).
 #[test]

@@ -7,8 +7,8 @@
 //! "Entries" section without a buffered human surface afterwards (the
 //! trailing Doc is payload-only). The `entries.is_empty()` branch is fully
 //! buffered (heading + status + with_data) — also no streaming→buffered
-//! transition. Follows the T4 pull precedent documented in the F3 README
-//! under "Bridge-snapshot rule".
+//! transition. Follows the bridge-snapshot rule: surfaces with no
+//! streaming→buffered transition do not get a bridge snapshot.
 //!
 //! Timestamps in the multi-row golden are normalised to a placeholder so
 //! the snapshot is host-stable.

@@ -7212,7 +7212,7 @@ fn rollback_restores_file_with_correct_content() {
     );
 }
 
-// --- Rollback Phase 3: removes files created after target ---
+// --- Rollback: removes files created after target ---
 
 #[test]
 fn rollback_removes_file_created_after_target_apply() {

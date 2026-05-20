@@ -9055,9 +9055,7 @@ mod harness {
     // These tests capture only what the daemon's own Printer writes:
     // startup banner, SIGHUP reload chatter, shutdown messages. Per-action
     // reconcile output is emitted by `daemon::reconcile` through separate
-    // short-lived printers (currently fully-qualified to the legacy
-    // `crate::output::*` for callees that haven't migrated yet) and is
-    // invisible to the buffer below.
+    // short-lived printers and is invisible to the buffer below.
 
     use crate::output::test_capture::{assert_snapshot_at, strip_ansi};
 

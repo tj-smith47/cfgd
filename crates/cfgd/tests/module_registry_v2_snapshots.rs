@@ -11,7 +11,7 @@
 //!   - `module_registry_list/empty.{txt,json}` — no registries.
 //!   - `module_registry_list/with_entries.{txt,json}` — multiple registries.
 //!
-//! Cases (streaming-bearing — bridge.txt invariant from §17.2):
+//! Cases (streaming-bearing — bridge.txt one-blank-line invariant):
 //!   - `module_add/bridge.txt` — `cmd_module_add_remote` against a bare repo
 //!     emits the clone spinner + buffered summary with exactly one blank line
 //!     between them.
@@ -316,7 +316,7 @@ fn module_registry_list_with_entries_human() {
 #[test]
 #[serial]
 fn module_add_bridge_one_blank_line() {
-    // §17.2 bridge invariant: the streaming clone surface (spinner) and
+    // Bridge invariant: the streaming clone surface (spinner) and
     // the buffered summary (lock summary Doc) must be separated by
     // exactly one blank line in the human render — no more, no fewer.
     let (config_dir, _state_dir) = registry_test_setup();

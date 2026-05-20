@@ -4,9 +4,10 @@
 //! disproportionate to fixture for the buffered Doc shape under test —
 //! `build_checkin_doc` is invoked directly with synthetic `CheckinOutput`
 //! payloads (`happy`, `drift_reported`, `no_drift`, `server_pushed_config`).
-//! The bridge invariant uses synthetic content per the F3 README §
-//! "Bridge synthetic exception". End-to-end client behavior is exercised
-//! by existing tests in `crates/cfgd-core/src/server_client/`.
+//! The bridge invariant uses synthetic content (bridge-synthetic exception
+//! for surfaces whose production invocation is disproportionate to fixture).
+//! End-to-end client behavior is exercised by existing tests in
+//! `crates/cfgd-core/src/server_client/`.
 //! Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test checkin_v2_snapshots
 
@@ -145,8 +146,8 @@ fn checkin_server_pushed_config_human() {
 /// buffered status emits — combined human surface contains exactly one
 /// blank line at the transition. The bridge synthetic adds a status that
 /// real `cmd_checkin` does not emit (production's buffered Doc is
-/// payload-only); per the F3 README bridge-synthetic exception, deterministic
-/// minimal content on both sides is preferred over matching the real shape.
+/// payload-only); deterministic minimal content on both sides is preferred
+/// over matching the real shape.
 #[test]
 fn checkin_bridge_one_blank_line() {
     let (printer, cap) = Printer::for_test_doc();

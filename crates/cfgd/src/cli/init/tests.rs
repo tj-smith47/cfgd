@@ -2714,7 +2714,7 @@ mod enroll_mockito {
         // `cmd_enroll` emits before the trailing buffered Doc. This test
         // drives the full token-enrollment orchestration through a mock
         // server, captures both streaming and buffered output on the same
-        // Printer, asserts the §17.2 one-blank-line invariant
+        // Printer, asserts the one-blank-line bridge invariant
         // programmatically, and snapshots the combined output for
         // regression coverage.
         let tmp = tempfile::tempdir().unwrap();
@@ -2761,7 +2761,7 @@ mod enroll_mockito {
                 "streaming surface must precede buffered surface in:\n{captured}"
             );
 
-            // §17.2 invariant: exactly one blank line between the last
+            // Bridge invariant: exactly one blank line between the last
             // streaming line and the first buffered line. Two newlines in
             // a row = one blank line; three or more = more than one.
             assert!(
