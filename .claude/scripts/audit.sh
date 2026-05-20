@@ -369,87 +369,81 @@ check_pattern warn \
     ""
 
 # --- output banned patterns -------------------------------------------------
-# These rules block the indent-hack and old-API patterns the redesign kills.
-# In R1, gated off so the script doesn't fail until R3 enables it
-# (CFGD_OUTPUT_V2_AUDIT=1) — this lets us land the rules + audit-tests
-# without breaking the build before the migration completes.
-if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
+# Block the indent-hack and old-API patterns the output module forbids.
+#
+# CFGD_AUDIT_PATH: replace `crates/`, do NOT append. The audit-tests driver
+# sets this per-fixture so each fixture is scanned in isolation; appending
+# would mix in 1000+ hits from crates/ and make every good_*.txt fixture
+# spuriously fail.
 
-  # CFGD_OUTPUT_V2_AUDIT_EXTRA_PATH: replace `crates/`, do NOT append. The
-  # audit-tests driver sets this per-fixture so each fixture is scanned in
-  # isolation; appending would mix in 1000+ legacy hits from crates/ and
-  # make every good_*.txt fixture spuriously fail until R3 migration completes.
+# 1. Banned old-API method calls outside the output module(s).
+banned_methods='printer\.(success|warning|info|error|header|subheader|key_value|newline|plan_phase|stdout_line)\('
+if violations=$(rg --type-add 'rust:*.txt' --type rust -n "$banned_methods" \
+      "${CFGD_AUDIT_PATH:-crates/}" \
+      --glob '!crates/cfgd-core/src/output/**' \
+      --glob '!**/tests.rs' \
+      --glob '!**/tests/**' 2>/dev/null) && [ -n "$violations" ]; then
+  log_error "BANNED OLD-API CALLS (Printer methods removed in output):"
+  echo "$violations"
+fi
 
-  # 1. Banned old-API method calls outside the output module(s).
-  banned_methods='printer\.(success|warning|info|error|header|subheader|key_value|newline|plan_phase|stdout_line)\('
-  if violations=$(rg --type-add 'rust:*.txt' --type rust -n "$banned_methods" \
-        "${CFGD_OUTPUT_V2_AUDIT_EXTRA_PATH:-crates/}" \
-        --glob '!crates/cfgd-core/src/output/**' \
-        --glob '!**/tests.rs' \
-        --glob '!**/tests/**' 2>/dev/null) && [ -n "$violations" ]; then
-    log_error "BANNED OLD-API CALLS (Printer methods removed in output):"
-    echo "$violations"
-  fi
+# 2. Indent hack in printer args. Catches:
+#      printer.X("  …               (two-or-more leading spaces)
+#      printer.X("<TAB>…            (literal tab byte in source)
+#      printer.X("\t…               (backslash-t escape)
+#      printer.X(&format!("  …
+#      printer.X(format!("  …
+#      printer.X(&"  …".to_string())
+#    Pattern "(  |\t|\\t) catches the three canonical hack shapes; a lone
+#    single leading space is normal prose and is NOT a hack.
+if hack=$(rg --type-add 'rust:*.txt' --type rust -n 'printer\.\w+\(\s*&?(format!\()?"(  |\t|\\t)' \
+      "${CFGD_AUDIT_PATH:-crates/}" \
+      --glob '!crates/cfgd-core/src/output/**' \
+      --glob '!**/tests.rs' \
+      --glob '!**/tests/**' 2>/dev/null) && [ -n "$hack" ]; then
+  log_error "INDENT HACK (>=2 spaces, tab byte, or \\t escape leading printer arg):"
+  echo "$hack"
+fi
 
-  # 2. Indent hack in printer args. Catches:
-  #      printer.X("  …               (two-or-more leading spaces)
-  #      printer.X("<TAB>…            (literal tab byte in source)
-  #      printer.X("\t…               (backslash-t escape — spec §16.2 fixture)
-  #      printer.X(&format!("  …
-  #      printer.X(format!("  …
-  #      printer.X(&"  …".to_string())
-  #    Pattern "(  |\t|\\t) catches the three canonical hack shapes; a lone
-  #    single leading space is normal prose and is NOT a hack.
-  if hack=$(rg --type-add 'rust:*.txt' --type rust -n 'printer\.\w+\(\s*&?(format!\()?"(  |\t|\\t)' \
-        "${CFGD_OUTPUT_V2_AUDIT_EXTRA_PATH:-crates/}" \
-        --glob '!crates/cfgd-core/src/output/**' \
-        --glob '!**/tests.rs' \
-        --glob '!**/tests/**' 2>/dev/null) && [ -n "$hack" ]; then
-    log_error "INDENT HACK (>=2 spaces, tab byte, or \\t escape leading printer arg):"
-    echo "$hack"
-  fi
+# 3. KV key-indent hack — same shapes.
+if kv_hack=$(rg --type-add 'rust:*.txt' --type rust -n '\.kv\(\s*&?(format!\()?"(  |\t|\\t)' \
+      "${CFGD_AUDIT_PATH:-crates/}" \
+      --glob '!crates/cfgd-core/src/output/**' \
+      --glob '!**/tests.rs' \
+      --glob '!**/tests/**' 2>/dev/null) && [ -n "$kv_hack" ]; then
+  log_error "KV KEY INDENT HACK (>=2 spaces, tab byte, or \\t escape leading kv key):"
+  echo "$kv_hack"
+fi
 
-  # 3. KV key-indent hack — same shapes.
-  if kv_hack=$(rg --type-add 'rust:*.txt' --type rust -n '\.kv\(\s*&?(format!\()?"(  |\t|\\t)' \
-        "${CFGD_OUTPUT_V2_AUDIT_EXTRA_PATH:-crates/}" \
-        --glob '!crates/cfgd-core/src/output/**' \
-        --glob '!**/tests.rs' \
-        --glob '!**/tests/**' 2>/dev/null) && [ -n "$kv_hack" ]; then
-    log_error "KV KEY INDENT HACK (>=2 spaces, tab byte, or \\t escape leading kv key):"
-    echo "$kv_hack"
-  fi
+# 4. Direct console::* / indicatif::*::new outside the output module(s).
+#    Hard Rule #1 extended to the new types.
+if direct=$(rg --type-add 'rust:*.txt' --type rust -n '(console::|indicatif::(ProgressBar|MultiProgress)::new)' \
+      "${CFGD_AUDIT_PATH:-crates/}" \
+      --glob '!crates/cfgd-core/src/output/**' \
+      --glob '!**/tests.rs' \
+      --glob '!**/tests/**' 2>/dev/null) && [ -n "$direct" ]; then
+  log_error "DIRECT TERMINAL TYPES (console::* / indicatif::*::new) outside output module:"
+  echo "$direct"
+fi
 
-  # 4. Direct console::* / indicatif::*::new outside the output module(s).
-  #    Hard Rule #1 extended to the new types.
-  if direct=$(rg --type-add 'rust:*.txt' --type rust -n '(console::|indicatif::(ProgressBar|MultiProgress)::new)' \
-        "${CFGD_OUTPUT_V2_AUDIT_EXTRA_PATH:-crates/}" \
-        --glob '!crates/cfgd-core/src/output/**' \
-        --glob '!**/tests.rs' \
-        --glob '!**/tests/**' 2>/dev/null) && [ -n "$direct" ]; then
-    log_error "DIRECT TERMINAL TYPES (console::* / indicatif::*::new) outside output module:"
-    echo "$direct"
-  fi
-
-  # 5. Structured-output coverage table — every cmd_* function in cli/ must
-  #    appear in .claude/rules/output-module.md's coverage table.
-  #    Only match file-scope definitions (no leading whitespace) to avoid
-  #    matching test helper functions inside #[cfg(test)] blocks.
-  cmds_in_code=$(rg --type rust --color never -n \
-        '^(pub(\(crate\)|(\(super\)))? fn |fn )cmd_' \
-        crates/cfgd/src/cli/ --glob '!**/tests.rs' --glob '!**/tests/**' \
-        2>/dev/null \
-        | sed -E 's/.*fn cmd_([a-z_]+).*/\1/' | sort -u)
-  rule_file=".claude/rules/output-module.md"
-  if [ -f "$rule_file" ]; then
-      cmds_in_table=$(awk '/^## Structured-output coverage/,0' "$rule_file" \
-          | grep -E '^\| [a-z]' | awk -F'|' '{print $2}' | tr -d ' ' | sort -u)
-      missing=$(comm -23 <(echo "$cmds_in_code") <(echo "$cmds_in_table" | tr ' ' '_'))
-      if [ -n "$missing" ]; then
-          log_error "Commands missing from structured-output coverage table in $rule_file:"
-          echo "$missing"
-      fi
-  fi
-
+# 5. Structured-output coverage table — every cmd_* function in cli/ must
+#    appear in .claude/rules/output-module.md's coverage table.
+#    Only match file-scope definitions (no leading whitespace) to avoid
+#    matching test helper functions inside #[cfg(test)] blocks.
+cmds_in_code=$(rg --type rust --color never -n \
+      '^(pub(\(crate\)|(\(super\)))? fn |fn )cmd_' \
+      crates/cfgd/src/cli/ --glob '!**/tests.rs' --glob '!**/tests/**' \
+      2>/dev/null \
+      | sed -E 's/.*fn cmd_([a-z_]+).*/\1/' | sort -u)
+rule_file=".claude/rules/output-module.md"
+if [ -f "$rule_file" ]; then
+    cmds_in_table=$(awk '/^## Structured-output coverage/,0' "$rule_file" \
+        | grep -E '^\| [a-z]' | awk -F'|' '{print $2}' | tr -d ' ' | sort -u)
+    missing=$(comm -23 <(echo "$cmds_in_code") <(echo "$cmds_in_table" | tr ' ' '_'))
+    if [ -n "$missing" ]; then
+        log_error "Commands missing from structured-output coverage table in $rule_file:"
+        echo "$missing"
+    fi
 fi
 # --- end output audit block -------------------------------------------------
 

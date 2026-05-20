@@ -5,7 +5,7 @@
 # or invoked from `task ci`.
 #
 # Fixtures are .txt files outside the cargo source tree. The driver tells
-# audit.sh to include the fixture directory via CFGD_OUTPUT_V2_AUDIT_EXTRA_PATH.
+# audit.sh to scope its scan to the fixture directory via CFGD_AUDIT_PATH.
 # rg's --type-add 'rust:*.txt' makes the audit's existing rust-typed regexes
 # match .txt content unchanged.
 set -euo pipefail
@@ -21,8 +21,7 @@ FAIL=0
 
 run_audit_against() {
     local fixture="$1"
-    CFGD_OUTPUT_V2_AUDIT=1 \
-    CFGD_OUTPUT_V2_AUDIT_EXTRA_PATH="$fixture" \
+    CFGD_AUDIT_PATH="$fixture" \
         bash .claude/scripts/audit.sh > "$TMP/out" 2>&1
     return $?
 }

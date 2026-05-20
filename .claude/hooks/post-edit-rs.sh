@@ -70,64 +70,61 @@ if [[ -n "$WARNINGS" ]]; then
     echo -e "$WARNINGS"
 fi
 
-# --- output banned patterns (R3) --------------------------------------------
-# Mirrors .claude/scripts/audit.sh rules but per-file (fast). Gated on
-# CFGD_OUTPUT_V2_AUDIT=1 (the default in CI since R3.S5).
-# Runs AFTER the legacy CRITICAL/WARNINGS block so legacy `exit 2` still wins.
+# --- output banned patterns -------------------------------------------------
+# Mirrors .claude/scripts/audit.sh rules but per-file (fast).
+# Runs AFTER the CRITICAL/WARNINGS block above so its `exit 2` still wins.
 # Regex shape uses an ANSI-C $'...' literal so the alternation matches
 # two-or-more spaces, a real tab byte (0x09), or a backslash-t escape — the
-# three canonical indent-hack shapes spec §16.2 lists. Plain `grep -E` does
-# NOT interpret \t inside a normal single-quoted pattern, hence the $'...'.
-if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
-    EDITED_FILE="${1:-}"
-    if [ -n "$EDITED_FILE" ] && [ -f "$EDITED_FILE" ]; then
-        # Defense in depth: only inspect Rust source. The harness already
-        # filters by *.rs at settings.json before invoking the hook, but
-        # nothing prevents a future caller from invoking us with .md/.toml.
-        case "$EDITED_FILE" in
-            *.rs) ;;
-            *) exit 0 ;;
-        esac
+# three canonical indent-hack shapes. Plain `grep -E` does NOT interpret \t
+# inside a normal single-quoted pattern, hence the $'...'.
+EDITED_FILE="${1:-}"
+if [ -n "$EDITED_FILE" ] && [ -f "$EDITED_FILE" ]; then
+    # Defense in depth: only inspect Rust source. The harness already
+    # filters by *.rs at settings.json before invoking the hook, but
+    # nothing prevents a future caller from invoking us with .md/.toml.
+    case "$EDITED_FILE" in
+        *.rs) ;;
+        *) exit 0 ;;
+    esac
 
-        # Skip if file is one of the output module(s), or any test file.
-        # Globs use `*/` (or unanchored relative) so absolute paths
-        # (`/opt/repos/cfgd/crates/...`) and bare-relative paths
-        # (`crates/...`) both match, without falsely exempting unrelated
-        # paths that happen to contain "crates/cfgd-core/src/output/".
-        case "$EDITED_FILE" in
-            */crates/cfgd-core/src/output/*) exit 0 ;;
-            crates/cfgd-core/src/output/*) exit 0 ;;
-            *tests.rs|*/tests/*) exit 0 ;;
-        esac
+    # Skip if file is one of the output module(s), or any test file.
+    # Globs use `*/` (or unanchored relative) so absolute paths
+    # (`/opt/repos/cfgd/crates/...`) and bare-relative paths
+    # (`crates/...`) both match, without falsely exempting unrelated
+    # paths that happen to contain "crates/cfgd-core/src/output/".
+    case "$EDITED_FILE" in
+        */crates/cfgd-core/src/output/*) exit 0 ;;
+        crates/cfgd-core/src/output/*) exit 0 ;;
+        *tests.rs|*/tests/*) exit 0 ;;
+    esac
 
-        # Same regexes as audit.sh.
-        if grep -nE 'printer\.(success|warning|info|error|header|subheader|key_value|newline|plan_phase|stdout_line)\(' "$EDITED_FILE" > /dev/null 2>&1; then
-            echo
-            echo "BANNED OLD-API CALL in $EDITED_FILE"
-            echo "  Replace with output vocabulary. See:"
-            echo "    .claude/rules/output-module.md  (Printer surface)"
-            exit 1
-        fi
-        if grep -nE $'printer\\.\\w+\\(\\s*&?(format!\\()?"(  |\t|\\\\t)' "$EDITED_FILE" > /dev/null 2>&1; then
-            echo
-            echo "INDENT HACK in $EDITED_FILE"
-            echo "  This is a printer call whose arg starts with two-or-more spaces,"
-            echo "  a literal tab byte, or a backslash-t escape."
-            echo "  Use a section instead:"
-            echo "    let sec = printer.section(\"...\");"
-            echo "    sec.bullet(format!(\"{}\", x));"
-            echo "  See spec §5–§6 of:"
-            echo "    .claude/specs/2026-05-14-output-system-redesign-design.md"
-            exit 1
-        fi
-        if grep -nE $'\\.kv\\(\\s*&?(format!\\()?"(  |\t|\\\\t)' "$EDITED_FILE" > /dev/null 2>&1; then
-            echo
-            echo "KV KEY INDENT HACK in $EDITED_FILE"
-            echo "  kv keys must not start with whitespace. Use a subsection if you"
-            echo "  need nesting:"
-            echo "    .section(\"Origins\", |s| s.subsection(\"Primary\", |o| o.kv(\"Branch\", ...)))"
-            exit 1
-        fi
+    # Same regexes as audit.sh.
+    if grep -nE 'printer\.(success|warning|info|error|header|subheader|key_value|newline|plan_phase|stdout_line)\(' "$EDITED_FILE" > /dev/null 2>&1; then
+        echo
+        echo "BANNED OLD-API CALL in $EDITED_FILE"
+        echo "  Replace with output vocabulary. See:"
+        echo "    .claude/rules/output-module.md  (Printer surface)"
+        exit 1
+    fi
+    if grep -nE $'printer\\.\\w+\\(\\s*&?(format!\\()?"(  |\t|\\\\t)' "$EDITED_FILE" > /dev/null 2>&1; then
+        echo
+        echo "INDENT HACK in $EDITED_FILE"
+        echo "  This is a printer call whose arg starts with two-or-more spaces,"
+        echo "  a literal tab byte, or a backslash-t escape."
+        echo "  Use a section instead:"
+        echo "    let sec = printer.section(\"...\");"
+        echo "    sec.bullet(format!(\"{}\", x));"
+        echo "  See:"
+        echo "    .claude/rules/output-module.md"
+        exit 1
+    fi
+    if grep -nE $'\\.kv\\(\\s*&?(format!\\()?"(  |\t|\\\\t)' "$EDITED_FILE" > /dev/null 2>&1; then
+        echo
+        echo "KV KEY INDENT HACK in $EDITED_FILE"
+        echo "  kv keys must not start with whitespace. Use a subsection if you"
+        echo "  need nesting:"
+        echo "    .section(\"Origins\", |s| s.subsection(\"Primary\", |o| o.kv(\"Branch\", ...)))"
+        exit 1
     fi
 fi
 # --- end output banned-patterns block ----------------------------------------

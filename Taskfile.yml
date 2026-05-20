@@ -96,7 +96,7 @@ tasks:
   audit:
     desc: Run project-specific code quality audit
     cmds:
-      - CFGD_OUTPUT_V2_AUDIT=1 bash .claude/scripts/audit.sh
+      - bash .claude/scripts/audit.sh
 
   audit:test:
     desc: Validate audit.sh's banned-pattern rules against paired fixtures
