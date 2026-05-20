@@ -11,6 +11,10 @@ pub(crate) fn role_glyph(theme: &Theme, role: Role) -> (Option<&str>, ThemedStyl
         Role::Running => (Some(theme.icon_running.as_str()), theme.running.clone()),
         Role::Skipped => (Some(theme.icon_skipped.as_str()), theme.muted.clone()),
         Role::Info => (None, ThemedStyle::plain()),
+        // Accent + Secondary intentionally claim no icon — they accent the
+        // text payload, they don't reserve a status-line glyph column.
+        Role::Accent => (None, theme.accent.clone()),
+        Role::Secondary => (None, theme.secondary.clone()),
     }
 }
 
@@ -30,5 +34,12 @@ mod tests {
         let t = Theme::default();
         let (icon, _) = role_glyph(&t, Role::Ok);
         assert_eq!(icon, Some("✓"));
+    }
+
+    #[test]
+    fn accent_and_secondary_have_no_icon() {
+        let t = Theme::default();
+        assert!(role_glyph(&t, Role::Accent).0.is_none());
+        assert!(role_glyph(&t, Role::Secondary).0.is_none());
     }
 }

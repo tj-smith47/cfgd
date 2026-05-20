@@ -199,7 +199,7 @@ impl<D: Display> Display for StyledText<'_, D> {
 }
 
 pub struct Theme {
-    // Style slots (8)
+    // Style slots (12)
     pub header: ThemedStyle,
     pub success: ThemedStyle,
     pub warning: ThemedStyle,
@@ -210,6 +210,13 @@ pub struct Theme {
     pub diff_add: ThemedStyle,
     pub diff_remove: ThemedStyle,
     pub diff_context: ThemedStyle,
+    /// "Attention without alarm" — orange-family in Dracula/Solarized, italic
+    /// non-color signal in `default` and `minimal`. Drives `Role::Accent`.
+    pub accent: ThemedStyle,
+    /// "Structural pivot / label / identifier" — pink/magenta family in
+    /// Dracula/Solarized, underlined non-color signal in `minimal`. Drives
+    /// `Role::Secondary`.
+    pub secondary: ThemedStyle,
 
     // Icon slots (7)
     pub icon_ok: String,
@@ -234,6 +241,11 @@ impl Default for Theme {
             diff_add: ThemedStyle::plain().green(),
             diff_remove: ThemedStyle::plain().red(),
             diff_context: ThemedStyle::plain().dim(),
+            // Italic keeps an honest non-color signal under NO_COLOR; the hex
+            // gives truecolor terminals an orange-leaning accent that does not
+            // collide with the yellow `warning` slot.
+            accent: hex("#d78700").italic(),
+            secondary: hex("#af5fd7"),
             icon_ok: ICON_OK.into(),
             icon_warn: ICON_WARN.into(),
             icon_fail: ICON_FAIL.into(),
@@ -268,6 +280,8 @@ impl Theme {
             diff_add: hex("#50fa7b"),
             diff_remove: hex("#ff5555"),
             diff_context: hex("#6272a4"),
+            accent: hex("#ffb86c"),
+            secondary: hex("#ff79c6"),
             ..Self::default()
         }
     }
@@ -284,6 +298,8 @@ impl Theme {
             diff_add: hex("#859900"),
             diff_remove: hex("#dc322f"),
             diff_context: hex("#586e75"),
+            accent: hex("#cb4b16"),
+            secondary: hex("#d33682"),
             ..Self::default()
         }
     }
@@ -300,6 +316,8 @@ impl Theme {
             diff_add: hex("#859900"),
             diff_remove: hex("#dc322f"),
             diff_context: hex("#93a1a1"),
+            accent: hex("#cb4b16"),
+            secondary: hex("#d33682"),
             ..Self::default()
         }
     }
@@ -341,6 +359,12 @@ impl Theme {
         if let Some(c) = &ov.diff_context {
             apply_color(&mut t.diff_context, c);
         }
+        if let Some(c) = &ov.accent {
+            apply_color(&mut t.accent, c);
+        }
+        if let Some(c) = &ov.secondary {
+            apply_color(&mut t.secondary, c);
+        }
         // Icon overrides
         if let Some(v) = &ov.icon_ok {
             t.icon_ok = v.clone();
@@ -378,6 +402,11 @@ impl Theme {
             diff_add: ThemedStyle::plain(),
             diff_remove: ThemedStyle::plain(),
             diff_context: ThemedStyle::plain().dim(),
+            // Italic vs underlined keeps the two accent axes distinguishable
+            // without any color budget — orthogonal to bold/dim already used by
+            // header/error/muted.
+            accent: ThemedStyle::plain().italic(),
+            secondary: ThemedStyle::plain().underlined(),
             icon_ok: "+".into(),
             icon_warn: "!".into(),
             icon_fail: "x".into(),

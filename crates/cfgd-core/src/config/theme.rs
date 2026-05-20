@@ -71,7 +71,7 @@ impl<'de> serde::Deserialize<'de> for ThemeConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThemeOverrides {
-    // Style overrides (10) — hex colors applied on top of the active preset.
+    // Style overrides (12) — hex colors applied on top of the active preset.
     pub header: Option<String>,
     pub success: Option<String>,
     pub warning: Option<String>,
@@ -82,6 +82,8 @@ pub struct ThemeOverrides {
     pub diff_add: Option<String>,
     pub diff_remove: Option<String>,
     pub diff_context: Option<String>,
+    pub accent: Option<String>,
+    pub secondary: Option<String>,
 
     // Icon overrides (7) — single glyphs (or short strings) for status roles.
     pub icon_ok: Option<String>,
@@ -105,6 +107,8 @@ impl ThemeOverrides {
             && self.diff_add.is_none()
             && self.diff_remove.is_none()
             && self.diff_context.is_none()
+            && self.accent.is_none()
+            && self.secondary.is_none()
             && self.icon_ok.is_none()
             && self.icon_warn.is_none()
             && self.icon_fail.is_none()
