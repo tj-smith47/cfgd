@@ -11472,12 +11472,10 @@ fn cmd_module_search_no_registries_structured() {
 
 #[test]
 fn cmd_module_build_no_module_yaml_fails() {
-    let (printer, _) = Printer::for_test();
     let dir = tempfile::tempdir().unwrap();
     let v2_printer = test_v2_printer();
 
     let result = module::cmd_module_build(
-        &printer,
         &v2_printer,
         &dir.path().display().to_string(),
         None,

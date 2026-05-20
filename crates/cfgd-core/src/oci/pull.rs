@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::Path;
 
 use crate::errors::OciError;
-use crate::output::Printer;
+use crate::output_v2::Printer;
 use crate::sha256_digest;
 
 use super::archive::extract_tar_gz;
@@ -27,7 +27,7 @@ pub fn pull_module(
     let auth = RegistryAuth::resolve(&oci_ref.registry);
     let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
 
-    let spinner = printer.map(|p| p.spinner(&format!("Pulling module from {artifact_ref}...")));
+    let spinner = printer.map(|p| p.spinner(format!("Pulling module from {artifact_ref}...")));
 
     // If signature required, check for cosign signature tag
     if require_signature {
@@ -122,7 +122,7 @@ pub fn pull_module(
     extract_tar_gz(&blob_data, output_dir)?;
 
     if let Some(s) = spinner {
-        s.finish_and_clear();
+        let _ = s.finish_ok(format!("Pulled module from {artifact_ref}"));
     }
 
     tracing::info!(

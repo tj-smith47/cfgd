@@ -7,7 +7,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::errors::OciError;
-use crate::output::Printer;
+use crate::output_v2::Printer;
 use crate::sha256_digest;
 
 use super::archive::create_tar_gz;
@@ -34,10 +34,10 @@ pub fn push_module(
     let oci_ref = OciReference::parse(artifact_ref)?;
     let auth = RegistryAuth::resolve(&oci_ref.registry);
     let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
-    let spinner = printer.map(|p| p.spinner(&format!("Pushing module to {artifact_ref}...")));
+    let spinner = printer.map(|p| p.spinner(format!("Pushing module to {artifact_ref}...")));
     let (digest, _size) = push_module_inner(&agent, dir, &oci_ref, auth.as_ref(), platform)?;
     if let Some(s) = spinner {
-        s.finish_and_clear();
+        let _ = s.finish_ok(format!("Pushed module to {artifact_ref}"));
     }
     Ok(digest)
 }
@@ -210,7 +210,7 @@ pub fn push_module_multiplatform(
     let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
 
     let spinner = printer.map(|p| {
-        p.spinner(&format!(
+        p.spinner(format!(
             "Pushing multi-platform module to {artifact_ref}..."
         ))
     });
@@ -273,7 +273,7 @@ pub fn push_module_multiplatform(
     let index_digest = sha256_digest(&index_json);
 
     if let Some(s) = spinner {
-        s.finish_and_clear();
+        let _ = s.finish_ok(format!("Pushed multi-platform module to {artifact_ref}"));
     }
 
     tracing::info!(

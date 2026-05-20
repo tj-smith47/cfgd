@@ -45,11 +45,9 @@ fn assert_snapshot(base: &Path, name: &str, actual: &str) {
 #[test]
 fn module_push_missing_yaml_human() {
     let dir = tempfile::tempdir().unwrap();
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
     let result = module::cmd_module_push(
-        &printer,
         &v2_printer,
         dir.path().to_str().unwrap(),
         "oci.example.com/test:v1",

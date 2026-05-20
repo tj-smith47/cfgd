@@ -3,7 +3,6 @@ use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_module_build(
-    printer: &Printer,
     v2_printer: &PrinterV2,
     dir: &str,
     target: Option<&str>,
@@ -63,16 +62,16 @@ pub fn cmd_module_build(
 
         if let Some(art) = artifact {
             let digest =
-                cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]), Some(printer))
+                cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]), Some(v2_printer))
                     .map_err(|e| {
-                        v2_printer.emit(cfgd_core::output_v2::error_doc(
-                            art,
-                            "push_failed",
-                            e.to_string(),
-                            serde_json::json!({ "artifact": art, "target": targets[0] }),
-                        ));
-                        anyhow::anyhow!("{e}")
-                    })?;
+                    v2_printer.emit(cfgd_core::output_v2::error_doc(
+                        art,
+                        "push_failed",
+                        e.to_string(),
+                        serde_json::json!({ "artifact": art, "target": targets[0] }),
+                    ));
+                    anyhow::anyhow!("{e}")
+                })?;
             v2_printer.status_simple(Role::Ok, format!("Pushed {art}"));
             v2_printer.kv("Digest", &digest);
             digest_value = Some(digest);
@@ -120,16 +119,17 @@ pub fn cmd_module_build(
                 .iter()
                 .map(|(dir, plat)| (dir.as_path(), plat.as_str()))
                 .collect();
-            let digest = cfgd_core::oci::push_module_multiplatform(&build_refs, art, Some(printer))
-                .map_err(|e| {
-                    v2_printer.emit(cfgd_core::output_v2::error_doc(
-                        art,
-                        "push_failed",
-                        e.to_string(),
-                        serde_json::json!({ "artifact": art, "targets": &targets }),
-                    ));
-                    anyhow::anyhow!("{e}")
-                })?;
+            let digest =
+                cfgd_core::oci::push_module_multiplatform(&build_refs, art, Some(v2_printer))
+                    .map_err(|e| {
+                        v2_printer.emit(cfgd_core::output_v2::error_doc(
+                            art,
+                            "push_failed",
+                            e.to_string(),
+                            serde_json::json!({ "artifact": art, "targets": &targets }),
+                        ));
+                        anyhow::anyhow!("{e}")
+                    })?;
             v2_printer.status_simple(Role::Ok, format!("Pushed multi-platform index {art}"));
             v2_printer.kv("Digest", &digest);
             digest_value = Some(digest);

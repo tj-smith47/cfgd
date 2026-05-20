@@ -1412,7 +1412,6 @@ fn cmd_module_keys_generate_no_cosign_fails() {
 #[test]
 fn cmd_module_push_no_module_yaml_fails() {
     let dir = tempfile::tempdir().unwrap();
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
     let v2_printer = make_v2_printer();
 
     let opts = PushOptions {
@@ -1423,7 +1422,6 @@ fn cmd_module_push_no_module_yaml_fails() {
         attest: false,
     };
     let err = cmd_module_push(
-        &printer,
         &v2_printer,
         dir.path().to_str().unwrap(),
         "oci.example.com/test:v1",
@@ -1439,11 +1437,9 @@ fn cmd_module_push_no_module_yaml_fails() {
 #[test]
 fn cmd_module_build_no_module_yaml_fails() {
     let dir = tempfile::tempdir().unwrap();
-    let (printer, _buf) = cfgd_core::output::Printer::for_test();
     let v2_printer = make_v2_printer();
 
     let err = cmd_module_build(
-        &printer,
         &v2_printer,
         dir.path().to_str().unwrap(),
         None,

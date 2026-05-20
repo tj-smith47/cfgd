@@ -12,7 +12,6 @@ pub struct PushOptions<'a> {
 }
 
 pub fn cmd_module_push(
-    printer: &Printer,
     v2_printer: &PrinterV2,
     dir: &str,
     artifact: &str,
@@ -52,8 +51,8 @@ pub fn cmd_module_push(
     }
     v2_printer.kv_block(header);
 
-    let digest =
-        cfgd_core::oci::push_module(dir_path, artifact, platform, Some(printer)).map_err(|e| {
+    let digest = cfgd_core::oci::push_module(dir_path, artifact, platform, Some(v2_printer))
+        .map_err(|e| {
             v2_printer.emit(cfgd_core::output_v2::error_doc(
                 artifact,
                 "push_failed",
@@ -246,7 +245,6 @@ async fn apply_module_crd(
 }
 
 pub fn cmd_module_pull(
-    printer: &Printer,
     v2_printer: &PrinterV2,
     artifact_ref: &str,
     output: &str,
@@ -290,15 +288,17 @@ pub fn cmd_module_pull(
     }
 
     // Pull uses the existing require_signature=false since we've already verified above
-    cfgd_core::oci::pull_module(artifact_ref, output_path, false, Some(printer)).map_err(|e| {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
-            artifact_ref,
-            "pull_failed",
-            e.to_string(),
-            serde_json::json!({ "artifact": artifact_ref, "output": output }),
-        ));
-        anyhow::anyhow!("{e}")
-    })?;
+    cfgd_core::oci::pull_module(artifact_ref, output_path, false, Some(v2_printer)).map_err(
+        |e| {
+            v2_printer.emit(cfgd_core::output_v2::error_doc(
+                artifact_ref,
+                "pull_failed",
+                e.to_string(),
+                serde_json::json!({ "artifact": artifact_ref, "output": output }),
+            ));
+            anyhow::anyhow!("{e}")
+        },
+    )?;
 
     v2_printer.status_simple(Role::Ok, format!("Pulled {artifact_ref} to {output}"));
 

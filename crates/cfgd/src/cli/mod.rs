@@ -1500,7 +1500,6 @@ pub fn execute(
                 key,
                 attest,
             } => module::cmd_module_push(
-                printer,
                 v2_printer,
                 dir,
                 artifact,
@@ -1521,7 +1520,6 @@ pub fn execute(
                 certificate_identity,
                 certificate_oidc_issuer,
             } => module::cmd_module_pull(
-                printer,
                 v2_printer,
                 artifact_ref,
                 dir,
@@ -1541,7 +1539,6 @@ pub fn execute(
                 sign,
                 key,
             } => module::cmd_module_build(
-                printer,
                 v2_printer,
                 dir,
                 target.as_deref(),
