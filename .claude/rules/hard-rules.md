@@ -3,7 +3,7 @@ paths: ["**/*.rs"]
 ---
 # cfgd Hard Rules — violations must be fixed immediately
 
-1. **ALL terminal output goes through `output::`**. No module outside `output/` may use `println!`, `eprintln!`, `print!`, `eprint!`, `console::*`, or `indicatif::*` directly. The `output` module owns all interaction with the terminal. This is the single most important architectural constraint — it enables consistent theming, syntax highlighting, and future TUI migration. The pre-R3 `Printer::{success, warning, info, error, header, subheader, key_value, newline, plan_phase, stdout_line}` methods no longer exist — use `status_simple(Role::Ok/Info/Warn/Err, ...)`, `heading(...)`, `kv(...)`, `data_line(...)` instead. See `output-module.md`.
+1. **ALL terminal output goes through `output::`**. No module outside `output/` may use `println!`, `eprintln!`, `print!`, `eprint!`, `console::*`, or `indicatif::*` directly. The `output` module owns all interaction with the terminal. This is the single most important architectural constraint — it enables consistent theming, syntax highlighting, and future TUI migration. The Printer surface is: `status_simple(Role::Ok/Info/Warn/Err, ...)`, `heading(...)`, `kv(...)`, `data_line(...)`, `section(...)`, `spinner(...)`, `progress_bar(...)`, `run(...)`, `emit(doc)`, `hint(...)`, `note(...)`, `table(...)`. There are no `success`/`warning`/`info`/`error`/`header`/`subheader`/`key_value`/`newline`/`plan_phase`/`stdout_line` methods — those names are banned (see `output-module.md`).
 
 2. **No `unwrap()` or `expect()` in library code**. Use `?` with proper error types. `unwrap()` is permitted only in tests and in `main.rs` for top-level setup where failure means "crash immediately."
 

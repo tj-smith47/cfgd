@@ -27,15 +27,15 @@ Forbidden outside the `output/` module itself:
 - `console::*` direct use
 - `indicatif::ProgressBar::new` or `MultiProgress::new` directly
 - `log::*` macros — use `tracing::*` instead
-- The pre-R3 `Printer::{success, warning, info, error, header, subheader, key_value, newline, plan_phase, stdout_line}` methods no longer exist.
+- The following method names are reserved-banned (the audit gate in `.claude/scripts/audit.sh` rejects them outside `output/` itself): `success`, `warning`, `info`, `error`, `header`, `subheader`, `key_value`, `newline`, `plan_phase`, `stdout_line`.
 
 See Hard Rule #1 in `hard-rules.md`.
 
 ## Structured-output coverage (cmd_* → has_data_payload?)
 
 Every `cmd_*` function in `crates/cfgd/src/cli/` must appear in this
-table. R3-enabled audit greps for `cmd_*` declarations and fails if any
-are missing from the table.
+table. The audit greps for `cmd_*` declarations and fails if any are
+missing from the table.
 
 | Command                      | has_data_payload? | Why / Why not                                      |
 |------------------------------|-------------------|----------------------------------------------------|
