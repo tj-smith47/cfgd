@@ -44,6 +44,12 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
         let silent_printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
 
+        // Multi-source sync emits N undifferentiated status streams. The
+        // per-source `secondary` line acts as a structural pivot — color
+        // groups each block visually so the eye can jump source-to-source
+        // without re-reading the spinner labels. Single-source runs still
+        // emit the header (consistent shape > one-off branches).
+        let multi_source = cfg.spec.sources.len() > 1;
         for source_spec in &cfg.spec.sources {
             let source_dir = cache_dir.join(&source_spec.name);
             let old_manifest = if source_dir.exists() {
@@ -52,6 +58,9 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                 None
             };
 
+            if multi_source {
+                sources_sec.status_simple(Role::Secondary, format!("Source: {}", source_spec.name));
+            }
             let sp = sources_sec.spinner(format!("Syncing source '{}'", source_spec.name));
             let load_result = mgr.load_source(source_spec, &silent_printer);
             match load_result {
