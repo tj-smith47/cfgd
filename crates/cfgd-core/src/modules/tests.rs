@@ -1486,11 +1486,6 @@ fn resolve_profile_module_name_bare() {
     assert_eq!(resolve_profile_module_name("tmux"), "tmux");
 }
 
-#[test]
-fn resolve_profile_module_name_registry_ref() {
-    assert_eq!(resolve_profile_module_name("community/tmux"), "tmux");
-}
-
 // --- Load locked modules into local map ---
 
 #[test]
@@ -1992,18 +1987,6 @@ fn save_lockfile_overwrites_existing() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn hash_module_contents_deterministic_v2() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("module.yaml"), "spec: {}").unwrap();
-    std::fs::write(dir.path().join("init.lua"), "-- lua config").unwrap();
-
-    let h1 = hash_module_contents(dir.path()).unwrap();
-    let h2 = hash_module_contents(dir.path()).unwrap();
-    assert_eq!(h1, h2);
-    assert!(h1.starts_with("sha256:"));
-}
-
-#[test]
 fn hash_module_contents_differs_on_content_change() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("file.txt"), "version 1").unwrap();
@@ -2027,13 +2010,6 @@ fn hash_module_contents_skips_git_dir() {
     std::fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/dev").unwrap();
     let h2 = hash_module_contents(dir.path()).unwrap();
     assert_eq!(h1, h2);
-}
-
-#[test]
-fn hash_module_contents_empty_dir_v2() {
-    let dir = tempfile::tempdir().unwrap();
-    let h = hash_module_contents(dir.path()).unwrap();
-    assert!(h.starts_with("sha256:"));
 }
 
 // -----------------------------------------------------------------------
@@ -2091,14 +2067,6 @@ fn parse_registry_ref_basic() {
 }
 
 #[test]
-fn parse_registry_ref_with_tag_v2() {
-    let r = parse_registry_ref("myorg/nvim@v2.0").unwrap();
-    assert_eq!(r.registry, "myorg");
-    assert_eq!(r.module, "nvim");
-    assert_eq!(r.tag, Some("v2.0".to_string()));
-}
-
-#[test]
 fn parse_registry_ref_empty_registry() {
     assert!(parse_registry_ref("/tmux").is_none());
 }
@@ -2125,7 +2093,7 @@ fn resolve_profile_module_name_local() {
 }
 
 #[test]
-fn resolve_profile_module_name_registry_ref_v2() {
+fn resolve_profile_module_name_registry_ref() {
     assert_eq!(resolve_profile_module_name("community/tmux"), "tmux");
     assert_eq!(resolve_profile_module_name("myorg/nvim"), "nvim");
 }

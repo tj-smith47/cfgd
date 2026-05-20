@@ -386,17 +386,6 @@ fn generate_slsa_provenance_complete_structure() {
 }
 
 #[test]
-fn generate_slsa_provenance_strips_sha256_prefix_v2() {
-    let prov =
-        generate_slsa_provenance("ghcr.io/test:v1", "sha256:abcdef", "repo", "commit").unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&prov).unwrap();
-    assert_eq!(
-        parsed["subject"][0]["digest"]["sha256"], "abcdef",
-        "sha256: prefix should be stripped from digest"
-    );
-}
-
-#[test]
 fn generate_slsa_provenance_bare_digest() {
     let prov = generate_slsa_provenance("ghcr.io/test:v1", "abcdef", "repo", "commit").unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&prov).unwrap();
