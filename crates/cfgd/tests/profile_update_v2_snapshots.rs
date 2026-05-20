@@ -154,8 +154,8 @@ fn profile_update_add_remove_mixed_human() {
 #[serial]
 fn profile_update_add_module_remote_hybrid_human() {
     // T1→T3 closed: `cmd_profile_update --module <file://...>` delegates to
-    // `module::cmd_module_add_remote(cli, printer, ...)` — both ends on v2.
-    // The v2 prompt queue drives the "Add this remote module?" / signature
+    // `module::cmd_module_add_remote(cli, printer, ...)`.
+    // The prompt queue drives the "Add this remote module?" / signature
     // confirmations through the unified Printer surface.
     let (config_dir, state_dir) = profile_test_config_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());

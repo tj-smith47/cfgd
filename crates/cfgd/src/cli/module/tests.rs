@@ -2929,8 +2929,8 @@ fn cmd_module_list_wide_format_emits_seven_column_table() {
     // string. Pins this UX contract by counting the per-column values.
     //
     // Drives the doc builder directly with wide=true because the buffered
-    // v2 test helpers (`for_test_with_format(Wide)`) force `Verbosity::Quiet`,
-    // and the v2 renderer suppresses tables under Quiet. Calling the builder
+    // test helpers (`for_test_with_format(Wide)`) force `Verbosity::Quiet`,
+    // and the renderer suppresses tables under Quiet. Calling the builder
     // skips the runtime is_wide() branch but pins the same shape contract.
     let entries = vec![super::ModuleListEntry {
         name: "wide-mod".into(),

@@ -11,7 +11,7 @@ pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 ///
 /// The `DoctorOutput` schema is consumer-facing and frozen; this struct carries
 /// the human-section sources (state-store health, profiles dir, config sources)
-/// so the human Doc keeps parity with the pre-v2 output without altering the
+/// so the human Doc keeps parity with the prior output without altering the
 /// `-o json` shape.
 #[derive(Default)]
 pub struct DoctorExtras {
@@ -37,7 +37,7 @@ pub struct DoctorConfigSource {
 }
 
 /// Gather every doctor check into the stable JSON payload + display-only extras.
-/// The lib call to `modules::load_all_modules` still takes the old `Printer`.
+/// The lib call to `modules::load_all_modules` takes a `Printer`.
 fn collect_doctor_output(
     cli: &Cli,
     printer: &Printer,

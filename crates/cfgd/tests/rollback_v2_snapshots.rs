@@ -1,9 +1,8 @@
 //! Snapshot tests for `cfgd rollback`.
 //!
 //! Real `cmd_rollback` capture against tempdir state DBs seeded directly
-//! through the public `StateStore` API. Reconciler emissions during the
-//! restore phase still render through the v1 `Printer`; v2 snapshots only
-//! lock the section headers, statuses, kv block, and buffered summary.
+//! through the public `StateStore` API. Snapshots lock the section headers,
+//! statuses, kv block, and buffered summary.
 //!
 //! Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test rollback_v2_snapshots

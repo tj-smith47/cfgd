@@ -1,10 +1,9 @@
 //! Snapshot tests for `cfgd diff`.
 //!
 //! Real `cmd_diff` capture against tempdir profiles. The file-diff body
-//! (subheaders + unified diff lines) still renders through the v1 `Printer`
-//! via `CfgdFileManager::diff` until F4b migrates the files lib; v2 snapshots
-//! only lock the section headers + outcome statuses + buffered summary, not
-//! the diff body. Test profiles use an empty `spec.system` map so each
+//! (subheaders + unified diff lines) renders via `CfgdFileManager::diff`;
+//! snapshots lock the section headers + outcome statuses + buffered summary,
+//! not the diff body. Test profiles use an empty `spec.system` map so each
 //! system configurator short-circuits on `merged.system.get(key) == None` —
 //! the System section emits only "No system drift" regardless of host. The
 //! `normalize` helper handles tempdir path substitution only.
@@ -185,7 +184,7 @@ fn diff_no_drift_json() {
 
 /// Profile target doesn't exist on disk — `fm.diff` reports drift. Snapshot
 /// locks the "Files" section header + summary outcome, not the diff body
-/// (which renders through v1 printer; F4b migrates).
+/// (which renders via `CfgdFileManager::diff`).
 #[test]
 fn diff_file_drift_human() {
     let (config_dir, state_dir, target) = file_drift_setup();

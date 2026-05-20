@@ -3,9 +3,8 @@
 //! Coverage strategy:
 //!   `cmd_upgrade` calls into `cfgd_core::upgrade::*` for GitHub Releases
 //!   API lookup, signature verification, and atomic install. Those carry
-//!   `&Printer` (v1) per the F3.5 hybrid lib-call rule and are exhaustively
-//!   tested in `cfgd-core::upgrade::tests` with the `CFGD_GITHUB_API_BASE`
-//!   mockito seam.
+//!   `&Printer` and are exhaustively tested in `cfgd-core::upgrade::tests`
+//!   with the `CFGD_GITHUB_API_BASE` mockito seam.
 //!
 //!   The "update available" branch in `--check` mode calls
 //!   `ExitCode::UpdateAvailable.exit()` which terminates the process — we
@@ -16,7 +15,7 @@
 //!
 //!   What we DO snapshot here is the `--check` path's "up to date" branch
 //!   (the safe, no-exit, no-network-mutation case). The release-info
-//!   payload is stubbed via mockito and the buffered v2 Doc is captured
+//!   payload is stubbed via mockito and the buffered Doc is captured
 //!   for both human (`up_to_date.txt`) and JSON (`up_to_date.json`)
 //!   shapes. The `up_to_date.{txt,json}` filenames cover the `--check`
 //!   up-to-date sub-case; the upgrade-without-`--check` up-to-date path

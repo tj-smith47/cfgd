@@ -199,10 +199,10 @@ fn source_add_clone_failure_human() {
 #[serial]
 fn source_add_bridge_one_blank_line() {
     // §17.2 bridge invariant: the streaming clone surface (spinners emitted
-    // by `SourceManager::load_source` via the v1 printer) → buffered
-    // "Subscribed" Doc transition has exactly one blank line. Hand-rolled
-    // because hooking the v1-printer spinners into the v2 capture is brittle;
-    // the human surface we care about is the v2 capture only.
+    // by `SourceManager::load_source`) → buffered "Subscribed" Doc transition
+    // has exactly one blank line. Hand-rolled because the Printer captures all
+    // human-surface output via the test capture; we only assert on that
+    // captured surface here.
     let _allow = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
@@ -218,7 +218,7 @@ fn source_add_bridge_one_blank_line() {
     drop(printer);
 
     let combined = cap.human();
-    // The v2 surface always carries the heading + manifest sections + final
+    // The capture always carries the heading + manifest sections + final
     // Doc — single-blank-line rule applies between the streamed manifest
     // section and the final Subscribed status.
     assert!(

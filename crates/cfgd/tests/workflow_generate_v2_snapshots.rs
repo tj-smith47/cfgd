@@ -9,7 +9,7 @@
 //!   - `workflow_generate/skipped.txt` — workflow exists, --force not set,
 //!     prompt declines → Role::Info Doc with `skipped: true`. The
 //!     `cli_for` helper uses Quiet+NoColor; `prompt_confirm` on a
-//!     Quiet-mode v2 Printer with no queued responses returns Err which
+//!     Quiet-mode Printer with no queued responses returns Err which
 //!     `unwrap_or(false)` maps to "do not overwrite".
 
 mod common;

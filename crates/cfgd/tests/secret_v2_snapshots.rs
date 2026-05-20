@@ -11,12 +11,12 @@
 //!     file via sops is idempotent; verify the Doc still emits Ok.
 //!   - `secret_decrypt/happy.{txt,json}` — decrypts a file; verifies the
 //!     plaintext-to-stdout shape via `cap.human()` (data_line goes to the
-//!     v2 stdout sink which `for_test_doc` routes to the capture buffer).
+//!     stdout sink which `for_test_doc` routes to the capture buffer).
 //!   - `secret_edit/happy.txt` — drives the decrypt → editor → encrypt
 //!     cycle; the editor is `/bin/true` so the content round-trips.
 //!
 //! Unix-only: relies on `age-keygen` / `age` / `sops` being on PATH and the
-//! v2 capture's plaintext sink. Goldens under `tests/output_snapshots/secret_*/`.
+//! capture's plaintext sink. Goldens under `tests/output_snapshots/secret_*/`.
 
 #![cfg(unix)]
 
