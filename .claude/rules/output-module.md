@@ -22,6 +22,8 @@ The `output` module (`crates/cfgd-core/src/output/`) provides:
 
 **Every module receives a `&Printer` (or `Arc<Printer>` in async contexts). This is non-negotiable.**
 
+**Status subjects must not contain `\n`.** When formatting a captured error (`io::Error`, `CfgdError`, command stderr) into a `status[_simple]` subject or detail, route through `cfgd_core::output::collapse_to_subject_line(err)` to flatten multi-line errors safely — the `Renderer::write_line` `debug_assert` will panic in debug builds otherwise.
+
 Forbidden outside the `output/` module itself:
 - `println!`, `eprintln!`, `print!`, `eprint!`
 - `console::*` direct use

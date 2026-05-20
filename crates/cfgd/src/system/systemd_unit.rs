@@ -112,13 +112,21 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                         {
                             printer.status_simple(
                                 Role::Warn,
-                                format!("Failed to install unit file: {}", e),
+                                format!(
+                                    "Failed to install unit file: {}",
+                                    cfgd_core::output::collapse_to_subject_line(&e)
+                                ),
                             );
                         }
                     }
                     Err(e) => {
-                        printer
-                            .status_simple(Role::Warn, format!("Failed to read unit file: {}", e));
+                        printer.status_simple(
+                            Role::Warn,
+                            format!(
+                                "Failed to read unit file: {}",
+                                cfgd_core::output::collapse_to_subject_line(&e)
+                            ),
+                        );
                     }
                 }
 

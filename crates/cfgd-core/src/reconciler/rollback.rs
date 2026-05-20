@@ -120,7 +120,11 @@ impl<'a> super::Reconciler<'a> {
                     if let Err(e) = std::fs::remove_file(target) {
                         printer.status_simple(
                             Role::Warn,
-                            format!("rollback: failed to remove {}: {}", target.display(), e),
+                            format!(
+                                "rollback: failed to remove {}: {}",
+                                target.display(),
+                                crate::output::collapse_to_subject_line(&e)
+                            ),
                         );
                     } else {
                         files_removed += 1;

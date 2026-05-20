@@ -165,12 +165,18 @@ impl SystemConfigurator for ContainerdConfigurator {
                 if let Err(re) = cfgd_core::atomic_write(&config_path, &state.content) {
                     printer.status_simple(
                         Role::Warn,
-                        format!("rollback: failed to restore config: {}", re),
+                        format!(
+                            "rollback: failed to restore config: {}",
+                            cfgd_core::output::collapse_to_subject_line(&re)
+                        ),
                     );
                 } else if let Err(re) = Self::restart_containerd() {
                     printer.status_simple(
                         Role::Warn,
-                        format!("rollback: containerd restart also failed: {}", re),
+                        format!(
+                            "rollback: containerd restart also failed: {}",
+                            cfgd_core::output::collapse_to_subject_line(&re)
+                        ),
                     );
                 }
             }

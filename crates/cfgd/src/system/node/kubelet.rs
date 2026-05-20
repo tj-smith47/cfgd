@@ -190,27 +190,19 @@ impl SystemConfigurator for KubeletConfigurator {
 }
 
 /// Emit a `Role::Warn` status whose subject collapses a multi-line error into
-/// a single line.
+/// a single line via `cfgd_core::output::collapse_to_subject_line`.
 ///
 /// Systemctl errors are routinely multi-line (e.g. `"Transport endpoint is not
 /// connected\nSee system logs and 'systemctl status kubelet.service' for
 /// details."`). Pumping the raw `Display` into `status_simple`'s subject trips
-/// `Renderer::write_line`'s debug-assert against embedded newlines. This helper
-/// flattens the message: the first non-empty line forms the head of the
-/// subject, and any trailing non-empty lines are joined via ` — ` so all
-/// information remains visible on a single physical row.
+/// `Renderer::write_line`'s debug-assert against embedded newlines.
 pub(super) fn emit_warn_with_error(printer: &Printer, prefix: &str, err: &impl std::fmt::Display) {
-    let s = err.to_string();
-    let mut lines = s.lines();
-    let first = lines.next().unwrap_or("");
-    let rest: String = lines
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>()
-        .join(" — ");
-    let subject = if rest.is_empty() {
-        format!("{}: {}", prefix, first)
-    } else {
-        format!("{}: {} — {}", prefix, first, rest)
-    };
-    printer.status_simple(Role::Warn, subject);
+    printer.status_simple(
+        Role::Warn,
+        format!(
+            "{}: {}",
+            prefix,
+            cfgd_core::output::collapse_to_subject_line(err)
+        ),
+    );
 }

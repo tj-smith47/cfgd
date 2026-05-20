@@ -3017,6 +3017,45 @@ fn kubelet_error_subject_handles_multiline_systemctl_output() {
     );
 }
 
+#[test]
+fn containerd_rollback_subject_handles_multiline_systemctl_output() {
+    // Regression covering the broader sweep: the `containerd` rollback arm
+    // (containerd.rs:166-175) inlines the same `format!("…: {}", e)` shape
+    // that `kubelet_error_subject_handles_multiline_systemctl_output`
+    // pinned for kubelet. Both now route the captured error through
+    // `cfgd_core::output::collapse_to_subject_line` so multi-line systemctl
+    // output cannot trip `Renderer::write_line`'s debug-assert.
+    let err = std::io::Error::other(
+        "Transport endpoint is not connected\n\
+         See system logs and 'systemctl status containerd.service' for details.",
+    );
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    // Must not panic on the debug-assert in `Renderer::write_line`.
+    printer.status_simple(
+        cfgd_core::output::Role::Warn,
+        format!(
+            "rollback: containerd restart also failed: {}",
+            cfgd_core::output::collapse_to_subject_line(&err)
+        ),
+    );
+
+    let captured = buf.lock().unwrap().clone();
+    let status_line = captured
+        .lines()
+        .find(|l| l.contains("rollback: containerd restart also failed"))
+        .expect("warn status line must be present");
+    assert!(
+        status_line.contains("Transport endpoint is not connected"),
+        "first error line must appear: {status_line:?}"
+    );
+    assert!(
+        status_line.contains("See system logs"),
+        "trailing systemctl context must be preserved on the same line: {status_line:?}"
+    );
+}
+
 // --- SysctlConfigurator::apply paths ---
 //
 // apply() at sysctl.rs:128-157 is reachable on Linux without root because

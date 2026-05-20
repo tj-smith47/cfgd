@@ -382,10 +382,24 @@ impl EnvironmentConfigurator {
             Ok(output) => {
                 // setx writes error messages to stdout, not stderr
                 let stdout = cfgd_core::stdout_lossy_trimmed(&output);
-                printer.status_simple(Role::Warn, format!("setx {} failed: {}", name, stdout));
+                printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "setx {} failed: {}",
+                        name,
+                        cfgd_core::output::collapse_to_subject_line(&stdout)
+                    ),
+                );
             }
             Err(e) => {
-                printer.status_simple(Role::Warn, format!("setx {} failed: {}", name, e));
+                printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "setx {} failed: {}",
+                        name,
+                        cfgd_core::output::collapse_to_subject_line(&e)
+                    ),
+                );
             }
         }
     }
@@ -486,7 +500,13 @@ impl SystemConfigurator for EnvironmentConfigurator {
                         .status_simple(Role::Info, "Add to your shell rc: . ~/.config/cfgd/env.sh");
                 }
                 Err(e) => {
-                    printer.status_simple(Role::Warn, format!("Failed to write env.sh: {}", e));
+                    printer.status_simple(
+                        Role::Warn,
+                        format!(
+                            "Failed to write env.sh: {}",
+                            cfgd_core::output::collapse_to_subject_line(&e)
+                        ),
+                    );
                 }
             }
 
@@ -499,8 +519,13 @@ impl SystemConfigurator for EnvironmentConfigurator {
                     );
                 }
                 Err(e) => {
-                    printer
-                        .status_simple(Role::Warn, format!("Failed to write launchd plist: {}", e));
+                    printer.status_simple(
+                        Role::Warn,
+                        format!(
+                            "Failed to write launchd plist: {}",
+                            cfgd_core::output::collapse_to_subject_line(&e)
+                        ),
+                    );
                 }
             }
 
