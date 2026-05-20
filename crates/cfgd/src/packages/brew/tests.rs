@@ -79,7 +79,7 @@ fn brew_tap_manager_name_and_bootstrap() {
     assert_eq!(mgr.name(), "brew-tap");
     assert!(!mgr.can_bootstrap());
     // bootstrap is a no-op
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     mgr.bootstrap(&printer).unwrap();
 }
 
@@ -88,14 +88,14 @@ fn brew_cask_manager_name_and_bootstrap() {
     let mgr = BrewCaskManager;
     assert_eq!(mgr.name(), "brew-cask");
     assert!(!mgr.can_bootstrap());
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     mgr.bootstrap(&printer).unwrap();
 }
 
 #[test]
 fn brew_tap_manager_update_is_noop() {
     let mgr = BrewTapManager;
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     mgr.update(&printer).unwrap();
 }
 
@@ -108,7 +108,7 @@ fn brew_tap_manager_available_version_is_none() {
 #[test]
 fn brew_cask_manager_update_is_noop() {
     let mgr = BrewCaskManager;
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     mgr.update(&printer).unwrap();
 }
 
@@ -229,7 +229,7 @@ fn brew_cask_manager_is_available_checks_brew() {
 #[test]
 fn brew_cask_update_returns_ok() {
     let mgr = BrewCaskManager;
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     // brew-cask update is a no-op, should always succeed
     mgr.update(&printer).unwrap();
 }
@@ -361,7 +361,7 @@ fn parse_brew_info_version_errors_attribute_correct_manager() {
 mod brew_shim {
     use super::*;
     use cfgd_core::providers::PackageManager;
-    use cfgd_core::test_helpers::{ToolShim, test_printer_v2};
+    use cfgd_core::test_helpers::{ToolShim, test_printer};
     use serial_test::serial;
 
     const SHIM_ENV: &str = "CFGD_BREW_BIN";
@@ -372,7 +372,7 @@ mod brew_shim {
     #[serial]
     fn brew_install_passes_install_subcommand_with_each_package() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
-        let p = test_printer_v2();
+        let p = test_printer();
         BrewManager
             .install(&["git".into(), "vim".into()], &p)
             .expect("install Ok");
@@ -387,7 +387,7 @@ mod brew_shim {
     #[serial]
     fn brew_install_skips_command_when_package_list_empty() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
-        let p = test_printer_v2();
+        let p = test_printer();
         BrewManager.install(&[], &p).expect("empty install Ok");
         assert_eq!(
             shim.invocation_count(),
@@ -400,7 +400,7 @@ mod brew_shim {
     #[serial]
     fn brew_uninstall_passes_uninstall_subcommand_with_each_package() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
-        let p = test_printer_v2();
+        let p = test_printer();
         BrewManager
             .uninstall(&["git".into()], &p)
             .expect("uninstall Ok");
@@ -411,7 +411,7 @@ mod brew_shim {
     #[serial]
     fn brew_uninstall_skips_command_when_package_list_empty() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
-        let p = test_printer_v2();
+        let p = test_printer();
         BrewManager.uninstall(&[], &p).expect("empty uninstall Ok");
         assert_eq!(shim.invocation_count(), 0);
     }
@@ -420,7 +420,7 @@ mod brew_shim {
     #[serial]
     fn brew_update_runs_update_subcommand() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
-        let p = test_printer_v2();
+        let p = test_printer();
         BrewManager.update(&p).expect("update Ok");
         assert!(shim.argv_log().contains("update"));
     }
@@ -429,7 +429,7 @@ mod brew_shim {
     #[serial]
     fn brew_install_translates_nonzero_exit_into_install_failed() {
         let _shim = ToolShim::install(SHIM_ENV, 1, "", "Error: package not found");
-        let p = test_printer_v2();
+        let p = test_printer();
         let err = BrewManager
             .install(&["nonexistent".into()], &p)
             .expect_err("non-zero → Err");
@@ -490,7 +490,7 @@ mod brew_shim {
     #[serial]
     fn brew_tap_install_runs_one_tap_subcommand_per_entry() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
-        let p = test_printer_v2();
+        let p = test_printer();
         BrewTapManager
             .install(&["org/foo".into(), "org/bar".into()], &p)
             .expect("Ok");
@@ -504,7 +504,7 @@ mod brew_shim {
     #[serial]
     fn brew_tap_uninstall_runs_one_untap_subcommand_per_entry() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
-        let p = test_printer_v2();
+        let p = test_printer();
         BrewTapManager
             .uninstall(&["org/foo".into()], &p)
             .expect("Ok");
@@ -515,7 +515,7 @@ mod brew_shim {
     #[serial]
     fn brew_tap_update_is_noop_no_command_spawned() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
-        let p = test_printer_v2();
+        let p = test_printer();
         BrewTapManager.update(&p).expect("Ok");
         assert_eq!(
             shim.invocation_count(),
@@ -543,7 +543,7 @@ mod brew_shim {
     #[serial]
     fn brew_cask_install_passes_cask_flag_with_packages() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
-        let p = test_printer_v2();
+        let p = test_printer();
         BrewCaskManager
             .install(&["firefox".into(), "vlc".into()], &p)
             .expect("Ok");
@@ -555,7 +555,7 @@ mod brew_shim {
     #[serial]
     fn brew_cask_uninstall_passes_cask_flag_with_packages() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
-        let p = test_printer_v2();
+        let p = test_printer();
         BrewCaskManager
             .uninstall(&["firefox".into()], &p)
             .expect("Ok");
@@ -566,7 +566,7 @@ mod brew_shim {
     #[serial]
     fn brew_cask_install_skips_command_when_empty() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
-        let p = test_printer_v2();
+        let p = test_printer();
         BrewCaskManager.install(&[], &p).expect("Ok");
         assert_eq!(shim.invocation_count(), 0);
     }

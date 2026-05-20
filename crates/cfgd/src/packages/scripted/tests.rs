@@ -32,7 +32,7 @@ fn scripted_manager_install_uses_sh() {
         packages: vec![],
     };
     let mgr = ScriptedManager::from_spec(&spec);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     mgr.install(&["pkg1".to_string()], &printer).unwrap();
 }
 
@@ -48,7 +48,7 @@ fn scripted_manager_batch_mode() {
         packages: vec![],
     };
     let mgr = ScriptedManager::from_spec(&spec);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     mgr.install(
         &["a".to_string(), "b".to_string(), "c".to_string()],
         &printer,
@@ -114,7 +114,7 @@ fn scripted_manager_install_failure() {
         packages: vec![],
     };
     let mgr = ScriptedManager::from_spec(&spec);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     let result = mgr.install(&["pkg".to_string()], &printer);
     let err = result.unwrap_err();
     let msg = err.to_string();
@@ -161,7 +161,7 @@ fn scripted_manager_update_noop_when_no_cmd() {
         packages: vec![],
     };
     let mgr = ScriptedManager::from_spec(&spec);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     mgr.update(&printer).unwrap();
 }
 
@@ -199,7 +199,7 @@ fn scripted_manager_empty_packages_is_noop() {
         packages: vec![],
     };
     let mgr = ScriptedManager::from_spec(&spec);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     // Empty packages should be a no-op (returns Ok immediately)
     mgr.install(&[], &printer).unwrap();
     mgr.uninstall(&[], &printer).unwrap();
@@ -218,7 +218,7 @@ fn scripted_manager_batch_append_mode() {
         packages: vec![],
     };
     let mgr = ScriptedManager::from_spec(&spec);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     // Should succeed — command becomes "echo install pkg1 pkg2"
     mgr.install(&["pkg1".to_string(), "pkg2".to_string()], &printer)
         .unwrap();
@@ -237,7 +237,7 @@ fn scripted_manager_uninstall_one_at_a_time() {
         packages: vec![],
     };
     let mgr = ScriptedManager::from_spec(&spec);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     mgr.uninstall(&["a".to_string(), "b".to_string()], &printer)
         .unwrap();
 }
@@ -269,7 +269,7 @@ fn scripted_manager_update_runs_command() {
         packages: vec![],
     };
     let mgr = ScriptedManager::from_spec(&spec);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     mgr.update(&printer).unwrap();
 }
 
@@ -285,7 +285,7 @@ fn scripted_manager_update_failure() {
         packages: vec![],
     };
     let mgr = ScriptedManager::from_spec(&spec);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     let result = mgr.update(&printer);
     let err = result.unwrap_err();
     let msg = err.to_string();
@@ -376,7 +376,7 @@ fn scripted_manager_shell_escapes_packages() {
         packages: vec![],
     };
     let mgr = ScriptedManager::from_spec(&spec);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     // Package name with spaces and special chars
     mgr.install(&["pkg with spaces".to_string()], &printer)
         .unwrap();
@@ -394,7 +394,7 @@ fn scripted_manager_uninstall_failure_reports_correct_error() {
         packages: vec![],
     };
     let mgr = ScriptedManager::from_spec(&spec);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     let result = mgr.uninstall(&["pkg".to_string()], &printer);
     let err = result.unwrap_err();
     let msg = err.to_string();
@@ -441,7 +441,7 @@ fn scripted_manager_per_package_error_includes_package_name_as_prefix() {
         packages: vec![],
     };
     let mgr = ScriptedManager::from_spec(&spec);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     let result = mgr.install(&["my-pkg".to_string()], &printer);
     let err = result.unwrap_err();
     let msg = err.to_string();
@@ -464,7 +464,7 @@ fn scripted_manager_batch_install_failure_is_install_error() {
         packages: vec![],
     };
     let mgr = ScriptedManager::from_spec(&spec);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     let result = mgr.install(&["pkg".to_string()], &printer);
     let err = result.unwrap_err();
     let msg = err.to_string();
@@ -486,7 +486,7 @@ fn scripted_manager_batch_uninstall_failure() {
         packages: vec![],
     };
     let mgr = ScriptedManager::from_spec(&spec);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     let result = mgr.uninstall(&["pkg".to_string()], &printer);
     let err = result.unwrap_err();
     let msg = err.to_string();
@@ -508,7 +508,7 @@ fn scripted_manager_install_stderr_in_error_message() {
         packages: vec![],
     };
     let mgr = ScriptedManager::from_spec(&spec);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     let result = mgr.install(&["pkg".to_string()], &printer);
     let err = result.unwrap_err();
     let msg = err.to_string();
@@ -552,7 +552,7 @@ fn scripted_manager_update_failure_includes_stderr() {
         packages: vec![],
     };
     let mgr = ScriptedManager::from_spec(&spec);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     let result = mgr.update(&printer);
     let err = result.unwrap_err();
     let msg = err.to_string();
@@ -618,7 +618,7 @@ fn scripted_manager_packages_plural_template() {
         packages: vec![],
     };
     let mgr = ScriptedManager::from_spec(&spec);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     // Should succeed — {packages} replaced with "a b c"
     mgr.install(
         &["a".to_string(), "b".to_string(), "c".to_string()],
@@ -641,7 +641,7 @@ fn scripted_manager_per_package_stops_on_first_failure() {
             packages: vec![],
         };
     let mgr = ScriptedManager::from_spec(&spec);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     let result = mgr.install(
         &[
             "ok-pkg".to_string(),
@@ -718,7 +718,7 @@ fn scripted_manager_bootstrap_through_trait() {
         packages: vec![],
     };
     let mgr: Box<dyn PackageManager> = Box::new(ScriptedManager::from_spec(&spec));
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     mgr.bootstrap(&printer).unwrap();
 }
 

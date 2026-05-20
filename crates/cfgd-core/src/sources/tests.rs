@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_helpers::test_printer_v2 as test_printer;
+use crate::test_helpers::test_printer;
 use serial_test::serial;
 
 #[test]

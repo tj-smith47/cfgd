@@ -514,7 +514,7 @@ mod tests {
     mod pipx_shim {
         use super::*;
         use cfgd_core::providers::PackageManager;
-        use cfgd_core::test_helpers::{ToolShim, test_printer_v2};
+        use cfgd_core::test_helpers::{ToolShim, test_printer};
         use serial_test::serial;
 
         const SHIM_ENV: &str = "CFGD_PIPX_BIN";
@@ -523,7 +523,7 @@ mod tests {
         #[serial]
         fn pipx_install_runs_install_subcommand_per_package() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer_v2();
+            let p = test_printer();
             PipxManager
                 .install(&["black".into(), "ruff".into()], &p)
                 .expect("Ok");
@@ -537,7 +537,7 @@ mod tests {
         #[serial]
         fn pipx_uninstall_runs_uninstall_subcommand_per_package() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer_v2();
+            let p = test_printer();
             PipxManager.uninstall(&["black".into()], &p).expect("Ok");
             assert!(s.argv_log().contains("uninstall black"));
         }
@@ -546,7 +546,7 @@ mod tests {
         #[serial]
         fn pipx_update_runs_upgrade_all_subcommand() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer_v2();
+            let p = test_printer();
             PipxManager.update(&p).expect("Ok");
             assert!(s.argv_log().contains("upgrade-all"));
         }

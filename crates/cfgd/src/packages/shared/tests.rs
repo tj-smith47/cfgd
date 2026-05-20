@@ -245,14 +245,14 @@ fn post_install_note_fields() {
 
 #[test]
 fn print_caveats_empty_is_noop() {
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     // Should not panic
     print_caveats(&printer, &[]);
 }
 
 #[test]
 fn print_caveats_non_empty() {
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     let notes = vec![PostInstallNote {
         manager: "brew".to_string(),
         message: "Add to PATH".to_string(),
@@ -310,7 +310,7 @@ fn extract_caveats_pip_in_stderr() {
 
 #[test]
 fn print_caveats_multiple_notes() {
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     let notes = vec![
         PostInstallNote {
             manager: "brew".to_string(),

@@ -8,8 +8,7 @@ use crate::config::{
 use crate::platform::Platform;
 use crate::providers::{PackageManager, StubPackageManager as MockManager};
 use crate::test_helpers::{
-    linux_ubuntu_platform, macos_platform, make_manager_map, make_test_modules,
-    test_printer_v2 as test_printer,
+    linux_ubuntu_platform, macos_platform, make_manager_map, make_test_modules, test_printer,
 };
 
 // Cross-cutting tests reach into private helpers of submodules; expose them.

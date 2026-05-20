@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_helpers::test_printer_v2 as test_printer;
+use crate::test_helpers::test_printer;
 
 #[test]
 fn server_client_strips_trailing_slash() {

@@ -202,7 +202,7 @@ mod tests {
     #[test]
     fn go_install_manager_update_is_noop() {
         let mgr = GoInstallManager;
-        let printer = cfgd_core::test_helpers::test_printer_v2();
+        let printer = cfgd_core::test_helpers::test_printer();
         mgr.update(&printer).unwrap();
     }
 
@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn go_update_returns_ok() {
         let mgr = GoInstallManager;
-        let printer = cfgd_core::test_helpers::test_printer_v2();
+        let printer = cfgd_core::test_helpers::test_printer();
         mgr.update(&printer).unwrap();
     }
 
@@ -372,7 +372,7 @@ mod tests {
     #[cfg(unix)]
     mod go_shim {
         use super::*;
-        use cfgd_core::test_helpers::{ToolShim, test_printer_v2};
+        use cfgd_core::test_helpers::{ToolShim, test_printer};
         use serial_test::serial;
 
         const SHIM_ENV: &str = "CFGD_GO_BIN";
@@ -381,7 +381,7 @@ mod tests {
         #[serial]
         fn go_install_appends_at_latest_to_unversioned_package() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer_v2();
+            let p = test_printer();
             GoInstallManager
                 .install(&["github.com/example/tool".into()], &p)
                 .expect("Ok");
@@ -397,7 +397,7 @@ mod tests {
         #[serial]
         fn go_install_passes_through_pre_pinned_version() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer_v2();
+            let p = test_printer();
             GoInstallManager
                 .install(&["github.com/example/tool@v1.2.3".into()], &p)
                 .expect("Ok");
@@ -413,7 +413,7 @@ mod tests {
         #[serial]
         fn go_install_runs_one_install_per_package() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer_v2();
+            let p = test_printer();
             GoInstallManager
                 .install(&["a.com/x".into(), "b.com/y".into()], &p)
                 .expect("Ok");
@@ -424,7 +424,7 @@ mod tests {
         #[serial]
         fn go_update_is_noop_no_command_spawned() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer_v2();
+            let p = test_printer();
             GoInstallManager.update(&p).expect("Ok");
             assert_eq!(
                 s.invocation_count(),

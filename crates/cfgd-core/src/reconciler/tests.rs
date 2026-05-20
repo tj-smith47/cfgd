@@ -9,7 +9,7 @@ use crate::providers::PackageManager;
 use crate::providers::StubPackageManager as MockPackageManager;
 use crate::test_helpers::{
     MockSecretBackend, MockSecretProvider, MockSystemConfigurator, make_empty_resolved,
-    make_resolved_module, test_printer_v2, test_state,
+    make_resolved_module, test_printer, test_state,
 };
 
 #[test]
@@ -144,7 +144,7 @@ fn apply_empty_plan_records_success() {
         )
         .unwrap();
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -220,7 +220,7 @@ fn verify_returns_results() {
         packages: vec!["ripgrep".to_string(), "bat".to_string()],
     });
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
 
     // ripgrep should be present, bat should be missing
@@ -646,7 +646,7 @@ fn module_state_stored_after_apply() {
         )
         .unwrap();
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let _result = reconciler
         .apply(
             &plan,
@@ -719,7 +719,7 @@ fn verify_module_drift_packages() {
     ));
 
     let resolved = make_empty_resolved();
-    let printer = test_printer_v2();
+    let printer = test_printer();
 
     let modules = vec![make_resolved_module("nvim")];
     let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
@@ -784,7 +784,7 @@ fn verify_module_healthy_when_all_installed() {
     ));
 
     let resolved = make_empty_resolved();
-    let printer = test_printer_v2();
+    let printer = test_printer();
 
     let modules = vec![make_resolved_module("nvim")];
     let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
@@ -813,7 +813,7 @@ fn verify_module_script_packages_not_false_drift() {
     let registry = ProviderRegistry::new(); // no managers
 
     let resolved = make_empty_resolved();
-    let printer = test_printer_v2();
+    let printer = test_printer();
 
     let modules = vec![ResolvedModule {
         name: "rustup".to_string(),
@@ -1761,7 +1761,7 @@ fn apply_package_install_calls_mock_and_records_state() {
         )
         .unwrap();
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -1818,7 +1818,7 @@ fn apply_package_uninstall_calls_mock() {
         )
         .unwrap();
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -1859,7 +1859,7 @@ fn apply_empty_plan_records_success_in_state_store() {
         )
         .unwrap();
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -1901,7 +1901,7 @@ fn apply_records_correct_apply_id() {
             ReconcileContext::Apply,
         )
         .unwrap();
-    let printer = test_printer_v2();
+    let printer = test_printer();
 
     // First apply
     let result1 = reconciler
@@ -1961,7 +1961,7 @@ fn apply_env_write_env_file_to_tempdir() {
         content: content.clone(),
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
 
     // Verify file was written
@@ -1991,7 +1991,7 @@ fn apply_env_write_skips_when_content_matches() {
         content,
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
 
     // Should report skipped
@@ -2008,7 +2008,7 @@ fn apply_env_inject_source_line_creates_file() {
         line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
 
     let written = std::fs::read_to_string(&rc_path).unwrap();
@@ -2033,7 +2033,7 @@ fn apply_env_inject_skips_when_already_present() {
         line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
 
     assert!(desc.contains("skipped"), "Expected skip: {}", desc);
@@ -2051,7 +2051,7 @@ fn apply_env_inject_appends_to_existing_content() {
         line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     Reconciler::apply_env_action(&action, &printer).unwrap();
 
     let written = std::fs::read_to_string(&rc_path).unwrap();
@@ -2093,7 +2093,7 @@ fn apply_full_flow_plan_apply_verify_consistent() {
     assert!(!plan.is_empty());
 
     // Apply
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -2151,7 +2151,7 @@ fn apply_records_summary_json() {
             ReconcileContext::Apply,
         )
         .unwrap();
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -2203,7 +2203,7 @@ fn apply_with_phase_filter_only_runs_matching_phase() {
         )
         .unwrap();
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
 
     // Apply with filter set to Env phase — should skip Packages
     let result = reconciler
@@ -2251,7 +2251,7 @@ fn apply_with_phase_filter_runs_only_packages() {
         )
         .unwrap();
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
 
     // Apply with filter set to Packages phase — should run the install
     let result = reconciler
@@ -2304,7 +2304,7 @@ fn apply_file_create_action_writes_file() {
         )
         .unwrap();
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -2365,7 +2365,7 @@ fn apply_multiple_package_actions_all_succeed() {
         )
         .unwrap();
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -2414,7 +2414,7 @@ fn apply_package_skip_action_succeeds() {
         )
         .unwrap();
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -2454,7 +2454,7 @@ fn apply_env_write_with_aliases_produces_correct_file() {
         content: content.clone(),
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     Reconciler::apply_env_action(&action, &printer).unwrap();
 
     let written = std::fs::read_to_string(&env_path).unwrap();
@@ -2699,7 +2699,7 @@ fn build_script_env_includes_module_vars() {
 
 #[test]
 fn execute_script_inline_command() {
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let entry = ScriptEntry::Simple("echo hello".to_string());
     let dir = tempfile::tempdir().unwrap();
     let (desc, changed, output) = super::execute_script(
@@ -2717,7 +2717,7 @@ fn execute_script_inline_command() {
 
 #[test]
 fn execute_script_failure_returns_error() {
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let entry = ScriptEntry::Simple("exit 1".to_string());
     let dir = tempfile::tempdir().unwrap();
     let result = super::execute_script(
@@ -2737,7 +2737,7 @@ fn execute_script_failure_returns_error() {
 
 #[test]
 fn execute_script_with_timeout_override() {
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let entry = ScriptEntry::Full {
         run: "echo fast".to_string(),
         timeout: Some("5s".to_string()),
@@ -2759,7 +2759,7 @@ fn execute_script_with_timeout_override() {
 #[test]
 #[cfg(unix)]
 fn execute_script_injects_env_vars() {
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let entry = ScriptEntry::Simple("echo $MY_VAR".to_string());
     let dir = tempfile::tempdir().unwrap();
     let env = vec![("MY_VAR".to_string(), "test_value".to_string())];
@@ -2784,7 +2784,7 @@ fn execute_script_runs_executable_file() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let entry = ScriptEntry::Simple("test.sh".to_string());
     let (_, _, output) = super::execute_script(
         &entry,
@@ -2807,7 +2807,7 @@ fn execute_script_rejects_non_executable_file() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o644)).unwrap();
     }
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let entry = ScriptEntry::Simple("noexec.sh".to_string());
     let result = super::execute_script(
         &entry,
@@ -2827,7 +2827,7 @@ fn execute_script_rejects_non_executable_file() {
 #[test]
 #[cfg(unix)]
 fn execute_script_idle_timeout_kills_idle_process() {
-    let printer = test_printer_v2();
+    let printer = test_printer();
     // Script prints once then sleeps forever — idle timeout should kill it
     let entry = ScriptEntry::Full {
         run: "echo started; sleep 60".to_string(),
@@ -2893,7 +2893,7 @@ fn rollback_restores_file_content() {
     // Rollback to apply 1 — should restore v1 content
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let rollback_result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
 
     assert_eq!(rollback_result.files_restored, 1);
@@ -2915,7 +2915,7 @@ fn rollback_no_changes_when_at_latest_apply() {
 
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let rollback_result = reconciler.rollback_apply(apply_id, &printer).unwrap();
 
     assert_eq!(rollback_result.files_restored, 0);
@@ -2948,7 +2948,7 @@ fn rollback_lists_non_file_actions() {
 
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let rollback_result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
 
     assert_eq!(rollback_result.files_restored, 0);
@@ -2966,7 +2966,7 @@ fn rollback_records_new_apply_entry() {
 
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
-    let printer = test_printer_v2();
+    let printer = test_printer();
     reconciler.rollback_apply(apply_id, &printer).unwrap();
 
     // The rollback should have created a new apply entry
@@ -3063,7 +3063,7 @@ fn apply_partial_when_some_actions_fail() {
         )
         .unwrap();
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -3114,7 +3114,7 @@ fn apply_failed_when_all_actions_fail() {
         )
         .unwrap();
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -3176,7 +3176,7 @@ fn apply_continue_on_error_post_script_continues() {
         )
         .unwrap();
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -3230,7 +3230,7 @@ fn apply_continue_on_error_false_pre_script_aborts() {
         )
         .unwrap();
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler.apply(
         &plan,
         &resolved,
@@ -3273,7 +3273,7 @@ fn apply_continue_on_error_default_post_script_continues() {
         )
         .unwrap();
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -3333,7 +3333,7 @@ fn apply_on_change_script_runs_when_changes_occur() {
         )
         .unwrap();
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -3385,7 +3385,7 @@ fn apply_on_change_script_does_not_run_when_no_changes() {
         )
         .unwrap();
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -4287,7 +4287,7 @@ fn apply_on_change_skipped_when_skip_scripts_true() {
         )
         .unwrap();
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     // skip_scripts = true
     let result = reconciler
         .apply(
@@ -4393,7 +4393,7 @@ fn apply_package_bootstrap_makes_manager_available() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -4439,7 +4439,7 @@ fn apply_package_bootstrap_unknown_manager_errors() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -4478,7 +4478,7 @@ fn apply_package_install_unknown_manager_errors() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -4515,7 +4515,7 @@ fn apply_package_uninstall_unknown_manager_errors() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -4586,7 +4586,7 @@ fn apply_secret_decrypt_writes_decrypted_file() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -4640,7 +4640,7 @@ fn apply_secret_decrypt_no_backend_errors() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -4685,7 +4685,7 @@ fn apply_secret_resolve_writes_provider_value_to_file() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -4735,7 +4735,7 @@ fn apply_secret_resolve_unknown_provider_errors() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -4766,7 +4766,7 @@ fn apply_secret_resolve_env_collects_env_vars() {
         MockSecretProvider::new("vault").with_resolve_result("env-secret-value"),
     ));
     let reconciler = Reconciler::new(&registry, &state);
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let tmp = tempfile::tempdir().unwrap();
 
     let mut collector: Vec<(String, String)> = Vec::new();
@@ -4812,7 +4812,7 @@ fn apply_secret_resolve_env_unknown_provider_errors() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -4849,7 +4849,7 @@ fn apply_secret_skip_succeeds() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -4895,7 +4895,7 @@ fn apply_file_delete_action_removes_file() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -4942,7 +4942,7 @@ fn apply_file_set_permissions_action() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -4989,7 +4989,7 @@ fn apply_file_skip_action_succeeds() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -5038,7 +5038,7 @@ fn apply_file_update_action_overwrites_target() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -5100,7 +5100,7 @@ fn apply_system_set_value_calls_configurator() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -5144,7 +5144,7 @@ fn apply_system_skip_logs_warning() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -5248,7 +5248,7 @@ fn apply_module_install_packages_calls_manager() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -5332,7 +5332,7 @@ fn apply_module_deploy_files_creates_target() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -5411,7 +5411,7 @@ fn apply_module_deploy_files_symlink_strategy() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -5453,7 +5453,7 @@ fn apply_module_skip_reports_skipped() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -5528,7 +5528,7 @@ fn apply_module_install_packages_bootstraps_when_needed() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -5603,7 +5603,7 @@ fn rollback_restores_symlink_target() {
     // Rollback to apply 1 — should restore the symlink
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
-    let printer = test_printer_v2();
+    let printer = test_printer();
 
     let rollback_result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
 
@@ -5803,7 +5803,7 @@ fn apply_script_action_executes_and_records_output() {
         )
         .unwrap();
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -5870,7 +5870,7 @@ fn apply_module_run_script_executes_in_module_dir() {
         warnings: vec![],
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -6128,7 +6128,7 @@ fn verify_empty_profile_returns_no_results() {
     let state = test_state();
     let registry = ProviderRegistry::new();
     let resolved = make_empty_resolved();
-    let printer = test_printer_v2();
+    let printer = test_printer();
 
     let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
     assert!(
@@ -6142,7 +6142,7 @@ fn verify_empty_profile_returns_no_results() {
 fn verify_file_target_exists() {
     let state = test_state();
     let registry = ProviderRegistry::new();
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let tmp = tempfile::tempdir().unwrap();
 
     // Create a file that exists
@@ -6174,7 +6174,7 @@ fn verify_file_target_exists() {
 fn verify_file_target_missing() {
     let state = test_state();
     let registry = ProviderRegistry::new();
-    let printer = test_printer_v2();
+    let printer = test_printer();
 
     let mut resolved = make_empty_resolved();
     resolved.merged.files.managed.push(ManagedFileSpec {
@@ -6201,7 +6201,7 @@ fn verify_file_target_missing() {
 fn verify_module_file_target_missing_causes_drift() {
     let state = test_state();
     let registry = ProviderRegistry::new();
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let resolved = make_empty_resolved();
 
     let modules = vec![ResolvedModule {
@@ -6246,7 +6246,7 @@ fn verify_module_file_target_missing_causes_drift() {
 fn verify_module_file_target_exists_no_drift() {
     let state = test_state();
     let registry = ProviderRegistry::new();
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let resolved = make_empty_resolved();
     let tmp = tempfile::tempdir().unwrap();
 
@@ -6301,7 +6301,7 @@ fn verify_multiple_packages_mixed_status() {
         packages: vec!["git".to_string(), "tmux".to_string()],
     });
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
 
     let git_result = results
@@ -6731,7 +6731,7 @@ fn apply_module_deploy_files_hardlink_strategy() {
         dir: dir.path().to_path_buf(),
     }];
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -6821,7 +6821,7 @@ fn apply_module_deploy_files_copy_strategy() {
         dir: dir.path().to_path_buf(),
     }];
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -6911,7 +6911,7 @@ fn apply_module_deploy_files_directory_copy_strategy() {
         dir: dir.path().to_path_buf(),
     }];
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -6990,7 +6990,7 @@ fn apply_module_deploy_files_overwrites_existing_file() {
         dir: dir.path().to_path_buf(),
     }];
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -7068,7 +7068,7 @@ fn apply_module_on_change_script_runs_when_module_has_changes() {
         dir: dir.path().to_path_buf(),
     }];
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -7125,7 +7125,7 @@ fn apply_module_on_change_script_does_not_run_when_no_changes() {
         dir: dir.path().to_path_buf(),
     }];
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler
         .apply(
             &plan,
@@ -7198,7 +7198,7 @@ fn rollback_restores_file_with_correct_content() {
     // Write the current file with apply-2 content
     std::fs::write(&file_path, "modified content").unwrap();
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
 
     assert!(
@@ -7255,7 +7255,7 @@ fn rollback_removes_file_created_after_target_apply() {
     assert!(created_file.exists());
 
     // Rollback to apply 1 — file didn't exist then, should be removed
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
 
     assert!(
@@ -7335,7 +7335,7 @@ fn rollback_keeps_file_that_existed_at_target_apply() {
     std::fs::write(&existing_file, "modified").unwrap();
 
     // Rollback to apply 1 — file existed at apply 1, should be restored not removed
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
 
     assert!(
@@ -7388,7 +7388,7 @@ fn rollback_collects_non_file_actions_from_subsequent_applies() {
         .unwrap();
 
     // Rollback to apply 1
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let result = reconciler.rollback_apply(apply_id_1, &printer).unwrap();
 
     // Non-file actions from subsequent applies should be listed for manual review
@@ -7472,7 +7472,7 @@ fn verify_system_configurator_reports_drift() {
         merged,
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
 
     // Should have per-key drift entries with resource_type "system"
@@ -7558,7 +7558,7 @@ fn verify_system_configurator_reports_healthy_when_no_drift() {
         merged,
     };
 
-    let printer = test_printer_v2();
+    let printer = test_printer();
     let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
 
     let sysctl_results: Vec<_> = results

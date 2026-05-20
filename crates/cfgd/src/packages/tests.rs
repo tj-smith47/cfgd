@@ -319,7 +319,7 @@ fn apply_calls_install_on_correct_manager() {
     }];
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     apply_packages(&actions, &managers, &printer).unwrap();
 
     let installs = mock.installs.lock().unwrap();
@@ -337,7 +337,7 @@ fn apply_calls_uninstall_on_correct_manager() {
     }];
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     apply_packages(&actions, &managers, &printer).unwrap();
 
     let uninstalls = mock.uninstalls.lock().unwrap();
@@ -968,7 +968,7 @@ fn custom_manager_desired_packages() {
 #[test]
 fn apply_packages_install() {
     let mock = MockPackageManager::new("cargo", true, vec![]);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     let actions = vec![PackageAction::Install {
         manager: "cargo".into(),
         packages: vec!["bat".into(), "fd-find".into()],
@@ -984,7 +984,7 @@ fn apply_packages_install() {
 #[test]
 fn apply_packages_uninstall() {
     let mock = MockPackageManager::new("cargo", true, vec!["bat"]);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     let actions = vec![PackageAction::Uninstall {
         manager: "cargo".into(),
         packages: vec!["bat".into()],
@@ -999,7 +999,7 @@ fn apply_packages_uninstall() {
 #[test]
 fn apply_packages_bootstrap() {
     let mock = MockPackageManager::new("cargo", false, vec![]).with_bootstrap();
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     let actions = vec![PackageAction::Bootstrap {
         manager: "cargo".into(),
         method: "rustup".into(),
@@ -1011,7 +1011,7 @@ fn apply_packages_bootstrap() {
 
 #[test]
 fn apply_packages_skip_no_error() {
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     let actions = vec![PackageAction::Skip {
         manager: "snap".into(),
         reason: "not available".into(),
@@ -1409,7 +1409,7 @@ fn plan_packages_no_managers() {
 #[test]
 fn mock_manager_update_is_noop() {
     let mock = MockPackageManager::new("test", true, vec![]);
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     mock.update(&printer).unwrap();
 }
 
@@ -1422,7 +1422,7 @@ fn mock_manager_available_version_is_none() {
 #[test]
 fn mock_manager_bootstrap_is_noop() {
     let mock = MockPackageManager::new("test", false, vec![]).with_bootstrap();
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     mock.bootstrap(&printer).unwrap();
 }
 
@@ -1615,7 +1615,7 @@ fn apply_packages_multiple_actions() {
     ];
 
     let managers: Vec<&dyn PackageManager> = vec![&cargo_mock, &npm_mock];
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     apply_packages(&actions, &managers, &printer).unwrap();
 
     let cargo_installs = cargo_mock.installs.lock().unwrap();
@@ -1636,7 +1636,7 @@ fn apply_packages_unknown_manager_skipped() {
         packages: vec!["foo".into()],
         origin: "local".into(),
     }];
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     // No matching manager → the find returns None → action is skipped
     apply_packages(&actions, &[], &printer).unwrap();
 }
@@ -2150,7 +2150,7 @@ fn apply_packages_mixed_actions() {
     ];
 
     let managers: Vec<&dyn PackageManager> = vec![&cargo_mock, &npm_mock];
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     apply_packages(&actions, &managers, &printer).unwrap();
 
     let cargo_installs = cargo_mock.installs.lock().unwrap();

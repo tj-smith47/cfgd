@@ -286,7 +286,7 @@ fn simple_manager_is_available_without_custom_fn() {
 #[test]
 fn simple_manager_bootstrap_is_noop() {
     let apt = apt_manager();
-    let printer = cfgd_core::test_helpers::test_printer_v2();
+    let printer = cfgd_core::test_helpers::test_printer();
     apt.bootstrap(&printer).unwrap();
 }
 

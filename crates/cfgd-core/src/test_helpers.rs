@@ -550,7 +550,7 @@ pub fn init_test_git_repo(dir: &Path) {
 /// Returns a bare `Printer` (not the `(Printer, Buffer)` tuple from
 /// `Printer::for_test()`) so it drops in as a direct replacement in fixtures
 /// that don't assert on captured output.
-pub fn test_printer_v2() -> crate::output::Printer {
+pub fn test_printer() -> crate::output::Printer {
     crate::output::Printer::new(crate::output::Verbosity::Quiet)
 }
 
@@ -1150,7 +1150,7 @@ mod tests {
             origin_source: "test-origin".into(),
             priority: 0,
         }];
-        let printer = test_printer_v2();
+        let printer = test_printer();
 
         let tree = fm.scan_source(&layers).unwrap();
         assert!(tree.files.is_empty());
@@ -1170,7 +1170,7 @@ mod tests {
     #[test]
     fn mock_file_manager_can_fail() {
         let fm = MockFileManager::new();
-        let printer = test_printer_v2();
+        let printer = test_printer();
         fm.set_fail_apply(true);
         let result = fm.apply(&[], &printer);
         let err_msg = format!("{}", result.unwrap_err());
@@ -1243,7 +1243,7 @@ mod tests {
     #[test]
     fn mock_system_configurator_apply_records() {
         let sc = MockSystemConfigurator::new("sysctl");
-        let printer = test_printer_v2();
+        let printer = test_printer();
         let desired = serde_yaml::Value::String("test".into());
         sc.apply(&desired, &printer).unwrap();
         assert_eq!(sc.apply_calls.lock().unwrap().len(), 1);
@@ -1252,7 +1252,7 @@ mod tests {
     #[test]
     fn mock_system_configurator_can_fail() {
         let sc = MockSystemConfigurator::new("sysctl");
-        let printer = test_printer_v2();
+        let printer = test_printer();
         sc.set_fail_apply(true);
         let result = sc.apply(&serde_yaml::Value::Null, &printer);
         let err_msg = format!("{}", result.unwrap_err());

@@ -1276,7 +1276,7 @@ fn download_to_file_drives_progress_bar_branch_with_printer_and_content_length()
     let dir = tempfile::tempdir().unwrap();
     let dest = dir.path().join("sized.bin");
     let url = format!("{}/download/sized", server.url());
-    let printer = crate::test_helpers::test_printer_v2();
+    let printer = crate::test_helpers::test_printer();
 
     let result = download_to_file(&url, &dest, Some(&printer));
     mock.assert();
@@ -1301,7 +1301,7 @@ fn download_to_file_drives_spinner_branch_when_printer_present_without_content_l
     let dir = tempfile::tempdir().unwrap();
     let dest = dir.path().join("chunked.bin");
     let url = format!("{}/download/chunked", server.url());
-    let printer = crate::test_helpers::test_printer_v2();
+    let printer = crate::test_helpers::test_printer();
 
     let result = download_to_file(&url, &dest, Some(&printer));
     mock.assert();
@@ -2281,7 +2281,7 @@ mod download_and_install_to {
         let target = target_dir.path().join("cfgd");
         std::fs::write(&target, b"old binary").unwrap();
 
-        let printer = crate::test_helpers::test_printer_v2();
+        let printer = crate::test_helpers::test_printer();
         let installed = download_and_install_to(&release, &asset, &target, Some(&printer))
             .expect("happy path with printer → Ok");
         assert_eq!(installed, target);
