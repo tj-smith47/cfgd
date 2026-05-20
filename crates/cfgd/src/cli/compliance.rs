@@ -363,7 +363,7 @@ mod tests {
     use cfgd_core::compliance::{
         ComplianceCheck, ComplianceSnapshot, ComplianceStatus, ComplianceSummary, MachineInfo,
     };
-    use cfgd_core::output::OutputFormat;
+    use cfgd_core::output_v2::OutputFormat;
 
     fn sample_snapshot(checks: Vec<ComplianceCheck>) -> ComplianceSnapshot {
         let summary = cfgd_core::compliance::compute_summary(&checks);

@@ -14,7 +14,6 @@ use std::path::Path;
 
 use cfgd::cli::output_types::PullOutput;
 use cfgd::cli::pull::{build_pull_doc, cmd_pull, render_pull};
-use cfgd_core::output::Printer as PrinterV1;
 use cfgd_core::output_v2::Printer;
 use pretty_assertions::assert_eq;
 
@@ -78,10 +77,9 @@ fn pull_failed_human() {
     let (config_dir, state_dir, _target) = tiny_profile_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let old_printer = PrinterV1::new(cfgd_core::output::Verbosity::Quiet);
     let (v2_printer, cap) = Printer::for_test_doc();
 
-    cmd_pull(&cli, &old_printer, &v2_printer).unwrap();
+    cmd_pull(&cli, &v2_printer).unwrap();
     drop(v2_printer);
 
     let normalized = normalize_libgit2_paths(&cap.human(), config_dir.path());

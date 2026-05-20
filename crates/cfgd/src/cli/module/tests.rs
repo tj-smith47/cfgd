@@ -247,7 +247,7 @@ spec:
         verbose: 0,
         quiet: true,
         no_color: false,
-        output: super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+        output: super::OutputFormatArg(cfgd_core::output_v2::OutputFormat::Table),
         jsonpath: None,
         state_dir: None,
     };
@@ -290,7 +290,7 @@ fn test_cli(dir: &std::path::Path) -> super::Cli {
         verbose: 0,
         quiet: true,
         no_color: true,
-        output: super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+        output: super::OutputFormatArg(cfgd_core::output_v2::OutputFormat::Table),
         jsonpath: None,
         state_dir: None,
     }
@@ -298,7 +298,7 @@ fn test_cli(dir: &std::path::Path) -> super::Cli {
 
 fn test_cli_json(dir: &std::path::Path) -> super::Cli {
     super::Cli {
-        output: super::OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+        output: super::OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json),
         ..test_cli(dir)
     }
 }
@@ -399,8 +399,6 @@ fn cmd_module_list_shows_modules() {
 fn cmd_module_list_json_empty() {
     let dir = setup_config_dir();
     let cli = test_cli_json(dir.path());
-    let (_printer, _buf) =
-        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
     let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
         cfgd_core::output_v2::OutputFormat::Json,
     );
@@ -424,8 +422,6 @@ fn cmd_module_list_json_with_modules() {
     );
 
     let cli = test_cli_json(dir.path());
-    let (_printer, _buf) =
-        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
     let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
         cfgd_core::output_v2::OutputFormat::Json,
     );
@@ -574,8 +570,6 @@ fn cmd_module_show_json_schema() {
     );
 
     let cli = test_cli_json(dir.path());
-    let (_printer, _buf) =
-        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
     let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
         cfgd_core::output_v2::OutputFormat::Json,
     );
@@ -645,7 +639,6 @@ fn cmd_module_update_add_env() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let v2_printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
@@ -670,7 +663,6 @@ fn cmd_module_update_remove_env() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let v2_printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
@@ -694,7 +686,6 @@ fn cmd_module_update_add_alias() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let v2_printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
@@ -719,7 +710,6 @@ fn cmd_module_update_remove_alias() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let v2_printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
@@ -743,7 +733,6 @@ fn cmd_module_update_add_depends() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let v2_printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
@@ -766,7 +755,6 @@ fn cmd_module_update_remove_depends() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
@@ -796,7 +784,6 @@ fn cmd_module_update_add_post_apply_script() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let v2_printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
@@ -821,7 +808,6 @@ fn cmd_module_update_remove_post_apply_script() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let v2_printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
@@ -846,7 +832,6 @@ fn cmd_module_update_description() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let v2_printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
@@ -872,7 +857,6 @@ fn cmd_module_update_no_changes_reports() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
@@ -1549,8 +1533,6 @@ fn cmd_module_show_json_with_lockfile_entry() {
     modules::save_lockfile(dir.path(), &lockfile).unwrap();
 
     let cli = test_cli_json(dir.path());
-    let (_printer, _buf) =
-        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
     let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
         cfgd_core::output_v2::OutputFormat::Json,
     );
@@ -1929,7 +1911,6 @@ fn cmd_module_update_with_set_overrides() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let v2_printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
@@ -1958,7 +1939,6 @@ fn cmd_module_update_add_and_remove_packages() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
@@ -1997,7 +1977,6 @@ fn cmd_module_update_add_duplicate_package_noop() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
@@ -2026,7 +2005,6 @@ fn cmd_module_update_remove_nonexistent_package_warns() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
@@ -2055,7 +2033,6 @@ fn cmd_module_update_remove_nonexistent_env_warns() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
@@ -2084,7 +2061,6 @@ fn cmd_module_update_remove_nonexistent_alias_warns() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
@@ -2113,7 +2089,6 @@ fn cmd_module_update_remove_nonexistent_depends_warns() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
@@ -2142,7 +2117,6 @@ fn cmd_module_update_remove_nonexistent_script_warns() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
@@ -2171,7 +2145,6 @@ fn cmd_module_update_empty_description_clears() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let v2_printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
@@ -2199,7 +2172,6 @@ fn cmd_module_update_add_duplicate_depends_noop() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let v2_printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
@@ -2224,7 +2196,6 @@ fn cmd_module_update_add_duplicate_post_apply_noop() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let v2_printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
@@ -2258,7 +2229,6 @@ fn cmd_module_update_add_files() {
     std::fs::write(&source_file, "setting = true").unwrap();
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
@@ -2296,7 +2266,6 @@ fn cmd_module_update_remove_files() {
     std::fs::write(dir.path().join("modules/mod1/files/config.toml"), "content").unwrap();
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
@@ -2337,7 +2306,6 @@ fn cmd_module_update_remove_nonexistent_file_warns() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
@@ -2369,7 +2337,6 @@ fn cmd_module_update_add_file_private() {
     std::fs::write(&source_file, "secret-data").unwrap();
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let v2_printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
@@ -2971,8 +2938,6 @@ fn cmd_module_list_json_active_modules() {
         ).unwrap();
 
     let cli = test_cli_json(dir.path());
-    let (_printer, _buf) =
-        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
     let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
         cfgd_core::output_v2::OutputFormat::Json,
     );
@@ -3162,8 +3127,6 @@ fn cmd_module_list_with_lockfile_shows_remote() {
     modules::save_lockfile(dir.path(), &lockfile).unwrap();
 
     let cli = test_cli_json(dir.path());
-    let (_printer, _buf) =
-        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
     let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
         cfgd_core::output_v2::OutputFormat::Json,
     );
@@ -3394,8 +3357,6 @@ fn cmd_module_show_json_depends() {
     );
 
     let cli = test_cli_json(dir.path());
-    let (_printer, _buf) =
-        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
     let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
         cfgd_core::output_v2::OutputFormat::Json,
     );
@@ -3463,7 +3424,6 @@ fn cmd_module_update_add_already_tracked_file_noop() {
     std::fs::write(&source_file, "content").unwrap();
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
@@ -3608,7 +3568,6 @@ fn cmd_module_update_combined_operations() {
     );
 
     let cli = test_cli(dir.path());
-    let (_printer, _buf) = cfgd_core::output::Printer::for_test();
     let (v2_printer, buf) =
         cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
 
@@ -5330,7 +5289,7 @@ mod cmd_module_add_from_registry_local {
         write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
 
         let mut cli = test_cli(work.path());
-        cli.output = super::OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
+        cli.output = super::OutputFormatArg(cfgd_core::output_v2::OutputFormat::Wide);
         let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc_with_format(
             cfgd_core::output_v2::OutputFormat::Wide,
         );

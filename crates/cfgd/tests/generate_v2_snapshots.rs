@@ -63,7 +63,7 @@ fn cli_for(config_dir: &Path) -> cfgd::cli::Cli {
         no_color: true,
         verbose: 0,
         quiet: true,
-        output: cfgd::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+        output: cfgd::cli::OutputFormatArg(cfgd_core::output_v2::OutputFormat::Table),
         jsonpath: None,
         state_dir: None,
         command: Some(cfgd::cli::Command::Status {

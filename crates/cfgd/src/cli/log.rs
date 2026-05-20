@@ -3,7 +3,6 @@ use super::*;
 use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role, renderer::Table};
 
 pub fn cmd_log(
-    _printer: &Printer,
     v2_printer: &PrinterV2,
     count: u32,
     show_output: Option<i64>,
@@ -12,7 +11,7 @@ pub fn cmd_log(
     let state = open_state_store(state_dir)?;
 
     if let Some(apply_id) = show_output {
-        return cmd_log_show_output(_printer, v2_printer, &state, apply_id);
+        return cmd_log_show_output(v2_printer, &state, apply_id);
     }
 
     let history = state.history(count)?;
@@ -21,7 +20,6 @@ pub fn cmd_log(
 }
 
 fn cmd_log_show_output(
-    _printer: &Printer,
     v2_printer: &PrinterV2,
     state: &cfgd_core::state::StateStore,
     apply_id: i64,

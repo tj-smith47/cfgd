@@ -426,7 +426,7 @@ fn test_cli(dir: &Path) -> super::super::Cli {
         no_color: true,
         verbose: 0,
         quiet: true,
-        output: super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+        output: super::super::OutputFormatArg(cfgd_core::output_v2::OutputFormat::Table),
         jsonpath: None,
         state_dir: None,
         command: Some(super::super::Command::Status {
@@ -1624,7 +1624,7 @@ fn profile_delete_without_yes_and_prompt_declined_returns_cancelled() {
 
 fn test_cli_json(dir: &Path) -> super::super::Cli {
     super::super::Cli {
-        output: super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+        output: super::super::OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json),
         ..test_cli(dir)
     }
 }
@@ -2666,7 +2666,7 @@ mod profile_update_module_cleanup {
             no_color: true,
             verbose: 0,
             quiet: true,
-            output: super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+            output: super::super::OutputFormatArg(cfgd_core::output_v2::OutputFormat::Table),
             jsonpath: None,
             state_dir: Some(state_dir.to_path_buf()),
             command: Some(super::super::Command::Status {

@@ -406,7 +406,7 @@ mod tests {
             verbose: 0,
             quiet: true,
             no_color: true,
-            output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+            output: OutputFormatArg(cfgd_core::output_v2::OutputFormat::Table),
             jsonpath: None,
             state_dir: Some(state_dir.to_path_buf()),
             command: None,
@@ -664,7 +664,7 @@ mod tests {
             .unwrap();
 
         let mut cli = test_cli_for(config_path, state_dir.path());
-        cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
+        cli.output = OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json);
         let (v2_printer, buf) = test_printers_json();
 
         cmd_status(&cli, &v2_printer, None, false).unwrap();
@@ -749,7 +749,7 @@ mod tests {
         let (_cfg_dir, state_dir, config_path) = setup_env();
 
         let mut cli = test_cli_for(config_path, state_dir.path());
-        cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
+        cli.output = OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json);
         let (v2_printer, buf) = test_printers_json();
 
         cmd_status_module(&cli, &v2_printer, "ghost").unwrap();
@@ -891,7 +891,7 @@ mod tests {
             .unwrap();
 
         let mut cli = test_cli_for(config_path, state_dir.path());
-        cli.output = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
+        cli.output = OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json);
         let (v2_printer, buf) = test_printers_json();
 
         cmd_status_module(&cli, &v2_printer, "test-mod").unwrap();

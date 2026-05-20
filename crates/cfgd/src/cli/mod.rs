@@ -36,8 +36,9 @@ pub(in crate::cli) use registry::*;
 #[cfg(test)]
 pub(in crate::cli) use source::{
     DEFAULT_NONINTERACTIVE_PRIORITY, add_source_to_config, build_subscription_preview_input,
-    count_policy_items, display_source_manifest, format_conflict_preview_lines, infer_source_name,
-    parse_priority_input, remove_source_from_config, resolve_non_interactive_profile,
+    count_policy_items, display_source_manifest_v2, format_conflict_preview_lines,
+    infer_source_name, parse_priority_input, remove_source_from_config,
+    resolve_non_interactive_profile,
 };
 pub(in crate::cli) use source::{
     build_pending_decisions_table_section, build_permission_input, mutate_config_yaml,
@@ -57,7 +58,6 @@ use crate::secrets;
 use cfgd_core::composition::{self, CompositionInput, SubscriptionConfig};
 use cfgd_core::config::{self, CfgdConfig, MergedProfile, ResolvedProfile};
 use cfgd_core::modules;
-use cfgd_core::output::Printer;
 use cfgd_core::platform::Platform;
 use cfgd_core::providers::{
     FileAction, PackageAction, ProviderRegistry, SecretAction, SecretBackend,
@@ -176,12 +176,12 @@ fn extract_config_path(args: &[String]) -> Option<PathBuf> {
 }
 
 #[derive(Debug, Clone)]
-pub struct OutputFormatArg(pub cfgd_core::output::OutputFormat);
+pub struct OutputFormatArg(pub cfgd_core::output_v2::OutputFormat);
 
 impl std::str::FromStr for OutputFormatArg {
     type Err = String;
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        use cfgd_core::output::OutputFormat;
+        use cfgd_core::output_v2::OutputFormat;
         match s {
             "table" => Ok(Self(OutputFormat::Table)),
             "wide" => Ok(Self(OutputFormat::Wide)),
@@ -1372,11 +1372,7 @@ pub enum ModuleRegistryCommand {
 }
 
 /// Execute the given CLI command. Returns Ok(()) on success.
-pub fn execute(
-    cli: &Cli,
-    printer: &Printer,
-    v2_printer: &cfgd_core::output_v2::Printer,
-) -> anyhow::Result<()> {
+pub fn execute(cli: &Cli, v2_printer: &cfgd_core::output_v2::Printer) -> anyhow::Result<()> {
     // No subcommand: print help and exit 0. Required for package-manager
     // validators (winget, chocolatey) that smoke-test the installed binary
     // with no arguments and treat any non-zero exit code as failure.
@@ -1394,13 +1390,9 @@ pub fn execute(
         Command::Diff { module, exit_code } => {
             diff::cmd_diff(cli, v2_printer, module.as_deref(), *exit_code)
         }
-        Command::Log { limit, show_output } => log::cmd_log(
-            printer,
-            v2_printer,
-            *limit,
-            *show_output,
-            cli.state_dir.as_deref(),
-        ),
+        Command::Log { limit, show_output } => {
+            log::cmd_log(v2_printer, *limit, *show_output, cli.state_dir.as_deref())
+        }
         Command::Verify { module, exit_code } => {
             verify::cmd_verify(cli, v2_printer, module.as_deref(), *exit_code)
         }
@@ -1558,7 +1550,7 @@ pub fn execute(
             },
         },
         Command::Sync => sync::cmd_sync(cli, v2_printer),
-        Command::Pull => pull::cmd_pull(cli, printer, v2_printer),
+        Command::Pull => pull::cmd_pull(cli, v2_printer),
         Command::Daemon { command } => daemon::cmd_daemon(cli, v2_printer, command.as_ref()),
         Command::Secret { command } => match command {
             SecretCommand::Encrypt { file } => secret::cmd_secret_encrypt(cli, v2_printer, file),

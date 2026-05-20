@@ -2,7 +2,7 @@ use super::*;
 
 use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
-pub fn cmd_pull(cli: &Cli, _printer: &Printer, v2_printer: &PrinterV2) -> anyhow::Result<()> {
+pub fn cmd_pull(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
     v2_printer.heading("Pull");
 
     let (_cfg, _profile_name, _resolved) = load_config_and_profile_v2(cli)?;

@@ -480,7 +480,7 @@ mod tests {
             verbose: 0,
             quiet: true,
             no_color: true,
-            output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+            output: OutputFormatArg(cfgd_core::output_v2::OutputFormat::Table),
             jsonpath: None,
             state_dir: None,
             command: None,

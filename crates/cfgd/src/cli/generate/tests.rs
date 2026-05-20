@@ -532,7 +532,7 @@ mod cmd_generate_mockito {
             verbose: 0,
             quiet: true,
             no_color: true,
-            output: super::super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+            output: super::super::super::OutputFormatArg(cfgd_core::output_v2::OutputFormat::Table),
             jsonpath: None,
             state_dir: None,
         }
