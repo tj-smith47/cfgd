@@ -101,9 +101,9 @@ fn main() -> anyhow::Result<()> {
         .then(|| cfgd_core::config::load_config(std::path::Path::new(&cli.config)).ok())
         .flatten()
         .and_then(|c| c.spec.theme);
-    let v2_theme_name = theme_config.as_ref().map(|t| t.name.clone());
+    let theme_name = theme_config.as_ref().map(|t| t.name.clone());
     let printer =
-        cfgd_core::output::Printer::with_format(verbosity, v2_theme_name.as_deref(), output_format);
+        cfgd_core::output::Printer::with_format(verbosity, theme_name.as_deref(), output_format);
 
     if jsonpath_deprecated {
         printer.status_simple(

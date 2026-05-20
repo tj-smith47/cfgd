@@ -168,11 +168,11 @@ fn source_update_happy_human() {
     let url = format!("file://{}", bare.display());
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_add, _add_cap) = Printer::for_test_doc();
+    let (add_printer, _add_cap) = Printer::for_test_doc();
     let mut args = source_add_args(url);
     args.name = Some("upd-src".into());
-    cmd_source_add(&cli, &v2_add, &args).expect("seed source");
-    drop(v2_add);
+    cmd_source_add(&cli, &add_printer, &args).expect("seed source");
+    drop(add_printer);
 
     let (printer, cap) = Printer::for_test_doc();
     cmd_source_update(&cli, &printer, Some("upd-src")).unwrap();
@@ -202,11 +202,11 @@ fn source_update_happy_json() {
     let url = format!("file://{}", bare.display());
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_add, _add_cap) = Printer::for_test_doc();
+    let (add_printer, _add_cap) = Printer::for_test_doc();
     let mut args = source_add_args(url);
     args.name = Some("upd-src".into());
-    cmd_source_add(&cli, &v2_add, &args).expect("seed source");
-    drop(v2_add);
+    cmd_source_add(&cli, &add_printer, &args).expect("seed source");
+    drop(add_printer);
 
     let (printer, cap) = Printer::for_test_doc();
     cmd_source_update(&cli, &printer, Some("upd-src")).unwrap();
@@ -235,11 +235,11 @@ fn perm_change_fixture(
     let url = format!("file://{}", bare.display());
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_add, _add_cap) = Printer::for_test_doc();
+    let (add_printer, _add_cap) = Printer::for_test_doc();
     let mut args = source_add_args(url);
     args.name = Some(source_name.into());
-    cmd_source_add(&cli, &v2_add, &args).expect("seed source");
-    drop(v2_add);
+    cmd_source_add(&cli, &add_printer, &args).expect("seed source");
+    drop(add_printer);
 
     // Publish a v2 manifest with expanded policy. required.modules grows
     // from 0 → 2 — detect_permission_changes will flag this.
@@ -335,11 +335,11 @@ fn source_update_bridge_one_blank_line() {
     let url = format!("file://{}", bare.display());
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_add, _add_cap) = Printer::for_test_doc();
+    let (add_printer, _add_cap) = Printer::for_test_doc();
     let mut args = source_add_args(url);
     args.name = Some("bridge-upd".into());
-    cmd_source_add(&cli, &v2_add, &args).expect("seed source");
-    drop(v2_add);
+    cmd_source_add(&cli, &add_printer, &args).expect("seed source");
+    drop(add_printer);
 
     let (printer, cap) = Printer::for_test_doc();
     cmd_source_update(&cli, &printer, Some("bridge-upd")).unwrap();

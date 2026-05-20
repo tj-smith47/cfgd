@@ -82,11 +82,11 @@ fn source_replace_happy_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
 
     // Seed the initial subscription via cmd_source_add (matches add fixture).
-    let (v2_add, _add_cap) = Printer::for_test_doc();
+    let (add_printer, _add_cap) = Printer::for_test_doc();
     let mut args = source_add_args(url_old);
     args.name = Some("replace-old".into());
-    cmd_source_add(&cli, &v2_add, &args).expect("seed source");
-    drop(v2_add);
+    cmd_source_add(&cli, &add_printer, &args).expect("seed source");
+    drop(add_printer);
 
     let (printer, cap) = Printer::for_test_doc();
     cmd_source_replace(&cli, &printer, "replace-old", &url_new).unwrap();

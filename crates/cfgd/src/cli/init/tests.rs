@@ -621,7 +621,7 @@ fn clone_into_local_repo() {
     let target = dir.path().join("clone");
     std::fs::create_dir_all(&target).unwrap();
 
-    let (printer, v2_cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     clone_into(&target, &origin.display().to_string(), "master", &printer).unwrap();
 
     assert!(target.join(".git").exists(), "should create .git directory");
@@ -632,7 +632,7 @@ fn clone_into_local_repo() {
     );
 
     drop(printer);
-    let output = v2_cap.human();
+    let output = cap.human();
     assert!(output.contains("Cloned"), "should report successful clone");
 }
 
@@ -642,7 +642,7 @@ fn clone_into_skips_if_already_cloned() {
     let target = dir.path().join("clone");
     std::fs::create_dir_all(target.join(".git")).unwrap();
 
-    let (printer, v2_cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     // Should return Ok without actually cloning
     clone_into(
         &target,
@@ -653,7 +653,7 @@ fn clone_into_skips_if_already_cloned() {
     .unwrap();
 
     drop(printer);
-    let output = v2_cap.human();
+    let output = cap.human();
     assert!(
         output.contains("already exists"),
         "should report repo already exists, got: {output}"
@@ -775,7 +775,7 @@ fn cmd_init_with_from_local_path() {
     )
     .unwrap();
 
-    let (printer, v2_cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let source_str = source.display().to_string();
     let args = InitArgs {
         path: None,
@@ -794,7 +794,7 @@ fn cmd_init_with_from_local_path() {
     cmd_init(&printer, &args).unwrap();
 
     drop(printer);
-    let output = v2_cap.human();
+    let output = cap.human();
     assert!(
         output.contains("Initialize") || output.contains("Initialized"),
         "should show init header, got: {output}"
@@ -849,7 +849,7 @@ fn cmd_init_scaffold_to_new_dir() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("new-config");
 
-    let (printer, v2_cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let target_str = target.display().to_string();
     let args = InitArgs {
         path: Some(&target_str),
@@ -883,7 +883,7 @@ fn cmd_init_scaffold_to_new_dir() {
     );
 
     drop(printer);
-    let output = v2_cap.human();
+    let output = cap.human();
     assert!(
         output.contains("Initialized"),
         "should show init success, got: {output}"
@@ -901,7 +901,7 @@ fn cmd_init_already_initialized() {
     )
     .unwrap();
 
-    let (printer, v2_cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let target_str = target.display().to_string();
     let args = InitArgs {
         path: Some(&target_str),
@@ -920,7 +920,7 @@ fn cmd_init_already_initialized() {
     cmd_init(&printer, &args).unwrap();
 
     drop(printer);
-    let output = v2_cap.human();
+    let output = cap.human();
     assert!(
         output.contains("Already initialized"),
         "should report already initialized, got: {output}"
@@ -1516,7 +1516,7 @@ fn cmd_init_with_theme_and_name_together() {
 #[test]
 fn apply_plan_empty_plan_reports_nothing_to_do() {
     let dir = tempfile::tempdir().unwrap();
-    let (printer, v2_cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     let registry = super::build_registry_with_config(None);
     // Isolate the state store under the tempdir so parallel tests don't
@@ -1545,7 +1545,7 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
     assert!(result.is_ok());
 
     drop(printer);
-    let output = v2_cap.human();
+    let output = cap.human();
     assert!(
         output.contains("Nothing to do"),
         "should report nothing to do for empty plan, got: {output}"
@@ -1701,7 +1701,7 @@ fn cmd_init_from_local_path_uses_source_dir() {
     std::fs::create_dir_all(source.join("profiles")).unwrap();
     std::fs::create_dir_all(source.join("modules")).unwrap();
 
-    let (printer, v2_cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let source_str = source.display().to_string();
     let args = InitArgs {
         path: None,
@@ -1720,7 +1720,7 @@ fn cmd_init_from_local_path_uses_source_dir() {
     cmd_init(&printer, &args).unwrap();
 
     drop(printer);
-    let output = v2_cap.human();
+    let output = cap.human();
     // The init should succeed and reference the source path
     assert!(
         output.contains("Initialize")
@@ -1740,11 +1740,11 @@ fn clone_into_skips_existing_git_dir() {
     let target = dir.path().join("already-cloned");
     git2::Repository::init(&target).unwrap();
 
-    let (printer, v2_cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     clone_into(&target, "https://example.com/repo.git", "main", &printer).unwrap();
 
     drop(printer);
-    let output = v2_cap.human();
+    let output = cap.human();
     assert!(
         output.contains("already exists"),
         "should report repo already exists, got: {output}"
@@ -1818,7 +1818,7 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
     // contract that a declined apply does NOT touch the reconciler or hit
     // the state-store apply lock.
     let dir = tempfile::tempdir().unwrap();
-    let (printer, v2_cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     let registry = super::build_registry_with_config(None);
     let store = super::open_state_store(Some(dir.path())).unwrap();
@@ -1854,7 +1854,7 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
     assert!(result.is_ok(), "declined prompt should still return Ok");
 
     drop(printer);
-    let output = v2_cap.human();
+    let output = cap.human();
     assert!(
         output.contains("Skipped"),
         "expected 'Skipped' message on declined prompt, got: {output}"
@@ -1999,7 +1999,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
 #[test]
 fn apply_plan_dry_run_skips_apply() {
     let dir = tempfile::tempdir().unwrap();
-    let (printer, v2_cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     let registry = super::build_registry_with_config(None);
     // Isolate the state store under the tempdir so parallel tests don't
@@ -2038,7 +2038,7 @@ fn apply_plan_dry_run_skips_apply() {
     assert!(result.is_ok());
 
     drop(printer);
-    let output = v2_cap.human();
+    let output = cap.human();
     // Dry run shows the plan but does not apply
     assert!(
         output.contains("action") || output.contains("planned"),
@@ -3270,7 +3270,7 @@ mod cmd_init_apply_orchestration {
         let state_dir = tmp.path().join("state");
         let url = format!("file://{}", bare.display());
 
-        let (printer, v2_cap) = Printer::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3289,7 +3289,7 @@ mod cmd_init_apply_orchestration {
         });
 
         drop(printer);
-        let out = v2_cap.human();
+        let out = cap.human();
         assert!(
             out.contains("Applying Configuration"),
             "should enter the profile-based apply branch: {out}"
@@ -3316,7 +3316,7 @@ mod cmd_init_apply_orchestration {
         let state_dir = tmp.path().join("state");
         let url = format!("file://{}", bare.display());
 
-        let (printer, v2_cap) = Printer::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3335,7 +3335,7 @@ mod cmd_init_apply_orchestration {
         });
 
         drop(printer);
-        let out = v2_cap.human();
+        let out = cap.human();
         assert!(
             out.contains("Set active profile: default"),
             "validated --apply-profile branch should announce profile selection: {out}"
@@ -3405,7 +3405,7 @@ mod cmd_init_apply_orchestration {
         let target = tmp.path().join("dst");
         let state_dir = tmp.path().join("state");
         let modules = vec!["sample".to_string()];
-        let (printer, v2_cap) = Printer::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3424,7 +3424,7 @@ mod cmd_init_apply_orchestration {
         });
 
         drop(printer);
-        let out = v2_cap.human();
+        let out = cap.human();
         assert!(
             out.contains("Applying Modules"),
             "should hit the Applying Modules header in the module-only arm: {out}"
@@ -3489,7 +3489,7 @@ mod cmd_init_apply_orchestration {
 
         let target = tmp.path().join("dst");
         let state_dir = tmp.path().join("state");
-        let (printer, v2_cap) = Printer::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3508,7 +3508,7 @@ mod cmd_init_apply_orchestration {
         });
 
         drop(printer);
-        let out = v2_cap.human();
+        let out = cap.human();
         assert!(
             out.contains("Using only available profile: only"),
             "pick_profile single-profile fast path should be exercised: {out}"
@@ -3590,7 +3590,7 @@ mod cmd_init_apply_orchestration {
         let state_dir = tmp.path().join("state");
         let url = format!("file://{}", bare.display());
 
-        let (printer, v2_cap) = Printer::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         let modules = vec!["extra".to_string()];
         with_state_dir(&state_dir, || {
             let args = InitArgs {
@@ -3611,7 +3611,7 @@ mod cmd_init_apply_orchestration {
         });
 
         drop(printer);
-        let out = v2_cap.human();
+        let out = cap.human();
         // Profile-validation arm fires.
         assert!(
             out.contains("Set active profile: default"),
@@ -3688,7 +3688,7 @@ mod cmd_init_apply_orchestration {
         let target = tmp.path().join("install-daemon-cfg");
         std::fs::create_dir_all(&target).unwrap();
 
-        let (printer, v2_cap) = Printer::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         let args = InitArgs {
             path: Some(target.to_str().unwrap()),
             from: None,
@@ -3705,7 +3705,7 @@ mod cmd_init_apply_orchestration {
         cmd_init(&printer, &args).expect("cmd_init with install_daemon must succeed");
 
         drop(printer);
-        let captured = v2_cap.human();
+        let captured = cap.human();
         let unit = tmp.path().join(".config/systemd/user/cfgd.service");
         if unit.exists() {
             assert!(
