@@ -10,7 +10,7 @@
 //!     buffered ApplyOutput) against a tempdir-backed profile; the JSON
 //!     case exercises `build_apply_doc` directly.
 //!   - `apply/dry_run.txt`      — `--dry-run` path through real
-//!     `cmd_apply` (so `display_plan_preview_v2` drift is caught).
+//!     `cmd_apply` (so `display_plan_preview` drift is caught).
 //!   - `apply/nothing_to_do.txt`— plan is empty.
 //!   - `apply/with_failures.txt`— one file action fails (parent path is
 //!     a regular file, so `create_dir_all` errors at apply time). The
@@ -147,7 +147,7 @@ fn apply_happy_json() {
 
 #[test]
 fn apply_dry_run_human() {
-    // Real --dry-run path through cmd_apply → display_plan_preview_v2.
+    // Real --dry-run path through cmd_apply → display_plan_preview.
     let (config_dir, state_dir, target) = tiny_profile_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());

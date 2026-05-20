@@ -367,7 +367,7 @@ pub(super) fn apply_plan(
         return Ok(());
     }
 
-    super::display_plan_table_v2(plan, printer, None);
+    super::display_plan_table(plan, printer, None);
     printer.status_simple(Role::Info, format!("{} action(s) planned", total));
 
     if dry_run {
@@ -398,7 +398,7 @@ pub(super) fn apply_plan(
         cfgd_core::reconciler::ReconcileContext::Apply,
         false,
     )?;
-    super::print_apply_result_v2(&result, printer, None);
+    super::print_apply_result(&result, printer, None);
     Ok(())
 }
 

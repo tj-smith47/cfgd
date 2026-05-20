@@ -15,7 +15,7 @@
 //!     (the module-only fallback kv lines).
 //!   - `plan/with_pending.txt`   — pending-decisions section: the state DB
 //!     is pre-populated with an unresolved decision so
-//!     `display_plan_preview_v2` renders the "Pending Decisions" section.
+//!     `display_plan_preview` renders the "Pending Decisions" section.
 
 mod common;
 
@@ -103,7 +103,7 @@ fn plan_happy_json() {
 #[test]
 fn plan_empty_human() {
     // Empty profile: zero managed files, zero modules — exercises the
-    // `MSG_NOTHING_TO_DO` branch of `display_plan_preview_v2`.
+    // `MSG_NOTHING_TO_DO` branch of `display_plan_preview`.
     let (config_dir, state_dir) = empty_profile_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
@@ -147,7 +147,7 @@ fn plan_module_only_human() {
 #[test]
 fn plan_with_pending_human() {
     // Pre-populated state DB with one unresolved pending decision.
-    // `display_plan_preview_v2` renders the "Pending Decisions" section
+    // `display_plan_preview` renders the "Pending Decisions" section
     // ahead of the plan table.
     let (config_dir, state_dir, target) = state_with_pending_decision_setup();
 

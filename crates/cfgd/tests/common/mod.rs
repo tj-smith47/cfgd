@@ -156,7 +156,7 @@ pub fn empty_profile_setup() -> (tempfile::TempDir, tempfile::TempDir) {
 }
 
 /// Like `tiny_profile_setup` but pre-records an unresolved pending decision in
-/// the state DB so `display_plan_preview_v2` renders the pending-decisions
+/// the state DB so `display_plan_preview` renders the pending-decisions
 /// section.
 ///
 /// Returns `(config_dir, state_dir, target)`.
@@ -165,7 +165,7 @@ pub fn state_with_pending_decision_setup() -> (tempfile::TempDir, tempfile::Temp
 
     // `cmd_plan` opens the state DB at `<state_dir>/cfgd.db` via
     // `open_state_store`; record the pending decision against the same path so
-    // the subsequent `pending_decisions()` query inside `display_plan_preview_v2`
+    // the subsequent `pending_decisions()` query inside `display_plan_preview`
     // sees it.
     let store = cfgd_core::state::StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
     store

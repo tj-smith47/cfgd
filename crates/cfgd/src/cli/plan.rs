@@ -164,7 +164,7 @@ pub fn cmd_plan(
         strip_scripts_from_plan(&mut plan);
     }
 
-    display_plan_preview_v2(
+    display_plan_preview(
         &plan,
         printer,
         &state,

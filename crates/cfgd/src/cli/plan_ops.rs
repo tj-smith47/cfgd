@@ -3,7 +3,7 @@ use cfgd_core::output::{Doc, Printer, Role};
 
 // --- Plan output rendering ---
 
-pub(in crate::cli) fn print_apply_result_v2(
+pub(in crate::cli) fn print_apply_result(
     result: &cfgd_core::reconciler::ApplyResult,
     printer: &Printer,
     elapsed: Option<std::time::Duration>,
@@ -142,7 +142,7 @@ pub(in crate::cli) fn strip_scripts_from_plan(plan: &mut reconciler::Plan) {
     }
 }
 
-pub(in crate::cli) fn display_plan_table_v2(
+pub(in crate::cli) fn display_plan_table(
     plan: &reconciler::Plan,
     printer: &Printer,
     phase_filter: Option<&PhaseName>,
@@ -165,7 +165,7 @@ pub(in crate::cli) fn display_plan_table_v2(
     }
 }
 
-pub(in crate::cli) fn display_plan_preview_v2(
+pub(in crate::cli) fn display_plan_preview(
     plan: &reconciler::Plan,
     printer: &Printer,
     state: &cfgd_core::state::StateStore,
@@ -200,7 +200,7 @@ pub(in crate::cli) fn display_plan_preview_v2(
     }
 
     // Table mode display
-    display_plan_table_v2(plan, printer, phase_filter);
+    display_plan_table(plan, printer, phase_filter);
 
     // Show diffs for file updates
     if let Some(fm) = dry_run_fm {
@@ -370,7 +370,7 @@ pub(in crate::cli) fn is_unmanaged_file(
     true
 }
 
-pub(in crate::cli) fn handle_unmanaged_file_targets_v2(
+pub(in crate::cli) fn handle_unmanaged_file_targets(
     plan: &mut reconciler::Plan,
     config_dir: &Path,
     state: &StateStore,
@@ -393,8 +393,8 @@ pub(in crate::cli) fn handle_unmanaged_file_targets_v2(
             {
                 let target = target.clone();
                 if is_unmanaged_file(&target, config_dir, state) && !auto_yes {
-                    let choice = prompt_backup_choice_v2(&target, None, printer, &options)?;
-                    apply_backup_choice_v2(choice, &target, &mut phase.actions[i], printer)?;
+                    let choice = prompt_backup_choice(&target, None, printer, &options)?;
+                    apply_backup_choice(choice, &target, &mut phase.actions[i], printer)?;
                 }
             }
 
@@ -416,14 +416,14 @@ pub(in crate::cli) fn handle_unmanaged_file_targets_v2(
                         while j < files.len() {
                             let file_target = cfgd_core::expand_tilde(&files[j].target);
                             if is_unmanaged_file(&file_target, config_dir, state) {
-                                let choice = prompt_backup_choice_v2(
+                                let choice = prompt_backup_choice(
                                     &file_target,
                                     Some(&module_name),
                                     printer,
                                     &options,
                                 )?;
                                 if choice.starts_with("Backup") {
-                                    backup_file_v2(&file_target, printer)?;
+                                    backup_file(&file_target, printer)?;
                                 } else if choice.starts_with("Skip") {
                                     files.remove(j);
                                     continue;
@@ -443,7 +443,7 @@ pub(in crate::cli) fn handle_unmanaged_file_targets_v2(
 }
 
 /// Prompt the user to choose how to handle an unmanaged file target.
-fn prompt_backup_choice_v2<'a>(
+fn prompt_backup_choice<'a>(
     target: &Path,
     module_name: Option<&str>,
     printer: &Printer,
@@ -464,7 +464,7 @@ fn prompt_backup_choice_v2<'a>(
         .unwrap_or(&options[0]))
 }
 
-pub(in crate::cli) fn backup_file_v2(target: &Path, printer: &Printer) -> anyhow::Result<()> {
+pub(in crate::cli) fn backup_file(target: &Path, printer: &Printer) -> anyhow::Result<()> {
     let backup_path = PathBuf::from(format!("{}.cfgd-backup", target.display()));
     std::fs::rename(target, &backup_path).map_err(|e| {
         anyhow::anyhow!(
@@ -478,14 +478,14 @@ pub(in crate::cli) fn backup_file_v2(target: &Path, printer: &Printer) -> anyhow
     Ok(())
 }
 
-pub(in crate::cli) fn apply_backup_choice_v2(
+pub(in crate::cli) fn apply_backup_choice(
     choice: &str,
     target: &Path,
     action: &mut reconciler::Action,
     printer: &Printer,
 ) -> anyhow::Result<()> {
     if choice.starts_with("Backup") {
-        backup_file_v2(target, printer)?;
+        backup_file(target, printer)?;
     } else if choice.starts_with("Skip") {
         let origin = match action {
             reconciler::Action::File(FileAction::Create { origin, .. })

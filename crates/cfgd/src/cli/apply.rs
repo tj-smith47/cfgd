@@ -203,7 +203,7 @@ pub fn cmd_apply(
     }
 
     if dry_run {
-        display_plan_preview_v2(
+        display_plan_preview(
             &plan,
             printer,
             &state,
@@ -218,7 +218,7 @@ pub fn cmd_apply(
 
     // Handle unmanaged file targets: if a target exists as a non-cfgd file, prompt to
     // adopt (proceed), backup (rename to .cfgd-backup), or skip.
-    handle_unmanaged_file_targets_v2(&mut plan, &config_dir, &state, printer, yes)?;
+    handle_unmanaged_file_targets(&mut plan, &config_dir, &state, printer, yes)?;
 
     // Check if filtered plan has actions
     let has_actions = if let Some(ref pf) = phase_filter {
@@ -298,7 +298,7 @@ pub fn cmd_apply(
         args.skip_scripts,
     )?;
 
-    let status = print_apply_result_v2(&result, printer, Some(start.elapsed()));
+    let status = print_apply_result(&result, printer, Some(start.elapsed()));
 
     // Link source commits to this apply for provenance tracking
     if !source_commits.is_empty() {

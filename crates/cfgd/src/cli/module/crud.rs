@@ -289,7 +289,7 @@ pub fn cmd_module_create(
             printer.status_simple(Role::Info, "Nothing to do");
         } else {
             if !args.yes {
-                super::display_plan_table_v2(&plan, printer, None);
+                super::display_plan_table(&plan, printer, None);
                 printer.status_simple(Role::Info, format!("{} action(s) planned", total));
                 let confirmed = printer
                     .prompt_confirm("Apply these changes?")
@@ -319,7 +319,7 @@ pub fn cmd_module_create(
                 cfgd_core::reconciler::ReconcileContext::Apply,
                 false,
             )?;
-            super::print_apply_result_v2(&result, printer, None);
+            super::print_apply_result(&result, printer, None);
             applied = true;
         }
     }
