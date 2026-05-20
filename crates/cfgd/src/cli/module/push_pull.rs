@@ -62,7 +62,6 @@ pub fn cmd_module_push(
             anyhow::anyhow!("{e}")
         })?;
 
-    v2_printer.status_simple(Role::Ok, format!("Pushed {artifact}"));
     v2_printer.kv("Digest", &digest);
 
     // Sign if requested

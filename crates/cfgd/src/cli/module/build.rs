@@ -72,7 +72,6 @@ pub fn cmd_module_build(
                     ));
                     anyhow::anyhow!("{e}")
                 })?;
-            v2_printer.status_simple(Role::Ok, format!("Pushed {art}"));
             v2_printer.kv("Digest", &digest);
             digest_value = Some(digest);
 
@@ -130,7 +129,6 @@ pub fn cmd_module_build(
                         ));
                         anyhow::anyhow!("{e}")
                     })?;
-            v2_printer.status_simple(Role::Ok, format!("Pushed multi-platform index {art}"));
             v2_printer.kv("Digest", &digest);
             digest_value = Some(digest);
 
