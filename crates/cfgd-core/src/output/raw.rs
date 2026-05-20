@@ -1,8 +1,8 @@
 //! Raw renderers — diff, syntax_highlight, data_line.
 //!
-//! Spec §5a: raw renderers are exempt from the indent invariant because
-//! their content is multi-line and line-by-line indent would corrupt
-//! syntax/diff output. All three render at depth 0.
+//! Raw renderers are exempt from the indent invariant because their content
+//! is multi-line and line-by-line indent would corrupt syntax/diff output.
+//! All three render at depth 0.
 
 use similar::{ChangeTag, TextDiff};
 use syntect::easy::HighlightLines;
@@ -15,7 +15,7 @@ use super::renderer::{Renderer, Writer};
 impl Renderer {
     /// Render a unified diff using `theme.diff_*` styles. Lines starting with
     /// `+` are themed diff_add, `-` themed diff_remove, others diff_context.
-    /// Always at depth 0 (raw renderer; see §5a).
+    /// Always at depth 0 (raw renderer).
     pub fn render_diff(&self, w: &dyn Writer, old: &str, new: &str) {
         let diff = TextDiff::from_lines(old, new);
         for change in diff.iter_all_changes() {
@@ -33,7 +33,7 @@ impl Renderer {
 
     /// Render syntax-highlighted code. Caller passes the `lang` hint (e.g.,
     /// "yaml", "rust", "json"); falls back to plain text on unknown.
-    /// Always at depth 0 (raw renderer; see §5a).
+    /// Always at depth 0 (raw renderer).
     pub fn render_syntax_highlight(
         &self,
         w: &dyn Writer,
@@ -68,13 +68,13 @@ impl Renderer {
 }
 
 impl super::Printer {
-    /// Diff renderer (§5a raw). Goes to stderr.
+    /// Diff renderer (raw, depth 0). Goes to stderr.
     pub fn diff(&self, old: &str, new: &str) {
         self.renderer
             .render_diff(self.sink_stderr.as_ref(), old, new);
     }
 
-    /// Syntax-highlighted code (§5a raw). Goes to stderr.
+    /// Syntax-highlighted code (raw, depth 0). Goes to stderr.
     pub fn syntax_highlight(&self, code: &str, lang: &str) {
         self.renderer.render_syntax_highlight(
             self.sink_stderr.as_ref(),
@@ -85,7 +85,7 @@ impl super::Printer {
         );
     }
 
-    /// Raw stdout line, no decoration, no indent (§5a). For `config get`-shaped
+    /// Raw stdout line, no decoration, no indent. For `config get`-shaped
     /// callers whose output is consumed by other programs.
     pub fn data_line(&self, text: &str) {
         self.sink_stdout.write_line(text);

@@ -32,7 +32,7 @@ pub(crate) struct SectionFrame {
     pub header_emitted: bool,
     /// Statuses awaiting flush at section close. Buffering lets us right-pad
     /// subjects to a common width when trailing content (detail/duration/
-    /// target) is present, so the trailing column aligns — spec §13.3/§13.4.
+    /// target) is present, so the trailing column aligns.
     pub pending_statuses: Vec<BufferedStatus>,
 }
 
@@ -76,12 +76,12 @@ impl Renderer {
 
         // Flush any buffered statuses BEFORE deciding blank-pending. Subject
         // right-pad is computed across the buffered set so trailing content
-        // aligns in a column — spec §13.3/§13.4.
+        // aligns in a column.
         self.flush_pending_statuses(w, &frame.pending_statuses);
 
         // Only TOP-LEVEL sections (header_depth == 0) mark blank-pending on
         // close. Subsection close must NOT produce a blank between siblings —
-        // see spec §13.1 (Primary/Secondary subsections render adjacent).
+        // Primary/Secondary subsections render adjacent.
         let is_top_level = frame.header_depth == 0;
         match (frame.children_emitted, frame.keep_when_empty) {
             (true, _) => {
@@ -93,7 +93,7 @@ impl Renderer {
             }
             (false, true) => {
                 if self.verbosity == Verbosity::Quiet {
-                    // §12: plain `section` with no children produces no output at
+                    // Plain `section` with no children produces no output at
                     // Quiet. Don't mark_blank_pending — there's nothing to space.
                     return;
                 }

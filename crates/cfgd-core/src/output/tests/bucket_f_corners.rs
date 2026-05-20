@@ -1,8 +1,8 @@
 //! Bucket (f): layout corner cases. 12 cases — covers KvBlock alignment at
-//! 1/2/many keys, long-key wrap, consecutive `kv` auto-batching (§9.2),
-//! spinner→Status detail/duration chain (§8.3), 3-level nesting, empty plain
-//! section's `(none)` placeholder (§6.4), `section_if_nonempty` skip,
-//! `with_data` divergence, status target path, and hint inside a section.
+//! 1/2/many keys, long-key wrap, consecutive `kv` auto-batching,
+//! spinner→Status detail/duration chain, 3-level nesting, empty plain
+//! section's `(none)` placeholder, `section_if_nonempty` skip, `with_data`
+//! divergence, status target path, and hint inside a section.
 
 use std::time::Duration;
 
@@ -36,7 +36,7 @@ golden_doc!(bucket_f, long_key_wraps_value, |p, cap| {
     p.kv_block([("ThisIsAVeryLongKeyThatExceedsTwentyFourChars", "value")]);
 });
 
-// 5. Consecutive standalone kv calls auto-batch (§9.2)
+// 5. Consecutive standalone kv calls auto-batch
 golden_doc!(bucket_f, consecutive_kvs_align, |p, cap| {
     p.kv("Foo", "1");
     p.kv("LongerKey", "2");

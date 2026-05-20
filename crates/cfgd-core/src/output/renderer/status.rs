@@ -16,10 +16,10 @@ pub struct StatusFields<'a> {
 impl Renderer {
     /// Top-level status dispatcher. Routes to the topmost open section's
     /// pending-statuses buffer when one exists (so subjects can be
-    /// right-padded to a common column at section close — spec §13.3/§13.4);
-    /// otherwise writes immediately.
+    /// right-padded to a common column at section close); otherwise writes
+    /// immediately.
     pub fn render_status(&self, w: &dyn Writer, depth: usize, f: &StatusFields<'_>) {
-        // Status(Fail) is shown even at Quiet — see spec §12.
+        // Status(Fail) is shown even at Quiet.
         if self.verbosity == Verbosity::Quiet && f.role != Role::Fail {
             return;
         }
@@ -78,9 +78,9 @@ impl Renderer {
         }
         line.push_str(&style.apply_to(f.subject).to_string());
 
-        // Field order per spec §13.2: subject — detail (target). Detail comes
-        // first (with em-dash glue), then target in parens. Duration trails
-        // last as its own (Ns) parens block.
+        // Field order: subject — detail (target). Detail comes first (with
+        // em-dash glue), then target in parens. Duration trails last as its
+        // own (Ns) parens block.
         if let Some(detail) = f.detail {
             line.push_str(" — ");
             line.push_str(detail);

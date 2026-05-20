@@ -1,6 +1,6 @@
 //! Bucket (b): per-component verbosity sweep. 27 cases — every component
-//! crossed with {Quiet, Normal, Verbose} at default theme. Catches the §12
-//! verbosity-suppression rules and the "emitted a child" rule in §6.4.
+//! crossed with {Quiet, Normal, Verbose} at default theme. Catches the
+//! verbosity-suppression rules and the "emitted a child" rule.
 
 use crate::golden_at;
 use crate::output::{Role, Verbosity};

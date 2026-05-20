@@ -1,6 +1,6 @@
 //! Bucket (c): Status × Role coverage. 7 cases — `Status` rendered at every
-//! Role × default theme × Normal verbosity. Locks the §7 / §10 role-glyph
-//! mapping into goldens.
+//! Role × default theme × Normal verbosity. Locks the role-glyph mapping
+//! into goldens.
 
 use crate::golden_doc;
 use crate::output::Role;

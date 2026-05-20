@@ -62,9 +62,8 @@ impl Doc {
     }
 
     pub fn kv(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        // Coalesce with the trailing child if it's already a KvBlock — spec §9.2
-        // requires that consecutive standalone kv() calls render as one aligned
-        // block (the buffered surface mirrors the streaming auto-batching rule).
+        // Consecutive standalone kv() calls must render as one aligned block
+        // (the buffered surface mirrors the streaming auto-batching rule).
         let pair = KvPair::new(key, value);
         if let Some(Component::KvBlock { pairs }) = self.children.last_mut() {
             pairs.push(pair);
@@ -227,7 +226,7 @@ impl SectionBuilder {
     }
 
     pub fn kv(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        // Same coalescing rule as Doc::kv (spec §9.2).
+        // Coalesce consecutive standalone kv() calls into one aligned block.
         let pair = KvPair::new(key, value);
         if let Some(Component::KvBlock { pairs }) = self.children.last_mut() {
             pairs.push(pair);
@@ -400,9 +399,9 @@ mod tests {
 
     #[test]
     fn consecutive_kvs_coalesce_in_doc() {
-        // Spec §9.2: Doc::kv must coalesce into one aligned block.
-        // The trailing `.note(...)` is a non-Kv child used to verify the
-        // coalescing boundary — Kv runs end when a non-Kv child arrives.
+        // Doc::kv must coalesce consecutive standalone calls into one aligned
+        // block. The trailing `.note(...)` is a non-Kv child used to verify
+        // the coalescing boundary — Kv runs end when a non-Kv child arrives.
         let d = Doc::new().kv("Foo", "1").kv("LongerKey", "2").note("Next");
         assert_eq!(d.children.len(), 2, "expected coalesced kvs + note");
         if let Component::KvBlock { pairs } = &d.children[0] {

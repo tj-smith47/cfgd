@@ -1,5 +1,5 @@
 //! Bucket (e): indent invariant. 6 cases — covers the runtime indent check
-//! at depths 1/2/3, the §6.4 empty-section collapse rule, suppressed-child
+//! at depths 1/2/3, the empty-section collapse rule, suppressed-child
 //! collapse, and the buffered-Doc path that never needs the runtime check.
 
 use crate::golden_doc;
@@ -39,9 +39,9 @@ golden_doc!(
     bucket_e,
     section_with_only_suppressed_hint_collapses,
     |p, cap| {
-        // §6.4: verbosity-suppressed components don't count as emitted
-        // children. At Normal, Note is Verbose-only, so a section that only
-        // emits a Note collapses under `section_or_collapse`.
+        // Verbosity-suppressed components don't count as emitted children.
+        // At Normal, Note is Verbose-only, so a section that only emits a
+        // Note collapses under `section_or_collapse`.
         let s = p.section_or_collapse("MaybeEmpty");
         s.note("verbose-only — suppressed at Normal");
     }

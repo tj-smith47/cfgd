@@ -1,8 +1,8 @@
-//! Prompts — interaction, not output. Kept API-compatible with the old
-//! `output/printer.rs` prompt_* trio so call sites migrate cleanly. Spec §5b:
-//! refuse to prompt under structured output (would deadlock pipelines), and
-//! honor a test-seeded answer queue (set via `for_test_with_prompt_responses`,
-//! wired in T26) so tests can drive prompt_* past the non-interactive guard.
+//! Prompts — interaction, not output. Two invariants:
+//!   - Refuse to prompt under structured output (would deadlock pipelines).
+//!   - Honor a test-seeded answer queue (set via
+//!     `for_test_with_prompt_responses`) so tests can drive prompt_* past the
+//!     non-interactive guard.
 
 use super::Printer;
 use super::printer::PromptAnswer;

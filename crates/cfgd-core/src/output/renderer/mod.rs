@@ -6,12 +6,9 @@
 //!
 //! Every other module routes terminal writes through here.
 //!
-//! R1 skeleton: the `render_*` emission family is wired via `Printer` (T14)
-//! and the `section::*` family is wired via `SectionGuard` (T15). A few
-//! internals remain reachable only from tests until later R1 tasks land
-//! more dispatchers — `RenderState::{depth,push,pop}` and `indent_prefix`
-//! sit behind a narrow allow so the renderer can keep them addressable
-//! from inside the renderer module without a workspace-wide warning.
+//! `RenderState::{depth,push,pop}` and `indent_prefix` are reachable only
+//! from tests and from inside the renderer module; the narrow `dead_code`
+//! allow keeps them addressable without a workspace-wide warning.
 #![allow(dead_code)]
 
 use std::sync::Mutex;
@@ -44,9 +41,9 @@ pub(crate) struct RenderState {
     pub(crate) section_stack: Vec<crate::output::renderer::section::SectionFrame>,
     /// True iff the most recent emission was a top-level heading and no other
     /// emission has happened since. Consumed by the next top-level kv_block,
-    /// which re-anchors the block at depth+1 so spec §13.1/§13.3/§13.4's
-    /// "kv_block indented under its heading" shape lands. Reset by any other
-    /// emission (status, section header, bullet, etc.).
+    /// which re-anchors the block at depth+1 so it visually nests under the
+    /// heading. Reset by any other emission (status, section header, bullet,
+    /// etc.).
     pub(crate) last_was_top_heading: bool,
 }
 
@@ -104,15 +101,15 @@ impl Renderer {
     /// Called by every top-level emit before writing. Returns the depth at
     /// which the emit should actually render (clamped to current open section).
     ///
-    /// Per spec §6.2: a top-level emit (depth 0) reached while a `SectionGuard`
-    /// is alive is a programming error. Debug builds `debug_assert!` to flag
-    /// the call site loudly; release builds log a `tracing::warn!` once per
-    /// process and re-route the emit to the section's current depth so the
-    /// output stays readable.
+    /// A top-level emit (depth 0) reached while a `SectionGuard` is alive is
+    /// a programming error. Debug builds `debug_assert!` to flag the call
+    /// site loudly; release builds log a `tracing::warn!` once per process
+    /// and re-route the emit to the section's current depth so the output
+    /// stays readable.
     pub(crate) fn enforce_top_level_emit(&self, expected_depth: usize) -> usize {
         let actual = self.state.lock().unwrap_or_else(|e| e.into_inner()).depth();
         if expected_depth == 0 && actual > 0 {
-            // Top-level emit while a section is open. Spec §6.2.
+            // Top-level emit while a section is open.
             debug_assert!(
                 false,
                 "top-level emit at depth 0 while section open at depth {actual}"
@@ -169,15 +166,15 @@ impl Renderer {
              Callers must pre-split multi-line content (see render_note for the canonical pattern)."
         );
         // Callers must pre-split multi-line content; we normalize embedded \n
-        // defensively to keep the §13 blank-line accounting honest if they
-        // don't. The sink appends its own trailing newline per call; any
-        // newlines already in `body` would smuggle physical line breaks past
-        // the blank-line accounting (e.g. a Status subject ending with `\n`
-        // would produce a stray blank between this emission and the next,
-        // breaking the §13 one-blank-between-siblings invariant). Strip
-        // trailing newlines and split internal ones into separate sink writes
-        // at the same depth — `render_note` is the only intentional
-        // multi-line path and pre-splits before calling here.
+        // defensively to keep blank-line accounting honest if they don't. The
+        // sink appends its own trailing newline per call; any newlines
+        // already in `body` would smuggle physical line breaks past the
+        // blank-line accounting (e.g. a Status subject ending with `\n` would
+        // produce a stray blank between this emission and the next, breaking
+        // the one-blank-between-siblings invariant). Strip trailing newlines
+        // and split internal ones into separate sink writes at the same
+        // depth — `render_note` is the only intentional multi-line path and
+        // pre-splits before calling here.
         let trimmed = body.trim_end_matches(['\n', '\r']);
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if s.leading {
@@ -220,7 +217,7 @@ impl Renderer {
     /// Set blank-pending iff we're at the root group level (no open section).
     /// Called at the end of every top-level group emission (heading, kv_block,
     /// status, hint, note, table) so the next top-level emit gets one blank.
-    /// Spec §13: a blank line precedes every top-level group after the first.
+    /// One blank line precedes every top-level group after the first.
     pub(crate) fn mark_top_level_blank_if_at_root(&self) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if s.section_stack.is_empty() {
@@ -237,7 +234,7 @@ impl Renderer {
         self.write_line(w, 0, &styled);
         // Set the heading-just-emitted flag AFTER write_line (which clears
         // it). The next top-level kv_block consumes this to re-anchor itself
-        // at depth+1 — spec §13.1/§13.3/§13.4.
+        // at depth+1 so it visually nests under the heading.
         {
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if s.section_stack.is_empty() {
@@ -257,8 +254,8 @@ impl Renderer {
         self.write_line(w, depth, &format!("- {}", text));
     }
 
-    /// Hint: arrow glyph + dim text. Shown at Normal+ (NOT Quiet). Per §12,
-    /// this is the canonical "next step" surface.
+    /// Hint: arrow glyph + dim text. Shown at Normal+ (NOT Quiet). The
+    /// canonical "next step" surface.
     pub fn render_hint(&self, w: &dyn Writer, depth: usize, text: &str) {
         if self.verbosity == Verbosity::Quiet {
             return;

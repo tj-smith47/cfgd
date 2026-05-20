@@ -1,13 +1,10 @@
 //! User-facing handle. Holds the Renderer (single layout authority), the
 //! active OutputFormat, and the writers for stderr (status output) +
-//! stdout (structured/data output). Section/spinner/process/prompt/buffered
-//! emission methods land in later R1 tasks.
-//!
-//! R1 skeleton: all sinks are wired (`sink_stderr` via T14/T15/T16,
-//! `sink_stdout` via T20 `data_line`). `multi_progress` is wired (T18).
-//! `syntax_set` / `theme_set` are wired (T20 `syntax_highlight`).
-//! `test_doc_capture` is wired by T27 (test-helpers feature) and
-//! `prompt_queue` is wired by T26 (prompts).
+//! stdout (structured/data output). Sinks: `sink_stderr` for status,
+//! `sink_stdout` for `data_line`, `multi_progress` for spinners and progress
+//! bars, `syntax_set` / `theme_set` for `syntax_highlight`. The
+//! `test_doc_capture` and `prompt_queue` fields are populated by test
+//! helpers (gated on the `test-helpers` feature).
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};

@@ -51,9 +51,9 @@ impl Renderer {
         // Also consume the heading-just-emitted flag: when the previous
         // emission was a top-level heading and we're still at root, re-anchor
         // this kv_block one level deeper so it visually nests under the
-        // heading (spec §13.1/§13.3/§13.4). When we bump, also SUPPRESS the
-        // would-be blank between heading and kv_block — spec shows the
-        // heading + kv_block as one bound unit with no blank between them.
+        // heading. When we bump, also SUPPRESS the would-be blank between
+        // heading and kv_block — heading + kv_block render as one bound unit
+        // with no blank between them.
         let effective_depth = {
             let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let bump = depth == 0 && s.section_stack.is_empty() && s.last_was_top_heading;

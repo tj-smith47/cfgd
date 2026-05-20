@@ -1,5 +1,5 @@
-//! Bucket (g): regression anchors. One golden per killed §1 violation in the
-//! design spec. Each test's doc-comment shows the BEFORE call site so future
+//! Bucket (g): regression anchors. One golden per killed output-vocabulary
+//! violation. Each test's doc-comment shows the BEFORE call site so future
 //! reviewers can see what was migrated.
 
 use std::time::Duration;
@@ -153,7 +153,7 @@ golden_doc!(bucket_g, init_picker_options, |p, cap| {
     s.bullet("2. prod");
 });
 
-// BEFORE: §1.5 header overload — `printer.header("Plan")` then `header("Apply")`
+// BEFORE: header overload — `printer.header("Plan")` then `header("Apply")`
 golden_doc!(bucket_g, plan_then_apply_no_double_heading, |p, cap| {
     p.heading("Apply");
     p.kv_block([("Profile", "dev")]);
@@ -162,7 +162,7 @@ golden_doc!(bucket_g, plan_then_apply_no_double_heading, |p, cap| {
         .duration(Duration::from_millis(50));
 });
 
-// BEFORE: §1.8 children pop to col 0 in apply flow
+// BEFORE: children pop to col 0 in apply flow
 golden_doc!(bucket_g, apply_results_stay_indented, |p, cap| {
     p.heading("Apply");
     let s = p.section("Files");
@@ -171,26 +171,26 @@ golden_doc!(bucket_g, apply_results_stay_indented, |p, cap| {
         .detail("permission denied");
 });
 
-// BEFORE: §1.4 glyph zoo — `~ tmux (Pass → Warning)` was warning-styled
+// BEFORE: glyph zoo — `~ tmux (Pass → Warning)` was warning-styled
 golden_doc!(bucket_g, compliance_changed_with_role_status, |p, cap| {
     let s = p.section_or_collapse("Changed (1)");
     s.status(Role::Warn, "tmux (Pass → Warning)");
 });
 
-// BEFORE: §1.7 info dumping ground — "Aborted" message
+// BEFORE: info dumping ground — "Aborted" message
 golden_doc!(bucket_g, apply_aborted_uses_status, |p, cap| {
     p.heading("Apply");
     p.status_simple(Role::Skipped, "Aborted by user");
 });
 
 // =====================================================================
-// Spec §13 worked-example fidelity tests. Each reproduces the spec's
-// claimed rendered output for a worked example. If the renderer drifts
-// from the spec, these fail loudly — a regression in the headline
+// Worked-example fidelity tests. Each reproduces the claimed rendered
+// output for a worked example. If the renderer drifts from the
+// documented shape, these fail loudly — a regression in the headline
 // before/after promise.
 // =====================================================================
 
-// BEFORE: spec §13.1 — `cfgd config show` worked example.
+// BEFORE: `cfgd config show` worked example.
 golden_doc!(bucket_g, worked_example_config_show, |p, cap| {
     let doc = Doc::new()
         .heading("Configuration")
@@ -210,8 +210,8 @@ golden_doc!(bucket_g, worked_example_config_show, |p, cap| {
     p.emit(doc);
 });
 
-// BEFORE: spec §13.2 — `cfgd status` worked example (without payload;
-// payload is exercised by per-command snapshots in F1).
+// BEFORE: `cfgd status` worked example (without payload; payload is
+// exercised by per-command snapshots).
 golden_doc!(bucket_g, worked_example_status, |p, cap| {
     let doc = Doc::new()
         .heading("Status")
@@ -238,9 +238,9 @@ golden_doc!(bucket_g, worked_example_status, |p, cap| {
     p.emit(doc);
 });
 
-// BEFORE: spec §13.3 — `cfgd apply` worked example. Streaming-shaped, so
-// this test exercises the streaming surface (Printer + SectionGuard)
-// rather than Doc::emit.
+// BEFORE: `cfgd apply` worked example. Streaming-shaped, so this test
+// exercises the streaming surface (Printer + SectionGuard) rather than
+// Doc::emit.
 golden_doc!(bucket_g, worked_example_apply, |p, cap| {
     p.heading("Apply");
     p.kv_block([("Config", "/etc/cfgd.yaml"), ("Profile", "dev")]);
@@ -264,8 +264,8 @@ golden_doc!(bucket_g, worked_example_apply, |p, cap| {
         .duration(Duration::from_millis(5400));
 });
 
-// BEFORE: spec §13.4 — `cfgd compliance diff` worked example (the role-
-// abuse case). Full Doc render to verify the spec's claimed output shape.
+// BEFORE: `cfgd compliance diff` worked example (the role-abuse case).
+// Full Doc render to verify the claimed output shape.
 golden_doc!(bucket_g, worked_example_compliance_diff, |p, cap| {
     let doc = Doc::new()
         .heading("Compliance Diff #4 → #5")
@@ -288,8 +288,8 @@ golden_doc!(bucket_g, worked_example_compliance_diff, |p, cap| {
     p.emit(doc);
 });
 
-// BEFORE: spec §13.5 — `cfgd init` worked example (the orphan-indent
-// fix). Streaming Section + bullets.
+// BEFORE: `cfgd init` worked example (the orphan-indent fix). Streaming
+// Section + bullets.
 golden_doc!(bucket_g, worked_example_init_next_steps, |p, cap| {
     let next = p.section("Next steps");
     next.bullet("cfgd module create <name>   — create a module");

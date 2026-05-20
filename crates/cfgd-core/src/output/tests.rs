@@ -3,7 +3,8 @@
 //! Goldens live in `snapshots/`. Refresh by running:
 //!   INSTA_UPDATE=always cargo test -p cfgd-core --features test-helpers output::tests
 //!
-//! See spec §15.1 for the prioritization (7 buckets, ~91 cases).
+//! Organized into 7 buckets covering ~91 cases — baseline, verbosity,
+//! status × role, themes, indent, corners, and regression.
 
 #[cfg(feature = "test-helpers")]
 mod bucket_a_baseline;
