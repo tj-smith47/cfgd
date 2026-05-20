@@ -1621,7 +1621,7 @@ pub fn execute(
             resource,
             recursive,
         } => explain::cmd_explain(v2_printer, resource.as_deref(), *recursive),
-        Command::Upgrade { check } => upgrade::cmd_upgrade(printer, v2_printer, *check),
+        Command::Upgrade { check } => upgrade::cmd_upgrade(v2_printer, *check),
         Command::Decide {
             action,
             resource,

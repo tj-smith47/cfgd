@@ -1,15 +1,10 @@
-use super::*;
 use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
 
-pub fn cmd_upgrade(
-    printer: &Printer,
-    v2_printer: &PrinterV2,
-    check_only: bool,
-) -> anyhow::Result<()> {
+pub fn cmd_upgrade(v2_printer: &PrinterV2, check_only: bool) -> anyhow::Result<()> {
     use cfgd_core::upgrade;
 
     if check_only {
-        let check = upgrade::check_latest(None, Some(printer)).map_err(|e| {
+        let check = upgrade::check_latest(None, Some(v2_printer)).map_err(|e| {
             v2_printer.emit(cfgd_core::output_v2::error_doc(
                 env!("CARGO_PKG_VERSION"),
                 "check_failed",
@@ -54,7 +49,7 @@ pub fn cmd_upgrade(
 
     v2_printer.heading("Upgrade");
 
-    let check = upgrade::check_latest(None, Some(printer)).map_err(|e| {
+    let check = upgrade::check_latest(None, Some(v2_printer)).map_err(|e| {
         v2_printer.emit(cfgd_core::output_v2::error_doc(
             env!("CARGO_PKG_VERSION"),
             "check_failed",
@@ -121,7 +116,7 @@ pub fn cmd_upgrade(
     }
 
     let installed_path =
-        upgrade::download_and_install(release, asset, Some(printer)).map_err(|e| {
+        upgrade::download_and_install(release, asset, Some(v2_printer)).map_err(|e| {
             v2_printer.emit(cfgd_core::output_v2::error_doc(
                 &check.latest.to_string(),
                 "install_failed",

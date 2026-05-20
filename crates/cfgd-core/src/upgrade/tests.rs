@@ -1276,7 +1276,7 @@ fn download_to_file_drives_progress_bar_branch_with_printer_and_content_length()
     let dir = tempfile::tempdir().unwrap();
     let dest = dir.path().join("sized.bin");
     let url = format!("{}/download/sized", server.url());
-    let printer = crate::test_helpers::test_printer();
+    let printer = crate::test_helpers::test_printer_v2();
 
     let result = download_to_file(&url, &dest, Some(&printer));
     mock.assert();
@@ -1301,7 +1301,7 @@ fn download_to_file_drives_spinner_branch_when_printer_present_without_content_l
     let dir = tempfile::tempdir().unwrap();
     let dest = dir.path().join("chunked.bin");
     let url = format!("{}/download/chunked", server.url());
-    let printer = crate::test_helpers::test_printer();
+    let printer = crate::test_helpers::test_printer_v2();
 
     let result = download_to_file(&url, &dest, Some(&printer));
     mock.assert();
@@ -2281,7 +2281,7 @@ mod download_and_install_to {
         let target = target_dir.path().join("cfgd");
         std::fs::write(&target, b"old binary").unwrap();
 
-        let (printer, _buf) = crate::output::Printer::for_test();
+        let printer = crate::test_helpers::test_printer_v2();
         let installed = download_and_install_to(&release, &asset, &target, Some(&printer))
             .expect("happy path with printer → Ok");
         assert_eq!(installed, target);
@@ -2638,7 +2638,8 @@ mod download_and_install_to {
         let checksums_path = tmp.path().join("checksums.txt");
         std::fs::write(&checksums_path, "").unwrap();
 
-        let (printer, buf) = crate::output::Printer::for_test();
+        let (printer, buf) =
+            crate::output_v2::Printer::for_test_at(crate::output_v2::Verbosity::Normal);
         let outcome = verify_cosign_bundle(&checksums_path, &release, tmp.path(), Some(&printer))
             .expect("missing bundle is graceful-degrade, not Err");
         assert!(
@@ -2666,7 +2667,8 @@ mod download_and_install_to {
         let checksums_path = tmp.path().join("checksums.txt");
         std::fs::write(&checksums_path, "").unwrap();
 
-        let (printer, buf) = crate::output::Printer::for_test();
+        let (printer, buf) =
+            crate::output_v2::Printer::for_test_at(crate::output_v2::Verbosity::Normal);
         let outcome = verify_cosign_bundle(&checksums_path, &release, tmp.path(), Some(&printer))
             .expect("missing pubkey is graceful-degrade, not Err");
         assert!(!outcome);
@@ -2710,7 +2712,8 @@ mod download_and_install_to {
         let checksums_path = tmp.path().join("checksums.txt");
         std::fs::write(&checksums_path, "").unwrap();
 
-        let (printer, buf) = crate::output::Printer::for_test();
+        let (printer, buf) =
+            crate::output_v2::Printer::for_test_at(crate::output_v2::Verbosity::Normal);
         let outcome = verify_cosign_bundle(&checksums_path, &release, tmp.path(), Some(&printer))
             .expect("missing cosign CLI is graceful-degrade, not Err");
         assert!(!outcome);

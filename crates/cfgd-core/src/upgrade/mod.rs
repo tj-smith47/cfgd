@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 use semver::Version;
 
 use crate::errors::{Result, UpgradeError};
-use crate::output::Printer;
+use crate::output_v2::{Printer, Role};
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
 const GITHUB_API_BASE_ENV: &str = "CFGD_GITHUB_API_BASE";
@@ -101,7 +101,7 @@ fn fetch_latest_release_from(
     })?;
 
     if let Some(s) = spinner {
-        s.finish_and_clear();
+        let _ = s.finish_ok("Checked latest release");
     }
 
     parse_release_json(&body)
@@ -220,19 +220,19 @@ fn verify_cosign_bundle(
 ) -> std::result::Result<bool, UpgradeError> {
     let Some(bundle_asset) = find_cosign_bundle_asset(release) else {
         if let Some(p) = printer {
-            p.warning("no cosign bundle attached to release — falling back to SHA256-only checksum verification. Downgrades publisher-compromise resistance to GitHub Releases trust.");
+            p.status_simple(Role::Warn, "no cosign bundle attached to release — falling back to SHA256-only checksum verification. Downgrades publisher-compromise resistance to GitHub Releases trust.");
         }
         return Ok(false);
     };
     let Some(pub_key_asset) = find_cosign_public_key_asset(release) else {
         if let Some(p) = printer {
-            p.warning("cosign bundle found but no public key attached to release — cannot verify without cosign.pub. Falling back to SHA256-only.");
+            p.status_simple(Role::Warn, "cosign bundle found but no public key attached to release — cannot verify without cosign.pub. Falling back to SHA256-only.");
         }
         return Ok(false);
     };
     if crate::require_cosign().is_err() {
         if let Some(p) = printer {
-            p.warning("cosign bundle found but the cosign CLI is not installed — install cosign (https://docs.sigstore.dev/cosign/system_config/installation/) to enable signature verification. Falling back to SHA256-only.");
+            p.status_simple(Role::Warn, "cosign bundle found but the cosign CLI is not installed — install cosign (https://docs.sigstore.dev/cosign/system_config/installation/) to enable signature verification. Falling back to SHA256-only.");
         }
         return Ok(false);
     }
@@ -244,8 +244,19 @@ fn verify_cosign_bundle(
 
     let verify_spinner = printer.map(|p| p.spinner("Verifying cosign signature..."));
     let outcome = run_cosign_verify_blob(checksums_path, &bundle_path, &pub_key_path);
-    if let Some(s) = verify_spinner {
-        s.finish_and_clear();
+    match &outcome {
+        Ok(()) => {
+            if let Some(s) = verify_spinner {
+                let _ = s.finish_ok("Verified cosign signature");
+            }
+        }
+        Err(e) => {
+            if let Some(s) = verify_spinner {
+                let _ = s
+                    .finish_fail("Failed to verify cosign signature")
+                    .detail(e.to_string());
+            }
+        }
     }
     outcome.map(|()| {
         tracing::info!(asset = %bundle_asset.name, "cosign signature verified");
@@ -339,14 +350,14 @@ fn download_to_file(
                 downloaded += n as u64;
                 pb.set_position(downloaded);
             }
-            pb.finish_and_clear();
+            pb.finish();
         }
         (Some(p), None) => {
-            let spinner = p.spinner(&format!("Downloading {url}..."));
+            let spinner = p.spinner(format!("Downloading {url}..."));
             std::io::copy(&mut reader, &mut tmp).map_err(|e| UpgradeError::DownloadFailed {
                 message: format!("stream to disk: {}", e),
             })?;
-            spinner.finish_and_clear();
+            let _ = spinner.finish_ok(format!("Downloaded {url}"));
         }
         _ => {
             std::io::copy(&mut reader, &mut tmp).map_err(|e| UpgradeError::DownloadFailed {
@@ -475,8 +486,19 @@ pub(crate) fn download_and_install_to(
 
         let verify_spinner = printer.map(|p| p.spinner("Verifying checksum..."));
         let verify_result = verify_archive_checksum(&archive_path, &checksums_content, &asset.name);
-        if let Some(s) = verify_spinner {
-            s.finish_and_clear();
+        match &verify_result {
+            Ok(()) => {
+                if let Some(s) = verify_spinner {
+                    let _ = s.finish_ok("Checksum verified");
+                }
+            }
+            Err(e) => {
+                if let Some(s) = verify_spinner {
+                    let _ = s
+                        .finish_fail("Checksum verification failed")
+                        .detail(e.to_string());
+                }
+            }
         }
         verify_result?;
         tracing::debug!("checksum verified for {}", asset.name);
@@ -499,7 +521,7 @@ pub(crate) fn download_and_install_to(
     #[cfg(windows)]
     extract_zip(&archive_path, &extract_dir)?;
     if let Some(s) = extract_spinner {
-        s.finish_and_clear();
+        let _ = s.finish_ok("Extracted archive");
     }
 
     // Find the cfgd binary in the extracted contents

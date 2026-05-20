@@ -26,7 +26,6 @@
 use std::path::Path;
 
 use cfgd::cli::upgrade;
-use cfgd_core::output::{OutputFormat as OutputFormatV1, Printer as PrinterV1, Verbosity};
 use cfgd_core::output_v2::{Doc, OutputFormat, Printer, Role};
 use cfgd_core::test_helpers::EnvVarGuard;
 use serial_test::serial;
@@ -89,10 +88,9 @@ fn upgrade_check_up_to_date_human() {
     let home = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(home.path());
 
-    let v1_printer = PrinterV1::with_format(Verbosity::Quiet, None, OutputFormatV1::Table);
     let (v2_printer, cap) = Printer::for_test_doc();
 
-    upgrade::cmd_upgrade(&v1_printer, &v2_printer, /*check_only=*/ true).unwrap();
+    upgrade::cmd_upgrade(&v2_printer, /*check_only=*/ true).unwrap();
     drop(v2_printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -111,10 +109,9 @@ fn upgrade_check_up_to_date_json() {
     let home = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(home.path());
 
-    let v1_printer = PrinterV1::with_format(Verbosity::Quiet, None, OutputFormatV1::Table);
     let (v2_printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
 
-    upgrade::cmd_upgrade(&v1_printer, &v2_printer, /*check_only=*/ true).unwrap();
+    upgrade::cmd_upgrade(&v2_printer, /*check_only=*/ true).unwrap();
     drop(v2_printer);
 
     let json = cap.json().expect("doc captured json");
