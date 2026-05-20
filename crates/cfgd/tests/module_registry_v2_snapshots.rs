@@ -118,16 +118,16 @@ fn mask_commit_sha(s: &str) -> String {
 fn module_registry_add_happy_human() {
     let (config_dir, _state_dir) = registry_test_setup();
     let cli = cli_for(config_dir.path(), config_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     module::cmd_module_registry_add(
         &cli,
-        &v2_printer,
+        &printer,
         "https://github.com/team/modules.git",
         Some("team"),
     )
     .unwrap();
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -141,16 +141,16 @@ fn module_registry_add_happy_human() {
 fn module_registry_add_happy_json() {
     let (config_dir, _state_dir) = registry_test_setup();
     let cli = cli_for(config_dir.path(), config_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     module::cmd_module_registry_add(
         &cli,
-        &v2_printer,
+        &printer,
         "https://github.com/team/modules.git",
         Some("team"),
     )
     .unwrap();
-    drop(v2_printer);
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["name"], "team");
@@ -173,15 +173,15 @@ fn module_registry_add_already_configured_human() {
     .unwrap();
 
     // Second add hits the already-configured Doc.
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     module::cmd_module_registry_add(
         &cli,
-        &v2_printer,
+        &printer,
         "https://github.com/team/different.git",
         Some("team"),
     )
     .unwrap();
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -201,9 +201,9 @@ fn module_registry_remove_happy_human() {
     module::cmd_module_registry_add(&cli, &v2a, "https://example.com/reg.git", Some("team"))
         .unwrap();
 
-    let (v2_printer, cap) = Printer::for_test_doc();
-    module::cmd_module_registry_remove(&cli, &v2_printer, "team").unwrap();
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    module::cmd_module_registry_remove(&cli, &printer, "team").unwrap();
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -221,10 +221,10 @@ fn module_registry_remove_happy_human() {
 fn module_registry_remove_not_found_human() {
     let (config_dir, _state_dir) = registry_test_setup();
     let cli = cli_for(config_dir.path(), config_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    module::cmd_module_registry_remove(&cli, &v2_printer, "ghost").unwrap();
-    drop(v2_printer);
+    module::cmd_module_registry_remove(&cli, &printer, "ghost").unwrap();
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -243,9 +243,9 @@ fn module_registry_rename_happy_human() {
     let v2a = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     module::cmd_module_registry_add(&cli, &v2a, "https://example.com/r.git", Some("old")).unwrap();
 
-    let (v2_printer, cap) = Printer::for_test_doc();
-    module::cmd_module_registry_rename(&cli, &v2_printer, "old", "fresh").unwrap();
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    module::cmd_module_registry_rename(&cli, &printer, "old", "fresh").unwrap();
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -269,10 +269,10 @@ fn module_registry_rename_happy_human() {
 fn module_registry_list_empty_human() {
     let (config_dir, _state_dir) = registry_test_setup();
     let cli = cli_for(config_dir.path(), config_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    module::cmd_module_registry_list(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    module::cmd_module_registry_list(&cli, &printer).unwrap();
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -295,9 +295,9 @@ fn module_registry_list_with_entries_human() {
         .unwrap();
     module::cmd_module_registry_add(&cli, &v2a, "https://example.com/b.git", Some("beta")).unwrap();
 
-    let (v2_printer, cap) = Printer::for_test_doc();
-    module::cmd_module_registry_list(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    module::cmd_module_registry_list(&cli, &printer).unwrap();
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -328,10 +328,10 @@ fn module_add_bridge_one_blank_line() {
     let url = format!("file://{}@v1.0.0", bare.display());
 
     let cli = cli_for(config_dir.path(), config_dir.path());
-    let (v2_printer, cap) =
+    let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
-    module::cmd_module_add_remote(&cli, &v2_printer, &url, None, true, true).unwrap();
-    drop(v2_printer);
+    module::cmd_module_add_remote(&cli, &printer, &url, None, true, true).unwrap();
+    drop(printer);
 
     let combined = cap.human();
     assert!(
@@ -365,10 +365,10 @@ fn module_add_happy_json() {
     let url = format!("file://{}@v1.0.0", bare.display());
 
     let cli = cli_for(config_dir.path(), config_dir.path());
-    let (v2_printer, cap) =
+    let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
-    module::cmd_module_add_remote(&cli, &v2_printer, &url, None, true, true).unwrap();
-    drop(v2_printer);
+    module::cmd_module_add_remote(&cli, &printer, &url, None, true, true).unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["name"], "jsonmod");
@@ -400,11 +400,10 @@ fn module_add_from_registry_bridge_one_blank_line() {
     std::fs::write(config_dir.path().join("cfgd.yaml"), yaml).unwrap();
 
     let cli = cli_for(config_dir.path(), config_dir.path());
-    let (v2_printer, cap) =
+    let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
-    module::cmd_module_add_from_registry(&cli, &v2_printer, "myreg/alpha@v1.0.0", true, true)
-        .unwrap();
-    drop(v2_printer);
+    module::cmd_module_add_from_registry(&cli, &printer, "myreg/alpha@v1.0.0", true, true).unwrap();
+    drop(printer);
 
     let combined = cap.human();
     assert!(
@@ -433,10 +432,10 @@ fn module_add_from_registry_bridge_one_blank_line() {
 fn module_search_no_registries_human() {
     let (config_dir, _state_dir) = registry_test_setup();
     let cli = cli_for(config_dir.path(), config_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    module::cmd_module_search(&cli, &v2_printer, "anything").unwrap();
-    drop(v2_printer);
+    module::cmd_module_search(&cli, &printer, "anything").unwrap();
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -467,9 +466,9 @@ fn module_search_happy_json() {
     std::fs::write(config_dir.path().join("cfgd.yaml"), yaml).unwrap();
 
     let cli = cli_for(config_dir.path(), config_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
-    module::cmd_module_search(&cli, &v2_printer, "alpha").unwrap();
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    module::cmd_module_search(&cli, &printer, "alpha").unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     let arr = json.as_array().expect("array");

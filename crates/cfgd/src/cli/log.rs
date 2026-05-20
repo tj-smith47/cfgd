@@ -3,7 +3,7 @@ use super::*;
 use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 
 pub fn cmd_log(
-    v2_printer: &Printer,
+    printer: &Printer,
     count: u32,
     show_output: Option<i64>,
     state_dir: Option<&Path>,
@@ -11,16 +11,16 @@ pub fn cmd_log(
     let state = open_state_store(state_dir)?;
 
     if let Some(apply_id) = show_output {
-        return cmd_log_show_output(v2_printer, &state, apply_id);
+        return cmd_log_show_output(printer, &state, apply_id);
     }
 
     let history = state.history(count)?;
-    v2_printer.emit(build_log_doc(&LogOutput { entries: history }));
+    printer.emit(build_log_doc(&LogOutput { entries: history }));
     Ok(())
 }
 
 fn cmd_log_show_output(
-    v2_printer: &Printer,
+    printer: &Printer,
     state: &cfgd_core::state::StateStore,
     apply_id: i64,
 ) -> anyhow::Result<()> {
@@ -30,7 +30,7 @@ fn cmd_log_show_output(
     let entries = state.journal_entries(apply_id)?;
 
     if entries.is_empty() {
-        v2_printer.emit(
+        printer.emit(
             Doc::new()
                 .heading(format!("Apply #{} — Script Output", apply_id))
                 .status(
@@ -45,12 +45,12 @@ fn cmd_log_show_output(
         return Ok(());
     }
 
-    v2_printer.heading(format!("Apply #{} — Script Output", apply_id));
+    printer.heading(format!("Apply #{} — Script Output", apply_id));
 
     let mut payload_entries = Vec::new();
     let mut found_output = false;
     {
-        let entries_sec = v2_printer.section_or_collapse("Entries");
+        let entries_sec = printer.section_or_collapse("Entries");
         for entry in &entries {
             if let Some(ref output) = entry.script_output {
                 found_output = true;
@@ -72,10 +72,10 @@ fn cmd_log_show_output(
     }
 
     if !found_output {
-        v2_printer.status_simple(Role::Info, "No script output captured for this apply");
+        printer.status_simple(Role::Info, "No script output captured for this apply");
     }
 
-    v2_printer.emit(Doc::new().with_data(&LogShowOutputOutput {
+    printer.emit(Doc::new().with_data(&LogShowOutputOutput {
         apply_id,
         entries: payload_entries,
     }));

@@ -3,7 +3,7 @@ use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_module_add_from_registry(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     reference: &str,
     yes: bool,
     allow_unsigned: bool,
@@ -11,7 +11,7 @@ pub fn cmd_module_add_from_registry(
     let reg_ref = match modules::parse_registry_ref(reference) {
         Some(r) => r,
         None => {
-            v2_printer.emit(cfgd_core::output::error_doc(
+            printer.emit(cfgd_core::output::error_doc(
                 reference,
                 "invalid_reference",
                 format!(
@@ -29,7 +29,7 @@ pub fn cmd_module_add_from_registry(
 
     // Load config to find the registry
     if !cli.config.exists() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             reference,
             "no_config",
             MSG_NO_CONFIG.to_string(),
@@ -48,7 +48,7 @@ pub fn cmd_module_add_from_registry(
     let registry_entry = match registries.iter().find(|s| s.name == reg_ref.registry) {
         Some(r) => r,
         None => {
-            v2_printer.emit(cfgd_core::output::error_doc(
+            printer.emit(cfgd_core::output::error_doc(
                 &reg_ref.registry,
                 "registry_not_found",
                 format!(
@@ -69,7 +69,7 @@ pub fn cmd_module_add_from_registry(
     let tag = match reg_ref.tag {
         Some(t) => t,
         None => {
-            v2_printer.status_simple(
+            printer.status_simple(
                 Role::Info,
                 format!(
                     "No tag specified — looking up latest for '{}'",
@@ -80,12 +80,12 @@ pub fn cmd_module_add_from_registry(
             // takes a v2 Printer; the Quiet sink suppresses the lib's
             // progress emissions so this command's v2 status surface above
             // owns the user-facing line (inversion of control).
-            let printer = null_lib_printer();
-            modules::fetch_registry_modules(registry_entry, &cache_base, &printer)?;
+            let lib_printer = null_lib_printer();
+            modules::fetch_registry_modules(registry_entry, &cache_base, &lib_printer)?;
             match modules::latest_module_version(registry_entry, &reg_ref.module, &cache_base)? {
                 Some(t) => t,
                 None => {
-                    v2_printer.emit(cfgd_core::output::error_doc(
+                    printer.emit(cfgd_core::output::error_doc(
                         &reg_ref.module,
                         "version_not_found",
                         format!(
@@ -106,7 +106,7 @@ pub fn cmd_module_add_from_registry(
 
     // Build the full git URL with subdir and delegate to cmd_module_add_remote
     let full_url = build_registry_module_url(&registry_entry.url, &reg_ref.module, &tag);
-    v2_printer.status_simple(
+    printer.status_simple(
         Role::Info,
         format!(
             "Resolved: {}/{} -> {}",
@@ -116,7 +116,7 @@ pub fn cmd_module_add_from_registry(
 
     cmd_module_add_remote(
         cli,
-        v2_printer,
+        printer,
         &full_url,
         Some(&reg_ref.registry),
         yes,
@@ -126,13 +126,13 @@ pub fn cmd_module_add_from_registry(
 
 pub fn cmd_module_add_remote(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     url: &str,
     source_name: Option<&str>,
     yes: bool,
     allow_unsigned: bool,
 ) -> anyhow::Result<()> {
-    v2_printer.heading("Add Remote Module");
+    printer.heading("Add Remote Module");
 
     let config_dir = config_dir(cli);
     let cache_base = modules::default_module_cache_dir()?;
@@ -140,9 +140,9 @@ pub fn cmd_module_add_remote(
     // Streaming: clone-fetch spinner. The lib call takes a v2 Printer; the
     // Quiet sink suppresses the lib's progress emissions so the v2 spinner
     // owns the user-facing surface (inversion of control).
-    let sp = v2_printer.spinner(format!("Fetching {}", url));
-    let printer = null_lib_printer();
-    let fetched = match modules::fetch_remote_module(url, &cache_base, &printer) {
+    let sp = printer.spinner(format!("Fetching {}", url));
+    let lib_printer = null_lib_printer();
+    let fetched = match modules::fetch_remote_module(url, &cache_base, &lib_printer) {
         Ok(f) => {
             sp.finish_ok(format!("Fetched {}", url));
             f
@@ -150,7 +150,7 @@ pub fn cmd_module_add_remote(
         Err(e) => {
             sp.finish_fail(format!("Failed to fetch {}", url))
                 .detail(e.to_string());
-            v2_printer.emit(cfgd_core::output::error_doc(
+            printer.emit(cfgd_core::output::error_doc(
                 url,
                 "clone_failed",
                 e.to_string(),
@@ -167,7 +167,7 @@ pub fn cmd_module_add_remote(
     // Check if already in lockfile
     let mut lockfile = modules::load_lockfile(&config_dir)?;
     if lockfile.modules.iter().any(|e| e.name == module_name) {
-        v2_printer.emit(
+        printer.emit(
             Doc::new()
                 .status(
                     Role::Info,
@@ -187,7 +187,7 @@ pub fn cmd_module_add_remote(
     // Check if a local module with the same name exists
     let local_modules = modules::load_modules(&config_dir)?;
     if local_modules.contains_key(&module_name) {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             &module_name,
             "already_exists",
             format!(
@@ -204,13 +204,13 @@ pub fn cmd_module_add_remote(
         );
     }
 
-    print_module_review_summary(v2_printer, &module_name, &module, &commit, &integrity);
+    print_module_review_summary(printer, &module_name, &module, &commit, &integrity);
 
     // Check for GPG/SSH signature on the tag
     let git_src = modules::parse_git_source(url)?;
     super::enforce_signature_policy(
         cli,
-        v2_printer,
+        printer,
         git_src.tag.as_deref(),
         &module_name,
         allow_unsigned,
@@ -219,8 +219,8 @@ pub fn cmd_module_add_remote(
     )?;
 
     // Confirm
-    if !yes && !v2_printer.prompt_confirm("Add this remote module?")? {
-        v2_printer.emit(
+    if !yes && !printer.prompt_confirm("Add this remote module?")? {
+        printer.emit(
             Doc::new()
                 .status(Role::Info, "Cancelled")
                 .with_data(serde_json::json!({
@@ -269,7 +269,7 @@ pub fn cmd_module_add_remote(
             if ensure_module_in_profile_doc(&mut doc, &profile_module_ref) {
                 let yaml = serde_yaml::to_string(&doc)?;
                 cfgd_core::atomic_write_str(&profile_path, &yaml)?;
-                v2_printer.status_simple(
+                printer.status_simple(
                     Role::Ok,
                     format!(
                         "Added module '{}' to profile '{}'",
@@ -281,7 +281,7 @@ pub fn cmd_module_add_remote(
         }
     }
 
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(
                 Role::Ok,
@@ -303,17 +303,17 @@ pub fn cmd_module_add_remote(
 
 pub fn cmd_module_upgrade(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     name: &str,
     new_ref: Option<&str>,
     yes: bool,
     allow_unsigned: bool,
 ) -> anyhow::Result<()> {
-    v2_printer.heading(format!("Update Module: {}", name));
+    printer.heading(format!("Update Module: {}", name));
 
     let config_dir = config_dir(cli);
     let cache_base = modules::default_module_cache_dir()?;
-    let printer = null_lib_printer();
+    let lib_printer = null_lib_printer();
 
     // Find the lockfile entry
     let mut lockfile = modules::load_lockfile(&config_dir)?;
@@ -324,7 +324,7 @@ pub fn cmd_module_upgrade(
         None => {
             let local_modules = modules::load_modules(&config_dir)?;
             if local_modules.contains_key(name) {
-                v2_printer.emit(cfgd_core::output::error_doc(
+                printer.emit(cfgd_core::output::error_doc(
                     name,
                     "local_module",
                     format!(
@@ -342,7 +342,7 @@ pub fn cmd_module_upgrade(
                     name
                 );
             } else {
-                v2_printer.emit(cfgd_core::output::error_doc(
+                printer.emit(cfgd_core::output::error_doc(
                     name,
                     "not_found",
                     format!("Module '{}' not found", name),
@@ -363,7 +363,8 @@ pub fn cmd_module_upgrade(
         git_ref: None,
         subdir: old_entry.subdir.clone(),
     };
-    let old_local_path = modules::fetch_git_source(&old_pinned_src, &cache_base, name, &printer)?;
+    let old_local_path =
+        modules::fetch_git_source(&old_pinned_src, &cache_base, name, &lib_printer)?;
     let old_module = modules::load_module(&old_local_path)?;
 
     // Build the new URL with the updated ref
@@ -377,10 +378,10 @@ pub fn cmd_module_upgrade(
                 git_ref: None,
                 subdir: None,
             };
-            modules::fetch_git_source(&git_src, &cache_base, name, &printer)?;
+            modules::fetch_git_source(&git_src, &cache_base, name, &lib_printer)?;
             let repo_dir = modules::git_cache_dir(&cache_base, &old_git_src.repo_url);
             let head = modules::get_head_commit_sha(&repo_dir)?;
-            v2_printer.status_simple(Role::Info, format!("Latest commit: {}", head));
+            printer.status_simple(Role::Info, format!("Latest commit: {}", head));
             head
         }
     };
@@ -392,14 +393,14 @@ pub fn cmd_module_upgrade(
         git_ref: None,
         subdir: old_entry.subdir.clone(),
     };
-    let new_local_path = modules::fetch_git_source(&new_src, &cache_base, name, &printer)?;
+    let new_local_path = modules::fetch_git_source(&new_src, &cache_base, name, &lib_printer)?;
     let new_module = modules::load_module(&new_local_path)?;
     let repo_dir = modules::git_cache_dir(&cache_base, &old_git_src.repo_url);
     let new_commit = modules::get_head_commit_sha(&repo_dir)?;
     let new_integrity = modules::hash_module_contents(&new_local_path)?;
 
     if new_commit == old_entry.commit {
-        v2_printer.emit(
+        printer.emit(
             Doc::new()
                 .status(Role::Info, "Module is already at this version")
                 .with_data(serde_json::json!({
@@ -414,13 +415,13 @@ pub fn cmd_module_upgrade(
     // Show diff
     let changes = modules::diff_module_specs(&old_module, &new_module);
     {
-        let changes_sec = v2_printer.section("Changes");
+        let changes_sec = printer.section("Changes");
         for change in &changes {
             changes_sec.bullet(change);
         }
     }
 
-    v2_printer.kv_block([
+    printer.kv_block([
         ("Old commit", old_entry.commit.as_str()),
         ("New commit", new_commit.as_str()),
         ("New integrity", new_integrity.as_str()),
@@ -429,7 +430,7 @@ pub fn cmd_module_upgrade(
     // Check for signature on new ref
     super::enforce_signature_policy(
         cli,
-        v2_printer,
+        printer,
         Some(&new_ref),
         name,
         allow_unsigned,
@@ -438,8 +439,8 @@ pub fn cmd_module_upgrade(
     )?;
 
     // Confirm
-    if !yes && !v2_printer.prompt_confirm("Update this module?")? {
-        v2_printer.emit(
+    if !yes && !printer.prompt_confirm("Update this module?")? {
+        printer.emit(
             Doc::new()
                 .status(Role::Info, "Cancelled")
                 .with_data(serde_json::json!({
@@ -461,7 +462,7 @@ pub fn cmd_module_upgrade(
     };
     modules::save_lockfile(&config_dir, &lockfile)?;
 
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(
                 Role::Ok,
@@ -486,13 +487,13 @@ pub fn cmd_module_upgrade(
 /// output shape is testable against a captured Printer buffer without
 /// running the full cmd_module_add_remote orchestration.
 pub(super) fn print_module_review_summary(
-    v2_printer: &Printer,
+    printer: &Printer,
     module_name: &str,
     module: &modules::LoadedModule,
     commit: &str,
     integrity: &str,
 ) {
-    let mod_sec = v2_printer.section(format!("Module: {}", module_name));
+    let mod_sec = printer.section(format!("Module: {}", module_name));
 
     if !module.spec.depends.is_empty() {
         mod_sec.kv("Dependencies", module.spec.depends.join(", "));
@@ -567,12 +568,12 @@ pub(super) fn filter_and_build_search_results(
         .collect()
 }
 
-pub fn cmd_module_search(cli: &Cli, v2_printer: &Printer, query: &str) -> anyhow::Result<()> {
+pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::Result<()> {
     let cache_base = modules::default_module_cache_dir()?;
-    let printer = null_lib_printer();
+    let lib_printer = null_lib_printer();
 
     if !cli.config.exists() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             query,
             "no_config",
             "No config found — add module registries to cfgd.yaml first".to_string(),
@@ -589,7 +590,7 @@ pub fn cmd_module_search(cli: &Cli, v2_printer: &Printer, query: &str) -> anyhow
         .map(|m| &m.registries[..])
         .unwrap_or(&[]);
     if registries.is_empty() {
-        v2_printer.emit(
+        printer.emit(
             Doc::new()
                 .heading(format!("Search Modules: {}", query))
                 .status(Role::Info, NO_REGISTRIES_MSG)
@@ -603,8 +604,8 @@ pub fn cmd_module_search(cli: &Cli, v2_printer: &Printer, query: &str) -> anyhow
     let mut errors: Vec<String> = Vec::new();
 
     for source in registries {
-        let sp = v2_printer.spinner(format!("Searching {} ({})", source.name, source.url));
-        match modules::fetch_registry_modules(source, &cache_base, &printer) {
+        let sp = printer.spinner(format!("Searching {} ({})", source.name, source.url));
+        match modules::fetch_registry_modules(source, &cache_base, &lib_printer) {
             Ok(registry_modules) => {
                 sp.finish_ok(format!("Searched {}", source.name));
                 all_results.extend(filter_and_build_search_results(&registry_modules, query));
@@ -630,7 +631,7 @@ pub fn cmd_module_search(cli: &Cli, v2_printer: &Printer, query: &str) -> anyhow
 
     if all_results.is_empty() {
         doc = doc.status(Role::Info, "No modules found matching your query");
-    } else if v2_printer.is_wide() {
+    } else if printer.is_wide() {
         let mut t = cfgd_core::output::renderer::Table::new([
             "Module",
             "Registry",
@@ -658,24 +659,24 @@ pub fn cmd_module_search(cli: &Cli, v2_printer: &Printer, query: &str) -> anyhow
         doc = doc.table(t);
     }
 
-    v2_printer.emit(doc.with_data(&all_results));
+    printer.emit(doc.with_data(&all_results));
     Ok(())
 }
 
 pub fn cmd_module_registry_add(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     url: &str,
     name: Option<&str>,
 ) -> anyhow::Result<()> {
-    v2_printer.heading("Add Module Registry");
+    printer.heading("Add Module Registry");
 
     let registry_name = match name {
         Some(n) => n.to_string(),
         None => match modules::extract_registry_name(url) {
             Some(n) => n,
             None => {
-                v2_printer.emit(cfgd_core::output::error_doc(
+                printer.emit(cfgd_core::output::error_doc(
                     url,
                     "invalid_url",
                     "Cannot extract registry name from URL — use --name to specify one".to_string(),
@@ -687,7 +688,7 @@ pub fn cmd_module_registry_add(
     };
 
     if !cli.config.exists() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             &registry_name,
             "no_config",
             MSG_NO_CONFIG.to_string(),
@@ -734,7 +735,7 @@ pub fn cmd_module_registry_add(
     })?;
 
     if already_present {
-        v2_printer.emit(
+        printer.emit(
             Doc::new()
                 .status(
                     Role::Info,
@@ -749,7 +750,7 @@ pub fn cmd_module_registry_add(
         return Ok(());
     }
 
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(
                 Role::Ok,
@@ -766,15 +767,11 @@ pub fn cmd_module_registry_add(
     Ok(())
 }
 
-pub fn cmd_module_registry_remove(
-    cli: &Cli,
-    v2_printer: &Printer,
-    name: &str,
-) -> anyhow::Result<()> {
-    v2_printer.heading("Remove Module Registry");
+pub fn cmd_module_registry_remove(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<()> {
+    printer.heading("Remove Module Registry");
 
     if !cli.config.exists() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             name,
             "no_config",
             MSG_NO_CONFIG.to_string(),
@@ -827,7 +824,7 @@ pub fn cmd_module_registry_remove(
             })?;
 
             if !affected_profiles.is_empty() {
-                let warn_sec = v2_printer.section("Profile references");
+                let warn_sec = printer.section("Profile references");
                 for profile_name in &affected_profiles {
                     warn_sec.status_simple(
                         Role::Warn,
@@ -839,7 +836,7 @@ pub fn cmd_module_registry_remove(
                 }
             }
 
-            v2_printer.emit(
+            printer.emit(
                 Doc::new()
                     .status(Role::Ok, format!("Removed module registry '{}'", name))
                     .with_data(serde_json::json!({
@@ -850,7 +847,7 @@ pub fn cmd_module_registry_remove(
             );
         }
         RegistryRemoveOutcome::NotFound => {
-            v2_printer.emit(
+            printer.emit(
                 Doc::new()
                     .status(Role::Info, format!("Registry '{}' not found", name))
                     .with_data(serde_json::json!({
@@ -860,7 +857,7 @@ pub fn cmd_module_registry_remove(
             );
         }
         RegistryRemoveOutcome::NoRegistries => {
-            v2_printer.emit(Doc::new().status(Role::Info, NO_REGISTRIES_MSG).with_data(
+            printer.emit(Doc::new().status(Role::Info, NO_REGISTRIES_MSG).with_data(
                 serde_json::json!({
                     "name": name,
                     "outcome": "no_registries",
@@ -880,12 +877,12 @@ enum RegistryRemoveOutcome {
 
 pub fn cmd_module_registry_rename(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     name: &str,
     new_name: &str,
 ) -> anyhow::Result<()> {
     if !cli.config.exists() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             name,
             "no_config",
             MSG_NO_CONFIG.to_string(),
@@ -903,7 +900,7 @@ pub fn cmd_module_registry_rename(
         .unwrap_or(&[]);
 
     if !registries.iter().any(|s| s.name == name) {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             name,
             "registry_not_found",
             format!("Registry '{}' not found", name),
@@ -912,7 +909,7 @@ pub fn cmd_module_registry_rename(
         anyhow::bail!("Registry '{}' not found", name);
     }
     if registries.iter().any(|s| s.name == new_name) {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             new_name,
             "already_exists",
             format!("A registry named '{}' already exists", new_name),
@@ -967,7 +964,7 @@ pub fn cmd_module_registry_rename(
         Ok(())
     })?;
 
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(
                 Role::Ok,
@@ -981,9 +978,9 @@ pub fn cmd_module_registry_rename(
     Ok(())
 }
 
-pub fn cmd_module_registry_list(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_module_registry_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     if !cli.config.exists() {
-        v2_printer.emit(
+        printer.emit(
             Doc::new()
                 .heading("Module Registries")
                 .status(Role::Info, "No config found")
@@ -1000,7 +997,7 @@ pub fn cmd_module_registry_list(cli: &Cli, v2_printer: &Printer) -> anyhow::Resu
         .map(|m| &m.registries[..])
         .unwrap_or(&[]);
     if registries.is_empty() {
-        v2_printer.emit(
+        printer.emit(
             Doc::new()
                 .heading("Module Registries")
                 .status(Role::Info, NO_REGISTRIES_MSG)
@@ -1023,7 +1020,7 @@ pub fn cmd_module_registry_list(cli: &Cli, v2_printer: &Printer) -> anyhow::Resu
         t = t.row([e.name.clone(), e.url.clone()]);
     }
 
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .heading("Module Registries")
             .table(t)

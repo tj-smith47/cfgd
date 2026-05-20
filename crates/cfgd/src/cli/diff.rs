@@ -4,20 +4,20 @@ use cfgd_core::output::{Doc, Printer, Role, section_guard::SectionGuard};
 
 pub fn cmd_diff(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     module_filter: Option<&str>,
     exit_code: bool,
 ) -> anyhow::Result<()> {
-    v2_printer.heading("Diff");
+    printer.heading("Diff");
 
     let config_dir = config_dir(cli);
 
     if let Some(mod_name) = module_filter {
-        return cmd_diff_module(cli, v2_printer, mod_name, &config_dir, exit_code);
+        return cmd_diff_module(cli, printer, mod_name, &config_dir, exit_code);
     }
 
     let (_cfg, profile_name, mut resolved) = load_config_and_profile_v2(cli)?;
-    v2_printer.kv_block([
+    printer.kv_block([
         ("Config".to_string(), cli.config.display().to_string()),
         ("Profile".to_string(), profile_name),
     ]);
@@ -30,19 +30,19 @@ pub fn cmd_diff(
     let mut has_system_drift = false;
 
     let has_file_drift = {
-        v2_printer.status_simple(Role::Info, "Files");
+        printer.status_simple(Role::Info, "Files");
         let fm = CfgdFileManager::new(&config_dir, &resolved)?;
-        let drift = fm.diff(&resolved.merged, v2_printer)?;
+        let drift = fm.diff(&resolved.merged, printer)?;
         if drift {
-            v2_printer.status_simple(Role::Warn, "File drift detected");
+            printer.status_simple(Role::Warn, "File drift detected");
         } else {
-            v2_printer.status_simple(Role::Ok, "No file drift");
+            printer.status_simple(Role::Ok, "No file drift");
         }
         drift
     };
 
     let has_pkg_drift = {
-        let pkg_sec = v2_printer.section("Packages");
+        let pkg_sec = printer.section("Packages");
         let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
             .package_managers
             .iter()
@@ -53,7 +53,7 @@ pub fn cmd_diff(
     };
 
     {
-        let sys_sec = v2_printer.section("System");
+        let sys_sec = printer.section("System");
         let available_configurators = registry.available_system_configurators();
         for configurator in &available_configurators {
             let key = configurator.name();
@@ -94,7 +94,7 @@ pub fn cmd_diff(
         has_system_drift,
     };
 
-    v2_printer.emit(build_diff_doc(&diff_payload));
+    printer.emit(build_diff_doc(&diff_payload));
 
     if exit_code && (has_file_drift || has_pkg_drift || has_system_drift) {
         cfgd_core::exit::ExitCode::DriftDetected.exit();
@@ -105,7 +105,7 @@ pub fn cmd_diff(
 
 fn cmd_diff_module(
     _cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     mod_name: &str,
     config_dir: &std::path::Path,
     exit_code: bool,
@@ -120,11 +120,11 @@ fn cmd_diff_module(
         &cache_base,
         &platform,
         &mgr_map,
-        v2_printer,
+        printer,
     ) {
         Ok(mods) => mods,
         Err(_) => {
-            v2_printer.emit(
+            printer.emit(
                 Doc::new()
                     .status(
                         Role::Info,
@@ -136,14 +136,14 @@ fn cmd_diff_module(
         }
     };
 
-    v2_printer.kv_block([("Module".to_string(), mod_name.to_string())]);
+    printer.kv_block([("Module".to_string(), mod_name.to_string())]);
 
     let mut diff_payload = DiffOutput::default();
     let mut has_file_diff = false;
     let mut has_pkg_drift = false;
 
     {
-        let files_sec = v2_printer.section("Files");
+        let files_sec = printer.section("Files");
         for module in &resolved_modules {
             for file in &module.files {
                 if file.target.exists() {
@@ -157,7 +157,7 @@ fn cmd_diff_module(
                             files_sec
                                 .status(Role::Warn, format!("{}", file.target.display()))
                                 .detail("content differs");
-                            v2_printer.diff(&target_content, &source_content);
+                            printer.diff(&target_content, &source_content);
                         }
                     }
                 } else {
@@ -174,7 +174,7 @@ fn cmd_diff_module(
     }
 
     {
-        let pkg_sec = v2_printer.section("Packages");
+        let pkg_sec = printer.section("Packages");
         let mut emitted = false;
         for module in &resolved_modules {
             for pkg in &module.packages {
@@ -210,7 +210,7 @@ fn cmd_diff_module(
         has_system_drift: false,
     };
 
-    v2_printer.emit(build_diff_doc(&diff_payload));
+    printer.emit(build_diff_doc(&diff_payload));
 
     if exit_code && (has_file_diff || has_pkg_drift) {
         cfgd_core::exit::ExitCode::DriftDetected.exit();
@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn print_package_drift_v2_no_drift() {
-        let (v2_printer, cap) = Printer::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         let mut payload = DiffOutput::default();
         let actions = vec![PackageAction::Skip {
             manager: "brew".into(),
@@ -325,11 +325,11 @@ mod tests {
             origin: "profile".into(),
         }];
         {
-            let section = v2_printer.section("Packages");
+            let section = printer.section("Packages");
             let has_drift = print_package_drift_v2(&actions, &section, &mut payload);
             assert!(!has_drift, "all-skip should report no drift");
         }
-        drop(v2_printer);
+        drop(printer);
 
         let output = strip_ansi(&cap.human());
         assert!(
@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn print_package_drift_v2_missing_packages() {
-        let (v2_printer, cap) = Printer::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         let mut payload = DiffOutput::default();
         let actions = vec![
             PackageAction::Install {
@@ -361,11 +361,11 @@ mod tests {
             },
         ];
         {
-            let section = v2_printer.section("Packages");
+            let section = printer.section("Packages");
             let has_drift = print_package_drift_v2(&actions, &section, &mut payload);
             assert!(has_drift, "non-Skip actions should report drift");
         }
-        drop(v2_printer);
+        drop(printer);
 
         let output = strip_ansi(&cap.human());
         assert!(

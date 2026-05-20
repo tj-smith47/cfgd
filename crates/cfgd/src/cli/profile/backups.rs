@@ -40,14 +40,14 @@ pub(crate) fn collect_module_file_targets(module_name: &str, config_dir: &Path) 
 /// and prompt the user to restore them.
 pub(crate) fn prompt_restore_backups(
     targets: &[PathBuf],
-    v2_printer: &cfgd_core::output::Printer,
+    printer: &cfgd_core::output::Printer,
 ) -> anyhow::Result<()> {
     for target in targets {
         let backup_path = PathBuf::from(format!("{}.cfgd-backup", target.display()));
         if backup_path.exists() {
             // Decline-on-IO-error is the safe default for an unattended path,
             // but the underlying failure is logged so it's not invisible.
-            let confirmed = match v2_printer.prompt_confirm(&format!(
+            let confirmed = match printer.prompt_confirm(&format!(
                 "Restore backup {} to {}?",
                 backup_path.display(),
                 target.display()
@@ -69,7 +69,7 @@ pub(crate) fn prompt_restore_backups(
                     std::fs::remove_file(target)?;
                 }
                 std::fs::rename(&backup_path, target)?;
-                v2_printer.status_simple(Role::Ok, format!("Restored {}", target.display()));
+                printer.status_simple(Role::Ok, format!("Restored {}", target.display()));
             }
         }
     }

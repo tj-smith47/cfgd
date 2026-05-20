@@ -31,10 +31,10 @@ fn pulled_output() -> PullOutput {
 /// Stubbed `Ok(true)` — new commits were pulled.
 #[test]
 fn pull_pulled_human() {
-    let (v2_printer, cap) = Printer::for_test_doc();
-    v2_printer.heading("Pull");
-    render_pull(&v2_printer, &Ok(true));
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    printer.heading("Pull");
+    render_pull(&printer, &Ok(true));
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "pull/pulled.txt", &stripped);
@@ -44,9 +44,9 @@ fn pull_pulled_human() {
 #[test]
 fn pull_pulled_json() {
     let output = pulled_output();
-    let (v2_printer, cap) = Printer::for_test_doc();
-    v2_printer.emit(build_pull_doc(&output));
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_pull_doc(&output));
+    drop(printer);
 
     let expected = serde_json::to_value(&output).unwrap();
     let actual = cap.json().expect("pull doc carries a payload");
@@ -60,10 +60,10 @@ fn pull_pulled_json() {
 /// Stubbed `Ok(false)` — remote was up to date, no fast-forward.
 #[test]
 fn pull_up_to_date_human() {
-    let (v2_printer, cap) = Printer::for_test_doc();
-    v2_printer.heading("Pull");
-    render_pull(&v2_printer, &Ok(false));
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    printer.heading("Pull");
+    render_pull(&printer, &Ok(false));
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "pull/up_to_date.txt", &stripped);
@@ -77,10 +77,10 @@ fn pull_failed_human() {
     let (config_dir, state_dir, _target) = tiny_profile_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_pull(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_pull(&cli, &printer).unwrap();
+    drop(printer);
 
     let normalized = normalize_libgit2_paths(&cap.human(), config_dir.path());
     let stripped = strip_ansi(&normalized);

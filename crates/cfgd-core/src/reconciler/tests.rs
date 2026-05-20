@@ -7615,11 +7615,11 @@ mod bridge {
     /// (and far smaller than) the cycle goldens so a regression in the seam
     /// itself tips a fixture that has nothing else moving.
     fn run_minimal_bridge() -> String {
-        let (v2_printer, cap) = Printer::for_test_doc();
-        v2_printer.status_simple(Role::Ok, "[1/1] Wrote /etc/hosts");
+        let (printer, cap) = Printer::for_test_doc();
+        printer.status_simple(Role::Ok, "[1/1] Wrote /etc/hosts");
         let doc = Doc::new().status(Role::Ok, "Apply complete");
-        v2_printer.emit(doc);
-        drop(v2_printer);
+        printer.emit(doc);
+        drop(printer);
         strip_ansi(&cap.human())
     }
 
@@ -7672,13 +7672,13 @@ mod bridge {
             )
             .unwrap();
 
-        let (v2_printer, cap) = Printer::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         let result = reconciler
             .apply(
                 &plan,
                 &resolved,
                 std::path::Path::new("."),
-                &v2_printer,
+                &printer,
                 None,
                 &[],
                 ReconcileContext::Apply,
@@ -7695,8 +7695,8 @@ mod bridge {
         let doc = Doc::new()
             .status(Role::Warn, "Apply partial")
             .with_data(&summary);
-        v2_printer.emit(doc);
-        drop(v2_printer);
+        printer.emit(doc);
+        drop(printer);
 
         strip_ansi(&cap.human())
     }
@@ -7717,13 +7717,13 @@ mod bridge {
             warnings: Vec::new(),
         };
 
-        let (v2_printer, cap) = Printer::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         let result = reconciler
             .apply(
                 &plan,
                 &resolved,
                 std::path::Path::new("."),
-                &v2_printer,
+                &printer,
                 None,
                 &[],
                 ReconcileContext::Apply,
@@ -7739,8 +7739,8 @@ mod bridge {
         let doc = Doc::new()
             .status(Role::Ok, "Apply complete — 0 changes")
             .with_data(&summary);
-        v2_printer.emit(doc);
-        drop(v2_printer);
+        printer.emit(doc);
+        drop(printer);
 
         strip_ansi(&cap.human())
     }

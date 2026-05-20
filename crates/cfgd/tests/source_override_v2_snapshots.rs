@@ -59,18 +59,18 @@ fn source_override_accept_human() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     cmd_source_override(
         &cli,
-        &v2_printer,
+        &printer,
         "team-config",
         SourceOverrideAction::Set,
         "packages.brew.ripgrep",
         Some("true"),
     )
     .unwrap();
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -89,18 +89,18 @@ fn source_override_accept_json() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     cmd_source_override(
         &cli,
-        &v2_printer,
+        &printer,
         "team-config",
         SourceOverrideAction::Set,
         "packages.brew.ripgrep",
         Some("true"),
     )
     .unwrap();
-    drop(v2_printer);
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["sourceName"], "team-config");
@@ -117,18 +117,18 @@ fn source_override_reject_human() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     cmd_source_override(
         &cli,
-        &v2_printer,
+        &printer,
         "team-config",
         SourceOverrideAction::Reject,
         "packages.brew.ripgrep",
         None,
     )
     .unwrap();
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -147,18 +147,18 @@ fn source_override_not_found_human() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     let result = cmd_source_override(
         &cli,
-        &v2_printer,
+        &printer,
         "missing",
         SourceOverrideAction::Reject,
         "packages.brew",
         None,
     );
     assert!(result.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(

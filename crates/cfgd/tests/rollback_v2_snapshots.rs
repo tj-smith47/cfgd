@@ -31,10 +31,10 @@ const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 fn rollback_happy_human() {
     let (_workspace, state_dir, target, apply_id) = rollback_state_with_backups_setup();
 
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_rollback(&v2_printer, apply_id, true, Some(state_dir.path())).unwrap();
-    drop(v2_printer);
+    cmd_rollback(&printer, apply_id, true, Some(state_dir.path())).unwrap();
+    drop(printer);
 
     let normalized = cap
         .human()
@@ -52,9 +52,9 @@ fn rollback_happy_json() {
         files_removed: 0,
         non_file_actions: Vec::new(),
     };
-    let (v2_printer, cap) = Printer::for_test_doc();
-    v2_printer.emit(build_rollback_doc(&output));
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_rollback_doc(&output));
+    drop(printer);
 
     let expected = serde_json::to_value(&output).unwrap();
     let actual = cap.json().expect("rollback doc carries a payload");
@@ -71,10 +71,10 @@ fn rollback_happy_json() {
 fn rollback_no_changes_human() {
     let (state_dir, apply_id) = rollback_state_no_changes_setup();
 
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_rollback(&v2_printer, apply_id, true, Some(state_dir.path())).unwrap();
-    drop(v2_printer);
+    cmd_rollback(&printer, apply_id, true, Some(state_dir.path())).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -93,16 +93,16 @@ fn rollback_no_changes_human() {
 fn rollback_accept_human() {
     let (_workspace, state_dir, target, apply_id) = rollback_state_with_backups_setup();
 
-    let (v2_printer, v2_buf) = Printer::for_test_with_prompt_responses_at(
+    let (printer, buf) = Printer::for_test_with_prompt_responses_at(
         vec![PromptAnswer::Confirm(true)],
         Verbosity::Normal,
     );
 
-    cmd_rollback(&v2_printer, apply_id, false, Some(state_dir.path())).unwrap();
-    v2_printer.flush();
-    drop(v2_printer);
+    cmd_rollback(&printer, apply_id, false, Some(state_dir.path())).unwrap();
+    printer.flush();
+    drop(printer);
 
-    let raw = v2_buf.lock().unwrap().clone();
+    let raw = buf.lock().unwrap().clone();
     let normalized = raw.replace(&target.display().to_string(), "<TARGET>");
     let stripped = strip_ansi(&normalized);
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "rollback/accept.txt", &stripped);
@@ -114,16 +114,16 @@ fn rollback_accept_human() {
 fn rollback_aborted_human() {
     let (_workspace, state_dir, target, apply_id) = rollback_state_with_backups_setup();
 
-    let (v2_printer, v2_buf) = Printer::for_test_with_prompt_responses_at(
+    let (printer, buf) = Printer::for_test_with_prompt_responses_at(
         vec![PromptAnswer::Confirm(false)],
         Verbosity::Normal,
     );
 
-    cmd_rollback(&v2_printer, apply_id, false, Some(state_dir.path())).unwrap();
-    v2_printer.flush();
-    drop(v2_printer);
+    cmd_rollback(&printer, apply_id, false, Some(state_dir.path())).unwrap();
+    printer.flush();
+    drop(printer);
 
-    let raw = v2_buf.lock().unwrap().clone();
+    let raw = buf.lock().unwrap().clone();
     let normalized = raw.replace(&target.display().to_string(), "<TARGET>");
     let stripped = strip_ansi(&normalized);
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "rollback/aborted.txt", &stripped);
@@ -138,10 +138,10 @@ fn rollback_aborted_human() {
 fn rollback_non_file_actions_human() {
     let (state_dir, apply_id) = rollback_state_with_non_file_actions_setup();
 
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_rollback(&v2_printer, apply_id, true, Some(state_dir.path())).unwrap();
-    drop(v2_printer);
+    cmd_rollback(&printer, apply_id, true, Some(state_dir.path())).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -155,15 +155,15 @@ fn rollback_non_file_actions_human() {
 /// human surface contains exactly one blank line at the transition.
 #[test]
 fn rollback_bridge_one_blank_line() {
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    v2_printer.heading("Rollback");
-    v2_printer.kv_block([
+    printer.heading("Rollback");
+    printer.kv_block([
         ("Target apply ID".to_string(), "1".to_string()),
         ("File backups to restore".to_string(), "1".to_string()),
     ]);
     {
-        let rb_sec = v2_printer.section("Restoring");
+        let rb_sec = printer.section("Restoring");
         rb_sec.status_simple(Role::Ok, "1 file(s) processed");
     }
 
@@ -175,8 +175,8 @@ fn rollback_bridge_one_blank_line() {
             files_removed: 0,
             non_file_actions: Vec::new(),
         });
-    v2_printer.emit(doc);
-    drop(v2_printer);
+    printer.emit(doc);
+    drop(printer);
 
     let captured = strip_ansi(&cap.human());
     assert!(

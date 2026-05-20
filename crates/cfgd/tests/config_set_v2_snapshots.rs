@@ -50,10 +50,10 @@ fn assert_snapshot(base: &Path, name: &str, actual: &str) {
 fn config_set_happy_human() {
     let (config_dir, state_dir) = config_test_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    config_cmd::cmd_config_set(&cli, &v2_printer, "profile", "work").unwrap();
-    drop(v2_printer);
+    config_cmd::cmd_config_set(&cli, &printer, "profile", "work").unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "config_set/happy.txt", &stripped);
@@ -63,10 +63,10 @@ fn config_set_happy_human() {
 fn config_set_happy_json() {
     let (config_dir, state_dir) = config_test_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+    let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
 
-    config_cmd::cmd_config_set(&cli, &v2_printer, "profile", "work").unwrap();
-    drop(v2_printer);
+    config_cmd::cmd_config_set(&cli, &printer, "profile", "work").unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["key"], "profile");
@@ -78,10 +78,10 @@ fn config_set_happy_json() {
 fn config_set_creates_new_human() {
     let (config_dir, state_dir) = config_test_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    config_cmd::cmd_config_set(&cli, &v2_printer, "daemon.enabled", "true").unwrap();
-    drop(v2_printer);
+    config_cmd::cmd_config_set(&cli, &printer, "daemon.enabled", "true").unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(

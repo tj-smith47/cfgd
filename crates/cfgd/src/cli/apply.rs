@@ -4,7 +4,7 @@ use cfgd_core::output::{Doc, Role};
 
 pub fn cmd_apply(
     cli: &Cli,
-    v2_printer: &cfgd_core::output::Printer,
+    printer: &cfgd_core::output::Printer,
     args: &ApplyArgs,
 ) -> anyhow::Result<()> {
     // Parse --context (mirrors PlanArgs::context).
@@ -34,7 +34,7 @@ pub fn cmd_apply(
         } else {
             None
         };
-        init::resolve_from(from, target, "master", v2_printer)?;
+        init::resolve_from(from, target, "master", printer)?;
     }
 
     let dry_run = args.dry_run;
@@ -43,9 +43,9 @@ pub fn cmd_apply(
     let only = &args.only;
     let module_filter = args.module.as_deref();
     if dry_run {
-        v2_printer.heading("Plan");
+        printer.heading("Plan");
     } else {
-        v2_printer.heading("Apply");
+        printer.heading("Apply");
     }
 
     let config_dir = config_dir(cli);
@@ -55,7 +55,7 @@ pub fn cmd_apply(
     let (cfg, resolved) = if let Some(mod_name) = module_filter {
         match load_config_and_profile_v2(cli) {
             Ok((cfg, profile_name, resolved)) => {
-                v2_printer.kv_block([
+                printer.kv_block([
                     ("Config".to_string(), cli.config.display().to_string()),
                     ("Profile".to_string(), profile_name),
                 ]);
@@ -66,7 +66,7 @@ pub fn cmd_apply(
                 let cfg =
                     config::load_config(&cli.config).unwrap_or_else(|_| config::minimal_config());
                 let resolved = empty_resolved_profile(mod_name);
-                v2_printer.kv_block([
+                printer.kv_block([
                     ("Config".to_string(), cli.config.display().to_string()),
                     ("Profile".to_string(), "(module-only)".to_string()),
                 ]);
@@ -75,7 +75,7 @@ pub fn cmd_apply(
         }
     } else {
         let (cfg, profile_name, resolved) = load_config_and_profile_v2(cli)?;
-        v2_printer.kv_block([
+        printer.kv_block([
             ("Config".to_string(), cli.config.display().to_string()),
             ("Profile".to_string(), profile_name),
         ]);
@@ -89,7 +89,7 @@ pub fn cmd_apply(
 
     // Compose with sources if configured
     let (source_env, source_commits) = if !cfg.spec.sources.is_empty() {
-        let composition_result = compose_with_sources_v2(cli, &cfg, &resolved, v2_printer)?;
+        let composition_result = compose_with_sources_v2(cli, &cfg, &resolved, printer)?;
         let se = composition_result.source_env;
         let sc = composition_result.source_commits;
         ((Some(composition_result.resolved), se), sc)
@@ -127,7 +127,7 @@ pub fn cmd_apply(
             &cache_base,
             &platform,
             &mgr_map,
-            v2_printer,
+            printer,
         ) {
             Ok(mods) => mods,
             Err(e) if module_filter.is_some() => {
@@ -205,7 +205,7 @@ pub fn cmd_apply(
     if dry_run {
         display_plan_preview_v2(
             &plan,
-            v2_printer,
+            printer,
             &state,
             &args.context,
             phase_filter.as_ref(),
@@ -218,7 +218,7 @@ pub fn cmd_apply(
 
     // Handle unmanaged file targets: if a target exists as a non-cfgd file, prompt to
     // adopt (proceed), backup (rename to .cfgd-backup), or skip.
-    handle_unmanaged_file_targets_v2(&mut plan, &config_dir, &state, v2_printer, yes)?;
+    handle_unmanaged_file_targets_v2(&mut plan, &config_dir, &state, printer, yes)?;
 
     // Check if filtered plan has actions
     let has_actions = if let Some(ref pf) = phase_filter {
@@ -230,8 +230,8 @@ pub fn cmd_apply(
     };
 
     if !has_actions {
-        v2_printer.status_simple(Role::Ok, MSG_NOTHING_TO_DO);
-        v2_printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
+        printer.status_simple(Role::Ok, MSG_NOTHING_TO_DO);
+        printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
         return Ok(());
     }
 
@@ -240,7 +240,7 @@ pub fn cmd_apply(
     // Show what will change, nested under a section so each phase's items
     // render at the section's indent.
     {
-        let preview = v2_printer.section("Plan preview");
+        let preview = printer.section("Plan preview");
         for phase_item in &plan.phases {
             if let Some(ref pf) = phase_filter
                 && &phase_item.name != pf
@@ -265,12 +265,12 @@ pub fn cmd_apply(
     if !yes {
         // Closed-TTY / non-interactive defaults to "no" — apply is destructive
         // and silence is treated as decline, not as approval.
-        let confirmed = v2_printer
+        let confirmed = printer
             .prompt_confirm("Apply these changes?")
             .unwrap_or(false);
         if !confirmed {
-            v2_printer.status_simple(Role::Info, "Aborted");
-            v2_printer.emit(Doc::new().with_data(ApplyOutput::aborted()));
+            printer.status_simple(Role::Info, "Aborted");
+            printer.emit(Doc::new().with_data(ApplyOutput::aborted()));
             return Ok(());
         }
     }
@@ -291,14 +291,14 @@ pub fn cmd_apply(
         &plan,
         &effective_resolved,
         &config_dir,
-        v2_printer,
+        printer,
         phase_filter.as_ref(),
         &resolved_modules,
         reconcile_context,
         args.skip_scripts,
     )?;
 
-    let status = print_apply_result_v2(&result, v2_printer, Some(start.elapsed()));
+    let status = print_apply_result_v2(&result, printer, Some(start.elapsed()));
 
     // Link source commits to this apply for provenance tracking
     if !source_commits.is_empty() {
@@ -324,7 +324,7 @@ pub fn cmd_apply(
         failed: result.failed(),
         source_commits,
     };
-    v2_printer.emit(Doc::new().with_data(&output));
+    printer.emit(Doc::new().with_data(&output));
 
     Ok(())
 }

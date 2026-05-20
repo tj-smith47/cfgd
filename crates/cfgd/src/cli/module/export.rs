@@ -3,30 +3,30 @@ use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_module_export(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     name: &str,
     format: &super::ExportFormat,
     output_dir: Option<&str>,
 ) -> anyhow::Result<()> {
     match format {
-        super::ExportFormat::Devcontainer => export_devcontainer(cli, v2_printer, name, output_dir),
+        super::ExportFormat::Devcontainer => export_devcontainer(cli, printer, name, output_dir),
     }
 }
 
 pub(super) fn export_devcontainer(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     name: &str,
     output_dir: Option<&str>,
 ) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     let cache_base = modules::default_module_cache_dir()?;
-    let all_modules = modules::load_all_modules(&config_dir, &cache_base, v2_printer)?;
+    let all_modules = modules::load_all_modules(&config_dir, &cache_base, printer)?;
 
     let module = match all_modules.get(name) {
         Some(m) => m,
         None => {
-            v2_printer.emit(cfgd_core::output::error_doc(
+            printer.emit(cfgd_core::output::error_doc(
                 name,
                 "not_found",
                 format!("Module '{}' not found", name),
@@ -156,7 +156,7 @@ pub(super) fn export_devcontainer(
 
     let install_path_str = install_path.display().to_string();
     let feature_path_str = feature_path.display().to_string();
-    let out_sec = v2_printer.section(format!(
+    let out_sec = printer.section(format!(
         "Exported module '{}' as DevContainer Feature to {}",
         name,
         feature_dir.display()
@@ -165,7 +165,7 @@ pub(super) fn export_devcontainer(
     out_sec.bullet(feature_path_str.clone());
     drop(out_sec);
 
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(
                 Role::Ok,

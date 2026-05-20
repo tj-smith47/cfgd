@@ -181,18 +181,14 @@ pub fn build_module_show_doc(
     doc.with_data(output)
 }
 
-pub(crate) fn cmd_module_list(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
+pub(crate) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     let cache_base = modules::default_module_cache_dir()?;
-    let all_modules = modules::load_all_modules(&config_dir, &cache_base, v2_printer)?;
+    let all_modules = modules::load_all_modules(&config_dir, &cache_base, printer)?;
     let lockfile = modules::load_lockfile(&config_dir)?;
 
     if all_modules.is_empty() {
-        v2_printer.emit(build_module_list_doc(
-            &[],
-            v2_printer.is_wide(),
-            &config_dir,
-        ));
+        printer.emit(build_module_list_doc(&[], printer.is_wide(), &config_dir));
         return Ok(());
     }
 
@@ -240,9 +236,9 @@ pub(crate) fn cmd_module_list(cli: &Cli, v2_printer: &Printer) -> anyhow::Result
         })
         .collect();
 
-    v2_printer.emit(build_module_list_doc(
+    printer.emit(build_module_list_doc(
         &entries,
-        v2_printer.is_wide(),
+        printer.is_wide(),
         &config_dir,
     ));
     Ok(())
@@ -250,20 +246,20 @@ pub(crate) fn cmd_module_list(cli: &Cli, v2_printer: &Printer) -> anyhow::Result
 
 pub(crate) fn cmd_module_show(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     name: &str,
     show_values: bool,
 ) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     let cache_base = modules::default_module_cache_dir()?;
-    let all_modules = modules::load_all_modules(&config_dir, &cache_base, v2_printer)?;
+    let all_modules = modules::load_all_modules(&config_dir, &cache_base, printer)?;
 
     let module = match all_modules.get(name) {
         Some(m) => m,
         None => {
             let mut available: Vec<String> = all_modules.keys().map(|s| s.to_string()).collect();
             available.sort();
-            v2_printer.emit(build_module_not_found_doc(name, &available));
+            printer.emit(build_module_not_found_doc(name, &available));
             anyhow::bail!("Module '{}' not found", name);
         }
     };
@@ -360,7 +356,7 @@ pub(crate) fn cmd_module_show(
         })
         .unwrap_or_default();
 
-    v2_printer.emit(build_module_show_doc(
+    printer.emit(build_module_show_doc(
         &output,
         lock_entry,
         &packages,

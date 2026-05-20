@@ -100,10 +100,10 @@ pub fn cmd_config_show(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn cmd_config_edit(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_config_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             &config_path.display().to_string(),
             "no_config",
             MSG_NO_CONFIG.to_string(),
@@ -112,7 +112,7 @@ pub fn cmd_config_edit(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
         anyhow::bail!("{}", MSG_NO_CONFIG);
     }
 
-    open_in_editor_v2(config_path, v2_printer)?;
+    open_in_editor_v2(config_path, printer)?;
 
     // Validate after editing — loop until valid or user cancels
     let mut valid = false;
@@ -123,17 +123,17 @@ pub fn cmd_config_edit(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
                 break;
             }
             Err(e) => {
-                v2_printer.status_simple(Role::Fail, format!("Invalid configuration: {}", e));
-                if !v2_printer.prompt_confirm("Re-open in editor to fix?")? {
+                printer.status_simple(Role::Fail, format!("Invalid configuration: {}", e));
+                if !printer.prompt_confirm("Re-open in editor to fix?")? {
                     break;
                 }
-                open_in_editor_v2(config_path, v2_printer)?;
+                open_in_editor_v2(config_path, printer)?;
             }
         }
     }
 
     if valid {
-        v2_printer.emit(
+        printer.emit(
             Doc::new()
                 .status(Role::Ok, "Configuration is valid")
                 .with_data(serde_json::json!({
@@ -142,7 +142,7 @@ pub fn cmd_config_edit(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
                 })),
         );
     } else {
-        v2_printer.emit(
+        printer.emit(
             Doc::new()
                 .status(Role::Warn, "Saved with validation errors")
                 .with_data(serde_json::json!({
@@ -252,10 +252,10 @@ pub(super) fn parse_yaml_value(s: &str) -> serde_yaml::Value {
     }
 }
 
-pub fn cmd_config_get(cli: &Cli, v2_printer: &Printer, key: &str) -> anyhow::Result<()> {
+pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             key,
             "no_config",
             MSG_NO_CONFIG.to_string(),
@@ -268,7 +268,7 @@ pub fn cmd_config_get(cli: &Cli, v2_printer: &Printer, key: &str) -> anyhow::Res
     let raw: serde_yaml::Value = match serde_yaml::from_str(&contents) {
         Ok(v) => v,
         Err(e) => {
-            v2_printer.emit(cfgd_core::output::error_doc(
+            printer.emit(cfgd_core::output::error_doc(
                 key,
                 "parse_failed",
                 format!("failed to parse config: {}", e),
@@ -281,7 +281,7 @@ pub fn cmd_config_get(cli: &Cli, v2_printer: &Printer, key: &str) -> anyhow::Res
     let spec = match raw.get("spec") {
         Some(s) => s,
         None => {
-            v2_printer.emit(cfgd_core::output::error_doc(
+            printer.emit(cfgd_core::output::error_doc(
                 key,
                 "parse_failed",
                 "config has no 'spec' section",
@@ -294,7 +294,7 @@ pub fn cmd_config_get(cli: &Cli, v2_printer: &Printer, key: &str) -> anyhow::Res
     let value = match walk_yaml_path(spec, key) {
         Ok(v) => v,
         Err(e) => {
-            v2_printer.emit(cfgd_core::output::error_doc(
+            printer.emit(cfgd_core::output::error_doc(
                 key,
                 "key_not_found",
                 format!("{}", e),
@@ -305,10 +305,10 @@ pub fn cmd_config_get(cli: &Cli, v2_printer: &Printer, key: &str) -> anyhow::Res
     };
 
     // human path writes the bare value via data_line; structured needs the keyed envelope.
-    if v2_printer.is_structured() {
+    if printer.is_structured() {
         let json_value: serde_json::Value =
             serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
-        v2_printer.emit(Doc::new().with_data(serde_json::json!({
+        printer.emit(Doc::new().with_data(serde_json::json!({
             "key": key,
             "value": json_value,
         })));
@@ -332,21 +332,16 @@ pub fn cmd_config_get(cli: &Cli, v2_printer: &Printer, key: &str) -> anyhow::Res
     // Human output: bare value on stdout for piping (matches `git config <key>`,
     // `kubectl config view -o jsonpath` shape). Empty for null leaves.
     if !rendered.is_empty() {
-        v2_printer.data_line(&rendered);
+        printer.data_line(&rendered);
     }
 
     Ok(())
 }
 
-pub fn cmd_config_set(
-    cli: &Cli,
-    v2_printer: &Printer,
-    key: &str,
-    value: &str,
-) -> anyhow::Result<()> {
+pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             key,
             "no_config",
             MSG_NO_CONFIG.to_string(),
@@ -373,7 +368,7 @@ pub fn cmd_config_set(
 
     if let Err(e) = mutate_result {
         let kind = classify_mutate_error(&e);
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             key,
             kind,
             format!("{}", e),
@@ -385,7 +380,7 @@ pub fn cmd_config_set(
     let value_json: serde_json::Value =
         serde_json::to_value(&parsed_value).unwrap_or(serde_json::Value::Null);
 
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(Role::Ok, format!("Set {} = {}", key, value))
             .with_data(serde_json::json!({
@@ -398,10 +393,10 @@ pub fn cmd_config_set(
     Ok(())
 }
 
-pub fn cmd_config_unset(cli: &Cli, v2_printer: &Printer, key: &str) -> anyhow::Result<()> {
+pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             key,
             "no_config",
             MSG_NO_CONFIG.to_string(),
@@ -429,7 +424,7 @@ pub fn cmd_config_unset(cli: &Cli, v2_printer: &Printer, key: &str) -> anyhow::R
 
     if let Err(e) = mutate_result {
         let kind = classify_mutate_error(&e);
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             key,
             kind,
             format!("{}", e),
@@ -438,7 +433,7 @@ pub fn cmd_config_unset(cli: &Cli, v2_printer: &Printer, key: &str) -> anyhow::R
         return Err(e);
     }
 
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(Role::Ok, format!("Unset {}", key))
             .with_data(serde_json::json!({

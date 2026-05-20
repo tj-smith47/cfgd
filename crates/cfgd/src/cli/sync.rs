@@ -2,11 +2,11 @@ use super::*;
 
 use cfgd_core::output::{Doc, Role};
 
-pub fn cmd_sync(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::Result<()> {
-    v2_printer.heading("Sync");
+pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Result<()> {
+    printer.heading("Sync");
 
     let (cfg, profile_name, _resolved) = load_config_and_profile_v2(cli)?;
-    v2_printer.kv_block([
+    printer.kv_block([
         ("Config".to_string(), cli.config.display().to_string()),
         ("Profile".to_string(), profile_name),
     ]);
@@ -19,7 +19,7 @@ pub fn cmd_sync(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::R
     };
 
     {
-        let repo_sec = v2_printer.section("Local repo");
+        let repo_sec = printer.section("Local repo");
         let sp = repo_sec.spinner("Pulling from remote");
         match cfgd_core::daemon::git_pull_sync(&config_dir) {
             Ok(true) => {
@@ -38,7 +38,7 @@ pub fn cmd_sync(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::R
     let mut changes_detected = false;
 
     if !cfg.spec.sources.is_empty() {
-        let sources_sec = v2_printer.section("Sources");
+        let sources_sec = printer.section("Sources");
         let cache_dir = source_cache_dir(cli)?;
         let mut mgr = SourceManager::new(&cache_dir);
         mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
@@ -93,7 +93,7 @@ pub fn cmd_sync(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::R
                                     perm_sec.bullet(change.description.clone());
                                 }
                             }
-                            match v2_printer.prompt_confirm("Accept permission changes?") {
+                            match printer.prompt_confirm("Accept permission changes?") {
                                 Ok(true) => true,
                                 Ok(false) => {
                                     sources_sec.status_simple(
@@ -167,7 +167,7 @@ pub fn cmd_sync(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::R
     } else {
         Doc::new().with_data(&sync_payload)
     };
-    v2_printer.emit(doc);
+    printer.emit(doc);
 
     Ok(())
 }

@@ -102,22 +102,22 @@ fn main() -> anyhow::Result<()> {
         .flatten()
         .and_then(|c| c.spec.theme);
     let v2_theme_name = theme_config.as_ref().map(|t| t.name.clone());
-    let v2_printer =
+    let printer =
         cfgd_core::output::Printer::with_format(verbosity, v2_theme_name.as_deref(), output_format);
 
     if jsonpath_deprecated {
-        v2_printer.status_simple(
+        printer.status_simple(
             cfgd_core::output::Role::Warn,
             "--jsonpath is deprecated and will be removed in a future release; use --output jsonpath=EXPR instead",
         );
     }
 
-    if let Err(e) = cli::execute(&cli, &v2_printer) {
+    if let Err(e) = cli::execute(&cli, &printer) {
         // Format with `{}` not `{:#}` — CfgdError templates already include
         // `{0}` which expands the inner error, so `{:#}` would walk source()
         // and duplicate the inner text. See errors/mod.rs::CfgdError for the
         // paired contract.
-        v2_printer.status_simple(cfgd_core::output::Role::Fail, format!("{}", e));
+        printer.status_simple(cfgd_core::output::Role::Fail, format!("{}", e));
         exit_code_for_anyhow(&e).exit();
     }
 

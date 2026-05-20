@@ -47,15 +47,15 @@ pub fn build_profile_list_missing_doc(profiles_dir: &Path) -> Doc {
         .with_data(&empty)
 }
 
-pub fn cmd_profile_list(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_profile_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let profiles_dir = profiles_dir(cli);
 
     if !profiles_dir.exists() {
-        if v2_printer.is_structured() {
-            v2_printer.emit(Doc::new().with_data(Vec::<super::ProfileListEntry>::new()));
+        if printer.is_structured() {
+            printer.emit(Doc::new().with_data(Vec::<super::ProfileListEntry>::new()));
             return Ok(());
         }
-        v2_printer.emit(build_profile_list_missing_doc(&profiles_dir));
+        printer.emit(build_profile_list_missing_doc(&profiles_dir));
         return Ok(());
     }
 
@@ -101,7 +101,7 @@ pub fn cmd_profile_list(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
         })
         .collect();
 
-    v2_printer.emit(build_profile_list_doc(&entries, v2_printer.is_wide()));
+    printer.emit(build_profile_list_doc(&entries, printer.is_wide()));
 
     Ok(())
 }

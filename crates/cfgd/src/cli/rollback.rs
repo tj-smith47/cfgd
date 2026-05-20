@@ -3,7 +3,7 @@ use super::*;
 use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_rollback(
-    v2_printer: &Printer,
+    printer: &Printer,
     apply_id: i64,
     yes: bool,
     state_dir: Option<&Path>,
@@ -37,7 +37,7 @@ pub fn cmd_rollback(
         .collect();
     let non_file_count = non_file_actions.len();
 
-    v2_printer.heading("Rollback");
+    printer.heading("Rollback");
     let mut kv_pairs: Vec<(String, String)> = vec![
         ("Target apply ID".to_string(), apply_id.to_string()),
         (
@@ -48,10 +48,10 @@ pub fn cmd_rollback(
     if non_file_count > 0 {
         kv_pairs.push(("Non-file actions".to_string(), non_file_count.to_string()));
     }
-    v2_printer.kv_block(kv_pairs);
+    printer.kv_block(kv_pairs);
 
     if file_count == 0 && non_file_count == 0 {
-        v2_printer.emit(
+        printer.emit(
             Doc::new()
                 .status(
                     Role::Info,
@@ -68,11 +68,11 @@ pub fn cmd_rollback(
     }
 
     if !yes {
-        let confirmed = v2_printer
+        let confirmed = printer
             .prompt_confirm("Roll back to this apply?")
             .unwrap_or(false);
         if !confirmed {
-            v2_printer.emit(
+            printer.emit(
                 Doc::new()
                     .status(Role::Info, "Aborted")
                     .with_data(&RollbackOutput {
@@ -89,8 +89,8 @@ pub fn cmd_rollback(
     let registry = ProviderRegistry::new();
     let reconciler = Reconciler::new(&registry, &state);
     let result = {
-        let rb_sec = v2_printer.section("Restoring");
-        let r = reconciler.rollback_apply(apply_id, v2_printer)?;
+        let rb_sec = printer.section("Restoring");
+        let r = reconciler.rollback_apply(apply_id, printer)?;
         let processed = r.files_restored + r.files_removed;
         let (role, msg) = if processed == 0 {
             (Role::Info, "No files affected".to_string())
@@ -102,33 +102,33 @@ pub fn cmd_rollback(
     };
 
     if result.files_restored > 0 {
-        v2_printer.status_simple(
+        printer.status_simple(
             Role::Ok,
             format!("{} file(s) restored from backup", result.files_restored),
         );
     }
     if result.files_removed > 0 {
-        v2_printer.status_simple(
+        printer.status_simple(
             Role::Ok,
             format!("{} newly created file(s) removed", result.files_removed),
         );
     }
 
     if !result.non_file_actions.is_empty() {
-        v2_printer.status_simple(
+        printer.status_simple(
             Role::Warn,
             format!(
                 "{} non-file action(s) require manual review",
                 result.non_file_actions.len()
             ),
         );
-        let nf_sec = v2_printer.section("Actions");
+        let nf_sec = printer.section("Actions");
         for action in &result.non_file_actions {
             nf_sec.bullet(action);
         }
     }
 
-    v2_printer.emit(build_rollback_doc(&RollbackOutput {
+    printer.emit(build_rollback_doc(&RollbackOutput {
         apply_id,
         files_restored: result.files_restored,
         files_removed: result.files_removed,

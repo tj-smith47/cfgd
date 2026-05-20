@@ -86,12 +86,12 @@ fn source_add_happy_human() {
     let url = format!("file://{}", bare.display());
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let mut args = source_add_args(url);
     args.name = Some("team-config".into());
 
-    cmd_source_add(&cli, &v2_printer, &args).unwrap();
-    drop(v2_printer);
+    cmd_source_add(&cli, &printer, &args).unwrap();
+    drop(printer);
 
     let stripped = normalize_paths(
         &strip_ansi(&cap.human()),
@@ -113,12 +113,12 @@ fn source_add_happy_json() {
     let url = format!("file://{}", bare.display());
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let mut args = source_add_args(url);
     args.name = Some("team-config".into());
 
-    cmd_source_add(&cli, &v2_printer, &args).unwrap();
-    drop(v2_printer);
+    cmd_source_add(&cli, &printer, &args).unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["name"], "team-config");
@@ -136,13 +136,13 @@ fn source_add_already_exists_human() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let mut args = source_add_args("https://github.com/team/config");
     args.name = Some("team-config".into());
 
-    let result = cmd_source_add(&cli, &v2_printer, &args);
+    let result = cmd_source_add(&cli, &printer, &args);
     assert!(result.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -169,13 +169,13 @@ fn source_add_clone_failure_human() {
     let url = format!("file://{}", bogus.display());
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let mut args = source_add_args(url);
     args.name = Some("doomed-src".into());
 
-    let result = cmd_source_add(&cli, &v2_printer, &args);
+    let result = cmd_source_add(&cli, &printer, &args);
     assert!(result.is_err(), "cmd_source_add must fail on bogus URL");
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = normalize_paths(
         &strip_ansi(&cap.human()),
@@ -210,12 +210,12 @@ fn source_add_bridge_one_blank_line() {
     let url = format!("file://{}", bare.display());
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let mut args = source_add_args(url);
     args.name = Some("bridge-src".into());
 
-    cmd_source_add(&cli, &v2_printer, &args).unwrap();
-    drop(v2_printer);
+    cmd_source_add(&cli, &printer, &args).unwrap();
+    drop(printer);
 
     let combined = cap.human();
     // The v2 surface always carries the heading + manifest sections + final

@@ -81,17 +81,17 @@ fn module_export_setup() -> (tempfile::TempDir, tempfile::TempDir, tempfile::Tem
 fn module_export_happy_human() {
     let (config_dir, state_dir, output_dir) = module_export_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     module::cmd_module_export(
         &cli,
-        &v2_printer,
+        &printer,
         "export-mod",
         &cfgd::cli::ExportFormat::Devcontainer,
         Some(output_dir.path().to_str().unwrap()),
     )
     .unwrap();
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = normalize(
         &strip_ansi(&cap.human()),
@@ -109,17 +109,17 @@ fn module_export_happy_human() {
 fn module_export_happy_json() {
     let (config_dir, state_dir, output_dir) = module_export_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     module::cmd_module_export(
         &cli,
-        &v2_printer,
+        &printer,
         "export-mod",
         &cfgd::cli::ExportFormat::Devcontainer,
         Some(output_dir.path().to_str().unwrap()),
     )
     .unwrap();
-    drop(v2_printer);
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["name"], "export-mod");
@@ -136,17 +136,17 @@ fn module_export_happy_json() {
 fn module_export_not_found_human() {
     let (config_dir, state_dir, output_dir) = module_export_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     let result = module::cmd_module_export(
         &cli,
-        &v2_printer,
+        &printer,
         "ghost",
         &cfgd::cli::ExportFormat::Devcontainer,
         Some(output_dir.path().to_str().unwrap()),
     );
     assert!(result.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = normalize(
         &strip_ansi(&cap.human()),

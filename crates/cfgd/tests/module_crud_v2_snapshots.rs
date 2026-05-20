@@ -93,7 +93,7 @@ fn normalize(raw: &str, config_dir: &Path) -> String {
 fn module_create_happy_human() {
     let (config_dir, state_dir) = module_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     let args = cfgd::cli::ModuleCreateArgs {
         name: "happy-mod".to_string(),
@@ -109,8 +109,8 @@ fn module_create_happy_human() {
         apply: false,
         yes: true,
     };
-    module::cmd_module_create(&cli, &v2_printer, &args).unwrap();
-    drop(v2_printer);
+    module::cmd_module_create(&cli, &printer, &args).unwrap();
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -124,7 +124,7 @@ fn module_create_happy_human() {
 fn module_create_happy_json() {
     let (config_dir, state_dir) = module_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     let args = cfgd::cli::ModuleCreateArgs {
         name: "json-mod".to_string(),
@@ -140,8 +140,8 @@ fn module_create_happy_json() {
         apply: false,
         yes: true,
     };
-    module::cmd_module_create(&cli, &v2_printer, &args).unwrap();
-    drop(v2_printer);
+    module::cmd_module_create(&cli, &printer, &args).unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["name"], "json-mod");
@@ -153,7 +153,7 @@ fn module_create_already_exists_human() {
     let (config_dir, state_dir) = module_test_config_setup();
     write_module(config_dir.path(), "dup-mod", VALID_MODULE);
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     let args = cfgd::cli::ModuleCreateArgs {
         name: "dup-mod".to_string(),
@@ -169,9 +169,9 @@ fn module_create_already_exists_human() {
         apply: false,
         yes: true,
     };
-    let result = module::cmd_module_create(&cli, &v2_printer, &args);
+    let result = module::cmd_module_create(&cli, &printer, &args);
     assert!(result.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -194,7 +194,7 @@ fn module_update_happy_human() {
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: upd-mod\nspec: {}\n",
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     let args = cfgd::cli::ModuleUpdateArgs {
         name: "upd-mod".to_string(),
@@ -208,8 +208,8 @@ fn module_update_happy_human() {
         description: None,
         sets: vec![],
     };
-    module::cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
-    drop(v2_printer);
+    module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -232,7 +232,7 @@ fn module_update_no_changes_human() {
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: noop-mod\nspec: {}\n",
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     let args = cfgd::cli::ModuleUpdateArgs {
         name: "noop-mod".to_string(),
@@ -246,8 +246,8 @@ fn module_update_no_changes_human() {
         description: None,
         sets: vec![],
     };
-    module::cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
-    drop(v2_printer);
+    module::cmd_module_update_local(&cli, &printer, &args).unwrap();
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -264,7 +264,7 @@ fn module_update_no_changes_human() {
 fn module_update_not_found_human() {
     let (config_dir, state_dir) = module_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     let args = cfgd::cli::ModuleUpdateArgs {
         name: "ghost".to_string(),
@@ -278,9 +278,9 @@ fn module_update_not_found_human() {
         description: None,
         sets: vec![],
     };
-    let result = module::cmd_module_update_local(&cli, &v2_printer, &args);
+    let result = module::cmd_module_update_local(&cli, &printer, &args);
     assert!(result.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -303,10 +303,10 @@ fn module_delete_happy_human() {
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: del-mod\nspec: {}\n",
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    module::cmd_module_delete(&cli, &v2_printer, "del-mod", true, false).unwrap();
-    drop(v2_printer);
+    module::cmd_module_delete(&cli, &printer, "del-mod", true, false).unwrap();
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -329,11 +329,11 @@ fn module_delete_cancelled_human() {
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: cancel-mod\nspec: {}\n",
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) =
+    let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
 
-    module::cmd_module_delete(&cli, &v2_printer, "cancel-mod", false, false).unwrap();
-    drop(v2_printer);
+    module::cmd_module_delete(&cli, &printer, "cancel-mod", false, false).unwrap();
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -350,11 +350,11 @@ fn module_delete_cancelled_human() {
 fn module_delete_not_found_human() {
     let (config_dir, state_dir) = module_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    let result = module::cmd_module_delete(&cli, &v2_printer, "ghost", true, false);
+    let result = module::cmd_module_delete(&cli, &printer, "ghost", true, false);
     assert!(result.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -374,11 +374,11 @@ fn module_edit_valid_human() {
     let (config_dir, state_dir) = module_test_config_setup();
     write_module(config_dir.path(), "edit-mod", VALID_MODULE);
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     let _editor = EditorGuard::set("/bin/true");
-    module::cmd_module_edit(&cli, &v2_printer, "edit-mod").unwrap();
-    drop(v2_printer);
+    module::cmd_module_edit(&cli, &printer, "edit-mod").unwrap();
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "module_edit/valid.txt", &stripped);
@@ -392,11 +392,11 @@ fn module_edit_valid_human() {
 fn module_edit_not_found_human() {
     let (config_dir, state_dir) = module_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    let result = module::cmd_module_edit(&cli, &v2_printer, "ghost");
+    let result = module::cmd_module_edit(&cli, &printer, "ghost");
     assert!(result.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(

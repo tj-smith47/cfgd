@@ -22,7 +22,7 @@ fn cmd_apply_increments_apply_log_by_one() {
     let (config_dir, state_dir, target) = tiny_profile_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let v2_printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
     let args = apply_args();
 
     // Baseline: no applies recorded.
@@ -33,7 +33,7 @@ fn cmd_apply_increments_apply_log_by_one() {
         assert_eq!(before.len(), 0, "no applies before the test");
     }
 
-    apply::cmd_apply(&cli, &v2_printer, &args).unwrap();
+    apply::cmd_apply(&cli, &printer, &args).unwrap();
     assert!(target.exists(), "target file was created");
 
     // Exactly one apply record now.
@@ -53,10 +53,10 @@ fn cmd_apply_releases_apply_lock() {
     let (config_dir, state_dir, _target) = tiny_profile_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let v2_printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
     let args = apply_args();
 
-    apply::cmd_apply(&cli, &v2_printer, &args).unwrap();
+    apply::cmd_apply(&cli, &printer, &args).unwrap();
 
     // If the lock is released, re-acquiring must succeed.
     let guard = cfgd_core::acquire_apply_lock(state_dir.path())

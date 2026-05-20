@@ -1,13 +1,13 @@
 use super::*;
 use cfgd_core::output::{Doc, Printer, Role};
 
-pub fn cmd_profile_switch(cli: &Cli, name: &str, v2_printer: &Printer) -> anyhow::Result<()> {
-    v2_printer.heading("Switch Profile");
+pub fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::Result<()> {
+    printer.heading("Switch Profile");
 
     let config_dir = super::config_dir(cli);
     let config_path = config_dir.join("cfgd.yaml");
     if !config_path.exists() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             name,
             "no_config",
             MSG_NO_CONFIG,
@@ -33,7 +33,7 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, v2_printer: &Printer) -> anyhow
         if !available.is_empty() {
             doc = doc.hint(format!("Available profiles: {}", available.join(", ")));
         }
-        v2_printer.emit(doc);
+        printer.emit(doc);
         let bail_hint = if available.is_empty() {
             String::new()
         } else {
@@ -66,7 +66,7 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, v2_printer: &Printer) -> anyhow
             "from": old_profile,
             "to": name,
         }));
-    v2_printer.emit(doc);
+    printer.emit(doc);
 
     Ok(())
 }

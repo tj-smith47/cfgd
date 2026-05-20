@@ -3,7 +3,7 @@ use cfgd_core::output::{Doc, Printer, Role};
 
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_module_build(
-    v2_printer: &Printer,
+    printer: &Printer,
     dir: &str,
     target: Option<&str>,
     base_image: Option<&str>,
@@ -13,7 +13,7 @@ pub fn cmd_module_build(
 ) -> anyhow::Result<()> {
     let dir_path = Path::new(dir);
     if !dir_path.join("module.yaml").exists() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             dir,
             "module_yaml_missing",
             format!(
@@ -28,7 +28,7 @@ pub fn cmd_module_build(
         );
     }
 
-    v2_printer.heading("Build Module");
+    printer.heading("Build Module");
     let mut header = vec![("Directory".to_string(), dir.to_string())];
     if let Some(t) = target {
         header.push(("Target".to_string(), t.to_string()));
@@ -36,7 +36,7 @@ pub fn cmd_module_build(
     if let Some(img) = base_image {
         header.push(("Base image".to_string(), img.to_string()));
     }
-    v2_printer.kv_block(header);
+    printer.kv_block(header);
 
     let default_platform = cfgd_core::oci::current_platform();
     let targets: Vec<&str> = target
@@ -49,7 +49,7 @@ pub fn cmd_module_build(
     if targets.len() == 1 {
         let output_dir = cfgd_core::oci::build_module(dir_path, Some(targets[0]), base_image)
             .map_err(|e| {
-                v2_printer.emit(cfgd_core::output::error_doc(
+                printer.emit(cfgd_core::output::error_doc(
                     dir,
                     "build_failed",
                     e.to_string(),
@@ -57,27 +57,27 @@ pub fn cmd_module_build(
                 ));
                 anyhow::anyhow!("{e}")
             })?;
-        v2_printer.status_simple(Role::Ok, format!("Built to {}", output_dir.display()));
+        printer.status_simple(Role::Ok, format!("Built to {}", output_dir.display()));
         output_artifacts.push(output_dir.display().to_string());
 
         if let Some(art) = artifact {
             let digest =
-                cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]), Some(v2_printer))
+                cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]), Some(printer))
                     .map_err(|e| {
-                    v2_printer.emit(cfgd_core::output::error_doc(
-                        art,
-                        "push_failed",
-                        e.to_string(),
-                        serde_json::json!({ "artifact": art, "target": targets[0] }),
-                    ));
-                    anyhow::anyhow!("{e}")
-                })?;
-            v2_printer.kv("Digest", &digest);
+                        printer.emit(cfgd_core::output::error_doc(
+                            art,
+                            "push_failed",
+                            e.to_string(),
+                            serde_json::json!({ "artifact": art, "target": targets[0] }),
+                        ));
+                        anyhow::anyhow!("{e}")
+                    })?;
+            printer.kv("Digest", &digest);
             digest_value = Some(digest);
 
             if sign {
                 cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
-                    v2_printer.emit(cfgd_core::output::error_doc(
+                    printer.emit(cfgd_core::output::error_doc(
                         art,
                         "sign_failed",
                         e.to_string(),
@@ -85,13 +85,13 @@ pub fn cmd_module_build(
                     ));
                     anyhow::anyhow!("{e}")
                 })?;
-                v2_printer.status_simple(Role::Ok, "Signed artifact");
+                printer.status_simple(Role::Ok, "Signed artifact");
             }
         }
     } else {
         let mut builds: Vec<(std::path::PathBuf, String)> = Vec::new();
         for t in &targets {
-            let sp = v2_printer.spinner(format!("Building for {t}..."));
+            let sp = printer.spinner(format!("Building for {t}..."));
             let output_dir = match cfgd_core::oci::build_module(dir_path, Some(t), base_image) {
                 Ok(d) => {
                     sp.finish_ok(format!("Built {t} to {}", d.display()));
@@ -100,7 +100,7 @@ pub fn cmd_module_build(
                 Err(e) => {
                     sp.finish_fail(format!("Build failed for {t}"))
                         .detail(e.to_string());
-                    v2_printer.emit(cfgd_core::output::error_doc(
+                    printer.emit(cfgd_core::output::error_doc(
                         dir,
                         "build_failed",
                         e.to_string(),
@@ -118,23 +118,22 @@ pub fn cmd_module_build(
                 .iter()
                 .map(|(dir, plat)| (dir.as_path(), plat.as_str()))
                 .collect();
-            let digest =
-                cfgd_core::oci::push_module_multiplatform(&build_refs, art, Some(v2_printer))
-                    .map_err(|e| {
-                        v2_printer.emit(cfgd_core::output::error_doc(
-                            art,
-                            "push_failed",
-                            e.to_string(),
-                            serde_json::json!({ "artifact": art, "targets": &targets }),
-                        ));
-                        anyhow::anyhow!("{e}")
-                    })?;
-            v2_printer.kv("Digest", &digest);
+            let digest = cfgd_core::oci::push_module_multiplatform(&build_refs, art, Some(printer))
+                .map_err(|e| {
+                    printer.emit(cfgd_core::output::error_doc(
+                        art,
+                        "push_failed",
+                        e.to_string(),
+                        serde_json::json!({ "artifact": art, "targets": &targets }),
+                    ));
+                    anyhow::anyhow!("{e}")
+                })?;
+            printer.kv("Digest", &digest);
             digest_value = Some(digest);
 
             if sign {
                 cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
-                    v2_printer.emit(cfgd_core::output::error_doc(
+                    printer.emit(cfgd_core::output::error_doc(
                         art,
                         "sign_failed",
                         e.to_string(),
@@ -142,7 +141,7 @@ pub fn cmd_module_build(
                     ));
                     anyhow::anyhow!("{e}")
                 })?;
-                v2_printer.status_simple(Role::Ok, "Signed artifact");
+                printer.status_simple(Role::Ok, "Signed artifact");
             }
         }
     }
@@ -177,7 +176,7 @@ pub fn cmd_module_build(
         payload.insert("digest".into(), serde_json::Value::String(d));
     }
     payload.insert("signed".into(), serde_json::Value::Bool(sign));
-    v2_printer.emit(Doc::new().with_data(serde_json::Value::Object(payload)));
+    printer.emit(Doc::new().with_data(serde_json::Value::Object(payload)));
 
     Ok(())
 }

@@ -95,9 +95,9 @@ fn count_packages(spec: &config::ProfileSpec) -> usize {
 #[test]
 fn scaffold_creates_structure() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
 
-    scaffold(dir.path(), Some("test-config"), None, &v2_printer).unwrap();
+    scaffold(dir.path(), Some("test-config"), None, &printer).unwrap();
 
     assert!(dir.path().join("cfgd.yaml").exists());
     assert!(dir.path().join("profiles").is_dir());
@@ -112,9 +112,9 @@ fn scaffold_creates_structure() {
 #[test]
 fn scaffold_with_theme() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
 
-    scaffold(dir.path(), Some("themed"), Some("minimal"), &v2_printer).unwrap();
+    scaffold(dir.path(), Some("themed"), Some("minimal"), &printer).unwrap();
 
     let contents = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
     assert!(contents.contains("name: themed"));
@@ -124,9 +124,9 @@ fn scaffold_with_theme() {
 #[test]
 fn scaffold_uses_dir_name_as_default() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
 
-    scaffold(dir.path(), None, None, &v2_printer).unwrap();
+    scaffold(dir.path(), None, None, &printer).unwrap();
 
     let contents = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
     // Should use the tempdir name
@@ -261,8 +261,8 @@ fn regenerate_workflow_empty_repo() {
     std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
     std::fs::create_dir_all(dir.path().join("modules")).unwrap();
 
-    let v2_printer = quiet_printer();
-    regenerate_workflow(dir.path(), &v2_printer).unwrap();
+    let printer = quiet_printer();
+    regenerate_workflow(dir.path(), &printer).unwrap();
 
     // No profiles or modules → no workflow generated
     assert!(
@@ -284,8 +284,8 @@ fn regenerate_workflow_with_profile() {
     )
     .unwrap();
 
-    let v2_printer = quiet_printer();
-    regenerate_workflow(dir.path(), &v2_printer).unwrap();
+    let printer = quiet_printer();
+    regenerate_workflow(dir.path(), &printer).unwrap();
 
     let workflow = dir.path().join(".github/workflows/cfgd-release.yml");
     assert!(workflow.exists());
@@ -296,9 +296,9 @@ fn regenerate_workflow_with_profile() {
 #[test]
 fn scaffold_includes_default_theme() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
 
-    scaffold(dir.path(), Some("test"), None, &v2_printer).unwrap();
+    scaffold(dir.path(), Some("test"), None, &printer).unwrap();
     let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
     assert_eq!(cfg.spec.theme.unwrap().name, "default");
 }
@@ -306,9 +306,9 @@ fn scaffold_includes_default_theme() {
 #[test]
 fn scaffold_with_custom_theme() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
 
-    scaffold(dir.path(), Some("test"), Some("minimal"), &v2_printer).unwrap();
+    scaffold(dir.path(), Some("test"), Some("minimal"), &printer).unwrap();
     let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
     assert_eq!(cfg.spec.theme.unwrap().name, "minimal");
 }
@@ -324,8 +324,8 @@ fn pick_profile_single_profile() {
     )
     .unwrap();
 
-    let v2_printer = quiet_printer();
-    let result = pick_profile(&profiles_dir, &v2_printer).unwrap();
+    let printer = quiet_printer();
+    let result = pick_profile(&profiles_dir, &printer).unwrap();
     assert_eq!(result, "base");
 }
 
@@ -335,8 +335,8 @@ fn pick_profile_no_profiles_errors() {
     let profiles_dir = dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
 
-    let v2_printer = quiet_printer();
-    let err = pick_profile(&profiles_dir, &v2_printer).unwrap_err();
+    let printer = quiet_printer();
+    let err = pick_profile(&profiles_dir, &printer).unwrap_err();
     assert!(
         err.to_string().contains("No profiles found"),
         "should report no profiles, got: {err}"
@@ -400,8 +400,8 @@ fn pick_profile_no_dir_errors() {
     let profiles_dir = dir.path().join("profiles");
     // Don't create the dir
 
-    let v2_printer = quiet_printer();
-    let err = pick_profile(&profiles_dir, &v2_printer).unwrap_err();
+    let printer = quiet_printer();
+    let err = pick_profile(&profiles_dir, &printer).unwrap_err();
     assert!(
         err.to_string().contains("No profiles directory"),
         "should report missing dir, got: {err}"
@@ -442,13 +442,8 @@ fn resolve_from_local_path_with_config() {
     )
     .unwrap();
 
-    let v2_printer = quiet_printer();
-    let result = resolve_from(
-        &dir.path().display().to_string(),
-        None,
-        "master",
-        &v2_printer,
-    );
+    let printer = quiet_printer();
+    let result = resolve_from(&dir.path().display().to_string(), None, "master", &printer);
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), dir.path());
 }
@@ -458,13 +453,8 @@ fn resolve_from_local_path_missing_config_errors() {
     let dir = tempfile::tempdir().unwrap();
     // No cfgd.yaml
 
-    let v2_printer = quiet_printer();
-    let result = resolve_from(
-        &dir.path().display().to_string(),
-        None,
-        "master",
-        &v2_printer,
-    );
+    let printer = quiet_printer();
+    let result = resolve_from(&dir.path().display().to_string(), None, "master", &printer);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
 }
@@ -473,13 +463,8 @@ fn resolve_from_local_path_missing_config_errors() {
 fn resolve_from_nonexistent_path_errors() {
     let dir = tempfile::tempdir().unwrap();
     let nonexistent = dir.path().join("does-not-exist");
-    let v2_printer = quiet_printer();
-    let result = resolve_from(
-        &nonexistent.display().to_string(),
-        None,
-        "master",
-        &v2_printer,
-    );
+    let printer = quiet_printer();
+    let result = resolve_from(&nonexistent.display().to_string(), None, "master", &printer);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("does not exist"));
 }
@@ -487,8 +472,8 @@ fn resolve_from_nonexistent_path_errors() {
 #[test]
 fn check_prerequisites_returns_true_when_git_available() {
     // git should be available in CI and dev environments
-    let v2_printer = quiet_printer();
-    let result = check_prerequisites(&v2_printer);
+    let printer = quiet_printer();
+    let result = check_prerequisites(&printer);
     if cfgd_core::command_available("git") {
         assert!(
             result,
@@ -508,7 +493,7 @@ fn cmd_init_scaffolds_local_directory() {
     let target = dir.path().join("my-config");
     std::fs::create_dir_all(&target).unwrap();
 
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
     let args = InitArgs {
         path: Some(target.to_str().unwrap()),
         from: None,
@@ -523,7 +508,7 @@ fn cmd_init_scaffolds_local_directory() {
         apply_modules: &[],
     };
 
-    let result = cmd_init(&v2_printer, &args);
+    let result = cmd_init(&printer, &args);
     assert!(result.is_ok(), "cmd_init failed: {:?}", result.err());
 
     // Verify scaffolded files exist and have expected content
@@ -560,7 +545,7 @@ fn cmd_init_skips_if_already_initialized() {
     )
     .unwrap();
 
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
     let args = InitArgs {
         path: Some(target.to_str().unwrap()),
         from: None,
@@ -575,7 +560,7 @@ fn cmd_init_skips_if_already_initialized() {
         apply_modules: &[],
     };
 
-    let result = cmd_init(&v2_printer, &args);
+    let result = cmd_init(&printer, &args);
     assert!(result.is_ok());
     // cfgd.yaml should be unchanged (not overwritten)
     let contents = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
@@ -588,7 +573,7 @@ fn cmd_init_creates_directory_if_missing() {
     let target = dir.path().join("new-config");
     assert!(!target.exists());
 
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
     let args = InitArgs {
         path: Some(target.to_str().unwrap()),
         from: None,
@@ -603,7 +588,7 @@ fn cmd_init_creates_directory_if_missing() {
         apply_modules: &[],
     };
 
-    let result = cmd_init(&v2_printer, &args);
+    let result = cmd_init(&printer, &args);
     assert!(result.is_ok(), "cmd_init failed: {:?}", result.err());
     assert!(target.exists());
     assert!(target.join("cfgd.yaml").exists());
@@ -636,14 +621,8 @@ fn clone_into_local_repo() {
     let target = dir.path().join("clone");
     std::fs::create_dir_all(&target).unwrap();
 
-    let (v2_printer, v2_cap) = Printer::for_test_doc();
-    clone_into(
-        &target,
-        &origin.display().to_string(),
-        "master",
-        &v2_printer,
-    )
-    .unwrap();
+    let (printer, v2_cap) = Printer::for_test_doc();
+    clone_into(&target, &origin.display().to_string(), "master", &printer).unwrap();
 
     assert!(target.join(".git").exists(), "should create .git directory");
     let cfg = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
@@ -652,7 +631,7 @@ fn clone_into_local_repo() {
         "cloned cfgd.yaml should contain the name"
     );
 
-    drop(v2_printer);
+    drop(printer);
     let output = v2_cap.human();
     assert!(output.contains("Cloned"), "should report successful clone");
 }
@@ -663,17 +642,17 @@ fn clone_into_skips_if_already_cloned() {
     let target = dir.path().join("clone");
     std::fs::create_dir_all(target.join(".git")).unwrap();
 
-    let (v2_printer, v2_cap) = Printer::for_test_doc();
+    let (printer, v2_cap) = Printer::for_test_doc();
     // Should return Ok without actually cloning
     clone_into(
         &target,
         "https://example.com/nonexistent",
         "master",
-        &v2_printer,
+        &printer,
     )
     .unwrap();
 
-    drop(v2_printer);
+    drop(printer);
     let output = v2_cap.human();
     assert!(
         output.contains("already exists"),
@@ -703,12 +682,12 @@ fn resolve_from_git_source_local_repo() {
         .unwrap();
 
     let target = dir.path().join("target");
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
     let result = resolve_from(
         &origin.display().to_string(),
         Some(&target),
         "master",
-        &v2_printer,
+        &printer,
     )
     .unwrap();
 
@@ -733,13 +712,13 @@ fn resolve_from_already_initialized_git_source() {
     )
     .unwrap();
 
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
     // Using a git URL (https://) triggers the git source path
     let result = resolve_from(
         "https://example.com/repo.git",
         Some(&target),
         "master",
-        &v2_printer,
+        &printer,
     );
     assert!(result.is_ok());
     // Should return the target path without re-cloning
@@ -749,9 +728,9 @@ fn resolve_from_already_initialized_git_source() {
 #[test]
 fn scaffold_creates_readme_with_name() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
 
-    scaffold(dir.path(), Some("my-dotfiles"), None, &v2_printer).unwrap();
+    scaffold(dir.path(), Some("my-dotfiles"), None, &printer).unwrap();
 
     let readme = std::fs::read_to_string(dir.path().join("README.md")).unwrap();
     assert!(
@@ -763,9 +742,9 @@ fn scaffold_creates_readme_with_name() {
 #[test]
 fn scaffold_creates_gitignore() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
 
-    scaffold(dir.path(), Some("test"), None, &v2_printer).unwrap();
+    scaffold(dir.path(), Some("test"), None, &printer).unwrap();
 
     let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
     assert!(gitignore.contains("!cfgd.yaml"));
@@ -776,9 +755,9 @@ fn scaffold_creates_gitignore() {
 #[test]
 fn scaffold_creates_workflow() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
 
-    scaffold(dir.path(), Some("test"), None, &v2_printer).unwrap();
+    scaffold(dir.path(), Some("test"), None, &printer).unwrap();
 
     let workflow_path = dir.path().join(".github/workflows/cfgd-release.yml");
     let workflow = std::fs::read_to_string(&workflow_path).unwrap();
@@ -796,7 +775,7 @@ fn cmd_init_with_from_local_path() {
     )
     .unwrap();
 
-    let (v2_printer, v2_cap) = Printer::for_test_doc();
+    let (printer, v2_cap) = Printer::for_test_doc();
     let source_str = source.display().to_string();
     let args = InitArgs {
         path: None,
@@ -812,9 +791,9 @@ fn cmd_init_with_from_local_path() {
         apply_modules: &[],
     };
 
-    cmd_init(&v2_printer, &args).unwrap();
+    cmd_init(&printer, &args).unwrap();
 
-    drop(v2_printer);
+    drop(printer);
     let output = v2_cap.human();
     assert!(
         output.contains("Initialize") || output.contains("Initialized"),
@@ -870,7 +849,7 @@ fn cmd_init_scaffold_to_new_dir() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("new-config");
 
-    let (v2_printer, v2_cap) = Printer::for_test_doc();
+    let (printer, v2_cap) = Printer::for_test_doc();
     let target_str = target.display().to_string();
     let args = InitArgs {
         path: Some(&target_str),
@@ -886,7 +865,7 @@ fn cmd_init_scaffold_to_new_dir() {
         apply_modules: &[],
     };
 
-    cmd_init(&v2_printer, &args).unwrap();
+    cmd_init(&printer, &args).unwrap();
 
     // Verify scaffolded structure
     assert!(target.join("cfgd.yaml").exists(), "should create cfgd.yaml");
@@ -903,7 +882,7 @@ fn cmd_init_scaffold_to_new_dir() {
         "config should contain the name, got: {config}"
     );
 
-    drop(v2_printer);
+    drop(printer);
     let output = v2_cap.human();
     assert!(
         output.contains("Initialized"),
@@ -922,7 +901,7 @@ fn cmd_init_already_initialized() {
     )
     .unwrap();
 
-    let (v2_printer, v2_cap) = Printer::for_test_doc();
+    let (printer, v2_cap) = Printer::for_test_doc();
     let target_str = target.display().to_string();
     let args = InitArgs {
         path: Some(&target_str),
@@ -938,9 +917,9 @@ fn cmd_init_already_initialized() {
         apply_modules: &[],
     };
 
-    cmd_init(&v2_printer, &args).unwrap();
+    cmd_init(&printer, &args).unwrap();
 
-    drop(v2_printer);
+    drop(printer);
     let output = v2_cap.human();
     assert!(
         output.contains("Already initialized"),
@@ -953,7 +932,7 @@ fn cmd_init_with_theme() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("themed");
 
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
     let target_str = target.display().to_string();
     let args = InitArgs {
         path: Some(&target_str),
@@ -969,7 +948,7 @@ fn cmd_init_with_theme() {
         apply_modules: &[],
     };
 
-    cmd_init(&v2_printer, &args).unwrap();
+    cmd_init(&printer, &args).unwrap();
 
     let config = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
     assert!(
@@ -989,29 +968,18 @@ fn resolve_from_local_path_valid() {
     )
     .unwrap();
 
-    let v2_printer = quiet_printer();
-    let result = resolve_from(
-        &dir.path().display().to_string(),
-        None,
-        "master",
-        &v2_printer,
-    )
-    .unwrap();
+    let printer = quiet_printer();
+    let result = resolve_from(&dir.path().display().to_string(), None, "master", &printer).unwrap();
     assert_eq!(result, dir.path());
 }
 
 #[test]
 fn resolve_from_local_path_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
 
-    let err = resolve_from(
-        &dir.path().display().to_string(),
-        None,
-        "master",
-        &v2_printer,
-    )
-    .unwrap_err();
+    let err =
+        resolve_from(&dir.path().display().to_string(), None, "master", &printer).unwrap_err();
     assert!(
         err.to_string().contains("No cfgd.yaml"),
         "should report missing cfgd.yaml, got: {err}"
@@ -1020,8 +988,8 @@ fn resolve_from_local_path_no_config_fails() {
 
 #[test]
 fn resolve_from_nonexistent_path_fails() {
-    let v2_printer = quiet_printer();
-    let err = resolve_from("/nonexistent/path/xyz", None, "master", &v2_printer).unwrap_err();
+    let printer = quiet_printer();
+    let err = resolve_from("/nonexistent/path/xyz", None, "master", &printer).unwrap_err();
     assert!(
         err.to_string().contains("does not exist"),
         "should report path does not exist, got: {err}"
@@ -1076,9 +1044,9 @@ fn is_git_source_local_git_repo() {
 #[test]
 fn scaffold_gitignore_content() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
 
-    scaffold(dir.path(), Some("test"), None, &v2_printer).unwrap();
+    scaffold(dir.path(), Some("test"), None, &printer).unwrap();
 
     let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
     assert!(
@@ -1092,9 +1060,9 @@ fn scaffold_gitignore_content() {
 #[test]
 fn scaffold_config_content() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
 
-    scaffold(dir.path(), Some("my-dots"), Some("catppuccin"), &v2_printer).unwrap();
+    scaffold(dir.path(), Some("my-dots"), Some("catppuccin"), &printer).unwrap();
 
     let config = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
     assert!(config.contains("my-dots"), "should use custom name");
@@ -1110,9 +1078,9 @@ fn scaffold_uses_dir_name_when_no_name() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("cool-dotfiles");
     std::fs::create_dir_all(&target).unwrap();
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
 
-    scaffold(&target, None, None, &v2_printer).unwrap();
+    scaffold(&target, None, None, &printer).unwrap();
 
     let config = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
     assert!(
@@ -1133,11 +1101,11 @@ fn pick_profile_single_profile_auto_selects() {
     )
     .unwrap();
 
-    let (v2_printer, cap) = Printer::for_test_doc();
-    let result = pick_profile(dir.path(), &v2_printer).unwrap();
+    let (printer, cap) = Printer::for_test_doc();
+    let result = pick_profile(dir.path(), &printer).unwrap();
     assert_eq!(result, "default");
 
-    drop(v2_printer);
+    drop(printer);
     let output = cap.human();
     assert!(
         output.contains("Using only available profile: default"),
@@ -1149,9 +1117,9 @@ fn pick_profile_single_profile_auto_selects() {
 fn pick_profile_no_dir_fails() {
     let dir = tempfile::tempdir().unwrap();
     let nonexistent = dir.path().join("nope");
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
 
-    let err = pick_profile(&nonexistent, &v2_printer).unwrap_err();
+    let err = pick_profile(&nonexistent, &printer).unwrap_err();
     assert!(
         err.to_string().contains("No profiles directory"),
         "should report no profiles dir, got: {err}"
@@ -1161,9 +1129,9 @@ fn pick_profile_no_dir_fails() {
 #[test]
 fn pick_profile_empty_dir_fails() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
 
-    let err = pick_profile(dir.path(), &v2_printer).unwrap_err();
+    let err = pick_profile(dir.path(), &printer).unwrap_err();
     assert!(
         err.to_string().contains("No profiles found"),
         "should report no profiles, got: {err}"
@@ -1177,9 +1145,9 @@ fn regenerate_workflow_skips_empty() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
     std::fs::create_dir_all(dir.path().join("modules")).unwrap();
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
 
-    regenerate_workflow(dir.path(), &v2_printer).unwrap();
+    regenerate_workflow(dir.path(), &printer).unwrap();
 
     // No workflow should be generated for empty project
     assert!(
@@ -1202,8 +1170,8 @@ fn regenerate_workflow_creates_for_content() {
     .unwrap();
     std::fs::create_dir_all(dir.path().join("modules")).unwrap();
 
-    let v2_printer = quiet_printer();
-    regenerate_workflow(dir.path(), &v2_printer).unwrap();
+    let printer = quiet_printer();
+    regenerate_workflow(dir.path(), &printer).unwrap();
 
     let workflow_path = dir.path().join(".github/workflows/cfgd-release.yml");
     assert!(workflow_path.exists(), "should create workflow");
@@ -1357,9 +1325,8 @@ fn resolve_from_local_path_returns_canonicalized_path() {
     )
     .unwrap();
 
-    let v2_printer = quiet_printer();
-    let result =
-        resolve_from(&dir.path().display().to_string(), None, "main", &v2_printer).unwrap();
+    let printer = quiet_printer();
+    let result = resolve_from(&dir.path().display().to_string(), None, "main", &printer).unwrap();
     // The result should be a valid path containing cfgd.yaml
     assert!(result.join("cfgd.yaml").exists());
 }
@@ -1388,12 +1355,12 @@ fn resolve_from_git_source_with_target_creates_dir() {
     let target = dir.path().join("new-target");
     assert!(!target.exists());
 
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
     let result = resolve_from(
         &origin.display().to_string(),
         Some(&target),
         "master",
-        &v2_printer,
+        &printer,
     )
     .unwrap();
 
@@ -1406,8 +1373,8 @@ fn resolve_from_git_source_with_target_creates_dir() {
 #[test]
 fn scaffold_config_has_api_version() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = quiet_printer();
-    scaffold(dir.path(), Some("my-cfg"), None, &v2_printer).unwrap();
+    let printer = quiet_printer();
+    scaffold(dir.path(), Some("my-cfg"), None, &printer).unwrap();
 
     let config = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
     assert!(
@@ -1427,8 +1394,8 @@ fn scaffold_config_has_api_version() {
 #[test]
 fn scaffold_readme_contains_structure_docs() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = quiet_printer();
-    scaffold(dir.path(), Some("documented"), None, &v2_printer).unwrap();
+    let printer = quiet_printer();
+    scaffold(dir.path(), Some("documented"), None, &printer).unwrap();
 
     let readme = std::fs::read_to_string(dir.path().join("README.md")).unwrap();
     assert!(
@@ -1453,7 +1420,7 @@ fn cmd_init_with_name_overrides_dir_name() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("generic-dir");
 
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
     let target_str = target.display().to_string();
     let args = InitArgs {
         path: Some(&target_str),
@@ -1469,7 +1436,7 @@ fn cmd_init_with_name_overrides_dir_name() {
         apply_modules: &[],
     };
 
-    cmd_init(&v2_printer, &args).unwrap();
+    cmd_init(&printer, &args).unwrap();
 
     let config = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
     assert!(
@@ -1483,7 +1450,7 @@ fn cmd_init_creates_git_repo() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("git-init-test");
 
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
     let target_str = target.display().to_string();
     let args = InitArgs {
         path: Some(&target_str),
@@ -1499,7 +1466,7 @@ fn cmd_init_creates_git_repo() {
         apply_modules: &[],
     };
 
-    cmd_init(&v2_printer, &args).unwrap();
+    cmd_init(&printer, &args).unwrap();
 
     assert!(
         target.join(".git").exists(),
@@ -1515,7 +1482,7 @@ fn cmd_init_with_theme_and_name_together() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("combo-test");
 
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
     let target_str = target.display().to_string();
     let args = InitArgs {
         path: Some(&target_str),
@@ -1531,7 +1498,7 @@ fn cmd_init_with_theme_and_name_together() {
         apply_modules: &[],
     };
 
-    cmd_init(&v2_printer, &args).unwrap();
+    cmd_init(&printer, &args).unwrap();
 
     let config = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
     assert!(
@@ -1549,7 +1516,7 @@ fn cmd_init_with_theme_and_name_together() {
 #[test]
 fn apply_plan_empty_plan_reports_nothing_to_do() {
     let dir = tempfile::tempdir().unwrap();
-    let (v2_printer, v2_cap) = Printer::for_test_doc();
+    let (printer, v2_cap) = Printer::for_test_doc();
 
     let registry = super::build_registry_with_config(None);
     // Isolate the state store under the tempdir so parallel tests don't
@@ -1573,11 +1540,11 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
         dir.path(),
         false,
         false,
-        &v2_printer,
+        &printer,
     );
     assert!(result.is_ok());
 
-    drop(v2_printer);
+    drop(printer);
     let output = v2_cap.human();
     assert!(
         output.contains("Nothing to do"),
@@ -1589,9 +1556,9 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
 
 #[test]
 fn check_prerequisites_with_test_printer() {
-    let (v2_printer, cap) = Printer::for_test_doc();
-    let result = check_prerequisites(&v2_printer);
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    let result = check_prerequisites(&printer);
+    drop(printer);
     let output = cap.human();
 
     if cfgd_core::command_available("git") {
@@ -1673,8 +1640,8 @@ fn regenerate_workflow_with_modules_and_profiles() {
     )
     .unwrap();
 
-    let v2_printer = quiet_printer();
-    regenerate_workflow(dir.path(), &v2_printer).unwrap();
+    let printer = quiet_printer();
+    regenerate_workflow(dir.path(), &printer).unwrap();
 
     let workflow_path = dir.path().join(".github/workflows/cfgd-release.yml");
     assert!(workflow_path.exists(), "should create workflow");
@@ -1734,7 +1701,7 @@ fn cmd_init_from_local_path_uses_source_dir() {
     std::fs::create_dir_all(source.join("profiles")).unwrap();
     std::fs::create_dir_all(source.join("modules")).unwrap();
 
-    let (v2_printer, v2_cap) = Printer::for_test_doc();
+    let (printer, v2_cap) = Printer::for_test_doc();
     let source_str = source.display().to_string();
     let args = InitArgs {
         path: None,
@@ -1750,9 +1717,9 @@ fn cmd_init_from_local_path_uses_source_dir() {
         apply_modules: &[],
     };
 
-    cmd_init(&v2_printer, &args).unwrap();
+    cmd_init(&printer, &args).unwrap();
 
-    drop(v2_printer);
+    drop(printer);
     let output = v2_cap.human();
     // The init should succeed and reference the source path
     assert!(
@@ -1773,10 +1740,10 @@ fn clone_into_skips_existing_git_dir() {
     let target = dir.path().join("already-cloned");
     git2::Repository::init(&target).unwrap();
 
-    let (v2_printer, v2_cap) = Printer::for_test_doc();
-    clone_into(&target, "https://example.com/repo.git", "main", &v2_printer).unwrap();
+    let (printer, v2_cap) = Printer::for_test_doc();
+    clone_into(&target, "https://example.com/repo.git", "main", &printer).unwrap();
 
-    drop(v2_printer);
+    drop(printer);
     let output = v2_cap.human();
     assert!(
         output.contains("already exists"),
@@ -1817,9 +1784,9 @@ fn sign_with_gpg_requires_gpg() {
 
 #[test]
 fn detect_ssh_key_returns_option() {
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
     // This will either find a key or return None — both are valid
-    let result = detect_ssh_key(&v2_printer);
+    let result = detect_ssh_key(&printer);
     // Just verify it doesn't panic and returns a valid type
     if let Some(ref path) = result {
         assert!(!path.is_empty(), "returned path should be non-empty");
@@ -1851,7 +1818,7 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
     // contract that a declined apply does NOT touch the reconciler or hit
     // the state-store apply lock.
     let dir = tempfile::tempdir().unwrap();
-    let (v2_printer, v2_cap) = Printer::for_test_doc();
+    let (printer, v2_cap) = Printer::for_test_doc();
 
     let registry = super::build_registry_with_config(None);
     let store = super::open_state_store(Some(dir.path())).unwrap();
@@ -1882,11 +1849,11 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
         dir.path(),
         false, // dry_run
         false, // yes — exercises the prompt arm
-        &v2_printer,
+        &printer,
     );
     assert!(result.is_ok(), "declined prompt should still return Ok");
 
-    drop(v2_printer);
+    drop(printer);
     let output = v2_cap.human();
     assert!(
         output.contains("Skipped"),
@@ -1912,7 +1879,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
     // observed (no "Skipped" output) and that apply completed without panic.
     let dir = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(dir.path());
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
             true,
         )]);
@@ -1946,15 +1913,15 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
         dir.path(),
         false,
         false,
-        &v2_printer,
+        &printer,
     );
     assert!(
         result.is_ok(),
         "confirmed prompt + empty-actions plan must succeed: {:?}",
         result.err()
     );
-    drop(v2_printer);
-    let output = v2_buf.lock().unwrap();
+    drop(printer);
+    let output = buf.lock().unwrap();
     assert!(
         !output.contains("Skipped"),
         "Skipped must NOT fire when prompt is confirmed: {output}"
@@ -1973,7 +1940,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
     // existing yes-branch test.
     let dir = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(dir.path());
-    let (v2_printer, v2_buf) = Printer::for_test_with_prompt_responses_at(
+    let (printer, buf) = Printer::for_test_with_prompt_responses_at(
         vec![cfgd_core::output::PromptAnswer::Confirm(false)],
         Verbosity::Normal,
     );
@@ -2012,15 +1979,15 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
         dir.path(),
         false,
         false,
-        &v2_printer,
+        &printer,
     );
     assert!(
         result.is_ok(),
         "declined prompt must still return Ok: {:?}",
         result.err()
     );
-    drop(v2_printer);
-    let output = v2_buf.lock().unwrap();
+    drop(printer);
+    let output = buf.lock().unwrap();
     assert!(
         output.contains("Skipped"),
         "Skipped notice must fire when prompt is declined: {output}"
@@ -2032,7 +1999,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
 #[test]
 fn apply_plan_dry_run_skips_apply() {
     let dir = tempfile::tempdir().unwrap();
-    let (v2_printer, v2_cap) = Printer::for_test_doc();
+    let (printer, v2_cap) = Printer::for_test_doc();
 
     let registry = super::build_registry_with_config(None);
     // Isolate the state store under the tempdir so parallel tests don't
@@ -2066,11 +2033,11 @@ fn apply_plan_dry_run_skips_apply() {
         dir.path(),
         true, // dry_run
         false,
-        &v2_printer,
+        &printer,
     );
     assert!(result.is_ok());
 
-    drop(v2_printer);
+    drop(printer);
     let output = v2_cap.human();
     // Dry run shows the plan but does not apply
     assert!(
@@ -2105,7 +2072,7 @@ fn cmd_init_from_git_source_with_explicit_target() {
         .unwrap();
 
     let target = dir.path().join("my-target");
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
     let origin_str = origin.display().to_string();
     let target_str = target.display().to_string();
     let args = InitArgs {
@@ -2122,7 +2089,7 @@ fn cmd_init_from_git_source_with_explicit_target() {
         apply_modules: &[],
     };
 
-    let result = cmd_init(&v2_printer, &args);
+    let result = cmd_init(&printer, &args);
     assert!(
         result.is_ok(),
         "cmd_init with --from git should succeed: {:?}",
@@ -2158,7 +2125,7 @@ fn cmd_init_from_git_with_theme_override() {
         .unwrap();
 
     let target = dir.path().join("themed-target");
-    let v2_printer = quiet_printer();
+    let printer = quiet_printer();
     let origin_str = origin.display().to_string();
     let target_str = target.display().to_string();
     let args = InitArgs {
@@ -2175,7 +2142,7 @@ fn cmd_init_from_git_with_theme_override() {
         apply_modules: &[],
     };
 
-    let result = cmd_init(&v2_printer, &args);
+    let result = cmd_init(&printer, &args);
     assert!(
         result.is_ok(),
         "cmd_init with theme override should succeed: {:?}",
@@ -2583,10 +2550,10 @@ mod enroll_mockito {
                 .with_body(enroll_response_json())
                 .create();
 
-            let (v2_printer, cap) = Printer::for_test_doc();
+            let (printer, cap) = Printer::for_test_doc();
             let url = server.url();
             let result = cmd_enroll(
-                &v2_printer,
+                &printer,
                 &url,
                 Some("bootstrap-token-xyz"),
                 None,
@@ -2610,7 +2577,7 @@ mod enroll_mockito {
 
             // Printer output should announce success and emit the Next
             // Steps section heading.
-            drop(v2_printer);
+            drop(printer);
             let captured = cap.human();
             assert!(
                 captured.contains("Enrolled as user 'alice'"),
@@ -2636,16 +2603,9 @@ mod enroll_mockito {
                 .with_body(r#"{"error":"invalid token"}"#)
                 .create();
 
-            let v2_printer = super::quiet_printer();
+            let printer = super::quiet_printer();
             let url = server.url();
-            let result = cmd_enroll(
-                &v2_printer,
-                &url,
-                Some("bad-token"),
-                None,
-                None,
-                Some("alice"),
-            );
+            let result = cmd_enroll(&printer, &url, Some("bad-token"), None, None, Some("alice"));
             assert!(result.is_err());
             // No credential written on failure.
             assert!(!tmp.path().join("device-credential.json").exists());
@@ -2666,11 +2626,11 @@ mod enroll_mockito {
                 .with_body(r#"{"method":"token"}"#)
                 .create();
 
-            let v2_printer = super::quiet_printer();
+            let printer = super::quiet_printer();
             let url = server.url();
             // No --token but key-based attempted: should error with a
             // pointer to the token form.
-            let result = cmd_enroll(&v2_printer, &url, None, None, None, Some("alice"));
+            let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
             let err = result.unwrap_err().to_string();
             assert!(
                 err.contains("bootstrap token enrollment") || err.contains("--token"),
@@ -2700,9 +2660,9 @@ mod enroll_mockito {
                 .with_body(r#"{"method":"key"}"#)
                 .create();
 
-            let v2_printer = super::quiet_printer();
+            let printer = super::quiet_printer();
             let url = server.url();
-            let result = cmd_enroll(&v2_printer, &url, None, None, None, Some("alice"));
+            let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
             let err = result.unwrap_err().to_string();
             assert!(
                 err.contains("no SSH key found"),
@@ -2731,9 +2691,9 @@ mod enroll_mockito {
                 .with_body("internal error")
                 .create();
 
-            let v2_printer = super::quiet_printer();
+            let printer = super::quiet_printer();
             let url = server.url();
-            let result = cmd_enroll(&v2_printer, &url, None, None, None, Some("alice"));
+            let result = cmd_enroll(&printer, &url, None, None, None, Some("alice"));
             let err = result.unwrap_err().to_string();
             assert!(
                 err.contains("enrollment info") || err.contains("500"),
@@ -2767,10 +2727,10 @@ mod enroll_mockito {
                 .with_body(enroll_response_json())
                 .create();
 
-            let (v2_printer, cap) = Printer::for_test_doc();
+            let (printer, cap) = Printer::for_test_doc();
             let url = server.url();
             let result = cmd_enroll(
-                &v2_printer,
+                &printer,
                 &url,
                 Some("bootstrap-token-xyz"),
                 None,
@@ -2779,7 +2739,7 @@ mod enroll_mockito {
             );
             assert!(result.is_ok(), "cmd_enroll should succeed: {result:?}");
             m.assert();
-            drop(v2_printer);
+            drop(printer);
 
             let captured = strip_ansi(&cap.human());
 
@@ -2892,12 +2852,12 @@ mod enroll_mockito {
                 .with_body(body)
                 .create();
 
-            let (v2_printer, cap) = Printer::for_test_doc();
+            let (printer, cap) = Printer::for_test_doc();
             let url = server.url();
-            let result = cmd_enroll(&v2_printer, &url, Some("token"), None, None, Some("alice"));
+            let result = cmd_enroll(&printer, &url, Some("token"), None, None, Some("alice"));
             assert!(result.is_ok(), "cmd_enroll should succeed: {result:?}");
             m.assert();
-            drop(v2_printer);
+            drop(printer);
             let captured = cap.human();
             assert!(
                 captured.contains("Server pushed desired config"),
@@ -3005,7 +2965,7 @@ mod cmd_init_from_local_bare {
         let target = tmp.path().join("dst");
         let url = format!("file://{}", bare.display());
 
-        let v2_printer = quiet_printer();
+        let printer = quiet_printer();
         let args = InitArgs {
             path: Some(target.to_str().unwrap()),
             from: Some(&url),
@@ -3019,7 +2979,7 @@ mod cmd_init_from_local_bare {
             apply_profile: None,
             apply_modules: &[],
         };
-        cmd_init(&v2_printer, &args).expect("cmd_init --from should succeed");
+        cmd_init(&printer, &args).expect("cmd_init --from should succeed");
 
         // The cloned cfgd.yaml lands at the target.
         let cfg_yaml = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
@@ -3047,7 +3007,7 @@ mod cmd_init_from_local_bare {
         let target = tmp.path().join("dst");
         let url = format!("file://{}", bare.display());
 
-        let v2_printer = quiet_printer();
+        let printer = quiet_printer();
         let args = InitArgs {
             path: Some(target.to_str().unwrap()),
             from: Some(&url),
@@ -3061,7 +3021,7 @@ mod cmd_init_from_local_bare {
             apply_profile: None,
             apply_modules: &[],
         };
-        cmd_init(&v2_printer, &args).expect("cmd_init --from --theme should succeed");
+        cmd_init(&printer, &args).expect("cmd_init --from --theme should succeed");
 
         let cfg_yaml = std::fs::read_to_string(target.join("cfgd.yaml")).unwrap();
         assert!(
@@ -3080,7 +3040,7 @@ mod cmd_init_from_local_bare {
         let target = tmp.path().join("empty-dst");
         let url = format!("file://{}", bare.display());
 
-        let v2_printer = quiet_printer();
+        let printer = quiet_printer();
         let args = InitArgs {
             path: Some(target.to_str().unwrap()),
             from: Some(&url),
@@ -3094,7 +3054,7 @@ mod cmd_init_from_local_bare {
             apply_profile: None,
             apply_modules: &[],
         };
-        cmd_init(&v2_printer, &args).expect("clone of empty repo should still return Ok");
+        cmd_init(&printer, &args).expect("clone of empty repo should still return Ok");
 
         // README.md from the source is present.
         assert!(target.join("README.md").is_file());
@@ -3142,7 +3102,7 @@ mod cmd_init_apply_orchestration {
         std::fs::create_dir_all(&target).unwrap();
         let state_dir = tmp.path().join("state");
 
-        let v2_printer = quiet_printer();
+        let printer = quiet_printer();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3157,7 +3117,7 @@ mod cmd_init_apply_orchestration {
                 apply_profile: None,
                 apply_modules: &[],
             };
-            let err = cmd_init(&v2_printer, &args)
+            let err = cmd_init(&printer, &args)
                 .expect_err("scaffold+apply without profile should surface pick_profile bail");
             let msg = err.to_string();
             assert!(
@@ -3182,7 +3142,7 @@ mod cmd_init_apply_orchestration {
         std::fs::create_dir_all(&target).unwrap();
         let state_dir = tmp.path().join("state");
 
-        let v2_printer = quiet_printer();
+        let printer = quiet_printer();
         with_state_dir(&state_dir, || {
             let modules = vec!["ghost-module".to_string()];
             let args = InitArgs {
@@ -3198,7 +3158,7 @@ mod cmd_init_apply_orchestration {
                 apply_profile: None,
                 apply_modules: &modules,
             };
-            let err = cmd_init(&v2_printer, &args)
+            let err = cmd_init(&printer, &args)
                 .expect_err("--apply-module on unknown module should bail");
             let msg = err.to_string();
             assert!(
@@ -3219,7 +3179,7 @@ mod cmd_init_apply_orchestration {
         std::fs::create_dir_all(&target).unwrap();
         let state_dir = tmp.path().join("state");
 
-        let v2_printer = quiet_printer();
+        let printer = quiet_printer();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3234,7 +3194,7 @@ mod cmd_init_apply_orchestration {
                 apply_profile: Some("missing-profile"),
                 apply_modules: &[],
             };
-            let err = cmd_init(&v2_printer, &args)
+            let err = cmd_init(&printer, &args)
                 .expect_err("--apply-profile on missing profile should bail");
             let msg = err.to_string();
             assert!(
@@ -3310,7 +3270,7 @@ mod cmd_init_apply_orchestration {
         let state_dir = tmp.path().join("state");
         let url = format!("file://{}", bare.display());
 
-        let (v2_printer, v2_cap) = Printer::for_test_doc();
+        let (printer, v2_cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3325,10 +3285,10 @@ mod cmd_init_apply_orchestration {
                 apply_profile: None,
                 apply_modules: &[],
             };
-            cmd_init(&v2_printer, &args).expect("--from + --apply --dry-run should succeed");
+            cmd_init(&printer, &args).expect("--from + --apply --dry-run should succeed");
         });
 
-        drop(v2_printer);
+        drop(printer);
         let out = v2_cap.human();
         assert!(
             out.contains("Applying Configuration"),
@@ -3356,7 +3316,7 @@ mod cmd_init_apply_orchestration {
         let state_dir = tmp.path().join("state");
         let url = format!("file://{}", bare.display());
 
-        let (v2_printer, v2_cap) = Printer::for_test_doc();
+        let (printer, v2_cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3371,11 +3331,10 @@ mod cmd_init_apply_orchestration {
                 apply_profile: Some("default"),
                 apply_modules: &[],
             };
-            cmd_init(&v2_printer, &args)
-                .expect("--apply-profile default should drive apply branch");
+            cmd_init(&printer, &args).expect("--apply-profile default should drive apply branch");
         });
 
-        drop(v2_printer);
+        drop(printer);
         let out = v2_cap.human();
         assert!(
             out.contains("Set active profile: default"),
@@ -3446,7 +3405,7 @@ mod cmd_init_apply_orchestration {
         let target = tmp.path().join("dst");
         let state_dir = tmp.path().join("state");
         let modules = vec!["sample".to_string()];
-        let (v2_printer, v2_cap) = Printer::for_test_doc();
+        let (printer, v2_cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3461,10 +3420,10 @@ mod cmd_init_apply_orchestration {
                 apply_profile: None,
                 apply_modules: &modules,
             };
-            cmd_init(&v2_printer, &args).expect("--apply-module drives module-only branch");
+            cmd_init(&printer, &args).expect("--apply-module drives module-only branch");
         });
 
-        drop(v2_printer);
+        drop(printer);
         let out = v2_cap.human();
         assert!(
             out.contains("Applying Modules"),
@@ -3530,7 +3489,7 @@ mod cmd_init_apply_orchestration {
 
         let target = tmp.path().join("dst");
         let state_dir = tmp.path().join("state");
-        let (v2_printer, v2_cap) = Printer::for_test_doc();
+        let (printer, v2_cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3545,10 +3504,10 @@ mod cmd_init_apply_orchestration {
                 apply_profile: None,
                 apply_modules: &[],
             };
-            cmd_init(&v2_printer, &args).expect("pick_profile should select the sole profile");
+            cmd_init(&printer, &args).expect("pick_profile should select the sole profile");
         });
 
-        drop(v2_printer);
+        drop(printer);
         let out = v2_cap.human();
         assert!(
             out.contains("Using only available profile: only"),
@@ -3631,7 +3590,7 @@ mod cmd_init_apply_orchestration {
         let state_dir = tmp.path().join("state");
         let url = format!("file://{}", bare.display());
 
-        let (v2_printer, v2_cap) = Printer::for_test_doc();
+        let (printer, v2_cap) = Printer::for_test_doc();
         let modules = vec!["extra".to_string()];
         with_state_dir(&state_dir, || {
             let args = InitArgs {
@@ -3647,11 +3606,11 @@ mod cmd_init_apply_orchestration {
                 apply_profile: Some("default"),
                 apply_modules: &modules,
             };
-            cmd_init(&v2_printer, &args)
+            cmd_init(&printer, &args)
                 .expect("--apply-profile + --apply-module should walk the combined arm");
         });
 
-        drop(v2_printer);
+        drop(printer);
         let out = v2_cap.human();
         // Profile-validation arm fires.
         assert!(
@@ -3688,7 +3647,7 @@ mod cmd_init_apply_orchestration {
         let state_dir = tmp.path().join("state");
         let url = format!("file://{}", bare.display());
 
-        let v2_printer = quiet_printer();
+        let printer = quiet_printer();
         let modules = vec!["ghost-extra".to_string()];
         with_state_dir(&state_dir, || {
             let args = InitArgs {
@@ -3704,7 +3663,7 @@ mod cmd_init_apply_orchestration {
                 apply_profile: Some("default"),
                 apply_modules: &modules,
             };
-            let err = cmd_init(&v2_printer, &args).expect_err(
+            let err = cmd_init(&printer, &args).expect_err(
                 "profile-based apply with unknown --apply-module should bail before plan",
             );
             let msg = err.to_string();
@@ -3729,7 +3688,7 @@ mod cmd_init_apply_orchestration {
         let target = tmp.path().join("install-daemon-cfg");
         std::fs::create_dir_all(&target).unwrap();
 
-        let (v2_printer, v2_cap) = Printer::for_test_doc();
+        let (printer, v2_cap) = Printer::for_test_doc();
         let args = InitArgs {
             path: Some(target.to_str().unwrap()),
             from: None,
@@ -3743,9 +3702,9 @@ mod cmd_init_apply_orchestration {
             apply_profile: None,
             apply_modules: &[],
         };
-        cmd_init(&v2_printer, &args).expect("cmd_init with install_daemon must succeed");
+        cmd_init(&printer, &args).expect("cmd_init with install_daemon must succeed");
 
-        drop(v2_printer);
+        drop(printer);
         let captured = v2_cap.human();
         let unit = tmp.path().join(".config/systemd/user/cfgd.service");
         if unit.exists() {

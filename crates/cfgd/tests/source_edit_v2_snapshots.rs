@@ -75,11 +75,11 @@ fn source_edit_valid_human() {
     let (config_dir, state_dir) = source_test_config_setup();
     std::fs::write(config_dir.path().join("cfgd-source.yaml"), VALID_MANIFEST).unwrap();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     let _editor = EditorGuard::set("/bin/true");
-    cmd_source_edit(&cli, &v2_printer).expect("valid manifest must succeed");
-    drop(v2_printer);
+    cmd_source_edit(&cli, &printer).expect("valid manifest must succeed");
+    drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "source_edit/valid.txt", &stripped);
@@ -115,12 +115,12 @@ fn source_edit_validation_error_accept_retry_human() {
     std::fs::set_permissions(&editor_script, perms).unwrap();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) =
+    let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
     let _editor = EditorGuard::set(editor_script.to_str().unwrap());
 
-    cmd_source_edit(&cli, &v2_printer).expect("retry-accept path must succeed");
-    drop(v2_printer);
+    cmd_source_edit(&cli, &printer).expect("retry-accept path must succeed");
+    drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -147,12 +147,12 @@ fn source_edit_validation_error_decline_human() {
     )
     .unwrap();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) =
+    let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
     let _editor = EditorGuard::set("/bin/true");
 
-    cmd_source_edit(&cli, &v2_printer).expect("save-with-errors must return Ok");
-    drop(v2_printer);
+    cmd_source_edit(&cli, &printer).expect("save-with-errors must return Ok");
+    drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -169,11 +169,11 @@ fn source_edit_validation_error_decline_human() {
 fn source_edit_no_config_human() {
     let (config_dir, state_dir) = source_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    let result = cmd_source_edit(&cli, &v2_printer);
+    let result = cmd_source_edit(&cli, &printer);
     assert!(result.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(

@@ -115,11 +115,11 @@ fn apply_happy_human() {
     let (config_dir, state_dir, target) = tiny_profile_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let args = apply_args();
 
-    cmd_apply(&cli, &v2_printer, &args).unwrap();
-    drop(v2_printer);
+    cmd_apply(&cli, &printer, &args).unwrap();
+    drop(printer);
 
     let normalized =
         normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
@@ -132,9 +132,9 @@ fn apply_happy_json() {
     // Pure data-roundtrip test on `build_apply_doc` — doesn't need to
     // stand up a reconciler.
     let output = happy_output();
-    let (v2_printer, cap) = Printer::for_test_doc();
-    v2_printer.emit(build_apply_doc(&output));
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_apply_doc(&output));
+    drop(printer);
 
     let expected = serde_json::to_value(&output).unwrap();
     let actual = cap.json().expect("apply doc carries a payload");
@@ -151,11 +151,11 @@ fn apply_dry_run_human() {
     let (config_dir, state_dir, target) = tiny_profile_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let args = apply_args_dry_run();
 
-    cmd_apply(&cli, &v2_printer, &args).unwrap();
-    drop(v2_printer);
+    cmd_apply(&cli, &printer, &args).unwrap();
+    drop(printer);
 
     assert!(!target.exists(), "dry-run must not create the target file");
 
@@ -167,13 +167,13 @@ fn apply_dry_run_human() {
 
 #[test]
 fn apply_nothing_to_do_human() {
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    v2_printer.heading("Apply");
-    v2_printer.kv_block([("Config", "/etc/cfgd.yaml"), ("Profile", "default")]);
-    v2_printer.status_simple(Role::Ok, "Nothing to do — everything is up to date");
-    v2_printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
-    drop(v2_printer);
+    printer.heading("Apply");
+    printer.kv_block([("Config", "/etc/cfgd.yaml"), ("Profile", "default")]);
+    printer.status_simple(Role::Ok, "Nothing to do — everything is up to date");
+    printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
+    drop(printer);
 
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "apply/nothing_to_do.txt");
 }
@@ -188,11 +188,11 @@ fn apply_with_failures_human() {
     let (config_dir, state_dir, target_ok, target_fail) = profile_with_one_failure_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let args = apply_args();
 
-    cmd_apply(&cli, &v2_printer, &args).unwrap();
-    drop(v2_printer);
+    cmd_apply(&cli, &printer, &args).unwrap();
+    drop(printer);
 
     assert!(target_ok.exists(), "first file action must succeed");
     assert!(
@@ -220,22 +220,22 @@ fn apply_bridge_one_blank_line() {
     // respects the no-leading-blank rule, so the combined human surface
     // has exactly one blank line at the transition between the last
     // streaming line and the first buffered line.
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    v2_printer.heading("Apply");
+    printer.heading("Apply");
     {
-        let work = v2_printer.section("Files");
+        let work = printer.section("Files");
         work.status(Role::Ok, "Wrote /etc/hosts");
     }
-    v2_printer.status_simple(Role::Ok, "Apply complete — 1 action(s) succeeded");
+    printer.status_simple(Role::Ok, "Apply complete — 1 action(s) succeeded");
 
     // Buffered Doc carrying both a human section and the ApplyOutput payload.
     // Combining both surfaces is what the bridge invariant guards.
     let doc = Doc::new()
         .section("Source Commits", |s| s.bullet("team-config @ abc1234"))
         .with_data(happy_output());
-    v2_printer.emit(doc);
-    drop(v2_printer);
+    printer.emit(doc);
+    drop(printer);
 
     let captured = strip_ansi(&cap.human());
     assert!(

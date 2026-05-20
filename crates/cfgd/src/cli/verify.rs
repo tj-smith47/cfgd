@@ -11,7 +11,7 @@ pub struct VerifyOutput {
 
 pub(super) fn cmd_verify(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     module_filter: Option<&str>,
     exit_code: bool,
 ) -> anyhow::Result<()> {
@@ -30,7 +30,7 @@ pub(super) fn cmd_verify(
             &cache_base,
             &platform,
             &mgr_map,
-            v2_printer,
+            printer,
         )
         .unwrap_or_default();
         (resolved, mods, registry)
@@ -41,7 +41,7 @@ pub(super) fn cmd_verify(
         (resolved, Vec::new(), registry)
     };
 
-    let results = reconciler::verify(&resolved, &registry, &state, v2_printer, &resolved_modules)?;
+    let results = reconciler::verify(&resolved, &registry, &state, printer, &resolved_modules)?;
     let pass_count = results.iter().filter(|r| r.matches).count();
     let fail_count = results.iter().filter(|r| !r.matches).count();
     let has_drift = fail_count > 0;
@@ -51,7 +51,7 @@ pub(super) fn cmd_verify(
         pass_count,
         fail_count,
     };
-    v2_printer.emit(build_verify_doc(&output));
+    printer.emit(build_verify_doc(&output));
 
     if exit_code && has_drift {
         cfgd_core::exit::ExitCode::DriftDetected.exit();

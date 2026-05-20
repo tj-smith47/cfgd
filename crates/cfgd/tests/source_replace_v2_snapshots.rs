@@ -88,9 +88,9 @@ fn source_replace_happy_human() {
     cmd_source_add(&cli, &v2_add, &args).expect("seed source");
     drop(v2_add);
 
-    let (v2_printer, cap) = Printer::for_test_doc();
-    cmd_source_replace(&cli, &v2_printer, "replace-old", &url_new).unwrap();
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    cmd_source_replace(&cli, &printer, "replace-old", &url_new).unwrap();
+    drop(printer);
 
     let stripped = normalize_bare(
         &strip_ansi(&cap.human()),
@@ -135,16 +135,11 @@ fn source_replace_happy_human() {
 fn source_replace_not_found_human() {
     let (config_dir, state_dir) = source_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    let result = cmd_source_replace(
-        &cli,
-        &v2_printer,
-        "missing",
-        "https://github.com/team/new.git",
-    );
+    let result = cmd_source_replace(&cli, &printer, "missing", "https://github.com/team/new.git");
     assert!(result.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(

@@ -50,10 +50,10 @@ fn assert_snapshot(base: &Path, name: &str, actual: &str) {
 fn config_unset_happy_human() {
     let (config_dir, state_dir) = config_test_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    config_cmd::cmd_config_unset(&cli, &v2_printer, "profile").unwrap();
-    drop(v2_printer);
+    config_cmd::cmd_config_unset(&cli, &printer, "profile").unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -67,10 +67,10 @@ fn config_unset_happy_human() {
 fn config_unset_happy_json() {
     let (config_dir, state_dir) = config_test_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+    let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
 
-    config_cmd::cmd_config_unset(&cli, &v2_printer, "profile").unwrap();
-    drop(v2_printer);
+    config_cmd::cmd_config_unset(&cli, &printer, "profile").unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["key"], "profile");
@@ -82,11 +82,11 @@ fn config_unset_happy_json() {
 fn config_unset_not_found_human() {
     let (config_dir, state_dir) = config_test_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    let result = config_cmd::cmd_config_unset(&cli, &v2_printer, "ghostKey");
+    let result = config_cmd::cmd_config_unset(&cli, &printer, "ghostKey");
     assert!(result.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(

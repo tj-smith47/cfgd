@@ -125,9 +125,9 @@ fn module_search_bridge_one_blank_line() {
     write_registry_config(config_dir.path(), &reg_url);
 
     let cli = cli_for(config_dir.path(), config_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
-    module::cmd_module_search(&cli, &v2_printer, "alpha").unwrap();
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    module::cmd_module_search(&cli, &printer, "alpha").unwrap();
+    drop(printer);
 
     let combined = cap.human();
     assert!(
@@ -163,9 +163,9 @@ fn search_happy_human() {
     write_registry_config(config_dir.path(), &reg_url);
 
     let cli = cli_for(config_dir.path(), config_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
-    module::cmd_module_search(&cli, &v2_printer, "alpha").unwrap();
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    module::cmd_module_search(&cli, &printer, "alpha").unwrap();
+    drop(printer);
 
     // Normalize variable paths so the golden is host-stable.
     let mut stripped = strip_ansi(&cap.human());

@@ -26,20 +26,20 @@ pub struct DaemonUninstallOutput {
 
 pub(super) fn cmd_daemon(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     command: Option<&DaemonCommand>,
 ) -> anyhow::Result<()> {
     match command {
-        Some(DaemonCommand::Status) => return cmd_daemon_status(v2_printer),
-        Some(DaemonCommand::Install) => return cmd_daemon_install(cli, v2_printer),
-        Some(DaemonCommand::Uninstall) => return cmd_daemon_uninstall(v2_printer),
+        Some(DaemonCommand::Status) => return cmd_daemon_status(printer),
+        Some(DaemonCommand::Install) => return cmd_daemon_install(cli, printer),
+        Some(DaemonCommand::Uninstall) => return cmd_daemon_uninstall(printer),
         Some(DaemonCommand::Service) => return cmd_daemon_service(),
         Some(DaemonCommand::Run) | None => {}
     }
 
     let config_path = std::fs::canonicalize(&cli.config).unwrap_or_else(|_| cli.config.clone());
     let profile_override = cli.profile.clone();
-    let printer = std::sync::Arc::new(cfgd_core::output::Printer::new(if cli.quiet {
+    let daemon_printer = std::sync::Arc::new(cfgd_core::output::Printer::new(if cli.quiet {
         cfgd_core::output::Verbosity::Quiet
     } else if cli.verbose > 0 {
         cfgd_core::output::Verbosity::Verbose
@@ -51,11 +51,11 @@ pub(super) fn cmd_daemon(
         std::sync::Arc::new(WorkstationDaemonHooks);
     let rt = tokio::runtime::Runtime::new()?;
     let result = rt.block_on(async {
-        cfgd_core::daemon::run_daemon(config_path, profile_override, printer, hooks).await
+        cfgd_core::daemon::run_daemon(config_path, profile_override, daemon_printer, hooks).await
     });
     rt.shutdown_timeout(std::time::Duration::from_secs(2));
     if let Err(e) = result {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             "cfgd",
             "runtime_failed",
             format!("Daemon reconcile loop failed: {}", e),
@@ -67,11 +67,11 @@ pub(super) fn cmd_daemon(
     Ok(())
 }
 
-pub fn cmd_daemon_status(v2_printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_daemon_status(printer: &Printer) -> anyhow::Result<()> {
     let status = match cfgd_core::daemon::query_daemon_status() {
         Ok(s) => s,
         Err(e) => {
-            v2_printer.emit(cfgd_core::output::error_doc(
+            printer.emit(cfgd_core::output::error_doc(
                 "cfgd",
                 "status_unavailable",
                 format!("Failed to query daemon status: {}", e),
@@ -80,7 +80,7 @@ pub fn cmd_daemon_status(v2_printer: &Printer) -> anyhow::Result<()> {
             return Err(e.into());
         }
     };
-    v2_printer.emit(build_daemon_status_doc(status.as_ref()));
+    printer.emit(build_daemon_status_doc(status.as_ref()));
     Ok(())
 }
 
@@ -157,7 +157,7 @@ pub fn build_daemon_status_doc(status: Option<&cfgd_core::daemon::DaemonStatusRe
     }
 }
 
-pub(super) fn cmd_daemon_install(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
+pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     // Runtime cfg! so the install_failed error_doc has the platform+service
     // strings available before the lib call. The success payload uses
     // compile-time #[cfg] further down because the Windows branch loads
@@ -171,7 +171,7 @@ pub(super) fn cmd_daemon_install(cli: &Cli, v2_printer: &Printer) -> anyhow::Res
     };
 
     if let Err(e) = cfgd_core::daemon::install_service(&cli.config, cli.profile.as_deref()) {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             "cfgd",
             "install_failed",
             format!("Failed to install daemon service: {}", e),
@@ -215,7 +215,7 @@ pub(super) fn cmd_daemon_install(cli: &Cli, v2_printer: &Printer) -> anyhow::Res
         }
     };
 
-    v2_printer.emit(build_daemon_install_doc(&payload));
+    printer.emit(build_daemon_install_doc(&payload));
     Ok(())
 }
 
@@ -271,7 +271,7 @@ pub fn build_daemon_install_doc(payload: &DaemonInstallOutput) -> Doc {
     doc.with_data(payload)
 }
 
-pub(super) fn cmd_daemon_uninstall(v2_printer: &Printer) -> anyhow::Result<()> {
+pub(super) fn cmd_daemon_uninstall(printer: &Printer) -> anyhow::Result<()> {
     let (platform, service) = if cfg!(windows) {
         ("windows", "cfgd")
     } else if cfg!(target_os = "macos") {
@@ -281,7 +281,7 @@ pub(super) fn cmd_daemon_uninstall(v2_printer: &Printer) -> anyhow::Result<()> {
     };
 
     if let Err(e) = cfgd_core::daemon::uninstall_service() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             "cfgd",
             "uninstall_failed",
             format!("Failed to uninstall daemon service: {}", e),
@@ -295,7 +295,7 @@ pub(super) fn cmd_daemon_uninstall(v2_printer: &Printer) -> anyhow::Result<()> {
         service: service.to_string(),
         removed: true,
     };
-    v2_printer.emit(build_daemon_uninstall_doc(&payload));
+    printer.emit(build_daemon_uninstall_doc(&payload));
     Ok(())
 }
 

@@ -1372,7 +1372,7 @@ pub enum ModuleRegistryCommand {
 }
 
 /// Execute the given CLI command. Returns Ok(()) on success.
-pub fn execute(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::Result<()> {
+pub fn execute(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Result<()> {
     // No subcommand: print help and exit 0. Required for package-manager
     // validators (winget, chocolatey) that smoke-test the installed binary
     // with no arguments and treat any non-zero exit code as failure.
@@ -1382,37 +1382,37 @@ pub fn execute(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::Re
         return Ok(());
     };
     match command {
-        Command::Apply(args) => apply::cmd_apply(cli, v2_printer, args),
-        Command::Plan(args) => plan::cmd_plan(cli, v2_printer, args),
+        Command::Apply(args) => apply::cmd_apply(cli, printer, args),
+        Command::Plan(args) => plan::cmd_plan(cli, printer, args),
         Command::Status { module, exit_code } => {
-            status::cmd_status(cli, v2_printer, module.as_deref(), *exit_code)
+            status::cmd_status(cli, printer, module.as_deref(), *exit_code)
         }
         Command::Diff { module, exit_code } => {
-            diff::cmd_diff(cli, v2_printer, module.as_deref(), *exit_code)
+            diff::cmd_diff(cli, printer, module.as_deref(), *exit_code)
         }
         Command::Log { limit, show_output } => {
-            log::cmd_log(v2_printer, *limit, *show_output, cli.state_dir.as_deref())
+            log::cmd_log(printer, *limit, *show_output, cli.state_dir.as_deref())
         }
         Command::Verify { module, exit_code } => {
-            verify::cmd_verify(cli, v2_printer, module.as_deref(), *exit_code)
+            verify::cmd_verify(cli, printer, module.as_deref(), *exit_code)
         }
         Command::Profile { command } => match command {
             ProfileCommand::Show { name } => {
-                profile::cmd_profile_show(cli, v2_printer, name.as_deref())
+                profile::cmd_profile_show(cli, printer, name.as_deref())
             }
-            ProfileCommand::List => profile::cmd_profile_list(cli, v2_printer),
-            ProfileCommand::Switch { name } => profile::cmd_profile_switch(cli, name, v2_printer),
-            ProfileCommand::Create(args) => profile::cmd_profile_create(cli, v2_printer, args),
+            ProfileCommand::List => profile::cmd_profile_list(cli, printer),
+            ProfileCommand::Switch { name } => profile::cmd_profile_switch(cli, name, printer),
+            ProfileCommand::Create(args) => profile::cmd_profile_create(cli, printer, args),
             ProfileCommand::Update(args) => {
                 let profile_name = resolve_profile_name(cli, args.name.as_deref())?;
-                profile::cmd_profile_update(cli, v2_printer, &profile_name, args)
+                profile::cmd_profile_update(cli, printer, &profile_name, args)
             }
-            ProfileCommand::Edit { name } => profile::cmd_profile_edit(cli, v2_printer, name),
+            ProfileCommand::Edit { name } => profile::cmd_profile_edit(cli, printer, name),
             ProfileCommand::Delete { name, yes } => {
-                profile::cmd_profile_delete(cli, v2_printer, name, *yes)
+                profile::cmd_profile_delete(cli, printer, name, *yes)
             }
         },
-        Command::Doctor => doctor::cmd_doctor(cli, v2_printer),
+        Command::Doctor => doctor::cmd_doctor(cli, printer),
         Command::Init {
             path,
             from,
@@ -1426,7 +1426,7 @@ pub fn execute(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::Re
             apply_profile,
             apply_modules,
         } => init::cmd_init(
-            v2_printer,
+            printer,
             &init::InitArgs {
                 path: path.as_deref(),
                 from: from.as_deref(),
@@ -1442,15 +1442,15 @@ pub fn execute(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::Re
             },
         ),
         Command::Module { command } => match command {
-            ModuleCommand::List => module::cmd_module_list(cli, v2_printer),
+            ModuleCommand::List => module::cmd_module_list(cli, printer),
             ModuleCommand::Show { name, show_values } => {
-                module::cmd_module_show(cli, v2_printer, name, *show_values)
+                module::cmd_module_show(cli, printer, name, *show_values)
             }
-            ModuleCommand::Create(args) => module::cmd_module_create(cli, v2_printer, args),
-            ModuleCommand::Update(args) => module::cmd_module_update_local(cli, v2_printer, args),
-            ModuleCommand::Edit { name } => module::cmd_module_edit(cli, v2_printer, name),
+            ModuleCommand::Create(args) => module::cmd_module_create(cli, printer, args),
+            ModuleCommand::Update(args) => module::cmd_module_update_local(cli, printer, args),
+            ModuleCommand::Edit { name } => module::cmd_module_edit(cli, printer, name),
             ModuleCommand::Delete { name, yes, purge } => {
-                module::cmd_module_delete(cli, v2_printer, name, *yes, *purge)
+                module::cmd_module_delete(cli, printer, name, *yes, *purge)
             }
             ModuleCommand::Upgrade {
                 name,
@@ -1459,30 +1459,30 @@ pub fn execute(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::Re
                 allow_unsigned,
             } => module::cmd_module_upgrade(
                 cli,
-                v2_printer,
+                printer,
                 name,
                 ref_.as_deref(),
                 *yes,
                 *allow_unsigned,
             ),
-            ModuleCommand::Search { query } => module::cmd_module_search(cli, v2_printer, query),
+            ModuleCommand::Search { query } => module::cmd_module_search(cli, printer, query),
             ModuleCommand::Registry { command } => match command {
                 ModuleRegistryCommand::Add { url, name } => {
-                    module::cmd_module_registry_add(cli, v2_printer, url, name.as_deref())
+                    module::cmd_module_registry_add(cli, printer, url, name.as_deref())
                 }
                 ModuleRegistryCommand::Remove { name } => {
-                    module::cmd_module_registry_remove(cli, v2_printer, name)
+                    module::cmd_module_registry_remove(cli, printer, name)
                 }
                 ModuleRegistryCommand::Rename { name, new_name } => {
-                    module::cmd_module_registry_rename(cli, v2_printer, name, new_name)
+                    module::cmd_module_registry_rename(cli, printer, name, new_name)
                 }
-                ModuleRegistryCommand::List => module::cmd_module_registry_list(cli, v2_printer),
+                ModuleRegistryCommand::List => module::cmd_module_registry_list(cli, printer),
             },
             ModuleCommand::Export {
                 name,
                 as_format,
                 dir,
-            } => module::cmd_module_export(cli, v2_printer, name, as_format, dir.as_deref()),
+            } => module::cmd_module_export(cli, printer, name, as_format, dir.as_deref()),
             ModuleCommand::Push {
                 dir,
                 artifact,
@@ -1492,7 +1492,7 @@ pub fn execute(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::Re
                 key,
                 attest,
             } => module::cmd_module_push(
-                v2_printer,
+                printer,
                 dir,
                 artifact,
                 module::PushOptions {
@@ -1512,7 +1512,7 @@ pub fn execute(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::Re
                 certificate_identity,
                 certificate_oidc_issuer,
             } => module::cmd_module_pull(
-                v2_printer,
+                printer,
                 artifact_ref,
                 dir,
                 *require_signature,
@@ -1531,7 +1531,7 @@ pub fn execute(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::Re
                 sign,
                 key,
             } => module::cmd_module_build(
-                v2_printer,
+                printer,
                 dir,
                 target.as_deref(),
                 base_image.as_deref(),
@@ -1541,30 +1541,30 @@ pub fn execute(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::Re
             ),
             ModuleCommand::Keys { command } => match command {
                 ModuleKeysCommand::Generate { dir } => {
-                    module::cmd_module_keys_generate(v2_printer, dir.as_deref())
+                    module::cmd_module_keys_generate(printer, dir.as_deref())
                 }
-                ModuleKeysCommand::List => module::cmd_module_keys_list(v2_printer),
+                ModuleKeysCommand::List => module::cmd_module_keys_list(printer),
                 ModuleKeysCommand::Rotate { dir, artifacts } => {
-                    module::cmd_module_keys_rotate(v2_printer, dir.as_deref(), artifacts)
+                    module::cmd_module_keys_rotate(printer, dir.as_deref(), artifacts)
                 }
             },
         },
-        Command::Sync => sync::cmd_sync(cli, v2_printer),
-        Command::Pull => pull::cmd_pull(cli, v2_printer),
-        Command::Daemon { command } => daemon::cmd_daemon(cli, v2_printer, command.as_ref()),
+        Command::Sync => sync::cmd_sync(cli, printer),
+        Command::Pull => pull::cmd_pull(cli, printer),
+        Command::Daemon { command } => daemon::cmd_daemon(cli, printer, command.as_ref()),
         Command::Secret { command } => match command {
-            SecretCommand::Encrypt { file } => secret::cmd_secret_encrypt(cli, v2_printer, file),
-            SecretCommand::Decrypt { file } => secret::cmd_secret_decrypt(cli, v2_printer, file),
-            SecretCommand::Edit { file } => secret::cmd_secret_edit(cli, v2_printer, file),
-            SecretCommand::Init => secret::cmd_secret_init(cli, v2_printer),
+            SecretCommand::Encrypt { file } => secret::cmd_secret_encrypt(cli, printer, file),
+            SecretCommand::Decrypt { file } => secret::cmd_secret_decrypt(cli, printer, file),
+            SecretCommand::Edit { file } => secret::cmd_secret_edit(cli, printer, file),
+            SecretCommand::Init => secret::cmd_secret_init(cli, printer),
         },
         Command::Source { command } => match command {
-            SourceCommand::Add(args) => source::cmd_source_add(cli, v2_printer, args),
+            SourceCommand::Add(args) => source::cmd_source_add(cli, printer, args),
             SourceCommand::Priority { name, value } => {
-                source::cmd_source_priority(cli, v2_printer, name, *value)
+                source::cmd_source_priority(cli, printer, name, *value)
             }
-            SourceCommand::List => source::cmd_source_list(cli, v2_printer),
-            SourceCommand::Show { name } => source::cmd_source_show(cli, v2_printer, name),
+            SourceCommand::List => source::cmd_source_list(cli, printer),
+            SourceCommand::Show { name } => source::cmd_source_show(cli, printer, name),
             SourceCommand::Remove {
                 name,
                 keep_all,
@@ -1572,38 +1572,31 @@ pub fn execute(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::Re
                 yes,
             } => source::cmd_source_remove(
                 cli,
-                v2_printer,
+                printer,
                 name,
                 *keep_all || (*yes && !*remove_all),
                 *remove_all,
             ),
             SourceCommand::Update { name } => {
-                source::cmd_source_update(cli, v2_printer, name.as_deref())
+                source::cmd_source_update(cli, printer, name.as_deref())
             }
             SourceCommand::Override {
                 source,
                 action,
                 path,
                 value,
-            } => source::cmd_source_override(
-                cli,
-                v2_printer,
-                source,
-                *action,
-                path,
-                value.as_deref(),
-            ),
+            } => source::cmd_source_override(cli, printer, source, *action, path, value.as_deref()),
             SourceCommand::Replace { old_name, new_url } => {
-                source::cmd_source_replace(cli, v2_printer, old_name, new_url)
+                source::cmd_source_replace(cli, printer, old_name, new_url)
             }
-            SourceCommand::Edit => source::cmd_source_edit(cli, v2_printer),
+            SourceCommand::Edit => source::cmd_source_edit(cli, printer),
             SourceCommand::Create {
                 name,
                 description,
                 version,
             } => source::cmd_source_create(
                 cli,
-                v2_printer,
+                printer,
                 name.as_deref(),
                 description.as_deref(),
                 version.as_deref(),
@@ -1612,15 +1605,15 @@ pub fn execute(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::Re
         Command::Explain {
             resource,
             recursive,
-        } => explain::cmd_explain(v2_printer, resource.as_deref(), *recursive),
-        Command::Upgrade { check } => upgrade::cmd_upgrade(v2_printer, *check),
+        } => explain::cmd_explain(printer, resource.as_deref(), *recursive),
+        Command::Upgrade { check } => upgrade::cmd_upgrade(printer, *check),
         Command::Decide {
             action,
             resource,
             source,
             all,
         } => decide::cmd_decide(
-            v2_printer,
+            printer,
             *action,
             resource.as_deref(),
             source.as_deref(),
@@ -1628,17 +1621,17 @@ pub fn execute(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::Re
             cli.state_dir.as_deref(),
         ),
         Command::Config { command } => match command {
-            ConfigCommand::Show => config_cmd::cmd_config_show(cli, v2_printer),
-            ConfigCommand::Edit => config_cmd::cmd_config_edit(cli, v2_printer),
-            ConfigCommand::Get { key } => config_cmd::cmd_config_get(cli, v2_printer, key),
+            ConfigCommand::Show => config_cmd::cmd_config_show(cli, printer),
+            ConfigCommand::Edit => config_cmd::cmd_config_edit(cli, printer),
+            ConfigCommand::Get { key } => config_cmd::cmd_config_get(cli, printer, key),
             ConfigCommand::Set { key, value } => {
-                config_cmd::cmd_config_set(cli, v2_printer, key, value)
+                config_cmd::cmd_config_set(cli, printer, key, value)
             }
-            ConfigCommand::Unset { key } => config_cmd::cmd_config_unset(cli, v2_printer, key),
+            ConfigCommand::Unset { key } => config_cmd::cmd_config_unset(cli, printer, key),
         },
         Command::Workflow { command } => match command {
             WorkflowCommand::Generate { force } => {
-                workflow::cmd_workflow_generate(cli, v2_printer, *force)
+                workflow::cmd_workflow_generate(cli, printer, *force)
             }
         },
         Command::Checkin {
@@ -1647,7 +1640,7 @@ pub fn execute(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::Re
             device_id,
         } => checkin::cmd_checkin(
             cli,
-            v2_printer,
+            printer,
             server_url,
             api_key.as_deref(),
             device_id.as_deref(),
@@ -1659,7 +1652,7 @@ pub fn execute(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::Re
             gpg_key,
             username,
         } => init::cmd_enroll(
-            v2_printer,
+            printer,
             server_url,
             token.as_deref(),
             ssh_key.as_deref(),
@@ -1670,19 +1663,19 @@ pub fn execute(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::Re
             clap_complete::generate(*shell, &mut Cli::command(), "cfgd", &mut std::io::stdout());
             Ok(())
         }
-        Command::Generate(args) => generate::cmd_generate(cli, v2_printer, args),
+        Command::Generate(args) => generate::cmd_generate(cli, printer, args),
         Command::Rollback { apply_id, yes } => {
-            rollback::cmd_rollback(v2_printer, *apply_id, *yes, cli.state_dir.as_deref())
+            rollback::cmd_rollback(printer, *apply_id, *yes, cli.state_dir.as_deref())
         }
         Command::McpServer => crate::mcp::server::run_mcp_server(&cli.config),
         Command::Compliance { command } => match command {
-            None => compliance::cmd_compliance_snapshot(cli, v2_printer),
-            Some(ComplianceCommand::Export) => compliance::cmd_compliance_export(cli, v2_printer),
+            None => compliance::cmd_compliance_snapshot(cli, printer),
+            Some(ComplianceCommand::Export) => compliance::cmd_compliance_export(cli, printer),
             Some(ComplianceCommand::History { since }) => {
-                compliance::cmd_compliance_history(cli, v2_printer, since.as_deref())
+                compliance::cmd_compliance_history(cli, printer, since.as_deref())
             }
             Some(ComplianceCommand::Diff { base_id, target_id }) => {
-                compliance::cmd_compliance_diff(cli, v2_printer, *base_id, *target_id)
+                compliance::cmd_compliance_diff(cli, printer, *base_id, *target_id)
             }
         },
     }

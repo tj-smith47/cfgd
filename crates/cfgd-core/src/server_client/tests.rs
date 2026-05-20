@@ -617,8 +617,8 @@ mod bridge {
             .create();
 
         let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
-        let (v2_printer, cap) = Printer::for_test_doc();
-        let resp = client.checkin("hash123", None, &v2_printer).unwrap();
+        let (printer, cap) = Printer::for_test_doc();
+        let resp = client.checkin("hash123", None, &printer).unwrap();
 
         let summary = CheckinSummary {
             server_status: resp.status.clone(),
@@ -627,8 +627,8 @@ mod bridge {
         let doc = Doc::new()
             .status(Role::Ok, format!("server status: {}", resp.status))
             .with_data(&summary);
-        v2_printer.emit(doc);
-        drop(v2_printer);
+        printer.emit(doc);
+        drop(printer);
 
         let captured = strip_ansi(&cap.human());
 
@@ -668,8 +668,8 @@ mod bridge {
             },
         ];
 
-        let (v2_printer, cap) = Printer::for_test_doc();
-        client.report_drift(&drifts, &v2_printer).unwrap();
+        let (printer, cap) = Printer::for_test_doc();
+        client.report_drift(&drifts, &printer).unwrap();
 
         let summary = DriftSummary {
             drift_count: drifts.len(),
@@ -677,8 +677,8 @@ mod bridge {
         let doc = Doc::new()
             .status(Role::Warn, format!("{} drift items reported", drifts.len()))
             .with_data(&summary);
-        v2_printer.emit(doc);
-        drop(v2_printer);
+        printer.emit(doc);
+        drop(printer);
 
         let captured = strip_ansi(&cap.human());
 

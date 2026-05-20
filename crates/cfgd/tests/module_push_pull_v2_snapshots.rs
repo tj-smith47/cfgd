@@ -45,10 +45,10 @@ fn assert_snapshot(base: &Path, name: &str, actual: &str) {
 #[test]
 fn module_push_missing_yaml_human() {
     let dir = tempfile::tempdir().unwrap();
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     let result = module::cmd_module_push(
-        &v2_printer,
+        &printer,
         dir.path().to_str().unwrap(),
         "oci.example.com/test:v1",
         module::PushOptions {
@@ -60,7 +60,7 @@ fn module_push_missing_yaml_human() {
         },
     );
     assert!(result.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human()).replace(&dir.path().display().to_string(), "<DIR>");
     assert_snapshot(

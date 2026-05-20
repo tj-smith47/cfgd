@@ -58,10 +58,10 @@ fn source_priority_happy_human() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_priority(&cli, &v2_printer, "team-config", Some(500)).unwrap();
-    drop(v2_printer);
+    cmd_source_priority(&cli, &printer, "team-config", Some(500)).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -80,10 +80,10 @@ fn source_priority_happy_json() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_priority(&cli, &v2_printer, "team-config", Some(500)).unwrap();
-    drop(v2_printer);
+    cmd_source_priority(&cli, &printer, "team-config", Some(500)).unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["name"], "team-config");
@@ -100,10 +100,10 @@ fn source_priority_view_human() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_priority(&cli, &v2_printer, "team-config", None).unwrap();
-    drop(v2_printer);
+    cmd_source_priority(&cli, &printer, "team-config", None).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -122,11 +122,11 @@ fn source_priority_not_found_human() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    let result = cmd_source_priority(&cli, &v2_printer, "missing", None);
+    let result = cmd_source_priority(&cli, &printer, "missing", None);
     assert!(result.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(

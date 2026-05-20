@@ -2,7 +2,7 @@ use super::*;
 
 pub fn cmd_plan(
     cli: &Cli,
-    v2_printer: &cfgd_core::output::Printer,
+    printer: &cfgd_core::output::Printer,
     args: &PlanArgs,
 ) -> anyhow::Result<()> {
     // Parse --context
@@ -30,10 +30,10 @@ pub fn cmd_plan(
         } else {
             None
         };
-        init::resolve_from(from, target, "master", v2_printer)?;
+        init::resolve_from(from, target, "master", printer)?;
     }
 
-    v2_printer.heading("Plan");
+    printer.heading("Plan");
 
     let config_dir = config_dir(cli);
     let state = open_state_store(cli.state_dir.as_deref())?;
@@ -43,7 +43,7 @@ pub fn cmd_plan(
     let (cfg, resolved) = if let Some(mod_name) = module_filter {
         match load_config_and_profile_v2(cli) {
             Ok((cfg, profile_name, resolved)) => {
-                v2_printer.kv_block([
+                printer.kv_block([
                     ("Config".to_string(), cli.config.display().to_string()),
                     ("Profile".to_string(), profile_name),
                 ]);
@@ -54,7 +54,7 @@ pub fn cmd_plan(
                 let cfg =
                     config::load_config(&cli.config).unwrap_or_else(|_| config::minimal_config());
                 let resolved = empty_resolved_profile(mod_name);
-                v2_printer.kv_block([
+                printer.kv_block([
                     ("Config".to_string(), cli.config.display().to_string()),
                     ("Profile".to_string(), "(module-only)".to_string()),
                 ]);
@@ -63,7 +63,7 @@ pub fn cmd_plan(
         }
     } else {
         let (cfg, profile_name, resolved) = load_config_and_profile_v2(cli)?;
-        v2_printer.kv_block([
+        printer.kv_block([
             ("Config".to_string(), cli.config.display().to_string()),
             ("Profile".to_string(), profile_name),
         ]);
@@ -77,7 +77,7 @@ pub fn cmd_plan(
 
     // Compose with sources if configured
     let source_env = if !cfg.spec.sources.is_empty() {
-        let composition_result = compose_with_sources_v2(cli, &cfg, &resolved, v2_printer)?;
+        let composition_result = compose_with_sources_v2(cli, &cfg, &resolved, printer)?;
         let se = composition_result.source_env;
         (Some(composition_result.resolved), se)
     } else {
@@ -111,7 +111,7 @@ pub fn cmd_plan(
             &cache_base,
             &platform,
             &mgr_map,
-            v2_printer,
+            printer,
         ) {
             Ok(mods) => mods,
             Err(e) if module_filter.is_some() => {
@@ -166,7 +166,7 @@ pub fn cmd_plan(
 
     display_plan_preview_v2(
         &plan,
-        v2_printer,
+        printer,
         &state,
         &args.context,
         phase_filter.as_ref(),

@@ -3,11 +3,11 @@ use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_source_replace(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     old_name: &str,
     new_url: &str,
 ) -> anyhow::Result<()> {
-    v2_printer.heading(format!("Replace Source: {}", old_name));
+    printer.heading(format!("Replace Source: {}", old_name));
 
     // Capture old source's profile and priority before removing
     let config_path = cli.config.clone();
@@ -17,12 +17,12 @@ pub fn cmd_source_replace(
     let old_priority = old_source.map(|s| s.subscription.priority).unwrap_or(500);
 
     // Remove old source (keeping resources)
-    cmd_source_remove(cli, v2_printer, old_name, true, false)?;
+    cmd_source_remove(cli, printer, old_name, true, false)?;
 
     // Add new source with same name, carrying over profile and priority
     cmd_source_add(
         cli,
-        v2_printer,
+        printer,
         &SourceAddArgs {
             url: new_url.to_string(),
             name: Some(old_name.to_string()),
@@ -38,7 +38,7 @@ pub fn cmd_source_replace(
         },
     )?;
 
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(
                 Role::Ok,

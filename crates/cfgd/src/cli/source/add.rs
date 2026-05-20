@@ -1,7 +1,7 @@
 use super::*;
 use cfgd_core::output::{Doc, Printer, Role};
 
-pub fn cmd_source_add(cli: &Cli, v2_printer: &Printer, args: &SourceAddArgs) -> anyhow::Result<()> {
+pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> anyhow::Result<()> {
     let url = &args.url;
     let name = args.name.as_deref();
     let branch = args.branch.as_deref();
@@ -12,7 +12,7 @@ pub fn cmd_source_add(cli: &Cli, v2_printer: &Printer, args: &SourceAddArgs) -> 
     let sync_interval = args.sync_interval.as_deref();
     let auto_apply = args.auto_apply;
     let pin_version = args.version_pin.as_deref();
-    v2_printer.heading("Add Config Source");
+    printer.heading("Add Config Source");
 
     // Infer name from URL if not provided
     let source_name = name
@@ -24,7 +24,7 @@ pub fn cmd_source_add(cli: &Cli, v2_printer: &Printer, args: &SourceAddArgs) -> 
     if config_path.exists() {
         let cfg = config::load_config(&config_path)?;
         if cfg.spec.sources.iter().any(|s| s.name == source_name) {
-            v2_printer.emit(cfgd_core::output::error_doc(
+            printer.emit(cfgd_core::output::error_doc(
                 &source_name,
                 "already_exists",
                 format!(
@@ -58,8 +58,8 @@ pub fn cmd_source_add(cli: &Cli, v2_printer: &Printer, args: &SourceAddArgs) -> 
     // Surface lib-side load failure as a load_failed Doc so structured
     // consumers see the same {"error": "load_failed", ...} shape as the
     // "Ok-but-no-cache-entry" fallback below.
-    if let Err(e) = mgr.load_source(&spec, v2_printer) {
-        v2_printer.emit(cfgd_core::output::error_doc(
+    if let Err(e) = mgr.load_source(&spec, printer) {
+        printer.emit(cfgd_core::output::error_doc(
             &source_name,
             "load_failed",
             format!("Failed to load source '{}': {}", source_name, e),
@@ -71,7 +71,7 @@ pub fn cmd_source_add(cli: &Cli, v2_printer: &Printer, args: &SourceAddArgs) -> 
     let cached = match mgr.get(&source_name) {
         Some(c) => c,
         None => {
-            v2_printer.emit(cfgd_core::output::error_doc(
+            printer.emit(cfgd_core::output::error_doc(
                 &source_name,
                 "load_failed",
                 format!("Failed to load source '{}'", source_name),
@@ -83,7 +83,7 @@ pub fn cmd_source_add(cli: &Cli, v2_printer: &Printer, args: &SourceAddArgs) -> 
 
     // Display source manifest info
     let manifest = &cached.manifest;
-    let provided_profiles = display_source_manifest_v2(v2_printer, manifest);
+    let provided_profiles = display_source_manifest_v2(printer, manifest);
 
     // Profile selection: explicit flag > platform auto-detect > single profile > interactive
     let auto_detected_profile =
@@ -94,7 +94,7 @@ pub fn cmd_source_add(cli: &Cli, v2_printer: &Printer, args: &SourceAddArgs) -> 
                 &manifest.spec.provides.platform_profiles,
             )
             .inspect(|matched| {
-                v2_printer.status_simple(
+                printer.status_simple(
                     Role::Ok,
                     format!(
                         "Auto-selected profile '{}' for platform {}",
@@ -115,8 +115,8 @@ pub fn cmd_source_add(cli: &Cli, v2_printer: &Printer, args: &SourceAddArgs) -> 
         Some(p) => Some(p),
         None if provided_profiles.is_empty() => None,
         None => {
-            let selection = v2_printer
-                .prompt_select("Select a profile to subscribe to:", &provided_profiles)?;
+            let selection =
+                printer.prompt_select("Select a profile to subscribe to:", &provided_profiles)?;
             Some(selection.clone())
         }
     };
@@ -127,7 +127,7 @@ pub fn cmd_source_add(cli: &Cli, v2_printer: &Printer, args: &SourceAddArgs) -> 
     } else if args.yes {
         DEFAULT_NONINTERACTIVE_PRIORITY
     } else {
-        let input = v2_printer.prompt_text("Set priority", "500")?;
+        let input = printer.prompt_text("Set priority", "500")?;
         parse_priority_input(&input)?
     };
 
@@ -168,16 +168,16 @@ pub fn cmd_source_add(cli: &Cli, v2_printer: &Printer, args: &SourceAddArgs) -> 
                     if lines.is_empty() {
                         // Role::Ok marks the conflict-check step as having passed cleanly
                         // (consistent with other clean-state preview steps).
-                        v2_printer.status_simple(Role::Ok, "No conflicts with current config");
+                        printer.status_simple(Role::Ok, "No conflicts with current config");
                     } else {
-                        let conflicts_sec = v2_printer.section("Conflicts with Current Config");
+                        let conflicts_sec = printer.section("Conflicts with Current Config");
                         for line in &lines {
                             conflicts_sec.status_simple(Role::Warn, line.trim_start().to_string());
                         }
                     }
                 }
                 Err(e) => {
-                    v2_printer
+                    printer
                         .status_simple(Role::Warn, format!("Failed to preview conflicts: {}", e));
                 }
             }
@@ -185,8 +185,8 @@ pub fn cmd_source_add(cli: &Cli, v2_printer: &Printer, args: &SourceAddArgs) -> 
     }
 
     // Confirm subscription
-    if !args.yes && !v2_printer.prompt_confirm("Subscribe to this source?")? {
-        v2_printer.emit(
+    if !args.yes && !printer.prompt_confirm("Subscribe to this source?")? {
+        printer.emit(
             Doc::new()
                 .status(Role::Info, "Cancelled")
                 .with_data(serde_json::json!({
@@ -245,7 +245,7 @@ pub fn cmd_source_add(cli: &Cli, v2_printer: &Printer, args: &SourceAddArgs) -> 
         "profile": selected_profile,
         "priority": resolved_priority,
     }));
-    v2_printer.emit(doc);
+    printer.emit(doc);
 
     Ok(())
 }

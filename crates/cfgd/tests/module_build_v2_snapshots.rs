@@ -55,10 +55,10 @@ fn assert_snapshot(base: &Path, name: &str, actual: &str) {
 #[test]
 fn module_build_missing_yaml_human() {
     let dir = tempfile::tempdir().unwrap();
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     let result = module::cmd_module_build(
-        &v2_printer,
+        &printer,
         dir.path().to_str().unwrap(),
         None,
         None,
@@ -67,7 +67,7 @@ fn module_build_missing_yaml_human() {
         None,
     );
     assert!(result.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human()).replace(&dir.path().display().to_string(), "<DIR>");
     assert_snapshot(
@@ -82,13 +82,13 @@ fn module_build_missing_yaml_human() {
 
 #[test]
 fn module_build_bridge_one_blank_line() {
-    let (v2_printer, cap) = Printer::for_test_doc();
-    v2_printer.heading("Build Module");
+    let (printer, cap) = Printer::for_test_doc();
+    printer.heading("Build Module");
     {
-        let sp = v2_printer.spinner("Building for linux/amd64...");
+        let sp = printer.spinner("Building for linux/amd64...");
         sp.finish_ok("Built linux/amd64 to /tmp/build-out");
     }
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(Role::Ok, "Built module")
             .with_data(serde_json::json!({
@@ -98,7 +98,7 @@ fn module_build_bridge_one_blank_line() {
                 "signed": false,
             })),
     );
-    drop(v2_printer);
+    drop(printer);
 
     let captured = strip_ansi(&cap.human());
     assert!(

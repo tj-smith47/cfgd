@@ -88,10 +88,10 @@ fn upgrade_check_up_to_date_human() {
     let home = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(home.path());
 
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    upgrade::cmd_upgrade(&v2_printer, /*check_only=*/ true).unwrap();
-    drop(v2_printer);
+    upgrade::cmd_upgrade(&printer, /*check_only=*/ true).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -109,10 +109,10 @@ fn upgrade_check_up_to_date_json() {
     let home = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(home.path());
 
-    let (v2_printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+    let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
 
-    upgrade::cmd_upgrade(&v2_printer, /*check_only=*/ true).unwrap();
-    drop(v2_printer);
+    upgrade::cmd_upgrade(&printer, /*check_only=*/ true).unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["updateAvailable"], false);
@@ -135,21 +135,23 @@ fn upgrade_check_up_to_date_json() {
 /// invocation; what's locked is the §17.2 invariant.
 #[test]
 fn upgrade_bridge_one_blank_line() {
-    let (v2_printer, cap) = Printer::for_test_doc();
-    v2_printer.heading("Upgrade");
+    let (printer, cap) = Printer::for_test_doc();
+    printer.heading("Upgrade");
     {
-        let work = v2_printer.section("Downloading");
+        let work = printer.section("Downloading");
         work.status(Role::Ok, "Verified signature");
     }
-    v2_printer.emit(Doc::new().status(Role::Ok, "Upgraded to v0.4.0").with_data(
-        serde_json::json!({
-            "currentVersion": "0.3.5",
-            "targetVersion": "0.4.0",
-            "installed": true,
-            "verified": true,
-        }),
-    ));
-    drop(v2_printer);
+    printer.emit(
+        Doc::new()
+            .status(Role::Ok, "Upgraded to v0.4.0")
+            .with_data(serde_json::json!({
+                "currentVersion": "0.3.5",
+                "targetVersion": "0.4.0",
+                "installed": true,
+                "verified": true,
+            })),
+    );
+    drop(printer);
 
     let captured = strip_ansi(&cap.human());
     assert!(

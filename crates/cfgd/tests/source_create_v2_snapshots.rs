@@ -53,17 +53,17 @@ fn assert_snapshot(base: &Path, name: &str, actual: &str) {
 fn source_create_happy_human() {
     let (config_dir, state_dir) = source_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     cmd_source_create(
         &cli,
-        &v2_printer,
+        &printer,
         Some("my-source"),
         Some("Test source"),
         Some("1.0.0"),
     )
     .unwrap();
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -77,17 +77,17 @@ fn source_create_happy_human() {
 fn source_create_happy_json() {
     let (config_dir, state_dir) = source_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     cmd_source_create(
         &cli,
-        &v2_printer,
+        &printer,
         Some("my-source"),
         Some("Test source"),
         Some("1.0.0"),
     )
     .unwrap();
-    drop(v2_printer);
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["name"], "my-source");
@@ -99,11 +99,11 @@ fn source_create_already_exists_human() {
     let (config_dir, state_dir) = source_test_config_setup();
     std::fs::write(config_dir.path().join("cfgd-source.yaml"), "stub manifest").unwrap();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    let result = cmd_source_create(&cli, &v2_printer, Some("x"), Some("x"), Some("1.0"));
+    let result = cmd_source_create(&cli, &printer, Some("x"), Some("x"), Some("1.0"));
     assert!(result.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(

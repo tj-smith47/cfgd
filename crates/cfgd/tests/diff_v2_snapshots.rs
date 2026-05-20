@@ -148,10 +148,10 @@ fn diff_no_drift_human() {
     let (config_dir, state_dir, target) = no_drift_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_diff(&cli, &v2_printer, None, false).unwrap();
-    drop(v2_printer);
+    cmd_diff(&cli, &printer, None, false).unwrap();
+    drop(printer);
 
     let normalized = normalize(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
     let stripped = strip_ansi(&normalized);
@@ -170,9 +170,9 @@ fn diff_no_drift_json() {
             has_system_drift: false,
         },
     };
-    let (v2_printer, cap) = Printer::for_test_doc();
-    v2_printer.emit(build_diff_doc(&output));
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_diff_doc(&output));
+    drop(printer);
 
     let expected = serde_json::to_value(&output).unwrap();
     let actual = cap.json().expect("diff doc carries a payload");
@@ -191,10 +191,10 @@ fn diff_file_drift_human() {
     let (config_dir, state_dir, target) = file_drift_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_diff(&cli, &v2_printer, None, false).unwrap();
-    drop(v2_printer);
+    cmd_diff(&cli, &printer, None, false).unwrap();
+    drop(printer);
 
     let normalized = normalize(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
     let stripped = strip_ansi(&normalized);
@@ -209,10 +209,10 @@ fn diff_package_drift_human() {
     let (config_dir, state_dir, target) = package_drift_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_diff(&cli, &v2_printer, None, false).unwrap();
-    drop(v2_printer);
+    cmd_diff(&cli, &printer, None, false).unwrap();
+    drop(printer);
 
     let normalized = normalize(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
     let stripped = strip_ansi(&normalized);
@@ -245,9 +245,9 @@ fn diff_system_drift_human() {
             has_system_drift: true,
         },
     };
-    let (v2_printer, cap) = Printer::for_test_doc();
-    v2_printer.emit(build_diff_doc(&output));
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_diff_doc(&output));
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "diff/system_drift.txt", &stripped);
@@ -260,10 +260,10 @@ fn diff_module_only_human() {
     let (config_dir, state_dir) = module_only_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_diff(&cli, &v2_printer, Some("diff-mod"), false).unwrap();
-    drop(v2_printer);
+    cmd_diff(&cli, &printer, Some("diff-mod"), false).unwrap();
+    drop(printer);
 
     let normalized = normalize(&cap.human(), config_dir.path(), &[]);
     let stripped = strip_ansi(&normalized);
@@ -289,11 +289,11 @@ fn diff_bridge_one_blank_line() {
             has_system_drift: false,
         },
     };
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    v2_printer.heading("Diff");
+    printer.heading("Diff");
     {
-        let pkg_sec = v2_printer.section("Packages");
+        let pkg_sec = printer.section("Packages");
         pkg_sec
             .status(Role::Warn, "drift-mgr: missing")
             .detail("pkg-a");
@@ -302,8 +302,8 @@ fn diff_bridge_one_blank_line() {
     let doc = Doc::new()
         .status(Role::Warn, "Drift detected")
         .with_data(&output);
-    v2_printer.emit(doc);
-    drop(v2_printer);
+    printer.emit(doc);
+    drop(printer);
 
     let captured = strip_ansi(&cap.human());
     assert!(

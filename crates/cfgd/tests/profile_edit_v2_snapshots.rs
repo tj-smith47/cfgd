@@ -77,11 +77,11 @@ fn profile_edit_valid_human() {
     .unwrap();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let _editor = EnvVarGuard::set("EDITOR", "/bin/true");
 
-    cmd_profile_edit(&cli, &v2_printer, "default").unwrap();
-    drop(v2_printer);
+    cmd_profile_edit(&cli, &printer, "default").unwrap();
+    drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -102,11 +102,11 @@ fn profile_edit_valid_json() {
     .unwrap();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let _editor = EnvVarGuard::set("EDITOR", "/bin/true");
 
-    cmd_profile_edit(&cli, &v2_printer, "default").unwrap();
-    drop(v2_printer);
+    cmd_profile_edit(&cli, &printer, "default").unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["name"], "default");
@@ -125,12 +125,12 @@ fn profile_edit_validation_error_decline_human() {
     .unwrap();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) =
+    let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
     let _editor = EnvVarGuard::set("EDITOR", "/bin/true");
 
-    cmd_profile_edit(&cli, &v2_printer, "default").expect("edit must Ok even on Save-with-errors");
-    drop(v2_printer);
+    cmd_profile_edit(&cli, &printer, "default").expect("edit must Ok even on Save-with-errors");
+    drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -169,13 +169,13 @@ fn profile_edit_validation_error_accept_retry_human() {
     std::fs::set_permissions(&script_path, perms).unwrap();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) =
+    let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
     let _editor = EnvVarGuard::set("EDITOR", script_path.to_str().unwrap());
 
-    cmd_profile_edit(&cli, &v2_printer, "default")
+    cmd_profile_edit(&cli, &printer, "default")
         .expect("edit must Ok on the second-pass valid YAML");
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(

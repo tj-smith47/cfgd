@@ -71,11 +71,11 @@ fn normalize_paths(raw: &str, config_dir: &Path) -> String {
 fn config_edit_valid_human() {
     let (config_dir, state_dir) = config_test_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     let _editor = EditorGuard::set("/bin/true");
-    config_cmd::cmd_config_edit(&cli, &v2_printer).expect("valid config must succeed");
-    drop(v2_printer);
+    config_cmd::cmd_config_edit(&cli, &printer).expect("valid config must succeed");
+    drop(printer);
 
     let stripped = normalize_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "config_edit/valid.txt", &stripped);
@@ -106,12 +106,12 @@ fn config_edit_validation_error_accept_retry_human() {
     std::fs::set_permissions(&editor_script, perms).unwrap();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) =
+    let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
     let _editor = EditorGuard::set(editor_script.to_str().unwrap());
 
-    config_cmd::cmd_config_edit(&cli, &v2_printer).expect("retry-accept path must succeed");
-    drop(v2_printer);
+    config_cmd::cmd_config_edit(&cli, &printer).expect("retry-accept path must succeed");
+    drop(printer);
 
     let stripped = normalize_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -131,12 +131,12 @@ fn config_edit_validation_error_decline_human() {
     let (config_dir, state_dir) = config_test_setup();
     std::fs::write(config_dir.path().join("cfgd.yaml"), "not a Config document").unwrap();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) =
+    let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
     let _editor = EditorGuard::set("/bin/true");
 
-    config_cmd::cmd_config_edit(&cli, &v2_printer).expect("save-with-errors must return Ok");
-    drop(v2_printer);
+    config_cmd::cmd_config_edit(&cli, &printer).expect("save-with-errors must return Ok");
+    drop(printer);
 
     let stripped = normalize_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(

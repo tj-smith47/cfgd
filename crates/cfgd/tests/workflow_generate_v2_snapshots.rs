@@ -60,10 +60,10 @@ fn normalize(raw: &str, config_dir: &Path) -> String {
 fn workflow_generate_happy_human() {
     let (config_dir, state_dir) = workflow_test_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    workflow::cmd_workflow_generate(&cli, &v2_printer, true).unwrap();
-    drop(v2_printer);
+    workflow::cmd_workflow_generate(&cli, &printer, true).unwrap();
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -77,10 +77,10 @@ fn workflow_generate_happy_human() {
 fn workflow_generate_happy_json() {
     let (config_dir, state_dir) = workflow_test_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+    let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
 
-    workflow::cmd_workflow_generate(&cli, &v2_printer, true).unwrap();
-    drop(v2_printer);
+    workflow::cmd_workflow_generate(&cli, &printer, true).unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["profiles"], serde_json::json!(["default"]));
@@ -99,10 +99,10 @@ fn workflow_generate_happy_json() {
 fn workflow_generate_no_profiles_warning_human() {
     let (config_dir, state_dir) = workflow_empty_test_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    workflow::cmd_workflow_generate(&cli, &v2_printer, false).unwrap();
-    drop(v2_printer);
+    workflow::cmd_workflow_generate(&cli, &printer, false).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -132,10 +132,10 @@ fn workflow_generate_skipped_human() {
     std::fs::write(&workflow_path, "# on-disk content\n").unwrap();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    workflow::cmd_workflow_generate(&cli, &v2_printer, false).unwrap();
-    drop(v2_printer);
+    workflow::cmd_workflow_generate(&cli, &printer, false).unwrap();
+    drop(printer);
 
     // File still has on-disk content (the skip path didn't overwrite).
     let after = std::fs::read_to_string(&workflow_path).unwrap();

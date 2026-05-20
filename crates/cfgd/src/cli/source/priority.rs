@@ -3,7 +3,7 @@ use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_source_priority(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     name: &str,
     value: Option<u32>,
 ) -> anyhow::Result<()> {
@@ -13,7 +13,7 @@ pub fn cmd_source_priority(
     let source = match cfg.spec.sources.iter().find(|s| s.name == name) {
         Some(s) => s,
         None => {
-            v2_printer.emit(cfgd_core::output::error_doc(
+            printer.emit(cfgd_core::output::error_doc(
                 name,
                 "not_found",
                 format!("source '{}' not found", name),
@@ -41,7 +41,7 @@ pub fn cmd_source_priority(
                 Ok(())
             })?;
 
-            v2_printer.emit(
+            printer.emit(
                 Doc::new()
                     .status(
                         Role::Ok,
@@ -58,7 +58,7 @@ pub fn cmd_source_priority(
             );
         }
         None => {
-            v2_printer.emit(
+            printer.emit(
                 Doc::new()
                     .kv("Source", name)
                     .kv("Priority", source.subscription.priority.to_string())

@@ -65,10 +65,10 @@ fn source_remove_happy_human() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_remove(&cli, &v2_printer, "team-config", false, true).unwrap();
-    drop(v2_printer);
+    cmd_source_remove(&cli, &printer, "team-config", false, true).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -87,10 +87,10 @@ fn source_remove_happy_json() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_remove(&cli, &v2_printer, "team-config", false, true).unwrap();
-    drop(v2_printer);
+    cmd_source_remove(&cli, &printer, "team-config", false, true).unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["name"], "team-config");
@@ -107,10 +107,10 @@ fn source_remove_keep_all_human() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_remove(&cli, &v2_printer, "team-config", true, false).unwrap();
-    drop(v2_printer);
+    cmd_source_remove(&cli, &printer, "team-config", true, false).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -138,13 +138,12 @@ fn source_remove_cancelled_human() {
         .unwrap();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) =
-        Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Select(
-            "Cancel (abort remove)".into(),
-        )]);
+    let (printer, cap) = Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Select(
+        "Cancel (abort remove)".into(),
+    )]);
 
-    cmd_source_remove(&cli, &v2_printer, "team-config", false, false).unwrap();
-    drop(v2_printer);
+    cmd_source_remove(&cli, &printer, "team-config", false, false).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -171,11 +170,11 @@ fn source_remove_not_found_human() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    let result = cmd_source_remove(&cli, &v2_printer, "missing", false, true);
+    let result = cmd_source_remove(&cli, &printer, "missing", false, true);
     assert!(result.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -198,11 +197,11 @@ fn source_remove_conflicting_flags_human() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    let result = cmd_source_remove(&cli, &v2_printer, "team-config", true, true);
+    let result = cmd_source_remove(&cli, &printer, "team-config", true, true);
     assert!(result.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(

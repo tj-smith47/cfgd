@@ -44,14 +44,14 @@ pub(super) fn collect_and_store_compliance_snapshot(
 }
 
 /// Build a snapshot and emit a compliance summary Doc.
-pub(super) fn cmd_compliance_snapshot(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
+pub(super) fn cmd_compliance_snapshot(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let (_cfg, snapshot) = collect_and_store_compliance_snapshot(cli)?;
-    v2_printer.emit(build_compliance_summary_doc(&snapshot));
+    printer.emit(build_compliance_summary_doc(&snapshot));
     Ok(())
 }
 
 /// Export snapshot to the configured export path and emit a compliance summary Doc.
-pub(super) fn cmd_compliance_export(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
+pub(super) fn cmd_compliance_export(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let (cfg, snapshot) = collect_and_store_compliance_snapshot(cli)?;
 
     let export = cfg
@@ -62,14 +62,14 @@ pub(super) fn cmd_compliance_export(cli: &Cli, v2_printer: &Printer) -> anyhow::
         .unwrap_or_default();
 
     let export_path = cfgd_core::compliance::export_snapshot_to_file(&snapshot, &export)?;
-    v2_printer.emit(build_compliance_export_doc(&snapshot, &export_path));
+    printer.emit(build_compliance_export_doc(&snapshot, &export_path));
     Ok(())
 }
 
 /// Show compliance snapshot history.
 pub(super) fn cmd_compliance_history(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     since: Option<&str>,
 ) -> anyhow::Result<()> {
     let state = open_state_store(cli.state_dir.as_deref())?;
@@ -84,14 +84,14 @@ pub(super) fn cmd_compliance_history(
         .transpose()?;
 
     let entries = state.compliance_history(since_ts.as_deref(), 100)?;
-    v2_printer.emit(build_compliance_history_doc(&entries));
+    printer.emit(build_compliance_history_doc(&entries));
     Ok(())
 }
 
 /// Show diff between two snapshots by ID.
 pub(super) fn cmd_compliance_diff(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     id1: i64,
     id2: i64,
 ) -> anyhow::Result<()> {
@@ -104,7 +104,7 @@ pub(super) fn cmd_compliance_diff(
         .ok_or_else(|| anyhow::anyhow!("snapshot #{} not found", id2))?;
 
     let diff = compute_compliance_diff(&snap1, &snap2);
-    v2_printer.emit(build_compliance_diff_doc(id1, id2, &snap1, &snap2, &diff));
+    printer.emit(build_compliance_diff_doc(id1, id2, &snap1, &snap2, &diff));
     Ok(())
 }
 

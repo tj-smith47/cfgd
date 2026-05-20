@@ -29,7 +29,7 @@ pub(super) struct DecideListOutput {
 }
 
 pub(super) fn cmd_decide(
-    v2_printer: &Printer,
+    printer: &Printer,
     action: DecideAction,
     resource: Option<&str>,
     source: Option<&str>,
@@ -41,24 +41,24 @@ pub(super) fn cmd_decide(
 
     if all {
         let count = state.resolve_all_decisions(resolution)?;
-        v2_printer.emit(build_decide_bulk_doc(resolution, count, None));
+        printer.emit(build_decide_bulk_doc(resolution, count, None));
         return Ok(());
     }
 
     if let Some(source_name) = source {
         let count = state.resolve_decisions_for_source(source_name, resolution)?;
-        v2_printer.emit(build_decide_bulk_doc(resolution, count, Some(source_name)));
+        printer.emit(build_decide_bulk_doc(resolution, count, Some(source_name)));
         return Ok(());
     }
 
     if let Some(resource_path) = resource {
         let resolved = state.resolve_decision(resource_path, resolution)?;
-        v2_printer.emit(build_decide_single_doc(resolution, resource_path, resolved));
+        printer.emit(build_decide_single_doc(resolution, resource_path, resolved));
         return Ok(());
     }
 
     let decisions = state.pending_decisions()?;
-    v2_printer.emit(build_decide_list_doc(&decisions));
+    printer.emit(build_decide_list_doc(&decisions));
     Ok(())
 }
 

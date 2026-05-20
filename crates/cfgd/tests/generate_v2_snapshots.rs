@@ -89,10 +89,10 @@ fn scan_only_args(home: &Path) -> GenerateArgs {
 fn generate_scan_only_empty_home_human() {
     let home = tempfile::tempdir().unwrap();
     let cli = cli_for(home.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    generate::cmd_generate(&cli, &v2_printer, &scan_only_args(home.path())).unwrap();
-    drop(v2_printer);
+    generate::cmd_generate(&cli, &printer, &scan_only_args(home.path())).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -109,10 +109,10 @@ fn generate_scan_only_json_shape() {
     std::fs::write(home.path().join(".vimrc"), "set number\n").unwrap();
 
     let cli = cli_for(home.path());
-    let (v2_printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+    let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
 
-    generate::cmd_generate(&cli, &v2_printer, &scan_only_args(home.path())).unwrap();
-    drop(v2_printer);
+    generate::cmd_generate(&cli, &printer, &scan_only_args(home.path())).unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["target"], "scan_only");
@@ -132,10 +132,10 @@ fn generate_scan_only_json_shape() {
 /// specific real invocation; what's locked is the §17.2 invariant.
 #[test]
 fn generate_bridge_one_blank_line() {
-    let (v2_printer, cap) = Printer::for_test_doc();
-    v2_printer.heading("Generate");
-    v2_printer.status_simple(Role::Info, "Scanning system for installed tools");
-    v2_printer.emit(
+    let (printer, cap) = Printer::for_test_doc();
+    printer.heading("Generate");
+    printer.status_simple(Role::Info, "Scanning system for installed tools");
+    printer.emit(
         Doc::new()
             .status(Role::Ok, "Generation complete")
             .with_data(serde_json::json!({
@@ -145,7 +145,7 @@ fn generate_bridge_one_blank_line() {
                 "modulesGenerated": 3,
             })),
     );
-    drop(v2_printer);
+    drop(printer);
 
     let captured = strip_ansi(&cap.human());
     assert!(

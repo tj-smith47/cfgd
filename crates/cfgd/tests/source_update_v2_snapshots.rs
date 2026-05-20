@@ -118,10 +118,10 @@ use cfgd_core::output::test_capture::strip_spinner_duration;
 fn source_update_no_sources_human() {
     let (config_dir, state_dir) = source_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_update(&cli, &v2_printer, None).unwrap();
-    drop(v2_printer);
+    cmd_source_update(&cli, &printer, None).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -140,11 +140,11 @@ fn source_update_not_found_human() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    let result = cmd_source_update(&cli, &v2_printer, Some("missing"));
+    let result = cmd_source_update(&cli, &printer, Some("missing"));
     assert!(result.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -174,9 +174,9 @@ fn source_update_happy_human() {
     cmd_source_add(&cli, &v2_add, &args).expect("seed source");
     drop(v2_add);
 
-    let (v2_printer, cap) = Printer::for_test_doc();
-    cmd_source_update(&cli, &v2_printer, Some("upd-src")).unwrap();
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    cmd_source_update(&cli, &printer, Some("upd-src")).unwrap();
+    drop(printer);
 
     let stripped = normalize_paths(
         &strip_ansi(&cap.human()),
@@ -208,9 +208,9 @@ fn source_update_happy_json() {
     cmd_source_add(&cli, &v2_add, &args).expect("seed source");
     drop(v2_add);
 
-    let (v2_printer, cap) = Printer::for_test_doc();
-    cmd_source_update(&cli, &v2_printer, Some("upd-src")).unwrap();
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    cmd_source_update(&cli, &printer, Some("upd-src")).unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["updated"], 1);
@@ -258,10 +258,10 @@ fn source_update_accept_human() {
     let (config_dir, state_dir, bare_root, bare) = perm_change_fixture("accept-src");
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) =
+    let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
-    cmd_source_update(&cli, &v2_printer, Some("accept-src")).unwrap();
-    drop(v2_printer);
+    cmd_source_update(&cli, &printer, Some("accept-src")).unwrap();
+    drop(printer);
 
     let stripped = normalize_paths(
         &strip_ansi(&cap.human()),
@@ -302,10 +302,10 @@ fn source_update_rejection_human() {
     let (config_dir, state_dir, bare_root, bare) = perm_change_fixture("reject-src");
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) =
+    let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
-    cmd_source_update(&cli, &v2_printer, Some("reject-src")).unwrap();
-    drop(v2_printer);
+    cmd_source_update(&cli, &printer, Some("reject-src")).unwrap();
+    drop(printer);
 
     let stripped = normalize_paths(
         &strip_ansi(&cap.human()),
@@ -341,9 +341,9 @@ fn source_update_bridge_one_blank_line() {
     cmd_source_add(&cli, &v2_add, &args).expect("seed source");
     drop(v2_add);
 
-    let (v2_printer, cap) = Printer::for_test_doc();
-    cmd_source_update(&cli, &v2_printer, Some("bridge-upd")).unwrap();
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    cmd_source_update(&cli, &printer, Some("bridge-upd")).unwrap();
+    drop(printer);
 
     let combined = cap.human();
     assert!(

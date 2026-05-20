@@ -1,18 +1,14 @@
 use super::*;
 use cfgd_core::output::{Doc, Printer, Role};
 
-pub fn cmd_source_update(
-    cli: &Cli,
-    v2_printer: &Printer,
-    name: Option<&str>,
-) -> anyhow::Result<()> {
-    v2_printer.heading("Update Sources");
+pub fn cmd_source_update(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow::Result<()> {
+    printer.heading("Update Sources");
 
     let config_path = cli.config.clone();
     let cfg = config::load_config(&config_path)?;
 
     if cfg.spec.sources.is_empty() {
-        v2_printer.emit(
+        printer.emit(
             Doc::new()
                 .status(Role::Info, "No sources configured")
                 .with_data(serde_json::json!({ "sources": [] })),
@@ -34,7 +30,7 @@ pub fn cmd_source_update(
     if sources_to_update.is_empty()
         && let Some(name) = name
     {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             name,
             "not_found",
             format!("Source '{}' not found", name),
@@ -62,7 +58,7 @@ pub fn cmd_source_update(
             None
         };
 
-        match mgr.load_source(source, v2_printer) {
+        match mgr.load_source(source, printer) {
             Ok(()) => {
                 if let Some(cached) = mgr.get(&source.name) {
                     // Detect permission-expanding changes between old and new manifests
@@ -83,9 +79,9 @@ pub fn cmd_source_update(
                     // section header phrasing pivots on whether permission
                     // changes were detected.
                     let source_sec = if perm_changes.is_empty() {
-                        v2_printer.section(format!("Source '{}'", source.name))
+                        printer.section(format!("Source '{}'", source.name))
                     } else {
-                        v2_printer.section(format!(
+                        printer.section(format!(
                             "Source '{}' update changes permissions",
                             source.name
                         ))
@@ -95,7 +91,7 @@ pub fn cmd_source_update(
                     }
 
                     let proceed = if !perm_changes.is_empty() {
-                        match v2_printer.prompt_confirm("Accept permission changes?") {
+                        match printer.prompt_confirm("Accept permission changes?") {
                             Ok(true) => true,
                             Ok(false) => {
                                 source_sec.status_simple(
@@ -152,7 +148,7 @@ pub fn cmd_source_update(
                 }
             }
             Err(e) => {
-                v2_printer.status_simple(
+                printer.status_simple(
                     Role::Fail,
                     format!("Failed to update source '{}': {}", source.name, e),
                 );
@@ -185,7 +181,7 @@ pub fn cmd_source_update(
         ),
     };
 
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(role, summary)
             .with_data(serde_json::json!({

@@ -85,10 +85,10 @@ fn secret_init_happy_human() {
 
     let (config_dir, state_dir) = secret_test_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    secret::cmd_secret_init(&cli, &v2_printer).expect("init should succeed");
-    drop(v2_printer);
+    secret::cmd_secret_init(&cli, &printer).expect("init should succeed");
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), home.path(), config_dir.path());
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "secret_init/happy.txt", &stripped);
@@ -105,10 +105,10 @@ fn secret_init_happy_json() {
 
     let (config_dir, state_dir) = secret_test_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    secret::cmd_secret_init(&cli, &v2_printer).expect("init should succeed");
-    drop(v2_printer);
+    secret::cmd_secret_init(&cli, &printer).expect("init should succeed");
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["backend"], "age");
@@ -134,14 +134,14 @@ fn secret_init_already_initialized_human() {
 
     // First init lands the key + .sops.yaml.
     {
-        let (v2_printer, _cap) = Printer::for_test_doc();
-        secret::cmd_secret_init(&cli, &v2_printer).expect("first init should succeed");
+        let (printer, _cap) = Printer::for_test_doc();
+        secret::cmd_secret_init(&cli, &printer).expect("first init should succeed");
     }
 
     // Second init should detect the existing state and emit the Info Doc.
-    let (v2_printer, cap) = Printer::for_test_doc();
-    secret::cmd_secret_init(&cli, &v2_printer).expect("second init should succeed");
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    secret::cmd_secret_init(&cli, &printer).expect("second init should succeed");
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), home.path(), config_dir.path());
     assert_snapshot(
@@ -161,9 +161,9 @@ const PLAINTEXT_YAML: &str = "secret: hello-world\n";
 fn init_secret_state(home: &Path, config_dir: &Path, state_dir: &Path) {
     // Reuse the lib path: this seeds age-key.txt + .sops.yaml.
     let cli = cli_for(config_dir, state_dir);
-    let (v2_printer, _cap) = Printer::for_test_doc();
+    let (printer, _cap) = Printer::for_test_doc();
     let _home_guard = with_test_home_guard(home);
-    secret::cmd_secret_init(&cli, &v2_printer).expect("init must seed sops/age");
+    secret::cmd_secret_init(&cli, &printer).expect("init must seed sops/age");
 }
 
 #[test]
@@ -181,10 +181,10 @@ fn secret_encrypt_happy_human() {
     std::fs::write(&secret_path, PLAINTEXT_YAML).unwrap();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    secret::cmd_secret_encrypt(&cli, &v2_printer, &secret_path).expect("encrypt should succeed");
-    drop(v2_printer);
+    secret::cmd_secret_encrypt(&cli, &printer, &secret_path).expect("encrypt should succeed");
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), home.path(), config_dir.path());
     assert_snapshot(
@@ -215,10 +215,10 @@ fn secret_encrypt_happy_json() {
     std::fs::write(&secret_path, PLAINTEXT_YAML).unwrap();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    secret::cmd_secret_encrypt(&cli, &v2_printer, &secret_path).expect("encrypt should succeed");
-    drop(v2_printer);
+    secret::cmd_secret_encrypt(&cli, &printer, &secret_path).expect("encrypt should succeed");
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["backend"], "sops");
@@ -242,17 +242,17 @@ fn secret_encrypt_already_encrypted_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     // First encryption.
     {
-        let (v2_printer, _cap) = Printer::for_test_doc();
-        secret::cmd_secret_encrypt(&cli, &v2_printer, &secret_path).expect("first encrypt");
+        let (printer, _cap) = Printer::for_test_doc();
+        secret::cmd_secret_encrypt(&cli, &printer, &secret_path).expect("first encrypt");
     }
 
     // Re-encrypt: sops returns "file already encrypted" — expect an error
     // Doc carrying the encryption_failed kind. The sops error body varies
     // across versions, so assert the role + kind shape rather than snapshot
     // the verbose message verbatim.
-    let (v2_printer, cap) = Printer::for_test_doc();
-    let result = secret::cmd_secret_encrypt(&cli, &v2_printer, &secret_path);
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    let result = secret::cmd_secret_encrypt(&cli, &printer, &secret_path);
+    drop(printer);
     assert!(
         result.is_err(),
         "re-encrypt should fail with already-encrypted"
@@ -286,13 +286,13 @@ fn secret_decrypt_happy_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     {
-        let (v2_printer, _cap) = Printer::for_test_doc();
-        secret::cmd_secret_encrypt(&cli, &v2_printer, &secret_path).expect("encrypt");
+        let (printer, _cap) = Printer::for_test_doc();
+        secret::cmd_secret_encrypt(&cli, &printer, &secret_path).expect("encrypt");
     }
 
-    let (v2_printer, cap) = Printer::for_test_doc();
-    secret::cmd_secret_decrypt(&cli, &v2_printer, &secret_path).expect("decrypt");
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    secret::cmd_secret_decrypt(&cli, &printer, &secret_path).expect("decrypt");
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), home.path(), config_dir.path());
     assert_snapshot(
@@ -332,13 +332,13 @@ fn secret_decrypt_happy_json() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     {
-        let (v2_printer, _cap) = Printer::for_test_doc();
-        secret::cmd_secret_encrypt(&cli, &v2_printer, &secret_path).expect("encrypt");
+        let (printer, _cap) = Printer::for_test_doc();
+        secret::cmd_secret_encrypt(&cli, &printer, &secret_path).expect("encrypt");
     }
 
-    let (v2_printer, cap) = Printer::for_test_doc();
-    secret::cmd_secret_decrypt(&cli, &v2_printer, &secret_path).expect("decrypt");
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    secret::cmd_secret_decrypt(&cli, &printer, &secret_path).expect("decrypt");
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["backend"], "sops");
@@ -363,16 +363,16 @@ fn secret_edit_happy_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     {
-        let (v2_printer, _cap) = Printer::for_test_doc();
-        secret::cmd_secret_encrypt(&cli, &v2_printer, &secret_path).expect("encrypt");
+        let (printer, _cap) = Printer::for_test_doc();
+        secret::cmd_secret_encrypt(&cli, &printer, &secret_path).expect("encrypt");
     }
 
     // EDITOR=/bin/true round-trips the decrypted file unchanged through
     // sops' edit flow.
     let _editor = EditorGuard::set("/bin/true");
-    let (v2_printer, cap) = Printer::for_test_doc();
-    secret::cmd_secret_edit(&cli, &v2_printer, &secret_path).expect("edit");
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    secret::cmd_secret_edit(&cli, &printer, &secret_path).expect("edit");
+    drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), home.path(), config_dir.path());
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "secret_edit/happy.txt", &stripped);

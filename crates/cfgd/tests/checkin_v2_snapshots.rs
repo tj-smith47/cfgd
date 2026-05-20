@@ -32,13 +32,13 @@ fn happy_output() -> CheckinOutput {
 /// Buffered payload-only Doc for the happy path — no drift, no pushed config.
 #[test]
 fn checkin_happy_human() {
-    let (v2_printer, cap) = Printer::for_test_doc();
-    v2_printer.heading("Checkin");
-    v2_printer.kv("Server status", "ok");
-    v2_printer.kv("Config changed", "false");
-    v2_printer.status_simple(Role::Info, "No drift to report");
-    v2_printer.emit(build_checkin_doc(&happy_output()));
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    printer.heading("Checkin");
+    printer.kv("Server status", "ok");
+    printer.kv("Config changed", "false");
+    printer.status_simple(Role::Info, "No drift to report");
+    printer.emit(build_checkin_doc(&happy_output()));
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "checkin/happy.txt", &stripped);
@@ -48,9 +48,9 @@ fn checkin_happy_human() {
 #[test]
 fn checkin_happy_json() {
     let output = happy_output();
-    let (v2_printer, cap) = Printer::for_test_doc();
-    v2_printer.emit(build_checkin_doc(&output));
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_checkin_doc(&output));
+    drop(printer);
 
     let expected = serde_json::to_value(&output).unwrap();
     let actual = cap.json().expect("checkin doc carries a payload");
@@ -65,22 +65,22 @@ fn checkin_happy_json() {
 /// with an Ok status carrying the count.
 #[test]
 fn checkin_drift_reported_human() {
-    let (v2_printer, cap) = Printer::for_test_doc();
-    v2_printer.heading("Checkin");
-    v2_printer.kv("Server status", "ok");
-    v2_printer.kv("Config changed", "false");
+    let (printer, cap) = Printer::for_test_doc();
+    printer.heading("Checkin");
+    printer.kv("Server status", "ok");
+    printer.kv("Config changed", "false");
     {
-        let sp = v2_printer.spinner("Reporting drift");
+        let sp = printer.spinner("Reporting drift");
         sp.finish_ok("3 drift items reported");
     }
-    v2_printer.emit(build_checkin_doc(&CheckinOutput {
+    printer.emit(build_checkin_doc(&CheckinOutput {
         server_status: "ok".to_string(),
         config_changed: false,
         drift_count: 3,
         drift_status: "drift_reported".to_string(),
         server_pushed_config: false,
     }));
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -94,13 +94,13 @@ fn checkin_drift_reported_human() {
 /// (T6 Info-on-zero pattern).
 #[test]
 fn checkin_no_drift_human() {
-    let (v2_printer, cap) = Printer::for_test_doc();
-    v2_printer.heading("Checkin");
-    v2_printer.kv("Server status", "ok");
-    v2_printer.kv("Config changed", "false");
-    v2_printer.status_simple(Role::Info, "No drift to report");
-    v2_printer.emit(build_checkin_doc(&happy_output()));
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    printer.heading("Checkin");
+    printer.kv("Server status", "ok");
+    printer.kv("Config changed", "false");
+    printer.status_simple(Role::Info, "No drift to report");
+    printer.emit(build_checkin_doc(&happy_output()));
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "checkin/no_drift.txt", &stripped);
@@ -110,28 +110,28 @@ fn checkin_no_drift_human() {
 /// "Server config" section so the urgency carries (T6 manual-review pattern).
 #[test]
 fn checkin_server_pushed_config_human() {
-    let (v2_printer, cap) = Printer::for_test_doc();
-    v2_printer.heading("Checkin");
-    v2_printer.kv("Server status", "ok");
-    v2_printer.kv("Config changed", "true");
-    v2_printer.status_simple(Role::Warn, "Server pushed desired config");
+    let (printer, cap) = Printer::for_test_doc();
+    printer.heading("Checkin");
+    printer.kv("Server status", "ok");
+    printer.kv("Config changed", "true");
+    printer.status_simple(Role::Warn, "Server pushed desired config");
     {
-        let push_sec = v2_printer.section("Server config");
+        let push_sec = printer.section("Server config");
         push_sec.status_simple(Role::Ok, "Saved to <PATH>");
         push_sec.status_simple(
             Role::Info,
             "Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'",
         );
     }
-    v2_printer.status_simple(Role::Info, "No drift to report");
-    v2_printer.emit(build_checkin_doc(&CheckinOutput {
+    printer.status_simple(Role::Info, "No drift to report");
+    printer.emit(build_checkin_doc(&CheckinOutput {
         server_status: "ok".to_string(),
         config_changed: true,
         drift_count: 0,
         drift_status: "no_drift".to_string(),
         server_pushed_config: true,
     }));
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -149,11 +149,11 @@ fn checkin_server_pushed_config_human() {
 /// minimal content on both sides is preferred over matching the real shape.
 #[test]
 fn checkin_bridge_one_blank_line() {
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    v2_printer.heading("Checkin");
+    printer.heading("Checkin");
     {
-        let net_sec = v2_printer.section("Checkin");
+        let net_sec = printer.section("Checkin");
         net_sec.status_simple(Role::Ok, "server status: ok");
     }
 
@@ -166,8 +166,8 @@ fn checkin_bridge_one_blank_line() {
             drift_status: "drift_reported".to_string(),
             server_pushed_config: false,
         });
-    v2_printer.emit(doc);
-    drop(v2_printer);
+    printer.emit(doc);
+    drop(printer);
 
     let captured = strip_ansi(&cap.human());
     assert!(

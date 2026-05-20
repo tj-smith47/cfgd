@@ -269,14 +269,14 @@ pub fn build_explain_drilldown_doc(
 }
 
 pub(super) fn cmd_explain(
-    v2_printer: &Printer,
+    printer: &Printer,
     resource: Option<&str>,
     recursive: bool,
 ) -> anyhow::Result<()> {
     let resource = match resource {
         Some(r) => r,
         None => {
-            v2_printer.emit(build_explain_index_doc());
+            printer.emit(build_explain_index_doc());
             return Ok(());
         }
     };
@@ -289,7 +289,7 @@ pub(super) fn cmd_explain(
         Some(s) => s,
         None => {
             let available: Vec<&'static str> = ALL_SCHEMAS.iter().map(|s| s.name).collect();
-            v2_printer.emit(build_explain_not_found_doc(resource_name, &available));
+            printer.emit(build_explain_not_found_doc(resource_name, &available));
             anyhow::bail!(
                 "Unknown resource type '{}'. Run 'cfgd explain' to see available types.",
                 resource_name
@@ -318,6 +318,6 @@ pub(super) fn cmd_explain(
         })?;
         build_explain_drilldown_doc(schema, field_path, fields, recursive)
     };
-    v2_printer.emit(doc);
+    printer.emit(doc);
     Ok(())
 }

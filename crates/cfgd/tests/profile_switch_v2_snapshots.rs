@@ -53,10 +53,10 @@ fn assert_snapshot(base: &Path, name: &str, actual: &str) {
 fn profile_switch_happy_human() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_profile_switch(&cli, "work", &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_profile_switch(&cli, "work", &printer).unwrap();
+    drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -70,10 +70,10 @@ fn profile_switch_happy_human() {
 fn profile_switch_happy_json() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_profile_switch(&cli, "work", &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_profile_switch(&cli, "work", &printer).unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["from"], "default");
@@ -85,12 +85,12 @@ fn profile_switch_happy_json() {
 fn profile_switch_not_found_human() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_profile_switch(&cli, "missing", &v2_printer)
+    let err = cmd_profile_switch(&cli, "missing", &printer)
         .expect_err("switching to nonexistent profile must error");
     assert!(err.to_string().contains("not found"));
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(

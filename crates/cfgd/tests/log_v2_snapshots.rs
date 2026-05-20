@@ -35,10 +35,10 @@ const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 fn log_empty_human() {
     let (state_dir, _ids) = log_history_setup(&[]);
 
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_log(&v2_printer, 10, None, Some(state_dir.path())).unwrap();
-    drop(v2_printer);
+    cmd_log(&printer, 10, None, Some(state_dir.path())).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "log/empty.txt", &stripped);
@@ -50,9 +50,9 @@ fn log_empty_json() {
     let output = LogOutput {
         entries: Vec::new(),
     };
-    let (v2_printer, cap) = Printer::for_test_doc();
-    v2_printer.emit(build_log_doc(&output));
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_log_doc(&output));
+    drop(printer);
 
     let expected = serde_json::to_value(&output).unwrap();
     let actual = cap.json().expect("log doc carries a payload");
@@ -73,10 +73,10 @@ fn log_multi_row_human() {
         ("gamma", ApplyStatus::Failed, None),
     ]);
 
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_log(&v2_printer, 10, None, Some(state_dir.path())).unwrap();
-    drop(v2_printer);
+    cmd_log(&printer, 10, None, Some(state_dir.path())).unwrap();
+    drop(printer);
 
     let normalized = normalize_timestamps(&cap.human());
     let stripped = strip_ansi(&normalized);
@@ -103,10 +103,10 @@ fn log_show_output_happy_human() {
         ),
     ]);
 
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_log(&v2_printer, 10, Some(apply_id), Some(state_dir.path())).unwrap();
-    drop(v2_printer);
+    cmd_log(&printer, 10, Some(apply_id), Some(state_dir.path())).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -126,10 +126,10 @@ fn log_show_output_empty_human() {
         ("files", "file", "file:create:/tmp/b", None),
     ]);
 
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_log(&v2_printer, 10, Some(apply_id), Some(state_dir.path())).unwrap();
-    drop(v2_printer);
+    cmd_log(&printer, 10, Some(apply_id), Some(state_dir.path())).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -147,10 +147,10 @@ fn log_show_output_empty_human() {
 fn log_show_output_no_journal_human() {
     let (state_dir, apply_id) = log_show_output_no_journal_setup();
 
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_log(&v2_printer, 10, Some(apply_id), Some(state_dir.path())).unwrap();
-    drop(v2_printer);
+    cmd_log(&printer, 10, Some(apply_id), Some(state_dir.path())).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -181,10 +181,10 @@ fn log_show_output_happy_json() {
         ),
     ]);
 
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_log(&v2_printer, 10, Some(apply_id), Some(state_dir.path())).unwrap();
-    drop(v2_printer);
+    cmd_log(&printer, 10, Some(apply_id), Some(state_dir.path())).unwrap();
+    drop(printer);
 
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "log/show_output_happy.json");
 }

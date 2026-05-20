@@ -75,10 +75,10 @@ fn source_list_happy_human() {
         100,
     );
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_list(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_source_list(&cli, &printer).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "source_list/happy.txt", &stripped);
@@ -101,10 +101,10 @@ fn source_list_empty_human() {
     // heading + a Role::Info "No sources configured" line.
     let (config_dir, state_dir) = source_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_list(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_source_list(&cli, &printer).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "source_list/empty.txt", &stripped);

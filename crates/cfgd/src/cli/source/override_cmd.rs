@@ -3,7 +3,7 @@ use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_source_override(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     source_name: &str,
     action: SourceOverrideAction,
     path: &str,
@@ -14,7 +14,7 @@ pub fn cmd_source_override(
 
     // Verify source exists in config
     if !cfg.spec.sources.iter().any(|s| s.name == source_name) {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             source_name,
             "not_found",
             format!("Source '{}' not found", source_name),
@@ -26,7 +26,7 @@ pub fn cmd_source_override(
     match action {
         SourceOverrideAction::Reject => {
             update_source_rejection(&config_path, source_name, path)?;
-            v2_printer.emit(
+            printer.emit(
                 Doc::new()
                     .status(
                         Role::Ok,
@@ -43,7 +43,7 @@ pub fn cmd_source_override(
             let val = match value {
                 Some(v) => v,
                 None => {
-                    v2_printer.emit(cfgd_core::output::error_doc(
+                    printer.emit(cfgd_core::output::error_doc(
                         source_name,
                         "missing_value",
                         "'set' action requires a value",
@@ -53,7 +53,7 @@ pub fn cmd_source_override(
                 }
             };
             update_source_override(&config_path, source_name, path, val)?;
-            v2_printer.emit(
+            printer.emit(
                 Doc::new()
                     .status(
                         Role::Ok,

@@ -182,9 +182,9 @@ fn module_upgrade_no_change_human_json() {
     // Pre-load the lockfile via add_remote.
     module::cmd_module_add_remote(&cli, &v2a, &url, None, true, true).unwrap();
 
-    let (v2_printer, cap) = Printer::for_test_doc();
-    module::cmd_module_upgrade(&cli, &v2_printer, "upmod", Some("v1.0.0"), true, true).unwrap();
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    module::cmd_module_upgrade(&cli, &printer, "upmod", Some("v1.0.0"), true, true).unwrap();
+    drop(printer);
 
     let mut stripped =
         strip_ansi(&cap.human()).replace(&config_dir.path().display().to_string(), "<CONFIG_DIR>");
@@ -221,10 +221,10 @@ fn module_upgrade_cancelled_human() {
     // Push a second tag (v1.1.0) onto the bare repo with a fresh commit.
     push_second_tag(bare_root.path(), "upmod", &bare, "v1.1.0");
 
-    let (v2_printer, cap) =
+    let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
-    module::cmd_module_upgrade(&cli, &v2_printer, "upmod", Some("v1.1.0"), false, true).unwrap();
-    drop(v2_printer);
+    module::cmd_module_upgrade(&cli, &printer, "upmod", Some("v1.1.0"), false, true).unwrap();
+    drop(printer);
 
     let mut stripped =
         strip_ansi(&cap.human()).replace(&config_dir.path().display().to_string(), "<CONFIG_DIR>");
@@ -258,9 +258,9 @@ fn module_upgrade_happy_human_json() {
 
     push_second_tag(bare_root.path(), "upmod", &bare, "v1.1.0");
 
-    let (v2_printer, cap) = Printer::for_test_doc();
-    module::cmd_module_upgrade(&cli, &v2_printer, "upmod", Some("v1.1.0"), true, true).unwrap();
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    module::cmd_module_upgrade(&cli, &printer, "upmod", Some("v1.1.0"), true, true).unwrap();
+    drop(printer);
 
     let mut stripped =
         strip_ansi(&cap.human()).replace(&config_dir.path().display().to_string(), "<CONFIG_DIR>");

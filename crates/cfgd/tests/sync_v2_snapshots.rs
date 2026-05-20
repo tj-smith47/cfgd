@@ -83,10 +83,10 @@ fn sync_happy_human() {
     let (_workspace, config_dir, state_dir, _branch_a, _branch_b) = two_source_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_sync(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_sync(&cli, &printer).unwrap();
+    drop(printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
     let normalized = normalize_commit_hashes(&normalized);
@@ -98,9 +98,9 @@ fn sync_happy_human() {
 #[test]
 fn sync_happy_json() {
     let output = happy_output();
-    let (v2_printer, cap) = Printer::for_test_doc();
-    v2_printer.emit(build_sync_doc(&output));
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_sync_doc(&output));
+    drop(printer);
 
     let expected = serde_json::to_value(&output).unwrap();
     let actual = cap.json().expect("sync doc carries a payload");
@@ -118,10 +118,10 @@ fn sync_no_sources_human() {
     let (config_dir, state_dir, _target) = tiny_profile_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_sync(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_sync(&cli, &printer).unwrap();
+    drop(printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
     let stripped = strip_ansi(&normalized);
@@ -138,16 +138,16 @@ fn sync_perm_changes_rejection_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     use cfgd_core::output::{PromptAnswer, Verbosity};
-    let (v2_printer, v2_buf) = Printer::for_test_with_prompt_responses_at(
+    let (printer, buf) = Printer::for_test_with_prompt_responses_at(
         vec![PromptAnswer::Confirm(false)],
         Verbosity::Normal,
     );
 
-    cmd_sync(&cli, &v2_printer).unwrap();
-    v2_printer.flush();
-    drop(v2_printer);
+    cmd_sync(&cli, &printer).unwrap();
+    printer.flush();
+    drop(printer);
 
-    let raw = v2_buf.lock().unwrap().clone();
+    let raw = buf.lock().unwrap().clone();
     let normalized = normalize_tempdir_paths(&raw, config_dir.path());
     let stripped = strip_ansi(&normalized);
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "sync/perm_changes.txt", &stripped);
@@ -163,16 +163,16 @@ fn sync_perm_changes_accept_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     use cfgd_core::output::{PromptAnswer, Verbosity};
-    let (v2_printer, v2_buf) = Printer::for_test_with_prompt_responses_at(
+    let (printer, buf) = Printer::for_test_with_prompt_responses_at(
         vec![PromptAnswer::Confirm(true)],
         Verbosity::Normal,
     );
 
-    cmd_sync(&cli, &v2_printer).unwrap();
-    v2_printer.flush();
-    drop(v2_printer);
+    cmd_sync(&cli, &printer).unwrap();
+    printer.flush();
+    drop(printer);
 
-    let raw = v2_buf.lock().unwrap().clone();
+    let raw = buf.lock().unwrap().clone();
     let normalized = normalize_tempdir_paths(&raw, config_dir.path());
     let normalized = normalize_commit_hashes(&normalized);
     let stripped = strip_ansi(&normalized);
@@ -192,10 +192,10 @@ fn sync_source_failure_human() {
     let (config_dir, state_dir) = unreachable_source_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_sync(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_sync(&cli, &printer).unwrap();
+    drop(printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
     let stripped = strip_ansi(&normalized);
@@ -209,19 +209,19 @@ fn sync_source_failure_human() {
 /// Streaming section followed by buffered Doc produces exactly one blank line between.
 #[test]
 fn sync_bridge_one_blank_line() {
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    v2_printer.heading("Sync");
+    printer.heading("Sync");
     {
-        let repo_sec = v2_printer.section("Local repo");
+        let repo_sec = printer.section("Local repo");
         repo_sec.status(Role::Ok, "Already up to date");
     }
 
     let doc = Doc::new()
         .section("Source Commits", |s| s.bullet("team-a @ abc1234"))
         .with_data(happy_output());
-    v2_printer.emit(doc);
-    drop(v2_printer);
+    printer.emit(doc);
+    drop(printer);
 
     let captured = strip_ansi(&cap.human());
     assert!(

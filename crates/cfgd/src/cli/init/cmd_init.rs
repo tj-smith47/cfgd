@@ -31,14 +31,14 @@ pub(crate) struct InitOutput {
 }
 
 /// Scaffold a new cfgd configuration repository.
-pub fn cmd_init(v2_printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
-    v2_printer.heading("Initialize cfgd");
+pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
+    printer.heading("Initialize cfgd");
 
-    if !check_prerequisites(v2_printer) {
+    if !check_prerequisites(printer) {
         let output = InitOutput {
             target_dir: args.path.unwrap_or("").to_string(),
         };
-        v2_printer.emit(Doc::new().with_data(&output));
+        printer.emit(Doc::new().with_data(&output));
         return Ok(());
     }
 
@@ -46,7 +46,7 @@ pub fn cmd_init(v2_printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()>
     let from_used = args.from.is_some();
     let target_dir = if let Some(from) = args.from {
         let explicit_path = args.path.map(|p| cfgd_core::expand_tilde(Path::new(p)));
-        resolve_from(from, explicit_path.as_deref(), args.branch, v2_printer)?
+        resolve_from(from, explicit_path.as_deref(), args.branch, printer)?
     } else {
         match args.path {
             Some(p) => cfgd_core::expand_tilde(Path::new(p)),
@@ -63,14 +63,14 @@ pub fn cmd_init(v2_printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()>
     // When --from is used, resolve_from handles the "already initialized" case
     // and the clone creates cfgd.yaml — skip this check so we reach the apply step
     if target_dir.join("cfgd.yaml").exists() && !from_used {
-        v2_printer.status_simple(
+        printer.status_simple(
             Role::Info,
             format!("Already initialized at {}", target_dir.display()),
         );
         let output = InitOutput {
             target_dir: target_dir.display().to_string(),
         };
-        v2_printer.emit(Doc::new().with_data(&output));
+        printer.emit(Doc::new().with_data(&output));
         return Ok(());
     }
 
@@ -79,7 +79,7 @@ pub fn cmd_init(v2_printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()>
     // Only clone here if resolve_from didn't handle it (non-git --from or no --from).
     if let Some(url) = args.from.filter(|f| is_git_source(f)) {
         if !target_dir.join(".git").exists() {
-            clone_into(&target_dir, url, args.branch, v2_printer)?;
+            clone_into(&target_dir, url, args.branch, printer)?;
         }
         // If --theme was specified and the cloned repo has a cfgd.yaml, set the theme
         if let Some(theme) = args.theme {
@@ -95,26 +95,24 @@ pub fn cmd_init(v2_printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()>
             }
         }
     } else {
-        scaffold(&target_dir, args.name, args.theme, v2_printer)?;
+        scaffold(&target_dir, args.name, args.theme, printer)?;
     }
 
     // 5. Generate release workflow — only for scaffolded repos, not cloned ones.
     // Cloned repos already have their own workflows; writing into them dirties the tree.
     if !from_used {
-        regenerate_workflow(&target_dir, v2_printer)?;
+        regenerate_workflow(&target_dir, printer)?;
     }
 
     // 6. Git init if not already a repo
     if !target_dir.join(".git").exists() {
         match git2::Repository::init(&target_dir) {
-            Ok(_) => v2_printer.status_simple(Role::Ok, "Initialized git repository"),
-            Err(e) => {
-                v2_printer.status_simple(Role::Warn, format!("Failed to init git repo: {}", e))
-            }
+            Ok(_) => printer.status_simple(Role::Ok, "Initialized git repository"),
+            Err(e) => printer.status_simple(Role::Warn, format!("Failed to init git repo: {}", e)),
         }
     }
 
-    v2_printer.status_simple(Role::Ok, format!("Initialized at {}", target_dir.display()));
+    printer.status_simple(Role::Ok, format!("Initialized at {}", target_dir.display()));
 
     // 7. Apply if requested
     let should_apply = should_run_apply(args.apply, args.apply_profile, args.apply_modules);
@@ -128,7 +126,7 @@ pub fn cmd_init(v2_printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()>
         if module_only {
             // Validate that requested modules exist
             let cache_base = modules::default_module_cache_dir()?;
-            let all_modules = modules::load_all_modules(&target_dir, &cache_base, v2_printer)?;
+            let all_modules = modules::load_all_modules(&target_dir, &cache_base, printer)?;
             for m in args.apply_modules {
                 let resolved_name = modules::resolve_profile_module_name(m);
                 if !all_modules.contains_key(resolved_name) {
@@ -136,7 +134,7 @@ pub fn cmd_init(v2_printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()>
                 }
             }
 
-            v2_printer.heading("Applying Modules");
+            printer.heading("Applying Modules");
 
             let cfg = config::load_config(&config_path)?;
             let registry = super::build_registry_with_config(Some(&cfg));
@@ -156,7 +154,7 @@ pub fn cmd_init(v2_printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()>
                 &cache_base,
                 &platform,
                 &mgr_map,
-                v2_printer,
+                printer,
             )?;
 
             let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
@@ -175,7 +173,7 @@ pub fn cmd_init(v2_printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()>
                 &target_dir,
                 args.dry_run,
                 args.yes,
-                v2_printer,
+                printer,
             )?;
         } else {
             // Profile-based apply
@@ -190,7 +188,7 @@ pub fn cmd_init(v2_printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()>
                 cfg.spec.profile = Some(name.to_string());
                 let yaml = serde_yaml::to_string(&cfg)?;
                 cfgd_core::atomic_write_str(&config_path, &yaml)?;
-                v2_printer.status_simple(Role::Ok, format!("Set active profile: {}", name));
+                printer.status_simple(Role::Ok, format!("Set active profile: {}", name));
                 name.to_string()
             } else {
                 // No --apply-profile: use whatever's in cfgd.yaml, or pick interactively
@@ -198,11 +196,11 @@ pub fn cmd_init(v2_printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()>
                 if let Some(ref p) = cfg.spec.profile {
                     p.clone()
                 } else {
-                    pick_profile(&profiles_dir, v2_printer)?
+                    pick_profile(&profiles_dir, printer)?
                 }
             };
 
-            v2_printer.heading("Applying Configuration");
+            printer.heading("Applying Configuration");
 
             let cfg = config::load_config(&config_path)?;
             let resolved = config::resolve_profile(&profile_name, &profiles_dir)?;
@@ -222,7 +220,7 @@ pub fn cmd_init(v2_printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()>
                 let mgr_map = super::managers_map(&registry);
                 let cache_base = modules::default_module_cache_dir()?;
                 // Validate --apply-module names exist (load once, check all)
-                let all_modules = modules::load_all_modules(&target_dir, &cache_base, v2_printer)?;
+                let all_modules = modules::load_all_modules(&target_dir, &cache_base, printer)?;
                 for m in args.apply_modules {
                     let resolved_name = modules::resolve_profile_module_name(m);
                     if !all_modules.contains_key(resolved_name) {
@@ -235,7 +233,7 @@ pub fn cmd_init(v2_printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()>
                     &cache_base,
                     &platform,
                     &mgr_map,
-                    v2_printer,
+                    printer,
                 )?
             } else {
                 Vec::new()
@@ -269,7 +267,7 @@ pub fn cmd_init(v2_printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()>
                 &target_dir,
                 args.dry_run,
                 args.yes,
-                v2_printer,
+                printer,
             )?;
         }
     }
@@ -283,25 +281,24 @@ pub fn cmd_init(v2_printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()>
             let profile = cfg.spec.profile.as_deref();
             match cfgd_core::daemon::install_service(&config_path, profile) {
                 Ok(()) => {
-                    v2_printer.status_simple(Role::Ok, "Daemon service installed");
+                    printer.status_simple(Role::Ok, "Daemon service installed");
                     #[cfg(windows)]
-                    v2_printer
+                    printer
                         .status_simple(Role::Info, "The service will start automatically on boot");
                 }
                 Err(e) => {
-                    v2_printer
-                        .status_simple(Role::Warn, format!("Failed to install daemon: {}", e));
-                    v2_printer.hint("Install later with: cfgd daemon install");
+                    printer.status_simple(Role::Warn, format!("Failed to install daemon: {}", e));
+                    printer.hint("Install later with: cfgd daemon install");
                 }
             }
         }
         #[cfg(not(any(unix, windows)))]
         {
-            v2_printer.status_simple(
+            printer.status_simple(
                 Role::Warn,
                 "Daemon service installation is not supported on this platform",
             );
-            v2_printer.hint("Run the daemon directly with: cfgd daemon");
+            printer.hint("Run the daemon directly with: cfgd daemon");
         }
     }
 
@@ -323,7 +320,7 @@ pub fn cmd_init(v2_printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()>
     } else {
         Doc::new().with_data(&output)
     };
-    v2_printer.emit(doc);
+    printer.emit(doc);
 
     Ok(())
 }
@@ -362,27 +359,27 @@ pub(super) fn apply_plan(
     config_dir: &Path,
     dry_run: bool,
     yes: bool,
-    v2_printer: &Printer,
+    printer: &Printer,
 ) -> anyhow::Result<()> {
     let total = plan.total_actions();
     if total == 0 {
-        v2_printer.status_simple(Role::Ok, "Nothing to do — system is already configured");
+        printer.status_simple(Role::Ok, "Nothing to do — system is already configured");
         return Ok(());
     }
 
-    super::display_plan_table_v2(plan, v2_printer, None);
-    v2_printer.status_simple(Role::Info, format!("{} action(s) planned", total));
+    super::display_plan_table_v2(plan, printer, None);
+    printer.status_simple(Role::Info, format!("{} action(s) planned", total));
 
     if dry_run {
         return Ok(());
     }
 
     if !yes {
-        let confirmed = v2_printer
+        let confirmed = printer
             .prompt_confirm("Apply these changes?")
             .unwrap_or(false);
         if !confirmed {
-            v2_printer.status_simple(Role::Info, "Skipped — run 'cfgd apply' to apply later");
+            printer.status_simple(Role::Info, "Skipped — run 'cfgd apply' to apply later");
             return Ok(());
         }
     }
@@ -395,18 +392,18 @@ pub(super) fn apply_plan(
         plan,
         resolved,
         config_dir,
-        v2_printer,
+        printer,
         None,
         &[],
         cfgd_core::reconciler::ReconcileContext::Apply,
         false,
     )?;
-    super::print_apply_result_v2(&result, v2_printer, None);
+    super::print_apply_result_v2(&result, printer, None);
     Ok(())
 }
 
 /// Interactively pick a profile from the profiles directory.
-pub(super) fn pick_profile(profiles_dir: &Path, v2_printer: &Printer) -> anyhow::Result<String> {
+pub(super) fn pick_profile(profiles_dir: &Path, printer: &Printer) -> anyhow::Result<String> {
     if !profiles_dir.is_dir() {
         anyhow::bail!(
             "No profiles directory found — create a profile first with: cfgd profile create <name>"
@@ -422,21 +419,20 @@ pub(super) fn pick_profile(profiles_dir: &Path, v2_printer: &Printer) -> anyhow:
     }
 
     if names.len() == 1 {
-        v2_printer.status_simple(
+        printer.status_simple(
             Role::Info,
             format!("Using only available profile: {}", names[0]),
         );
         return Ok(names[0].clone());
     }
 
-    let section = v2_printer.section("Available Profiles");
+    let section = printer.section("Available Profiles");
     for (i, name) in names.iter().enumerate() {
         section.bullet(format!("{}. {}", i + 1, name));
     }
     drop(section);
 
-    let input =
-        v2_printer.prompt_text(&format!("Select profile (1-{}) or name", names.len()), "1")?;
+    let input = printer.prompt_text(&format!("Select profile (1-{}) or name", names.len()), "1")?;
 
     // Try as number first
     if let Ok(n) = input.parse::<usize>()
@@ -462,7 +458,7 @@ pub(super) fn scaffold(
     dir: &Path,
     name: Option<&str>,
     theme: Option<&str>,
-    v2_printer: &Printer,
+    printer: &Printer,
 ) -> anyhow::Result<()> {
     let config_name = name
         .or_else(|| dir.file_name().and_then(|n| n.to_str()))
@@ -471,7 +467,7 @@ pub(super) fn scaffold(
     // Create directories
     std::fs::create_dir_all(dir.join("profiles"))?;
     std::fs::create_dir_all(dir.join("modules"))?;
-    v2_printer.status_simple(Role::Ok, "Created profiles/ modules/");
+    printer.status_simple(Role::Ok, "Created profiles/ modules/");
 
     // cfgd.yaml
     let theme_value = theme.unwrap_or("default");
@@ -493,7 +489,7 @@ spec:
 "#
     );
     cfgd_core::atomic_write_str(&dir.join("cfgd.yaml"), &content)?;
-    v2_printer.status_simple(Role::Ok, "Created cfgd.yaml");
+    printer.status_simple(Role::Ok, "Created cfgd.yaml");
 
     // .gitignore — ignore everything except cfgd-managed content
     let gitignore = "\
@@ -516,7 +512,7 @@ spec:
 !.github/**
 ";
     cfgd_core::atomic_write_str(&dir.join(".gitignore"), gitignore)?;
-    v2_printer.status_simple(Role::Ok, "Created .gitignore");
+    printer.status_simple(Role::Ok, "Created .gitignore");
 
     // README.md
     let readme = format!(
@@ -539,7 +535,7 @@ cfgd apply
 "#
     );
     cfgd_core::atomic_write_str(&dir.join("README.md"), &readme)?;
-    v2_printer.status_simple(Role::Ok, "Created README.md");
+    printer.status_simple(Role::Ok, "Created README.md");
 
     // Workflow — generate a base workflow even with no modules/profiles yet.
     // It gets regenerated when modules/profiles are added.
@@ -549,14 +545,14 @@ cfgd apply
         cfgd_core::detect_default_branch(dir).unwrap_or_else(|| "master".to_string());
     let workflow = generate_release_workflow_yaml(&[], &[], &default_branch);
     cfgd_core::atomic_write_str(&workflow_dir.join("cfgd-release.yml"), &workflow)?;
-    v2_printer.status_simple(Role::Ok, "Created .github/workflows/cfgd-release.yml");
+    printer.status_simple(Role::Ok, "Created .github/workflows/cfgd-release.yml");
 
     Ok(())
 }
 
 /// Generate or regenerate the release workflow based on current modules/profiles.
 /// Called by init and also by module create / profile create.
-pub(crate) fn regenerate_workflow(config_dir: &Path, v2_printer: &Printer) -> anyhow::Result<()> {
+pub(crate) fn regenerate_workflow(config_dir: &Path, printer: &Printer) -> anyhow::Result<()> {
     let profiles = scan_profile_names(&config_dir.join("profiles"))?;
     let modules = scan_module_names(&config_dir.join("modules"))?;
 
@@ -571,18 +567,18 @@ pub(crate) fn regenerate_workflow(config_dir: &Path, v2_printer: &Printer) -> an
         cfgd_core::detect_default_branch(config_dir).unwrap_or_else(|| "master".to_string());
     let yaml = generate_release_workflow_yaml(&modules, &profiles, &default_branch);
     cfgd_core::atomic_write_str(&workflow_dir.join("cfgd-release.yml"), &yaml)?;
-    v2_printer.status_simple(Role::Ok, "Generated .github/workflows/cfgd-release.yml");
+    printer.status_simple(Role::Ok, "Generated .github/workflows/cfgd-release.yml");
 
     Ok(())
 }
 
-pub(super) fn check_prerequisites(v2_printer: &Printer) -> bool {
+pub(super) fn check_prerequisites(printer: &Printer) -> bool {
     if !cfgd_core::command_available("git") {
-        v2_printer.status_simple(Role::Fail, "git is not installed — cfgd requires git");
+        printer.status_simple(Role::Fail, "git is not installed — cfgd requires git");
         if cfg!(target_os = "macos") {
-            v2_printer.hint("Install with: xcode-select --install");
+            printer.hint("Install with: xcode-select --install");
         } else {
-            v2_printer.hint("Install with: sudo apt install git (or your package manager)");
+            printer.hint("Install with: sudo apt install git (or your package manager)");
         }
         return false;
     }

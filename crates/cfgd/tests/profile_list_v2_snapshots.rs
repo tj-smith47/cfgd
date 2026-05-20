@@ -80,10 +80,10 @@ fn happy_entries() -> Vec<ProfileListEntry> {
 fn profile_list_happy_human() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_profile_list(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_profile_list(&cli, &printer).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -117,10 +117,10 @@ fn profile_list_empty_human() {
     )
     .unwrap();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_profile_list(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_profile_list(&cli, &printer).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -148,7 +148,7 @@ fn profile_list_wide_human() {
     // `--wide` table layout: drive cmd_profile_list with a printer whose
     // is_wide() returns true. The Printer's wide flag is part of OutputFormat
     // handling; the simplest route is to use the build_*_doc directly since
-    // cmd_profile_list reads `v2_printer.is_wide()`. for_test_doc defaults
+    // cmd_profile_list reads `printer.is_wide()`. for_test_doc defaults
     // to Wide=false, so use the build helper here.
     let entries = happy_entries();
     let (printer, cap) = Printer::for_test_doc();

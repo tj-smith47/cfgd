@@ -1,11 +1,11 @@
 use super::*;
 use cfgd_core::output::{Doc, Printer, Role};
 
-pub fn cmd_source_edit(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_source_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     let source_path = config_dir.join("cfgd-source.yaml");
     if !source_path.exists() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             "cfgd-source.yaml",
             "no_config",
             format!(
@@ -20,14 +20,14 @@ pub fn cmd_source_edit(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
         );
     }
 
-    open_in_editor_v2(&source_path, v2_printer)?;
+    open_in_editor_v2(&source_path, printer)?;
 
     // Validate after editing — loop until valid or user cancels
     loop {
         let contents = std::fs::read_to_string(&source_path)?;
         match config::parse_config_source(&contents) {
             Ok(_) => {
-                v2_printer.emit(
+                printer.emit(
                     Doc::new()
                         .status(Role::Ok, "Source manifest is valid")
                         .with_data(serde_json::json!({
@@ -38,9 +38,9 @@ pub fn cmd_source_edit(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
                 break;
             }
             Err(e) => {
-                v2_printer.status_simple(Role::Fail, format!("Invalid source manifest: {}", e));
-                if !v2_printer.prompt_confirm("Re-open in editor to fix?")? {
-                    v2_printer.emit(
+                printer.status_simple(Role::Fail, format!("Invalid source manifest: {}", e));
+                if !printer.prompt_confirm("Re-open in editor to fix?")? {
+                    printer.emit(
                         Doc::new()
                             .status(Role::Warn, "Saved with validation errors")
                             .with_data(serde_json::json!({
@@ -50,7 +50,7 @@ pub fn cmd_source_edit(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
                     );
                     break;
                 }
-                open_in_editor_v2(&source_path, v2_printer)?;
+                open_in_editor_v2(&source_path, printer)?;
             }
         }
     }

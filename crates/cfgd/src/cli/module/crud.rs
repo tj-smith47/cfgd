@@ -3,7 +3,7 @@ use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_module_create(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     args: &ModuleCreateArgs,
 ) -> anyhow::Result<()> {
     let name = &args.name;
@@ -15,14 +15,14 @@ pub fn cmd_module_create(
     let post_apply = &args.post_apply;
     let sets = &args.sets;
     validate_resource_name(name, "Module")?;
-    v2_printer.heading(format!("Create Module: {}", name));
+    printer.heading(format!("Create Module: {}", name));
 
     let config_dir = config_dir(cli);
     let module_dir = config_dir.join("modules").join(name);
     let module_yaml_path = module_dir.join("module.yaml");
 
     if module_yaml_path.exists() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             name,
             "already_exists",
             format!(
@@ -52,10 +52,10 @@ pub fn cmd_module_create(
         && sets.is_empty();
 
     let (desc, dep_list, pkg_list, file_list, post_apply_list) = if is_interactive {
-        let desc = v2_printer.prompt_text("Description", "")?;
+        let desc = printer.prompt_text("Description", "")?;
         let desc = if desc.is_empty() { None } else { Some(desc) };
 
-        let deps_str = v2_printer.prompt_text("Dependencies (comma-separated, or empty)", "")?;
+        let deps_str = printer.prompt_text("Dependencies (comma-separated, or empty)", "")?;
         let deps: Vec<String> = if deps_str.is_empty() {
             Vec::new()
         } else {
@@ -64,7 +64,7 @@ pub fn cmd_module_create(
 
         let mut pkgs = Vec::new();
         loop {
-            let pkg = v2_printer.prompt_text("Add package (name, or empty to stop)", "")?;
+            let pkg = printer.prompt_text("Add package (name, or empty to stop)", "")?;
             if pkg.is_empty() {
                 break;
             }
@@ -74,7 +74,7 @@ pub fn cmd_module_create(
         let mut imported_files: Vec<String> = Vec::new();
         loop {
             let file =
-                v2_printer.prompt_text("Add file (path or source:target, or empty to stop)", "")?;
+                printer.prompt_text("Add file (path or source:target, or empty to stop)", "")?;
             if file.is_empty() {
                 break;
             }
@@ -84,7 +84,7 @@ pub fn cmd_module_create(
         let mut scripts = Vec::new();
         loop {
             let script =
-                v2_printer.prompt_text("Add post-apply script (command, or empty to stop)", "")?;
+                printer.prompt_text("Add post-apply script (command, or empty to stop)", "")?;
             if script.is_empty() {
                 break;
             }
@@ -113,7 +113,7 @@ pub fn cmd_module_create(
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
             if !seen.insert(base.clone()) {
-                v2_printer.emit(cfgd_core::output::error_doc(
+                printer.emit(cfgd_core::output::error_doc(
                     name,
                     "duplicate_basename",
                     format!(
@@ -219,7 +219,7 @@ pub fn cmd_module_create(
     // Write
     save_module_document(&doc, &module_yaml_path)?;
 
-    let summary_sec = v2_printer.section(format!(
+    let summary_sec = printer.section(format!(
         "Created module '{}' at {}",
         name,
         module_dir.display()
@@ -243,15 +243,15 @@ pub fn cmd_module_create(
     }
     drop(summary_sec);
 
-    v2_printer.hint("Add to a profile with: cfgd profile update <profile> --module <name>");
-    v2_printer.hint("Fine-tune with: cfgd module edit <name>");
+    printer.hint("Add to a profile with: cfgd profile update <profile> --module <name>");
+    printer.hint("Fine-tune with: cfgd module edit <name>");
 
-    maybe_update_workflow(cli, v2_printer)?;
+    maybe_update_workflow(cli, printer)?;
 
     // Apply if requested
     let mut applied = false;
     if args.apply {
-        v2_printer.heading("Applying Module");
+        printer.heading("Applying Module");
 
         let config_path = config_dir.join("cfgd.yaml");
         let cfg = config::load_config(&config_path)?;
@@ -267,7 +267,7 @@ pub fn cmd_module_create(
             &cache_base,
             &platform,
             &mgr_map,
-            v2_printer,
+            printer,
         )?;
 
         let resolved = config::ResolvedProfile {
@@ -286,18 +286,17 @@ pub fn cmd_module_create(
 
         let total = plan.total_actions();
         if total == 0 {
-            v2_printer.status_simple(Role::Info, "Nothing to do");
+            printer.status_simple(Role::Info, "Nothing to do");
         } else {
             if !args.yes {
-                super::display_plan_table_v2(&plan, v2_printer, None);
-                v2_printer.status_simple(Role::Info, format!("{} action(s) planned", total));
-                let confirmed = v2_printer
+                super::display_plan_table_v2(&plan, printer, None);
+                printer.status_simple(Role::Info, format!("{} action(s) planned", total));
+                let confirmed = printer
                     .prompt_confirm("Apply these changes?")
                     .unwrap_or(false);
                 if !confirmed {
-                    v2_printer
-                        .status_simple(Role::Info, "Skipped — run 'cfgd apply' to apply later");
-                    v2_printer.emit(Doc::new().with_data(serde_json::json!({
+                    printer.status_simple(Role::Info, "Skipped — run 'cfgd apply' to apply later");
+                    printer.emit(Doc::new().with_data(serde_json::json!({
                         "name": name,
                         "path": module_dir.display().to_string(),
                         "applied": false,
@@ -314,18 +313,18 @@ pub fn cmd_module_create(
                 &plan,
                 &resolved,
                 &config_dir,
-                v2_printer,
+                printer,
                 None,
                 &[],
                 cfgd_core::reconciler::ReconcileContext::Apply,
                 false,
             )?;
-            super::print_apply_result_v2(&result, v2_printer, None);
+            super::print_apply_result_v2(&result, printer, None);
             applied = true;
         }
     }
 
-    v2_printer.emit(Doc::new().with_data(serde_json::json!({
+    printer.emit(Doc::new().with_data(serde_json::json!({
         "name": name,
         "path": module_dir.display().to_string(),
         "applied": applied,
@@ -338,7 +337,7 @@ pub fn cmd_module_create(
 
 pub fn cmd_module_update_local(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     args: &ModuleUpdateArgs,
 ) -> anyhow::Result<()> {
     let name = &args.name;
@@ -351,13 +350,13 @@ pub fn cmd_module_update_local(
     let description = args.description.as_deref();
     let sets = &args.sets;
     validate_resource_name(name, "Module")?;
-    v2_printer.heading(format!("Update Module: {}", name));
+    printer.heading(format!("Update Module: {}", name));
 
     let config_dir = config_dir(cli);
     let (mut doc, module_yaml_path) = match load_module_document(&config_dir, name) {
         Ok(v) => v,
         Err(e) => {
-            v2_printer.emit(cfgd_core::output::error_doc(
+            printer.emit(cfgd_core::output::error_doc(
                 name,
                 "not_found",
                 e.to_string(),
@@ -384,7 +383,7 @@ pub fn cmd_module_update_local(
     for dep in &add_depends {
         if !doc.spec.depends.contains(dep) {
             doc.spec.depends.push(dep.clone());
-            v2_printer.status_simple(Role::Ok, format!("Added dependency: {}", dep));
+            printer.status_simple(Role::Ok, format!("Added dependency: {}", dep));
             changes += 1;
         }
     }
@@ -394,10 +393,10 @@ pub fn cmd_module_update_local(
         let before = doc.spec.depends.len();
         doc.spec.depends.retain(|d| d != dep);
         if doc.spec.depends.len() < before {
-            v2_printer.status_simple(Role::Ok, format!("Removed dependency: {}", dep));
+            printer.status_simple(Role::Ok, format!("Removed dependency: {}", dep));
             changes += 1;
         } else {
-            v2_printer.status_simple(Role::Warn, format!("Dependency '{}' not found", dep));
+            printer.status_simple(Role::Warn, format!("Dependency '{}' not found", dep));
         }
     }
 
@@ -407,7 +406,7 @@ pub fn cmd_module_update_local(
     for pkg_str in &add_packages {
         let (mgr, pkg) = super::parse_package_flag(pkg_str, &known_refs);
         if doc.spec.packages.iter().any(|p| p.name == pkg) {
-            v2_printer.status_simple(Role::Info, format!("Package '{}' already in module", pkg));
+            printer.status_simple(Role::Info, format!("Package '{}' already in module", pkg));
             continue;
         }
         doc.spec.packages.push(config::ModulePackageEntry {
@@ -419,7 +418,7 @@ pub fn cmd_module_update_local(
             script: None,
             platforms: Vec::new(),
         });
-        v2_printer.status_simple(Role::Ok, format!("Added package: {}", pkg));
+        printer.status_simple(Role::Ok, format!("Added package: {}", pkg));
         changes += 1;
     }
 
@@ -431,10 +430,10 @@ pub fn cmd_module_update_local(
         let before = doc.spec.packages.len();
         doc.spec.packages.retain(|p| p.name != canonical);
         if doc.spec.packages.len() < before {
-            v2_printer.status_simple(Role::Ok, format!("Removed package: {}", canonical));
+            printer.status_simple(Role::Ok, format!("Removed package: {}", canonical));
             changes += 1;
         } else {
-            v2_printer.status_simple(
+            printer.status_simple(
                 Role::Warn,
                 format!("Package '{}' not found in module", canonical),
             );
@@ -455,8 +454,7 @@ pub fn cmd_module_update_local(
 
             let source_key = format!("files/{}", basename);
             if doc.spec.files.iter().any(|f| f.source == source_key) {
-                v2_printer
-                    .status_simple(Role::Info, format!("File '{}' already in module", basename));
+                printer.status_simple(Role::Info, format!("File '{}' already in module", basename));
                 continue;
             }
             if !added_basenames.insert(basename) {
@@ -480,7 +478,7 @@ pub fn cmd_module_update_local(
             private: args.private,
             encryption: None,
         });
-        v2_printer.status_simple(Role::Ok, format!("Added file: {}", target.display()));
+        printer.status_simple(Role::Ok, format!("Added file: {}", target.display()));
         changes += 1;
     }
 
@@ -511,10 +509,10 @@ pub fn cmd_module_update_local(
                     }
                 }
             }
-            v2_printer.status_simple(Role::Ok, format!("Removed file: {}", target));
+            printer.status_simple(Role::Ok, format!("Removed file: {}", target));
             changes += 1;
         } else {
-            v2_printer.status_simple(Role::Warn, format!("File '{}' not found in module", target));
+            printer.status_simple(Role::Warn, format!("File '{}' not found in module", target));
         }
     }
 
@@ -522,7 +520,7 @@ pub fn cmd_module_update_local(
     for e in &add_env {
         let ev = cfgd_core::parse_env_var(e).map_err(|e| anyhow::anyhow!(e))?;
         cfgd_core::merge_env(&mut doc.spec.env, std::slice::from_ref(&ev));
-        v2_printer.status_simple(Role::Ok, format!("Set env: {}={}", ev.name, ev.value));
+        printer.status_simple(Role::Ok, format!("Set env: {}={}", ev.name, ev.value));
         changes += 1;
     }
 
@@ -531,10 +529,10 @@ pub fn cmd_module_update_local(
         let before = doc.spec.env.len();
         doc.spec.env.retain(|ev| ev.name != *key);
         if doc.spec.env.len() < before {
-            v2_printer.status_simple(Role::Ok, format!("Removed env: {}", key));
+            printer.status_simple(Role::Ok, format!("Removed env: {}", key));
             changes += 1;
         } else {
-            v2_printer.status_simple(Role::Warn, format!("Env var '{}' not found", key));
+            printer.status_simple(Role::Warn, format!("Env var '{}' not found", key));
         }
     }
 
@@ -542,7 +540,7 @@ pub fn cmd_module_update_local(
     for a in &add_aliases {
         let alias = cfgd_core::parse_alias(a).map_err(|e| anyhow::anyhow!(e))?;
         cfgd_core::merge_aliases(&mut doc.spec.aliases, std::slice::from_ref(&alias));
-        v2_printer.status_simple(
+        printer.status_simple(
             Role::Ok,
             format!("Set alias: {}={}", alias.name, alias.command),
         );
@@ -554,10 +552,10 @@ pub fn cmd_module_update_local(
         let before = doc.spec.aliases.len();
         doc.spec.aliases.retain(|a| a.name != *name);
         if doc.spec.aliases.len() < before {
-            v2_printer.status_simple(Role::Ok, format!("Removed alias: {}", name));
+            printer.status_simple(Role::Ok, format!("Removed alias: {}", name));
             changes += 1;
         } else {
-            v2_printer.status_simple(Role::Warn, format!("Alias '{}' not found", name));
+            printer.status_simple(Role::Warn, format!("Alias '{}' not found", name));
         }
     }
 
@@ -570,7 +568,7 @@ pub fn cmd_module_update_local(
         let entry = config::ScriptEntry::Simple(script.clone());
         if !scripts.post_apply.contains(&entry) {
             scripts.post_apply.push(entry);
-            v2_printer.status_simple(Role::Ok, format!("Added post-apply script: {}", script));
+            printer.status_simple(Role::Ok, format!("Added post-apply script: {}", script));
             changes += 1;
         }
     }
@@ -581,11 +579,10 @@ pub fn cmd_module_update_local(
             let before = scripts.post_apply.len();
             scripts.post_apply.retain(|e| e.run_str() != script);
             if scripts.post_apply.len() < before {
-                v2_printer
-                    .status_simple(Role::Ok, format!("Removed post-apply script: {}", script));
+                printer.status_simple(Role::Ok, format!("Removed post-apply script: {}", script));
                 changes += 1;
             } else {
-                v2_printer.status_simple(Role::Warn, format!("Script '{}' not found", script));
+                printer.status_simple(Role::Warn, format!("Script '{}' not found", script));
             }
         }
     }
@@ -597,7 +594,7 @@ pub fn cmd_module_update_local(
     }
 
     if changes == 0 {
-        v2_printer.emit(
+        printer.emit(
             Doc::new()
                 .status(Role::Info, "No changes specified")
                 .with_data(serde_json::json!({
@@ -609,7 +606,7 @@ pub fn cmd_module_update_local(
     }
 
     save_module_document(&doc, &module_yaml_path)?;
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(
                 Role::Ok,
@@ -626,13 +623,13 @@ pub fn cmd_module_update_local(
 
 // --- Module Edit ---
 
-pub fn cmd_module_edit(cli: &Cli, v2_printer: &Printer, name: &str) -> anyhow::Result<()> {
+pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<()> {
     validate_resource_name(name, "Module")?;
     let config_dir = config_dir(cli);
     let module_yaml = config_dir.join("modules").join(name).join("module.yaml");
 
     if !module_yaml.exists() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             name,
             "not_found",
             format!("Module '{}' not found at {}", name, module_yaml.display()),
@@ -641,7 +638,7 @@ pub fn cmd_module_edit(cli: &Cli, v2_printer: &Printer, name: &str) -> anyhow::R
         anyhow::bail!("Module '{}' not found at {}", name, module_yaml.display());
     }
 
-    open_in_editor_v2(&module_yaml, v2_printer)?;
+    open_in_editor_v2(&module_yaml, printer)?;
 
     // Validate after editing — loop until valid or user cancels
     let mut valid = false;
@@ -653,18 +650,17 @@ pub fn cmd_module_edit(cli: &Cli, v2_printer: &Printer, name: &str) -> anyhow::R
                 break;
             }
             Err(e) => {
-                v2_printer
-                    .status_simple(Role::Fail, format!("Module '{}' has errors: {}", name, e));
-                if !v2_printer.prompt_confirm("Re-open in editor?")? {
+                printer.status_simple(Role::Fail, format!("Module '{}' has errors: {}", name, e));
+                if !printer.prompt_confirm("Re-open in editor?")? {
                     break;
                 }
-                open_in_editor_v2(&module_yaml, v2_printer)?;
+                open_in_editor_v2(&module_yaml, printer)?;
             }
         }
     }
 
     if valid {
-        v2_printer.emit(
+        printer.emit(
             Doc::new()
                 .status(Role::Ok, format!("Module '{}' is valid", name))
                 .with_data(serde_json::json!({
@@ -674,7 +670,7 @@ pub fn cmd_module_edit(cli: &Cli, v2_printer: &Printer, name: &str) -> anyhow::R
                 })),
         );
     } else {
-        v2_printer.emit(
+        printer.emit(
             Doc::new()
                 .status(Role::Warn, "Saved with validation errors")
                 .with_data(serde_json::json!({
@@ -692,19 +688,19 @@ pub fn cmd_module_edit(cli: &Cli, v2_printer: &Printer, name: &str) -> anyhow::R
 
 pub fn cmd_module_delete(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     name: &str,
     yes: bool,
     purge: bool,
 ) -> anyhow::Result<()> {
     validate_resource_name(name, "Module")?;
-    v2_printer.heading(format!("Delete Module: {}", name));
+    printer.heading(format!("Delete Module: {}", name));
 
     let config_dir = config_dir(cli);
     let module_dir = config_dir.join("modules").join(name);
 
     if !module_dir.exists() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             name,
             "not_found",
             format!("Module '{}' not found at {}", name, module_dir.display()),
@@ -716,7 +712,7 @@ pub fn cmd_module_delete(
     // Safety: refuse if any profile references this module
     let referencing = profiles_using_module(&profiles_dir(cli), name)?;
     if !referencing.is_empty() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             name,
             "in_use",
             format!(
@@ -733,8 +729,8 @@ pub fn cmd_module_delete(
         );
     }
 
-    if !yes && !v2_printer.prompt_confirm(&format!("Delete module '{}'?", name))? {
-        v2_printer.emit(
+    if !yes && !printer.prompt_confirm(&format!("Delete module '{}'?", name))? {
+        printer.emit(
             Doc::new()
                 .status(Role::Info, "Cancelled")
                 .with_data(serde_json::json!({
@@ -754,7 +750,7 @@ pub fn cmd_module_delete(
             // Purge mode: remove all files deployed by this module to target locations.
             // This replaces symlink restoration — there's nothing to restore if we're
             // removing everything.
-            let purge_sec = v2_printer.section("Purging files");
+            let purge_sec = printer.section("Purging files");
             for file_entry in &doc.spec.files {
                 let target = cfgd_core::expand_tilde(std::path::Path::new(&file_entry.target));
                 if target.is_symlink() || target.exists() {
@@ -772,7 +768,7 @@ pub fn cmd_module_delete(
             // Default: restore symlinked files before deleting the module directory.
             // When module create adopts files, it moves them into the module dir and
             // symlinks the original location back. On delete, we reverse that.
-            let restore_sec = v2_printer.section("Restoring files");
+            let restore_sec = printer.section("Restoring files");
             for file_entry in &doc.spec.files {
                 let target = cfgd_core::expand_tilde(std::path::Path::new(&file_entry.target));
                 let source = module_dir.join(&file_entry.source);
@@ -802,7 +798,7 @@ pub fn cmd_module_delete(
     if let Ok(state) = open_state_store(cli.state_dir.as_deref())
         && let Err(e) = state.remove_module_state(name)
     {
-        v2_printer.status_simple(Role::Warn, format!("Failed to clean module state: {}", e));
+        printer.status_simple(Role::Warn, format!("Failed to clean module state: {}", e));
     }
 
     // Clean from lockfile if present
@@ -811,10 +807,10 @@ pub fn cmd_module_delete(
     if had_lock {
         lockfile.modules.retain(|e| e.name != name);
         modules::save_lockfile(&config_dir, &lockfile)?;
-        v2_printer.status_simple(Role::Info, format!("Removed '{}' from modules.lock", name));
+        printer.status_simple(Role::Info, format!("Removed '{}' from modules.lock", name));
     }
 
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(Role::Ok, format!("Deleted module '{}'", name))
             .with_data(serde_json::json!({
@@ -826,7 +822,7 @@ pub fn cmd_module_delete(
             })),
     );
 
-    maybe_update_workflow(cli, v2_printer)?;
+    maybe_update_workflow(cli, printer)?;
 
     Ok(())
 }

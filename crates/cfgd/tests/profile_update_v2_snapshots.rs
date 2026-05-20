@@ -65,12 +65,12 @@ fn assert_snapshot(base: &Path, name: &str, actual: &str) {
 fn profile_update_happy_human() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let mut args = profile_update_args();
     args.env = vec!["EDITOR=nvim".to_string()];
 
-    cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
-    drop(v2_printer);
+    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -84,12 +84,12 @@ fn profile_update_happy_human() {
 fn profile_update_happy_json() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let mut args = profile_update_args();
     args.env = vec!["EDITOR=nvim".to_string()];
 
-    cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
-    drop(v2_printer);
+    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["name"], "default");
@@ -101,11 +101,11 @@ fn profile_update_happy_json() {
 fn profile_update_no_changes_human() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let args = profile_update_args();
 
-    cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
-    drop(v2_printer);
+    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -119,11 +119,11 @@ fn profile_update_no_changes_human() {
 fn profile_update_no_changes_json() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let args = profile_update_args();
 
-    cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
-    drop(v2_printer);
+    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["changes"], 0);
@@ -134,13 +134,13 @@ fn profile_update_no_changes_json() {
 fn profile_update_add_remove_mixed_human() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let mut args = profile_update_args();
     args.modules = vec!["nvim".to_string(), "-missing".to_string()];
     args.env = vec!["-EDITOR".to_string()];
 
-    cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
-    drop(v2_printer);
+    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -154,7 +154,7 @@ fn profile_update_add_remove_mixed_human() {
 #[serial]
 fn profile_update_add_module_remote_hybrid_human() {
     // T1→T3 closed: `cmd_profile_update --module <file://...>` delegates to
-    // `module::cmd_module_add_remote(cli, v2_printer, ...)` — both ends on v2.
+    // `module::cmd_module_add_remote(cli, printer, ...)` — both ends on v2.
     // The v2 prompt queue drives the "Add this remote module?" / signature
     // confirmations through the unified Printer surface.
     let (config_dir, state_dir) = profile_test_config_setup();
@@ -166,13 +166,13 @@ fn profile_update_add_module_remote_hybrid_human() {
     let module_url = format!("file://{}@v1.0.0", bare.display());
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) =
+    let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
     let mut args = profile_update_args();
     args.modules = vec![module_url.clone()];
 
-    cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
-    drop(v2_printer);
+    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    drop(printer);
 
     let mut stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
     // Strip the bare-repo path so the golden is host-stable.

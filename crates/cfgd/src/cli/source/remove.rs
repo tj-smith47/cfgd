@@ -3,13 +3,13 @@ use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 
 pub fn cmd_source_remove(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     name: &str,
     keep_all: bool,
     remove_all: bool,
 ) -> anyhow::Result<()> {
     if keep_all && remove_all {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             name,
             "conflicting_flags",
             "cannot use --keep-all and --remove-all together",
@@ -18,13 +18,13 @@ pub fn cmd_source_remove(
         anyhow::bail!("cannot use --keep-all and --remove-all together");
     }
 
-    v2_printer.heading(format!("Remove Source: {}", name));
+    printer.heading(format!("Remove Source: {}", name));
 
     let config_path = cli.config.clone();
     let cfg = config::load_config(&config_path)?;
 
     if !cfg.spec.sources.iter().any(|s| s.name == name) {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             name,
             "not_found",
             format!("Source '{}' not found in config", name),
@@ -42,7 +42,7 @@ pub fn cmd_source_remove(
     if !resources.is_empty() && !keep_all && !remove_all {
         // Interactive: Keep / Remove / Cancel
         {
-            let res_sec = v2_printer.section(format!(
+            let res_sec = printer.section(format!(
                 "This source manages {} resource(s)",
                 resources.len()
             ));
@@ -58,10 +58,10 @@ pub fn cmd_source_remove(
             "Remove all".to_string(),
             "Cancel (abort remove)".to_string(),
         ];
-        let choice = v2_printer.prompt_select("What to do with these resources?", &options)?;
+        let choice = printer.prompt_select("What to do with these resources?", &options)?;
 
         if choice.starts_with("Cancel") {
-            v2_printer.emit(
+            printer.emit(
                 Doc::new()
                     .status(Role::Info, "Cancelled — source not removed")
                     .with_data(serde_json::json!({
@@ -84,7 +84,7 @@ pub fn cmd_source_remove(
                     r.last_applied,
                 )?;
             }
-            v2_printer.status_simple(Role::Info, "Resources transferred to local management");
+            printer.status_simple(Role::Info, "Resources transferred to local management");
             disposition = "kept";
         } else {
             disposition = "purged";
@@ -126,7 +126,7 @@ pub fn cmd_source_remove(
         tracing::debug!("source cache removal failed for '{}': {}", name, e);
     }
 
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(Role::Ok, format!("Source '{}' removed", name))
             .with_data(serde_json::json!({

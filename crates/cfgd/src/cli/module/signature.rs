@@ -32,7 +32,7 @@ fn verify_tag_signature_cryptographic(repo_dir: &Path, tag_name: &str) -> anyhow
 /// and bails if policy is violated. Returns Ok(()) if allowed to proceed.
 pub(crate) fn enforce_signature_policy(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     tag: Option<&str>,
     module_name: &str,
     allow_unsigned: bool,
@@ -50,7 +50,7 @@ pub(crate) fn enforce_signature_policy(
 
     let Some(tag) = tag else {
         if require_signatures && !allow_unsigned {
-            v2_printer.emit(cfgd_core::output::error_doc(
+            printer.emit(cfgd_core::output::error_doc(
                 module_name,
                 "signature_required",
                 format!(
@@ -74,10 +74,10 @@ pub(crate) fn enforce_signature_policy(
         Ok(modules::TagSignatureStatus::SignaturePresent) => {
             match verify_tag_signature_cryptographic(&repo_dir, tag) {
                 Ok(true) => {
-                    v2_printer.status_simple(Role::Ok, format!("Tag '{}' signature verified", tag))
+                    printer.status_simple(Role::Ok, format!("Tag '{}' signature verified", tag))
                 }
                 Ok(false) => {
-                    v2_printer.emit(cfgd_core::output::error_doc(
+                    printer.emit(cfgd_core::output::error_doc(
                         module_name,
                         "signature_failed",
                         format!(
@@ -92,7 +92,7 @@ pub(crate) fn enforce_signature_policy(
                     );
                 }
                 Err(e) => {
-                    v2_printer.status_simple(
+                    printer.status_simple(
                         Role::Warn,
                         format!(
                             "Tag '{}' has a signature but verification skipped: {}",
@@ -111,7 +111,7 @@ pub(crate) fn enforce_signature_policy(
                 _ => format!("Tag '{}' is unsigned", tag),
             };
             if require_signatures && !allow_unsigned {
-                v2_printer.emit(cfgd_core::output::error_doc(
+                printer.emit(cfgd_core::output::error_doc(
                     module_name,
                     "signature_required",
                     label.clone(),
@@ -123,12 +123,12 @@ pub(crate) fn enforce_signature_policy(
                     tag
                 );
             }
-            v2_printer.status_simple(Role::Info, label);
+            printer.status_simple(Role::Info, label);
         }
         Ok(modules::TagSignatureStatus::TagNotFound) => {
-            v2_printer.status_simple(Role::Warn, format!("Tag '{}' not found in repo", tag));
+            printer.status_simple(Role::Warn, format!("Tag '{}' not found in repo", tag));
         }
-        Err(e) => v2_printer.status_simple(Role::Warn, format!("Signature check: {}", e)),
+        Err(e) => printer.status_simple(Role::Warn, format!("Signature check: {}", e)),
     }
 
     Ok(())

@@ -59,11 +59,11 @@ fn assert_snapshot(base: &Path, name: &str, actual: &str) {
 
 #[test]
 fn plugin_debug_module_required_human() {
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    let err = plugin::cmd_debug(&v2_printer, "mypod", &[], "default", "ubuntu:22.04");
+    let err = plugin::cmd_debug(&printer, "mypod", &[], "default", "ubuntu:22.04");
     assert!(err.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -79,11 +79,11 @@ fn plugin_debug_module_required_human() {
 
 #[test]
 fn plugin_debug_module_required_json() {
-    let (v2_printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+    let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
 
-    let err = plugin::cmd_debug(&v2_printer, "mypod", &[], "default", "ubuntu:22.04");
+    let err = plugin::cmd_debug(&printer, "mypod", &[], "default", "ubuntu:22.04");
     assert!(err.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let json = cap.json().expect("error Doc carries with_data");
     assert_eq!(json["error"], "module_required");
@@ -95,11 +95,11 @@ fn plugin_debug_module_required_json() {
 
 #[test]
 fn plugin_exec_module_required_human() {
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    let err = plugin::cmd_exec(&v2_printer, "mypod", &[], "default", &["ls".into()]);
+    let err = plugin::cmd_exec(&printer, "mypod", &[], "default", &["ls".into()]);
     assert!(err.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -114,12 +114,12 @@ fn plugin_exec_module_required_human() {
 
 #[test]
 fn plugin_exec_command_required_human() {
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     let modules = vec!["nettools:1.0.0".to_string()];
-    let err = plugin::cmd_exec(&v2_printer, "mypod", &modules, "default", &[]);
+    let err = plugin::cmd_exec(&printer, "mypod", &modules, "default", &[]);
     assert!(err.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -136,11 +136,11 @@ fn plugin_exec_command_required_human() {
 
 #[test]
 fn plugin_inject_module_required_human() {
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    let err = plugin::cmd_inject(&v2_printer, "deployment/myapp", &[], "default");
+    let err = plugin::cmd_inject(&printer, "deployment/myapp", &[], "default");
     assert!(err.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -156,12 +156,12 @@ fn plugin_inject_module_required_human() {
 
 #[test]
 fn plugin_inject_invalid_resource_human() {
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     let modules = vec!["tool:1.0".to_string()];
-    let err = plugin::cmd_inject(&v2_printer, "bad-format-no-slash", &modules, "default");
+    let err = plugin::cmd_inject(&printer, "bad-format-no-slash", &modules, "default");
     assert!(err.is_err());
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
@@ -184,10 +184,10 @@ fn plugin_inject_invalid_resource_human() {
 #[serial]
 fn plugin_version_disconnected_human() {
     let _kubeconfig = EnvVarGuard::set("KUBECONFIG", "/tmp/nonexistent-kubeconfig");
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    plugin::cmd_version(&v2_printer).unwrap();
-    drop(v2_printer);
+    plugin::cmd_version(&printer).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(

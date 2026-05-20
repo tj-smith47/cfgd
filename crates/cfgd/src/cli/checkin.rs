@@ -5,12 +5,12 @@ use cfgd_core::server_client::{DeviceCredential, ServerClient};
 
 pub fn cmd_checkin(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     server_url: &str,
     api_key: Option<&str>,
     device_id: Option<&str>,
 ) -> anyhow::Result<()> {
-    v2_printer.heading("Checkin");
+    printer.heading("Checkin");
 
     let (cfg, _profile_name, resolved) = load_config_and_profile_v2(cli)?;
     let registry = build_registry_with_profile(&resolved.merged.packages);
@@ -33,7 +33,7 @@ pub fn cmd_checkin(
                 &[],
             ) {
                 Ok(snapshot) => {
-                    v2_printer.kv(
+                    printer.kv(
                         "Compliance",
                         format!(
                             "{} compliant, {} warning, {} violation",
@@ -57,9 +57,9 @@ pub fn cmd_checkin(
     };
 
     let resp = {
-        let sp = v2_printer.spinner("Posting to gateway");
+        let sp = printer.spinner("Posting to gateway");
         let result = client
-            .checkin(&config_hash, compliance_summary, v2_printer)
+            .checkin(&config_hash, compliance_summary, printer)
             .map_err(|e| anyhow::anyhow!("{}", e));
         match &result {
             Ok(resp) => {
@@ -72,12 +72,12 @@ pub fn cmd_checkin(
         result?
     };
 
-    v2_printer.kv("Server status", &resp.status);
-    v2_printer.kv("Config changed", resp.config_changed.to_string());
+    printer.kv("Server status", &resp.status);
+    printer.kv("Config changed", resp.config_changed.to_string());
 
     if let Some(ref desired) = resp.desired_config {
-        v2_printer.status_simple(Role::Warn, "Server pushed desired config");
-        let push_sec = v2_printer.section("Server config");
+        printer.status_simple(Role::Warn, "Server pushed desired config");
+        let push_sec = printer.section("Server config");
         match cfgd_core::state::save_pending_server_config(desired) {
             Ok(path) => {
                 push_sec.status_simple(Role::Ok, format!("Saved to {}", path.display()));
@@ -107,9 +107,9 @@ pub fn cmd_checkin(
     }
 
     let drift_status = if !all_drifts.is_empty() {
-        let sp = v2_printer.spinner("Reporting drift");
+        let sp = printer.spinner("Reporting drift");
         let res = client
-            .report_drift(&all_drifts, v2_printer)
+            .report_drift(&all_drifts, printer)
             .map_err(|e| anyhow::anyhow!("{}", e));
         match &res {
             Ok(()) => {
@@ -122,11 +122,11 @@ pub fn cmd_checkin(
         res?;
         "drift_reported"
     } else {
-        v2_printer.status_simple(Role::Info, "No drift to report");
+        printer.status_simple(Role::Info, "No drift to report");
         "no_drift"
     };
 
-    v2_printer.emit(build_checkin_doc(&CheckinOutput {
+    printer.emit(build_checkin_doc(&CheckinOutput {
         server_status: resp.status.clone(),
         config_changed: resp.config_changed,
         drift_count: all_drifts.len(),

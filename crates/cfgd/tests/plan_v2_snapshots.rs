@@ -70,11 +70,11 @@ fn plan_happy_human() {
     let (config_dir, state_dir, target) = tiny_profile_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let args = plan_args();
 
-    cmd_plan(&cli, &v2_printer, &args).unwrap();
-    drop(v2_printer);
+    cmd_plan(&cli, &printer, &args).unwrap();
+    drop(printer);
 
     let normalized =
         normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
@@ -87,9 +87,9 @@ fn plan_happy_json() {
     // Pure data-roundtrip test on `PlanOutput` — drives the JSON path
     // through `Doc::with_data` without standing up a reconciler.
     let output = happy_plan_output();
-    let (v2_printer, cap) = Printer::for_test_doc();
-    v2_printer.emit(Doc::new().with_data(&output));
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(Doc::new().with_data(&output));
+    drop(printer);
 
     let expected = serde_json::to_value(&output).unwrap();
     let actual = cap.json().expect("plan doc carries a payload");
@@ -107,11 +107,11 @@ fn plan_empty_human() {
     let (config_dir, state_dir) = empty_profile_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let args = plan_args();
 
-    cmd_plan(&cli, &v2_printer, &args).unwrap();
-    drop(v2_printer);
+    cmd_plan(&cli, &printer, &args).unwrap();
+    drop(printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path(), &[]);
     let stripped = strip_ansi(&normalized);
@@ -133,11 +133,11 @@ fn plan_module_only_human() {
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let args = plan_args_module("nettools");
 
-    cmd_plan(&cli, &v2_printer, &args).unwrap();
-    drop(v2_printer);
+    cmd_plan(&cli, &printer, &args).unwrap();
+    drop(printer);
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path(), &[]);
     let stripped = strip_ansi(&normalized);
@@ -152,11 +152,11 @@ fn plan_with_pending_human() {
     let (config_dir, state_dir, target) = state_with_pending_decision_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let args = plan_args();
 
-    cmd_plan(&cli, &v2_printer, &args).unwrap();
-    drop(v2_printer);
+    cmd_plan(&cli, &printer, &args).unwrap();
+    drop(printer);
 
     let normalized =
         normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);

@@ -13,7 +13,7 @@
 //!     --dry-run` against an empty profile (plan has zero actions, so
 //!     `apply_plan` early-returns on "Nothing to do"). When `should_apply ==
 //!     true`, cmd_init suppresses the trailing "Next steps" section and the
-//!     final `v2_printer.emit(...)` carries only the typed payload — no
+//!     final `printer.emit(...)` carries only the typed payload — no
 //!     buffered human content. This snapshot therefore pins the apply-status
 //!     streaming surface end-to-end, NOT a streaming → buffered human
 //!     transition. The §17.2 invariant under apply data is asserted by the
@@ -145,7 +145,7 @@ fn init_with_apply_renders_apply_status_streaming() {
     // --dry-run` against an empty profile (zero actions, so `apply_plan`
     // hits its "Nothing to do" early-return). When `should_apply == true`
     // cmd_init suppresses the "Next steps" section in its trailing
-    // `v2_printer.emit(...)`, so the final Doc carries only the InitOutput
+    // `printer.emit(...)`, so the final Doc carries only the InitOutput
     // payload — NOT a buffered human surface. This capture therefore covers
     // Phase A (scaffold status lines + git-init success) and Phase B (apply
     // header + "Set active profile" + "Nothing to do" status), with no
@@ -217,12 +217,12 @@ fn init_with_apply_renders_apply_status_streaming() {
 fn init_apply_then_next_steps_bridge_invariant() {
     // Bridge anchor: cmd_init's apply branch deliberately suppresses the
     // "Next steps" buffered section (the apply path already produced its
-    // own report), so the trailing `v2_printer.emit(...)` there carries
+    // own report), so the trailing `printer.emit(...)` there carries
     // only a payload-bearing Doc with no human content — meaning cmd_init
     // alone does NOT exercise a streaming → buffered human transition
     // under apply data.
     //
-    // This test fills that gap by driving the same v2_printer with the
+    // This test fills that gap by driving the same printer with the
     // shape `apply_plan` produces for a non-empty plan (heading +
     // status_simple lines) and then emitting a buffered Doc carrying a
     // real `section("Next Steps", |s| s.bullet(...))` payload. The
@@ -231,16 +231,16 @@ fn init_apply_then_next_steps_bridge_invariant() {
     // streaming line and the first buffered line.
     use cfgd_core::output::{Doc, Role};
 
-    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc();
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     // Streaming portion — mirrors `apply_plan`'s shape for a non-empty
     // plan: heading + plan-table section + "N action(s) planned" info
     // line. We use status_simple rather than restanding the plan-table
     // renderer because the bridge invariant is about the gap between
     // streaming and buffered, not the plan-table interior.
-    v2_printer.heading("Applying Configuration");
-    v2_printer.status_simple(Role::Ok, "Set active profile: default");
-    v2_printer.status_simple(Role::Info, "1 action(s) planned");
+    printer.heading("Applying Configuration");
+    printer.status_simple(Role::Ok, "Set active profile: default");
+    printer.status_simple(Role::Info, "1 action(s) planned");
 
     // Buffered portion — a real section with bullets, matching the shape
     // cmd_init emits when `should_apply == false` (the "Next steps"
@@ -250,8 +250,8 @@ fn init_apply_then_next_steps_bridge_invariant() {
             .bullet("cfgd status         — view configured state")
             .bullet("cfgd daemon install — start background sync")
     });
-    v2_printer.emit(doc);
-    drop(v2_printer);
+    printer.emit(doc);
+    drop(printer);
 
     let captured = strip_ansi(&cap.human());
 

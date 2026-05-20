@@ -1,16 +1,13 @@
 use super::*;
 use cfgd_core::output::{Doc, Printer, Role};
 
-pub fn cmd_module_keys_generate(
-    v2_printer: &Printer,
-    output_dir: Option<&str>,
-) -> anyhow::Result<()> {
+pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> anyhow::Result<()> {
     if let Err(msg) = cfgd_core::require_tool_with_seam(
         "CFGD_COSIGN_BIN",
         "cosign",
         Some("install it from https://docs.sigstore.dev/cosign/installation/"),
     ) {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             "cosign",
             "tool_missing",
             msg.clone(),
@@ -19,7 +16,7 @@ pub fn cmd_module_keys_generate(
         anyhow::bail!(msg);
     }
 
-    v2_printer.heading("Generate Cosign Key Pair");
+    printer.heading("Generate Cosign Key Pair");
 
     let dir = output_dir.unwrap_or(".");
     std::fs::create_dir_all(dir)?;
@@ -43,7 +40,7 @@ pub fn cmd_module_keys_generate(
         .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
 
     if !status.success() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             "cosign",
             "keygen_failed",
             "cosign generate-key-pair failed".to_string(),
@@ -58,17 +55,17 @@ pub fn cmd_module_keys_generate(
     if key_dir.join("cosign.key").exists() {
         let priv_path = format!("{}/cosign.key", dir);
         let pub_path = format!("{}/cosign.pub", dir);
-        v2_printer.kv_block([
+        printer.kv_block([
             ("Private key", priv_path.clone()),
             ("Public key", pub_path.clone()),
         ]);
-        v2_printer.hint("Sign with: cfgd module push --sign --key cosign.key ...");
-        v2_printer.hint("Verify with: cosign verify --key cosign.pub <artifact>");
+        printer.hint("Sign with: cfgd module push --sign --key cosign.key ...");
+        printer.hint("Verify with: cosign verify --key cosign.pub <artifact>");
         private_key = Some(priv_path);
         public_key = Some(pub_path);
     }
 
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(Role::Ok, "Generated cosign key pair")
             .with_data(serde_json::json!({
@@ -81,7 +78,7 @@ pub fn cmd_module_keys_generate(
     Ok(())
 }
 
-pub fn cmd_module_keys_list(v2_printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_module_keys_list(printer: &Printer) -> anyhow::Result<()> {
     let locations = [
         ("./cosign.key", "./cosign.pub"),
         ("~/.cfgd/cosign.key", "~/.cfgd/cosign.pub"),
@@ -130,12 +127,12 @@ pub fn cmd_module_keys_list(v2_printer: &Printer) -> anyhow::Result<()> {
         doc = doc.kv_block(pairs);
     }
 
-    v2_printer.emit(doc.with_data(&entries));
+    printer.emit(doc.with_data(&entries));
     Ok(())
 }
 
 pub fn cmd_module_keys_rotate(
-    v2_printer: &Printer,
+    printer: &Printer,
     dir: Option<&str>,
     artifacts: &[String],
 ) -> anyhow::Result<()> {
@@ -144,7 +141,7 @@ pub fn cmd_module_keys_rotate(
         "cosign",
         Some("install it from https://docs.sigstore.dev/cosign/installation/"),
     ) {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             "cosign",
             "tool_missing",
             msg.clone(),
@@ -158,7 +155,7 @@ pub fn cmd_module_keys_rotate(
     let old_pub = Path::new(key_dir).join("cosign.pub");
 
     if !old_key.exists() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             key_dir,
             "key_not_found",
             format!(
@@ -173,7 +170,7 @@ pub fn cmd_module_keys_rotate(
         );
     }
 
-    v2_printer.heading("Rotate Cosign Key Pair");
+    printer.heading("Rotate Cosign Key Pair");
 
     // Back up old keys
     let backup_suffix = cfgd_core::utc_now_filename_safe();
@@ -181,13 +178,13 @@ pub fn cmd_module_keys_rotate(
     let backup_pub = Path::new(key_dir).join(format!("cosign.pub.{backup_suffix}"));
 
     std::fs::rename(&old_key, &backup_key)?;
-    v2_printer.status_simple(
+    printer.status_simple(
         Role::Info,
         format!("Backed up old private key to {}", backup_key.display()),
     );
     if old_pub.exists() {
         std::fs::rename(&old_pub, &backup_pub)?;
-        v2_printer.status_simple(
+        printer.status_simple(
             Role::Info,
             format!("Backed up old public key to {}", backup_pub.display()),
         );
@@ -213,7 +210,7 @@ pub fn cmd_module_keys_rotate(
         if backup_pub.exists() {
             let _ = std::fs::rename(&backup_pub, &old_pub);
         }
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             key_dir,
             "keygen_failed",
             "cosign generate-key-pair failed — old keys restored".to_string(),
@@ -222,13 +219,13 @@ pub fn cmd_module_keys_rotate(
         anyhow::bail!("cosign generate-key-pair failed — old keys restored");
     }
 
-    v2_printer.status_simple(Role::Ok, "Generated new key pair");
+    printer.status_simple(Role::Ok, "Generated new key pair");
 
     // Re-sign artifacts with the new key
     let new_key_path = Path::new(key_dir).join("cosign.key");
     let mut resigned: Vec<String> = Vec::new();
     for artifact in artifacts {
-        let sp = v2_printer.spinner(format!("Re-signing {artifact}..."));
+        let sp = printer.spinner(format!("Re-signing {artifact}..."));
         match cfgd_core::oci::sign_artifact(artifact, Some(&new_key_path.display().to_string())) {
             Ok(()) => {
                 sp.finish_ok(format!("Re-signed {artifact}"));
@@ -237,7 +234,7 @@ pub fn cmd_module_keys_rotate(
             Err(e) => {
                 sp.finish_fail(format!("Failed to re-sign {artifact}"))
                     .detail(e.to_string());
-                v2_printer.emit(cfgd_core::output::error_doc(
+                printer.emit(cfgd_core::output::error_doc(
                     "keys",
                     "resign_failed",
                     e.to_string(),
@@ -252,7 +249,7 @@ pub fn cmd_module_keys_rotate(
     }
 
     if artifacts.is_empty() {
-        v2_printer.hint(
+        printer.hint(
             "No artifacts specified — re-sign manually with: cfgd module push --sign --key cosign.key ...",
         );
     }
@@ -262,7 +259,7 @@ pub fn cmd_module_keys_rotate(
     } else {
         None
     };
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(Role::Ok, "Key rotation complete")
             .with_data(serde_json::json!({

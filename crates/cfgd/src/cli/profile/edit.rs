@@ -1,11 +1,11 @@
 use super::*;
 use cfgd_core::output::{Doc, Printer, Role};
 
-pub fn cmd_profile_edit(cli: &Cli, v2_printer: &Printer, name: &str) -> anyhow::Result<()> {
+pub fn cmd_profile_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<()> {
     validate_resource_name(name, "Profile")?;
     let profile_path = profiles_dir(cli).join(format!("{}.yaml", name));
     if !profile_path.exists() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             name,
             "not_found",
             format!("Profile '{}' not found", name),
@@ -14,7 +14,7 @@ pub fn cmd_profile_edit(cli: &Cli, v2_printer: &Printer, name: &str) -> anyhow::
         anyhow::bail!("Profile '{}' not found", name);
     }
 
-    open_in_editor_v2(&profile_path, v2_printer)?;
+    open_in_editor_v2(&profile_path, printer)?;
 
     let mut errors: Vec<String> = Vec::new();
     let valid = loop {
@@ -26,15 +26,15 @@ pub fn cmd_profile_edit(cli: &Cli, v2_printer: &Printer, name: &str) -> anyhow::
             }
             Err(e) => {
                 let msg = e.to_string();
-                v2_printer.status_simple(
+                printer.status_simple(
                     Role::Fail,
                     format!("Profile '{}' has errors: {}", name, msg),
                 );
                 errors.push(msg);
-                if !v2_printer.prompt_confirm("Re-open in editor?")? {
+                if !printer.prompt_confirm("Re-open in editor?")? {
                     break false;
                 }
-                open_in_editor_v2(&profile_path, v2_printer)?;
+                open_in_editor_v2(&profile_path, printer)?;
             }
         }
     };
@@ -56,7 +56,7 @@ pub fn cmd_profile_edit(cli: &Cli, v2_printer: &Printer, name: &str) -> anyhow::
                 "errors": errors,
             }))
     };
-    v2_printer.emit(doc);
+    printer.emit(doc);
 
     Ok(())
 }

@@ -3,19 +3,19 @@ use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_profile_delete(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     name: &str,
     yes: bool,
 ) -> anyhow::Result<()> {
     validate_resource_name(name, "Profile")?;
-    v2_printer.heading(format!("Delete Profile: {}", name));
+    printer.heading(format!("Delete Profile: {}", name));
 
     let config_dir = config_dir(cli);
     let pdir = profiles_dir(cli);
     let profile_path = pdir.join(format!("{}.yaml", name));
 
     if !profile_path.exists() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             name,
             "not_found",
             format!("Profile '{}' not found", name),
@@ -29,7 +29,7 @@ pub fn cmd_profile_delete(
         && let Ok(cfg) = config::load_config(&cli.config)
         && cfg.spec.profile.as_deref() == Some(name)
     {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             name,
             "active_profile",
             format!(
@@ -47,7 +47,7 @@ pub fn cmd_profile_delete(
     // Safety: refuse if inherited by other profiles
     let inheritors = profiles_inheriting(&pdir, name)?;
     if !inheritors.is_empty() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             name,
             "inherited",
             format!(
@@ -64,8 +64,8 @@ pub fn cmd_profile_delete(
         );
     }
 
-    if !yes && !v2_printer.prompt_confirm(&format!("Delete profile '{}'?", name))? {
-        v2_printer.emit(
+    if !yes && !printer.prompt_confirm(&format!("Delete profile '{}'?", name))? {
+        printer.emit(
             Doc::new()
                 .status(Role::Info, "Cancelled")
                 .with_data(serde_json::json!({
@@ -84,7 +84,7 @@ pub fn cmd_profile_delete(
         std::fs::remove_dir_all(&files_dir)?;
     }
 
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(Role::Ok, format!("Deleted profile '{}'", name))
             .with_data(serde_json::json!({
@@ -93,7 +93,7 @@ pub fn cmd_profile_delete(
             })),
     );
 
-    maybe_update_workflow(cli, v2_printer)?;
+    maybe_update_workflow(cli, printer)?;
 
     Ok(())
 }

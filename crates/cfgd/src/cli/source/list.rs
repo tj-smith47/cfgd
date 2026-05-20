@@ -56,14 +56,14 @@ pub fn build_source_list_no_config_doc() -> Doc {
         .with_data(&empty)
 }
 
-pub fn cmd_source_list(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_source_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let config_path = cli.config.clone();
     if !config_path.exists() {
-        if v2_printer.is_structured() {
-            v2_printer.emit(Doc::new().with_data(Vec::<SourceListEntry>::new()));
+        if printer.is_structured() {
+            printer.emit(Doc::new().with_data(Vec::<SourceListEntry>::new()));
             return Ok(());
         }
-        v2_printer.emit(build_source_list_no_config_doc());
+        printer.emit(build_source_list_no_config_doc());
         return Ok(());
     }
 
@@ -71,7 +71,7 @@ pub fn cmd_source_list(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
 
     if cfg.spec.sources.is_empty() {
         let entries: Vec<SourceListEntry> = Vec::new();
-        v2_printer.emit(build_source_list_doc(&entries, v2_printer.is_wide()));
+        printer.emit(build_source_list_doc(&entries, printer.is_wide()));
         return Ok(());
     }
 
@@ -97,6 +97,6 @@ pub fn cmd_source_list(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
         })
         .collect();
 
-    v2_printer.emit(build_source_list_doc(&entries, v2_printer.is_wide()));
+    printer.emit(build_source_list_doc(&entries, printer.is_wide()));
     Ok(())
 }

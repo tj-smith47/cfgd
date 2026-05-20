@@ -236,7 +236,7 @@ spec:
     .unwrap();
 
     let output_dir = tempfile::tempdir().unwrap();
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
     let cli = super::Cli {
         command: Some(super::Command::Status {
             module: None,
@@ -254,7 +254,7 @@ spec:
 
     let result = super::export_devcontainer(
         &cli,
-        &v2_printer,
+        &printer,
         "test-tool",
         Some(output_dir.path().to_str().unwrap()),
     );
@@ -356,13 +356,13 @@ spec:
 fn cmd_module_list_empty() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_list(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_module_list(&cli, &printer).unwrap();
+    drop(printer);
 
-    let output = v2_buf.lock().unwrap();
+    let output = buf.lock().unwrap();
     assert!(
         output.contains("No modules found"),
         "should report no modules, got: {output}"
@@ -384,13 +384,13 @@ fn cmd_module_list_shows_modules() {
     );
 
     let cli = test_cli(dir.path());
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_list(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_module_list(&cli, &printer).unwrap();
+    drop(printer);
 
-    let output = v2_buf.lock().unwrap();
+    let output = buf.lock().unwrap();
     assert!(output.contains("alpha"), "should list alpha, got: {output}");
     assert!(output.contains("beta"), "should list beta, got: {output}");
 }
@@ -399,13 +399,13 @@ fn cmd_module_list_shows_modules() {
 fn cmd_module_list_json_empty() {
     let dir = setup_config_dir();
     let cli = test_cli_json(dir.path());
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_module_list(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_module_list(&cli, &printer).unwrap();
+    drop(printer);
 
-    let output = v2_buf.lock().unwrap();
+    let output = buf.lock().unwrap();
     let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
     assert!(json.is_array());
     assert_eq!(json.as_array().unwrap().len(), 0);
@@ -421,13 +421,13 @@ fn cmd_module_list_json_with_modules() {
     );
 
     let cli = test_cli_json(dir.path());
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_module_list(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_module_list(&cli, &printer).unwrap();
+    drop(printer);
 
-    let output = v2_buf.lock().unwrap();
+    let output = buf.lock().unwrap();
     let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
     assert!(json.is_array());
     let arr = json.as_array().unwrap();
@@ -443,10 +443,10 @@ fn cmd_module_list_json_with_modules() {
 fn cmd_module_show_not_found() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (v2_printer, _v2_buf) =
+    let (printer, _v2_buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let err = cmd_module_show(&cli, &v2_printer, "ghost", false).unwrap_err();
+    let err = cmd_module_show(&cli, &printer, "ghost", false).unwrap_err();
     assert!(
         err.to_string().contains("not found"),
         "should report not found, got: {err}"
@@ -465,13 +465,13 @@ fn cmd_module_show_displays_details() {
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &v2_printer, "devtools", false).unwrap();
-    drop(v2_printer);
+    cmd_module_show(&cli, &printer, "devtools", false).unwrap();
+    drop(printer);
 
-    let output = v2_buf.lock().unwrap();
+    let output = buf.lock().unwrap();
     assert!(
         output.contains("Module: devtools"),
         "should show module header, got: {output}"
@@ -500,12 +500,12 @@ fn cmd_module_show_with_available_hint() {
     );
 
     let cli = test_cli(dir.path());
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let err = cmd_module_show(&cli, &v2_printer, "missing", false).unwrap_err();
-    drop(v2_printer);
-    let output = v2_buf.lock().unwrap();
+    let err = cmd_module_show(&cli, &printer, "missing", false).unwrap_err();
+    drop(printer);
+    let output = buf.lock().unwrap();
     assert!(
         output.contains("existing"),
         "should hint available modules, got: {output}"
@@ -523,12 +523,12 @@ fn cmd_module_show_env_masking() {
     make_module(dir.path(), "secrets-mod", yaml);
 
     let cli = test_cli(dir.path());
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &v2_printer, "secrets-mod", false).unwrap();
-    drop(v2_printer);
-    let output = v2_buf.lock().unwrap();
+    cmd_module_show(&cli, &printer, "secrets-mod", false).unwrap();
+    drop(printer);
+    let output = buf.lock().unwrap();
     assert!(
         output.contains("***"),
         "env values should be masked, got: {output}"
@@ -546,12 +546,12 @@ fn cmd_module_show_env_unmasked() {
     make_module(dir.path(), "env-mod", yaml);
 
     let cli = test_cli(dir.path());
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &v2_printer, "env-mod", true).unwrap();
-    drop(v2_printer);
-    let output = v2_buf.lock().unwrap();
+    cmd_module_show(&cli, &printer, "env-mod", true).unwrap();
+    drop(printer);
+    let output = buf.lock().unwrap();
     assert!(
         output.contains("hello-world"),
         "actual value should appear with show_values=true, got: {output}"
@@ -568,13 +568,13 @@ fn cmd_module_show_json_schema() {
     );
 
     let cli = test_cli_json(dir.path());
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_module_show(&cli, &v2_printer, "jmod", false).unwrap();
-    drop(v2_printer);
+    cmd_module_show(&cli, &printer, "jmod", false).unwrap();
+    drop(printer);
 
-    let output = v2_buf.lock().unwrap();
+    let output = buf.lock().unwrap();
     let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
     assert!(json.get("name").is_some(), "JSON should have name field");
     assert_eq!(json["name"], "jmod");
@@ -636,13 +636,13 @@ fn cmd_module_update_add_env() {
     );
 
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
         env: vec!["EDITOR=nvim".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
     assert_eq!(doc.spec.env.len(), 1);
@@ -660,13 +660,13 @@ fn cmd_module_update_remove_env() {
     );
 
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
         env: vec!["-EDITOR".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
     assert_eq!(doc.spec.env.len(), 1);
@@ -683,13 +683,13 @@ fn cmd_module_update_add_alias() {
     );
 
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
         aliases: vec!["ll=ls -la".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
     assert_eq!(doc.spec.aliases.len(), 1);
@@ -707,13 +707,13 @@ fn cmd_module_update_remove_alias() {
     );
 
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
         aliases: vec!["-ll".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
     assert_eq!(doc.spec.aliases.len(), 1);
@@ -730,13 +730,13 @@ fn cmd_module_update_add_depends() {
     );
 
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
         depends: vec!["base".to_string(), "core".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
     assert_eq!(doc.spec.depends, vec!["base", "core"]);
@@ -752,14 +752,14 @@ fn cmd_module_update_remove_depends() {
     );
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = super::ModuleUpdateArgs {
         depends: vec!["-base".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
     assert_eq!(doc.spec.depends, vec!["core"]);
@@ -781,13 +781,13 @@ fn cmd_module_update_add_post_apply_script() {
     );
 
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
         post_apply: vec!["echo hello".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
     let scripts = doc.spec.scripts.unwrap();
@@ -805,13 +805,13 @@ fn cmd_module_update_remove_post_apply_script() {
     );
 
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
         post_apply: vec!["-echo hello".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
     let scripts = doc.spec.scripts.unwrap();
@@ -829,13 +829,13 @@ fn cmd_module_update_description() {
     );
 
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
         description: Some("Updated description".to_string()),
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
     assert_eq!(
@@ -854,11 +854,11 @@ fn cmd_module_update_no_changes_reports() {
     );
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = make_module_update_args("mod1");
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let output = buf.lock().unwrap();
     assert!(
@@ -873,10 +873,10 @@ fn cmd_module_update_nonexistent_fails() {
     std::fs::create_dir_all(dir.path().join("modules")).unwrap();
 
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let args = make_module_update_args("ghost");
-    let err = cmd_module_update_local(&cli, &v2_printer, &args).unwrap_err();
+    let err = cmd_module_update_local(&cli, &printer, &args).unwrap_err();
     assert!(
         err.to_string().contains("not found"),
         "should report not found, got: {err}"
@@ -904,12 +904,12 @@ fn cmd_module_update_add_files_with_duplicate_basename_bails() {
     std::fs::write(&f2, b"second").unwrap();
 
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
     let args = super::ModuleUpdateArgs {
         files: vec![f1.display().to_string(), f2.display().to_string()],
         ..make_module_update_args("mod1")
     };
-    let err = cmd_module_update_local(&cli, &v2_printer, &args).unwrap_err();
+    let err = cmd_module_update_local(&cli, &printer, &args).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("Duplicate file basename") && msg.contains("conflict.toml"),
@@ -923,7 +923,7 @@ fn cmd_module_update_add_files_with_duplicate_basename_bails() {
 fn cmd_module_create_with_env_and_aliases() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = super::ModuleCreateArgs {
@@ -932,8 +932,8 @@ fn cmd_module_create_with_env_and_aliases() {
         aliases: vec!["ll=ls -la".to_string()],
         ..make_module_create_args("env-mod")
     };
-    cmd_module_create(&cli, &v2_printer, &args).unwrap();
-    drop(v2_printer);
+    cmd_module_create(&cli, &printer, &args).unwrap();
+    drop(printer);
 
     let (doc, _) = load_module_document(dir.path(), "env-mod").unwrap();
     assert_eq!(doc.spec.env.len(), 1);
@@ -952,14 +952,14 @@ fn cmd_module_create_with_env_and_aliases() {
 fn cmd_module_create_with_depends_and_scripts() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let args = super::ModuleCreateArgs {
         depends: vec!["base".to_string()],
         post_apply: vec!["echo setup".to_string()],
         ..make_module_create_args("dep-mod")
     };
-    cmd_module_create(&cli, &v2_printer, &args).unwrap();
+    cmd_module_create(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "dep-mod").unwrap();
     assert_eq!(doc.spec.depends, vec!["base"]);
@@ -972,10 +972,10 @@ fn cmd_module_create_with_depends_and_scripts() {
 fn cmd_module_create_invalid_name_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let args = make_module_create_args(".bad-name");
-    let err = cmd_module_create(&cli, &v2_printer, &args).unwrap_err();
+    let err = cmd_module_create(&cli, &printer, &args).unwrap_err();
     assert!(
         err.to_string().contains("cannot start with"),
         "should reject invalid name, got: {err}"
@@ -988,9 +988,9 @@ fn cmd_module_create_invalid_name_fails() {
 fn cmd_module_delete_nonexistent_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
-    let err = cmd_module_delete(&cli, &v2_printer, "ghost", true, false).unwrap_err();
+    let err = cmd_module_delete(&cli, &printer, "ghost", true, false).unwrap_err();
     assert!(
         err.to_string().contains("not found"),
         "should report not found, got: {err}"
@@ -1001,9 +1001,9 @@ fn cmd_module_delete_nonexistent_fails() {
 fn cmd_module_delete_invalid_name_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
-    let err = cmd_module_delete(&cli, &v2_printer, "-bad", true, false).unwrap_err();
+    let err = cmd_module_delete(&cli, &printer, "-bad", true, false).unwrap_err();
     assert!(
         err.to_string().contains("cannot start with"),
         "should reject invalid name, got: {err}"
@@ -1016,17 +1016,17 @@ fn cmd_module_delete_invalid_name_fails() {
 fn cmd_module_registry_add_creates_entry() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     cmd_module_registry_add(
         &cli,
-        &v2_printer,
+        &printer,
         "https://github.com/team/modules.git",
         Some("team"),
     )
     .unwrap();
-    drop(v2_printer);
+    drop(printer);
 
     let output = buf.lock().unwrap();
     assert!(
@@ -1079,15 +1079,10 @@ fn cmd_module_registry_add_duplicate_is_noop() {
 fn cmd_module_registry_add_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
-    let err = cmd_module_registry_add(
-        &cli,
-        &v2_printer,
-        "https://example.com/reg.git",
-        Some("test"),
-    )
-    .unwrap_err();
+    let err = cmd_module_registry_add(&cli, &printer, "https://example.com/reg.git", Some("test"))
+        .unwrap_err();
     assert!(
         err.to_string().contains("cfgd.yaml"),
         "should fail without config, got: {err}"
@@ -1128,11 +1123,11 @@ fn cmd_module_registry_remove_existing() {
 fn cmd_module_registry_remove_not_found() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_registry_remove(&cli, &v2_printer, "nonexistent").unwrap();
-    drop(v2_printer);
+    cmd_module_registry_remove(&cli, &printer, "nonexistent").unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap();
     assert!(
@@ -1178,9 +1173,9 @@ fn cmd_module_registry_rename_success() {
 fn cmd_module_registry_rename_not_found_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
-    let err = cmd_module_registry_rename(&cli, &v2_printer, "ghost", "new").unwrap_err();
+    let err = cmd_module_registry_rename(&cli, &printer, "ghost", "new").unwrap_err();
     assert!(
         err.to_string().contains("not found"),
         "should report not found, got: {err}"
@@ -1222,11 +1217,11 @@ fn cmd_module_registry_rename_target_exists_fails() {
 fn cmd_module_registry_list_empty() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_registry_list(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_module_registry_list(&cli, &printer).unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap();
     assert!(
@@ -1297,11 +1292,11 @@ fn cmd_module_registry_list_json() {
 fn cmd_module_registry_list_no_config() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_registry_list(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_module_registry_list(&cli, &printer).unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap();
     assert!(
@@ -1314,12 +1309,12 @@ fn cmd_module_registry_list_no_config() {
 
 #[test]
 fn cmd_module_keys_list_no_keys() {
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    cmd_module_keys_list(&v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_module_keys_list(&printer).unwrap();
+    drop(printer);
 
-    let output = v2_buf.lock().unwrap();
+    let output = buf.lock().unwrap();
     assert!(
         output.contains("No signing keys found"),
         "should report no keys, got: {output}"
@@ -1332,9 +1327,9 @@ fn cmd_module_keys_list_no_keys() {
 fn cmd_module_search_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
-    let err = cmd_module_search(&cli, &v2_printer, "test").unwrap_err();
+    let err = cmd_module_search(&cli, &printer, "test").unwrap_err();
     assert!(
         err.to_string().contains("config"),
         "should fail without config, got: {err}"
@@ -1345,11 +1340,11 @@ fn cmd_module_search_no_config_fails() {
 fn cmd_module_search_no_registries() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_search(&cli, &v2_printer, "test").unwrap();
-    drop(v2_printer);
+    cmd_module_search(&cli, &printer, "test").unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap();
     assert!(
@@ -1362,10 +1357,10 @@ fn cmd_module_search_no_registries() {
 fn cmd_module_search_no_registries_json() {
     let dir = setup_config_dir();
     let cli = test_cli_json(dir.path());
-    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc();
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    cmd_module_search(&cli, &v2_printer, "test").unwrap();
-    drop(v2_printer);
+    cmd_module_search(&cli, &printer, "test").unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert!(json.is_array());
@@ -1380,8 +1375,8 @@ fn cmd_module_keys_generate_no_cosign_fails() {
     if cfgd_core::command_available("cosign") {
         return; // skip if cosign is actually installed
     }
-    let v2_printer = make_v2_printer();
-    let err = cmd_module_keys_generate(&v2_printer, None).unwrap_err();
+    let printer = make_v2_printer();
+    let err = cmd_module_keys_generate(&printer, None).unwrap_err();
     assert!(
         err.to_string().contains("cosign not found"),
         "should report cosign missing, got: {err}"
@@ -1393,7 +1388,7 @@ fn cmd_module_keys_generate_no_cosign_fails() {
 #[test]
 fn cmd_module_push_no_module_yaml_fails() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let opts = PushOptions {
         platform: None,
@@ -1403,7 +1398,7 @@ fn cmd_module_push_no_module_yaml_fails() {
         attest: false,
     };
     let err = cmd_module_push(
-        &v2_printer,
+        &printer,
         dir.path().to_str().unwrap(),
         "oci.example.com/test:v1",
         opts,
@@ -1418,10 +1413,10 @@ fn cmd_module_push_no_module_yaml_fails() {
 #[test]
 fn cmd_module_build_no_module_yaml_fails() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let err = cmd_module_build(
-        &v2_printer,
+        &printer,
         dir.path().to_str().unwrap(),
         None,
         None,
@@ -1442,11 +1437,11 @@ fn cmd_module_build_no_module_yaml_fails() {
 fn cmd_module_export_not_found() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let err = cmd_module_export(
         &cli,
-        &v2_printer,
+        &printer,
         "ghost",
         &super::ExportFormat::Devcontainer,
         None,
@@ -1480,9 +1475,9 @@ fn profiles_using_module_nonexistent_dir() {
 fn cmd_module_registry_rename_cascades_to_profiles() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
-    cmd_module_registry_add(&cli, &v2_printer, "https://example.com/r.git", Some("old")).unwrap();
+    cmd_module_registry_add(&cli, &printer, "https://example.com/r.git", Some("old")).unwrap();
 
     // Add a profile that references old/somemod
     let profile_path = dir.path().join("profiles").join("default.yaml");
@@ -1491,7 +1486,7 @@ fn cmd_module_registry_rename_cascades_to_profiles() {
     let yaml = serde_yaml::to_string(&pdoc).unwrap();
     std::fs::write(&profile_path, &yaml).unwrap();
 
-    cmd_module_registry_rename(&cli, &v2_printer, "old", "fresh").unwrap();
+    cmd_module_registry_rename(&cli, &printer, "old", "fresh").unwrap();
 
     let pdoc = config::load_profile(&profile_path).unwrap();
     assert!(
@@ -1530,13 +1525,13 @@ fn cmd_module_show_json_with_lockfile_entry() {
     modules::save_lockfile(dir.path(), &lockfile).unwrap();
 
     let cli = test_cli_json(dir.path());
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_module_show(&cli, &v2_printer, "remote-mod", false).unwrap();
-    drop(v2_printer);
+    cmd_module_show(&cli, &printer, "remote-mod", false).unwrap();
+    drop(printer);
 
-    let output = v2_buf.lock().unwrap();
+    let output = buf.lock().unwrap();
     let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
     assert_eq!(json["name"], "remote-mod");
     assert_eq!(json["source"], "remote", "lockfile module should be remote");
@@ -1570,13 +1565,13 @@ fn cmd_module_show_table_with_lockfile_entry() {
     modules::save_lockfile(dir.path(), &lockfile).unwrap();
 
     let cli = test_cli(dir.path());
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &v2_printer, "locked-mod", false).unwrap();
-    drop(v2_printer);
+    cmd_module_show(&cli, &printer, "locked-mod", false).unwrap();
+    drop(printer);
 
-    let output = v2_buf.lock().unwrap();
+    let output = buf.lock().unwrap();
     assert!(
         output.contains("remote (locked)"),
         "should show 'remote (locked)' source, got: {output}"
@@ -1604,13 +1599,13 @@ fn cmd_module_show_aliases() {
     make_module(dir.path(), "alias-mod", yaml);
 
     let cli = test_cli(dir.path());
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &v2_printer, "alias-mod", false).unwrap();
-    drop(v2_printer);
+    cmd_module_show(&cli, &printer, "alias-mod", false).unwrap();
+    drop(printer);
 
-    let output = v2_buf.lock().unwrap();
+    let output = buf.lock().unwrap();
     assert!(
         output.contains("Aliases"),
         "should have Aliases section, got: {output}"
@@ -1634,13 +1629,13 @@ fn cmd_module_show_scripts() {
     make_module(dir.path(), "script-mod", yaml);
 
     let cli = test_cli(dir.path());
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &v2_printer, "script-mod", false).unwrap();
-    drop(v2_printer);
+    cmd_module_show(&cli, &printer, "script-mod", false).unwrap();
+    drop(printer);
 
-    let output = v2_buf.lock().unwrap();
+    let output = buf.lock().unwrap();
     assert!(
         output.contains("Post-apply Scripts"),
         "should have post-apply scripts section, got: {output}"
@@ -1664,13 +1659,13 @@ fn cmd_module_show_files_with_git_source() {
     make_module(dir.path(), "git-file-mod", yaml);
 
     let cli = test_cli(dir.path());
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &v2_printer, "git-file-mod", false).unwrap();
-    drop(v2_printer);
+    cmd_module_show(&cli, &printer, "git-file-mod", false).unwrap();
+    drop(printer);
 
-    let output = v2_buf.lock().unwrap();
+    let output = buf.lock().unwrap();
     assert!(
         output.contains("Files"),
         "should have Files section, got: {output}"
@@ -1687,7 +1682,7 @@ fn cmd_module_show_files_with_git_source() {
 fn cmd_module_create_with_packages_and_sets() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = super::ModuleCreateArgs {
@@ -1698,8 +1693,8 @@ fn cmd_module_create_with_packages_and_sets() {
         ],
         ..make_module_create_args("pkg-set-mod")
     };
-    cmd_module_create(&cli, &v2_printer, &args).unwrap();
-    drop(v2_printer);
+    cmd_module_create(&cli, &printer, &args).unwrap();
+    drop(printer);
 
     let (doc, _) = load_module_document(dir.path(), "pkg-set-mod").unwrap();
     assert_eq!(doc.spec.packages.len(), 2);
@@ -1731,13 +1726,13 @@ fn cmd_module_create_with_packages_and_sets() {
 fn cmd_module_create_duplicate_name_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let args = super::ModuleCreateArgs {
         description: Some("test module".to_string()),
         ..make_module_create_args("dup-mod")
     };
-    cmd_module_create(&cli, &v2_printer, &args).unwrap();
+    cmd_module_create(&cli, &printer, &args).unwrap();
 
     // Second create with same name should fail
     let v2_printer2 = make_v2_printer();
@@ -1754,13 +1749,13 @@ fn cmd_module_create_duplicate_name_fails() {
 fn cmd_module_create_post_apply_scripts_escape() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let args = super::ModuleCreateArgs {
         post_apply: vec![r"echo hello \! world".to_string()],
         ..make_module_create_args("script-esc-mod")
     };
-    cmd_module_create(&cli, &v2_printer, &args).unwrap();
+    cmd_module_create(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "script-esc-mod").unwrap();
     let scripts = doc.spec.scripts.unwrap();
@@ -1778,13 +1773,13 @@ fn cmd_module_create_post_apply_scripts_escape() {
 fn cmd_module_create_with_prefixed_packages() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let args = super::ModuleCreateArgs {
         packages: vec!["brew:ripgrep".to_string(), "cargo:fd-find".to_string()],
         ..make_module_create_args("prefix-mod")
     };
-    cmd_module_create(&cli, &v2_printer, &args).unwrap();
+    cmd_module_create(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "prefix-mod").unwrap();
     assert_eq!(doc.spec.packages[0].name, "ripgrep");
@@ -1799,7 +1794,7 @@ fn cmd_module_create_with_prefixed_packages() {
 fn cmd_module_create_with_file_import() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     // Create a source file to import
@@ -1813,8 +1808,8 @@ fn cmd_module_create_with_file_import() {
         files: vec![file_spec],
         ..make_module_create_args("file-mod")
     };
-    cmd_module_create(&cli, &v2_printer, &args).unwrap();
-    drop(v2_printer);
+    cmd_module_create(&cli, &printer, &args).unwrap();
+    drop(printer);
 
     let (doc, _) = load_module_document(dir.path(), "file-mod").unwrap();
     assert_eq!(doc.spec.files.len(), 1);
@@ -1843,7 +1838,7 @@ fn cmd_module_create_with_file_import() {
 fn cmd_module_create_duplicate_file_basenames_fail() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     // Create two files with the same basename in different dirs
     let dir_a = dir.path().join("a");
@@ -1860,7 +1855,7 @@ fn cmd_module_create_duplicate_file_basenames_fail() {
         ],
         ..make_module_create_args("dup-file-mod")
     };
-    let err = cmd_module_create(&cli, &v2_printer, &args).unwrap_err();
+    let err = cmd_module_create(&cli, &printer, &args).unwrap_err();
     assert!(
         err.to_string().contains("Duplicate file basename"),
         "should report duplicate basenames, got: {err}"
@@ -1873,7 +1868,7 @@ fn cmd_module_create_duplicate_file_basenames_fail() {
 fn cmd_module_create_private_files_gitignore() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let source_file = dir.path().join("secret.key");
     std::fs::write(&source_file, "private-data").unwrap();
@@ -1883,7 +1878,7 @@ fn cmd_module_create_private_files_gitignore() {
         private: true,
         ..make_module_create_args("priv-mod")
     };
-    cmd_module_create(&cli, &v2_printer, &args).unwrap();
+    cmd_module_create(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "priv-mod").unwrap();
     assert!(doc.spec.files[0].private, "file should be marked private");
@@ -1907,7 +1902,7 @@ fn cmd_module_update_with_set_overrides() {
     );
 
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
         sets: vec![
@@ -1916,7 +1911,7 @@ fn cmd_module_update_with_set_overrides() {
         ],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
     assert_eq!(doc.spec.packages[0].min_version.as_deref(), Some("8.0"));
@@ -1935,14 +1930,14 @@ fn cmd_module_update_add_and_remove_packages() {
     );
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = super::ModuleUpdateArgs {
         packages: vec!["ripgrep".to_string(), "-wget".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
     let names: Vec<&str> = doc.spec.packages.iter().map(|p| p.name.as_str()).collect();
@@ -1973,14 +1968,14 @@ fn cmd_module_update_add_duplicate_package_noop() {
     );
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = super::ModuleUpdateArgs {
         packages: vec!["curl".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let output = buf.lock().unwrap();
     assert!(
@@ -2001,14 +1996,14 @@ fn cmd_module_update_remove_nonexistent_package_warns() {
     );
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = super::ModuleUpdateArgs {
         packages: vec!["-nonexistent".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let output = buf.lock().unwrap();
     assert!(
@@ -2029,14 +2024,14 @@ fn cmd_module_update_remove_nonexistent_env_warns() {
     );
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = super::ModuleUpdateArgs {
         env: vec!["-NONEXISTENT".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let output = buf.lock().unwrap();
     assert!(
@@ -2057,14 +2052,14 @@ fn cmd_module_update_remove_nonexistent_alias_warns() {
     );
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = super::ModuleUpdateArgs {
         aliases: vec!["-noalias".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let output = buf.lock().unwrap();
     assert!(
@@ -2085,14 +2080,14 @@ fn cmd_module_update_remove_nonexistent_depends_warns() {
     );
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = super::ModuleUpdateArgs {
         depends: vec!["-nonexistent".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let output = buf.lock().unwrap();
     assert!(
@@ -2113,14 +2108,14 @@ fn cmd_module_update_remove_nonexistent_script_warns() {
     );
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = super::ModuleUpdateArgs {
         post_apply: vec!["-nonexistent script".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let output = buf.lock().unwrap();
     assert!(
@@ -2141,13 +2136,13 @@ fn cmd_module_update_empty_description_clears() {
     );
 
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
         description: Some(String::new()),
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
     assert_eq!(
@@ -2168,13 +2163,13 @@ fn cmd_module_update_add_duplicate_depends_noop() {
     );
 
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
         depends: vec!["base".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
     assert_eq!(doc.spec.depends.len(), 1, "should not duplicate depends");
@@ -2192,13 +2187,13 @@ fn cmd_module_update_add_duplicate_post_apply_noop() {
     );
 
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
         post_apply: vec!["echo hello".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
     let scripts = doc.spec.scripts.unwrap();
@@ -2225,7 +2220,7 @@ fn cmd_module_update_add_files() {
     std::fs::write(&source_file, "setting = true").unwrap();
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = super::ModuleUpdateArgs {
@@ -2235,7 +2230,7 @@ fn cmd_module_update_add_files() {
         )],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
     assert_eq!(doc.spec.files.len(), 1, "should have one file");
@@ -2262,14 +2257,14 @@ fn cmd_module_update_remove_files() {
     std::fs::write(dir.path().join("modules/mod1/files/config.toml"), "content").unwrap();
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = super::ModuleUpdateArgs {
         files: vec!["-~/.config/app/config.toml".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
     assert!(
@@ -2302,14 +2297,14 @@ fn cmd_module_update_remove_nonexistent_file_warns() {
     );
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = super::ModuleUpdateArgs {
         files: vec!["-~/.nonexistent/file".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let output = buf.lock().unwrap();
     assert!(
@@ -2333,14 +2328,14 @@ fn cmd_module_update_add_file_private() {
     std::fs::write(&source_file, "secret-data").unwrap();
 
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let args = super::ModuleUpdateArgs {
         files: vec![format!("{}:~/.ssh/secret.key", source_file.display())],
         private: true,
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
     assert!(doc.spec.files[0].private, "file should be marked private");
@@ -2366,11 +2361,11 @@ fn cmd_module_delete_with_yes_succeeds() {
     );
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_delete(&cli, &v2_printer, "to-delete", true, false).unwrap();
-    drop(v2_printer);
+    cmd_module_delete(&cli, &printer, "to-delete", true, false).unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap();
     assert!(
@@ -2396,13 +2391,13 @@ fn cmd_module_delete_without_yes_and_prompt_confirmed_proceeds_with_deletion() {
     );
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+    let (printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
         vec![cfgd_core::output::PromptAnswer::Confirm(true)],
         cfgd_core::output::Verbosity::Normal,
     );
 
-    cmd_module_delete(&cli, &v2_printer, "prompt-yes-mod", false, false).unwrap();
-    drop(v2_printer);
+    cmd_module_delete(&cli, &printer, "prompt-yes-mod", false, false).unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap();
     assert!(
@@ -2433,17 +2428,16 @@ fn cmd_module_edit_with_invalid_yaml_and_prompt_declined_breaks_with_warning() {
     );
 
     let cli = test_cli(dir.path());
-    let (v2_printer, v2_buf) =
-        cfgd_core::output::Printer::for_test_doc_with_prompt_responses(vec![
-            cfgd_core::output::PromptAnswer::Confirm(false),
-        ]);
+    let (printer, buf) = cfgd_core::output::Printer::for_test_doc_with_prompt_responses(vec![
+        cfgd_core::output::PromptAnswer::Confirm(false),
+    ]);
 
     let _editor = cfgd_core::test_helpers::EnvVarGuard::set("EDITOR", "/bin/true");
-    cmd_module_edit(&cli, &v2_printer, "edit-broken")
+    cmd_module_edit(&cli, &printer, "edit-broken")
         .expect("edit must return Ok even on Save-with-errors");
-    drop(v2_printer);
+    drop(printer);
 
-    let output = v2_buf.human();
+    let output = buf.human();
     assert!(
         output.contains("Saved with validation errors"),
         "should warn about invalid save: {output}"
@@ -2467,16 +2461,16 @@ fn cmd_module_create_with_apply_and_yes_drives_full_apply_sequence() {
     )
     .unwrap();
 
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut args = make_module_create_args("apply-noop-mod");
     args.apply = true;
     args.yes = true;
     args.description = Some("noop".to_string());
 
-    cmd_module_create(&cli, &v2_printer, &args)
+    cmd_module_create(&cli, &printer, &args)
         .expect("create-with-apply-yes (empty spec) should succeed");
-    drop(v2_printer);
+    drop(printer);
 
     let output = buf.lock().unwrap().clone();
     assert!(
@@ -2500,7 +2494,7 @@ fn cmd_module_create_interactive_drives_full_prompt_sequence_via_harness() {
     // make_module_create_args() already returns that shape.
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+    let (printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
         vec![
             cfgd_core::output::PromptAnswer::Text("Interactive build module".to_string()),
             cfgd_core::output::PromptAnswer::Text("nodejs,git".to_string()),
@@ -2513,8 +2507,8 @@ fn cmd_module_create_interactive_drives_full_prompt_sequence_via_harness() {
     );
     let args = make_module_create_args("interactive-mod");
 
-    cmd_module_create(&cli, &v2_printer, &args).expect("interactive create should succeed");
-    drop(v2_printer);
+    cmd_module_create(&cli, &printer, &args).expect("interactive create should succeed");
+    drop(printer);
 
     // The module yaml should be written with the prompted fields.
     let yaml_path = dir
@@ -2558,13 +2552,13 @@ fn cmd_module_delete_without_yes_and_prompt_declined_returns_cancelled() {
     );
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+    let (printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
         vec![cfgd_core::output::PromptAnswer::Confirm(false)],
         cfgd_core::output::Verbosity::Normal,
     );
 
-    cmd_module_delete(&cli, &v2_printer, "prompt-no-mod", false, false).unwrap();
-    drop(v2_printer);
+    cmd_module_delete(&cli, &printer, "prompt-no-mod", false, false).unwrap();
+    drop(printer);
 
     let output = buf.lock().unwrap();
     assert!(
@@ -2596,9 +2590,9 @@ fn cmd_module_delete_refused_when_profile_references() {
         ).unwrap();
 
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
-    let err = cmd_module_delete(&cli, &v2_printer, "referenced", true, false).unwrap_err();
+    let err = cmd_module_delete(&cli, &printer, "referenced", true, false).unwrap_err();
     assert!(
         err.to_string().contains("referenced by profile"),
         "should refuse deletion when profiles reference module, got: {err}"
@@ -2621,10 +2615,10 @@ fn cmd_module_delete_with_purge() {
     make_module(dir.path(), "purge-mod", &yaml);
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_delete(&cli, &v2_printer, "purge-mod", true, true).unwrap();
+    cmd_module_delete(&cli, &printer, "purge-mod", true, true).unwrap();
 
     assert!(!target_file.exists(), "target file should be purged");
     let output = buf.lock().unwrap();
@@ -2659,10 +2653,10 @@ fn cmd_module_delete_restores_symlinked_files() {
     std::fs::write(dir.path().join("modules/restore-mod/module.yaml"), &yaml).unwrap();
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_delete(&cli, &v2_printer, "restore-mod", true, false).unwrap();
+    cmd_module_delete(&cli, &printer, "restore-mod", true, false).unwrap();
 
     assert!(
         target_file.exists(),
@@ -2704,9 +2698,9 @@ fn cmd_module_delete_with_purge_removes_directory_target() {
     make_module(dir.path(), "purge-dir-mod", &yaml);
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    cmd_module_delete(&cli, &v2_printer, "purge-dir-mod", true, true).unwrap();
+    cmd_module_delete(&cli, &printer, "purge-dir-mod", true, true).unwrap();
 
     assert!(
         !target_dir.exists(),
@@ -2753,9 +2747,9 @@ fn cmd_module_delete_default_mode_restores_directory_source_via_copy_dir() {
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    cmd_module_delete(&cli, &v2_printer, "restore-dir-mod", true, false).unwrap();
+    cmd_module_delete(&cli, &printer, "restore-dir-mod", true, false).unwrap();
 
     // The symlink is replaced by a real directory whose contents match.
     assert!(target.exists(), "target dir must remain after restore");
@@ -2803,10 +2797,10 @@ fn cmd_module_delete_cleans_lockfile() {
     modules::save_lockfile(dir.path(), &lockfile).unwrap();
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_delete(&cli, &v2_printer, "lock-mod", true, false).unwrap();
+    cmd_module_delete(&cli, &printer, "lock-mod", true, false).unwrap();
 
     let lockfile = modules::load_lockfile(dir.path()).unwrap();
     assert!(
@@ -2858,11 +2852,11 @@ spec:
 
     let output_dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let result = super::export_devcontainer(
         &cli,
-        &v2_printer,
+        &printer,
         "complex-tool",
         Some(output_dir.path().to_str().unwrap()),
     );
@@ -2934,13 +2928,13 @@ fn cmd_module_list_json_active_modules() {
         ).unwrap();
 
     let cli = test_cli_json(dir.path());
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_module_list(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_module_list(&cli, &printer).unwrap();
+    drop(printer);
 
-    let output = v2_buf.lock().unwrap();
+    let output = buf.lock().unwrap();
     let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
     let arr = json.as_array().unwrap();
     assert_eq!(arr.len(), 2);
@@ -2977,16 +2971,16 @@ fn cmd_module_list_wide_format_emits_seven_column_table() {
         files: 2,
         depends: 2,
     }];
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    v2_printer.emit(super::list_show::build_module_list_doc(
+    printer.emit(super::list_show::build_module_list_doc(
         &entries,
         true,
         std::path::Path::new("/tmp/cfgd"),
     ));
-    drop(v2_printer);
+    drop(printer);
 
-    let output = v2_buf.lock().unwrap();
+    let output = buf.lock().unwrap();
     // Per-column counts rather than the "X pkgs, Y files, Z deps" composite.
     assert!(
         output.contains("Packages") && output.contains("Files") && output.contains("Deps"),
@@ -3031,13 +3025,13 @@ fn cmd_module_show_renders_platform_filtered_and_resolved_packages() {
     make_module(dir.path(), "rich", yaml);
 
     let cli = test_cli(dir.path());
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_show(&cli, &v2_printer, "rich", false).unwrap();
-    drop(v2_printer);
+    cmd_module_show(&cli, &printer, "rich", false).unwrap();
+    drop(printer);
 
-    let output = v2_buf.lock().unwrap();
+    let output = buf.lock().unwrap();
     // Ok(Some(_)) — curl resolves cleanly via the default manager.
     assert!(
         output.contains("curl -> "),
@@ -3077,13 +3071,13 @@ fn cmd_module_list_table_active_modules() {
         ).unwrap();
 
     let cli = test_cli(dir.path());
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_list(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_module_list(&cli, &printer).unwrap();
+    drop(printer);
 
-    let output = v2_buf.lock().unwrap();
+    let output = buf.lock().unwrap();
     assert!(
         output.contains("my-mod"),
         "should list module name, got: {output}"
@@ -3122,13 +3116,13 @@ fn cmd_module_list_with_lockfile_shows_remote() {
     modules::save_lockfile(dir.path(), &lockfile).unwrap();
 
     let cli = test_cli_json(dir.path());
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_module_list(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_module_list(&cli, &printer).unwrap();
+    drop(printer);
 
-    let output = v2_buf.lock().unwrap();
+    let output = buf.lock().unwrap();
     let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
     let arr = json.as_array().unwrap();
     let entry = &arr[0];
@@ -3141,9 +3135,9 @@ fn cmd_module_list_with_lockfile_shows_remote() {
 fn cmd_module_registry_remove_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
-    let err = cmd_module_registry_remove(&cli, &v2_printer, "test").unwrap_err();
+    let err = cmd_module_registry_remove(&cli, &printer, "test").unwrap_err();
     assert!(
         err.to_string().contains("cfgd.yaml"),
         "should fail without config, got: {err}"
@@ -3196,10 +3190,10 @@ fn cmd_module_registry_remove_warns_profile_refs() {
 fn cmd_module_registry_list_json_empty() {
     let dir = setup_config_dir();
     let cli = test_cli_json(dir.path());
-    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc();
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    cmd_module_registry_list(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_module_registry_list(&cli, &printer).unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert!(json.is_array());
@@ -3212,10 +3206,10 @@ fn cmd_module_registry_list_json_empty() {
 fn cmd_module_registry_list_json_no_config() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli_json(dir.path());
-    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc();
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
-    cmd_module_registry_list(&cli, &v2_printer).unwrap();
-    drop(v2_printer);
+    cmd_module_registry_list(&cli, &printer).unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert!(json.is_array());
@@ -3351,13 +3345,13 @@ fn cmd_module_show_json_depends() {
     );
 
     let cli = test_cli_json(dir.path());
-    let (v2_printer, v2_buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    cmd_module_show(&cli, &v2_printer, "dep-show", false).unwrap();
-    drop(v2_printer);
+    cmd_module_show(&cli, &printer, "dep-show", false).unwrap();
+    drop(printer);
 
-    let output = v2_buf.lock().unwrap();
+    let output = buf.lock().unwrap();
     let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
     let depends = json["depends"].as_array().unwrap();
     assert_eq!(depends.len(), 2);
@@ -3377,7 +3371,7 @@ fn cmd_module_update_remove_prefixed_package() {
     );
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     // Remove with manager prefix: -brew:ripgrep should strip prefix and remove "ripgrep"
@@ -3385,8 +3379,8 @@ fn cmd_module_update_remove_prefixed_package() {
         packages: vec!["-brew:ripgrep".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
-    drop(v2_printer);
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
+    drop(printer);
 
     let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
     assert!(
@@ -3417,7 +3411,7 @@ fn cmd_module_update_add_already_tracked_file_noop() {
     std::fs::write(&source_file, "content").unwrap();
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = super::ModuleUpdateArgs {
@@ -3427,7 +3421,7 @@ fn cmd_module_update_add_already_tracked_file_noop() {
         )],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let output = buf.lock().unwrap();
     assert!(
@@ -3445,7 +3439,7 @@ fn cmd_module_update_add_already_tracked_file_noop() {
 fn cmd_module_create_description_and_depends_output() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = super::ModuleCreateArgs {
@@ -3454,8 +3448,8 @@ fn cmd_module_create_description_and_depends_output() {
         packages: vec!["curl".to_string()],
         ..make_module_create_args("desc-mod")
     };
-    cmd_module_create(&cli, &v2_printer, &args).unwrap();
-    drop(v2_printer);
+    cmd_module_create(&cli, &printer, &args).unwrap();
+    drop(printer);
 
     let (doc, _) = load_module_document(dir.path(), "desc-mod").unwrap();
     assert_eq!(
@@ -3481,9 +3475,9 @@ fn cmd_module_create_description_and_depends_output() {
 fn cmd_module_registry_rename_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
-    let err = cmd_module_registry_rename(&cli, &v2_printer, "old", "new").unwrap_err();
+    let err = cmd_module_registry_rename(&cli, &printer, "old", "new").unwrap_err();
     assert!(
         err.to_string().contains("cfgd.yaml"),
         "should fail without config, got: {err}"
@@ -3539,10 +3533,10 @@ fn module_show_output_json_fields() {
 fn cmd_module_update_invalid_name_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     let args = make_module_update_args(".bad-name");
-    let err = cmd_module_update_local(&cli, &v2_printer, &args).unwrap_err();
+    let err = cmd_module_update_local(&cli, &printer, &args).unwrap_err();
     assert!(
         err.to_string().contains("cannot start with"),
         "should reject invalid module name, got: {err}"
@@ -3561,7 +3555,7 @@ fn cmd_module_update_combined_operations() {
     );
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = super::ModuleUpdateArgs {
@@ -3573,7 +3567,7 @@ fn cmd_module_update_combined_operations() {
         post_apply: vec!["echo done".to_string()],
         ..make_module_update_args("mod1")
     };
-    cmd_module_update_local(&cli, &v2_printer, &args).unwrap();
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
 
     let (doc, _) = load_module_document(dir.path(), "mod1").unwrap();
     assert_eq!(doc.metadata.description, Some("Updated".to_string()));
@@ -3600,8 +3594,8 @@ fn cmd_module_keys_rotate_no_cosign_fails() {
     if cfgd_core::command_available("cosign") {
         return;
     }
-    let v2_printer = make_v2_printer();
-    let err = cmd_module_keys_rotate(&v2_printer, None, &[]).unwrap_err();
+    let printer = make_v2_printer();
+    let err = cmd_module_keys_rotate(&printer, None, &[]).unwrap_err();
     assert!(
         err.to_string().contains("cosign not found"),
         "should report cosign missing, got: {err}"
@@ -3616,9 +3610,9 @@ fn cmd_module_keys_rotate_no_existing_key_fails() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
     let err =
-        cmd_module_keys_rotate(&v2_printer, Some(dir.path().to_str().unwrap()), &[]).unwrap_err();
+        cmd_module_keys_rotate(&printer, Some(dir.path().to_str().unwrap()), &[]).unwrap_err();
     assert!(
         err.to_string().contains("No existing cosign.key"),
         "should report no existing key, got: {err}"
@@ -3664,11 +3658,11 @@ fn cmd_module_export_devcontainer_no_packages() {
 
     let output_dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let v2_printer = make_v2_printer();
+    let printer = make_v2_printer();
 
     super::export_devcontainer(
         &cli,
-        &v2_printer,
+        &printer,
         "env-only",
         Some(output_dir.path().to_str().unwrap()),
     )
@@ -3989,10 +3983,10 @@ mod keys_with_fake_cosign {
         let work = tempfile::tempdir().expect("workdir");
         let dir_str = work.path().to_str().unwrap();
 
-        let (v2_printer, v2_buf) =
+        let (printer, buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        cmd_module_keys_generate(&v2_printer, Some(dir_str)).expect("happy path → Ok");
-        drop(v2_printer);
+        cmd_module_keys_generate(&printer, Some(dir_str)).expect("happy path → Ok");
+        drop(printer);
 
         assert!(
             work.path().join("cosign.key").is_file(),
@@ -4003,7 +3997,7 @@ mod keys_with_fake_cosign {
             "public key written by shim must land in target dir"
         );
 
-        let output = v2_buf.lock().unwrap();
+        let output = buf.lock().unwrap();
         assert!(
             output.contains("Private key") && output.contains("Public key"),
             "success output must mention both key paths: {output}"
@@ -4021,9 +4015,9 @@ mod keys_with_fake_cosign {
         let work = tempfile::tempdir().expect("workdir");
         let dir_str = work.path().to_str().unwrap();
 
-        let v2_printer = make_v2_printer();
+        let printer = make_v2_printer();
         let err =
-            cmd_module_keys_generate(&v2_printer, Some(dir_str)).expect_err("non-zero exit → Err");
+            cmd_module_keys_generate(&printer, Some(dir_str)).expect_err("non-zero exit → Err");
         assert!(
             err.to_string().contains("cosign generate-key-pair failed"),
             "error must surface the failure context: {err}"
@@ -4040,8 +4034,8 @@ mod keys_with_fake_cosign {
         let work = tempfile::tempdir().expect("workdir");
         let dir_str = work.path().to_str().unwrap();
 
-        let v2_printer = make_v2_printer();
-        let err = cmd_module_keys_rotate(&v2_printer, Some(dir_str), &[])
+        let printer = make_v2_printer();
+        let err = cmd_module_keys_rotate(&printer, Some(dir_str), &[])
             .expect_err("missing cosign.key → Err");
         let msg = err.to_string();
         // require_tool_with_seam might fail first if cosign is missing
@@ -4068,8 +4062,8 @@ mod keys_with_fake_cosign {
         std::fs::write(dir.join("cosign.key"), b"old-private-key-bytes").unwrap();
         std::fs::write(dir.join("cosign.pub"), b"old-public-key-bytes").unwrap();
 
-        let v2_printer = make_v2_printer();
-        cmd_module_keys_rotate(&v2_printer, Some(dir.to_str().unwrap()), &[])
+        let printer = make_v2_printer();
+        cmd_module_keys_rotate(&printer, Some(dir.to_str().unwrap()), &[])
             .expect("rotate happy path → Ok");
 
         // The new key files written by the shim are present.
@@ -4244,17 +4238,17 @@ fn make_loaded_module(name: &str, spec: config::ModuleSpec) -> modules::LoadedMo
 
 #[test]
 fn print_module_review_summary_emits_subheader_and_commit_integrity() {
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let module = make_loaded_module("vim-config", config::ModuleSpec::default());
     super::registry::print_module_review_summary(
-        &v2_printer,
+        &printer,
         "vim-config",
         &module,
         "abc123",
         "sha256:def456",
     );
-    drop(v2_printer);
+    drop(printer);
     let out = buf.lock().unwrap().clone();
     assert!(out.contains("Module: vim-config"), "subheader: {out}");
     assert!(out.contains("Commit"), "commit kv missing: {out}");
@@ -4268,7 +4262,7 @@ fn print_module_review_summary_emits_subheader_and_commit_integrity() {
 
 #[test]
 fn print_module_review_summary_shows_dependency_list_when_present() {
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let module = make_loaded_module(
         "m",
@@ -4277,8 +4271,8 @@ fn print_module_review_summary_shows_dependency_list_when_present() {
             ..Default::default()
         },
     );
-    super::registry::print_module_review_summary(&v2_printer, "m", &module, "c", "i");
-    drop(v2_printer);
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
     let out = buf.lock().unwrap().clone();
     assert!(out.contains("Dependencies"), "Dependencies kv: {out}");
     assert!(out.contains("base, shell"), "deps joined: {out}");
@@ -4286,7 +4280,7 @@ fn print_module_review_summary_shows_dependency_list_when_present() {
 
 #[test]
 fn print_module_review_summary_lists_packages_with_min_version_when_set() {
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let module = make_loaded_module(
         "m",
@@ -4305,8 +4299,8 @@ fn print_module_review_summary_lists_packages_with_min_version_when_set() {
             ..Default::default()
         },
     );
-    super::registry::print_module_review_summary(&v2_printer, "m", &module, "c", "i");
-    drop(v2_printer);
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
     let out = buf.lock().unwrap().clone();
     assert!(out.contains("Packages (2)"), "count: {out}");
     assert!(out.contains("ripgrep (min: 13.0)"), "min-version: {out}");
@@ -4319,7 +4313,7 @@ fn print_module_review_summary_warns_on_post_apply_scripts() {
     // post-apply scripts gets a visible WARNING before the confirm
     // prompt. If this regresses, users could miss that a remote module
     // is about to execute shell on their machine.
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let module = make_loaded_module(
         "m",
@@ -4334,8 +4328,8 @@ fn print_module_review_summary_warns_on_post_apply_scripts() {
             ..Default::default()
         },
     );
-    super::registry::print_module_review_summary(&v2_printer, "m", &module, "c", "i");
-    drop(v2_printer);
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
     let out = buf.lock().unwrap().clone();
     assert!(
         out.contains("Post-apply scripts (1)"),
@@ -4356,7 +4350,7 @@ fn print_module_review_summary_omits_empty_sections() {
     // A module with only `depends` should not emit Packages/Files/
     // Scripts subheaders — the output should stay tight, not push
     // "Packages (0):" noise into the confirm-prompt view.
-    let (v2_printer, buf) =
+    let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let module = make_loaded_module(
         "m",
@@ -4365,8 +4359,8 @@ fn print_module_review_summary_omits_empty_sections() {
             ..Default::default()
         },
     );
-    super::registry::print_module_review_summary(&v2_printer, "m", &module, "c", "i");
-    drop(v2_printer);
+    super::registry::print_module_review_summary(&printer, "m", &module, "c", "i");
+    drop(printer);
     let out = buf.lock().unwrap().clone();
     assert!(!out.contains("Packages ("), "no packages section: {out}");
     assert!(!out.contains("Files ("), "no files section: {out}");
@@ -4683,8 +4677,8 @@ mod cmd_module_add_remote_local_bare {
         let url = format!("file://{}@v1.0.0", bare.display());
 
         let cli = test_cli(work.path());
-        let v2_printer = make_v2_printer();
-        cmd_module_add_remote(&cli, &v2_printer, &url, None, true, true)
+        let printer = make_v2_printer();
+        cmd_module_add_remote(&cli, &printer, &url, None, true, true)
             .expect("cmd_module_add_remote happy path");
 
         // Lockfile created with the new module entry.
@@ -4755,8 +4749,8 @@ mod cmd_module_add_remote_local_bare {
         let url = format!("file://{}@v1.0.0", bare.display());
 
         let cli = test_cli(work.path());
-        let v2_printer = make_v2_printer();
-        let err = cmd_module_add_remote(&cli, &v2_printer, &url, None, true, true)
+        let printer = make_v2_printer();
+        let err = cmd_module_add_remote(&cli, &printer, &url, None, true, true)
             .expect_err("local-module collision should refuse to proceed");
         let msg = err.to_string();
         assert!(
@@ -4777,8 +4771,8 @@ mod cmd_module_add_remote_local_bare {
         let url_v1 = format!("file://{}@v1.0.0", bare.display());
 
         let cli = test_cli(work.path());
-        let v2_printer = make_v2_printer();
-        cmd_module_add_remote(&cli, &v2_printer, &url_v1, None, true, true).unwrap();
+        let printer = make_v2_printer();
+        cmd_module_add_remote(&cli, &printer, &url_v1, None, true, true).unwrap();
 
         // Capture v1 lockfile state for comparison.
         let lock_v1 = std::fs::read_to_string(work.path().join("modules.lock")).unwrap();
@@ -4789,7 +4783,7 @@ mod cmd_module_add_remote_local_bare {
         add_tag_to_bare(&src, &bare, "v2.0.0");
 
         // Upgrade to v2.0.0.
-        cmd_module_upgrade(&cli, &v2_printer, "mymod", Some("v2.0.0"), true, true)
+        cmd_module_upgrade(&cli, &printer, "mymod", Some("v2.0.0"), true, true)
             .expect("upgrade to v2.0.0 should succeed");
 
         let lock_v2 = std::fs::read_to_string(work.path().join("modules.lock")).unwrap();
@@ -4811,8 +4805,8 @@ mod cmd_module_add_remote_local_bare {
         let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
 
         let cli = test_cli(work.path());
-        let v2_printer = make_v2_printer();
-        let err = cmd_module_upgrade(&cli, &v2_printer, "ghost", Some("v9.9.9"), true, true)
+        let printer = make_v2_printer();
+        let err = cmd_module_upgrade(&cli, &printer, "ghost", Some("v9.9.9"), true, true)
             .expect_err("upgrading a non-tracked module should error");
         let msg = err.to_string();
         assert!(
@@ -4926,8 +4920,8 @@ mod cmd_module_add_remote_local_bare {
         make_module(work.path(), "localmod", local_mod_yaml);
 
         let cli = test_cli(work.path());
-        let v2_printer = make_v2_printer();
-        let err = cmd_module_upgrade(&cli, &v2_printer, "localmod", Some("v1"), true, true)
+        let printer = make_v2_printer();
+        let err = cmd_module_upgrade(&cli, &printer, "localmod", Some("v1"), true, true)
             .expect_err("upgrade should refuse to touch local modules");
         let msg = err.to_string();
         assert!(
@@ -5070,11 +5064,11 @@ mod cmd_module_add_from_registry_local {
         write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
 
         let cli = test_cli(work.path());
-        let (v2_printer, buf) =
+        let (printer, buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        cmd_module_add_from_registry(&cli, &v2_printer, "myreg/alpha@v1.0.0", true, true)
+        cmd_module_add_from_registry(&cli, &printer, "myreg/alpha@v1.0.0", true, true)
             .expect("explicit-tag registry add should succeed");
-        drop(v2_printer);
+        drop(printer);
 
         // The resolver should log the per-module URL it built before delegating.
         let out = buf.lock().unwrap();
@@ -5115,12 +5109,12 @@ mod cmd_module_add_from_registry_local {
         write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
 
         let cli = test_cli(work.path());
-        let (v2_printer, buf) =
+        let (printer, buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         // No `@<tag>` — should fetch tags and pick the highest semver.
-        cmd_module_add_from_registry(&cli, &v2_printer, "myreg/beta", true, true)
+        cmd_module_add_from_registry(&cli, &printer, "myreg/beta", true, true)
             .expect("latest-version registry add should succeed");
-        drop(v2_printer);
+        drop(printer);
 
         let out = buf.lock().unwrap();
         assert!(
@@ -5144,10 +5138,9 @@ mod cmd_module_add_from_registry_local {
 
         // cfgd.yaml left without any registries declared.
         let cli = test_cli(work.path());
-        let v2_printer = make_v2_printer();
-        let err =
-            cmd_module_add_from_registry(&cli, &v2_printer, "ghost-reg/foo@v1.0.0", true, true)
-                .expect_err("unknown registry should error");
+        let printer = make_v2_printer();
+        let err = cmd_module_add_from_registry(&cli, &printer, "ghost-reg/foo@v1.0.0", true, true)
+            .expect_err("unknown registry should error");
         let msg = err.to_string();
         assert!(
             msg.contains("ghost-reg") && msg.contains("registry add"),
@@ -5163,9 +5156,9 @@ mod cmd_module_add_from_registry_local {
         let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
 
         let cli = test_cli(work.path());
-        let v2_printer = make_v2_printer();
+        let printer = make_v2_printer();
         // No slash — `parse_registry_ref` should reject this before any I/O.
-        let err = cmd_module_add_from_registry(&cli, &v2_printer, "noslash", true, true)
+        let err = cmd_module_add_from_registry(&cli, &printer, "noslash", true, true)
             .expect_err("bare reference without `/` should be rejected");
         let msg = err.to_string();
         assert!(
@@ -5187,9 +5180,9 @@ mod cmd_module_add_from_registry_local {
         write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
 
         let cli = test_cli(work.path());
-        let v2_printer = make_v2_printer();
+        let printer = make_v2_printer();
         // Registry resolves, but `beta` has no matching tags in the source.
-        let err = cmd_module_add_from_registry(&cli, &v2_printer, "myreg/beta", true, true)
+        let err = cmd_module_add_from_registry(&cli, &printer, "myreg/beta", true, true)
             .expect_err("module with no tags should error on latest lookup");
         let msg = err.to_string();
         assert!(
@@ -5219,10 +5212,10 @@ mod cmd_module_add_from_registry_local {
         write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
 
         let cli = test_cli(work.path());
-        let (v2_printer, buf) =
+        let (printer, buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        cmd_module_search(&cli, &v2_printer, "alph").expect("search should succeed");
-        drop(v2_printer);
+        cmd_module_search(&cli, &printer, "alph").expect("search should succeed");
+        drop(printer);
 
         let out = buf.lock().unwrap();
         assert!(
@@ -5253,10 +5246,10 @@ mod cmd_module_add_from_registry_local {
         write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
 
         let cli = test_cli(work.path());
-        let (v2_printer, buf) =
+        let (printer, buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        cmd_module_search(&cli, &v2_printer, "no-such-name").expect("search should succeed");
-        drop(v2_printer);
+        cmd_module_search(&cli, &printer, "no-such-name").expect("search should succeed");
+        drop(printer);
 
         let out = buf.lock().unwrap();
         assert!(
@@ -5283,11 +5276,11 @@ mod cmd_module_add_from_registry_local {
 
         let mut cli = test_cli(work.path());
         cli.output = super::OutputFormatArg(cfgd_core::output::OutputFormat::Wide);
-        let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc_with_format(
+        let (printer, cap) = cfgd_core::output::Printer::for_test_doc_with_format(
             cfgd_core::output::OutputFormat::Wide,
         );
-        cmd_module_search(&cli, &v2_printer, "alph").expect("wide search should succeed");
-        drop(v2_printer);
+        cmd_module_search(&cli, &printer, "alph").expect("wide search should succeed");
+        drop(printer);
 
         let out = cap.human();
         assert!(
@@ -5317,9 +5310,9 @@ mod cmd_module_add_from_registry_local {
         write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
 
         let cli = test_cli_json(work.path());
-        let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc();
-        cmd_module_search(&cli, &v2_printer, "alpha").expect("json search should succeed");
-        drop(v2_printer);
+        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+        cmd_module_search(&cli, &printer, "alpha").expect("json search should succeed");
+        drop(printer);
 
         let json = cap.json().expect("doc captured json");
         let arr = json
@@ -5350,11 +5343,11 @@ mod cmd_module_add_from_registry_local {
         write_cfgd_yaml_with_registry(work.path(), "myreg", &ghost_url);
 
         let cli = test_cli(work.path());
-        let (v2_printer, buf) =
+        let (printer, buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        cmd_module_search(&cli, &v2_printer, "anything")
+        cmd_module_search(&cli, &printer, "anything")
             .expect("search should succeed even when a registry fails");
-        drop(v2_printer);
+        drop(printer);
 
         let out = buf.lock().unwrap();
         assert!(

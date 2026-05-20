@@ -1,11 +1,11 @@
 use cfgd_core::output::{Doc, Printer, Role};
 
-pub fn cmd_upgrade(v2_printer: &Printer, check_only: bool) -> anyhow::Result<()> {
+pub fn cmd_upgrade(printer: &Printer, check_only: bool) -> anyhow::Result<()> {
     use cfgd_core::upgrade;
 
     if check_only {
-        let check = upgrade::check_latest(None, Some(v2_printer)).map_err(|e| {
-            v2_printer.emit(cfgd_core::output::error_doc(
+        let check = upgrade::check_latest(None, Some(printer)).map_err(|e| {
+            printer.emit(cfgd_core::output::error_doc(
                 env!("CARGO_PKG_VERSION"),
                 "check_failed",
                 format!("Failed to check latest version: {e}"),
@@ -15,7 +15,7 @@ pub fn cmd_upgrade(v2_printer: &Printer, check_only: bool) -> anyhow::Result<()>
         })?;
 
         if check.update_available {
-            v2_printer.emit(
+            printer.emit(
                 Doc::new()
                     .status(
                         Role::Info,
@@ -33,7 +33,7 @@ pub fn cmd_upgrade(v2_printer: &Printer, check_only: bool) -> anyhow::Result<()>
             // results from network/IO errors.
             cfgd_core::exit::ExitCode::UpdateAvailable.exit();
         } else {
-            v2_printer.emit(
+            printer.emit(
                 Doc::new()
                     .status(Role::Ok, format!("cfgd {} is up to date", check.current))
                     .with_data(serde_json::json!({
@@ -47,10 +47,10 @@ pub fn cmd_upgrade(v2_printer: &Printer, check_only: bool) -> anyhow::Result<()>
         return Ok(());
     }
 
-    v2_printer.heading("Upgrade");
+    printer.heading("Upgrade");
 
-    let check = upgrade::check_latest(None, Some(v2_printer)).map_err(|e| {
-        v2_printer.emit(cfgd_core::output::error_doc(
+    let check = upgrade::check_latest(None, Some(printer)).map_err(|e| {
+        printer.emit(cfgd_core::output::error_doc(
             env!("CARGO_PKG_VERSION"),
             "check_failed",
             format!("Failed to check latest version: {e}"),
@@ -60,7 +60,7 @@ pub fn cmd_upgrade(v2_printer: &Printer, check_only: bool) -> anyhow::Result<()>
     })?;
 
     if !check.update_available {
-        v2_printer.emit(
+        printer.emit(
             Doc::new()
                 .status(
                     Role::Ok,
@@ -79,7 +79,7 @@ pub fn cmd_upgrade(v2_printer: &Printer, check_only: bool) -> anyhow::Result<()>
     }
 
     let release = check.release.as_ref().ok_or_else(|| {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             &check.latest.to_string(),
             "no_release",
             "release info not available".to_string(),
@@ -92,7 +92,7 @@ pub fn cmd_upgrade(v2_printer: &Printer, check_only: bool) -> anyhow::Result<()>
     })?;
 
     let asset = upgrade::find_asset_for_platform(release).map_err(|e| {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             &check.latest.to_string(),
             "no_release",
             format!("no asset for platform: {e}"),
@@ -105,7 +105,7 @@ pub fn cmd_upgrade(v2_printer: &Printer, check_only: bool) -> anyhow::Result<()>
     })?;
 
     {
-        let sec = v2_printer.section(format!(
+        let sec = printer.section(format!(
             "Update available: {} -> {}",
             check.current, check.latest
         ));
@@ -116,8 +116,8 @@ pub fn cmd_upgrade(v2_printer: &Printer, check_only: bool) -> anyhow::Result<()>
     }
 
     let installed_path =
-        upgrade::download_and_install(release, asset, Some(v2_printer)).map_err(|e| {
-            v2_printer.emit(cfgd_core::output::error_doc(
+        upgrade::download_and_install(release, asset, Some(printer)).map_err(|e| {
+            printer.emit(cfgd_core::output::error_doc(
                 &check.latest.to_string(),
                 "install_failed",
                 format!("download/install failed: {e}"),
@@ -135,7 +135,7 @@ pub fn cmd_upgrade(v2_printer: &Printer, check_only: bool) -> anyhow::Result<()>
     // Restart daemon if running
     let daemon_restarted = upgrade::restart_daemon_if_running();
 
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(Role::Ok, format!("cfgd upgraded to {}", check.latest))
             .kv("Installed to", installed_path.display().to_string())

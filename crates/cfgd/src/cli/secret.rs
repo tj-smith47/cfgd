@@ -5,12 +5,12 @@ fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").to_string()
 }
 
-pub fn cmd_secret_encrypt(cli: &Cli, v2_printer: &Printer, file: &Path) -> anyhow::Result<()> {
+pub fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Result<()> {
     let backend = match get_secret_backend(cli, file) {
         Ok(b) => b,
         Err(e) => {
             let full = format!("{}", e);
-            v2_printer.emit(cfgd_core::output::error_doc(
+            printer.emit(cfgd_core::output::error_doc(
                 &file.display().to_string(),
                 "backend_unavailable",
                 first_line(&full),
@@ -23,7 +23,7 @@ pub fn cmd_secret_encrypt(cli: &Cli, v2_printer: &Printer, file: &Path) -> anyho
 
     if let Err(e) = backend.encrypt_file(file) {
         let full = format!("{}", e);
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             &file.display().to_string(),
             "encryption_failed",
             first_line(&full),
@@ -36,7 +36,7 @@ pub fn cmd_secret_encrypt(cli: &Cli, v2_printer: &Printer, file: &Path) -> anyho
         return Err(e.into());
     }
 
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(
                 Role::Ok,
@@ -51,12 +51,12 @@ pub fn cmd_secret_encrypt(cli: &Cli, v2_printer: &Printer, file: &Path) -> anyho
     Ok(())
 }
 
-pub fn cmd_secret_decrypt(cli: &Cli, v2_printer: &Printer, file: &Path) -> anyhow::Result<()> {
+pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Result<()> {
     let backend = match get_secret_backend(cli, file) {
         Ok(b) => b,
         Err(e) => {
             let full = format!("{}", e);
-            v2_printer.emit(cfgd_core::output::error_doc(
+            printer.emit(cfgd_core::output::error_doc(
                 &file.display().to_string(),
                 "backend_unavailable",
                 first_line(&full),
@@ -71,7 +71,7 @@ pub fn cmd_secret_decrypt(cli: &Cli, v2_printer: &Printer, file: &Path) -> anyho
         Ok(d) => d,
         Err(e) => {
             let full = format!("{}", e);
-            v2_printer.emit(cfgd_core::output::error_doc(
+            printer.emit(cfgd_core::output::error_doc(
                 &file.display().to_string(),
                 "decryption_failed",
                 first_line(&full),
@@ -91,8 +91,8 @@ pub fn cmd_secret_decrypt(cli: &Cli, v2_printer: &Printer, file: &Path) -> anyho
     // skip the raw stdout sink so plaintext doesn't contaminate both the
     // JSON channel and raw stdout — the structured caller receives plaintext
     // inside the Doc payload.
-    if v2_printer.is_structured() {
-        v2_printer.emit(
+    if printer.is_structured() {
+        printer.emit(
             Doc::new()
                 .status(Role::Ok, format!("Decrypted {}", file.display()))
                 .with_data(serde_json::json!({
@@ -104,9 +104,9 @@ pub fn cmd_secret_decrypt(cli: &Cli, v2_printer: &Printer, file: &Path) -> anyho
         return Ok(());
     }
 
-    v2_printer.data_line(plaintext);
+    printer.data_line(plaintext);
 
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(Role::Ok, format!("Decrypted {}", file.display()))
             .with_data(serde_json::json!({
@@ -118,12 +118,12 @@ pub fn cmd_secret_decrypt(cli: &Cli, v2_printer: &Printer, file: &Path) -> anyho
     Ok(())
 }
 
-pub fn cmd_secret_edit(cli: &Cli, v2_printer: &Printer, file: &Path) -> anyhow::Result<()> {
+pub fn cmd_secret_edit(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Result<()> {
     let backend = match get_secret_backend(cli, file) {
         Ok(b) => b,
         Err(e) => {
             let full = format!("{}", e);
-            v2_printer.emit(cfgd_core::output::error_doc(
+            printer.emit(cfgd_core::output::error_doc(
                 &file.display().to_string(),
                 "backend_unavailable",
                 first_line(&full),
@@ -136,7 +136,7 @@ pub fn cmd_secret_edit(cli: &Cli, v2_printer: &Printer, file: &Path) -> anyhow::
 
     if let Err(e) = backend.edit_file(file) {
         let full = format!("{}", e);
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             &file.display().to_string(),
             "edit_failed",
             first_line(&full),
@@ -149,7 +149,7 @@ pub fn cmd_secret_edit(cli: &Cli, v2_printer: &Printer, file: &Path) -> anyhow::
         return Err(e.into());
     }
 
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(
                 Role::Ok,
@@ -169,7 +169,7 @@ pub fn cmd_secret_edit(cli: &Cli, v2_printer: &Printer, file: &Path) -> anyhow::
     Ok(())
 }
 
-pub fn cmd_secret_init(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_secret_init(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
 
     let sops_config_pre = config_dir.join(".sops.yaml");
@@ -181,7 +181,7 @@ pub fn cmd_secret_init(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
         Ok(p) => p,
         Err(e) => {
             let full = format!("{}", e);
-            v2_printer.emit(cfgd_core::output::error_doc(
+            printer.emit(cfgd_core::output::error_doc(
                 "age",
                 "backend_unavailable",
                 first_line(&full),
@@ -195,7 +195,7 @@ pub fn cmd_secret_init(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
     };
 
     if already_initialized {
-        v2_printer.emit(
+        printer.emit(
             Doc::new()
                 .status(
                     Role::Info,
@@ -218,7 +218,7 @@ pub fn cmd_secret_init(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
         None
     };
 
-    let init_sec = v2_printer.section("Secrets Initialized");
+    let init_sec = printer.section("Secrets Initialized");
     let mut pairs: Vec<(String, String)> =
         vec![("Age key".to_string(), key_path.display().to_string())];
     if let Some(ref p) = sops_path {
@@ -240,7 +240,7 @@ pub fn cmd_secret_init(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
         );
     }
 
-    v2_printer.emit(
+    printer.emit(
         Doc::new()
             .status(
                 Role::Ok,

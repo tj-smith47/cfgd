@@ -70,11 +70,11 @@ pub fn build_enroll_error_doc(kind: &'static str, payload: serde_json::Value) ->
 // cfgd enroll — unified enrollment (token + key-based)
 // ─────────────────────────────────────────────────────
 
-/// Run the unified enrollment flow. All emits route through `v2_printer`,
+/// Run the unified enrollment flow. All emits route through `printer`,
 /// including the `ServerClient::enroll` / `request_challenge` /
 /// `submit_verification` calls now that server_client is on v2.
 pub(crate) fn cmd_enroll(
-    v2_printer: &Printer,
+    printer: &Printer,
     server_url: &str,
     token: Option<&str>,
     ssh_key: Option<&str>,
@@ -87,35 +87,35 @@ pub(crate) fn cmd_enroll(
     };
     let device_id = default_device_id();
 
-    v2_printer.kv("Server", server_url);
-    v2_printer.kv("Device ID", &device_id);
+    printer.kv("Server", server_url);
+    printer.kv("Device ID", &device_id);
 
     let client = cfgd_core::server_client::ServerClient::new(server_url, None, &device_id);
 
     // Token-based enrollment (direct exchange)
     if let Some(token) = token {
-        v2_printer.heading("Token Enrollment");
-        v2_printer.status_simple(
+        printer.heading("Token Enrollment");
+        printer.status_simple(
             Role::Info,
             "Exchanging bootstrap token for device credential...",
         );
 
         let resp = client
-            .enroll(token, v2_printer)
+            .enroll(token, printer)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-        return finish_enrollment(v2_printer, server_url, &device_id, resp);
+        return finish_enrollment(printer, server_url, &device_id, resp);
     }
 
     // Key-based enrollment (challenge-response)
-    v2_printer.heading("Key-Based Enrollment");
-    v2_printer.kv("Username", &username);
+    printer.heading("Key-Based Enrollment");
+    printer.kv("Username", &username);
 
     // Check server enrollment method
     let info = client.enroll_info().map_err(|e| anyhow::anyhow!("{}", e))?;
 
     if info.method == "token" {
-        v2_printer.emit(build_enroll_error_doc(
+        printer.emit(build_enroll_error_doc(
             "method_mismatch",
             serde_json::json!({
                 "serverUrl": server_url,
@@ -133,10 +133,10 @@ pub(crate) fn cmd_enroll(
     } else if let Some(ssh_path) = ssh_key {
         (KeyType::Ssh, ssh_path.to_string())
     } else {
-        match detect_ssh_key(v2_printer) {
+        match detect_ssh_key(printer) {
             Some(path) => (KeyType::Ssh, path),
             None => {
-                v2_printer.emit(build_enroll_error_doc(
+                printer.emit(build_enroll_error_doc(
                     "no_key",
                     serde_json::json!({
                         "checked": [
@@ -155,25 +155,25 @@ pub(crate) fn cmd_enroll(
         }
     };
 
-    v2_printer.kv(
+    printer.kv(
         "Signing with",
         format!("{} ({})", key_type.as_str().to_uppercase(), key_ref),
     );
 
     // Challenge-response
     let challenge = client
-        .request_challenge(&username, v2_printer)
+        .request_challenge(&username, printer)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    v2_printer.kv("Challenge ID", &challenge.challenge_id);
-    v2_printer.kv("Expires", &challenge.expires_at);
+    printer.kv("Challenge ID", &challenge.challenge_id);
+    printer.kv("Expires", &challenge.expires_at);
 
     let signature = match key_type {
         KeyType::Ssh => sign_with_ssh(&challenge.nonce, &key_ref),
         KeyType::Gpg => sign_with_gpg(&challenge.nonce, &key_ref),
     }
     .inspect_err(|e| {
-        v2_printer.emit(build_enroll_error_doc(
+        printer.emit(build_enroll_error_doc(
             "signing_failed",
             serde_json::json!({
                 "keyType": key_type.as_str(),
@@ -183,43 +183,43 @@ pub(crate) fn cmd_enroll(
         ));
     })?;
 
-    v2_printer.status_simple(Role::Ok, "Challenge signed");
+    printer.status_simple(Role::Ok, "Challenge signed");
 
     let resp = client
         .submit_verification(
             &challenge.challenge_id,
             &signature,
             key_type.as_str(),
-            v2_printer,
+            printer,
         )
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-    finish_enrollment(v2_printer, server_url, &device_id, resp)
+    finish_enrollment(printer, server_url, &device_id, resp)
 }
 
 /// Shared enrollment completion: save credential, handle desired config, emit
 /// the final buffered Doc carrying the structured payload.
 fn finish_enrollment(
-    v2_printer: &Printer,
+    printer: &Printer,
     server_url: &str,
     device_id: &str,
     resp: cfgd_core::server_client::EnrollResponse,
 ) -> anyhow::Result<()> {
-    v2_printer.status_simple(Role::Ok, format!("Enrolled as user '{}'", resp.username));
+    printer.status_simple(Role::Ok, format!("Enrolled as user '{}'", resp.username));
     if let Some(ref team) = resp.team {
-        v2_printer.kv("Team", team);
+        printer.kv("Team", team);
     }
-    v2_printer.kv("Device", &resp.device_id);
+    printer.kv("Device", &resp.device_id);
 
     let credential = build_device_credential(server_url, device_id, &resp);
 
     match cfgd_core::server_client::save_credential(&credential) {
         Ok(path) => {
-            v2_printer.status_simple(Role::Ok, format!("Credential saved to {}", path.display()));
+            printer.status_simple(Role::Ok, format!("Credential saved to {}", path.display()));
         }
         Err(e) => {
-            v2_printer.status_simple(Role::Fail, format!("Failed to save credential: {}", e));
-            v2_printer.status_simple(
+            printer.status_simple(Role::Fail, format!("Failed to save credential: {}", e));
+            printer.status_simple(
                 Role::Warn,
                 "You will need to manually provide --api-key for future commands",
             );
@@ -229,11 +229,11 @@ fn finish_enrollment(
     if let Some(ref desired) = resp.desired_config {
         match cfgd_core::state::save_pending_server_config(desired) {
             Ok(path) => {
-                v2_printer.status_simple(
+                printer.status_simple(
                     Role::Info,
                     format!("Server pushed desired config — saved to {}", path.display()),
                 );
-                v2_printer.status_simple(Role::Info, MSG_RUN_APPLY);
+                printer.status_simple(Role::Info, MSG_RUN_APPLY);
             }
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to save pending server config");
@@ -247,7 +247,7 @@ fn finish_enrollment(
         username: resp.username.clone(),
         team: resp.team.clone(),
     };
-    v2_printer.emit(build_enroll_final_doc(&output));
+    printer.emit(build_enroll_final_doc(&output));
 
     Ok(())
 }
@@ -305,7 +305,7 @@ pub(super) fn next_steps_lines() -> &'static [&'static str] {
 // SSH/GPG signing helpers
 // ─────────────────────────────────────────────────────
 
-pub(super) fn detect_ssh_key(v2_printer: &Printer) -> Option<String> {
+pub(super) fn detect_ssh_key(printer: &Printer) -> Option<String> {
     let ssh_dir = cfgd_core::expand_tilde(Path::new("~/.ssh"));
 
     // Try SSH agent first — when the agent has identities loaded, prefer
@@ -323,7 +323,7 @@ pub(super) fn detect_ssh_key(v2_printer: &Printer) -> Option<String> {
             && !line.contains("no identities")
             && let Some(key) = first_existing_ssh_key(&ssh_dir)
         {
-            v2_printer.status_simple(
+            printer.status_simple(
                 Role::Info,
                 format!("Using SSH key from agent: {}", key.display()),
             );
@@ -333,7 +333,7 @@ pub(super) fn detect_ssh_key(v2_printer: &Printer) -> Option<String> {
 
     // Fall back to on-disk keys
     if let Some(key) = first_existing_ssh_key(&ssh_dir) {
-        v2_printer.status_simple(Role::Info, format!("Using SSH key: {}", key.display()));
+        printer.status_simple(Role::Info, format!("Using SSH key: {}", key.display()));
         return Some(key.to_string_lossy().to_string());
     }
 

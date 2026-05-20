@@ -99,9 +99,9 @@ fn module_keys_list_empty_human() {
     let home_guard =
         cfgd_core::test_helpers::EnvVarGuard::set("HOME", tmp.path().to_str().unwrap());
 
-    let (v2_printer, cap) = Printer::for_test_doc();
-    module::cmd_module_keys_list(&v2_printer).unwrap();
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    module::cmd_module_keys_list(&printer).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(&snap_root, "module_keys/list_empty.txt", &stripped);
@@ -123,9 +123,9 @@ fn module_keys_list_empty_json() {
     let home_guard =
         cfgd_core::test_helpers::EnvVarGuard::set("HOME", tmp.path().to_str().unwrap());
 
-    let (v2_printer, cap) = Printer::for_test_doc();
-    module::cmd_module_keys_list(&v2_printer).unwrap();
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    module::cmd_module_keys_list(&printer).unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     let arr = json.as_array().expect("Vec payload");
@@ -146,9 +146,9 @@ fn module_keys_generate_happy_human() {
     let work = tempfile::tempdir().unwrap();
     let dir_str = work.path().to_str().unwrap();
 
-    let (v2_printer, cap) = Printer::for_test_doc();
-    module::cmd_module_keys_generate(&v2_printer, Some(dir_str)).unwrap();
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    module::cmd_module_keys_generate(&printer, Some(dir_str)).unwrap();
+    drop(printer);
 
     let stripped = strip_ansi(&cap.human()).replace(dir_str, "<DIR>");
     assert_snapshot(
@@ -169,9 +169,9 @@ fn module_keys_generate_happy_json() {
     let work = tempfile::tempdir().unwrap();
     let dir_str = work.path().to_str().unwrap();
 
-    let (v2_printer, cap) = Printer::for_test_doc();
-    module::cmd_module_keys_generate(&v2_printer, Some(dir_str)).unwrap();
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    module::cmd_module_keys_generate(&printer, Some(dir_str)).unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["dir"], dir_str);
@@ -224,10 +224,10 @@ fn module_keys_rotate_happy_human() {
     std::fs::write(dir.join("cosign.pub"), b"old-public").unwrap();
 
     let dir_str = dir.to_str().unwrap();
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     // Empty artifacts list — exercises the path that skips OCI re-signing.
-    module::cmd_module_keys_rotate(&v2_printer, Some(dir_str), &[]).unwrap();
-    drop(v2_printer);
+    module::cmd_module_keys_rotate(&printer, Some(dir_str), &[]).unwrap();
+    drop(printer);
 
     let stripped = mask_timestamp(&strip_ansi(&cap.human()).replace(dir_str, "<DIR>"));
     assert_snapshot(
@@ -251,9 +251,9 @@ fn module_keys_rotate_happy_json() {
     std::fs::write(dir.join("cosign.pub"), b"old-public").unwrap();
 
     let dir_str = dir.to_str().unwrap();
-    let (v2_printer, cap) = Printer::for_test_doc();
-    module::cmd_module_keys_rotate(&v2_printer, Some(dir_str), &[]).unwrap();
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    module::cmd_module_keys_rotate(&printer, Some(dir_str), &[]).unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["dir"], dir_str);
@@ -306,9 +306,9 @@ fn module_keys_rotate_bridge_one_blank_line() {
 
     let dir_str = dir.to_str().unwrap();
     let artifacts = vec!["oci.example.com/m:v1".to_string()];
-    let (v2_printer, cap) = Printer::for_test_doc();
-    module::cmd_module_keys_rotate(&v2_printer, Some(dir_str), &artifacts).unwrap();
-    drop(v2_printer);
+    let (printer, cap) = Printer::for_test_doc();
+    module::cmd_module_keys_rotate(&printer, Some(dir_str), &artifacts).unwrap();
+    drop(printer);
 
     let combined = cap.human();
     assert!(

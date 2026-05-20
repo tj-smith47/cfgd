@@ -60,12 +60,12 @@ fn assert_snapshot(base: &Path, name: &str, actual: &str) {
 fn profile_delete_happy_human() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
     // Delete the inheritor first so we don't trip the active-profile refusal
     // (the fixture's active profile is `default`, so `work` is safely deletable).
-    cmd_profile_delete(&cli, &v2_printer, "work", true).unwrap();
-    drop(v2_printer);
+    cmd_profile_delete(&cli, &printer, "work", true).unwrap();
+    drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -79,10 +79,10 @@ fn profile_delete_happy_human() {
 fn profile_delete_happy_json() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    cmd_profile_delete(&cli, &v2_printer, "work", true).unwrap();
-    drop(v2_printer);
+    cmd_profile_delete(&cli, &printer, "work", true).unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["name"], "work");
@@ -94,11 +94,11 @@ fn profile_delete_happy_json() {
 fn profile_delete_cancelled_human() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) =
+    let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
 
-    cmd_profile_delete(&cli, &v2_printer, "work", false).unwrap();
-    drop(v2_printer);
+    cmd_profile_delete(&cli, &printer, "work", false).unwrap();
+    drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -112,11 +112,11 @@ fn profile_delete_cancelled_human() {
 fn profile_delete_cancelled_json() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) =
+    let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
 
-    cmd_profile_delete(&cli, &v2_printer, "work", false).unwrap();
-    drop(v2_printer);
+    cmd_profile_delete(&cli, &printer, "work", false).unwrap();
+    drop(printer);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["cancelled"], true);
@@ -129,12 +129,12 @@ fn profile_delete_active_profile_refused_human() {
     // emits the error Doc and bails.
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_profile_delete(&cli, &v2_printer, "default", true)
+    let err = cmd_profile_delete(&cli, &printer, "default", true)
         .expect_err("deleting the active profile must error");
     assert!(err.to_string().contains("active profile"));
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(
@@ -157,12 +157,12 @@ fn profile_delete_inheritor_refused_human() {
     .unwrap();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (v2_printer, cap) = Printer::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_profile_delete(&cli, &v2_printer, "work", true)
+    let err = cmd_profile_delete(&cli, &printer, "work", true)
         .expect_err("deleting an inherited profile must error");
     assert!(err.to_string().contains("inherited"));
-    drop(v2_printer);
+    drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
     assert_snapshot(

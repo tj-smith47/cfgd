@@ -3,7 +3,7 @@ use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_profile_create(
     cli: &Cli,
-    v2_printer: &Printer,
+    printer: &Printer,
     args: &ProfileCreateArgs,
 ) -> anyhow::Result<()> {
     let name = &args.name;
@@ -22,7 +22,7 @@ pub fn cmd_profile_create(
     let on_change = &args.on_change;
     let on_drift = &args.on_drift;
     validate_resource_name(name, "Profile")?;
-    v2_printer.heading(format!("Create Profile: {}", name));
+    printer.heading(format!("Create Profile: {}", name));
 
     let config_dir = config_dir(cli);
     let pdir = config_dir.join("profiles");
@@ -30,7 +30,7 @@ pub fn cmd_profile_create(
 
     let profile_path = pdir.join(format!("{}.yaml", name));
     if profile_path.exists() {
-        v2_printer.emit(cfgd_core::output::error_doc(
+        printer.emit(cfgd_core::output::error_doc(
             name,
             "already_exists",
             format!(
@@ -51,7 +51,7 @@ pub fn cmd_profile_create(
     for parent in inherits {
         let parent_path = pdir.join(format!("{}.yaml", parent));
         if !parent_path.exists() {
-            v2_printer.emit(cfgd_core::output::error_doc(
+            printer.emit(cfgd_core::output::error_doc(
                 name,
                 "parent_not_found",
                 format!("Parent profile '{}' not found", parent),
@@ -78,7 +78,7 @@ pub fn cmd_profile_create(
         && on_drift.is_empty();
 
     let (inh, mods, pkgs_parsed, vars, sys) = if is_interactive {
-        let inh_str = v2_printer.prompt_text("Inherit from (comma-separated, or empty)", "")?;
+        let inh_str = printer.prompt_text("Inherit from (comma-separated, or empty)", "")?;
         let inh: Vec<String> = if inh_str.is_empty() {
             Vec::new()
         } else {
@@ -87,7 +87,7 @@ pub fn cmd_profile_create(
         for parent in &inh {
             let parent_path = pdir.join(format!("{}.yaml", parent));
             if !parent_path.exists() {
-                v2_printer.emit(cfgd_core::output::error_doc(
+                printer.emit(cfgd_core::output::error_doc(
                     name,
                     "parent_not_found",
                     format!("Parent profile '{}' not found", parent),
@@ -97,7 +97,7 @@ pub fn cmd_profile_create(
             }
         }
 
-        let mods_str = v2_printer.prompt_text("Modules (comma-separated, or empty)", "")?;
+        let mods_str = printer.prompt_text("Modules (comma-separated, or empty)", "")?;
         let mods: Vec<String> = if mods_str.is_empty() {
             Vec::new()
         } else {
@@ -125,7 +125,7 @@ pub fn cmd_profile_create(
     let modules_dir = config_dir.join("modules");
     for m in &mods {
         if !modules_dir.join(m).join("module.yaml").exists() {
-            v2_printer.status_simple(
+            printer.status_simple(
                 Role::Warn,
                 format!(
                     "Module '{}' not found locally — make sure it exists or is a remote module",
@@ -286,9 +286,9 @@ pub fn cmd_profile_create(
             "inherits": doc.spec.inherits,
             "modules": doc.spec.modules,
         }));
-    v2_printer.emit(out);
+    printer.emit(out);
 
-    maybe_update_workflow(cli, v2_printer)?;
+    maybe_update_workflow(cli, printer)?;
 
     Ok(())
 }
