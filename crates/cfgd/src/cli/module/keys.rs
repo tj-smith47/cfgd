@@ -1,8 +1,8 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_module_keys_generate(
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     output_dir: Option<&str>,
 ) -> anyhow::Result<()> {
     if let Err(msg) = cfgd_core::require_tool_with_seam(
@@ -81,7 +81,7 @@ pub fn cmd_module_keys_generate(
     Ok(())
 }
 
-pub fn cmd_module_keys_list(v2_printer: &PrinterV2) -> anyhow::Result<()> {
+pub fn cmd_module_keys_list(v2_printer: &Printer) -> anyhow::Result<()> {
     let locations = [
         ("./cosign.key", "./cosign.pub"),
         ("~/.cfgd/cosign.key", "~/.cfgd/cosign.pub"),
@@ -135,7 +135,7 @@ pub fn cmd_module_keys_list(v2_printer: &PrinterV2) -> anyhow::Result<()> {
 }
 
 pub fn cmd_module_keys_rotate(
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     dir: Option<&str>,
     artifacts: &[String],
 ) -> anyhow::Result<()> {

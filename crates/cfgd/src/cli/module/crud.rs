@@ -1,9 +1,9 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_module_create(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     args: &ModuleCreateArgs,
 ) -> anyhow::Result<()> {
     let name = &args.name;
@@ -338,7 +338,7 @@ pub fn cmd_module_create(
 
 pub fn cmd_module_update_local(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     args: &ModuleUpdateArgs,
 ) -> anyhow::Result<()> {
     let name = &args.name;
@@ -626,7 +626,7 @@ pub fn cmd_module_update_local(
 
 // --- Module Edit ---
 
-pub fn cmd_module_edit(cli: &Cli, v2_printer: &PrinterV2, name: &str) -> anyhow::Result<()> {
+pub fn cmd_module_edit(cli: &Cli, v2_printer: &Printer, name: &str) -> anyhow::Result<()> {
     validate_resource_name(name, "Module")?;
     let config_dir = config_dir(cli);
     let module_yaml = config_dir.join("modules").join(name).join("module.yaml");
@@ -692,7 +692,7 @@ pub fn cmd_module_edit(cli: &Cli, v2_printer: &PrinterV2, name: &str) -> anyhow:
 
 pub fn cmd_module_delete(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     name: &str,
     yes: bool,
     purge: bool,

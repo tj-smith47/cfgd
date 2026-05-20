@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
 // --- OCI Push / Pull ---
 
@@ -12,7 +12,7 @@ pub struct PushOptions<'a> {
 }
 
 pub fn cmd_module_push(
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     dir: &str,
     artifact: &str,
     opts: PushOptions<'_>,
@@ -191,7 +191,7 @@ pub(super) fn build_module_crd_json(
 }
 
 async fn apply_module_crd(
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     module_doc: &cfgd_core::config::ModuleDocument,
     artifact: &str,
 ) -> anyhow::Result<()> {
@@ -244,7 +244,7 @@ async fn apply_module_crd(
 }
 
 pub fn cmd_module_pull(
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     artifact_ref: &str,
     output: &str,
     require_signature: bool,

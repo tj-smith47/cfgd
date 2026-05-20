@@ -1,7 +1,7 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role, doc::SectionBuilder};
+use cfgd_core::output::{Doc, Printer, Role, doc::SectionBuilder};
 
-pub(super) fn cmd_doctor(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
+pub(super) fn cmd_doctor(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
     let (output, extras) = collect_doctor_output(cli, v2_printer)?;
     v2_printer.emit(build_doctor_doc(&output, &extras));
     Ok(())
@@ -40,7 +40,7 @@ pub struct DoctorConfigSource {
 /// The lib call to `modules::load_all_modules` still takes the old `Printer`.
 fn collect_doctor_output(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
 ) -> anyhow::Result<(DoctorOutput, DoctorExtras)> {
     let (config_check, loaded_cfg) = if cli.config.exists() {
         match config::load_config(&cli.config) {

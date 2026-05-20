@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role, SectionBuilder};
+use cfgd_core::output::{Doc, Printer, Role, SectionBuilder};
 
 // --- Source cache layout ---
 
@@ -95,7 +95,7 @@ pub(crate) fn parse_priority_input(input: &str) -> anyhow::Result<u32> {
 /// path defers kv emission past section close, mis-ordering with the
 /// section header).
 pub(crate) fn display_source_manifest_v2(
-    printer: &PrinterV2,
+    printer: &Printer,
     manifest: &config::ConfigSourceDocument,
 ) -> Vec<String> {
     let provided_profiles = cfgd_core::config::source_profile_names(&manifest.spec.provides);

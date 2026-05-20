@@ -1,6 +1,6 @@
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
-pub fn cmd_upgrade(v2_printer: &PrinterV2, check_only: bool) -> anyhow::Result<()> {
+pub fn cmd_upgrade(v2_printer: &Printer, check_only: bool) -> anyhow::Result<()> {
     use cfgd_core::upgrade;
 
     if check_only {

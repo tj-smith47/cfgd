@@ -1,11 +1,11 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
 // --- Plan output rendering ---
 
 pub(in crate::cli) fn print_apply_result_v2(
     result: &cfgd_core::reconciler::ApplyResult,
-    printer: &PrinterV2,
+    printer: &Printer,
     elapsed: Option<std::time::Duration>,
 ) -> cfgd_core::state::ApplyStatus {
     let (role, subject) = match result.status {
@@ -144,7 +144,7 @@ pub(in crate::cli) fn strip_scripts_from_plan(plan: &mut reconciler::Plan) {
 
 pub(in crate::cli) fn display_plan_table_v2(
     plan: &reconciler::Plan,
-    printer: &PrinterV2,
+    printer: &Printer,
     phase_filter: Option<&PhaseName>,
 ) {
     for phase_item in &plan.phases {
@@ -167,7 +167,7 @@ pub(in crate::cli) fn display_plan_table_v2(
 
 pub(in crate::cli) fn display_plan_preview_v2(
     plan: &reconciler::Plan,
-    printer: &PrinterV2,
+    printer: &Printer,
     state: &cfgd_core::state::StateStore,
     context: &str,
     phase_filter: Option<&PhaseName>,
@@ -374,7 +374,7 @@ pub(in crate::cli) fn handle_unmanaged_file_targets_v2(
     plan: &mut reconciler::Plan,
     config_dir: &Path,
     state: &StateStore,
-    printer: &PrinterV2,
+    printer: &Printer,
     auto_yes: bool,
 ) -> anyhow::Result<()> {
     let options = vec![
@@ -446,7 +446,7 @@ pub(in crate::cli) fn handle_unmanaged_file_targets_v2(
 fn prompt_backup_choice_v2<'a>(
     target: &Path,
     module_name: Option<&str>,
-    printer: &PrinterV2,
+    printer: &Printer,
     options: &'a [String],
 ) -> anyhow::Result<&'a String> {
     let msg = if let Some(m) = module_name {
@@ -464,7 +464,7 @@ fn prompt_backup_choice_v2<'a>(
         .unwrap_or(&options[0]))
 }
 
-pub(in crate::cli) fn backup_file_v2(target: &Path, printer: &PrinterV2) -> anyhow::Result<()> {
+pub(in crate::cli) fn backup_file_v2(target: &Path, printer: &Printer) -> anyhow::Result<()> {
     let backup_path = PathBuf::from(format!("{}.cfgd-backup", target.display()));
     std::fs::rename(target, &backup_path).map_err(|e| {
         anyhow::anyhow!(
@@ -482,7 +482,7 @@ pub(in crate::cli) fn apply_backup_choice_v2(
     choice: &str,
     target: &Path,
     action: &mut reconciler::Action,
-    printer: &PrinterV2,
+    printer: &Printer,
 ) -> anyhow::Result<()> {
     if choice.starts_with("Backup") {
         backup_file_v2(target, printer)?;

@@ -1,9 +1,9 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_module_add_from_registry(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     reference: &str,
     yes: bool,
     allow_unsigned: bool,
@@ -126,7 +126,7 @@ pub fn cmd_module_add_from_registry(
 
 pub fn cmd_module_add_remote(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     url: &str,
     source_name: Option<&str>,
     yes: bool,
@@ -303,7 +303,7 @@ pub fn cmd_module_add_remote(
 
 pub fn cmd_module_upgrade(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     name: &str,
     new_ref: Option<&str>,
     yes: bool,
@@ -486,7 +486,7 @@ pub fn cmd_module_upgrade(
 /// output shape is testable against a captured Printer buffer without
 /// running the full cmd_module_add_remote orchestration.
 pub(super) fn print_module_review_summary(
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     module_name: &str,
     module: &modules::LoadedModule,
     commit: &str,
@@ -567,7 +567,7 @@ pub(super) fn filter_and_build_search_results(
         .collect()
 }
 
-pub fn cmd_module_search(cli: &Cli, v2_printer: &PrinterV2, query: &str) -> anyhow::Result<()> {
+pub fn cmd_module_search(cli: &Cli, v2_printer: &Printer, query: &str) -> anyhow::Result<()> {
     let cache_base = modules::default_module_cache_dir()?;
     let printer = null_lib_printer();
 
@@ -664,7 +664,7 @@ pub fn cmd_module_search(cli: &Cli, v2_printer: &PrinterV2, query: &str) -> anyh
 
 pub fn cmd_module_registry_add(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     url: &str,
     name: Option<&str>,
 ) -> anyhow::Result<()> {
@@ -768,7 +768,7 @@ pub fn cmd_module_registry_add(
 
 pub fn cmd_module_registry_remove(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     name: &str,
 ) -> anyhow::Result<()> {
     v2_printer.heading("Remove Module Registry");
@@ -880,7 +880,7 @@ enum RegistryRemoveOutcome {
 
 pub fn cmd_module_registry_rename(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     name: &str,
     new_name: &str,
 ) -> anyhow::Result<()> {
@@ -981,7 +981,7 @@ pub fn cmd_module_registry_rename(
     Ok(())
 }
 
-pub fn cmd_module_registry_list(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
+pub fn cmd_module_registry_list(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
     if !cli.config.exists() {
         v2_printer.emit(
             Doc::new()

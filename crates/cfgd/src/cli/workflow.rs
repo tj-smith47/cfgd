@@ -1,7 +1,7 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
-pub fn cmd_workflow_generate(cli: &Cli, v2_printer: &PrinterV2, force: bool) -> anyhow::Result<()> {
+pub fn cmd_workflow_generate(cli: &Cli, v2_printer: &Printer, force: bool) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     let workflow_dir = config_dir.join(".github").join("workflows");
     let workflow_path = workflow_dir.join("cfgd-release.yml");

@@ -1,9 +1,9 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_module_build(
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     dir: &str,
     target: Option<&str>,
     base_image: Option<&str>,

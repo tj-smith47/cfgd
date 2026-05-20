@@ -1,9 +1,9 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_source_create(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     name: Option<&str>,
     description: Option<&str>,
     version: Option<&str>,

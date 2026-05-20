@@ -1,7 +1,7 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
-pub fn cmd_profile_switch(cli: &Cli, name: &str, v2_printer: &PrinterV2) -> anyhow::Result<()> {
+pub fn cmd_profile_switch(cli: &Cli, name: &str, v2_printer: &Printer) -> anyhow::Result<()> {
     v2_printer.heading("Switch Profile");
 
     let config_dir = super::config_dir(cli);

@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::output::renderer::Table;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 use serde::Serialize;
 
 /// JSON payload for `cfgd daemon install`.
@@ -26,7 +26,7 @@ pub struct DaemonUninstallOutput {
 
 pub(super) fn cmd_daemon(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     command: Option<&DaemonCommand>,
 ) -> anyhow::Result<()> {
     match command {
@@ -67,7 +67,7 @@ pub(super) fn cmd_daemon(
     Ok(())
 }
 
-pub fn cmd_daemon_status(v2_printer: &PrinterV2) -> anyhow::Result<()> {
+pub fn cmd_daemon_status(v2_printer: &Printer) -> anyhow::Result<()> {
     let status = match cfgd_core::daemon::query_daemon_status() {
         Ok(s) => s,
         Err(e) => {
@@ -157,7 +157,7 @@ pub fn build_daemon_status_doc(status: Option<&cfgd_core::daemon::DaemonStatusRe
     }
 }
 
-pub(super) fn cmd_daemon_install(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
+pub(super) fn cmd_daemon_install(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
     // Runtime cfg! so the install_failed error_doc has the platform+service
     // strings available before the lib call. The success payload uses
     // compile-time #[cfg] further down because the Windows branch loads
@@ -271,7 +271,7 @@ pub fn build_daemon_install_doc(payload: &DaemonInstallOutput) -> Doc {
     doc.with_data(payload)
 }
 
-pub(super) fn cmd_daemon_uninstall(v2_printer: &PrinterV2) -> anyhow::Result<()> {
+pub(super) fn cmd_daemon_uninstall(v2_printer: &Printer) -> anyhow::Result<()> {
     let (platform, service) = if cfg!(windows) {
         ("windows", "cfgd")
     } else if cfg!(target_os = "macos") {

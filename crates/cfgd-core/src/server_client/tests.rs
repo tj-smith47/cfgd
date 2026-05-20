@@ -583,7 +583,7 @@ fn checkin_no_api_key_omits_auth_header() {
 mod bridge {
     use super::*;
     use crate::output::test_capture::{assert_snapshot_at, strip_ansi};
-    use crate::output::{Doc, Printer as PrinterV2, Role};
+    use crate::output::{Doc, Printer, Role};
 
     fn snapshot_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server_client/snapshots")
@@ -617,7 +617,7 @@ mod bridge {
             .create();
 
         let client = ServerClient::new(&server.url(), Some("key"), "dev-1");
-        let (v2_printer, cap) = PrinterV2::for_test_doc();
+        let (v2_printer, cap) = Printer::for_test_doc();
         let resp = client.checkin("hash123", None, &v2_printer).unwrap();
 
         let summary = CheckinSummary {
@@ -668,7 +668,7 @@ mod bridge {
             },
         ];
 
-        let (v2_printer, cap) = PrinterV2::for_test_doc();
+        let (v2_printer, cap) = Printer::for_test_doc();
         client.report_drift(&drifts, &v2_printer).unwrap();
 
         let summary = DriftSummary {

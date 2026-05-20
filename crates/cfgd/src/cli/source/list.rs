@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role, renderer::Table as TableV2};
+use cfgd_core::output::{Doc, Printer, Role, renderer::Table as TableV2};
 
 /// Build the `cfgd source list` Doc from a populated entries vector + `--wide`
 /// flag. Pure; the caller assembles the entries from disk.
@@ -56,7 +56,7 @@ pub fn build_source_list_no_config_doc() -> Doc {
         .with_data(&empty)
 }
 
-pub fn cmd_source_list(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
+pub fn cmd_source_list(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
     let config_path = cli.config.clone();
     if !config_path.exists() {
         if v2_printer.is_structured() {

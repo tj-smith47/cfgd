@@ -1,11 +1,7 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
-pub fn cmd_source_add(
-    cli: &Cli,
-    v2_printer: &PrinterV2,
-    args: &SourceAddArgs,
-) -> anyhow::Result<()> {
+pub fn cmd_source_add(cli: &Cli, v2_printer: &Printer, args: &SourceAddArgs) -> anyhow::Result<()> {
     let url = &args.url;
     let name = args.name.as_deref();
     let branch = args.branch.as_deref();

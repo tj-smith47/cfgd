@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 use serde::Serialize;
 
 use super::*;
@@ -74,7 +74,7 @@ pub fn build_enroll_error_doc(kind: &'static str, payload: serde_json::Value) ->
 /// including the `ServerClient::enroll` / `request_challenge` /
 /// `submit_verification` calls now that server_client is on v2.
 pub(crate) fn cmd_enroll(
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     server_url: &str,
     token: Option<&str>,
     ssh_key: Option<&str>,
@@ -200,7 +200,7 @@ pub(crate) fn cmd_enroll(
 /// Shared enrollment completion: save credential, handle desired config, emit
 /// the final buffered Doc carrying the structured payload.
 fn finish_enrollment(
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     server_url: &str,
     device_id: &str,
     resp: cfgd_core::server_client::EnrollResponse,
@@ -305,7 +305,7 @@ pub(super) fn next_steps_lines() -> &'static [&'static str] {
 // SSH/GPG signing helpers
 // ─────────────────────────────────────────────────────
 
-pub(super) fn detect_ssh_key(v2_printer: &PrinterV2) -> Option<String> {
+pub(super) fn detect_ssh_key(v2_printer: &Printer) -> Option<String> {
     let ssh_dir = cfgd_core::expand_tilde(Path::new("~/.ssh"));
 
     // Try SSH agent first — when the agent has identities loaded, prefer

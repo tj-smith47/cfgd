@@ -1,9 +1,9 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_source_replace(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     old_name: &str,
     new_url: &str,
 ) -> anyhow::Result<()> {

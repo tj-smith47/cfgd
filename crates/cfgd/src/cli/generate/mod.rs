@@ -2,7 +2,7 @@ use clap::{Args, Subcommand};
 
 use cfgd_core::config::{self, AiConfig};
 use cfgd_core::generate::{PresentYamlRequest, PresentYamlResponse};
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
 use crate::ai::client::{AnthropicClient, ContentBlock};
 use crate::ai::conversation::Conversation;
@@ -56,7 +56,7 @@ pub enum GenerateTarget {
     },
 }
 
-pub fn cmd_generate(cli: &Cli, v2_printer: &PrinterV2, args: &GenerateArgs) -> anyhow::Result<()> {
+pub fn cmd_generate(cli: &Cli, v2_printer: &Printer, args: &GenerateArgs) -> anyhow::Result<()> {
     // --scan-only short-circuits the AI conversation loop.
     if args.scan_only {
         return cmd_generate_scan_only(v2_printer, args);
@@ -326,7 +326,7 @@ fn target_label(target: &Option<GenerateTarget>) -> String {
 }
 
 fn handle_present_yaml(
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     tool_use_id: &str,
     input: &serde_json::Value,
     auto_accept: bool,
@@ -367,7 +367,7 @@ fn handle_present_yaml(
 }
 
 /// Legacy scan-only mode: scan dotfiles and shell config without AI.
-fn cmd_generate_scan_only(v2_printer: &PrinterV2, args: &GenerateArgs) -> anyhow::Result<()> {
+fn cmd_generate_scan_only(v2_printer: &Printer, args: &GenerateArgs) -> anyhow::Result<()> {
     let home_path = if let Some(h) = &args.home {
         std::path::PathBuf::from(h)
     } else {

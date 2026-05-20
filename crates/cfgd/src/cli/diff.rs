@@ -1,10 +1,10 @@
 use super::*;
 
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role, section_guard::SectionGuard};
+use cfgd_core::output::{Doc, Printer, Role, section_guard::SectionGuard};
 
 pub fn cmd_diff(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     module_filter: Option<&str>,
     exit_code: bool,
 ) -> anyhow::Result<()> {
@@ -105,7 +105,7 @@ pub fn cmd_diff(
 
 fn cmd_diff_module(
     _cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     mod_name: &str,
     config_dir: &std::path::Path,
     exit_code: bool,
@@ -317,7 +317,7 @@ mod tests {
 
     #[test]
     fn print_package_drift_v2_no_drift() {
-        let (v2_printer, cap) = PrinterV2::for_test_doc();
+        let (v2_printer, cap) = Printer::for_test_doc();
         let mut payload = DiffOutput::default();
         let actions = vec![PackageAction::Skip {
             manager: "brew".into(),
@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn print_package_drift_v2_missing_packages() {
-        let (v2_printer, cap) = PrinterV2::for_test_doc();
+        let (v2_printer, cap) = Printer::for_test_doc();
         let mut payload = DiffOutput::default();
         let actions = vec![
             PackageAction::Install {

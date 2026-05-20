@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role, SectionBuilder, renderer::Table};
+use cfgd_core::output::{Doc, Printer, Role, SectionBuilder, renderer::Table};
 
 // cfgd explain — schema documentation for all resource types
 // ---------------------------------------------------------------------------
@@ -269,7 +269,7 @@ pub fn build_explain_drilldown_doc(
 }
 
 pub(super) fn cmd_explain(
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     resource: Option<&str>,
     recursive: bool,
 ) -> anyhow::Result<()> {

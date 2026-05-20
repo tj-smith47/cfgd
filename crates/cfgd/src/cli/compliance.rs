@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::compliance::{ComplianceCheck, ComplianceSnapshot, ComplianceStatus};
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role, renderer::Table as TableV2};
+use cfgd_core::output::{Doc, Printer, Role, renderer::Table as TableV2};
 use cfgd_core::state::ComplianceHistoryRow;
 
 /// Collect a compliance snapshot, hash it, and store in the state store.
@@ -44,14 +44,14 @@ pub(super) fn collect_and_store_compliance_snapshot(
 }
 
 /// Build a snapshot and emit a v2 summary Doc.
-pub(super) fn cmd_compliance_snapshot(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
+pub(super) fn cmd_compliance_snapshot(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
     let (_cfg, snapshot) = collect_and_store_compliance_snapshot(cli)?;
     v2_printer.emit(build_compliance_summary_doc(&snapshot));
     Ok(())
 }
 
 /// Export snapshot to configured export path and emit a v2 summary Doc.
-pub(super) fn cmd_compliance_export(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
+pub(super) fn cmd_compliance_export(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
     let (cfg, snapshot) = collect_and_store_compliance_snapshot(cli)?;
 
     let export = cfg
@@ -69,7 +69,7 @@ pub(super) fn cmd_compliance_export(cli: &Cli, v2_printer: &PrinterV2) -> anyhow
 /// Show compliance snapshot history.
 pub(super) fn cmd_compliance_history(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     since: Option<&str>,
 ) -> anyhow::Result<()> {
     let state = open_state_store(cli.state_dir.as_deref())?;
@@ -91,7 +91,7 @@ pub(super) fn cmd_compliance_history(
 /// Show diff between two snapshots by ID.
 pub(super) fn cmd_compliance_diff(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     id1: i64,
     id2: i64,
 ) -> anyhow::Result<()> {
@@ -419,7 +419,7 @@ mod tests {
             check("file", "/etc/hosts", ComplianceStatus::Compliant),
             check("package", "ripgrep", ComplianceStatus::Compliant),
         ]);
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         printer.emit(build_compliance_summary_doc(&snapshot));
         drop(printer);
 
@@ -444,7 +444,7 @@ mod tests {
             check("file", "/etc/a", ComplianceStatus::Compliant),
             check("system", "sysctl.x", ComplianceStatus::Warning),
         ]);
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         printer.emit(build_compliance_summary_doc(&snapshot));
         drop(printer);
 
@@ -466,7 +466,7 @@ mod tests {
             check("file", "/etc/b", ComplianceStatus::Warning),
             check("package", "ripgrep", ComplianceStatus::Violation),
         ]);
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         printer.emit(build_compliance_summary_doc(&snapshot));
         drop(printer);
 
@@ -484,7 +484,7 @@ mod tests {
     #[test]
     fn build_compliance_summary_doc_empty_checks() {
         let snapshot = sample_snapshot(vec![]);
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         printer.emit(build_compliance_summary_doc(&snapshot));
         drop(printer);
 
@@ -503,7 +503,7 @@ mod tests {
     fn cmd_compliance_diff_missing_snapshots_returns_err() {
         let state_dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(state_dir.path());
-        let (printer, _cap) = PrinterV2::for_test_doc();
+        let (printer, _cap) = Printer::for_test_doc();
 
         let err = cmd_compliance_diff(&cli, &printer, 1, 2).unwrap_err();
         assert!(
@@ -525,7 +525,7 @@ mod tests {
         store_snapshot(state_dir.path(), &snapshot);
 
         let cli = test_cli_for(state_dir.path());
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
 
         cmd_compliance_diff(&cli, &printer, 1, 2).unwrap();
         drop(printer);
@@ -553,7 +553,7 @@ mod tests {
         store_snapshot(state_dir.path(), &snap2);
 
         let cli = test_cli_for(state_dir.path());
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
 
         cmd_compliance_diff(&cli, &printer, 1, 2).unwrap();
         drop(printer);
@@ -589,7 +589,7 @@ mod tests {
         store_snapshot(state_dir.path(), &snap2);
 
         let cli = test_cli_for(state_dir.path());
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
 
         cmd_compliance_diff(&cli, &printer, 1, 2).unwrap();
         drop(printer);
@@ -617,7 +617,7 @@ mod tests {
     fn cmd_compliance_history_empty_state_prints_no_snapshots() {
         let state_dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(state_dir.path());
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
 
         cmd_compliance_history(&cli, &printer, None).unwrap();
         drop(printer);
@@ -633,7 +633,7 @@ mod tests {
     fn cmd_compliance_history_invalid_since_returns_err() {
         let state_dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(state_dir.path());
-        let (printer, _cap) = PrinterV2::for_test_doc();
+        let (printer, _cap) = Printer::for_test_doc();
 
         let err = cmd_compliance_history(&cli, &printer, Some("not-a-duration")).unwrap_err();
         assert!(
@@ -653,7 +653,7 @@ mod tests {
         store_snapshot(state_dir.path(), &snapshot);
 
         let cli = test_cli_for(state_dir.path());
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
 
         cmd_compliance_history(&cli, &printer, None).unwrap();
         drop(printer);
@@ -680,7 +680,7 @@ mod tests {
         store_snapshot(state_dir.path(), &snapshot);
 
         let cli = test_cli_for(state_dir.path());
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
 
         cmd_compliance_history(&cli, &printer, None).unwrap();
         drop(printer);

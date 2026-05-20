@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use cfgd_core::output::{Printer as PrinterV2, Role};
+use cfgd_core::output::{Printer, Role};
 
 /// Returns true if the value is a clonable git source (URL or local git repo).
 pub(super) fn is_git_source(value: &str) -> bool {
@@ -26,7 +26,7 @@ pub(crate) fn resolve_from(
     from: &str,
     target: Option<&Path>,
     branch: &str,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
 ) -> anyhow::Result<std::path::PathBuf> {
     if is_git_source(from) {
         let dest = target
@@ -59,7 +59,7 @@ pub(super) fn clone_into(
     target_dir: &Path,
     url: &str,
     branch: &str,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
 ) -> anyhow::Result<()> {
     // If target already has .git, it's already cloned — nothing to do.
     if target_dir.join(".git").exists() {

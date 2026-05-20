@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::config::{ConfigSourceDocument, PolicyItems};
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role, doc::SectionBuilder, renderer::Table};
+use cfgd_core::output::{Doc, Printer, Role, doc::SectionBuilder, renderer::Table};
 
 const SHORT_COMMIT_LEN: usize = 12;
 
@@ -167,7 +167,7 @@ fn append_policy_items(mut s: SectionBuilder, items: &PolicyItems) -> SectionBui
     s
 }
 
-pub fn cmd_source_show(cli: &Cli, v2_printer: &PrinterV2, name: &str) -> anyhow::Result<()> {
+pub fn cmd_source_show(cli: &Cli, v2_printer: &Printer, name: &str) -> anyhow::Result<()> {
     let config_path = cli.config.clone();
     let cfg = config::load_config(&config_path)?;
 

@@ -1,8 +1,8 @@
 use super::*;
 
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
-pub fn cmd_pull(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
+pub fn cmd_pull(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
     v2_printer.heading("Pull");
 
     let (_cfg, _profile_name, _resolved) = load_config_and_profile_v2(cli)?;
@@ -17,7 +17,7 @@ pub fn cmd_pull(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
 /// Render the streaming spinner + buffered Doc for a `git_pull_sync` result.
 /// Heading is emitted by the caller so this helper composes inside both real
 /// `cmd_pull` and snapshot tests that stub the result.
-pub fn render_pull(v2_printer: &PrinterV2, pull_result: &Result<bool, String>) {
+pub fn render_pull(v2_printer: &Printer, pull_result: &Result<bool, String>) {
     let sp = v2_printer.spinner("Pulling from remote");
     let (role, msg, status, err) = pull_status_from_result(pull_result);
     match role {

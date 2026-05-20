@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Printer as PrinterV2, Role};
+use cfgd_core::output::{Printer, Role};
 
 /// Cryptographically verify a git tag signature using `git tag -v`.
 /// Returns `Ok(true)` if verified, `Ok(false)` if verification fails (bad sig),
@@ -32,7 +32,7 @@ fn verify_tag_signature_cryptographic(repo_dir: &Path, tag_name: &str) -> anyhow
 /// and bails if policy is violated. Returns Ok(()) if allowed to proceed.
 pub(crate) fn enforce_signature_policy(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     tag: Option<&str>,
     module_name: &str,
     allow_unsigned: bool,

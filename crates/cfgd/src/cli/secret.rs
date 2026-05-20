@@ -1,11 +1,11 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
 fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").to_string()
 }
 
-pub fn cmd_secret_encrypt(cli: &Cli, v2_printer: &PrinterV2, file: &Path) -> anyhow::Result<()> {
+pub fn cmd_secret_encrypt(cli: &Cli, v2_printer: &Printer, file: &Path) -> anyhow::Result<()> {
     let backend = match get_secret_backend(cli, file) {
         Ok(b) => b,
         Err(e) => {
@@ -51,7 +51,7 @@ pub fn cmd_secret_encrypt(cli: &Cli, v2_printer: &PrinterV2, file: &Path) -> any
     Ok(())
 }
 
-pub fn cmd_secret_decrypt(cli: &Cli, v2_printer: &PrinterV2, file: &Path) -> anyhow::Result<()> {
+pub fn cmd_secret_decrypt(cli: &Cli, v2_printer: &Printer, file: &Path) -> anyhow::Result<()> {
     let backend = match get_secret_backend(cli, file) {
         Ok(b) => b,
         Err(e) => {
@@ -118,7 +118,7 @@ pub fn cmd_secret_decrypt(cli: &Cli, v2_printer: &PrinterV2, file: &Path) -> any
     Ok(())
 }
 
-pub fn cmd_secret_edit(cli: &Cli, v2_printer: &PrinterV2, file: &Path) -> anyhow::Result<()> {
+pub fn cmd_secret_edit(cli: &Cli, v2_printer: &Printer, file: &Path) -> anyhow::Result<()> {
     let backend = match get_secret_backend(cli, file) {
         Ok(b) => b,
         Err(e) => {
@@ -169,7 +169,7 @@ pub fn cmd_secret_edit(cli: &Cli, v2_printer: &PrinterV2, file: &Path) -> anyhow
     Ok(())
 }
 
-pub fn cmd_secret_init(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
+pub fn cmd_secret_init(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
 
     let sops_config_pre = config_dir.join(".sops.yaml");

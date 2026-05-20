@@ -1,9 +1,9 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role, renderer::Table as TableV2};
+use cfgd_core::output::{Doc, Printer, Role, renderer::Table as TableV2};
 
 pub fn cmd_source_remove(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     name: &str,
     keep_all: bool,
     remove_all: bool,

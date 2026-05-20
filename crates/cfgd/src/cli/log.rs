@@ -1,9 +1,9 @@
 use super::*;
 
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role, renderer::Table};
+use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 
 pub fn cmd_log(
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     count: u32,
     show_output: Option<i64>,
     state_dir: Option<&Path>,
@@ -20,7 +20,7 @@ pub fn cmd_log(
 }
 
 fn cmd_log_show_output(
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     state: &cfgd_core::state::StateStore,
     apply_id: i64,
 ) -> anyhow::Result<()> {

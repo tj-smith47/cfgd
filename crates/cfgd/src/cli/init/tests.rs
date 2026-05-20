@@ -1,11 +1,11 @@
 use super::*;
-use cfgd_core::output::{Printer as PrinterV2, Verbosity as V2Verbosity};
+use cfgd_core::output::{Printer, Verbosity as V2Verbosity};
 
 /// Build a quiet v2 printer for tests that only need to satisfy the v2
 /// signature without asserting on captured output. Mirrors the
 /// `Printer::new(Verbosity::Quiet)` pattern used for the legacy printer.
-fn v2_quiet() -> PrinterV2 {
-    PrinterV2::new(V2Verbosity::Quiet)
+fn v2_quiet() -> Printer {
+    Printer::new(V2Verbosity::Quiet)
 }
 
 // ─────────────────────────────────────────────────────
@@ -368,7 +368,7 @@ fn pick_profile_multi_lists_options_and_propagates_prompt_error() {
     // under structured-format to force prompt_text into its non-interactive
     // refusal — pins both halves of the multi-profile path: the enumerator
     // emits the section, then prompt_text Errs deterministically.
-    let (printer, cap) = PrinterV2::for_test_doc();
+    let (printer, cap) = Printer::for_test_doc();
     let _ = pick_profile(&profiles_dir, &printer);
     drop(printer);
     let captured = cap.human();
@@ -381,7 +381,7 @@ fn pick_profile_multi_lists_options_and_propagates_prompt_error() {
         "each profile must be enumerated 1-based on its own bullet: {captured}"
     );
 
-    let json_printer = PrinterV2::with_format(
+    let json_printer = Printer::with_format(
         V2Verbosity::Normal,
         None,
         cfgd_core::output::OutputFormat::Json,
@@ -637,7 +637,7 @@ fn clone_into_local_repo() {
     let target = dir.path().join("clone");
     std::fs::create_dir_all(&target).unwrap();
 
-    let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
+    let (v2_printer, v2_cap) = Printer::for_test_doc();
     clone_into(
         &target,
         &origin.display().to_string(),
@@ -664,7 +664,7 @@ fn clone_into_skips_if_already_cloned() {
     let target = dir.path().join("clone");
     std::fs::create_dir_all(target.join(".git")).unwrap();
 
-    let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
+    let (v2_printer, v2_cap) = Printer::for_test_doc();
     // Should return Ok without actually cloning
     clone_into(
         &target,
@@ -797,7 +797,7 @@ fn cmd_init_with_from_local_path() {
     )
     .unwrap();
 
-    let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
+    let (v2_printer, v2_cap) = Printer::for_test_doc();
     let source_str = source.display().to_string();
     let args = InitArgs {
         path: None,
@@ -871,7 +871,7 @@ fn cmd_init_scaffold_to_new_dir() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("new-config");
 
-    let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
+    let (v2_printer, v2_cap) = Printer::for_test_doc();
     let target_str = target.display().to_string();
     let args = InitArgs {
         path: Some(&target_str),
@@ -923,7 +923,7 @@ fn cmd_init_already_initialized() {
     )
     .unwrap();
 
-    let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
+    let (v2_printer, v2_cap) = Printer::for_test_doc();
     let target_str = target.display().to_string();
     let args = InitArgs {
         path: Some(&target_str),
@@ -1134,7 +1134,7 @@ fn pick_profile_single_profile_auto_selects() {
     )
     .unwrap();
 
-    let (v2_printer, cap) = PrinterV2::for_test_doc();
+    let (v2_printer, cap) = Printer::for_test_doc();
     let result = pick_profile(dir.path(), &v2_printer).unwrap();
     assert_eq!(result, "default");
 
@@ -1550,7 +1550,7 @@ fn cmd_init_with_theme_and_name_together() {
 #[test]
 fn apply_plan_empty_plan_reports_nothing_to_do() {
     let dir = tempfile::tempdir().unwrap();
-    let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
+    let (v2_printer, v2_cap) = Printer::for_test_doc();
 
     let registry = super::build_registry_with_config(None);
     // Isolate the state store under the tempdir so parallel tests don't
@@ -1590,7 +1590,7 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
 
 #[test]
 fn check_prerequisites_with_test_printer() {
-    let (v2_printer, cap) = PrinterV2::for_test_doc();
+    let (v2_printer, cap) = Printer::for_test_doc();
     let result = check_prerequisites(&v2_printer);
     drop(v2_printer);
     let output = cap.human();
@@ -1735,7 +1735,7 @@ fn cmd_init_from_local_path_uses_source_dir() {
     std::fs::create_dir_all(source.join("profiles")).unwrap();
     std::fs::create_dir_all(source.join("modules")).unwrap();
 
-    let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
+    let (v2_printer, v2_cap) = Printer::for_test_doc();
     let source_str = source.display().to_string();
     let args = InitArgs {
         path: None,
@@ -1774,7 +1774,7 @@ fn clone_into_skips_existing_git_dir() {
     let target = dir.path().join("already-cloned");
     git2::Repository::init(&target).unwrap();
 
-    let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
+    let (v2_printer, v2_cap) = Printer::for_test_doc();
     clone_into(&target, "https://example.com/repo.git", "main", &v2_printer).unwrap();
 
     drop(v2_printer);
@@ -1852,7 +1852,7 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
     // contract that a declined apply does NOT touch the reconciler or hit
     // the state-store apply lock.
     let dir = tempfile::tempdir().unwrap();
-    let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
+    let (v2_printer, v2_cap) = Printer::for_test_doc();
 
     let registry = super::build_registry_with_config(None);
     let store = super::open_state_store(Some(dir.path())).unwrap();
@@ -1914,7 +1914,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
     let dir = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(dir.path());
     let (v2_printer, v2_buf) =
-        PrinterV2::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
+        Printer::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
             true,
         )]);
 
@@ -1974,7 +1974,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
     // existing yes-branch test.
     let dir = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(dir.path());
-    let (v2_printer, v2_buf) = PrinterV2::for_test_with_prompt_responses_at(
+    let (v2_printer, v2_buf) = Printer::for_test_with_prompt_responses_at(
         vec![cfgd_core::output::PromptAnswer::Confirm(false)],
         V2Verbosity::Normal,
     );
@@ -2033,7 +2033,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
 #[test]
 fn apply_plan_dry_run_skips_apply() {
     let dir = tempfile::tempdir().unwrap();
-    let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
+    let (v2_printer, v2_cap) = Printer::for_test_doc();
 
     let registry = super::build_registry_with_config(None);
     // Isolate the state store under the tempdir so parallel tests don't
@@ -2556,7 +2556,7 @@ fn next_steps_lines_are_bare_commands_not_pre_indented() {
 
 mod enroll_mockito {
     use crate::cli::init::enroll::cmd_enroll;
-    use cfgd_core::output::Printer as PrinterV2;
+    use cfgd_core::output::Printer;
     use cfgd_core::test_helpers::with_test_env_var;
     use serial_test::serial;
 
@@ -2584,7 +2584,7 @@ mod enroll_mockito {
                 .with_body(enroll_response_json())
                 .create();
 
-            let (v2_printer, cap) = PrinterV2::for_test_doc();
+            let (v2_printer, cap) = Printer::for_test_doc();
             let url = server.url();
             let result = cmd_enroll(
                 &v2_printer,
@@ -2755,7 +2755,7 @@ mod enroll_mockito {
         // `cmd_enroll` emits before the trailing buffered Doc. This test
         // drives the full token-enrollment orchestration through a mock
         // server, captures both streaming and buffered output on the same
-        // PrinterV2, asserts the §17.2 one-blank-line invariant
+        // Printer, asserts the §17.2 one-blank-line invariant
         // programmatically, and snapshots the combined output for
         // regression coverage.
         let tmp = tempfile::tempdir().unwrap();
@@ -2768,7 +2768,7 @@ mod enroll_mockito {
                 .with_body(enroll_response_json())
                 .create();
 
-            let (v2_printer, cap) = PrinterV2::for_test_doc();
+            let (v2_printer, cap) = Printer::for_test_doc();
             let url = server.url();
             let result = cmd_enroll(
                 &v2_printer,
@@ -2893,7 +2893,7 @@ mod enroll_mockito {
                 .with_body(body)
                 .create();
 
-            let (v2_printer, cap) = PrinterV2::for_test_doc();
+            let (v2_printer, cap) = Printer::for_test_doc();
             let url = server.url();
             let result = cmd_enroll(&v2_printer, &url, Some("token"), None, None, Some("alice"));
             assert!(result.is_ok(), "cmd_enroll should succeed: {result:?}");
@@ -3311,7 +3311,7 @@ mod cmd_init_apply_orchestration {
         let state_dir = tmp.path().join("state");
         let url = format!("file://{}", bare.display());
 
-        let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
+        let (v2_printer, v2_cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3357,7 +3357,7 @@ mod cmd_init_apply_orchestration {
         let state_dir = tmp.path().join("state");
         let url = format!("file://{}", bare.display());
 
-        let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
+        let (v2_printer, v2_cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3447,7 +3447,7 @@ mod cmd_init_apply_orchestration {
         let target = tmp.path().join("dst");
         let state_dir = tmp.path().join("state");
         let modules = vec!["sample".to_string()];
-        let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
+        let (v2_printer, v2_cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3531,7 +3531,7 @@ mod cmd_init_apply_orchestration {
 
         let target = tmp.path().join("dst");
         let state_dir = tmp.path().join("state");
-        let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
+        let (v2_printer, v2_cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3632,7 +3632,7 @@ mod cmd_init_apply_orchestration {
         let state_dir = tmp.path().join("state");
         let url = format!("file://{}", bare.display());
 
-        let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
+        let (v2_printer, v2_cap) = Printer::for_test_doc();
         let modules = vec!["extra".to_string()];
         with_state_dir(&state_dir, || {
             let args = InitArgs {
@@ -3730,7 +3730,7 @@ mod cmd_init_apply_orchestration {
         let target = tmp.path().join("install-daemon-cfg");
         std::fs::create_dir_all(&target).unwrap();
 
-        let (v2_printer, v2_cap) = PrinterV2::for_test_doc();
+        let (v2_printer, v2_cap) = Printer::for_test_doc();
         let args = InitArgs {
             path: Some(target.to_str().unwrap()),
             from: None,

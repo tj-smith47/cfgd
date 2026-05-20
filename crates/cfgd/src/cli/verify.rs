@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -11,7 +11,7 @@ pub struct VerifyOutput {
 
 pub(super) fn cmd_verify(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     module_filter: Option<&str>,
     exit_code: bool,
 ) -> anyhow::Result<()> {
@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn build_verify_doc_renders_passing_resources() {
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         let output = VerifyOutput {
             results: vec![passing_result()],
             pass_count: 1,
@@ -153,7 +153,7 @@ mod tests {
 
     #[test]
     fn build_verify_doc_renders_failures_with_actual() {
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         let output = VerifyOutput {
             results: vec![failing_result()],
             pass_count: 0,

@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 use cfgd_core::state::PendingDecision;
 
 /// Bulk-resolution payload (`accept --all` or `accept --source <name>`).
@@ -29,7 +29,7 @@ pub(super) struct DecideListOutput {
 }
 
 pub(super) fn cmd_decide(
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     action: DecideAction,
     resource: Option<&str>,
     source: Option<&str>,

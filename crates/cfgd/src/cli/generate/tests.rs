@@ -141,7 +141,7 @@ fn generate_args_profile_target() {
 #[test]
 fn cmd_generate_scan_only_with_empty_home() {
     let dir = tempfile::tempdir().unwrap();
-    let (printer, buf) = PrinterV2::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let args = GenerateArgs {
         target: None,
         model: None,
@@ -181,7 +181,7 @@ fn cmd_generate_scan_only_with_shell_configs() {
     .unwrap();
     std::fs::write(dir.path().join(".bash_profile"), "source ~/.bashrc\n").unwrap();
 
-    let (printer, buf) = PrinterV2::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let args = GenerateArgs {
         target: None,
         model: None,
@@ -223,7 +223,7 @@ fn cmd_generate_scan_only_with_dotfiles() {
     )
     .unwrap();
 
-    let (printer, buf) = PrinterV2::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let args = GenerateArgs {
         target: None,
         model: None,
@@ -251,7 +251,7 @@ fn cmd_generate_scan_only_with_dotfiles() {
 #[test]
 fn cmd_generate_scan_only_default_shell_is_zsh() {
     let dir = tempfile::tempdir().unwrap();
-    let (printer, buf) = PrinterV2::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     // Remove SHELL env var to test default
     let original_shell = std::env::var("SHELL").ok();
@@ -295,7 +295,7 @@ fn cmd_generate_scan_only_shell_with_aliases_and_exports() {
     )
     .unwrap();
 
-    let (printer, buf) = PrinterV2::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let args = GenerateArgs {
         target: None,
         model: None,
@@ -321,7 +321,7 @@ fn cmd_generate_scan_only_shell_with_aliases_and_exports() {
 
 #[test]
 fn handle_present_yaml_auto_accept() {
-    let (printer, _buf) = PrinterV2::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let input = serde_json::json!({
         "content": "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: test\nspec: {}\n",
         "kind": "Profile",
@@ -352,7 +352,7 @@ fn handle_present_yaml_auto_accept() {
 
 #[test]
 fn handle_present_yaml_shows_header_and_syntax() {
-    let (printer, buf) = PrinterV2::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let input = serde_json::json!({
         "content": "key: value\n",
         "kind": "Module",
@@ -371,7 +371,7 @@ fn handle_present_yaml_shows_header_and_syntax() {
 
 #[test]
 fn handle_present_yaml_invalid_input_fails() {
-    let (printer, _buf) = PrinterV2::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     // Missing required fields
     let input = serde_json::json!({
         "not_a_valid_field": "bad"
@@ -395,7 +395,7 @@ fn cmd_generate_scan_only_with_fish_shell() {
     )
     .unwrap();
 
-    let (printer, buf) = PrinterV2::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let args = GenerateArgs {
         target: None,
         model: None,
@@ -421,7 +421,7 @@ fn cmd_generate_scan_only_no_dotfiles_reports_none() {
     let dir = tempfile::tempdir().unwrap();
     // Completely empty home directory
 
-    let (printer, buf) = PrinterV2::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let args = GenerateArgs {
         target: None,
         model: None,
@@ -449,7 +449,7 @@ fn cmd_generate_scan_only_detects_tool_from_dotfiles() {
     std::fs::write(dir.path().join(".tmux.conf"), "set -g mouse on\n").unwrap();
     std::fs::write(dir.path().join(".vimrc"), "set number\n").unwrap();
 
-    let (printer, buf) = PrinterV2::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let args = GenerateArgs {
         target: None,
         model: None,
@@ -481,7 +481,7 @@ fn cmd_generate_scan_only_with_plugin_manager() {
     )
     .unwrap();
 
-    let (printer, buf) = PrinterV2::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let args = GenerateArgs {
         target: None,
         model: None,
@@ -568,7 +568,7 @@ mod cmd_generate_mockito {
             .create();
 
         let cli = test_cli(tmp.path().join("cfgd.yaml"));
-        let (printer, buf) = PrinterV2::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         let args = GenerateArgs {
             target: None,
             model: None,
@@ -628,7 +628,7 @@ mod cmd_generate_mockito {
             .create();
 
         let cli = test_cli(tmp.path().join("cfgd.yaml"));
-        let (printer, _buf) = PrinterV2::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         let args = GenerateArgs {
             target: Some(GenerateTarget::Module {
                 name: "neovim".into(),
@@ -708,7 +708,7 @@ mod cmd_generate_mockito {
             .create();
 
         let cli = test_cli(tmp.path().join("cfgd.yaml"));
-        let (printer, buf) = PrinterV2::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         let args = GenerateArgs {
             target: None,
             model: None,
@@ -799,7 +799,7 @@ mod cmd_generate_mockito {
             .create();
 
         let cli = test_cli(tmp.path().join("cfgd.yaml"));
-        let (printer, buf) = PrinterV2::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         let args = GenerateArgs {
             target: None,
             model: None,
@@ -834,7 +834,7 @@ mod cmd_generate_mockito {
     #[serial]
     fn cmd_generate_aborts_when_consent_prompt_declined() {
         // Drives the consent-disclosure branch with yes=false. The
-        // PrinterV2::for_test_at(cfgd_core::output::Verbosity::Normal) prompt_confirm returns Err in non-interactive
+        // Printer::for_test_at(cfgd_core::output::Verbosity::Normal) prompt_confirm returns Err in non-interactive
         // mode (via non_interactive_err) → `let proceed = ...?` propagates
         // the Err out of cmd_generate. The user-facing contract is that we
         // never hit the API.
@@ -864,7 +864,7 @@ mod cmd_generate_mockito {
             .create();
 
         let cli = test_cli(tmp.path().join("cfgd.yaml"));
-        let (printer, buf) = PrinterV2::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         let args = GenerateArgs {
             target: None,
             model: None,
@@ -924,7 +924,7 @@ mod cmd_generate_mockito {
         let _key = EnvVarGuard::unset("ANTHROPIC_API_KEY");
 
         let cli = test_cli(tmp.path().join("cfgd.yaml"));
-        let (printer, _buf) = PrinterV2::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         let args = GenerateArgs {
             target: None,
             model: None,

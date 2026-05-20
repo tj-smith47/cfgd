@@ -5,7 +5,7 @@ use tempfile::TempDir;
 mod bridge {
     use super::*;
     use cfgd_core::output::test_capture::{assert_snapshot_at, strip_ansi};
-    use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+    use cfgd_core::output::{Doc, Printer, Role};
 
     fn snapshot_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/system/ssh_keys/snapshots")
@@ -34,7 +34,7 @@ mod bridge {
         let desired =
             make_desired(&[("default", "ed25519", Some(&key_path.display().to_string()))]);
 
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         let c = SshKeysConfigurator;
         c.apply(&desired, &printer).unwrap();
 
@@ -78,7 +78,7 @@ mod bridge {
         let desired =
             make_desired_with_perms("default", "ed25519", &key_path.display().to_string(), "600");
 
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         let c = SshKeysConfigurator;
         c.apply(&desired, &printer).unwrap();
 

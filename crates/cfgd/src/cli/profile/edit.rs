@@ -1,7 +1,7 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
-pub fn cmd_profile_edit(cli: &Cli, v2_printer: &PrinterV2, name: &str) -> anyhow::Result<()> {
+pub fn cmd_profile_edit(cli: &Cli, v2_printer: &Printer, name: &str) -> anyhow::Result<()> {
     validate_resource_name(name, "Profile")?;
     let profile_path = profiles_dir(cli).join(format!("{}.yaml", name));
     if !profile_path.exists() {

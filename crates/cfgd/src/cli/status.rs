@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role, renderer::Table as TableV2};
+use cfgd_core::output::{Doc, Printer, Role, renderer::Table as TableV2};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -235,7 +235,7 @@ pub fn build_module_status_not_found_doc(name: &str) -> Doc {
 
 pub(super) fn cmd_status(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     module_filter: Option<&str>,
     exit_code: bool,
 ) -> anyhow::Result<()> {
@@ -317,7 +317,7 @@ pub(super) fn cmd_status(
 
 pub(super) fn cmd_status_module(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     mod_name: &str,
 ) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
@@ -370,7 +370,7 @@ pub(super) fn cmd_status_module(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cfgd_core::output::Printer as PrinterV2;
+    use cfgd_core::output::Printer;
     use cfgd_core::output::Verbosity as VerbosityV2;
     use cfgd_core::state::ApplyStatus;
 
@@ -413,12 +413,12 @@ mod tests {
         }
     }
 
-    fn test_printers() -> (PrinterV2, std::sync::Arc<std::sync::Mutex<String>>) {
-        PrinterV2::for_test_at(VerbosityV2::Normal)
+    fn test_printers() -> (Printer, std::sync::Arc<std::sync::Mutex<String>>) {
+        Printer::for_test_at(VerbosityV2::Normal)
     }
 
-    fn test_printers_json() -> (PrinterV2, std::sync::Arc<std::sync::Mutex<String>>) {
-        PrinterV2::for_test_with_format(cfgd_core::output::OutputFormat::Json)
+    fn test_printers_json() -> (Printer, std::sync::Arc<std::sync::Mutex<String>>) {
+        Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json)
     }
 
     /// Isolated config-dir + state-dir pair with a minimal valid `cfgd.yaml`

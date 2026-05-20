@@ -294,7 +294,7 @@ mod tests {
     mod bridge {
         use super::*;
         use cfgd_core::output::test_capture::{assert_snapshot_at, strip_ansi};
-        use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+        use cfgd_core::output::{Doc, Printer, Role};
 
         fn snapshot_dir() -> std::path::PathBuf {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/system/snapshots")
@@ -343,7 +343,7 @@ mod tests {
             )
             .unwrap();
 
-            let (printer, cap) = PrinterV2::for_test_doc();
+            let (printer, cap) = Printer::for_test_doc();
             let su = SystemdUnitConfigurator;
             su.apply(&yaml, &printer).unwrap();
 
@@ -380,7 +380,7 @@ mod tests {
             );
             let yaml: serde_yaml::Value = serde_yaml::from_str(&yaml_str).unwrap();
 
-            let (printer, cap) = PrinterV2::for_test_doc();
+            let (printer, cap) = Printer::for_test_doc();
             let su = SystemdUnitConfigurator;
             su.apply(&yaml, &printer).unwrap();
 

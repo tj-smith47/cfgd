@@ -585,7 +585,7 @@ mod brew_shim {
 mod bridge {
     use super::*;
     use cfgd_core::output::test_capture::{assert_snapshot_at, strip_ansi, strip_spinner_duration};
-    use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+    use cfgd_core::output::{Doc, Printer, Role};
     use cfgd_core::providers::PackageManager;
     use cfgd_core::test_helpers::ToolShim;
     use serial_test::serial;
@@ -610,7 +610,7 @@ mod bridge {
     fn snapshot_brew_install_clean() {
         let _shim = ToolShim::install(SHIM_ENV, 0, "", "");
 
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         BrewManager
             .install(&["git".to_string()], &printer)
             .expect("install ok");
@@ -651,7 +651,7 @@ mod bridge {
             git installed.\n";
         let _shim = ToolShim::install(SHIM_ENV, 0, caveat_stdout, "");
 
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         BrewManager
             .install(&["git".to_string()], &printer)
             .expect("install ok with caveats");

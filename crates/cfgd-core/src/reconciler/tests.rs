@@ -7441,7 +7441,7 @@ fn verify_system_configurator_reports_drift() {
                 },
             ])
         }
-        fn apply(&self, _: &serde_yaml::Value, _: &PrinterV2) -> crate::errors::Result<()> {
+        fn apply(&self, _: &serde_yaml::Value, _: &Printer) -> crate::errors::Result<()> {
             Ok(())
         }
     }
@@ -7527,7 +7527,7 @@ fn verify_system_configurator_reports_healthy_when_no_drift() {
         ) -> crate::errors::Result<Vec<crate::providers::SystemDrift>> {
             Ok(vec![])
         }
-        fn apply(&self, _: &serde_yaml::Value, _: &PrinterV2) -> crate::errors::Result<()> {
+        fn apply(&self, _: &serde_yaml::Value, _: &Printer) -> crate::errors::Result<()> {
             Ok(())
         }
     }
@@ -7589,7 +7589,7 @@ mod bridge {
     use super::super::Reconciler;
     use super::*;
     use crate::output::test_capture::{assert_snapshot_at, strip_ansi};
-    use crate::output::{Doc, Printer as PrinterV2, Role};
+    use crate::output::{Doc, Printer, Role};
 
     fn snapshot_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reconciler/snapshots")
@@ -7615,7 +7615,7 @@ mod bridge {
     /// (and far smaller than) the cycle goldens so a regression in the seam
     /// itself tips a fixture that has nothing else moving.
     fn run_minimal_bridge() -> String {
-        let (v2_printer, cap) = PrinterV2::for_test_doc();
+        let (v2_printer, cap) = Printer::for_test_doc();
         v2_printer.status_simple(Role::Ok, "[1/1] Wrote /etc/hosts");
         let doc = Doc::new().status(Role::Ok, "Apply complete");
         v2_printer.emit(doc);
@@ -7672,7 +7672,7 @@ mod bridge {
             )
             .unwrap();
 
-        let (v2_printer, cap) = PrinterV2::for_test_doc();
+        let (v2_printer, cap) = Printer::for_test_doc();
         let result = reconciler
             .apply(
                 &plan,
@@ -7717,7 +7717,7 @@ mod bridge {
             warnings: Vec::new(),
         };
 
-        let (v2_printer, cap) = PrinterV2::for_test_doc();
+        let (v2_printer, cap) = Printer::for_test_doc();
         let result = reconciler
             .apply(
                 &plan,

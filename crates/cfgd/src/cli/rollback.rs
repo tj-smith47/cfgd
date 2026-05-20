@@ -1,9 +1,9 @@
 use super::*;
 
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_rollback(
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     apply_id: i64,
     yes: bool,
     state_dir: Option<&Path>,

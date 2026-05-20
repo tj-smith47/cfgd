@@ -1,11 +1,11 @@
 use super::*;
 
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 use cfgd_core::server_client::{DeviceCredential, ServerClient};
 
 pub fn cmd_checkin(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     server_url: &str,
     api_key: Option<&str>,
     device_id: Option<&str>,

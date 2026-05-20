@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role, renderer::Table as TableV2};
+use cfgd_core::output::{Doc, Printer, Role, renderer::Table as TableV2};
 
 /// Build the `cfgd profile list` Doc from a populated entries vector + `--wide`
 /// flag. Pure; the caller assembles the entries from disk.
@@ -47,7 +47,7 @@ pub fn build_profile_list_missing_doc(profiles_dir: &Path) -> Doc {
         .with_data(&empty)
 }
 
-pub fn cmd_profile_list(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
+pub fn cmd_profile_list(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
     let profiles_dir = profiles_dir(cli);
 
     if !profiles_dir.exists() {

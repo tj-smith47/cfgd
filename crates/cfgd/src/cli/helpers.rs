@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Printer as PrinterV2, Role};
+use cfgd_core::output::{Printer, Role};
 
 pub(in crate::cli) fn load_config_and_profile_v2(
     cli: &Cli,
@@ -281,7 +281,7 @@ pub(in crate::cli) fn module_state_map(
         .collect()
 }
 
-pub(in crate::cli) fn open_in_editor_v2(path: &Path, printer: &PrinterV2) -> anyhow::Result<()> {
+pub(in crate::cli) fn open_in_editor_v2(path: &Path, printer: &Printer) -> anyhow::Result<()> {
     let editor = std::env::var("EDITOR")
         .or_else(|_| std::env::var("VISUAL"))
         .unwrap_or_else(|_| "vi".to_string());
@@ -387,7 +387,7 @@ pub(in crate::cli) fn compose_with_sources_v2(
     cli: &Cli,
     cfg: &config::CfgdConfig,
     local_resolved: &ResolvedProfile,
-    printer: &PrinterV2,
+    printer: &Printer,
 ) -> anyhow::Result<composition::CompositionResult> {
     if cfg.spec.sources.is_empty() {
         // No sources, return local profile as-is

@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use secrecy::SecretString;
 
 use crate::errors::{CfgdError, FileError, SecretError};
-use crate::output::Printer as PrinterV2;
+use crate::output::Printer;
 use crate::providers::{
     FileAction, FileDiff, FileLayer, FileTree, SecretBackend, SecretProvider, SystemConfigurator,
     SystemDrift,
@@ -74,7 +74,7 @@ impl crate::providers::FileManager for MockFileManager {
         Ok(Vec::new())
     }
 
-    fn apply(&self, actions: &[FileAction], _printer: &PrinterV2) -> crate::errors::Result<()> {
+    fn apply(&self, actions: &[FileAction], _printer: &Printer) -> crate::errors::Result<()> {
         self.apply_calls
             .lock()
             .unwrap()
@@ -310,11 +310,7 @@ impl SystemConfigurator for MockSystemConfigurator {
             .collect())
     }
 
-    fn apply(
-        &self,
-        desired: &serde_yaml::Value,
-        _printer: &PrinterV2,
-    ) -> crate::errors::Result<()> {
+    fn apply(&self, desired: &serde_yaml::Value, _printer: &Printer) -> crate::errors::Result<()> {
         self.apply_calls.lock().unwrap().push(desired.clone());
         if *self.fail_apply.lock().unwrap() {
             return Err(CfgdError::Io(std::io::Error::other(

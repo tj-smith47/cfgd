@@ -610,7 +610,7 @@ mod bridge {
     use crate::oci::test_helpers::{create_test_module_dir, registry_from_url};
     use crate::oci::{MEDIA_TYPE_MODULE_CONFIG, MEDIA_TYPE_MODULE_LAYER, MEDIA_TYPE_OCI_MANIFEST};
     use crate::output::test_capture::{assert_snapshot_at, strip_ansi, strip_spinner_duration};
-    use crate::output::{Doc, Printer as PrinterV2, Role};
+    use crate::output::{Doc, Printer, Role};
     use crate::sha256_digest;
 
     fn snapshot_dir() -> std::path::PathBuf {
@@ -688,7 +688,7 @@ mod bridge {
         let output_dir = tempfile::tempdir().unwrap();
         let artifact_ref = format!("{}/test/bridge-pull:v1", registry);
 
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         pull_module(&artifact_ref, output_dir.path(), false, Some(&printer)).unwrap();
 
         let summary = OciPullSummary {
@@ -761,7 +761,7 @@ mod bridge {
 
         let artifact_ref = format!("{}/test/bridge-push:v1", registry);
 
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         let digest = push_module(module_dir.path(), &artifact_ref, None, Some(&printer)).unwrap();
 
         let summary = OciPushSummary {

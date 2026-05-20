@@ -1,7 +1,7 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
-pub fn cmd_source_edit(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
+pub fn cmd_source_edit(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     let source_path = config_dir.join("cfgd-source.yaml");
     if !source_path.exists() {

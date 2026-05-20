@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 use serde::Serialize;
 
 use super::source::{clone_into, is_git_source, resolve_from};
@@ -31,7 +31,7 @@ pub(crate) struct InitOutput {
 }
 
 /// Scaffold a new cfgd configuration repository.
-pub fn cmd_init(v2_printer: &PrinterV2, args: &InitArgs<'_>) -> anyhow::Result<()> {
+pub fn cmd_init(v2_printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     v2_printer.heading("Initialize cfgd");
 
     if !check_prerequisites(v2_printer) {
@@ -362,7 +362,7 @@ pub(super) fn apply_plan(
     config_dir: &Path,
     dry_run: bool,
     yes: bool,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
 ) -> anyhow::Result<()> {
     let total = plan.total_actions();
     if total == 0 {
@@ -406,7 +406,7 @@ pub(super) fn apply_plan(
 }
 
 /// Interactively pick a profile from the profiles directory.
-pub(super) fn pick_profile(profiles_dir: &Path, v2_printer: &PrinterV2) -> anyhow::Result<String> {
+pub(super) fn pick_profile(profiles_dir: &Path, v2_printer: &Printer) -> anyhow::Result<String> {
     if !profiles_dir.is_dir() {
         anyhow::bail!(
             "No profiles directory found — create a profile first with: cfgd profile create <name>"
@@ -462,7 +462,7 @@ pub(super) fn scaffold(
     dir: &Path,
     name: Option<&str>,
     theme: Option<&str>,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
 ) -> anyhow::Result<()> {
     let config_name = name
         .or_else(|| dir.file_name().and_then(|n| n.to_str()))
@@ -556,7 +556,7 @@ cfgd apply
 
 /// Generate or regenerate the release workflow based on current modules/profiles.
 /// Called by init and also by module create / profile create.
-pub(crate) fn regenerate_workflow(config_dir: &Path, v2_printer: &PrinterV2) -> anyhow::Result<()> {
+pub(crate) fn regenerate_workflow(config_dir: &Path, v2_printer: &Printer) -> anyhow::Result<()> {
     let profiles = scan_profile_names(&config_dir.join("profiles"))?;
     let modules = scan_module_names(&config_dir.join("modules"))?;
 
@@ -576,7 +576,7 @@ pub(crate) fn regenerate_workflow(config_dir: &Path, v2_printer: &PrinterV2) -> 
     Ok(())
 }
 
-pub(super) fn check_prerequisites(v2_printer: &PrinterV2) -> bool {
+pub(super) fn check_prerequisites(v2_printer: &Printer) -> bool {
     if !cfgd_core::command_available("git") {
         v2_printer.status_simple(Role::Fail, "git is not installed — cfgd requires git");
         if cfg!(target_os = "macos") {

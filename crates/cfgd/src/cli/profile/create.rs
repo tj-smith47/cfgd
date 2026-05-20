@@ -1,9 +1,9 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_profile_create(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     args: &ProfileCreateArgs,
 ) -> anyhow::Result<()> {
     let name = &args.name;

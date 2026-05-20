@@ -2,7 +2,7 @@ use super::*;
 use cfgd_core::config::{
     EnvVar, ManagedFileSpec, PackagesSpec, ProfileLayer, ResolvedProfile, SecretSpec,
 };
-use cfgd_core::output::{Doc, Printer as PrinterV2};
+use cfgd_core::output::{Doc, Printer};
 
 /// Build the `cfgd profile show` Doc from a resolved profile. Pure; consumes
 /// nothing — the caller serializes `{name, resolved}` as the structured payload.
@@ -109,7 +109,7 @@ fn package_display_rows(pkgs: &PackagesSpec) -> Vec<(String, String)> {
     rows
 }
 
-pub fn cmd_profile_show(cli: &Cli, printer: &PrinterV2, name: Option<&str>) -> anyhow::Result<()> {
+pub fn cmd_profile_show(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow::Result<()> {
     let (profile_name, resolved) = match name {
         Some(n) => {
             config::load_config(&cli.config)?;

@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::config::ModuleLockEntry;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role, renderer::Table as TableV2};
+use cfgd_core::output::{Doc, Printer, Role, renderer::Table as TableV2};
 
 /// Per-package display row for `cfgd module show`. Computed from package
 /// resolution so the renderer is pure and snapshot-testable without needing a
@@ -181,7 +181,7 @@ pub fn build_module_show_doc(
     doc.with_data(output)
 }
 
-pub(crate) fn cmd_module_list(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
+pub(crate) fn cmd_module_list(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     let cache_base = modules::default_module_cache_dir()?;
     let all_modules = modules::load_all_modules(&config_dir, &cache_base, v2_printer)?;
@@ -250,7 +250,7 @@ pub(crate) fn cmd_module_list(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Resu
 
 pub(crate) fn cmd_module_show(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     name: &str,
     show_values: bool,
 ) -> anyhow::Result<()> {

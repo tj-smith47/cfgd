@@ -3154,7 +3154,7 @@ fn systemd_apply_unit_with_disabled_field_emits_disable_line() {
 mod bridge {
     use super::*;
     use cfgd_core::output::test_capture::{assert_snapshot_at, strip_ansi};
-    use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+    use cfgd_core::output::{Doc, Printer, Role};
 
     fn snapshot_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/system/node/snapshots")
@@ -3198,7 +3198,7 @@ profiles:
         ))
         .unwrap();
 
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         let sc = SeccompConfigurator;
         sc.apply(&desired, &printer).unwrap();
 
@@ -3253,7 +3253,7 @@ profiles:
         ))
         .unwrap();
 
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         let sc = SeccompConfigurator;
         sc.apply(&desired, &printer).unwrap();
 
@@ -3317,7 +3317,7 @@ certificates:
         ))
         .unwrap();
 
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         let cc = CertificateConfigurator;
         cc.apply(&desired, &printer).unwrap();
 
@@ -3377,7 +3377,7 @@ certificates:
         ))
         .unwrap();
 
-        let (printer, cap) = PrinterV2::for_test_doc();
+        let (printer, cap) = Printer::for_test_doc();
         let cc = CertificateConfigurator;
         cc.apply(&desired, &printer).unwrap();
 

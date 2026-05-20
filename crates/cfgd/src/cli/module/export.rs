@@ -1,9 +1,9 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_module_export(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     name: &str,
     format: &super::ExportFormat,
     output_dir: Option<&str>,
@@ -15,7 +15,7 @@ pub fn cmd_module_export(
 
 pub(super) fn export_devcontainer(
     cli: &Cli,
-    v2_printer: &PrinterV2,
+    v2_printer: &Printer,
     name: &str,
     output_dir: Option<&str>,
 ) -> anyhow::Result<()> {
