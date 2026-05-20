@@ -1,0 +1,3 @@
+Writing seccomp profile default-audit: <TMPDIR>/cfgd-seccomp/default-audit.json
+
+✓ seccomp profiles applied

@@ -3149,3 +3149,260 @@ fn systemd_apply_unit_with_disabled_field_emits_disable_line() {
         "disable info line should fire when enabled=false: {captured}"
     );
 }
+
+#[cfg(target_os = "linux")]
+mod bridge {
+    use super::*;
+    use cfgd_core::output_v2::test_capture::{assert_snapshot_at, strip_ansi};
+    use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+
+    fn snapshot_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/system/node/snapshots")
+    }
+
+    fn assert_snapshot(name: &str, actual: &str) {
+        assert_snapshot_at(&snapshot_dir(), name, actual);
+    }
+
+    fn normalize_paths(raw: &str, tmpdir: &std::path::Path) -> String {
+        raw.replace(&tmpdir.to_string_lossy().to_string(), "<TMPDIR>")
+    }
+
+    #[derive(serde::Serialize)]
+    struct NodeApplySummary {
+        configurator: String,
+        applied: bool,
+    }
+
+    // --- seccomp bridge tests ---
+
+    /// Clean setup: single seccomp profile written to tmpdir. No external
+    /// commands are called — seccomp apply is pure file I/O. The "Writing
+    /// seccomp profile" info line and closing Ok Doc document the full apply
+    /// path deterministically regardless of environment.
+    #[test]
+    fn snapshot_seccomp_clean() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let profiles_dir = tmp.path().join("cfgd-seccomp");
+
+        let desired: serde_yaml::Value = serde_yaml::from_str(&format!(
+            r#"
+profilesDir: {}
+profiles:
+  - name: default-audit
+    file: default-audit.json
+    content: |
+      {{"defaultAction":"SCMP_ACT_LOG"}}
+"#,
+            profiles_dir.display()
+        ))
+        .unwrap();
+
+        let (printer, cap) = PrinterV2::for_test_doc();
+        let sc = SeccompConfigurator;
+        sc.apply(&desired, &printer).unwrap();
+
+        let summary = NodeApplySummary {
+            configurator: "seccomp".to_string(),
+            applied: true,
+        };
+        let doc = Doc::new()
+            .status(Role::Ok, "seccomp profiles applied")
+            .with_data(&summary);
+        printer.emit(doc);
+        drop(printer);
+
+        let raw = strip_ansi(&cap.human());
+        let captured = normalize_paths(&raw, tmp.path());
+
+        assert!(
+            captured.contains("\n\n"),
+            "seccomp_clean missing blank line at seam:\n{captured}"
+        );
+        assert!(
+            !captured.contains("\n\n\n"),
+            "seccomp_clean has duplicate blank line:\n{captured}"
+        );
+
+        assert_snapshot("seccomp_clean.txt", &captured);
+    }
+
+    /// Warnings scenario: first profile has a path traversal in its file name
+    /// (emits Warn + continues), second profile is valid. Two distinct output
+    /// lines document the mixed-result apply surface. Pure file I/O; no external
+    /// commands.
+    #[test]
+    fn snapshot_seccomp_with_warnings() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let profiles_dir = tmp.path().join("cfgd-seccomp");
+
+        let desired: serde_yaml::Value = serde_yaml::from_str(&format!(
+            r#"
+profilesDir: {}
+profiles:
+  - name: traversal-profile
+    file: ../../etc/cfgd-snap-traversal.json
+    content: |
+      {{"defaultAction":"SCMP_ACT_ERRNO"}}
+  - name: allow-audit
+    file: allow-audit.json
+    content: |
+      {{"defaultAction":"SCMP_ACT_LOG"}}
+"#,
+            profiles_dir.display()
+        ))
+        .unwrap();
+
+        let (printer, cap) = PrinterV2::for_test_doc();
+        let sc = SeccompConfigurator;
+        sc.apply(&desired, &printer).unwrap();
+
+        let summary = NodeApplySummary {
+            configurator: "seccomp".to_string(),
+            applied: true,
+        };
+        let doc = Doc::new()
+            .status(Role::Warn, "seccomp apply completed with warnings")
+            .with_data(&summary);
+        printer.emit(doc);
+        drop(printer);
+
+        let raw = strip_ansi(&cap.human());
+        let captured = normalize_paths(&raw, tmp.path());
+
+        assert!(
+            captured.contains("\n\n"),
+            "seccomp_with_warnings missing blank line at seam:\n{captured}"
+        );
+        assert!(
+            !captured.contains("\n\n\n"),
+            "seccomp_with_warnings has duplicate blank line:\n{captured}"
+        );
+
+        assert_snapshot("seccomp_with_warnings.txt", &captured);
+    }
+
+    // --- certificates bridge tests ---
+
+    /// Clean setup: certificate file exists with wrong permissions. Apply sets
+    /// the desired mode and emits Info lines. Pure file I/O — no external
+    /// commands. Always deterministic regardless of environment.
+    #[test]
+    fn snapshot_certificates_clean() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pki_dir = tmp.path().join("pki");
+        fs::create_dir_all(&pki_dir).unwrap();
+
+        let cert_path = pki_dir.join("kubelet-client.crt");
+        let key_path = pki_dir.join("kubelet-client.key");
+        fs::write(&cert_path, b"FAKE CERT").unwrap();
+        fs::write(&key_path, b"FAKE KEY").unwrap();
+        fs::set_permissions(&cert_path, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::set_permissions(&key_path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let desired: serde_yaml::Value = serde_yaml::from_str(&format!(
+            r#"
+caCertDir: {}
+certificates:
+  - name: kubelet-client
+    certPath: {}
+    keyPath: {}
+    mode: "0600"
+"#,
+            pki_dir.display(),
+            cert_path.display(),
+            key_path.display(),
+        ))
+        .unwrap();
+
+        let (printer, cap) = PrinterV2::for_test_doc();
+        let cc = CertificateConfigurator;
+        cc.apply(&desired, &printer).unwrap();
+
+        let summary = NodeApplySummary {
+            configurator: "certificates".to_string(),
+            applied: true,
+        };
+        let doc = Doc::new()
+            .status(Role::Ok, "certificates applied")
+            .with_data(&summary);
+        printer.emit(doc);
+        drop(printer);
+
+        let raw = strip_ansi(&cap.human());
+        let captured = normalize_paths(&raw, tmp.path());
+
+        assert!(
+            captured.contains("\n\n"),
+            "certificates_clean missing blank line at seam:\n{captured}"
+        );
+        assert!(
+            !captured.contains("\n\n\n"),
+            "certificates_clean has duplicate blank line:\n{captured}"
+        );
+
+        assert_snapshot("certificates_clean.txt", &captured);
+    }
+
+    /// Warnings scenario: one cert file is missing (emits Warn) while another
+    /// exists with wrong permissions (emits Info + fixes). Demonstrates the
+    /// mixed Warn/Info output surface. Pure file I/O.
+    #[test]
+    fn snapshot_certificates_with_warnings() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let pki_dir = tmp.path().join("pki");
+        fs::create_dir_all(&pki_dir).unwrap();
+
+        let cert_path = pki_dir.join("kubelet-client.crt");
+        let key_path = pki_dir.join("kubelet-client.key");
+        fs::write(&cert_path, b"FAKE CERT").unwrap();
+        fs::set_permissions(&cert_path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let desired: serde_yaml::Value = serde_yaml::from_str(&format!(
+            r#"
+caCertDir: {}
+certificates:
+  - name: kubelet-client
+    certPath: {}
+    keyPath: {}
+    mode: "0600"
+"#,
+            pki_dir.display(),
+            cert_path.display(),
+            key_path.display(),
+        ))
+        .unwrap();
+
+        let (printer, cap) = PrinterV2::for_test_doc();
+        let cc = CertificateConfigurator;
+        cc.apply(&desired, &printer).unwrap();
+
+        let summary = NodeApplySummary {
+            configurator: "certificates".to_string(),
+            applied: true,
+        };
+        let doc = Doc::new()
+            .status(Role::Warn, "certificates apply completed with warnings")
+            .with_data(&summary);
+        printer.emit(doc);
+        drop(printer);
+
+        let raw = strip_ansi(&cap.human());
+        let captured = normalize_paths(&raw, tmp.path());
+
+        assert!(
+            captured.contains("\n\n"),
+            "certificates_with_warnings missing blank line at seam:\n{captured}"
+        );
+        assert!(
+            !captured.contains("\n\n\n"),
+            "certificates_with_warnings has duplicate blank line:\n{captured}"
+        );
+
+        assert_snapshot("certificates_with_warnings.txt", &captured);
+    }
+}

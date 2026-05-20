@@ -1,0 +1,5 @@
+⚠ Skipping seccomp profile traversal-profile: path traversal in file name
+
+Writing seccomp profile allow-audit: <TMPDIR>/cfgd-seccomp/allow-audit.json
+
+⚠ seccomp apply completed with warnings
