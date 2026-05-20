@@ -155,6 +155,7 @@ fn status_clean_human() {
         &[],
         Path::new("/etc/cfgd/cfgd.yaml"),
         "default",
+        &printer,
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "status/clean.txt");
@@ -169,6 +170,7 @@ fn status_clean_json() {
         &[],
         Path::new("/etc/cfgd/cfgd.yaml"),
         "default",
+        &printer,
     ));
     drop(printer);
     let expected = serde_json::to_value(&output).unwrap();
@@ -190,6 +192,7 @@ fn status_drift_human() {
         &sources,
         Path::new("/etc/cfgd/cfgd.yaml"),
         "default",
+        &printer,
     ));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "status/drift.txt");
@@ -205,6 +208,7 @@ fn status_drift_json() {
         &sources,
         Path::new("/etc/cfgd/cfgd.yaml"),
         "default",
+        &printer,
     ));
     drop(printer);
     let expected = serde_json::to_value(&output).unwrap();

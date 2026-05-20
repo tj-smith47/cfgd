@@ -117,6 +117,21 @@ impl Printer {
         console::set_colors_enabled_stderr(false);
     }
 
+    /// Style a string with the role's theme color, returning the pre-styled
+    /// content for embedding inside another `status` / `kv` value. The
+    /// terminal-write boundary stays inside `Printer` — callers pass the
+    /// returned `String` back into a Printer method to actually render.
+    ///
+    /// Use sparingly: nested ANSI styling only renders correctly when the
+    /// pre-styled segment is at the END of its enclosing subject (because
+    /// the inner reset `\x1b[0m` kills the outer color for any trailing
+    /// content). Suitable for trailing labels like ` [source-name]`; not
+    /// suitable for highlighting a word in the middle of a sentence.
+    pub fn style(&self, role: super::Role, text: impl AsRef<str>) -> String {
+        let (_icon, style) = super::renderer::role_glyph(&self.renderer.theme, role);
+        style.apply_to(text.as_ref()).to_string()
+    }
+
     // ----- Top-level emit methods (depth 0) -----
 
     pub fn heading(&self, text: impl Into<String>) {

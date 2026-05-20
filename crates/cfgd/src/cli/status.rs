@@ -43,12 +43,15 @@ fn apply_status_str(s: &cfgd_core::state::ApplyStatus) -> &'static str {
 
 /// Build the fleet-wide `cfgd status` Doc. Caller supplies the precomputed
 /// payload and the configured `SourceSpec` list so the renderer can show
-/// "not yet fetched" rows for sources without state records.
+/// "not yet fetched" rows for sources without state records. The `printer`
+/// is used only to pre-style the drift-event source-attribution suffix —
+/// it does not perform any terminal write inside this function.
 pub fn build_fleet_status_doc(
     output: &StatusOutput,
     configured_sources: &[String],
     config_path: &Path,
     profile_name: &str,
+    printer: &cfgd_core::output::Printer,
 ) -> Doc {
     let mut doc = Doc::new()
         .heading("Status")
@@ -78,8 +81,13 @@ pub fn build_fleet_status_doc(
     } else {
         doc.section("Drift", |s| {
             output.drift.iter().fold(s, |s, event| {
+                // Pre-style the source-attribution suffix in `secondary`
+                // (pink/magenta). Placed at the end of the subject because
+                // nested ANSI styling only renders correctly when the inner
+                // reset is followed by no further outer-styled content; see
+                // `Printer::style` for the constraint.
                 let source_info = if event.source != "local" {
-                    format!(" [{}]", event.source)
+                    printer.style(Role::Secondary, format!(" [{}]", event.source))
                 } else {
                     String::new()
                 };
@@ -306,6 +314,7 @@ pub(super) fn cmd_status(
         &configured_source_names,
         &cli.config,
         &profile_name,
+        printer,
     ));
 
     if exit_code && has_drift {
