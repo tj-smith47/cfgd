@@ -584,7 +584,9 @@ mod brew_shim {
 #[cfg(unix)]
 mod bridge {
     use super::*;
-    use cfgd_core::output_v2::test_capture::{assert_snapshot_at, strip_ansi};
+    use cfgd_core::output_v2::test_capture::{
+        assert_snapshot_at, strip_ansi, strip_spinner_duration,
+    };
     use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
     use cfgd_core::providers::PackageManager;
     use cfgd_core::test_helpers::ToolShim;
@@ -598,38 +600,6 @@ mod bridge {
 
     fn assert_snapshot(name: &str, actual: &str) {
         assert_snapshot_at(&snapshot_dir(), name, actual);
-    }
-
-    /// Strip non-deterministic spinner finish durations like ` (0.0s)`.
-    fn strip_spinner_duration(s: String) -> String {
-        let mut out = String::with_capacity(s.len());
-        let mut rest = s.as_str();
-        while let Some(idx) = rest.find(" (") {
-            out.push_str(&rest[..idx]);
-            let after = &rest[idx + 2..];
-            let digit_end = after
-                .find(|c: char| !c.is_ascii_digit())
-                .unwrap_or(after.len());
-            if digit_end > 0 && after.as_bytes().get(digit_end).copied() == Some(b'.') {
-                let frac_start = digit_end + 1;
-                let frac_rest = &after[frac_start..];
-                let frac_end = frac_rest
-                    .find(|c: char| !c.is_ascii_digit())
-                    .unwrap_or(frac_rest.len());
-                let total = frac_start + frac_end;
-                if frac_end > 0
-                    && after.as_bytes().get(total).copied() == Some(b's')
-                    && after.as_bytes().get(total + 1).copied() == Some(b')')
-                {
-                    rest = &after[total + 2..];
-                    continue;
-                }
-            }
-            out.push_str(" (");
-            rest = after;
-        }
-        out.push_str(rest);
-        out
     }
 
     #[derive(serde::Serialize)]

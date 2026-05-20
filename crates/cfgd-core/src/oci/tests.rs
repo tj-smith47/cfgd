@@ -609,7 +609,7 @@ mod bridge {
     use crate::oci::push::push_module;
     use crate::oci::test_helpers::{create_test_module_dir, registry_from_url};
     use crate::oci::{MEDIA_TYPE_MODULE_CONFIG, MEDIA_TYPE_MODULE_LAYER, MEDIA_TYPE_OCI_MANIFEST};
-    use crate::output_v2::test_capture::{assert_snapshot_at, strip_ansi};
+    use crate::output_v2::test_capture::{assert_snapshot_at, strip_ansi, strip_spinner_duration};
     use crate::output_v2::{Doc, Printer as PrinterV2, Role};
     use crate::sha256_digest;
 
@@ -624,38 +624,6 @@ mod bridge {
     fn normalize_mock_url(s: &str, server_url: &str, registry: &str) -> String {
         s.replace(server_url, "<MOCK_URL>")
             .replace(registry, "<MOCK_REGISTRY>")
-    }
-
-    /// Strip non-deterministic spinner finish durations like ` (0.0s)`.
-    fn strip_spinner_duration(s: String) -> String {
-        let mut out = String::with_capacity(s.len());
-        let mut rest = s.as_str();
-        while let Some(idx) = rest.find(" (") {
-            out.push_str(&rest[..idx]);
-            let after = &rest[idx + 2..];
-            let digit_end = after
-                .find(|c: char| !c.is_ascii_digit())
-                .unwrap_or(after.len());
-            if digit_end > 0 && after.as_bytes().get(digit_end).copied() == Some(b'.') {
-                let frac_start = digit_end + 1;
-                let frac_rest = &after[frac_start..];
-                let frac_end = frac_rest
-                    .find(|c: char| !c.is_ascii_digit())
-                    .unwrap_or(frac_rest.len());
-                let total = frac_start + frac_end;
-                if frac_end > 0
-                    && after.as_bytes().get(total).copied() == Some(b's')
-                    && after.as_bytes().get(total + 1).copied() == Some(b')')
-                {
-                    rest = &after[total + 2..];
-                    continue;
-                }
-            }
-            out.push_str(" (");
-            rest = after;
-        }
-        out.push_str(rest);
-        out
     }
 
     #[derive(serde::Serialize)]
