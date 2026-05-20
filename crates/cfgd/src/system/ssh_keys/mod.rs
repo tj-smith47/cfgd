@@ -176,8 +176,8 @@ impl SshKeysConfigurator {
             cmd.arg("-C").arg(comment);
         }
 
-        // Passphrase — for now only empty passphrase is supported.
-        // The `passphrase` field may hold a secret provider URI for future resolution.
+        // Passphrase: always generates without a passphrase. The `passphrase`
+        // field is reserved for future secret-provider URI resolution.
         cmd.arg("-N").arg("");
 
         let output = cmd.output().map_err(CfgdError::Io)?;
