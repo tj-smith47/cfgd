@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer, Role, renderer::Table as TableV2};
+use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 
 /// Build the `cfgd source list` Doc from a populated entries vector + `--wide`
 /// flag. Pure; the caller assembles the entries from disk.
@@ -12,7 +12,7 @@ pub fn build_source_list_doc(entries: &[SourceListEntry], wide: bool) -> Doc {
     }
 
     if wide {
-        let mut t = TableV2::new([
+        let mut t = Table::new([
             "Name",
             "URL",
             "Priority",
@@ -32,7 +32,7 @@ pub fn build_source_list_doc(entries: &[SourceListEntry], wide: bool) -> Doc {
         }
         doc = doc.table(t);
     } else {
-        let mut t = TableV2::new(["Name", "URL", "Priority", "Status"]);
+        let mut t = Table::new(["Name", "URL", "Priority", "Status"]);
         for e in entries {
             t = t.row([
                 e.name.clone(),

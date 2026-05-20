@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::config::ModuleLockEntry;
-use cfgd_core::output::{Doc, Printer, Role, renderer::Table as TableV2};
+use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 
 /// Per-package display row for `cfgd module show`. Computed from package
 /// resolution so the renderer is pure and snapshot-testable without needing a
@@ -35,7 +35,7 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
     }
 
     let table = if wide {
-        let mut t = TableV2::new([
+        let mut t = Table::new([
             "Module", "Active", "Source", "Status", "Packages", "Files", "Deps",
         ]);
         for e in entries {
@@ -51,7 +51,7 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
         }
         t
     } else {
-        let mut t = TableV2::new(["Module", "Active", "Source", "Status", "Contents"]);
+        let mut t = Table::new(["Module", "Active", "Source", "Status", "Contents"]);
         for e in entries {
             t = t.row([
                 e.name.clone(),

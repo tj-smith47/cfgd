@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer, Role, renderer::Table as TableV2};
+use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,7 +105,7 @@ pub fn build_fleet_status_doc(
                     .iter()
                     .fold(s, |s, name| s.kv(name, "not yet fetched"))
             } else {
-                let mut t = TableV2::new(["Source", "Status", "Version", "Last Fetched"]);
+                let mut t = Table::new(["Source", "Status", "Version", "Last Fetched"]);
                 for rec in &output.sources {
                     t = t.row([
                         rec.name.clone(),
@@ -170,7 +170,7 @@ pub fn build_fleet_status_doc(
         "Managed Resources",
         &output.managed_resources,
         |s, items| {
-            let mut t = TableV2::new(["Type", "Resource", "Source"]);
+            let mut t = Table::new(["Type", "Resource", "Source"]);
             for r in items {
                 t = t.row([
                     r.resource_type.clone(),
@@ -371,7 +371,7 @@ pub(super) fn cmd_status_module(
 mod tests {
     use super::*;
     use cfgd_core::output::Printer;
-    use cfgd_core::output::Verbosity as VerbosityV2;
+    use cfgd_core::output::Verbosity;
     use cfgd_core::state::ApplyStatus;
 
     // Minimal config + default profile YAML used by every test that exercises
@@ -414,7 +414,7 @@ mod tests {
     }
 
     fn test_printers() -> (Printer, std::sync::Arc<std::sync::Mutex<String>>) {
-        Printer::for_test_at(VerbosityV2::Normal)
+        Printer::for_test_at(Verbosity::Normal)
     }
 
     fn test_printers_json() -> (Printer, std::sync::Arc<std::sync::Mutex<String>>) {

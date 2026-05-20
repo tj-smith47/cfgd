@@ -14,7 +14,7 @@ use std::path::Path;
 
 use cfgd::cli::output_types::RollbackOutput;
 use cfgd::cli::rollback::{build_rollback_doc, cmd_rollback};
-use cfgd_core::output::{Doc, Printer, PromptAnswer, Role, Verbosity as V2Verbosity};
+use cfgd_core::output::{Doc, Printer, PromptAnswer, Role, Verbosity};
 use pretty_assertions::assert_eq;
 
 use common::{
@@ -95,7 +95,7 @@ fn rollback_accept_human() {
 
     let (v2_printer, v2_buf) = Printer::for_test_with_prompt_responses_at(
         vec![PromptAnswer::Confirm(true)],
-        V2Verbosity::Normal,
+        Verbosity::Normal,
     );
 
     cmd_rollback(&v2_printer, apply_id, false, Some(state_dir.path())).unwrap();
@@ -116,7 +116,7 @@ fn rollback_aborted_human() {
 
     let (v2_printer, v2_buf) = Printer::for_test_with_prompt_responses_at(
         vec![PromptAnswer::Confirm(false)],
-        V2Verbosity::Normal,
+        Verbosity::Normal,
     );
 
     cmd_rollback(&v2_printer, apply_id, false, Some(state_dir.path())).unwrap();

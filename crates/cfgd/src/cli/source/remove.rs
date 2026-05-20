@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer, Role, renderer::Table as TableV2};
+use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 
 pub fn cmd_source_remove(
     cli: &Cli,
@@ -46,7 +46,7 @@ pub fn cmd_source_remove(
                 "This source manages {} resource(s)",
                 resources.len()
             ));
-            let mut t = TableV2::new(["Type", "Resource"]);
+            let mut t = Table::new(["Type", "Resource"]);
             for r in &resources {
                 t = t.row([r.resource_type.clone(), r.resource_id.clone()]);
             }

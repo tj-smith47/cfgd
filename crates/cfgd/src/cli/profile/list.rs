@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Doc, Printer, Role, renderer::Table as TableV2};
+use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 
 /// Build the `cfgd profile list` Doc from a populated entries vector + `--wide`
 /// flag. Pure; the caller assembles the entries from disk.
@@ -12,7 +12,7 @@ pub fn build_profile_list_doc(entries: &[super::ProfileListEntry], wide: bool) -
     }
 
     if wide {
-        let mut t = TableV2::new(["Profile", "Active", "Inherits", "Modules"]);
+        let mut t = Table::new(["Profile", "Active", "Inherits", "Modules"]);
         for e in entries {
             t = t.row([
                 e.name.clone(),

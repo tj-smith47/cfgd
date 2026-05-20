@@ -1,11 +1,11 @@
 use super::*;
-use cfgd_core::output::{Printer, Verbosity as V2Verbosity};
+use cfgd_core::output::{Printer, Verbosity};
 
 /// Build a quiet Printer for tests that only need to satisfy the signature
 /// without asserting on captured output. Mirrors the
 /// `Printer::new(Verbosity::Quiet)` pattern used for the legacy printer.
 fn v2_quiet() -> Printer {
-    Printer::new(V2Verbosity::Quiet)
+    Printer::new(Verbosity::Quiet)
 }
 
 // ─────────────────────────────────────────────────────
@@ -382,7 +382,7 @@ fn pick_profile_multi_lists_options_and_propagates_prompt_error() {
     );
 
     let json_printer = Printer::with_format(
-        V2Verbosity::Normal,
+        Verbosity::Normal,
         None,
         cfgd_core::output::OutputFormat::Json,
     );
@@ -1976,7 +1976,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
     let _home = cfgd_core::with_test_home_guard(dir.path());
     let (v2_printer, v2_buf) = Printer::for_test_with_prompt_responses_at(
         vec![cfgd_core::output::PromptAnswer::Confirm(false)],
-        V2Verbosity::Normal,
+        Verbosity::Normal,
     );
 
     let registry = super::build_registry_with_config(None);

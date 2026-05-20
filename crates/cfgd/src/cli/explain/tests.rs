@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output::{Printer, Verbosity as V2Verbosity};
+use cfgd_core::output::{Printer, Verbosity};
 
 // --- explain tests ---
 
@@ -90,7 +90,7 @@ fn explain_all_schemas_have_fields() {
 
 #[test]
 fn explain_cmd_no_args_lists_types() {
-    let (printer, buf) = Printer::for_test_at(V2Verbosity::Normal);
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     cmd_explain(&printer, None, false).unwrap();
     printer.flush();
     let output = buf.lock().unwrap();
@@ -114,7 +114,7 @@ fn explain_cmd_no_args_lists_types() {
 
 #[test]
 fn explain_cmd_known_resource() {
-    let (printer, buf) = Printer::for_test_at(V2Verbosity::Normal);
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     cmd_explain(&printer, Some("module"), false).unwrap();
     printer.flush();
     let output = buf.lock().unwrap();
@@ -134,7 +134,7 @@ fn explain_cmd_known_resource() {
 
 #[test]
 fn explain_cmd_field_path() {
-    let (printer, buf) = Printer::for_test_at(V2Verbosity::Normal);
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     cmd_explain(&printer, Some("module.packages"), false).unwrap();
     printer.flush();
     let output = buf.lock().unwrap();
@@ -152,12 +152,12 @@ fn explain_cmd_field_path() {
 #[test]
 fn explain_cmd_spec_prefix_stripped() {
     // "module.spec.packages" should produce identical output to "module.packages"
-    let (printer_a, buf_a) = Printer::for_test_at(V2Verbosity::Normal);
+    let (printer_a, buf_a) = Printer::for_test_at(Verbosity::Normal);
     cmd_explain(&printer_a, Some("module.packages"), false).unwrap();
     printer_a.flush();
     let output_a = buf_a.lock().unwrap().clone();
 
-    let (printer_b, buf_b) = Printer::for_test_at(V2Verbosity::Normal);
+    let (printer_b, buf_b) = Printer::for_test_at(Verbosity::Normal);
     cmd_explain(&printer_b, Some("module.spec.packages"), false).unwrap();
     printer_b.flush();
     let output_b = buf_b.lock().unwrap().clone();
@@ -174,7 +174,7 @@ fn explain_cmd_spec_prefix_stripped() {
 
 #[test]
 fn explain_cmd_recursive() {
-    let (printer, buf) = Printer::for_test_at(V2Verbosity::Normal);
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     cmd_explain(&printer, Some("profile"), true).unwrap();
     printer.flush();
     let output = buf.lock().unwrap();
@@ -196,7 +196,7 @@ fn explain_cmd_recursive() {
 
 #[test]
 fn explain_cmd_unknown_resource() {
-    let (printer, _buf) = Printer::for_test_at(V2Verbosity::Normal);
+    let (printer, _buf) = Printer::for_test_at(Verbosity::Normal);
     let err = cmd_explain(&printer, Some("nonexistent"), false).unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -207,7 +207,7 @@ fn explain_cmd_unknown_resource() {
 
 #[test]
 fn explain_cmd_unknown_field_path() {
-    let (printer, _buf) = Printer::for_test_at(V2Verbosity::Normal);
+    let (printer, _buf) = Printer::for_test_at(Verbosity::Normal);
     let err = cmd_explain(&printer, Some("module.nonexistent"), false).unwrap_err();
     let msg = err.to_string();
     assert!(

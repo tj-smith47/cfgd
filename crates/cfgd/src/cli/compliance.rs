@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::compliance::{ComplianceCheck, ComplianceSnapshot, ComplianceStatus};
-use cfgd_core::output::{Doc, Printer, Role, renderer::Table as TableV2};
+use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 use cfgd_core::state::ComplianceHistoryRow;
 
 /// Collect a compliance snapshot, hash it, and store in the state store.
@@ -329,7 +329,7 @@ pub fn build_compliance_history_doc(entries: &[ComplianceHistoryRow]) -> Doc {
     if entries.is_empty() {
         doc = doc.status(Role::Info, "No compliance snapshots recorded yet");
     } else {
-        let mut table = TableV2::new(["ID", "Timestamp", "Compliant", "Warning", "Violation"]);
+        let mut table = Table::new(["ID", "Timestamp", "Compliant", "Warning", "Violation"]);
         for row in entries {
             table = table.row([
                 row.id.to_string(),

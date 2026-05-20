@@ -471,7 +471,7 @@ fn classify_mutate_error(e: &anyhow::Error) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cfgd_core::output::OutputFormat as OutputFormatV2;
+    use cfgd_core::output::OutputFormat;
 
     fn test_cli_for(config_path: std::path::PathBuf) -> Cli {
         Cli {
@@ -726,7 +726,7 @@ spec:
     fn cmd_config_get_json_emits_parseable_value() {
         let dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(write_sample_config(dir.path()));
-        let (printer, cap) = Printer::for_test_doc_with_format(OutputFormatV2::Json);
+        let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
 
         cmd_config_get(&cli, &printer, "theme").unwrap();
         drop(printer);
