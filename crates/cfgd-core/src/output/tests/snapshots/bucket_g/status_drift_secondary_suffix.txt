@@ -1,0 +1,2 @@
+Drift
+  ⚠ file /etc/hosts — want: managed, have: external [team-config]

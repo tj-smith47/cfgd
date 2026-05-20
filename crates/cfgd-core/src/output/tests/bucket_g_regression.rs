@@ -296,3 +296,54 @@ golden_doc!(bucket_g, worked_example_init_next_steps, |p, cap| {
     next.bullet("cfgd profile create <name>  — create a profile");
     next.bullet("cfgd apply                  — apply configuration");
 });
+
+// Surface: `cfgd module list` table — per-cell roles. The `Source` value "remote"
+// and `Status` value "pending" pick up secondary / accent styling via
+// `Table::row_styled`. Snapshot anchors the plain-text layout — width-aware
+// padding stays honest under embedded ANSI escapes (colors are off in tests, so
+// the visual is plain — the regression target is the row shape).
+golden_doc!(bucket_g, module_list_table_styled_cells, |p, cap| {
+    let doc = Doc::new().heading("Modules");
+    p.emit(doc);
+    use crate::output::renderer::Table;
+    let t = Table::new(["Module", "Source", "Status"])
+        .row_styled([
+            ("git".to_string(), None),
+            ("local".to_string(), None),
+            ("installed".to_string(), None),
+        ])
+        .row_styled([
+            ("neovim".to_string(), None),
+            ("remote".to_string(), Some(Role::Secondary)),
+            ("pending".to_string(), Some(Role::Accent)),
+        ]);
+    p.table(t);
+});
+
+// Surface: `cfgd sync` per-source pivot line. `Role::Secondary` status_simple
+// before each source's spinner block creates a visual group boundary when N>1
+// sources are configured. Snapshot anchors the placement — the marker emits
+// before the spinner-finish line.
+golden_doc!(bucket_g, sync_per_source_secondary_marker, |p, cap| {
+    let s = p.section("Sources");
+    s.status_simple(Role::Secondary, "Source: dotfiles");
+    s.status(Role::Ok, "'dotfiles' synced")
+        .detail("commit: abc1234");
+    s.status_simple(Role::Secondary, "Source: k8s-manifests");
+    s.status(Role::Fail, "Failed to sync 'k8s-manifests'")
+        .detail("network unreachable");
+});
+
+// Surface: `cfgd status` drift attribution. The ` [source-name]` suffix is
+// pre-styled in `secondary` so the warn subject's yellow stays intact up to
+// the suffix, then the suffix renders in pink. Tests run with colors off, so
+// the snapshot shows the plain composed subject — the regression target is
+// that the suffix lands at end-of-subject without breaking the line.
+golden_doc!(bucket_g, status_drift_secondary_suffix, |p, cap| {
+    let s = p.section("Drift");
+    let suffix = p.style(Role::Secondary, " [team-config]");
+    s.status(
+        Role::Warn,
+        format!("file /etc/hosts — want: managed, have: external{suffix}"),
+    );
+});

@@ -383,4 +383,27 @@ pub(crate) fn cmd_module_show(
     Ok(())
 }
 
+#[cfg(test)]
+mod role_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn source_role_pinks_remote_only() {
+        assert_eq!(source_role("remote"), Some(Role::Secondary));
+        assert_eq!(source_role("local"), None);
+        assert_eq!(source_role(""), None);
+        assert_eq!(source_role("registry:foo"), None);
+    }
+
+    #[test]
+    fn status_role_accents_actionable_states() {
+        assert_eq!(status_role("pending"), Some(Role::Accent));
+        assert_eq!(status_role("out-of-date"), Some(Role::Accent));
+        assert_eq!(status_role("installed"), None);
+        assert_eq!(status_role("available"), None);
+        assert_eq!(status_role("error"), None);
+        assert_eq!(status_role(""), None);
+    }
+}
+
 // --- Module CRUD helpers ---

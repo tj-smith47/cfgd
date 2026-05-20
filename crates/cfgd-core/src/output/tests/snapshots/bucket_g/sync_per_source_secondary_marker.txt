@@ -1,0 +1,5 @@
+Sources
+  Source: dotfiles
+  ✓ 'dotfiles' synced              — commit: abc1234
+  Source: k8s-manifests
+  ✗ Failed to sync 'k8s-manifests' — network unreachable
