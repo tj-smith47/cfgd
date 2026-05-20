@@ -77,8 +77,8 @@ pub fn cmd_module_add_from_registry(
                 ),
             );
             // Fetch the registry repo so we can read tags. The lib call
-            // takes a v2 Printer; the Quiet sink suppresses the lib's
-            // progress emissions so this command's v2 status surface above
+            // takes a Printer; the Quiet sink suppresses the lib's
+            // progress emissions so this command's status surface above
             // owns the user-facing line (inversion of control).
             let lib_printer = null_lib_printer();
             modules::fetch_registry_modules(registry_entry, &cache_base, &lib_printer)?;
@@ -137,8 +137,8 @@ pub fn cmd_module_add_remote(
     let config_dir = config_dir(cli);
     let cache_base = modules::default_module_cache_dir()?;
 
-    // Streaming: clone-fetch spinner. The lib call takes a v2 Printer; the
-    // Quiet sink suppresses the lib's progress emissions so the v2 spinner
+    // Streaming: clone-fetch spinner. The lib call takes a Printer; the
+    // Quiet sink suppresses the lib's progress emissions so the spinner
     // owns the user-facing surface (inversion of control).
     let sp = printer.spinner(format!("Fetching {}", url));
     let lib_printer = null_lib_printer();
@@ -1097,7 +1097,7 @@ pub(super) fn ensure_module_in_profile_doc(
 
 /// Construct a Quiet Printer for outbound `cfgd_core::modules::*` library
 /// calls. The lib owns its own progress surface; this CLI module already
-/// drives the user-facing v2 spinner / status above the call, so the lib's
+/// drives the user-facing spinner / status above the call, so the lib's
 /// emissions are suppressed (inversion of control — the CLI owns the
 /// user-facing surface, the lib gets a non-emitting sink).
 fn null_lib_printer() -> cfgd_core::output::Printer {

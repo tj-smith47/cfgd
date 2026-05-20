@@ -71,8 +71,8 @@ pub fn build_enroll_error_doc(kind: &'static str, payload: serde_json::Value) ->
 // ─────────────────────────────────────────────────────
 
 /// Run the unified enrollment flow. All emits route through `printer`,
-/// including the `ServerClient::enroll` / `request_challenge` /
-/// `submit_verification` calls now that server_client is on v2.
+/// including the internal `ServerClient::enroll` / `request_challenge` /
+/// `submit_verification` calls.
 pub(crate) fn cmd_enroll(
     printer: &Printer,
     server_url: &str,
