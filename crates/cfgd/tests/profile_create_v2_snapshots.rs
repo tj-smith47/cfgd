@@ -22,7 +22,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::profile::cmd_profile_create;
-use cfgd_core::output_v2::{Printer, PromptAnswer};
+use cfgd_core::output::{Printer, PromptAnswer};
 
 use common::{cli_for, normalize_profile_paths, profile_create_args, profile_test_config_setup};
 

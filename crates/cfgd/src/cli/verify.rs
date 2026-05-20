@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use cfgd_core::output_v2::{Doc, OutputFormat, Printer, Role, Verbosity};
+use cfgd_core::output::{Doc, OutputFormat, Printer, Role, Verbosity};
 
 #[derive(Parser)]
 #[command(
@@ -183,7 +183,7 @@ pub fn cmd_debug(
     image: &str,
 ) -> anyhow::Result<()> {
     if modules.is_empty() {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             pod,
             "module_required",
             MODULE_REQUIRED.to_string(),
@@ -200,7 +200,7 @@ pub fn cmd_debug(
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let client = kube::Client::try_default().await.map_err(|e| {
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 pod,
                 "kube_connect_failed",
                 format!("Failed to connect to cluster: {e}"),
@@ -252,7 +252,7 @@ pub fn cmd_debug(
         )
         .await
         .map_err(|e| {
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 pod,
                 "inject_failed",
                 format!("failed to create ephemeral container: {e}"),
@@ -292,7 +292,7 @@ pub fn cmd_exec(
     command: &[String],
 ) -> anyhow::Result<()> {
     if modules.is_empty() {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             pod,
             "module_required",
             MODULE_REQUIRED.to_string(),
@@ -301,7 +301,7 @@ pub fn cmd_exec(
         anyhow::bail!(MODULE_REQUIRED);
     }
     if command.is_empty() {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             pod,
             "command_required",
             "command is required after --".to_string(),
@@ -370,7 +370,7 @@ pub fn cmd_inject(
     namespace: &str,
 ) -> anyhow::Result<()> {
     if modules.is_empty() {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             resource,
             "module_required",
             MODULE_REQUIRED.to_string(),
@@ -380,7 +380,7 @@ pub fn cmd_inject(
     }
 
     let (kind, name) = resource.split_once('/').ok_or_else(|| {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             resource,
             "invalid_resource",
             format!(
@@ -415,7 +415,7 @@ pub fn cmd_inject(
         &patch_str,
     ])?;
     if code != 0 {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             resource,
             "inject_failed",
             "kubectl patch failed".to_string(),
@@ -457,7 +457,7 @@ pub fn cmd_status(v2_printer: &Printer) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let client = kube::Client::try_default().await.map_err(|e| {
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 "cluster",
                 "kube_connect_failed",
                 format!("Failed to connect to cluster: {e}"),
@@ -482,7 +482,7 @@ pub fn cmd_status(v2_printer: &Printer) -> anyhow::Result<()> {
             .list(&kube::api::ListParams::default())
             .await
             .map_err(|e| {
-                v2_printer.emit(cfgd_core::output_v2::error_doc(
+                v2_printer.emit(cfgd_core::output::error_doc(
                     "modules",
                     "list_failed",
                     format!("failed to list modules: {e}"),

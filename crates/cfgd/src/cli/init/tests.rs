@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Printer as PrinterV2, Verbosity as V2Verbosity};
+use cfgd_core::output::{Printer as PrinterV2, Verbosity as V2Verbosity};
 
 /// Build a quiet v2 printer for tests that only need to satisfy the v2
 /// signature without asserting on captured output. Mirrors the
@@ -384,7 +384,7 @@ fn pick_profile_multi_lists_options_and_propagates_prompt_error() {
     let json_printer = PrinterV2::with_format(
         V2Verbosity::Normal,
         None,
-        cfgd_core::output_v2::OutputFormat::Json,
+        cfgd_core::output::OutputFormat::Json,
     );
     let err = pick_profile(&profiles_dir, &json_printer)
         .expect_err("non-interactive prompt_text Errs in structured-format printer");
@@ -1913,9 +1913,10 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
     // observed (no "Skipped" output) and that apply completed without panic.
     let dir = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(dir.path());
-    let (v2_printer, v2_buf) = PrinterV2::for_test_with_prompt_responses(vec![
-        cfgd_core::output_v2::PromptAnswer::Confirm(true),
-    ]);
+    let (v2_printer, v2_buf) =
+        PrinterV2::for_test_with_prompt_responses(vec![cfgd_core::output::PromptAnswer::Confirm(
+            true,
+        )]);
 
     let registry = super::build_registry_with_config(None);
     let state_dir = dir.path().join("state");
@@ -1974,7 +1975,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
     let dir = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(dir.path());
     let (v2_printer, v2_buf) = PrinterV2::for_test_with_prompt_responses_at(
-        vec![cfgd_core::output_v2::PromptAnswer::Confirm(false)],
+        vec![cfgd_core::output::PromptAnswer::Confirm(false)],
         V2Verbosity::Normal,
     );
 
@@ -2555,7 +2556,7 @@ fn next_steps_lines_are_bare_commands_not_pre_indented() {
 
 mod enroll_mockito {
     use crate::cli::init::enroll::cmd_enroll;
-    use cfgd_core::output_v2::Printer as PrinterV2;
+    use cfgd_core::output::Printer as PrinterV2;
     use cfgd_core::test_helpers::with_test_env_var;
     use serial_test::serial;
 

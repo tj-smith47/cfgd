@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output_v2::{Printer, Role};
+use cfgd_core::output::{Printer, Role};
 
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
@@ -376,7 +376,7 @@ mod tests {
 
     #[test]
     fn shell_apply_empty_desired_is_noop() {
-        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
+        let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let sc = ShellConfigurator;
         let yaml = serde_yaml::Value::String(String::new());
         sc.apply(&yaml, &printer).unwrap();
@@ -384,7 +384,7 @@ mod tests {
 
     #[test]
     fn shell_apply_non_string_desired_is_noop() {
-        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
+        let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let sc = ShellConfigurator;
         let yaml = serde_yaml::Value::Null;
         sc.apply(&yaml, &printer).unwrap();

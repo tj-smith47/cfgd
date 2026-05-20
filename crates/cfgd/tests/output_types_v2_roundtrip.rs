@@ -1,5 +1,5 @@
 //! Round-trip tests: `cli::output_types` payloads emitted through a
-//! JSON-format `output_v2::Printer` deserialize back to the same JSON shape.
+//! JSON-format `output::Printer` deserialize back to the same JSON shape.
 //!
 //! Tests three payload shapes:
 //!   * snapshot-shape (`DoctorOutput`): nested struct of typed checks
@@ -15,7 +15,7 @@ use cfgd::cli::output_types::{
     DoctorOutput, DoctorProviderCheck, DoctorSecretsCheck, LogOutput, PlanActionOutput, PlanOutput,
     PlanPhaseOutput,
 };
-use cfgd_core::output_v2::{Doc, OutputFormat, Printer};
+use cfgd_core::output::{Doc, OutputFormat, Printer};
 use cfgd_core::state::{ApplyRecord, ApplyStatus};
 use pretty_assertions::assert_eq;
 

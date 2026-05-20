@@ -165,7 +165,7 @@ pub fn resolve_module_packages(
 pub fn resolve_module_files(
     module: &LoadedModule,
     cache_base: &Path,
-    printer: &crate::output_v2::Printer,
+    printer: &crate::output::Printer,
 ) -> Result<Vec<ResolvedFile>> {
     let mut resolved = Vec::new();
 
@@ -230,7 +230,7 @@ pub fn resolve_modules(
     cache_base: &Path,
     platform: &Platform,
     managers: &HashMap<String, &dyn PackageManager>,
-    printer: &crate::output_v2::Printer,
+    printer: &crate::output::Printer,
 ) -> Result<Vec<ResolvedModule>> {
     let all_modules = load_all_modules(config_dir, cache_base, printer)?;
 

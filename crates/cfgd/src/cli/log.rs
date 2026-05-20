@@ -1,6 +1,6 @@
 use super::*;
 
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role, renderer::Table};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role, renderer::Table};
 
 pub fn cmd_log(
     v2_printer: &PrinterV2,

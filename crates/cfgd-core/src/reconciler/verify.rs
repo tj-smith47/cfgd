@@ -6,7 +6,7 @@ use crate::config::ResolvedProfile;
 use crate::errors::Result;
 use crate::expand_tilde;
 use crate::modules::ResolvedModule;
-use crate::output_v2::Printer;
+use crate::output::Printer;
 use crate::providers::ProviderRegistry;
 use crate::state::StateStore;
 

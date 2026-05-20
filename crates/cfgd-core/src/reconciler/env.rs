@@ -1,6 +1,6 @@
 use crate::errors::Result;
 use crate::modules::ResolvedModule;
-use crate::output_v2::{Printer, Role};
+use crate::output::{Printer, Role};
 
 use super::env_files::{
     detect_rc_env_conflicts, fish_in_use, generate_env_file_content, generate_fish_env_content,

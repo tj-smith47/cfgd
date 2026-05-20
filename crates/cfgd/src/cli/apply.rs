@@ -1,10 +1,10 @@
 use super::*;
 
-use cfgd_core::output_v2::{Doc, Role};
+use cfgd_core::output::{Doc, Role};
 
 pub fn cmd_apply(
     cli: &Cli,
-    v2_printer: &cfgd_core::output_v2::Printer,
+    v2_printer: &cfgd_core::output::Printer,
     args: &ApplyArgs,
 ) -> anyhow::Result<()> {
     // Parse --context (mirrors PlanArgs::context).

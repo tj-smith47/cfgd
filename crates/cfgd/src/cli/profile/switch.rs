@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
 
 pub fn cmd_profile_switch(cli: &Cli, name: &str, v2_printer: &PrinterV2) -> anyhow::Result<()> {
     v2_printer.heading("Switch Profile");
@@ -7,7 +7,7 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, v2_printer: &PrinterV2) -> anyh
     let config_dir = super::config_dir(cli);
     let config_path = config_dir.join("cfgd.yaml");
     if !config_path.exists() {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             name,
             "no_config",
             MSG_NO_CONFIG,
@@ -21,7 +21,7 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, v2_printer: &PrinterV2) -> anyh
     let profile_path = profiles_dir.join(format!("{}.yaml", name));
     if !profile_path.exists() {
         let available = super::list_yaml_stems(&profiles_dir).unwrap_or_default();
-        let mut doc = cfgd_core::output_v2::error_doc(
+        let mut doc = cfgd_core::output::error_doc(
             name,
             "not_found",
             format!("Profile '{}' not found at {}", name, profile_path.display()),

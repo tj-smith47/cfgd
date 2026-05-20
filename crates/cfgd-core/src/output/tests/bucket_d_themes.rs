@@ -6,7 +6,7 @@
 //! (✓ → +, ⚠ → !, ✗ → x, ◐ → .) so it diverges from the others.
 
 use crate::golden_themed;
-use crate::output_v2::{Doc, Role};
+use crate::output::{Doc, Role};
 
 golden_themed!(bucket_d, default_preset, "default", |p| {
     let doc = Doc::new()

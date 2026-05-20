@@ -3,7 +3,7 @@
 //! verbosity-suppression rules and the "emitted a child" rule in §6.4.
 
 use crate::golden_at;
-use crate::output_v2::{Role, Verbosity};
+use crate::output::{Role, Verbosity};
 
 // Heading × {Quiet, Normal, Verbose}
 golden_at!(bucket_b, heading_quiet, Verbosity::Quiet, |p| {
@@ -101,14 +101,14 @@ golden_at!(bucket_b, note_verbose, Verbosity::Verbose, |p| {
 
 // Table × verbosity
 golden_at!(bucket_b, table_quiet, Verbosity::Quiet, |p| {
-    use crate::output_v2::renderer::Table;
+    use crate::output::renderer::Table;
     p.table(Table::new(["k"]).row(["v"]));
 });
 golden_at!(bucket_b, table_normal, Verbosity::Normal, |p| {
-    use crate::output_v2::renderer::Table;
+    use crate::output::renderer::Table;
     p.table(Table::new(["k"]).row(["v"]));
 });
 golden_at!(bucket_b, table_verbose, Verbosity::Verbose, |p| {
-    use crate::output_v2::renderer::Table;
+    use crate::output::renderer::Table;
     p.table(Table::new(["k"]).row(["v"]));
 });

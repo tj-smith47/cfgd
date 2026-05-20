@@ -68,7 +68,7 @@ struct CliTestHarnessBuilder {
     config_yaml: String,
     profiles: Vec<(String, String)>,
     modules: Vec<(String, String)>,
-    output_format: cfgd_core::output_v2::OutputFormat,
+    output_format: cfgd_core::output::OutputFormat,
 }
 
 impl CliTestHarnessBuilder {
@@ -80,7 +80,7 @@ impl CliTestHarnessBuilder {
                 ("work.yaml".into(), WORK_PROFILE_YAML.into()),
             ],
             modules: Vec::new(),
-            output_format: cfgd_core::output_v2::OutputFormat::Table,
+            output_format: cfgd_core::output::OutputFormat::Table,
         }
     }
 
@@ -105,7 +105,7 @@ impl CliTestHarnessBuilder {
     }
 
     fn json(mut self) -> Self {
-        self.output_format = cfgd_core::output_v2::OutputFormat::Json;
+        self.output_format = cfgd_core::output::OutputFormat::Json;
         self
     }
 
@@ -132,12 +132,11 @@ impl CliTestHarnessBuilder {
         // For human formats, use Normal verbosity so tests can assert on
         // rendered output (Quiet would suppress headings/sections). Structured
         // formats route through `for_test_with_format`, which auto-quiets.
-        let (v2_printer, v2_buf) =
-            if self.output_format == cfgd_core::output_v2::OutputFormat::Table {
-                cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal)
-            } else {
-                cfgd_core::output_v2::Printer::for_test_with_format(self.output_format.clone())
-            };
+        let (v2_printer, v2_buf) = if self.output_format == cfgd_core::output::OutputFormat::Table {
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal)
+        } else {
+            cfgd_core::output::Printer::for_test_with_format(self.output_format.clone())
+        };
 
         CliTestHarness {
             config_dir,
@@ -152,9 +151,9 @@ impl CliTestHarnessBuilder {
 struct CliTestHarness {
     config_dir: tempfile::TempDir,
     state_dir: tempfile::TempDir,
-    v2_printer: cfgd_core::output_v2::Printer,
+    v2_printer: cfgd_core::output::Printer,
     v2_buf: Arc<Mutex<String>>,
-    output_format: cfgd_core::output_v2::OutputFormat,
+    output_format: cfgd_core::output::OutputFormat,
 }
 
 impl CliTestHarness {
@@ -186,7 +185,7 @@ impl CliTestHarness {
         }
     }
 
-    fn v2_printer(&self) -> &cfgd_core::output_v2::Printer {
+    fn v2_printer(&self) -> &cfgd_core::output::Printer {
         &self.v2_printer
     }
 
@@ -568,7 +567,7 @@ spec:
 #[test]
 fn display_source_manifest_returns_provided_profiles_in_listed_order() {
     let manifest = manifest_yaml("  provides:\n    profiles: [dev, prod, ci]\n");
-    let (printer, _buf) = cfgd_core::output_v2::Printer::for_test();
+    let (printer, _buf) = cfgd_core::output::Printer::for_test();
     let profiles = super::display_source_manifest_v2(&printer, &manifest);
     assert_eq!(profiles, vec!["dev", "prod", "ci"]);
 }
@@ -577,7 +576,7 @@ fn display_source_manifest_returns_provided_profiles_in_listed_order() {
 fn display_source_manifest_emits_metadata_header_kv_lines() {
     let manifest = manifest_yaml("  provides: {}\n");
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::display_source_manifest_v2(&printer, &manifest);
     drop(printer);
     let out = buf.lock().unwrap().clone();
@@ -601,7 +600,7 @@ fn display_source_manifest_omits_profiles_kv_when_empty() {
     // When the manifest provides no profiles, the "Profiles:" key/value
     // line is suppressed entirely (rather than printing an empty value).
     let manifest = manifest_yaml("  provides: {}\n");
-    let (printer, buf) = cfgd_core::output_v2::Printer::for_test();
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
     let profiles = super::display_source_manifest_v2(&printer, &manifest);
     assert!(profiles.is_empty());
     drop(printer);
@@ -635,7 +634,7 @@ fn display_source_manifest_summarizes_required_recommended_locked_counts() {
 "#,
     );
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::display_source_manifest_v2(&printer, &manifest);
     drop(printer);
     let out = buf.lock().unwrap().clone();
@@ -658,7 +657,7 @@ fn display_source_manifest_summarizes_required_recommended_locked_counts() {
 fn display_source_manifest_omits_zero_count_tiers() {
     // When a tier has zero items its line must NOT appear.
     let manifest = manifest_yaml("  provides: {}\n");
-    let (printer, buf) = cfgd_core::output_v2::Printer::for_test();
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
     super::display_source_manifest_v2(&printer, &manifest);
     drop(printer);
     let out = buf.lock().unwrap().clone();
@@ -680,7 +679,7 @@ fn display_source_manifest_constraints_render_each_blocked_axis() {
 "#,
     );
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::display_source_manifest_v2(&printer, &manifest);
     drop(printer);
     let out = buf.lock().unwrap().clone();
@@ -711,7 +710,7 @@ fn display_source_manifest_constraints_omitted_when_unrestricted() {
       allowedTargetPaths: []
 "#,
     );
-    let (printer, buf) = cfgd_core::output_v2::Printer::for_test();
+    let (printer, buf) = cfgd_core::output::Printer::for_test();
     super::display_source_manifest_v2(&printer, &manifest);
     drop(printer);
     let out = buf.lock().unwrap().clone();
@@ -738,7 +737,7 @@ spec:
     )
     .unwrap();
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::display_source_manifest_v2(&printer, &manifest);
     drop(printer);
     let out = buf.lock().unwrap().clone();
@@ -1214,7 +1213,7 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
         no_color: true,
         verbose: 0,
         quiet: true,
-        output: OutputFormatArg(cfgd_core::output_v2::OutputFormat::Table),
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         jsonpath: None,
         state_dir,
         command: Some(Command::Status {
@@ -1224,14 +1223,14 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
     }
 }
 
-fn test_v2_printer() -> cfgd_core::output_v2::Printer {
-    cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet)
+fn test_v2_printer() -> cfgd_core::output::Printer {
+    cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet)
 }
 
 /// Capturing v2 printer at `Normal` verbosity for tests that need to inspect
 /// headings, sections, or other output that requires non-quiet verbosity.
-fn test_v2_printer_capture() -> (cfgd_core::output_v2::Printer, Arc<Mutex<String>>) {
-    cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal)
+fn test_v2_printer_capture() -> (cfgd_core::output::Printer, Arc<Mutex<String>>) {
+    cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal)
 }
 
 /// Extract JSON object or array from captured output that may contain
@@ -1981,7 +1980,7 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
     let result = config_cmd::cmd_config_show(&cli, &printer);
     assert!(result.is_ok(), "config show failed: {:?}", result.err());
     drop(printer);
@@ -2067,11 +2066,10 @@ fn source_create_interactive_mode_prompts_for_name_and_description() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let (v2_printer, _cap) =
-        cfgd_core::output_v2::Printer::for_test_doc_with_prompt_responses(vec![
-            cfgd_core::output_v2::PromptAnswer::Text("interactive-source".to_string()),
-            cfgd_core::output_v2::PromptAnswer::Text("Interactive description".to_string()),
-        ]);
+    let (v2_printer, _cap) = cfgd_core::output::Printer::for_test_doc_with_prompt_responses(vec![
+        cfgd_core::output::PromptAnswer::Text("interactive-source".to_string()),
+        cfgd_core::output::PromptAnswer::Text("Interactive description".to_string()),
+    ]);
 
     source::cmd_source_create(&cli, &v2_printer, None, None, None)
         .expect("interactive create should succeed");
@@ -2104,7 +2102,7 @@ fn source_edit_with_valid_manifest_reports_valid_and_returns_ok() {
     // wrote and lands in the "Source manifest is valid" success arm.
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc();
     std::fs::write(
         dir.path().join("cfgd-source.yaml"),
         "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: edit-mod\nspec:\n  provides:\n    profiles:\n      - default\n",
@@ -2137,10 +2135,9 @@ fn source_edit_with_invalid_manifest_and_prompt_declined_breaks_with_warning() {
     )
     .unwrap();
     let cli = test_cli(dir.path());
-    let (v2_printer, cap) =
-        cfgd_core::output_v2::Printer::for_test_doc_with_prompt_responses(vec![
-            cfgd_core::output_v2::PromptAnswer::Confirm(false),
-        ]);
+    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc_with_prompt_responses(vec![
+        cfgd_core::output::PromptAnswer::Confirm(false),
+    ]);
 
     let _editor = EditorGuard::set("/bin/true");
     source::cmd_source_edit(&cli, &v2_printer).expect("save-with-errors must return Ok");
@@ -2455,7 +2452,7 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     let result = config_cmd::cmd_config_show(&cli, &printer);
     assert!(result.is_ok(), "config show failed: {:?}", result.err());
@@ -3357,7 +3354,7 @@ fn config_show_succeeds_with_valid_config() {
         config: config_path,
         ..test_cli(dir.path())
     };
-    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     assert!(
         super::config_cmd::cmd_config_show(&cli, &printer).is_ok(),
@@ -3589,7 +3586,7 @@ fn cmd_doctor_with_valid_config() {
 
     let cli = test_cli(dir.path());
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let result = super::doctor::cmd_doctor(&cli, &v2_printer);
     assert!(result.is_ok(), "doctor failed: {:?}", result.err());
@@ -3614,7 +3611,7 @@ fn cmd_doctor_without_config() {
         ..test_cli(dir.path())
     };
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let result = super::doctor::cmd_doctor(&cli, &v2_printer);
     assert!(result.is_ok(), "doctor failed: {:?}", result.err());
@@ -3874,7 +3871,7 @@ fn cmd_status_after_apply() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = ApplyArgs {
         from: None,
@@ -4194,7 +4191,7 @@ fn execute_with_no_subcommand_prints_help_and_returns_ok() {
         no_color: true,
         verbose: 0,
         quiet: false,
-        output: OutputFormatArg(cfgd_core::output_v2::OutputFormat::Table),
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         jsonpath: None,
         state_dir: Some(h.state_path().to_path_buf()),
         command: None,
@@ -4611,7 +4608,7 @@ fn cmd_status_with_modules() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     assert!(
         super::status::cmd_status(&cli, &v2_printer, None, false).is_ok(),
@@ -4671,7 +4668,7 @@ fn cmd_status_with_drift_events() {
     // Clear buffer before status call
 
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::status::cmd_status(&cli, &v2_printer, None, false).unwrap();
     drop(v2_printer);
 
@@ -4689,7 +4686,7 @@ fn cmd_source_list_no_sources() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     assert!(
         super::source::cmd_source_list(&cli, &v2_printer).is_ok(),
@@ -4713,7 +4710,7 @@ fn cmd_source_list_no_config() {
         config: dir.path().join("nonexistent.yaml"),
         ..test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     assert!(
         super::source::cmd_source_list(&cli, &v2_printer).is_ok(),
@@ -4735,7 +4732,7 @@ fn cmd_decide_accept_all_empty() {
     let (_config_dir, state_dir) = setup_test_env();
 
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let result = super::decide::cmd_decide(
         &printer,
@@ -4763,7 +4760,7 @@ fn cmd_decide_reject_all_empty() {
     let (_config_dir, state_dir) = setup_test_env();
 
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let result = super::decide::cmd_decide(
         &printer,
@@ -4795,7 +4792,7 @@ fn cmd_decide_accept_specific_resource() {
     let (_config_dir, state_dir) = setup_test_env();
 
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let result = super::decide::cmd_decide(
         &printer,
@@ -4826,7 +4823,7 @@ fn cmd_decide_reject_by_source() {
     let (_config_dir, state_dir) = setup_test_env();
 
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let result = super::decide::cmd_decide(
         &printer,
@@ -4899,7 +4896,7 @@ fn execute_module_list() {
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     super::execute(&cli, &v2_printer).unwrap();
     drop(v2_printer);
@@ -5041,7 +5038,7 @@ fn cmd_verify_after_apply_with_env() {
     super::apply::cmd_apply(&cli, &v2_printer, &args).unwrap();
 
     let (verify_v2_printer, verify_v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     super::verify::cmd_verify(&cli, &verify_v2_printer, None, false).unwrap();
     verify_v2_printer.flush();
 
@@ -5056,15 +5053,15 @@ fn cmd_verify_after_apply_with_env() {
 fn output_format_arg_parse_basic() {
     use super::OutputFormatArg;
     let table: OutputFormatArg = "table".parse().unwrap();
-    assert_eq!(table.0, cfgd_core::output_v2::OutputFormat::Table);
+    assert_eq!(table.0, cfgd_core::output::OutputFormat::Table);
     let wide: OutputFormatArg = "wide".parse().unwrap();
-    assert_eq!(wide.0, cfgd_core::output_v2::OutputFormat::Wide);
+    assert_eq!(wide.0, cfgd_core::output::OutputFormat::Wide);
     let json: OutputFormatArg = "json".parse().unwrap();
-    assert_eq!(json.0, cfgd_core::output_v2::OutputFormat::Json);
+    assert_eq!(json.0, cfgd_core::output::OutputFormat::Json);
     let yaml: OutputFormatArg = "yaml".parse().unwrap();
-    assert_eq!(yaml.0, cfgd_core::output_v2::OutputFormat::Yaml);
+    assert_eq!(yaml.0, cfgd_core::output::OutputFormat::Yaml);
     let name: OutputFormatArg = "name".parse().unwrap();
-    assert_eq!(name.0, cfgd_core::output_v2::OutputFormat::Name);
+    assert_eq!(name.0, cfgd_core::output::OutputFormat::Name);
 }
 
 #[test]
@@ -5073,19 +5070,17 @@ fn output_format_arg_parse_data_carrying() {
     let jp: OutputFormatArg = "jsonpath=.items[*].name".parse().unwrap();
     assert_eq!(
         jp.0,
-        cfgd_core::output_v2::OutputFormat::Jsonpath(".items[*].name".to_string())
+        cfgd_core::output::OutputFormat::Jsonpath(".items[*].name".to_string())
     );
     let tmpl: OutputFormatArg = "template={{ name }}".parse().unwrap();
     assert_eq!(
         tmpl.0,
-        cfgd_core::output_v2::OutputFormat::Template("{{ name }}".to_string())
+        cfgd_core::output::OutputFormat::Template("{{ name }}".to_string())
     );
     let tf: OutputFormatArg = "template-file=/tmp/report.tera".parse().unwrap();
     assert_eq!(
         tf.0,
-        cfgd_core::output_v2::OutputFormat::TemplateFile(std::path::PathBuf::from(
-            "/tmp/report.tera"
-        ))
+        cfgd_core::output::OutputFormat::TemplateFile(std::path::PathBuf::from("/tmp/report.tera"))
     );
 }
 
@@ -5442,9 +5437,9 @@ fn cmd_rollback_without_yes_and_prompt_confirmed_proceeds() {
     // yes=false + Confirm(true) drives the prompt-true branch — the
     // reconciler.rollback_apply call fires and the success message follows.
     let (_cd, state_dir, _target, apply_id) = apply_one_file_and_record("rb-yes-prompt");
-    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_prompt_responses_at(
-        vec![cfgd_core::output_v2::PromptAnswer::Confirm(true)],
-        cfgd_core::output_v2::Verbosity::Normal,
+    let (v2_printer, v2_buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+        vec![cfgd_core::output::PromptAnswer::Confirm(true)],
+        cfgd_core::output::Verbosity::Normal,
     );
 
     let result =
@@ -5471,9 +5466,9 @@ fn cmd_rollback_without_yes_and_prompt_declined_aborts() {
     // yes=false + Confirm(false) takes the early-return arm — "Aborted"
     // fires and reconciler.rollback_apply is never called.
     let (_cd, state_dir, _target, apply_id) = apply_one_file_and_record("rb-no-prompt");
-    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_prompt_responses_at(
-        vec![cfgd_core::output_v2::PromptAnswer::Confirm(false)],
-        cfgd_core::output_v2::Verbosity::Normal,
+    let (v2_printer, v2_buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+        vec![cfgd_core::output::PromptAnswer::Confirm(false)],
+        cfgd_core::output::Verbosity::Normal,
     );
 
     let result =
@@ -5498,7 +5493,7 @@ fn cmd_compliance_snapshot_basic() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     let result = super::compliance::cmd_compliance_snapshot(&cli, &printer);
     assert!(
@@ -5528,7 +5523,7 @@ fn cmd_compliance_export_basic() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     let result = super::compliance::cmd_compliance_export(&cli, &printer);
     assert!(
@@ -5550,7 +5545,7 @@ fn cmd_compliance_history_empty() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     let result = super::compliance::cmd_compliance_history(&cli, &printer, None);
     assert!(
@@ -5583,7 +5578,7 @@ fn cmd_compliance_history_with_since() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     let result = super::compliance::cmd_compliance_history(&cli, &printer, Some("7d"));
     assert!(
@@ -5670,7 +5665,7 @@ fn cmd_compliance_history_after_snapshot() {
     drop(snap_printer);
 
     // History should show at least one entry
-    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
     let result = super::compliance::cmd_compliance_history(&cli, &printer, None);
     assert!(
         result.is_ok(),
@@ -5840,7 +5835,7 @@ fn execute_compliance_snapshot() {
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     super::execute(&cli, &v2_printer).unwrap();
     v2_printer.flush();
@@ -5862,7 +5857,7 @@ fn execute_compliance_export() {
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     super::execute(&cli, &v2_printer).unwrap();
     v2_printer.flush();
@@ -5886,7 +5881,7 @@ fn execute_compliance_history() {
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     super::execute(&cli, &v2_printer).unwrap();
     v2_printer.flush();
@@ -5954,12 +5949,11 @@ fn cmd_plan_structured_json() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = Cli {
-        output: OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json),
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
-        cfgd_core::output_v2::OutputFormat::Json,
-    );
+    let (v2_printer, v2_buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
     let args = PlanArgs {
         from: None,
@@ -6001,12 +5995,11 @@ fn cmd_verify_structured_json() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = Cli {
-        output: OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json),
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
-        cfgd_core::output_v2::OutputFormat::Json,
-    );
+    let (v2_printer, v2_buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
     super::verify::cmd_verify(&cli, &v2_printer, None, false).unwrap();
     v2_printer.flush();
@@ -6040,12 +6033,11 @@ fn cmd_doctor_structured_json() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = Cli {
-        output: OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json),
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
-        cfgd_core::output_v2::OutputFormat::Json,
-    );
+    let (v2_printer, v2_buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
     super::doctor::cmd_doctor(&cli, &v2_printer).unwrap();
     v2_printer.flush();
@@ -6080,12 +6072,11 @@ fn cmd_compliance_snapshot_structured_json() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = Cli {
-        output: OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json),
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = cfgd_core::output_v2::Printer::for_test_with_format(
-        cfgd_core::output_v2::OutputFormat::Json,
-    );
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
     super::compliance::cmd_compliance_snapshot(&cli, &printer).unwrap();
 
@@ -6120,12 +6111,11 @@ fn cmd_compliance_history_structured_json() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = Cli {
-        output: OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json),
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = cfgd_core::output_v2::Printer::for_test_with_format(
-        cfgd_core::output_v2::OutputFormat::Json,
-    );
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
     super::compliance::cmd_compliance_history(&cli, &printer, None).unwrap();
 
@@ -6180,7 +6170,7 @@ fn cmd_verify_module_not_found() {
 
     // Nonexistent module should succeed gracefully (empty results, exit 0)
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let result = super::verify::cmd_verify(&cli, &v2_printer, Some("nonexistent"), false);
     assert!(
         result.is_ok(),
@@ -6378,7 +6368,7 @@ fn module_list_empty_config_dir() {
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     module::cmd_module_list(&cli, &v2_printer).unwrap();
     drop(v2_printer);
@@ -6407,7 +6397,7 @@ fn module_list_with_modules() {
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     module::cmd_module_list(&cli, &v2_printer).unwrap();
     drop(v2_printer);
@@ -6423,7 +6413,7 @@ fn module_list_no_modules_dir() {
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     module::cmd_module_list(&cli, &v2_printer).unwrap();
     drop(v2_printer);
@@ -6453,7 +6443,7 @@ fn module_list_with_config_and_profile() {
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     module::cmd_module_list(&cli, &v2_printer).unwrap();
     drop(v2_printer);
@@ -6531,7 +6521,7 @@ spec:
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     module::cmd_module_show(&cli, &v2_printer, "dev-tools", false).unwrap();
     drop(v2_printer);
@@ -6572,7 +6562,7 @@ spec:
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     module::cmd_module_show(&cli, &v2_printer, "secrets-mod", false).unwrap();
     {
@@ -6630,7 +6620,7 @@ spec:
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     module::cmd_module_show(&cli, &v2_printer, "scripted", false).unwrap();
     drop(v2_printer);
@@ -7833,7 +7823,7 @@ fn module_registry_rename_no_config() {
 #[test]
 fn module_keys_list_no_keys() {
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     module::cmd_module_keys_list(&v2_printer).unwrap();
     drop(v2_printer);
 
@@ -7850,7 +7840,7 @@ fn module_keys_list_with_pub_key() {
     std::fs::write(dir.path().join("cosign.pub"), "fake pub key").unwrap();
 
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     module::cmd_module_keys_list(&v2_printer).unwrap();
     drop(v2_printer);
 
@@ -7891,9 +7881,8 @@ fn module_list_structured_output_empty() {
     std::fs::create_dir_all(dir.path().join("modules")).unwrap();
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
-        cfgd_core::output_v2::OutputFormat::Json,
-    );
+    let (v2_printer, v2_buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
     module::cmd_module_list(&cli, &v2_printer).unwrap();
     drop(v2_printer);
@@ -7914,9 +7903,8 @@ fn module_show_structured_output() {
     );
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
-        cfgd_core::output_v2::OutputFormat::Json,
-    );
+    let (v2_printer, v2_buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
     module::cmd_module_show(&cli, &v2_printer, "json-mod", false).unwrap();
     drop(v2_printer);
@@ -7947,7 +7935,7 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     module::cmd_module_registry_list(&cli, &v2_printer).unwrap();
     drop(v2_printer);
@@ -8720,10 +8708,10 @@ fn cmd_source_list_structured_output() {
     std::fs::write(config_dir.path().join("cfgd.yaml"), config_with_source).unwrap();
 
     let cli = Cli {
-        output: OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json),
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     super::source::cmd_source_list(&cli, &v2_printer).unwrap();
 
@@ -8784,7 +8772,7 @@ spec:
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     super::source::cmd_source_show(&cli, &v2_printer, "team-config").unwrap();
     drop(v2_printer);
@@ -8923,7 +8911,7 @@ spec:
     std::fs::write(config_dir.path().join("cfgd.yaml"), config_with_source).unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     super::source::cmd_source_priority(&cli, &v2_printer, "team", None).unwrap();
 
@@ -8978,7 +8966,7 @@ spec:
 fn cmd_decide_no_args_shows_pending() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     super::decide::cmd_decide(
         &printer,
@@ -9002,7 +8990,7 @@ fn cmd_decide_no_args_shows_pending() {
 fn cmd_decide_with_pending_decision() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
     state
@@ -9047,7 +9035,7 @@ fn cmd_decide_with_pending_decision() {
 fn cmd_decide_accept_all_with_pending() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
     state
@@ -9092,7 +9080,7 @@ fn cmd_decide_accept_all_with_pending() {
 fn cmd_decide_reject_by_source_with_pending() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, _buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
     state
@@ -9178,12 +9166,11 @@ fn cmd_compliance_history_structured() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = Cli {
-        output: OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json),
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = cfgd_core::output_v2::Printer::for_test_with_format(
-        cfgd_core::output_v2::OutputFormat::Json,
-    );
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
     super::compliance::cmd_compliance_history(&cli, &printer, None).unwrap();
 
@@ -9417,7 +9404,7 @@ fn execute_compliance_command() {
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     super::execute(&cli, &v2_printer).unwrap();
     v2_printer.flush();
@@ -9438,7 +9425,7 @@ fn execute_source_list() {
         }),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     super::execute(&cli, &v2_printer).unwrap();
     drop(v2_printer);
@@ -9465,7 +9452,7 @@ fn execute_decide_accept_all() {
         ..test_cli(dir.path())
     };
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     super::execute(&cli, &v2_printer).unwrap();
     drop(v2_printer);
@@ -9577,12 +9564,11 @@ fn cmd_status_module_structured_output() {
         .unwrap();
 
     let cli = Cli {
-        output: OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json),
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
-        cfgd_core::output_v2::OutputFormat::Json,
-    );
+    let (v2_printer, v2_buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
     super::status::cmd_status(&cli, &v2_printer, Some("json-mod"), false).unwrap();
     drop(v2_printer);
@@ -9604,12 +9590,11 @@ fn cmd_verify_structured_output() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = Cli {
-        output: OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json),
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
-        cfgd_core::output_v2::OutputFormat::Json,
-    );
+    let (v2_printer, v2_buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
     super::verify::cmd_verify(&cli, &v2_printer, None, false).unwrap();
     v2_printer.flush();
@@ -9643,12 +9628,11 @@ fn cmd_plan_structured_output() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = Cli {
-        output: OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json),
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
-        cfgd_core::output_v2::OutputFormat::Json,
-    );
+    let (v2_printer, v2_buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
     let args = PlanArgs {
         from: None,
         phase: None,
@@ -9730,7 +9714,7 @@ fn infer_source_name_with_git_suffix() {
 #[test]
 fn output_format_arg_into_os_str() {
     use super::OutputFormatArg;
-    let arg = OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json);
+    let arg = OutputFormatArg(cfgd_core::output::OutputFormat::Json);
     let os_str: clap::builder::OsStr = arg.into();
     assert_eq!(os_str, "table");
 }
@@ -10220,12 +10204,11 @@ fn cmd_plan_module_structured_output() {
     );
 
     let cli = Cli {
-        output: OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json),
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
-        cfgd_core::output_v2::OutputFormat::Json,
-    );
+    let (v2_printer, v2_buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
     let args = PlanArgs {
         from: None,
         phase: None,
@@ -10267,7 +10250,7 @@ fn setup_rich_test_env() -> (tempfile::TempDir, tempfile::TempDir) {
 fn cmd_config_show_with_rich_config() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     super::config_cmd::cmd_config_show(&cli, &printer).unwrap();
     drop(printer);
@@ -10285,12 +10268,11 @@ fn cmd_config_show_with_rich_config() {
 fn cmd_config_show_structured_json() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = Cli {
-        output: OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json),
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = cfgd_core::output_v2::Printer::for_test_with_format(
-        cfgd_core::output_v2::OutputFormat::Json,
-    );
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
     super::config_cmd::cmd_config_show(&cli, &printer).unwrap();
     drop(printer);
@@ -10324,7 +10306,7 @@ fn cmd_config_show_no_config_fails() {
 fn cmd_config_get_reads_profile() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     super::config_cmd::cmd_config_get(&cli, &v2_printer, "profile").unwrap();
     drop(v2_printer);
@@ -10340,7 +10322,7 @@ fn cmd_config_get_reads_profile() {
 fn cmd_config_get_nested_key() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     super::config_cmd::cmd_config_get(&cli, &v2_printer, "daemon.enabled").unwrap();
     drop(v2_printer);
@@ -10356,12 +10338,11 @@ fn cmd_config_get_nested_key() {
 fn cmd_config_get_structured_json() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = Cli {
-        output: OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json),
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc_with_format(
-        cfgd_core::output_v2::OutputFormat::Json,
-    );
+    let (v2_printer, cap) =
+        cfgd_core::output::Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
 
     super::config_cmd::cmd_config_get(&cli, &v2_printer, "profile").unwrap();
     drop(v2_printer);
@@ -10470,7 +10451,7 @@ fn cmd_doctor_without_config_succeeds() {
     std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
     let cli = test_cli(dir.path());
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     super::doctor::cmd_doctor(&cli, &v2_printer).unwrap();
     v2_printer.flush();
@@ -10484,7 +10465,7 @@ fn cmd_doctor_with_rich_config() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     super::doctor::cmd_doctor(&cli, &v2_printer).unwrap();
     v2_printer.flush();
@@ -10898,7 +10879,7 @@ fn cmd_source_remove_nonexistent_fails() {
 fn cmd_source_override_reject_succeeds() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     super::source::cmd_source_override(
         &cli,
@@ -10922,7 +10903,7 @@ fn cmd_source_override_reject_succeeds() {
 fn cmd_source_override_set_succeeds() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     super::source::cmd_source_override(
         &cli,
@@ -11005,7 +10986,7 @@ fn cmd_source_show_exists() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let (v2_printer, v2_buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let result = super::source::cmd_source_show(&cli, &v2_printer, "team-config");
     assert!(
@@ -11026,12 +11007,11 @@ fn cmd_source_show_exists() {
 fn cmd_source_show_structured_json() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = Cli {
-        output: OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json),
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (v2_printer, v2_buf) = cfgd_core::output_v2::Printer::for_test_with_format(
-        cfgd_core::output_v2::OutputFormat::Json,
-    );
+    let (v2_printer, v2_buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
     super::source::cmd_source_show(&cli, &v2_printer, "team-config").unwrap();
     drop(v2_printer);
@@ -11082,7 +11062,7 @@ fn cmd_source_create_initializes_manifest() {
 fn cmd_source_list_with_sources_shows_entries() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     let result = super::source::cmd_source_list(&cli, &v2_printer);
     assert!(
@@ -11103,10 +11083,10 @@ fn cmd_source_list_with_sources_shows_entries() {
 fn cmd_source_list_structured_json() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = Cli {
-        output: OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json),
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     super::source::cmd_source_list(&cli, &v2_printer).unwrap();
 
@@ -11232,10 +11212,10 @@ fn cmd_module_search_no_registries() {
 fn cmd_module_search_no_registries_structured() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = Cli {
-        output: OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json),
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     module::cmd_module_search(&cli, &v2_printer, "test").unwrap();
     drop(v2_printer);
@@ -11476,10 +11456,9 @@ fn cmd_config_edit_with_invalid_config_and_prompt_declined_breaks_with_warning()
     std::fs::write(dir.path().join("cfgd.yaml"), "not a Config document").unwrap();
 
     let cli = test_cli(dir.path());
-    let (v2_printer, cap) =
-        cfgd_core::output_v2::Printer::for_test_doc_with_prompt_responses(vec![
-            cfgd_core::output_v2::PromptAnswer::Confirm(false),
-        ]);
+    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc_with_prompt_responses(vec![
+        cfgd_core::output::PromptAnswer::Confirm(false),
+    ]);
 
     let _editor = cfgd_core::test_helpers::EditorGuard::set("/bin/true");
     super::config_cmd::cmd_config_edit(&cli, &v2_printer)
@@ -11914,7 +11893,7 @@ fn sample_source(
 
 #[test]
 fn render_daemon_status_human_running_with_sources_and_update() {
-    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
     let status = sample_daemon_status(
         4242,
         3600,
@@ -11952,7 +11931,7 @@ fn render_daemon_status_human_running_with_sources_and_update() {
 
 #[test]
 fn render_daemon_status_human_running_without_last_timestamps_skips_rows() {
-    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
     let status = cfgd_core::daemon::DaemonStatusResponse {
         running: true,
         pid: 1,
@@ -11985,7 +11964,7 @@ fn render_daemon_status_human_running_without_last_timestamps_skips_rows() {
 
 #[test]
 fn render_daemon_status_json_emits_some_status_shape() {
-    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
     let status = sample_daemon_status(99, 60, 1, vec![sample_source("s1", "ok", 0, None)], None);
     printer.emit(super::daemon::build_daemon_status_doc(Some(&status)));
     drop(printer);
@@ -11998,7 +11977,7 @@ fn render_daemon_status_json_emits_some_status_shape() {
 
 #[test]
 fn render_daemon_status_json_emits_placeholder_when_none() {
-    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
     printer.emit(super::daemon::build_daemon_status_doc(None));
     drop(printer);
     let parsed = cap.json().expect("doc captured json");
@@ -12013,7 +11992,7 @@ fn render_daemon_status_json_emits_placeholder_when_none() {
 
 #[test]
 fn daemon_uninstall_prints_platform_info_and_succeeds() {
-    let (printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
     // On Linux (CI/test env), uninstall_service just removes the unit file
     // if present; in a clean test env there is nothing to remove, so it succeeds.
     let result = super::daemon::cmd_daemon_uninstall(&printer);
@@ -14807,7 +14786,7 @@ spec:
 fn cmd_decide_no_args_no_pending_shows_info() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     // With no resource, no source, and all=false, should show pending list
     super::decide::cmd_decide(
@@ -14832,7 +14811,7 @@ fn cmd_decide_no_args_no_pending_shows_info() {
 fn cmd_decide_no_args_with_pending_shows_list() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
 
     state
@@ -14890,7 +14869,7 @@ fn cmd_decide_no_args_with_pending_shows_list() {
 fn cmd_decide_reject_specific_resource_verifies_resolution() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
 
     state
@@ -14936,7 +14915,7 @@ fn cmd_decide_reject_specific_resource_verifies_resolution() {
 fn cmd_decide_accept_specific_resource_verifies_messaging() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
 
     state
@@ -14973,7 +14952,7 @@ fn cmd_decide_accept_specific_resource_verifies_messaging() {
 fn cmd_decide_accept_nonexistent_resource_warns() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     super::decide::cmd_decide(
         &printer,
@@ -15001,7 +14980,7 @@ fn cmd_decide_accept_nonexistent_resource_warns() {
 fn cmd_decide_accept_all_reports_count() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
 
     for i in 0..3 {
@@ -15049,7 +15028,7 @@ fn cmd_decide_accept_all_reports_count() {
 fn cmd_decide_reject_by_source_preserves_other_sources() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
 
     state
@@ -15098,7 +15077,7 @@ fn cmd_decide_reject_by_source_preserves_other_sources() {
 fn cmd_decide_reject_by_source_with_no_matching_decisions() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
 
     state
@@ -15131,7 +15110,7 @@ fn cmd_decide_reject_by_source_with_no_matching_decisions() {
 fn cmd_decide_accept_single_item_singular_message() {
     let state_dir = tempfile::tempdir().unwrap();
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let state = super::open_state_store(Some(state_dir.path())).unwrap();
 
     state

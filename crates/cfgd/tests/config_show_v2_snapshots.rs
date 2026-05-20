@@ -16,7 +16,7 @@ use cfgd_core::config::{
     ModuleSecurityConfig, ModulesConfig, OriginSpec, OriginType, ReconcileConfig, SecretsConfig,
     SourceSpec, SshHostKeyPolicy, SyncConfig, ThemeConfig,
 };
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 use pretty_assertions::assert_eq;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";

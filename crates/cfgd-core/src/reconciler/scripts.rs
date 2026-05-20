@@ -1,6 +1,6 @@
 use crate::config::ScriptEntry;
 use crate::errors::{ConfigError, Result};
-use crate::output_v2::Printer;
+use crate::output::Printer;
 
 use super::types::{ReconcileContext, ScriptPhase};
 

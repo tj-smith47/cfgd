@@ -19,7 +19,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::module;
-use cfgd_core::output_v2::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 

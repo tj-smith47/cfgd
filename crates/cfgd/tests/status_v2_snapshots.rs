@@ -19,7 +19,7 @@ use cfgd::cli::status::{
     ModuleStatus, ModuleStatusEntry, StatusOutput, build_fleet_status_doc, build_module_status_doc,
     build_module_status_not_found_doc,
 };
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 use cfgd_core::state::{
     ApplyRecord, ApplyStatus, ConfigSourceRecord, DriftEvent, ManagedResource, PendingDecision,
 };

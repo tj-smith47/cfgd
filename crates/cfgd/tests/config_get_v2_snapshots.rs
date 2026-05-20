@@ -12,7 +12,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::config_cmd;
-use cfgd_core::output_v2::{OutputFormat, Printer};
+use cfgd_core::output::{OutputFormat, Printer};
 
 use common::{cli_for, config_test_setup};
 

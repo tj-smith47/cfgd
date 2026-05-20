@@ -264,7 +264,7 @@ fn apply_creates_files() {
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
     let actions = fm.plan(&resolved.merged).unwrap();
 
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     fm.apply(&actions, &printer).unwrap();
 
     assert!(target.exists());
@@ -299,7 +299,7 @@ fn apply_is_idempotent() {
         },
     );
 
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
 
     // First apply
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
@@ -344,7 +344,7 @@ fn template_custom_functions() {
         },
     );
 
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
 
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
     let actions = fm.plan(&resolved.merged).unwrap();
@@ -386,7 +386,7 @@ fn permissions_set_correctly() {
         },
     );
 
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
 
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
     let actions = fm.plan(&resolved.merged).unwrap();
@@ -739,7 +739,7 @@ fn symlink_strategy_creates_symlink() {
         }
     ));
 
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     fm.apply(&actions, &printer).unwrap();
 
     assert!(target.is_symlink());
@@ -775,7 +775,7 @@ fn symlink_strategy_is_idempotent() {
         },
     );
 
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
 
     // First apply
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
@@ -824,7 +824,7 @@ fn hardlink_strategy_creates_hardlink() {
     let actions = fm.plan(&resolved.merged).unwrap();
     assert_eq!(actions.len(), 1);
 
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     fm.apply(&actions, &printer).unwrap();
 
     assert!(target.exists());
@@ -880,7 +880,7 @@ fn template_auto_upgrades_to_copy() {
         }
     ));
 
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     fm.apply(&actions, &printer).unwrap();
 
     // Should be a regular file, not a symlink
@@ -1044,7 +1044,7 @@ fn diff_no_changes_prints_success() {
     );
 
     let (printer, _buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
     let has_drift = fm.diff(&resolved.merged, &printer).unwrap();
     assert!(!has_drift, "identical content should report no drift");
@@ -1081,7 +1081,7 @@ fn diff_detects_content_difference() {
     );
 
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
     assert!(fm.diff(&resolved.merged, &printer).is_ok());
     let output = buf.lock().unwrap();
@@ -1123,7 +1123,7 @@ fn diff_new_file_shown() {
     );
 
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
     assert!(fm.diff(&resolved.merged, &printer).is_ok());
     let output = buf.lock().unwrap();
@@ -1381,7 +1381,7 @@ fn apply_update_overwrites_target() {
         },
     );
 
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
     let actions = fm.plan(&resolved.merged).unwrap();
     assert_eq!(actions.len(), 1);
@@ -2851,7 +2851,7 @@ fn apply_delete_removes_existing_file() {
         target: target.clone(),
         origin: "local".to_string(),
     }];
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
 
     assert!(!target.exists());
@@ -2868,7 +2868,7 @@ fn apply_delete_when_target_missing_is_noop() {
         target: target.clone(),
         origin: "local".to_string(),
     }];
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
 
     assert!(!target.exists());
@@ -2894,7 +2894,7 @@ fn apply_delete_removes_dangling_symlink() {
         target: link.clone(),
         origin: "local".to_string(),
     }];
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
 
     assert!(
@@ -2919,7 +2919,7 @@ fn apply_set_permissions_changes_mode() {
         mode: 0o600,
         origin: "local".to_string(),
     }];
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
 
     let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
@@ -2939,7 +2939,7 @@ fn apply_skip_action_is_noop() {
         reason: "private file: source missing".to_string(),
         origin: "local".to_string(),
     }];
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
 
     assert!(!target.exists());
@@ -2964,7 +2964,7 @@ fn apply_create_with_stale_source_hash_returns_source_changed() {
         source_hash: Some(cfgd_core::sha256_hex(b"different content from plan time")),
     }];
 
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     let err =
         <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
             .expect_err("expected SourceChanged error");
@@ -2995,7 +2995,7 @@ fn apply_create_with_matching_source_hash_writes_target() {
         source_hash: Some(cfgd_core::sha256_hex(body.as_bytes())),
     }];
 
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
 
     assert_eq!(fs::read_to_string(&target).unwrap(), body);
@@ -3066,7 +3066,7 @@ fn apply_create_with_symlink_strategy_creates_symbolic_link() {
         source_hash: None,
     }];
 
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
 
     let meta = target.symlink_metadata().expect("target should exist");
@@ -3098,7 +3098,7 @@ fn apply_create_with_hardlink_strategy_creates_hard_link() {
         source_hash: None,
     }];
 
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
 
     let src_meta = fs::metadata(&source).unwrap();
@@ -3139,7 +3139,7 @@ fn apply_create_with_symlink_strategy_replaces_existing_file() {
         source_hash: None,
     }];
 
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
 
     let meta = target.symlink_metadata().unwrap();

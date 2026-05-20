@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use cfgd::cli::diff::{build_diff_doc, cmd_diff};
 use cfgd::cli::output_types::{DiffOutput, DiffSummary, PackageDrift, SystemDriftOutput};
-use cfgd_core::output_v2::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 use pretty_assertions::assert_eq;
 
 use common::cli_for;

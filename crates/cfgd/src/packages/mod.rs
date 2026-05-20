@@ -22,7 +22,7 @@ use cfgd_core::command_available;
 use cfgd_core::config::{MergedProfile, PackagesSpec};
 use cfgd_core::errors::{PackageError, Result};
 #[cfg(test)]
-use cfgd_core::output_v2::{Printer, Role};
+use cfgd_core::output::{Printer, Role};
 use cfgd_core::providers::{PackageAction, PackageManager};
 
 mod brew;

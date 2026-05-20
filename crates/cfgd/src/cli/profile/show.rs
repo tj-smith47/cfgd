@@ -2,7 +2,7 @@ use super::*;
 use cfgd_core::config::{
     EnvVar, ManagedFileSpec, PackagesSpec, ProfileLayer, ResolvedProfile, SecretSpec,
 };
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2};
+use cfgd_core::output::{Doc, Printer as PrinterV2};
 
 /// Build the `cfgd profile show` Doc from a resolved profile. Pure; consumes
 /// nothing — the caller serializes `{name, resolved}` as the structured payload.

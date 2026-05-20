@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Mutex;
 
-use cfgd_core::output_v2::{Printer, Verbosity};
+use cfgd_core::output::{Printer, Verbosity};
 
 use super::cargo::{cargo_available, cargo_cmd};
 use super::go::{find_go, go_available, go_cmd};

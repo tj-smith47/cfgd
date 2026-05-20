@@ -9,7 +9,6 @@ pub mod http;
 pub mod modules;
 pub mod oci;
 pub mod output;
-pub mod output_v2;
 pub mod platform;
 pub mod providers;
 pub mod reconciler;

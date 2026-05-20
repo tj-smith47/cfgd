@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
 use serde::Serialize;
 
 use super::source::{clone_into, is_git_source, resolve_from};

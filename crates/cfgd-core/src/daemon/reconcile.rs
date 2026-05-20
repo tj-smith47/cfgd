@@ -108,7 +108,7 @@ pub(crate) struct ReconcileCtx<'a> {
     pub notify_on_drift: bool,
     pub hooks: &'a dyn DaemonHooks,
     pub state_dir_override: Option<&'a Path>,
-    pub printer: &'a crate::output_v2::Printer,
+    pub printer: &'a crate::output::Printer,
 }
 
 pub(crate) fn handle_reconcile(

@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
 
 pub fn cmd_source_add(
     cli: &Cli,
@@ -28,7 +28,7 @@ pub fn cmd_source_add(
     if config_path.exists() {
         let cfg = config::load_config(&config_path)?;
         if cfg.spec.sources.iter().any(|s| s.name == source_name) {
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 &source_name,
                 "already_exists",
                 format!(
@@ -63,7 +63,7 @@ pub fn cmd_source_add(
     // consumers see the same {"error": "load_failed", ...} shape as the
     // "Ok-but-no-cache-entry" fallback below.
     if let Err(e) = mgr.load_source(&spec, v2_printer) {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             &source_name,
             "load_failed",
             format!("Failed to load source '{}': {}", source_name, e),
@@ -75,7 +75,7 @@ pub fn cmd_source_add(
     let cached = match mgr.get(&source_name) {
         Some(c) => c,
         None => {
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 &source_name,
                 "load_failed",
                 format!("Failed to load source '{}'", source_name),

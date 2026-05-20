@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role, renderer::Table as TableV2};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role, renderer::Table as TableV2};
 
 pub fn cmd_source_remove(
     cli: &Cli,
@@ -9,7 +9,7 @@ pub fn cmd_source_remove(
     remove_all: bool,
 ) -> anyhow::Result<()> {
     if keep_all && remove_all {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             name,
             "conflicting_flags",
             "cannot use --keep-all and --remove-all together",
@@ -24,7 +24,7 @@ pub fn cmd_source_remove(
     let cfg = config::load_config(&config_path)?;
 
     if !cfg.spec.sources.iter().any(|s| s.name == name) {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             name,
             "not_found",
             format!("Source '{}' not found in config", name),

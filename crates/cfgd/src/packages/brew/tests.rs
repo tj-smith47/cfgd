@@ -584,10 +584,8 @@ mod brew_shim {
 #[cfg(unix)]
 mod bridge {
     use super::*;
-    use cfgd_core::output_v2::test_capture::{
-        assert_snapshot_at, strip_ansi, strip_spinner_duration,
-    };
-    use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+    use cfgd_core::output::test_capture::{assert_snapshot_at, strip_ansi, strip_spinner_duration};
+    use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
     use cfgd_core::providers::PackageManager;
     use cfgd_core::test_helpers::ToolShim;
     use serial_test::serial;

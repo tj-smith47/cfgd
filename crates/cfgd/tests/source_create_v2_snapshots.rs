@@ -14,7 +14,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::source::cmd_source_create;
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 
 use common::{cli_for, normalize_profile_paths, source_test_config_setup};
 

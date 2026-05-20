@@ -176,12 +176,12 @@ fn extract_config_path(args: &[String]) -> Option<PathBuf> {
 }
 
 #[derive(Debug, Clone)]
-pub struct OutputFormatArg(pub cfgd_core::output_v2::OutputFormat);
+pub struct OutputFormatArg(pub cfgd_core::output::OutputFormat);
 
 impl std::str::FromStr for OutputFormatArg {
     type Err = String;
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        use cfgd_core::output_v2::OutputFormat;
+        use cfgd_core::output::OutputFormat;
         match s {
             "table" => Ok(Self(OutputFormat::Table)),
             "wide" => Ok(Self(OutputFormat::Wide)),
@@ -1372,7 +1372,7 @@ pub enum ModuleRegistryCommand {
 }
 
 /// Execute the given CLI command. Returns Ok(()) on success.
-pub fn execute(cli: &Cli, v2_printer: &cfgd_core::output_v2::Printer) -> anyhow::Result<()> {
+pub fn execute(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::Result<()> {
     // No subcommand: print help and exit 0. Required for package-manager
     // validators (winget, chocolatey) that smoke-test the installed binary
     // with no arguments and treat any non-zero exit code as failure.

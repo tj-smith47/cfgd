@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Printer as PrinterV2, Verbosity as V2Verbosity};
+use cfgd_core::output::{Printer as PrinterV2, Verbosity as V2Verbosity};
 
 // --- explain tests ---
 

@@ -2,7 +2,7 @@ use super::*;
 
 pub fn cmd_plan(
     cli: &Cli,
-    v2_printer: &cfgd_core::output_v2::Printer,
+    v2_printer: &cfgd_core::output::Printer,
     args: &PlanArgs,
 ) -> anyhow::Result<()> {
     // Parse --context

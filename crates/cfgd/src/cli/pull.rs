@@ -1,6 +1,6 @@
 use super::*;
 
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
 
 pub fn cmd_pull(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
     v2_printer.heading("Pull");

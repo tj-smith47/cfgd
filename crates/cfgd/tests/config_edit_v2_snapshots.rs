@@ -19,7 +19,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::config_cmd;
-use cfgd_core::output_v2::{Printer, PromptAnswer};
+use cfgd_core::output::{Printer, PromptAnswer};
 #[cfg(unix)]
 use cfgd_core::test_helpers::EditorGuard;
 #[cfg(unix)]

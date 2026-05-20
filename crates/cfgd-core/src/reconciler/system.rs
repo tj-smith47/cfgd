@@ -1,6 +1,6 @@
 use crate::config::MergedProfile;
 use crate::errors::Result;
-use crate::output_v2::{Printer, Role};
+use crate::output::{Printer, Role};
 
 use super::types::SystemAction;
 

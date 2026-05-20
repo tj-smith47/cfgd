@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cfgd_core::errors::{CfgdError, Result};
-use cfgd_core::output_v2::{Printer, Role};
+use cfgd_core::output::{Printer, Role};
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
 use super::super::{diff_yaml_mapping, yaml_value_with_numeric_bools};

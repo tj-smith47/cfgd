@@ -22,7 +22,7 @@ use std::path::Path;
 
 use cfgd::cli::log::{build_log_doc, cmd_log};
 use cfgd::cli::output_types::LogOutput;
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 use cfgd_core::state::ApplyStatus;
 use pretty_assertions::assert_eq;
 

@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use secrecy::SecretString;
 
 use crate::errors::{CfgdError, FileError, SecretError};
-use crate::output_v2::Printer as PrinterV2;
+use crate::output::Printer as PrinterV2;
 use crate::providers::{
     FileAction, FileDiff, FileLayer, FileTree, SecretBackend, SecretProvider, SystemConfigurator,
     SystemDrift,
@@ -554,8 +554,8 @@ pub fn init_test_git_repo(dir: &Path) {
 /// Returns a bare `Printer` (not the `(Printer, Buffer)` tuple from
 /// `Printer::for_test()`) so it drops in as a direct replacement in fixtures
 /// that don't assert on captured output.
-pub fn test_printer_v2() -> crate::output_v2::Printer {
-    crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet)
+pub fn test_printer_v2() -> crate::output::Printer {
+    crate::output::Printer::new(crate::output::Verbosity::Quiet)
 }
 
 // ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@ use crate::config::{ResolvedProfile, ScriptEntry};
 use crate::errors::{ConfigError, Result};
 use crate::expand_tilde;
 use crate::modules::ResolvedModule;
-use crate::output_v2::{Printer, Role};
+use crate::output::{Printer, Role};
 
 use super::scripts::{MODULE_SCRIPT_TIMEOUT, build_script_env, execute_script};
 use super::types::{ModuleAction, ModuleActionKind, ReconcileContext, ScriptPhase};

@@ -14,7 +14,7 @@ use std::path::Path;
 
 use cfgd::cli::checkin::build_checkin_doc;
 use cfgd::cli::output_types::CheckinOutput;
-use cfgd_core::output_v2::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 use pretty_assertions::assert_eq;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";

@@ -26,7 +26,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::source::{cmd_source_add, cmd_source_update};
-use cfgd_core::output_v2::{Printer, PromptAnswer};
+use cfgd_core::output::{Printer, PromptAnswer};
 use serial_test::serial;
 
 use common::{
@@ -112,7 +112,7 @@ fn strip_git_sha_ranges(s: String) -> String {
     out
 }
 
-use cfgd_core::output_v2::test_capture::strip_spinner_duration;
+use cfgd_core::output::test_capture::strip_spinner_duration;
 
 #[test]
 fn source_update_no_sources_human() {

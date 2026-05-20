@@ -3,7 +3,7 @@
 //! mapping into goldens.
 
 use crate::golden_doc;
-use crate::output_v2::Role;
+use crate::output::Role;
 
 golden_doc!(bucket_c, ok, |p, cap| {
     p.status_simple(Role::Ok, "ok msg");

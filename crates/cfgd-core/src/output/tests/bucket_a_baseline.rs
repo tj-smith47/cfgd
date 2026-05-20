@@ -2,8 +2,8 @@
 //! theme, Normal verbosity.
 
 use crate::golden_doc;
-use crate::output_v2::Role;
-use crate::output_v2::renderer::Table;
+use crate::output::Role;
+use crate::output::renderer::Table;
 
 golden_doc!(bucket_a, heading_only, |p, cap| {
     p.heading("My Command");

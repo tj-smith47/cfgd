@@ -1,6 +1,6 @@
 use console::Style;
 
-use crate::output_v2::{Role, Theme};
+use crate::output::{Role, Theme};
 
 /// Look up the icon glyph + style for a Role.
 pub(crate) fn role_glyph(theme: &Theme, role: Role) -> (Option<&str>, Style) {

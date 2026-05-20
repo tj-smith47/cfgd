@@ -1,6 +1,6 @@
 use crate::config::MergedProfile;
 use crate::errors::Result;
-use crate::output_v2::Printer;
+use crate::output::Printer;
 use crate::providers::FileAction;
 
 use super::file_action::apply_file_action_direct;

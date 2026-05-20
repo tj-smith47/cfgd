@@ -44,7 +44,7 @@ use cfgd::cli::daemon::{
     build_daemon_uninstall_doc, cmd_daemon_status,
 };
 use cfgd_core::daemon::{DaemonStatusResponse, SourceStatus};
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -274,7 +274,7 @@ fn daemon_install_installed_windows_json() {
 #[test]
 fn daemon_install_install_failed_human() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(cfgd_core::output_v2::error_doc(
+    printer.emit(cfgd_core::output::error_doc(
         "cfgd",
         "install_failed",
         "Failed to install daemon service: permission denied",
@@ -290,7 +290,7 @@ fn daemon_install_install_failed_human() {
 #[test]
 fn daemon_install_install_failed_json() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(cfgd_core::output_v2::error_doc(
+    printer.emit(cfgd_core::output::error_doc(
         "cfgd",
         "install_failed",
         "Failed to install daemon service: permission denied",
@@ -412,7 +412,7 @@ fn daemon_uninstall_windows_json() {
 #[test]
 fn daemon_uninstall_uninstall_failed_human() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(cfgd_core::output_v2::error_doc(
+    printer.emit(cfgd_core::output::error_doc(
         "cfgd",
         "uninstall_failed",
         "Failed to uninstall daemon service: unit file not found",
@@ -428,7 +428,7 @@ fn daemon_uninstall_uninstall_failed_human() {
 #[test]
 fn daemon_uninstall_uninstall_failed_json() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(cfgd_core::output_v2::error_doc(
+    printer.emit(cfgd_core::output::error_doc(
         "cfgd",
         "uninstall_failed",
         "Failed to uninstall daemon service: unit file not found",

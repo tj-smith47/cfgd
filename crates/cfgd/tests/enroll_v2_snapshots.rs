@@ -13,7 +13,7 @@
 use std::path::Path;
 
 use cfgd::cli::init::{EnrollOutput, build_enroll_error_doc, build_enroll_final_doc};
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 

@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use super::{Renderer, Writer, role_glyph};
-use crate::output_v2::{Role, Verbosity};
+use crate::output::{Role, Verbosity};
 
 /// Inputs to a single Status line. Builders convert to this for rendering.
 pub struct StatusFields<'a> {
@@ -107,8 +107,8 @@ mod tests {
 
     use super::super::StringSink;
     use super::*;
-    use crate::output_v2::Theme;
-    use crate::output_v2::tests::strip_ansi;
+    use crate::output::Theme;
+    use crate::output::tests::strip_ansi;
 
     fn capture() -> (Renderer, StringSink, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));

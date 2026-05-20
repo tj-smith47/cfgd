@@ -20,7 +20,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::source::cmd_source_add;
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 use serial_test::serial;
 
 use common::{
@@ -74,7 +74,7 @@ fn normalize_paths(
     strip_spinner_duration(out)
 }
 
-use cfgd_core::output_v2::test_capture::strip_spinner_duration;
+use cfgd_core::output::test_capture::strip_spinner_duration;
 
 #[test]
 #[serial]

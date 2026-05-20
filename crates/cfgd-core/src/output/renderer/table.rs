@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 use super::{Renderer, Writer};
-use crate::output_v2::Verbosity;
+use crate::output::Verbosity;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Table {
@@ -78,7 +78,7 @@ mod tests {
 
     use super::super::StringSink;
     use super::*;
-    use crate::output_v2::Theme;
+    use crate::output::Theme;
 
     #[test]
     fn empty_table_emits_nothing() {

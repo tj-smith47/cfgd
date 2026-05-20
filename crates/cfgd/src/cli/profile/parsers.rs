@@ -45,9 +45,9 @@ pub(crate) fn update_script_list(
     remove: &[String],
     label: &str,
     field: fn(&mut config::ScriptSpec) -> &mut Vec<config::ScriptEntry>,
-    v2_printer: &cfgd_core::output_v2::Printer,
+    v2_printer: &cfgd_core::output::Printer,
 ) -> u32 {
-    use cfgd_core::output_v2::Role;
+    use cfgd_core::output::Role;
     let mut changes = 0u32;
     for script in add {
         let scripts = scripts_opt.get_or_insert_with(Default::default);

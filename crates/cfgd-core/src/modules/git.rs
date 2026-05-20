@@ -183,7 +183,7 @@ pub fn fetch_git_source(
     git_src: &GitSource,
     cache_base: &Path,
     module_name: &str,
-    printer: &crate::output_v2::Printer,
+    printer: &crate::output::Printer,
 ) -> Result<PathBuf> {
     let cache_dir = git_cache_dir(cache_base, &git_src.repo_url);
 
@@ -223,7 +223,7 @@ pub(super) fn clone_repo(
     dest: &Path,
     git_src: &GitSource,
     module_name: &str,
-    printer: &crate::output_v2::Printer,
+    printer: &crate::output::Printer,
 ) -> Result<()> {
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| ModuleError::GitFetchFailed {
@@ -285,7 +285,7 @@ pub(super) fn fetch_existing_repo(
     repo_path: &Path,
     git_src: &GitSource,
     module_name: &str,
-    printer: &crate::output_v2::Printer,
+    printer: &crate::output::Printer,
 ) -> Result<()> {
     // Try git CLI first with live progress output.
     let mut cmd = crate::git_cmd_safe(Some(&git_src.repo_url), None);

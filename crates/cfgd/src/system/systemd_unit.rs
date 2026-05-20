@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output_v2::{Printer, Role};
+use cfgd_core::output::{Printer, Role};
 
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn systemd_apply_empty_sequence_is_noop() {
-        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
+        let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let su = SystemdUnitConfigurator;
         let yaml = serde_yaml::Value::Sequence(Vec::new());
         su.apply(&yaml, &printer).unwrap();
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn systemd_apply_non_sequence_is_noop() {
-        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
+        let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let su = SystemdUnitConfigurator;
         let yaml = serde_yaml::Value::String("not a sequence".into());
         su.apply(&yaml, &printer).unwrap();
@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn systemd_apply_skips_units_without_name() {
-        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
+        let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let su = SystemdUnitConfigurator;
         let mut unit = serde_yaml::Mapping::new();
         unit.insert(
@@ -293,8 +293,8 @@ mod tests {
     #[cfg(unix)]
     mod bridge {
         use super::*;
-        use cfgd_core::output_v2::test_capture::{assert_snapshot_at, strip_ansi};
-        use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+        use cfgd_core::output::test_capture::{assert_snapshot_at, strip_ansi};
+        use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
 
         fn snapshot_dir() -> std::path::PathBuf {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/system/snapshots")

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::{Renderer, Writer};
-use crate::output_v2::{Role, Verbosity};
+use crate::output::{Role, Verbosity};
 
 /// A Status emission deferred until section close so subjects can be right-
 /// padded to a common column. Buffered per section frame.
@@ -198,7 +198,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::super::{Renderer, StringSink};
-    use crate::output_v2::{Theme, Verbosity};
+    use crate::output::{Theme, Verbosity};
 
     fn capture() -> (Renderer, StringSink, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));

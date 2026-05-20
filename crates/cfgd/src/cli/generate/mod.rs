@@ -2,7 +2,7 @@ use clap::{Args, Subcommand};
 
 use cfgd_core::config::{self, AiConfig};
 use cfgd_core::generate::{PresentYamlRequest, PresentYamlResponse};
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
 
 use crate::ai::client::{AnthropicClient, ContentBlock};
 use crate::ai::conversation::Conversation;
@@ -79,7 +79,7 @@ pub fn cmd_generate(cli: &Cli, v2_printer: &PrinterV2, args: &GenerateArgs) -> a
 
     // 2. Resolve API key
     let api_key = std::env::var(&ai_config.api_key_env).map_err(|_| {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             &ai_config.api_key_env,
             "api_error",
             format!("API key env var '{}' not set", ai_config.api_key_env),

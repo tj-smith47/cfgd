@@ -1,5 +1,5 @@
 use crate::errors::Result;
-use crate::output_v2::{Printer, Role};
+use crate::output::{Printer, Role};
 use crate::providers::PackageAction;
 
 impl<'a> super::Reconciler<'a> {

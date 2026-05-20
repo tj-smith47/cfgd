@@ -573,7 +573,7 @@ fn checkin_no_api_key_omits_auth_header() {
 // ===========================================================================
 //
 // `ServerClient::{checkin,report_drift}` emit a single streaming `status_simple`
-// line on the supplied `&output_v2::Printer`. Callers (e.g. `cli::checkin`)
+// line on the supplied `&output::Printer`. Callers (e.g. `cli::checkin`)
 // then emit a buffered `Doc` on the same printer. The renderer must produce
 // exactly one blank line between the last streaming line and the buffered
 // Doc's first visible line. These snapshots lock the human shape of that
@@ -582,8 +582,8 @@ fn checkin_no_api_key_omits_auth_header() {
 #[cfg(unix)]
 mod bridge {
     use super::*;
-    use crate::output_v2::test_capture::{assert_snapshot_at, strip_ansi};
-    use crate::output_v2::{Doc, Printer as PrinterV2, Role};
+    use crate::output::test_capture::{assert_snapshot_at, strip_ansi};
+    use crate::output::{Doc, Printer as PrinterV2, Role};
 
     fn snapshot_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server_client/snapshots")

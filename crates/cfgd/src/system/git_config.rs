@@ -1,5 +1,5 @@
 use cfgd_core::errors::{CfgdError, Result};
-use cfgd_core::output_v2::{Printer, Role};
+use cfgd_core::output::{Printer, Role};
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
 /// GitConfigurator — manages `git config --global` settings declaratively.
@@ -282,7 +282,7 @@ mod tests {
         with_temp_global_config(|config_file| {
             let desired: serde_yaml::Value =
                 serde_yaml::from_str("user.email: jane@work.com").unwrap();
-            let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
+            let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
             GitConfigurator.apply(&desired, &printer).unwrap();
 
             let actual = git_config_get_file(config_file, "user.email");
@@ -294,7 +294,7 @@ mod tests {
     fn test_apply_handles_bool_value() {
         with_temp_global_config(|config_file| {
             let desired: serde_yaml::Value = serde_yaml::from_str("commit.gpgSign: true").unwrap();
-            let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
+            let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
             GitConfigurator.apply(&desired, &printer).unwrap();
 
             let actual = git_config_get_file(config_file, "commit.gpgSign");

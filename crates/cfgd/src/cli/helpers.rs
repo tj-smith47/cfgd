@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Printer as PrinterV2, Role};
+use cfgd_core::output::{Printer as PrinterV2, Role};
 
 pub(in crate::cli) fn load_config_and_profile_v2(
     cli: &Cli,

@@ -7,7 +7,7 @@ use std::path::Path;
 
 use cfgd::cli::output_types::{SourceSyncOutput, SyncOutput};
 use cfgd::cli::sync::{build_sync_doc, cmd_sync};
-use cfgd_core::output_v2::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 use cfgd_core::test_helpers::EnvVarGuard;
 use pretty_assertions::assert_eq;
 use serial_test::serial;
@@ -137,7 +137,7 @@ fn sync_perm_changes_rejection_human() {
     let (_workspace, config_dir, state_dir, _branch) = permission_change_source_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    use cfgd_core::output_v2::{PromptAnswer, Verbosity as V2Verbosity};
+    use cfgd_core::output::{PromptAnswer, Verbosity as V2Verbosity};
     let (v2_printer, v2_buf) = Printer::for_test_with_prompt_responses_at(
         vec![PromptAnswer::Confirm(false)],
         V2Verbosity::Normal,
@@ -162,7 +162,7 @@ fn sync_perm_changes_accept_human() {
     let (_workspace, config_dir, state_dir, _branch) = permission_change_source_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    use cfgd_core::output_v2::{PromptAnswer, Verbosity as V2Verbosity};
+    use cfgd_core::output::{PromptAnswer, Verbosity as V2Verbosity};
     let (v2_printer, v2_buf) = Printer::for_test_with_prompt_responses_at(
         vec![PromptAnswer::Confirm(true)],
         V2Verbosity::Normal,

@@ -3,7 +3,7 @@
 //! collapse, and the buffered-Doc path that never needs the runtime check.
 
 use crate::golden_doc;
-use crate::output_v2::Doc;
+use crate::output::Doc;
 
 golden_doc!(bucket_e, depth_one, |p, cap| {
     let s = p.section("X");

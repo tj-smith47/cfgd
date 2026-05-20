@@ -30,7 +30,7 @@ use crate::config::{
     ResolvedProfile,
 };
 use crate::errors::{DaemonError, Result};
-use crate::output_v2::{Printer, Role};
+use crate::output::{Printer, Role};
 use crate::providers::{FileAction, PackageAction, PackageManager, ProviderRegistry};
 use crate::state::StateStore;
 

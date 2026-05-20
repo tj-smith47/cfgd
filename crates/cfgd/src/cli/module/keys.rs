@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
 
 pub fn cmd_module_keys_generate(
     v2_printer: &PrinterV2,
@@ -10,7 +10,7 @@ pub fn cmd_module_keys_generate(
         "cosign",
         Some("install it from https://docs.sigstore.dev/cosign/installation/"),
     ) {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             "cosign",
             "tool_missing",
             msg.clone(),
@@ -43,7 +43,7 @@ pub fn cmd_module_keys_generate(
         .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
 
     if !status.success() {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             "cosign",
             "keygen_failed",
             "cosign generate-key-pair failed".to_string(),
@@ -144,7 +144,7 @@ pub fn cmd_module_keys_rotate(
         "cosign",
         Some("install it from https://docs.sigstore.dev/cosign/installation/"),
     ) {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             "cosign",
             "tool_missing",
             msg.clone(),
@@ -158,7 +158,7 @@ pub fn cmd_module_keys_rotate(
     let old_pub = Path::new(key_dir).join("cosign.pub");
 
     if !old_key.exists() {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             key_dir,
             "key_not_found",
             format!(
@@ -213,7 +213,7 @@ pub fn cmd_module_keys_rotate(
         if backup_pub.exists() {
             let _ = std::fs::rename(&backup_pub, &old_pub);
         }
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             key_dir,
             "keygen_failed",
             "cosign generate-key-pair failed — old keys restored".to_string(),
@@ -237,7 +237,7 @@ pub fn cmd_module_keys_rotate(
             Err(e) => {
                 sp.finish_fail(format!("Failed to re-sign {artifact}"))
                     .detail(e.to_string());
-                v2_printer.emit(cfgd_core::output_v2::error_doc(
+                v2_printer.emit(cfgd_core::output::error_doc(
                     "keys",
                     "resign_failed",
                     e.to_string(),

@@ -10,7 +10,7 @@
 use std::path::Path;
 
 use cfgd::cli::decide::{build_decide_bulk_doc, build_decide_list_doc};
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 use cfgd_core::state::PendingDecision;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";

@@ -20,7 +20,7 @@ use std::path::Path;
 use cfgd::cli::output_types::SourceListEntry;
 use cfgd::cli::source::cmd_source_list;
 use cfgd::cli::source::list::{build_source_list_doc, build_source_list_no_config_doc};
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 
 use common::{cli_for, source_test_config_setup, source_test_config_with_source_setup};
 

@@ -6,7 +6,7 @@ use similar::TextDiff;
 use cfgd_core::config::{EncryptionMode, FileStrategy, ManagedFileSpec, MergedProfile};
 use cfgd_core::errors::{FileError, Result};
 use cfgd_core::expand_tilde;
-use cfgd_core::output_v2::{Printer, Role};
+use cfgd_core::output::{Printer, Role};
 use cfgd_core::providers::FileAction;
 
 use super::is_file_encrypted;

@@ -7,7 +7,7 @@ fn quiet_reconcile_ctx<'a>(
     notify_on_drift: bool,
     hooks: &'a dyn DaemonHooks,
     state_dir: &'a Path,
-    printer: &'a crate::output_v2::Printer,
+    printer: &'a crate::output::Printer,
 ) -> ReconcileCtx<'a> {
     ReconcileCtx {
         state,
@@ -4742,7 +4742,7 @@ fn handle_reconcile_with_no_config_file() {
 
     let tmp = tempfile::tempdir().unwrap();
     let state_dir = tmp.path().to_path_buf();
-    let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+    let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
 
     // Passing a nonexistent config path should return gracefully (no panic)
     handle_reconcile(
@@ -4809,7 +4809,7 @@ fn handle_reconcile_with_no_profile() {
     )
     .unwrap();
 
-    let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+    let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
     // No profile override and no profile in config — should return gracefully
     handle_reconcile(
         &config_path,
@@ -5246,7 +5246,7 @@ async fn handle_reconcile_with_valid_config_records_drift_events() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
         handle_reconcile(
             &cp,
             None,
@@ -5348,7 +5348,7 @@ async fn handle_reconcile_notify_only_drift_policy_does_not_apply() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
         handle_reconcile(
             &cp,
             None,
@@ -5432,7 +5432,7 @@ async fn handle_reconcile_no_drift_when_no_actions() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
         handle_reconcile(
             &cp,
             None,
@@ -5518,7 +5518,7 @@ async fn handle_reconcile_with_profile_override() {
     let cp = config_path.clone();
     // Override profile to "default" which exists
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
         handle_reconcile(
             &cp,
             Some("default"),
@@ -5614,7 +5614,7 @@ async fn handle_reconcile_multiple_actions_records_all_drift() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
         handle_reconcile(
             &cp,
             None,
@@ -5730,7 +5730,7 @@ async fn handle_reconcile_auto_policy_with_drift_invokes_apply_success() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
         handle_reconcile(
             &cp,
             None,
@@ -5792,7 +5792,7 @@ async fn handle_reconcile_auto_policy_apply_failure_notifies() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
         handle_reconcile(
             &cp,
             None,
@@ -5885,7 +5885,7 @@ async fn handle_reconcile_runs_on_drift_scripts() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
         handle_reconcile(
             &cp,
             None,
@@ -5968,7 +5968,7 @@ async fn handle_reconcile_notify_only_with_notify_on_drift_sends_notification() 
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
         // notify_on_drift = true → notifier.notify() reached
         handle_reconcile(
             &cp,
@@ -6914,7 +6914,7 @@ mod harness {
     ) {
         let state = Arc::new(Mutex::new(DaemonState::new()));
         let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
-        let (printer, buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
+        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let ctx = DaemonLoopContext {
             state: Arc::clone(&state),
@@ -7015,7 +7015,7 @@ mod harness {
         std::fs::write(&config_path, "::: not yaml :::").unwrap();
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
-        let (printer, buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
+        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         runner::apply_sighup_reload(&config_path, &reconcile_secs, &sync_secs, &printer);
         let captured = buf.lock().unwrap().clone();
         assert!(
@@ -7039,7 +7039,7 @@ mod harness {
         .unwrap();
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
-        let (printer, buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
+        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         runner::apply_sighup_reload(&config_path, &reconcile_secs, &sync_secs, &printer);
         let captured = buf.lock().unwrap().clone();
         assert!(
@@ -7062,7 +7062,7 @@ mod harness {
         .unwrap();
         let reconcile_secs = AtomicU64::new(300);
         let sync_secs = AtomicU64::new(300);
-        let (printer, buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
+        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         runner::apply_sighup_reload(&config_path, &reconcile_secs, &sync_secs, &printer);
         let captured = buf.lock().unwrap().clone();
         assert!(
@@ -8389,7 +8389,7 @@ mod harness {
 
     #[test]
     fn print_startup_banner_emits_health_intervals_and_run_hint() {
-        let (printer, buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
+        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         super::super::print_startup_banner(
             &printer,
             &["reconcile=30s".to_string(), "compliance=900s".to_string()],
@@ -8570,7 +8570,7 @@ mod harness {
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
         let (triggers, senders) = make_triggers();
-        let (printer, buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
+        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
 
@@ -8614,7 +8614,7 @@ mod harness {
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
         let (triggers, senders) = make_triggers();
-        let (printer, _buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
+        let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
 
@@ -8659,7 +8659,7 @@ mod harness {
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
         let (triggers, senders) = make_triggers();
-        let (printer, _buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
+        let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
 
@@ -8690,7 +8690,7 @@ mod harness {
         // Start with the happy-path config (no daemon spec).
         let config_path = write_happy_path_config(&tmp);
         let (triggers, senders) = make_triggers();
-        let (printer, buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
+        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
 
@@ -8739,7 +8739,7 @@ mod harness {
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
         let (triggers, senders) = make_triggers();
-        let (printer, _buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
+        let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
 
@@ -8775,7 +8775,7 @@ mod harness {
         let _g = crate::with_test_home_guard(tmp.path());
         let config_path = write_happy_path_config(&tmp);
         let (triggers, senders) = make_triggers();
-        let (printer, _buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
+        let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
 
@@ -8810,7 +8810,7 @@ mod harness {
         let config_path = write_happy_path_config(&tmp);
         let ipc_path = tmp.path().join("health-on.sock");
         let (triggers, senders) = make_triggers();
-        let (printer, _buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
+        let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
 
@@ -8861,7 +8861,7 @@ mod harness {
         let _listener = StdUnixListener::bind(&ipc_path).unwrap();
 
         let (triggers, _senders) = make_triggers();
-        let (printer, _buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
+        let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
 
@@ -9059,7 +9059,7 @@ mod harness {
     // `crate::output::*` for callees that haven't migrated yet) and is
     // invisible to the buffer below.
 
-    use crate::output_v2::test_capture::{assert_snapshot_at, strip_ansi};
+    use crate::output::test_capture::{assert_snapshot_at, strip_ansi};
 
     fn snapshot_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/snapshots")
@@ -9081,7 +9081,7 @@ mod harness {
         let config_path = write_happy_path_config(&tmp);
         let ipc_path = tmp.path().join("daemon-test.sock");
         let (triggers, senders) = make_triggers();
-        let (printer, buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
+        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
 
@@ -9131,7 +9131,7 @@ mod harness {
         let config_path = write_happy_path_config(&tmp);
         let ipc_path = tmp.path().join("daemon-test.sock");
         let (triggers, senders) = make_triggers();
-        let (printer, buf) = Printer::for_test_at(crate::output_v2::Verbosity::Normal);
+        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
 
@@ -9418,7 +9418,7 @@ async fn handle_reconcile_warns_when_module_resolution_fails_and_continues() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
         handle_reconcile(
             &cp,
             None,
@@ -9464,7 +9464,7 @@ async fn handle_reconcile_resolves_non_empty_modules_when_module_dir_exists() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
         handle_reconcile(
             &cp,
             None,
@@ -9531,7 +9531,7 @@ async fn handle_reconcile_auto_apply_with_sources_processes_decisions_and_resolv
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet);
+        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
         handle_reconcile(
             &cp,
             None,

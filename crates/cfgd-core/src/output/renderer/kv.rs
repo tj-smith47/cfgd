@@ -13,7 +13,7 @@
 //! Every line emission below uses `w.write_line(...)` directly, with blank-
 //! pending handled inline.
 use super::{Renderer, Writer};
-use crate::output_v2::Verbosity;
+use crate::output::Verbosity;
 
 const KEY_WIDTH_CAP: usize = 24;
 /// Gap inserted between the (padded) key column and the value.
@@ -122,8 +122,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::super::{Renderer, StringSink};
-    use crate::output_v2::tests::strip_ansi;
-    use crate::output_v2::{Theme, Verbosity};
+    use crate::output::tests::strip_ansi;
+    use crate::output::{Theme, Verbosity};
 
     fn capture() -> (Renderer, StringSink, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));

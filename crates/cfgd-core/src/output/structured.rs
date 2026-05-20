@@ -1,6 +1,21 @@
-use serde::Serialize;
+//! Structured-output bridge for `Printer::emit`.
+//!
+//! Routes a `Doc` by `OutputFormat`:
+//! - `Json` → pretty-printed JSON to stdout.
+//! - `Yaml` → YAML to stdout (with leading `---\n` stripped).
+//! - `Name` → name-field per item to stdout.
+//! - `Jsonpath(expr)` → kubectl-style jsonpath result to stdout.
+//! - `Template(str)` / `TemplateFile(path)` → tera-rendered to stdout.
+//! - `Table` / `Wide` → returns `false`; caller falls back to `render_doc`.
+//!
+//! The four jsonpath helpers (`apply_jsonpath`, `walk_jsonpath`,
+//! `split_jsonpath_segment`, `format_jsonpath_result`) are copied verbatim
+//! from the legacy `output/structured.rs` — they depend only on
+//! `serde_json` and are already battle-tested.
 
-use super::{OutputFormat, Printer};
+use super::OutputFormat;
+use super::doc::Doc;
+use super::renderer::Writer;
 
 /// Apply a kubectl-compatible jsonpath expression to a JSON value.
 ///
@@ -11,7 +26,7 @@ use super::{OutputFormat, Printer};
 /// - `{.items[0:3]}` — array slice
 ///
 /// Scalars return as raw text, objects/arrays as JSON.
-pub(super) fn apply_jsonpath(value: &serde_json::Value, expr: &str) -> String {
+pub(crate) fn apply_jsonpath(value: &serde_json::Value, expr: &str) -> String {
     // Strip optional { } wrapper
     let expr = expr.trim();
     let expr = expr.strip_prefix('{').unwrap_or(expr);
@@ -39,7 +54,7 @@ pub(super) fn apply_jsonpath(value: &serde_json::Value, expr: &str) -> String {
 
 /// Extract a name-like identity field from a JSON value.
 /// Tries "name" first, then common identity fields as fallbacks.
-pub(super) fn name_from_value(value: &serde_json::Value) -> Option<String> {
+pub(crate) fn name_from_value(value: &serde_json::Value) -> Option<String> {
     for key in &["name", "context", "phase", "resourceType", "url"] {
         if let Some(s) = value.get(key).and_then(|v| v.as_str()) {
             return Some(s.to_string());
@@ -54,7 +69,10 @@ pub(super) fn name_from_value(value: &serde_json::Value) -> Option<String> {
     None
 }
 
-fn walk_jsonpath<'a>(value: &'a serde_json::Value, path: &str) -> Vec<&'a serde_json::Value> {
+pub(crate) fn walk_jsonpath<'a>(
+    value: &'a serde_json::Value,
+    path: &str,
+) -> Vec<&'a serde_json::Value> {
     if path.is_empty() {
         return vec![value];
     }
@@ -129,7 +147,7 @@ fn walk_jsonpath<'a>(value: &'a serde_json::Value, path: &str) -> Vec<&'a serde_
 
 /// Split a jsonpath into the first segment and the rest.
 /// Handles bracket notation: `items[0].name` → (`items[0]`, `name`)
-pub(super) fn split_jsonpath_segment(path: &str) -> (&str, &str) {
+pub(crate) fn split_jsonpath_segment(path: &str) -> (&str, &str) {
     let mut in_bracket = false;
     for (i, c) in path.char_indices() {
         match c {
@@ -145,7 +163,7 @@ pub(super) fn split_jsonpath_segment(path: &str) -> (&str, &str) {
 }
 
 /// Format a jsonpath result value: scalars as raw text, objects/arrays as JSON.
-pub(super) fn format_jsonpath_result(value: &serde_json::Value) -> String {
+pub(crate) fn format_jsonpath_result(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::Null => String::new(),
         serde_json::Value::String(s) => s.clone(),
@@ -155,109 +173,95 @@ pub(super) fn format_jsonpath_result(value: &serde_json::Value) -> String {
     }
 }
 
-impl Printer {
-    /// Whether structured output mode is active (not table or wide).
-    pub fn is_structured(&self) -> bool {
-        !matches!(self.output_format, OutputFormat::Table | OutputFormat::Wide)
-    }
-
-    /// Returns `true` when `-o wide` was specified, enabling extra columns.
-    pub fn is_wide(&self) -> bool {
-        matches!(self.output_format, OutputFormat::Wide)
-    }
-
-    /// Write a serializable value as structured output to stdout.
-    /// Returns `true` if output was emitted (caller should skip human formatting).
-    /// Returns `false` if output format is Table/Wide (caller should do human formatting).
-    pub fn write_structured<T: Serialize>(&self, value: &T) -> bool {
-        match &self.output_format {
-            OutputFormat::Table | OutputFormat::Wide => false,
-            OutputFormat::Json => {
-                let json_value = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
-                let text = serde_json::to_string_pretty(&json_value).unwrap_or_default();
-                self.stdout_line(&text);
-                true
-            }
-            OutputFormat::Yaml => {
-                let yaml = serde_yaml::to_string(value).unwrap_or_default();
-                let trimmed = yaml.strip_prefix("---\n").unwrap_or(&yaml);
-                self.stdout_line(trimmed.trim_end());
-                true
-            }
-            OutputFormat::Name => {
-                let json_value = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
-                match &json_value {
-                    serde_json::Value::Array(arr) => {
-                        for item in arr {
-                            if let Some(name) = name_from_value(item) {
-                                self.stdout_line(&name);
-                            }
-                        }
-                    }
-                    obj => {
-                        if let Some(name) = name_from_value(obj) {
-                            self.stdout_line(&name);
+/// Route a `Doc` to `sink_stdout` per `format`. Returns `true` when the format
+/// was handled (structured); returns `false` for `Table | Wide` so the caller
+/// can fall back to the human renderer.
+pub(crate) fn emit_structured(sink_stdout: &dyn Writer, doc: &Doc, format: &OutputFormat) -> bool {
+    match format {
+        OutputFormat::Table | OutputFormat::Wide => false,
+        OutputFormat::Json => {
+            let v = doc.data_or_self_json();
+            let text = serde_json::to_string_pretty(&v).unwrap_or_default();
+            sink_stdout.write_line(&text);
+            true
+        }
+        OutputFormat::Yaml => {
+            let v = doc.data_or_self_json();
+            let yaml = serde_yaml::to_string(&v).unwrap_or_default();
+            let trimmed = yaml.strip_prefix("---\n").unwrap_or(&yaml);
+            sink_stdout.write_line(trimmed.trim_end());
+            true
+        }
+        OutputFormat::Name => {
+            let v = doc.data_or_self_json();
+            match v {
+                serde_json::Value::Array(arr) => {
+                    for item in arr {
+                        if let Some(name) = name_from_value(&item) {
+                            sink_stdout.write_line(&name);
                         }
                     }
                 }
-                true
-            }
-            OutputFormat::Jsonpath(expr) => {
-                let json_value = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
-                let text = apply_jsonpath(&json_value, expr);
-                self.stdout_line(&text);
-                true
-            }
-            OutputFormat::Template(tmpl) => {
-                self.render_template(value, tmpl);
-                true
-            }
-            OutputFormat::TemplateFile(path) => {
-                let path = crate::expand_tilde(path);
-                match std::fs::read_to_string(&path) {
-                    Ok(tmpl) => {
-                        self.render_template(value, &tmpl);
-                    }
-                    Err(e) => {
-                        self.error(&format!(
-                            "failed to read template file '{}': {}",
-                            path.display(),
-                            e
-                        ));
+                obj => {
+                    if let Some(name) = name_from_value(&obj) {
+                        sink_stdout.write_line(&name);
                     }
                 }
-                true
             }
+            true
+        }
+        OutputFormat::Jsonpath(expr) => {
+            let v = doc.data_or_self_json();
+            sink_stdout.write_line(&apply_jsonpath(&v, expr));
+            true
+        }
+        OutputFormat::Template(tmpl) => {
+            render_template_to(sink_stdout, doc, tmpl);
+            true
+        }
+        OutputFormat::TemplateFile(path) => {
+            let path = crate::expand_tilde(path);
+            match std::fs::read_to_string(&path) {
+                Ok(tmpl) => render_template_to(sink_stdout, doc, &tmpl),
+                Err(e) => {
+                    sink_stdout.write_line(&format!(
+                        "failed to read template file '{}': {}",
+                        path.display(),
+                        e
+                    ));
+                }
+            }
+            true
         }
     }
+}
 
-    fn render_template<T: Serialize>(&self, value: &T, template: &str) {
-        let json_value = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
-        let mut tera = tera::Tera::default();
-        let tmpl_name = "__inline__";
-        if let Err(e) = tera.add_raw_template(tmpl_name, template) {
-            self.error(&format!("invalid template: {}", e));
-            return;
-        }
-        match &json_value {
-            serde_json::Value::Array(arr) => {
-                for item in arr {
-                    match tera::Context::from_value(item.clone()) {
-                        Ok(ctx) => match tera.render(tmpl_name, &ctx) {
-                            Ok(rendered) => self.stdout_line(&rendered),
-                            Err(e) => self.error(&format!("template render error: {}", e)),
-                        },
-                        Err(e) => self.error(&format!("template context error: {}", e)),
-                    }
+fn render_template_to(sink_stdout: &dyn Writer, doc: &Doc, template: &str) {
+    let v = doc.data_or_self_json();
+    let mut tera = tera::Tera::default();
+    let tmpl_name = "__inline__";
+    if let Err(e) = tera.add_raw_template(tmpl_name, template) {
+        sink_stdout.write_line(&format!("invalid template: {e}"));
+        return;
+    }
+    match v {
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                match tera::Context::from_value(item.clone()) {
+                    Ok(ctx) => match tera.render(tmpl_name, &ctx) {
+                        Ok(rendered) => sink_stdout.write_line(&rendered),
+                        Err(e) => sink_stdout.write_line(&format!("template render error: {e}")),
+                    },
+                    Err(e) => sink_stdout.write_line(&format!("template context error: {e}")),
                 }
             }
-            other => match tera::Context::from_value(other.clone()) {
-                Ok(ctx) => match tera.render(tmpl_name, &ctx) {
-                    Ok(rendered) => self.stdout_line(&rendered),
-                    Err(e) => self.error(&format!("template render error: {}", e)),
-                },
-                Err(e) => self.error(&format!("template context error: {}", e)),
+        }
+        other => match tera::Context::from_value(other) {
+            Ok(ctx) => match tera.render(tmpl_name, &ctx) {
+                Ok(rendered) => sink_stdout.write_line(&rendered),
+                Err(e) => sink_stdout.write_line(&format!("template render error: {e}")),
             },
-        }
+            Err(e) => sink_stdout.write_line(&format!("template context error: {e}")),
+        },
     }
 }

@@ -18,7 +18,7 @@ use cfgd::cli::module::list_show::{
 };
 use cfgd::cli::module::{ModuleListEntry, ModuleShowOutput};
 use cfgd_core::config::{EnvVar, ModuleFileEntry, ModuleLockEntry, ModuleSpec, ShellAlias};
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 use cfgd_core::state::ModuleStateRecord;
 use pretty_assertions::assert_eq;
 

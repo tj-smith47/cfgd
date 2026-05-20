@@ -99,7 +99,7 @@ mod tests {
     use super::super::renderer::StringSink;
     use super::super::{Theme, Verbosity};
     use super::*;
-    use crate::output_v2::tests::strip_ansi;
+    use crate::output::tests::strip_ansi;
 
     #[test]
     fn diff_marks_changed_lines() {

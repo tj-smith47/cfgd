@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
 
 pub fn cmd_module_create(
     cli: &Cli,
@@ -22,7 +22,7 @@ pub fn cmd_module_create(
     let module_yaml_path = module_dir.join("module.yaml");
 
     if module_yaml_path.exists() {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             name,
             "already_exists",
             format!(
@@ -113,7 +113,7 @@ pub fn cmd_module_create(
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
             if !seen.insert(base.clone()) {
-                v2_printer.emit(cfgd_core::output_v2::error_doc(
+                v2_printer.emit(cfgd_core::output::error_doc(
                     name,
                     "duplicate_basename",
                     format!(
@@ -357,7 +357,7 @@ pub fn cmd_module_update_local(
     let (mut doc, module_yaml_path) = match load_module_document(&config_dir, name) {
         Ok(v) => v,
         Err(e) => {
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 name,
                 "not_found",
                 e.to_string(),
@@ -632,7 +632,7 @@ pub fn cmd_module_edit(cli: &Cli, v2_printer: &PrinterV2, name: &str) -> anyhow:
     let module_yaml = config_dir.join("modules").join(name).join("module.yaml");
 
     if !module_yaml.exists() {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             name,
             "not_found",
             format!("Module '{}' not found at {}", name, module_yaml.display()),
@@ -704,7 +704,7 @@ pub fn cmd_module_delete(
     let module_dir = config_dir.join("modules").join(name);
 
     if !module_dir.exists() {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             name,
             "not_found",
             format!("Module '{}' not found at {}", name, module_dir.display()),
@@ -716,7 +716,7 @@ pub fn cmd_module_delete(
     // Safety: refuse if any profile references this module
     let referencing = profiles_using_module(&profiles_dir(cli), name)?;
     if !referencing.is_empty() {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             name,
             "in_use",
             format!(

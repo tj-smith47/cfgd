@@ -37,8 +37,8 @@ pub(crate) use scripts::{build_script_env, execute_script};
 #[cfg(test)]
 use {
     crate::errors::Result,
-    crate::output_v2::Printer,
-    crate::output_v2::Printer as PrinterV2,
+    crate::output::Printer,
+    crate::output::Printer as PrinterV2,
     crate::providers::{FileAction, PackageAction, SecretAction},
     crate::state::ApplyStatus,
     env_files::*,

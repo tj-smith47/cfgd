@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::config::{ConfigSourceDocument, PolicyItems};
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role, doc::SectionBuilder, renderer::Table};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role, doc::SectionBuilder, renderer::Table};
 
 const SHORT_COMMIT_LEN: usize = 12;
 
@@ -212,7 +212,7 @@ pub fn cmd_source_show(cli: &Cli, v2_printer: &PrinterV2, name: &str) -> anyhow:
     let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
-    let v2_local = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let v2_local = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     if let Err(e) = mgr.load_source(source_spec, &v2_local) {
         v2_printer.status_simple(Role::Warn, format!("Failed to load source manifest: {}", e));
     }

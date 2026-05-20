@@ -1,4 +1,4 @@
-use cfgd_core::output_v2::Role;
+use cfgd_core::output::Role;
 use tracing::warn;
 
 use super::*;
@@ -40,7 +40,7 @@ pub(crate) fn collect_module_file_targets(module_name: &str, config_dir: &Path) 
 /// and prompt the user to restore them.
 pub(crate) fn prompt_restore_backups(
     targets: &[PathBuf],
-    v2_printer: &cfgd_core::output_v2::Printer,
+    v2_printer: &cfgd_core::output::Printer,
 ) -> anyhow::Result<()> {
     for target in targets {
         let backup_path = PathBuf::from(format!("{}.cfgd-backup", target.display()));

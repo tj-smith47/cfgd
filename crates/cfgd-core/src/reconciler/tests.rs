@@ -7588,8 +7588,8 @@ fn verify_system_configurator_reports_healthy_when_no_drift() {
 mod bridge {
     use super::super::Reconciler;
     use super::*;
-    use crate::output_v2::test_capture::{assert_snapshot_at, strip_ansi};
-    use crate::output_v2::{Doc, Printer as PrinterV2, Role};
+    use crate::output::test_capture::{assert_snapshot_at, strip_ansi};
+    use crate::output::{Doc, Printer as PrinterV2, Role};
 
     fn snapshot_dir() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reconciler/snapshots")

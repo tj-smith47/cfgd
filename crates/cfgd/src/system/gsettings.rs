@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output_v2::{Printer, Role};
+use cfgd_core::output::{Printer, Role};
 
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn gsettings_apply_empty_mapping_is_noop() {
-        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
+        let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let gc = GsettingsConfigurator;
         let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
         gc.apply(&yaml, &printer).unwrap();
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn gsettings_apply_non_mapping_is_noop() {
-        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
+        let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let gc = GsettingsConfigurator;
         let yaml = serde_yaml::Value::String("not a mapping".into());
         gc.apply(&yaml, &printer).unwrap();
@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn gsettings_apply_skips_non_string_schema_key() {
-        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
+        let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let gc = GsettingsConfigurator;
         let mut outer = serde_yaml::Mapping::new();
         outer.insert(
@@ -194,7 +194,7 @@ mod tests {
 
     #[test]
     fn gsettings_apply_skips_inner_non_mapping() {
-        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
+        let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let gc = GsettingsConfigurator;
         let mut outer = serde_yaml::Mapping::new();
         outer.insert(
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn gsettings_apply_skips_non_string_key() {
-        let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
+        let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
         let gc = GsettingsConfigurator;
         let mut inner = serde_yaml::Mapping::new();
         inner.insert(

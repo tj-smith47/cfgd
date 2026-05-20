@@ -17,7 +17,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::workflow;
-use cfgd_core::output_v2::{OutputFormat, Printer};
+use cfgd_core::output::{OutputFormat, Printer};
 
 use common::{cli_for, workflow_empty_test_setup, workflow_test_setup};
 

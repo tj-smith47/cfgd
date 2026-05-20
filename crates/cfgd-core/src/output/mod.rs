@@ -1,80 +1,75 @@
-// Centralized output system — all terminal interaction goes through Printer
+//! New typed-component output system. Ships alongside `output/` during the R1–R3
+//! migration; replaces it at R3.
+//!
+//! See `.claude/specs/2026-05-14-output-system-redesign-design.md` for the design.
 
-mod diff;
-mod printer;
-mod process;
-mod progress;
-mod structured;
-mod syntax;
-mod theme;
+pub mod role;
+pub use role::Role;
+
+pub mod verbosity;
+pub use verbosity::{OutputFormat, Verbosity};
+
+pub mod theme;
+pub use theme::Theme;
+
+pub mod component;
+pub use component::{Component, KvPair};
+
+pub mod renderer;
+
+pub mod printer;
+pub use printer::{DocCapture, Printer, PromptAnswer};
+
+pub mod section_guard;
+pub use section_guard::SectionGuard;
+
+pub mod status_builder;
+pub use status_builder::StatusBuilder;
+
+pub mod spinner;
+pub use spinner::{ProgressBar, Spinner};
+
+pub mod process;
+pub use process::CommandOutput;
+
+pub mod prompts;
+
+pub mod raw;
+
+pub mod doc;
+pub use doc::{Doc, SectionBuilder, StatusFields};
+
+/// Build a stable-shaped error Doc for `bail!`-on-emit-then-fail sites.
+/// Carries an `error` category key + `name` so structured consumers
+/// (`-o json`) see a consistent payload on failure. Any extra fields in
+/// `extras` (object literal expected) are merged into the payload alongside
+/// `error` + `name`.
+pub fn error_doc(
+    name: &str,
+    error_kind: &str,
+    message: impl Into<String>,
+    extras: serde_json::Value,
+) -> Doc {
+    let mut payload = serde_json::json!({
+        "error": error_kind,
+        "name": name,
+    });
+    if let serde_json::Value::Object(extra_map) = extras
+        && let serde_json::Value::Object(payload_map) = &mut payload
+    {
+        for (k, v) in extra_map {
+            payload_map.insert(k, v);
+        }
+    }
+    Doc::new().status(Role::Fail, message).with_data(payload)
+}
+
+pub mod render_doc;
+
+pub mod structured;
+
+#[cfg(feature = "test-helpers")]
+pub mod test_capture;
 
 #[cfg(test)]
 mod tests;
-
-use console::Term;
-use indicatif::MultiProgress;
-use syntect::highlighting::ThemeSet;
-use syntect::parsing::SyntaxSet;
-
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-pub use theme::Theme;
-
-/// A canned response for one prompt invocation. Used by tests to drive
-/// command flows past `prompt_confirm` / `prompt_text` / `prompt_select`
-/// without an attached TTY. Each prompt call consumes one queue entry;
-/// type-mismatched or exhausted entries fall back to the normal
-/// non-interactive Err arm.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PromptAnswer {
-    Confirm(bool),
-    Text(String),
-    Select(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum OutputFormat {
-    Table,
-    Wide,
-    Json,
-    Yaml,
-    Name,
-    Jsonpath(String),
-    Template(String),
-    TemplateFile(std::path::PathBuf),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Verbosity {
-    Quiet,
-    Normal,
-    Verbose,
-}
-
-/// Result of running a command with live output display.
-pub struct CommandOutput {
-    pub status: std::process::ExitStatus,
-    pub stdout: String,
-    pub stderr: String,
-    pub duration: Duration,
-}
-
-pub struct Printer {
-    theme: Theme,
-    term: Term,
-    multi_progress: MultiProgress,
-    syntax_set: SyntaxSet,
-    theme_set: ThemeSet,
-    verbosity: Verbosity,
-    output_format: OutputFormat,
-    /// Optional buffer for capturing output in tests. When set, all output
-    /// methods append plain text here regardless of verbosity level.
-    test_buf: Option<Arc<Mutex<String>>>,
-    /// Optional queue of canned prompt responses for tests. When set, each
-    /// `prompt_confirm` / `prompt_text` / `prompt_select` call pops the
-    /// front entry and returns it (if the type matches). Production
-    /// Printers leave this None and prompts behave normally.
-    prompt_queue: Option<Arc<Mutex<VecDeque<PromptAnswer>>>>,
-}

@@ -1,8 +1,8 @@
 use super::*;
 
-use cfgd_core::output_v2::{Doc, Role};
+use cfgd_core::output::{Doc, Role};
 
-pub fn cmd_sync(cli: &Cli, v2_printer: &cfgd_core::output_v2::Printer) -> anyhow::Result<()> {
+pub fn cmd_sync(cli: &Cli, v2_printer: &cfgd_core::output::Printer) -> anyhow::Result<()> {
     v2_printer.heading("Sync");
 
     let (cfg, profile_name, _resolved) = load_config_and_profile_v2(cli)?;
@@ -42,7 +42,7 @@ pub fn cmd_sync(cli: &Cli, v2_printer: &cfgd_core::output_v2::Printer) -> anyhow
         let cache_dir = source_cache_dir(cli)?;
         let mut mgr = SourceManager::new(&cache_dir);
         mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
-        let v2_local = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+        let v2_local = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
 
         for source_spec in &cfg.spec.sources {
             let source_dir = cache_dir.join(&source_spec.name);

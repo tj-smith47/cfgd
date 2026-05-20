@@ -14,7 +14,7 @@ use std::path::Path;
 
 use cfgd::cli::output_types::RollbackOutput;
 use cfgd::cli::rollback::{build_rollback_doc, cmd_rollback};
-use cfgd_core::output_v2::{Doc, Printer, PromptAnswer, Role, Verbosity as V2Verbosity};
+use cfgd_core::output::{Doc, Printer, PromptAnswer, Role, Verbosity as V2Verbosity};
 use pretty_assertions::assert_eq;
 
 use common::{

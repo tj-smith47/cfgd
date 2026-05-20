@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output_v2::{Printer, Role};
+use cfgd_core::output::{Printer, Role};
 use cfgd_core::providers::PackageManager;
 
 use super::shared::{run_pkg_cmd, run_pkg_cmd_msg};

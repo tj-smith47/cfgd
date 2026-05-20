@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role, SectionBuilder, renderer::Table};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role, SectionBuilder, renderer::Table};
 
 // cfgd explain — schema documentation for all resource types
 // ---------------------------------------------------------------------------

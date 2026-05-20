@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use cfgd_core::output_v2::{Printer as PrinterV2, Role};
+use cfgd_core::output::{Printer as PrinterV2, Role};
 
 /// Returns true if the value is a clonable git source (URL or local git repo).
 pub(super) fn is_git_source(value: &str) -> bool {

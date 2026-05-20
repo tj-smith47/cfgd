@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::compliance::{ComplianceCheck, ComplianceSnapshot, ComplianceStatus};
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role, renderer::Table as TableV2};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role, renderer::Table as TableV2};
 use cfgd_core::state::ComplianceHistoryRow;
 
 /// Collect a compliance snapshot, hash it, and store in the state store.
@@ -363,7 +363,7 @@ mod tests {
     use cfgd_core::compliance::{
         ComplianceCheck, ComplianceSnapshot, ComplianceStatus, ComplianceSummary, MachineInfo,
     };
-    use cfgd_core::output_v2::OutputFormat;
+    use cfgd_core::output::OutputFormat;
 
     fn sample_snapshot(checks: Vec<ComplianceCheck>) -> ComplianceSnapshot {
         let summary = cfgd_core::compliance::compute_summary(&checks);

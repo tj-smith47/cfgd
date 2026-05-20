@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 use cfgd_core::providers::PackageManager;
 
 #[cfg(target_os = "linux")]

@@ -777,7 +777,7 @@ fn write_etc_environment_empty_managed_on_new_file() {
 
 #[test]
 fn environment_apply_empty_desired_is_noop() {
-    let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
     let ec = EnvironmentConfigurator;
     let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
     // Should return Ok(()) without writing anything
@@ -786,7 +786,7 @@ fn environment_apply_empty_desired_is_noop() {
 
 #[test]
 fn environment_apply_non_mapping_is_noop() {
-    let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
     let ec = EnvironmentConfigurator;
     let yaml = serde_yaml::Value::String("not a mapping".into());
     ec.apply(&yaml, &printer).unwrap();

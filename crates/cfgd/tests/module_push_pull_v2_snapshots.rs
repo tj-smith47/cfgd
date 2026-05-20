@@ -9,7 +9,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::module;
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 

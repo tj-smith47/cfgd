@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use crate::golden_doc;
-use crate::output_v2::{Doc, Role};
+use crate::output::{Doc, Role};
 
 // 1. KvBlock alignment with 1 key
 golden_doc!(bucket_f, kv_one_key, |p, cap| {

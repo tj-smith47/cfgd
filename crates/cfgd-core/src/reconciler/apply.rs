@@ -1,7 +1,7 @@
 use crate::config::ResolvedProfile;
 use crate::errors::{ConfigError, Result};
 use crate::modules::ResolvedModule;
-use crate::output_v2::{Printer, Role};
+use crate::output::{Printer, Role};
 use crate::state::ApplyStatus;
 
 use super::format::{format_action_description, parse_resource_from_description};

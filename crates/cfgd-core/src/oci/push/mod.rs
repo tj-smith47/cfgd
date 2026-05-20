@@ -7,7 +7,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::errors::OciError;
-use crate::output_v2::Printer;
+use crate::output::Printer;
 use crate::sha256_digest;
 
 use super::archive::create_tar_gz;

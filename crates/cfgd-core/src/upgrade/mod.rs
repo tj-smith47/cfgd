@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime};
 use semver::Version;
 
 use crate::errors::{Result, UpgradeError};
-use crate::output_v2::{Printer, Role};
+use crate::output::{Printer, Role};
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
 const GITHUB_API_BASE_ENV: &str = "CFGD_GITHUB_API_BASE";

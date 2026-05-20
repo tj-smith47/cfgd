@@ -157,7 +157,7 @@ tasks:
         # (a) Re-add files that were staged pre-task. Use -A so deletes and
         # renames staged with `git mv` aren't lost when lint touches them.
         while IFS= read -r f; do
-          [ -n "$f" ] && git add -A -- "$f"
+          [ -n "$f" ] && { git add -A -- "$f" 2>/dev/null || git rm --cached -- "$f" 2>/dev/null || true; }
         done <<'STAGED_EOF'
         {{.STAGED_LIST}}
         STAGED_EOF

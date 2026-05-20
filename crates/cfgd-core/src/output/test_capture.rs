@@ -187,18 +187,18 @@ impl DocCapture {
     }
 
     /// Snapshot helper: assert the captured human output matches the contents
-    /// of `src/output_v2/tests/snapshots/<name>`. Use `INSTA_UPDATE=always
+    /// of `src/output/tests/snapshots/<name>`. Use `INSTA_UPDATE=always
     /// cargo test` to refresh.
     pub fn assert_human_snapshot(&self, name: &str) {
-        self.assert_human_snapshot_in(std::path::Path::new("src/output_v2/tests/snapshots"), name);
+        self.assert_human_snapshot_in(std::path::Path::new("src/output/tests/snapshots"), name);
     }
 
     pub fn assert_json_snapshot(&self, name: &str) {
-        self.assert_json_snapshot_in(std::path::Path::new("src/output_v2/tests/snapshots"), name);
+        self.assert_json_snapshot_in(std::path::Path::new("src/output/tests/snapshots"), name);
     }
 
     /// Like `assert_human_snapshot` but rooted at `base` instead of the
-    /// hard-coded `src/output_v2/tests/snapshots`. Use from downstream test
+    /// hard-coded `src/output/tests/snapshots`. Use from downstream test
     /// crates that store snapshots elsewhere (e.g. `tests/output_snapshots/`).
     pub fn assert_human_snapshot_in(&self, base: &std::path::Path, name: &str) {
         let actual = strip_ansi(&self.human());
@@ -226,8 +226,8 @@ pub fn assert_snapshot_at(base: &std::path::Path, name: &str, actual: &str) {
 }
 
 /// ANSI-stripping helper used by `assert_*_snapshot`. Mirrors
-/// `crate::output_v2::tests::strip_ansi` but lives here because this file is
-/// feature-gated (not test-gated) — `crate::output_v2::tests` is only present
+/// `crate::output::tests::strip_ansi` but lives here because this file is
+/// feature-gated (not test-gated) — `crate::output::tests` is only present
 /// under `#[cfg(test)]` and is unreachable from a `cargo build
 /// --features test-helpers` compile of this module.
 pub fn strip_ansi(s: &str) -> String {

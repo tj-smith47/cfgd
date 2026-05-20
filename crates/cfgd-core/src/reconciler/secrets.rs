@@ -2,7 +2,7 @@ use secrecy::ExposeSecret;
 
 use crate::errors::Result;
 use crate::expand_tilde;
-use crate::output_v2::{Printer, Role};
+use crate::output::{Printer, Role};
 use crate::providers::SecretAction;
 
 impl<'a> super::Reconciler<'a> {

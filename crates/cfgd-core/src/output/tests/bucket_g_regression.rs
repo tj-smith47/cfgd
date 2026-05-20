@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use crate::golden_doc;
-use crate::output_v2::{Doc, Role};
+use crate::output::{Doc, Role};
 
 // BEFORE: cli/rollback.rs:108  printer.info(&format!("  {}", action));
 golden_doc!(bucket_g, rollback_action, |p, cap| {

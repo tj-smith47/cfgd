@@ -23,7 +23,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::generate::{self, GenerateArgs};
-use cfgd_core::output_v2::{Doc, OutputFormat, Printer, Role};
+use cfgd_core::output::{Doc, OutputFormat, Printer, Role};
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -63,7 +63,7 @@ fn cli_for(config_dir: &Path) -> cfgd::cli::Cli {
         no_color: true,
         verbose: 0,
         quiet: true,
-        output: cfgd::cli::OutputFormatArg(cfgd_core::output_v2::OutputFormat::Table),
+        output: cfgd::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         jsonpath: None,
         state_dir: None,
         command: Some(cfgd::cli::Command::Status {

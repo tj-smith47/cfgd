@@ -21,7 +21,7 @@ use super::{
 };
 use crate::config::{self, CfgdConfig};
 use crate::errors::{DaemonError, Result};
-use crate::output_v2::{Printer, Role};
+use crate::output::{Printer, Role};
 
 pub(super) struct DaemonLoopContext {
     pub state: Arc<Mutex<DaemonState>>,

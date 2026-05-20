@@ -14,7 +14,7 @@ use std::path::Path;
 
 use cfgd::cli::output_types::PullOutput;
 use cfgd::cli::pull::{build_pull_doc, cmd_pull, render_pull};
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 use pretty_assertions::assert_eq;
 
 use common::{cli_for, tiny_profile_setup};

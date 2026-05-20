@@ -7,7 +7,7 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
 use crate::errors::Result;
-use crate::output_v2::Printer;
+use crate::output::Printer;
 
 // --- PackageManager trait ---
 

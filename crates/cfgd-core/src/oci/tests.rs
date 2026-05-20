@@ -609,8 +609,8 @@ mod bridge {
     use crate::oci::push::push_module;
     use crate::oci::test_helpers::{create_test_module_dir, registry_from_url};
     use crate::oci::{MEDIA_TYPE_MODULE_CONFIG, MEDIA_TYPE_MODULE_LAYER, MEDIA_TYPE_OCI_MANIFEST};
-    use crate::output_v2::test_capture::{assert_snapshot_at, strip_ansi, strip_spinner_duration};
-    use crate::output_v2::{Doc, Printer as PrinterV2, Role};
+    use crate::output::test_capture::{assert_snapshot_at, strip_ansi, strip_spinner_duration};
+    use crate::output::{Doc, Printer as PrinterV2, Role};
     use crate::sha256_digest;
 
     fn snapshot_dir() -> std::path::PathBuf {

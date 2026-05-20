@@ -709,7 +709,7 @@ fn configurator_name_is_gpg_keys() {
 #[test]
 fn apply_non_sequence_is_noop() {
     let c = GpgKeysConfigurator;
-    let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
     let desired = serde_yaml::Value::String("not a sequence".into());
     let result = c.apply(&desired, &printer);
     assert!(
@@ -721,7 +721,7 @@ fn apply_non_sequence_is_noop() {
 #[test]
 fn apply_empty_sequence_is_noop() {
     let c = GpgKeysConfigurator;
-    let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
     let desired = serde_yaml::Value::Sequence(Vec::new());
     let result = c.apply(&desired, &printer);
     assert!(
@@ -733,7 +733,7 @@ fn apply_empty_sequence_is_noop() {
 #[test]
 fn apply_unparseable_entries_skipped() {
     let c = GpgKeysConfigurator;
-    let (printer, _doc) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
     let desired: serde_yaml::Value = serde_yaml::from_str(
         r#"
 - displayName: "Missing required fields"

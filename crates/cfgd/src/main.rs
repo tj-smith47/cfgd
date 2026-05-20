@@ -52,11 +52,11 @@ fn main() -> anyhow::Result<()> {
     let mut output_format = cli.output.0.clone();
     if let Some(ref expr) = cli.jsonpath {
         match &output_format {
-            cfgd_core::output_v2::OutputFormat::Jsonpath(_) => {
+            cfgd_core::output::OutputFormat::Jsonpath(_) => {
                 anyhow::bail!("cannot use both --jsonpath and -o jsonpath=...");
             }
             _ => {
-                output_format = cfgd_core::output_v2::OutputFormat::Jsonpath(expr.clone());
+                output_format = cfgd_core::output::OutputFormat::Jsonpath(expr.clone());
             }
         }
     }
@@ -65,11 +65,11 @@ fn main() -> anyhow::Result<()> {
     // Verbosity enum stays 3-way (Quiet|Normal|Verbose) — the extra tracing detail
     // from `-vv` goes into the tracing filter, not the user-facing Printer noise.
     let verbosity = if cli.quiet {
-        cfgd_core::output_v2::Verbosity::Quiet
+        cfgd_core::output::Verbosity::Quiet
     } else if cli.verbose > 0 {
-        cfgd_core::output_v2::Verbosity::Verbose
+        cfgd_core::output::Verbosity::Verbose
     } else {
-        cfgd_core::output_v2::Verbosity::Normal
+        cfgd_core::output::Verbosity::Normal
     };
 
     // Initialize tracing
@@ -92,7 +92,7 @@ fn main() -> anyhow::Result<()> {
     // Printer::with_format so every Printer (including daemon-owned
     // ones) honors the convention.
     if cli.no_color {
-        cfgd_core::output_v2::Printer::disable_colors();
+        cfgd_core::output::Printer::disable_colors();
     }
 
     // Try loading config for theme settings; fall back to default theme if unavailable
@@ -102,15 +102,12 @@ fn main() -> anyhow::Result<()> {
         .flatten()
         .and_then(|c| c.spec.theme);
     let v2_theme_name = theme_config.as_ref().map(|t| t.name.clone());
-    let v2_printer = cfgd_core::output_v2::Printer::with_format(
-        verbosity,
-        v2_theme_name.as_deref(),
-        output_format,
-    );
+    let v2_printer =
+        cfgd_core::output::Printer::with_format(verbosity, v2_theme_name.as_deref(), output_format);
 
     if jsonpath_deprecated {
         v2_printer.status_simple(
-            cfgd_core::output_v2::Role::Warn,
+            cfgd_core::output::Role::Warn,
             "--jsonpath is deprecated and will be removed in a future release; use --output jsonpath=EXPR instead",
         );
     }
@@ -120,7 +117,7 @@ fn main() -> anyhow::Result<()> {
         // `{0}` which expands the inner error, so `{:#}` would walk source()
         // and duplicate the inner text. See errors/mod.rs::CfgdError for the
         // paired contract.
-        v2_printer.status_simple(cfgd_core::output_v2::Role::Fail, format!("{}", e));
+        v2_printer.status_simple(cfgd_core::output::Role::Fail, format!("{}", e));
         exit_code_for_anyhow(&e).exit();
     }
 

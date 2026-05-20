@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::Path;
 
 use crate::errors::OciError;
-use crate::output_v2::Printer;
+use crate::output::Printer;
 use crate::sha256_digest;
 
 use super::archive::extract_tar_gz;

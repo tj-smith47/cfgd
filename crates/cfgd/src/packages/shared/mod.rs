@@ -9,7 +9,7 @@ use std::process::{Command, Output};
 
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output_v2::{CommandOutput, Printer, Role};
+use cfgd_core::output::{CommandOutput, Printer, Role};
 
 /// Compute the canonical env-var seam name for a package-manager binary.
 /// Pattern: `CFGD_<NAME>_BIN`, with hyphens turned into underscores so

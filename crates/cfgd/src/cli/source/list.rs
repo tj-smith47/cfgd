@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role, renderer::Table as TableV2};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role, renderer::Table as TableV2};
 
 /// Build the `cfgd source list` Doc from a populated entries vector + `--wide`
 /// flag. Pure; the caller assembles the entries from disk.

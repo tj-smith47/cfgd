@@ -25,7 +25,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::secret;
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 use cfgd_core::test_helpers::EditorGuard;
 use cfgd_core::with_test_home_guard;
 use serial_test::serial;

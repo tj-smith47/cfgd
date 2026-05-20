@@ -1,4 +1,4 @@
-use cfgd_core::output_v2::{CommandOutput, Printer, Verbosity};
+use cfgd_core::output::{CommandOutput, Printer, Verbosity};
 
 use super::*;
 

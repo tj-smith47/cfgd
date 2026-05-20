@@ -84,7 +84,7 @@ pub struct FetchedRemoteModule {
 pub fn fetch_remote_module(
     url: &str,
     cache_base: &Path,
-    printer: &crate::output_v2::Printer,
+    printer: &crate::output::Printer,
 ) -> Result<FetchedRemoteModule> {
     let git_src = parse_git_source(url)?;
 
@@ -164,7 +164,7 @@ pub fn extract_registry_name(url: &str) -> Option<String> {
 pub fn fetch_registry_modules(
     registry: &ModuleRegistryEntry,
     cache_base: &Path,
-    printer: &crate::output_v2::Printer,
+    printer: &crate::output::Printer,
 ) -> Result<Vec<RegistryModule>> {
     let git_src = GitSource {
         repo_url: registry.url.clone(),

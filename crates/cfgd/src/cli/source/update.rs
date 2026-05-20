@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
 
 pub fn cmd_source_update(
     cli: &Cli,
@@ -34,7 +34,7 @@ pub fn cmd_source_update(
     if sources_to_update.is_empty()
         && let Some(name) = name
     {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             name,
             "not_found",
             format!("Source '{}' not found", name),

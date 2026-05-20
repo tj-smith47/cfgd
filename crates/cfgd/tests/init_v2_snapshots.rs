@@ -30,7 +30,7 @@
 use std::path::Path;
 
 use cfgd::cli::init::{InitArgs, cmd_init};
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -229,9 +229,9 @@ fn init_apply_then_next_steps_bridge_invariant() {
     // snapshot pins the rendered output and the assertions below confirm
     // the §17.2 invariant: exactly one blank line between the last
     // streaming line and the first buffered line.
-    use cfgd_core::output_v2::{Doc, Role};
+    use cfgd_core::output::{Doc, Role};
 
-    let (v2_printer, cap) = cfgd_core::output_v2::Printer::for_test_doc();
+    let (v2_printer, cap) = cfgd_core::output::Printer::for_test_doc();
 
     // Streaming portion — mirrors `apply_plan`'s shape for a non-empty
     // plan: heading + plan-table section + "N action(s) planned" info

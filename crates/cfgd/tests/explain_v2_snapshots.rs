@@ -13,7 +13,7 @@
 use std::path::Path;
 
 use cfgd::cli::explain::{build_explain_index_doc, build_explain_schema_doc, find_schema};
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 

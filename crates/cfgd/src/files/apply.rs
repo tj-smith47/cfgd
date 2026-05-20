@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use cfgd_core::config::FileStrategy;
 use cfgd_core::errors::{FileError, Result};
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 use cfgd_core::providers::{FileAction, FileDiff, FileDiffKind, FileEntry, FileLayer, FileTree};
 
 use super::template::is_tera_template;

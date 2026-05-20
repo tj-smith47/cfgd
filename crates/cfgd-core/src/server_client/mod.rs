@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::compliance::ComplianceSummary;
 use crate::errors::{CfgdError, Result};
-use crate::output_v2::{Printer, Role};
+use crate::output::{Printer, Role};
 use crate::providers::SystemDrift;
 
 /// Client for communicating with the device gateway.

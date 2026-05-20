@@ -30,7 +30,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::module;
-use cfgd_core::output_v2::{Printer, PromptAnswer};
+use cfgd_core::output::{Printer, PromptAnswer};
 use serial_test::serial;
 
 use common::{cli_for, make_bare_module_repo};
@@ -163,7 +163,7 @@ fn module_registry_add_already_configured_human() {
     let cli = cli_for(config_dir.path(), config_dir.path());
 
     // First add
-    let v2a = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let v2a = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     module::cmd_module_registry_add(
         &cli,
         &v2a,
@@ -197,7 +197,7 @@ fn module_registry_add_already_configured_human() {
 fn module_registry_remove_happy_human() {
     let (config_dir, _state_dir) = registry_test_setup();
     let cli = cli_for(config_dir.path(), config_dir.path());
-    let v2a = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let v2a = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     module::cmd_module_registry_add(&cli, &v2a, "https://example.com/reg.git", Some("team"))
         .unwrap();
 
@@ -240,7 +240,7 @@ fn module_registry_remove_not_found_human() {
 fn module_registry_rename_happy_human() {
     let (config_dir, _state_dir) = registry_test_setup();
     let cli = cli_for(config_dir.path(), config_dir.path());
-    let v2a = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let v2a = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     module::cmd_module_registry_add(&cli, &v2a, "https://example.com/r.git", Some("old")).unwrap();
 
     let (v2_printer, cap) = Printer::for_test_doc();
@@ -290,7 +290,7 @@ fn module_registry_list_empty_human() {
 fn module_registry_list_with_entries_human() {
     let (config_dir, _state_dir) = registry_test_setup();
     let cli = cli_for(config_dir.path(), config_dir.path());
-    let v2a = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let v2a = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
     module::cmd_module_registry_add(&cli, &v2a, "https://example.com/a.git", Some("alpha"))
         .unwrap();
     module::cmd_module_registry_add(&cli, &v2a, "https://example.com/b.git", Some("beta")).unwrap();

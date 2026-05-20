@@ -1,4 +1,4 @@
-use crate::output_v2::Role;
+use crate::output::Role;
 use crate::providers::FileAction;
 
 use super::types::{Action, EnvAction};
@@ -15,7 +15,7 @@ pub(super) enum RestoreOutcome {
 pub(super) fn restore_file_from_backup(
     target: &std::path::Path,
     bk: &crate::state::FileBackupRecord,
-    printer: &crate::output_v2::Printer,
+    printer: &crate::output::Printer,
 ) -> RestoreOutcome {
     // Backup has content — write it (works for both regular files and symlink snapshots
     // where the resolved content was captured)

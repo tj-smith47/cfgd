@@ -20,7 +20,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::plugin;
-use cfgd_core::output_v2::{OutputFormat, Printer};
+use cfgd_core::output::{OutputFormat, Printer};
 use cfgd_core::test_helpers::EnvVarGuard;
 use serial_test::serial;
 

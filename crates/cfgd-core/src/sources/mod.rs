@@ -13,7 +13,7 @@ use crate::config::{
     ConfigSourceDocument, OriginSpec, OriginType, ProfileDocument, SourceSpec, parse_config_source,
 };
 use crate::errors::{Result, SourceError};
-use crate::output_v2::{Printer, Role};
+use crate::output::{Printer, Role};
 
 const SOURCE_MANIFEST_FILE: &str = "cfgd-source.yaml";
 const PROFILES_DIR: &str = "profiles";

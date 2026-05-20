@@ -20,7 +20,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::source::{cmd_source_add, cmd_source_replace};
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 use serial_test::serial;
 
 use common::{cli_for, make_bare_source_repo, source_add_args, source_test_config_setup};
@@ -66,7 +66,7 @@ fn normalize_bare(raw: &str, bares: &[(&std::path::Path, &str)]) -> String {
 
 /// Strip non-deterministic spinner finish durations like ` (0.0s)` so goldens
 /// survive runtime variance.
-use cfgd_core::output_v2::test_capture::strip_spinner_duration;
+use cfgd_core::output::test_capture::strip_spinner_duration;
 
 #[test]
 #[serial]

@@ -26,7 +26,7 @@
 use std::path::Path;
 
 use cfgd::cli::upgrade;
-use cfgd_core::output_v2::{Doc, OutputFormat, Printer, Role};
+use cfgd_core::output::{Doc, OutputFormat, Printer, Role};
 use cfgd_core::test_helpers::EnvVarGuard;
 use serial_test::serial;
 

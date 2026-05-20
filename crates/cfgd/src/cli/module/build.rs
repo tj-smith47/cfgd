@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
 
 #[allow(clippy::too_many_arguments)]
 pub fn cmd_module_build(
@@ -13,7 +13,7 @@ pub fn cmd_module_build(
 ) -> anyhow::Result<()> {
     let dir_path = Path::new(dir);
     if !dir_path.join("module.yaml").exists() {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             dir,
             "module_yaml_missing",
             format!(
@@ -49,7 +49,7 @@ pub fn cmd_module_build(
     if targets.len() == 1 {
         let output_dir = cfgd_core::oci::build_module(dir_path, Some(targets[0]), base_image)
             .map_err(|e| {
-                v2_printer.emit(cfgd_core::output_v2::error_doc(
+                v2_printer.emit(cfgd_core::output::error_doc(
                     dir,
                     "build_failed",
                     e.to_string(),
@@ -64,7 +64,7 @@ pub fn cmd_module_build(
             let digest =
                 cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]), Some(v2_printer))
                     .map_err(|e| {
-                    v2_printer.emit(cfgd_core::output_v2::error_doc(
+                    v2_printer.emit(cfgd_core::output::error_doc(
                         art,
                         "push_failed",
                         e.to_string(),
@@ -77,7 +77,7 @@ pub fn cmd_module_build(
 
             if sign {
                 cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
-                    v2_printer.emit(cfgd_core::output_v2::error_doc(
+                    v2_printer.emit(cfgd_core::output::error_doc(
                         art,
                         "sign_failed",
                         e.to_string(),
@@ -100,7 +100,7 @@ pub fn cmd_module_build(
                 Err(e) => {
                     sp.finish_fail(format!("Build failed for {t}"))
                         .detail(e.to_string());
-                    v2_printer.emit(cfgd_core::output_v2::error_doc(
+                    v2_printer.emit(cfgd_core::output::error_doc(
                         dir,
                         "build_failed",
                         e.to_string(),
@@ -121,7 +121,7 @@ pub fn cmd_module_build(
             let digest =
                 cfgd_core::oci::push_module_multiplatform(&build_refs, art, Some(v2_printer))
                     .map_err(|e| {
-                        v2_printer.emit(cfgd_core::output_v2::error_doc(
+                        v2_printer.emit(cfgd_core::output::error_doc(
                             art,
                             "push_failed",
                             e.to_string(),
@@ -134,7 +134,7 @@ pub fn cmd_module_build(
 
             if sign {
                 cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
-                    v2_printer.emit(cfgd_core::output_v2::error_doc(
+                    v2_printer.emit(cfgd_core::output::error_doc(
                         art,
                         "sign_failed",
                         e.to_string(),

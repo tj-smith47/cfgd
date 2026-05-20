@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
 
 // --- OCI Push / Pull ---
 
@@ -26,7 +26,7 @@ pub fn cmd_module_push(
     } = opts;
     let dir_path = Path::new(dir);
     if !dir_path.join("module.yaml").exists() {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             dir,
             "module_yaml_missing",
             format!(
@@ -53,7 +53,7 @@ pub fn cmd_module_push(
 
     let digest = cfgd_core::oci::push_module(dir_path, artifact, platform, Some(v2_printer))
         .map_err(|e| {
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 artifact,
                 "push_failed",
                 e.to_string(),
@@ -67,7 +67,7 @@ pub fn cmd_module_push(
     // Sign if requested
     if sign {
         cfgd_core::oci::sign_artifact(artifact, key).map_err(|e| {
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 artifact,
                 "sign_failed",
                 e.to_string(),
@@ -89,7 +89,7 @@ pub fn cmd_module_push(
             artifact, &digest, &repo, &commit,
         )
         .map_err(|e| {
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 artifact,
                 "attest_failed",
                 e.to_string(),
@@ -101,7 +101,7 @@ pub fn cmd_module_push(
         std::fs::write(tmp.path(), &provenance)?;
         cfgd_core::oci::attach_attestation(artifact, &tmp.path().display().to_string(), key)
             .map_err(|e| {
-                v2_printer.emit(cfgd_core::output_v2::error_doc(
+                v2_printer.emit(cfgd_core::output::error_doc(
                     artifact,
                     "attest_failed",
                     e.to_string(),
@@ -200,7 +200,7 @@ async fn apply_module_crd(
 
     let name = &module_doc.metadata.name;
     let client = Client::try_default().await.map_err(|e| {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             name,
             "crd_connect_failed",
             format!("Failed to connect to cluster: {e}"),
@@ -230,7 +230,7 @@ async fn apply_module_crd(
         )
         .await
         .map_err(|e| {
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 name,
                 "crd_apply_failed",
                 format!("Failed to apply Module CRD: {e}"),
@@ -259,7 +259,7 @@ pub fn cmd_module_pull(
     // Verify signature if requested (uses cosign, not the old tag-check)
     if require_signature {
         cfgd_core::oci::verify_signature(artifact_ref, &verify_opts).map_err(|e| {
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 artifact_ref,
                 "verify_failed",
                 e.to_string(),
@@ -274,7 +274,7 @@ pub fn cmd_module_pull(
     if verify_attestation {
         cfgd_core::oci::verify_attestation(artifact_ref, "slsaprovenance", &verify_opts).map_err(
             |e| {
-                v2_printer.emit(cfgd_core::output_v2::error_doc(
+                v2_printer.emit(cfgd_core::output::error_doc(
                     artifact_ref,
                     "verify_failed",
                     e.to_string(),
@@ -289,7 +289,7 @@ pub fn cmd_module_pull(
     // Pull uses the existing require_signature=false since we've already verified above
     cfgd_core::oci::pull_module(artifact_ref, output_path, false, Some(v2_printer)).map_err(
         |e| {
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 artifact_ref,
                 "pull_failed",
                 e.to_string(),

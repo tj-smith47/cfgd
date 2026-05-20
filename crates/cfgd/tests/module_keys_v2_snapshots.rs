@@ -16,7 +16,7 @@ mod common;
 #[cfg(unix)]
 use cfgd::cli::module;
 #[cfg(unix)]
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 #[cfg(unix)]
 use cfgd_core::test_helpers::CosignTestShim;
 #[cfg(unix)]

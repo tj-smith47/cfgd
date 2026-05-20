@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
 
 pub fn cmd_module_add_from_registry(
     cli: &Cli,
@@ -11,7 +11,7 @@ pub fn cmd_module_add_from_registry(
     let reg_ref = match modules::parse_registry_ref(reference) {
         Some(r) => r,
         None => {
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 reference,
                 "invalid_reference",
                 format!(
@@ -29,7 +29,7 @@ pub fn cmd_module_add_from_registry(
 
     // Load config to find the registry
     if !cli.config.exists() {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             reference,
             "no_config",
             MSG_NO_CONFIG.to_string(),
@@ -48,7 +48,7 @@ pub fn cmd_module_add_from_registry(
     let registry_entry = match registries.iter().find(|s| s.name == reg_ref.registry) {
         Some(r) => r,
         None => {
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 &reg_ref.registry,
                 "registry_not_found",
                 format!(
@@ -85,7 +85,7 @@ pub fn cmd_module_add_from_registry(
             match modules::latest_module_version(registry_entry, &reg_ref.module, &cache_base)? {
                 Some(t) => t,
                 None => {
-                    v2_printer.emit(cfgd_core::output_v2::error_doc(
+                    v2_printer.emit(cfgd_core::output::error_doc(
                         &reg_ref.module,
                         "version_not_found",
                         format!(
@@ -150,7 +150,7 @@ pub fn cmd_module_add_remote(
         Err(e) => {
             sp.finish_fail(format!("Failed to fetch {}", url))
                 .detail(e.to_string());
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 url,
                 "clone_failed",
                 e.to_string(),
@@ -187,7 +187,7 @@ pub fn cmd_module_add_remote(
     // Check if a local module with the same name exists
     let local_modules = modules::load_modules(&config_dir)?;
     if local_modules.contains_key(&module_name) {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             &module_name,
             "already_exists",
             format!(
@@ -324,7 +324,7 @@ pub fn cmd_module_upgrade(
         None => {
             let local_modules = modules::load_modules(&config_dir)?;
             if local_modules.contains_key(name) {
-                v2_printer.emit(cfgd_core::output_v2::error_doc(
+                v2_printer.emit(cfgd_core::output::error_doc(
                     name,
                     "local_module",
                     format!(
@@ -342,7 +342,7 @@ pub fn cmd_module_upgrade(
                     name
                 );
             } else {
-                v2_printer.emit(cfgd_core::output_v2::error_doc(
+                v2_printer.emit(cfgd_core::output::error_doc(
                     name,
                     "not_found",
                     format!("Module '{}' not found", name),
@@ -572,7 +572,7 @@ pub fn cmd_module_search(cli: &Cli, v2_printer: &PrinterV2, query: &str) -> anyh
     let printer = null_lib_printer();
 
     if !cli.config.exists() {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             query,
             "no_config",
             "No config found — add module registries to cfgd.yaml first".to_string(),
@@ -631,7 +631,7 @@ pub fn cmd_module_search(cli: &Cli, v2_printer: &PrinterV2, query: &str) -> anyh
     if all_results.is_empty() {
         doc = doc.status(Role::Info, "No modules found matching your query");
     } else if v2_printer.is_wide() {
-        let mut t = cfgd_core::output_v2::renderer::Table::new([
+        let mut t = cfgd_core::output::renderer::Table::new([
             "Module",
             "Registry",
             "Description",
@@ -647,7 +647,7 @@ pub fn cmd_module_search(cli: &Cli, v2_printer: &PrinterV2, query: &str) -> anyh
         }
         doc = doc.table(t);
     } else {
-        let mut t = cfgd_core::output_v2::renderer::Table::new(["Module", "Description", "Latest"]);
+        let mut t = cfgd_core::output::renderer::Table::new(["Module", "Description", "Latest"]);
         for m in &all_results {
             t = t.row([
                 m.name.clone(),
@@ -675,7 +675,7 @@ pub fn cmd_module_registry_add(
         None => match modules::extract_registry_name(url) {
             Some(n) => n,
             None => {
-                v2_printer.emit(cfgd_core::output_v2::error_doc(
+                v2_printer.emit(cfgd_core::output::error_doc(
                     url,
                     "invalid_url",
                     "Cannot extract registry name from URL — use --name to specify one".to_string(),
@@ -687,7 +687,7 @@ pub fn cmd_module_registry_add(
     };
 
     if !cli.config.exists() {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             &registry_name,
             "no_config",
             MSG_NO_CONFIG.to_string(),
@@ -774,7 +774,7 @@ pub fn cmd_module_registry_remove(
     v2_printer.heading("Remove Module Registry");
 
     if !cli.config.exists() {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             name,
             "no_config",
             MSG_NO_CONFIG.to_string(),
@@ -885,7 +885,7 @@ pub fn cmd_module_registry_rename(
     new_name: &str,
 ) -> anyhow::Result<()> {
     if !cli.config.exists() {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             name,
             "no_config",
             MSG_NO_CONFIG.to_string(),
@@ -903,7 +903,7 @@ pub fn cmd_module_registry_rename(
         .unwrap_or(&[]);
 
     if !registries.iter().any(|s| s.name == name) {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             name,
             "registry_not_found",
             format!("Registry '{}' not found", name),
@@ -912,7 +912,7 @@ pub fn cmd_module_registry_rename(
         anyhow::bail!("Registry '{}' not found", name);
     }
     if registries.iter().any(|s| s.name == new_name) {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             new_name,
             "already_exists",
             format!("A registry named '{}' already exists", new_name),
@@ -1018,7 +1018,7 @@ pub fn cmd_module_registry_list(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Re
         })
         .collect();
 
-    let mut t = cfgd_core::output_v2::renderer::Table::new(["Name", "URL"]);
+    let mut t = cfgd_core::output::renderer::Table::new(["Name", "URL"]);
     for e in &entries {
         t = t.row([e.name.clone(), e.url.clone()]);
     }
@@ -1103,6 +1103,6 @@ pub(super) fn ensure_module_in_profile_doc(
 /// drives the user-facing v2 spinner / status above the call, so the lib's
 /// emissions are suppressed (inversion of control — the CLI owns the
 /// user-facing surface, the lib gets a non-emitting sink).
-fn null_lib_printer() -> cfgd_core::output_v2::Printer {
-    cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet)
+fn null_lib_printer() -> cfgd_core::output::Printer {
+    cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet)
 }

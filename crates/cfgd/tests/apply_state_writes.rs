@@ -12,7 +12,7 @@
 mod common;
 
 use cfgd::cli::apply;
-use cfgd_core::output_v2::Printer as PrinterV2;
+use cfgd_core::output::Printer as PrinterV2;
 use cfgd_core::state::StateStore;
 
 use common::{apply_args, cli_for, tiny_profile_setup};
@@ -22,7 +22,7 @@ fn cmd_apply_increments_apply_log_by_one() {
     let (config_dir, state_dir, target) = tiny_profile_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let v2_printer = PrinterV2::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let v2_printer = PrinterV2::new(cfgd_core::output::Verbosity::Quiet);
     let args = apply_args();
 
     // Baseline: no applies recorded.
@@ -53,7 +53,7 @@ fn cmd_apply_releases_apply_lock() {
     let (config_dir, state_dir, _target) = tiny_profile_setup();
 
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let v2_printer = PrinterV2::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let v2_printer = PrinterV2::new(cfgd_core::output::Verbosity::Quiet);
     let args = apply_args();
 
     apply::cmd_apply(&cli, &v2_printer, &args).unwrap();

@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
 
 fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").to_string()
@@ -10,7 +10,7 @@ pub fn cmd_secret_encrypt(cli: &Cli, v2_printer: &PrinterV2, file: &Path) -> any
         Ok(b) => b,
         Err(e) => {
             let full = format!("{}", e);
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 &file.display().to_string(),
                 "backend_unavailable",
                 first_line(&full),
@@ -23,7 +23,7 @@ pub fn cmd_secret_encrypt(cli: &Cli, v2_printer: &PrinterV2, file: &Path) -> any
 
     if let Err(e) = backend.encrypt_file(file) {
         let full = format!("{}", e);
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             &file.display().to_string(),
             "encryption_failed",
             first_line(&full),
@@ -56,7 +56,7 @@ pub fn cmd_secret_decrypt(cli: &Cli, v2_printer: &PrinterV2, file: &Path) -> any
         Ok(b) => b,
         Err(e) => {
             let full = format!("{}", e);
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 &file.display().to_string(),
                 "backend_unavailable",
                 first_line(&full),
@@ -71,7 +71,7 @@ pub fn cmd_secret_decrypt(cli: &Cli, v2_printer: &PrinterV2, file: &Path) -> any
         Ok(d) => d,
         Err(e) => {
             let full = format!("{}", e);
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 &file.display().to_string(),
                 "decryption_failed",
                 first_line(&full),
@@ -123,7 +123,7 @@ pub fn cmd_secret_edit(cli: &Cli, v2_printer: &PrinterV2, file: &Path) -> anyhow
         Ok(b) => b,
         Err(e) => {
             let full = format!("{}", e);
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 &file.display().to_string(),
                 "backend_unavailable",
                 first_line(&full),
@@ -136,7 +136,7 @@ pub fn cmd_secret_edit(cli: &Cli, v2_printer: &PrinterV2, file: &Path) -> anyhow
 
     if let Err(e) = backend.edit_file(file) {
         let full = format!("{}", e);
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             &file.display().to_string(),
             "edit_failed",
             first_line(&full),
@@ -181,7 +181,7 @@ pub fn cmd_secret_init(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> 
         Ok(p) => p,
         Err(e) => {
             let full = format!("{}", e);
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 "age",
                 "backend_unavailable",
                 first_line(&full),

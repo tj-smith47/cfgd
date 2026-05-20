@@ -24,7 +24,7 @@ use std::path::Path;
 use cfgd::cli::output_types::ProfileListEntry;
 use cfgd::cli::profile::cmd_profile_list;
 use cfgd::cli::profile::list::{build_profile_list_doc, build_profile_list_missing_doc};
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 
 use common::{cli_for, profile_test_config_setup};
 

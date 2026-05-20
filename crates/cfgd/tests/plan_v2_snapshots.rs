@@ -23,7 +23,7 @@ use std::path::Path;
 
 use cfgd::cli::output_types::{PlanActionOutput, PlanOutput, PlanPhaseOutput};
 use cfgd::cli::plan::cmd_plan;
-use cfgd_core::output_v2::{Doc, Printer};
+use cfgd_core::output::{Doc, Printer};
 use pretty_assertions::assert_eq;
 
 use common::{

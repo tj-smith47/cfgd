@@ -20,7 +20,7 @@ use cfgd_core::config::{
     ConfigSourceDocument, ConfigSourceMetadata, ConfigSourcePolicy, ConfigSourceProvides,
     ConfigSourceSpec, EnvVar, ManagedFileSpec, PolicyItems, SourceConstraints,
 };
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 use pretty_assertions::assert_eq;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";

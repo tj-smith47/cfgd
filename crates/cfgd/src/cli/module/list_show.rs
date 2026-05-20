@@ -1,6 +1,6 @@
 use super::*;
 use cfgd_core::config::ModuleLockEntry;
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role, renderer::Table as TableV2};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role, renderer::Table as TableV2};
 
 /// Per-package display row for `cfgd module show`. Computed from package
 /// resolution so the renderer is pure and snapshot-testable without needing a

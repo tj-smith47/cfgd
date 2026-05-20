@@ -92,8 +92,8 @@ fn parse_secret_spec_empty_target() {
 
 // --- update_script_list ---
 
-fn make_v2_printer() -> cfgd_core::output_v2::Printer {
-    cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet)
+fn make_v2_printer() -> cfgd_core::output::Printer {
+    cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet)
 }
 
 #[test]
@@ -269,9 +269,9 @@ fn prompt_restore_backups_no_op_when_no_backup_files_exist() {
     // no side-effects and the prompt is never consumed.
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("no-such-target.conf");
-    let (v2_printer, buf) = cfgd_core::output_v2::Printer::for_test_with_prompt_responses_at(
-        vec![cfgd_core::output_v2::PromptAnswer::Confirm(true)],
-        cfgd_core::output_v2::Verbosity::Normal,
+    let (v2_printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+        vec![cfgd_core::output::PromptAnswer::Confirm(true)],
+        cfgd_core::output::Verbosity::Normal,
     );
 
     prompt_restore_backups(std::slice::from_ref(&target), &v2_printer).expect("no backups → no-op");
@@ -294,9 +294,9 @@ fn prompt_restore_backups_with_confirmed_yes_restores_backup_to_target() {
     let backup = dir.path().join("restored.conf.cfgd-backup");
     std::fs::write(&backup, b"backup-contents").unwrap();
 
-    let (v2_printer, buf) = cfgd_core::output_v2::Printer::for_test_with_prompt_responses_at(
-        vec![cfgd_core::output_v2::PromptAnswer::Confirm(true)],
-        cfgd_core::output_v2::Verbosity::Normal,
+    let (v2_printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+        vec![cfgd_core::output::PromptAnswer::Confirm(true)],
+        cfgd_core::output::Verbosity::Normal,
     );
     prompt_restore_backups(std::slice::from_ref(&target), &v2_printer)
         .expect("restore-confirmed must Ok");
@@ -325,9 +325,9 @@ fn prompt_restore_backups_with_confirmed_no_leaves_backup_and_target_alone() {
     let backup = dir.path().join("declined.conf.cfgd-backup");
     std::fs::write(&backup, b"untouched-backup").unwrap();
 
-    let (v2_printer, _buf) = cfgd_core::output_v2::Printer::for_test_with_prompt_responses_at(
-        vec![cfgd_core::output_v2::PromptAnswer::Confirm(false)],
-        cfgd_core::output_v2::Verbosity::Normal,
+    let (v2_printer, _buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+        vec![cfgd_core::output::PromptAnswer::Confirm(false)],
+        cfgd_core::output::Verbosity::Normal,
     );
     prompt_restore_backups(std::slice::from_ref(&target), &v2_printer).expect("decline must Ok");
 
@@ -351,9 +351,9 @@ fn prompt_restore_backups_removes_existing_target_before_renaming_backup() {
     std::fs::write(&target, b"stale-deployed").unwrap();
     std::fs::write(&backup, b"original-backup").unwrap();
 
-    let (v2_printer, _buf) = cfgd_core::output_v2::Printer::for_test_with_prompt_responses_at(
-        vec![cfgd_core::output_v2::PromptAnswer::Confirm(true)],
-        cfgd_core::output_v2::Verbosity::Normal,
+    let (v2_printer, _buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+        vec![cfgd_core::output::PromptAnswer::Confirm(true)],
+        cfgd_core::output::Verbosity::Normal,
     );
     prompt_restore_backups(std::slice::from_ref(&target), &v2_printer).unwrap();
 
@@ -426,7 +426,7 @@ fn test_cli(dir: &Path) -> super::super::Cli {
         no_color: true,
         verbose: 0,
         quiet: true,
-        output: super::super::OutputFormatArg(cfgd_core::output_v2::OutputFormat::Table),
+        output: super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
         jsonpath: None,
         state_dir: None,
         command: Some(super::super::Command::Status {
@@ -485,7 +485,7 @@ fn profile_show_named_profile() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     cmd_profile_show(&cli, &printer, Some("default")).unwrap();
     drop(printer);
@@ -505,7 +505,7 @@ fn profile_show_active_profile() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     // None means "show the active profile" — reads from cfgd.yaml
     cmd_profile_show(&cli, &printer, None).unwrap();
@@ -526,7 +526,7 @@ fn profile_show_inherited_profile_resolves_layers() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     // work inherits from default, should resolve both layers
     cmd_profile_show(&cli, &printer, Some("work")).unwrap();
@@ -550,7 +550,7 @@ fn profile_show_inherited_profile_resolves_layers() {
 fn profile_show_nonexistent_profile_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
 
     let err = cmd_profile_show(&cli, &printer, Some("nonexistent")).unwrap_err();
     assert!(
@@ -563,7 +563,7 @@ fn profile_show_nonexistent_profile_fails() {
 fn profile_show_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = cfgd_core::output_v2::Printer::new(cfgd_core::output_v2::Verbosity::Quiet);
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
 
     // No cfgd.yaml — showing active profile should fail
     let err = cmd_profile_show(&cli, &printer, None).unwrap_err();
@@ -580,7 +580,7 @@ fn profile_list_shows_profiles() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     cmd_profile_list(&cli, &v2_printer).unwrap();
     let output = buf.lock().unwrap();
@@ -601,7 +601,7 @@ fn profile_list_no_profiles_dir() {
     // Don't create profiles dir
     let cli = test_cli(dir.path());
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     cmd_profile_list(&cli, &v2_printer).unwrap();
     let output = buf.lock().unwrap();
@@ -619,7 +619,7 @@ fn profile_list_empty_profiles_dir() {
 
     let cli = test_cli(dir.path());
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     cmd_profile_list(&cli, &v2_printer).unwrap();
     let output = buf.lock().unwrap();
@@ -721,12 +721,12 @@ fn profile_create_interactive_drives_prompts_via_harness() {
     // two prompt_text calls so the body of the if-branch fires.
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) = cfgd_core::output_v2::Printer::for_test_with_prompt_responses_at(
+    let (v2_printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
         vec![
-            cfgd_core::output_v2::PromptAnswer::Text("default".to_string()),
-            cfgd_core::output_v2::PromptAnswer::Text("".to_string()),
+            cfgd_core::output::PromptAnswer::Text("default".to_string()),
+            cfgd_core::output::PromptAnswer::Text("".to_string()),
         ],
-        cfgd_core::output_v2::Verbosity::Normal,
+        cfgd_core::output::Verbosity::Normal,
     );
 
     // setup_config_dir already creates a `default.yaml` profile that the
@@ -752,12 +752,12 @@ fn profile_create_interactive_with_missing_parent_bails() {
     // ghost.yaml existence at profile/create.rs:70-74 → anyhow::bail.
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (v2_printer, _buf) = cfgd_core::output_v2::Printer::for_test_with_prompt_responses_at(
+    let (v2_printer, _buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
         vec![
-            cfgd_core::output_v2::PromptAnswer::Text("ghost-parent".to_string()),
-            cfgd_core::output_v2::PromptAnswer::Text("".to_string()),
+            cfgd_core::output::PromptAnswer::Text("ghost-parent".to_string()),
+            cfgd_core::output::PromptAnswer::Text("".to_string()),
         ],
-        cfgd_core::output_v2::Verbosity::Normal,
+        cfgd_core::output::Verbosity::Normal,
     );
 
     let args = make_profile_create_args("bad-parent-child");
@@ -905,7 +905,7 @@ fn profile_create_with_system_settings() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let mut args = make_profile_create_args("sys-test");
     args.system = vec!["sysctl=net.core.somaxconn".to_string()];
@@ -1002,7 +1002,7 @@ fn profile_update_add_env() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let mut args = make_profile_update_args();
     args.env = vec!["NEW_VAR=hello".to_string()];
@@ -1033,7 +1033,7 @@ fn profile_update_remove_env() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let mut args = make_profile_update_args();
     args.env = vec!["-EDITOR".to_string()];
@@ -1061,7 +1061,7 @@ fn profile_update_add_alias() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let mut args = make_profile_update_args();
     args.aliases = vec!["gs=git status".to_string()];
@@ -1205,7 +1205,7 @@ fn profile_update_add_system_setting() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let mut args = make_profile_update_args();
     args.system = vec!["sysctl=net.core.somaxconn".to_string()];
@@ -1369,7 +1369,7 @@ fn profile_update_no_changes_succeeds() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = make_profile_update_args();
     cmd_profile_update(&cli, &v2_printer, "default", &args).unwrap();
@@ -1428,7 +1428,7 @@ fn profile_delete_with_yes_flag() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     // Delete 'work' (not active, not inherited by others)
     cmd_profile_delete(&cli, &v2_printer, "work", true).unwrap();
@@ -1550,9 +1550,9 @@ fn profile_edit_with_invalid_yaml_and_prompt_declined_breaks_with_warning() {
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) = cfgd_core::output_v2::Printer::for_test_with_prompt_responses_at(
-        vec![cfgd_core::output_v2::PromptAnswer::Confirm(false)],
-        cfgd_core::output_v2::Verbosity::Normal,
+    let (v2_printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+        vec![cfgd_core::output::PromptAnswer::Confirm(false)],
+        cfgd_core::output::Verbosity::Normal,
     );
 
     let _editor = cfgd_core::test_helpers::EnvVarGuard::set("EDITOR", "/bin/true");
@@ -1573,9 +1573,9 @@ fn profile_delete_without_yes_and_prompt_confirmed_proceeds() {
     // fires (previously unreachable without an attached TTY).
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) = cfgd_core::output_v2::Printer::for_test_with_prompt_responses_at(
-        vec![cfgd_core::output_v2::PromptAnswer::Confirm(true)],
-        cfgd_core::output_v2::Verbosity::Normal,
+    let (v2_printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+        vec![cfgd_core::output::PromptAnswer::Confirm(true)],
+        cfgd_core::output::Verbosity::Normal,
     );
 
     cmd_profile_delete(&cli, &v2_printer, "work", false).unwrap();
@@ -1600,9 +1600,9 @@ fn profile_delete_without_yes_and_prompt_declined_returns_cancelled() {
     // "Cancelled".
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (v2_printer, buf) = cfgd_core::output_v2::Printer::for_test_with_prompt_responses_at(
-        vec![cfgd_core::output_v2::PromptAnswer::Confirm(false)],
-        cfgd_core::output_v2::Verbosity::Normal,
+    let (v2_printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+        vec![cfgd_core::output::PromptAnswer::Confirm(false)],
+        cfgd_core::output::Verbosity::Normal,
     );
 
     cmd_profile_delete(&cli, &v2_printer, "work", false).unwrap();
@@ -1624,7 +1624,7 @@ fn profile_delete_without_yes_and_prompt_declined_returns_cancelled() {
 
 fn test_cli_json(dir: &Path) -> super::super::Cli {
     super::super::Cli {
-        output: super::super::OutputFormatArg(cfgd_core::output_v2::OutputFormat::Json),
+        output: super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Json),
         ..test_cli(dir)
     }
 }
@@ -1633,9 +1633,8 @@ fn test_cli_json(dir: &Path) -> super::super::Cli {
 fn profile_show_json_schema() {
     let dir = setup_config_dir();
     let cli = test_cli_json(dir.path());
-    let (printer, buf) = cfgd_core::output_v2::Printer::for_test_with_format(
-        cfgd_core::output_v2::OutputFormat::Json,
-    );
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
     cmd_profile_show(&cli, &printer, Some("default")).unwrap();
     drop(printer);
@@ -1665,9 +1664,8 @@ fn profile_show_json_schema() {
 fn profile_list_json_schema() {
     let dir = setup_config_dir();
     let cli = test_cli_json(dir.path());
-    let (v2_printer, buf) = cfgd_core::output_v2::Printer::for_test_with_format(
-        cfgd_core::output_v2::OutputFormat::Json,
-    );
+    let (v2_printer, buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
     cmd_profile_list(&cli, &v2_printer).unwrap();
     drop(v2_printer);
@@ -1702,9 +1700,8 @@ fn profile_list_json_empty() {
     std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
 
     let cli = test_cli_json(dir.path());
-    let (v2_printer, buf) = cfgd_core::output_v2::Printer::for_test_with_format(
-        cfgd_core::output_v2::OutputFormat::Json,
-    );
+    let (v2_printer, buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
     cmd_profile_list(&cli, &v2_printer).unwrap();
     drop(v2_printer);
@@ -1721,9 +1718,8 @@ fn profile_list_json_no_profiles_dir() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli_json(dir.path());
-    let (v2_printer, buf) = cfgd_core::output_v2::Printer::for_test_with_format(
-        cfgd_core::output_v2::OutputFormat::Json,
-    );
+    let (v2_printer, buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
     cmd_profile_list(&cli, &v2_printer).unwrap();
     drop(v2_printer);
@@ -1758,7 +1754,7 @@ spec:
 
     let cli = test_cli(dir.path());
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     cmd_profile_show(&cli, &printer, Some("files-test")).unwrap();
     drop(printer);
@@ -1780,7 +1776,7 @@ fn profile_show_displays_packages_section() {
     // 'default' profile has cargo packages — verify they show up
     let cli = test_cli(dir.path());
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     cmd_profile_show(&cli, &printer, Some("default")).unwrap();
     drop(printer);
@@ -1816,7 +1812,7 @@ spec:
 
     let cli = test_cli(dir.path());
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     cmd_profile_show(&cli, &printer, Some("secret-show")).unwrap();
     drop(printer);
@@ -1851,7 +1847,7 @@ spec:
 
     let cli = test_cli(dir.path());
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     cmd_profile_show(&cli, &printer, Some("sys-show")).unwrap();
     drop(printer);
@@ -1874,7 +1870,7 @@ fn profile_switch_shows_transition() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     cmd_profile_switch(&cli, "work", &v2_printer).unwrap();
 
@@ -1892,7 +1888,7 @@ fn profile_create_output_messages() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let mut args = make_profile_create_args("fancy");
     args.inherits = vec!["default".to_string()];
@@ -1999,7 +1995,7 @@ spec:
 
     let cli = test_cli(dir.path());
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     cmd_profile_show(&cli, &printer, Some("rich")).unwrap();
     drop(printer);
@@ -2075,7 +2071,7 @@ fn profile_show_no_packages_omits_section() {
 
     let cli = test_cli(dir.path());
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     cmd_profile_show(&cli, &printer, Some("bare")).unwrap();
     drop(printer);
     let output = buf.lock().unwrap();
@@ -2121,7 +2117,7 @@ spec:
 
     let cli = test_cli(dir.path());
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     cmd_profile_show(&cli, &printer, Some("env-secret")).unwrap();
     drop(printer);
     let output = buf.lock().unwrap();
@@ -2162,7 +2158,7 @@ spec:
 
     let cli = test_cli(dir.path());
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     cmd_profile_show(&cli, &printer, Some("both-secret")).unwrap();
     drop(printer);
     let output = buf.lock().unwrap();
@@ -2199,7 +2195,7 @@ fn profile_list_wide_format() {
         },
     ];
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     v2_printer.emit(super::list::build_profile_list_doc(&entries, true));
     drop(v2_printer);
     let output = buf.lock().unwrap();
@@ -2231,7 +2227,7 @@ fn profile_show_no_env_omits_section() {
 
     let cli = test_cli(dir.path());
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     cmd_profile_show(&cli, &printer, Some("noenv")).unwrap();
     drop(printer);
     let output = buf.lock().unwrap();
@@ -2273,7 +2269,7 @@ fn profile_show_no_files_omits_section() {
 
     let cli = test_cli(dir.path());
     let (printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     cmd_profile_show(&cli, &printer, Some("nofiles")).unwrap();
     drop(printer);
     let output = buf.lock().unwrap();
@@ -2294,7 +2290,7 @@ fn profile_update_add_package() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let mut args = make_profile_update_args();
     args.packages = vec!["brew:neovim".to_string()];
@@ -2344,7 +2340,7 @@ fn profile_update_remove_nonexistent_package() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let mut args = make_profile_update_args();
     args.packages = vec!["-brew:nonexistent-pkg".to_string()];
@@ -2365,7 +2361,7 @@ fn profile_update_remove_nonexistent_env() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let mut args = make_profile_update_args();
     args.env = vec!["-NONEXISTENT_VAR".to_string()];
@@ -2386,7 +2382,7 @@ fn profile_update_remove_nonexistent_alias() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let mut args = make_profile_update_args();
     args.aliases = vec!["-nonexistent-alias".to_string()];
@@ -2407,7 +2403,7 @@ fn profile_update_remove_nonexistent_system_setting() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let mut args = make_profile_update_args();
     args.system = vec!["-nonexistent-setting".to_string()];
@@ -2428,7 +2424,7 @@ fn profile_update_remove_nonexistent_secret() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let mut args = make_profile_update_args();
     args.secrets = vec!["-/tmp/nonexistent-secret".to_string()];
@@ -2449,7 +2445,7 @@ fn profile_update_add_duplicate_inherits() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     // work already inherits default, try adding it again
     let mut args = make_profile_update_args();
@@ -2471,7 +2467,7 @@ fn profile_update_remove_nonexistent_inherits() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
     let (v2_printer, buf) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let mut args = make_profile_update_args();
     args.inherits = vec!["-nonexistent-parent".to_string()];
@@ -2500,7 +2496,7 @@ fn profile_update_add_duplicate_secret() {
 
     // Try adding the same secret again
     let (v2_printer2, buf2) =
-        cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut args2 = make_profile_update_args();
     args2.secrets = vec!["other-source:~/target".to_string()];
     cmd_profile_update(&cli, &v2_printer2, "default", &args2).unwrap();
@@ -2666,7 +2662,7 @@ mod profile_update_module_cleanup {
             no_color: true,
             verbose: 0,
             quiet: true,
-            output: super::super::OutputFormatArg(cfgd_core::output_v2::OutputFormat::Table),
+            output: super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
             jsonpath: None,
             state_dir: Some(state_dir.to_path_buf()),
             command: Some(super::super::Command::Status {
@@ -2704,7 +2700,7 @@ mod profile_update_module_cleanup {
 
         let cli = cli_with_state_dir(config_dir.path(), &state_dir);
         let (v2_printer, buf) =
-            cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         let mut args = make_profile_update_args();
         args.modules = vec!["-ghmod".to_string()];
         cmd_profile_update(&cli, &v2_printer, "default", &args)
@@ -2785,7 +2781,7 @@ mod profile_update_module_cleanup {
 
         let cli = cli_with_state_dir(config_dir.path(), &state_dir);
         let (v2_printer, buf) =
-            cfgd_core::output_v2::Printer::for_test_at(cfgd_core::output_v2::Verbosity::Normal);
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         let mut args = make_profile_update_args();
         args.modules = vec!["-statemod".to_string()];
         cmd_profile_update(&cli, &v2_printer, "default", &args)
@@ -2910,9 +2906,9 @@ mod profile_update_module_cleanup {
         let _apply_id = record_apply_and_deployed_file(&state_dir, "noBackupMod", &deployed_path);
 
         let cli = cli_with_state_dir(&cfg_dir, &state_dir);
-        let (v2_printer, buf) = cfgd_core::output_v2::Printer::for_test_with_prompt_responses_at(
-            vec![cfgd_core::output_v2::PromptAnswer::Confirm(true)],
-            cfgd_core::output_v2::Verbosity::Normal,
+        let (v2_printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+            vec![cfgd_core::output::PromptAnswer::Confirm(true)],
+            cfgd_core::output::Verbosity::Normal,
         );
         let mut args = make_profile_update_args();
         args.modules = vec!["-noBackupMod".to_string()];
@@ -2966,9 +2962,9 @@ mod profile_update_module_cleanup {
         drop(state);
 
         let cli = cli_with_state_dir(&cfg_dir, &state_dir);
-        let (v2_printer, buf) = cfgd_core::output_v2::Printer::for_test_with_prompt_responses_at(
-            vec![cfgd_core::output_v2::PromptAnswer::Confirm(true)],
-            cfgd_core::output_v2::Verbosity::Normal,
+        let (v2_printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+            vec![cfgd_core::output::PromptAnswer::Confirm(true)],
+            cfgd_core::output::Verbosity::Normal,
         );
         let mut args = make_profile_update_args();
         args.modules = vec!["-backupMod".to_string()];
@@ -3023,9 +3019,9 @@ mod profile_update_module_cleanup {
         drop(state);
 
         let cli = cli_with_state_dir(&cfg_dir, &state_dir);
-        let (v2_printer, buf) = cfgd_core::output_v2::Printer::for_test_with_prompt_responses_at(
-            vec![cfgd_core::output_v2::PromptAnswer::Confirm(true)],
-            cfgd_core::output_v2::Verbosity::Normal,
+        let (v2_printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+            vec![cfgd_core::output::PromptAnswer::Confirm(true)],
+            cfgd_core::output::Verbosity::Normal,
         );
         let mut args = make_profile_update_args();
         args.modules = vec!["-symlinkMod".to_string()];

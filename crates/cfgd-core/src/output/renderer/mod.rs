@@ -41,7 +41,7 @@ pub(crate) struct RenderState {
     leading: bool,
     /// Buffered kvs awaiting a non-kv emission to flush as one aligned block.
     kv_buffer: Vec<(String, String)>,
-    pub(crate) section_stack: Vec<crate::output_v2::renderer::section::SectionFrame>,
+    pub(crate) section_stack: Vec<crate::output::renderer::section::SectionFrame>,
     /// True iff the most recent emission was a top-level heading and no other
     /// emission has happened since. Consumed by the next top-level kv_block,
     /// which re-anchors the block at depth+1 so spec §13.1/§13.3/§13.4's
@@ -122,7 +122,7 @@ impl Renderer {
             static WARNED: std::sync::Once = std::sync::Once::new();
             WARNED.call_once(|| {
                 tracing::warn!(
-                    "cfgd output_v2: top-level Printer emit reached while a SectionGuard \
+                    "cfgd output: top-level Printer emit reached while a SectionGuard \
                      was open. The emit was re-routed to the section's depth. Fix the \
                      call site (move it inside or outside the section)."
                 );

@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role, doc::SectionBuilder};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role, doc::SectionBuilder};
 
 pub(super) fn cmd_doctor(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::Result<()> {
     let (output, extras) = collect_doctor_output(cli, v2_printer)?;

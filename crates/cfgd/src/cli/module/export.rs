@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
 
 pub fn cmd_module_export(
     cli: &Cli,
@@ -26,7 +26,7 @@ pub(super) fn export_devcontainer(
     let module = match all_modules.get(name) {
         Some(m) => m,
         None => {
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 name,
                 "not_found",
                 format!("Module '{}' not found", name),

@@ -18,7 +18,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::module;
-use cfgd_core::output_v2::Printer;
+use cfgd_core::output::Printer;
 use serial_test::serial;
 
 use common::cli_for;

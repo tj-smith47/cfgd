@@ -3547,7 +3547,7 @@ mod git_fixture_tests {
         TagSignatureStatus, check_tag_signature, fetch_git_source, get_head_commit_sha, open_repo,
     };
     use crate::modules::GitSource;
-    use crate::output_v2::Printer;
+    use crate::output::Printer;
     use std::path::Path;
 
     fn init_repo_with_commit(dir: &Path) -> (git2::Repository, git2::Oid) {

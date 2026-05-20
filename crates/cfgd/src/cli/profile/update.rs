@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
 
 pub fn cmd_profile_update(
     cli: &Cli,
@@ -29,7 +29,7 @@ pub fn cmd_profile_update(
     let config_dir = config_dir(cli);
     let profile_path = config_dir.join("profiles").join(format!("{}.yaml", name));
     if !profile_path.exists() {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             name,
             "not_found",
             format!("Profile '{}' not found", name),
@@ -50,7 +50,7 @@ pub fn cmd_profile_update(
         }
         let parent_path = profiles_dir.join(format!("{}.yaml", parent));
         if !parent_path.exists() {
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 name,
                 "parent_not_found",
                 format!("Parent profile '{}' not found", parent),

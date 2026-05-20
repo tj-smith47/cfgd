@@ -1,128 +1,61 @@
 use console::{Color, Style};
 
-use crate::config::ThemeConfig;
-
-// Default icons shared across all non-minimal presets
-const ICON_SUCCESS: &str = "✓";
-const ICON_WARNING: &str = "⚠";
-const ICON_ERROR: &str = "✗";
-const ICON_INFO: &str = "⚙";
+const ICON_OK: &str = "✓";
+const ICON_WARN: &str = "⚠";
+const ICON_FAIL: &str = "✗";
 const ICON_PENDING: &str = "○";
+const ICON_RUNNING: &str = "◐";
+const ICON_SKIPPED: &str = "—";
 const ICON_ARROW: &str = "→";
 
 pub struct Theme {
+    // Style slots (8)
+    pub header: Style,
     pub success: Style,
     pub warning: Style,
     pub error: Style,
     pub info: Style,
     pub muted: Style,
-
-    pub header: Style,
-    pub subheader: Style,
-    pub key: Style,
-    pub value: Style,
-
+    pub running: Style,
     pub diff_add: Style,
     pub diff_remove: Style,
     pub diff_context: Style,
 
-    pub icon_success: String,
-    pub icon_warning: String,
-    pub icon_error: String,
-    pub icon_info: String,
+    // Icon slots (7)
+    pub icon_ok: String,
+    pub icon_warn: String,
+    pub icon_fail: String,
     pub icon_pending: String,
+    pub icon_running: String,
+    pub icon_skipped: String,
     pub icon_arrow: String,
 }
 
 impl Default for Theme {
     fn default() -> Self {
         Self {
+            header: Style::new().bold().cyan(),
             success: Style::new().green(),
             warning: Style::new().yellow(),
             error: Style::new().red().bold(),
             info: Style::new().cyan(),
             muted: Style::new().dim(),
-
-            header: Style::new().bold().cyan(),
-            subheader: Style::new().bold(),
-            key: Style::new().bold(),
-            value: Style::new(),
-
+            running: Style::new().cyan(),
             diff_add: Style::new().green(),
             diff_remove: Style::new().red(),
             diff_context: Style::new().dim(),
-
-            icon_success: ICON_SUCCESS.into(),
-            icon_warning: ICON_WARNING.into(),
-            icon_error: ICON_ERROR.into(),
-            icon_info: ICON_INFO.into(),
+            icon_ok: ICON_OK.into(),
+            icon_warn: ICON_WARN.into(),
+            icon_fail: ICON_FAIL.into(),
             icon_pending: ICON_PENDING.into(),
+            icon_running: ICON_RUNNING.into(),
+            icon_skipped: ICON_SKIPPED.into(),
             icon_arrow: ICON_ARROW.into(),
         }
     }
 }
 
 impl Theme {
-    pub fn from_config(config: Option<&ThemeConfig>) -> Self {
-        let config = match config {
-            Some(c) => c,
-            None => return Self::default(),
-        };
-
-        let mut theme = Self::from_preset(&config.name);
-
-        // Apply hex color overrides
-        let ov = &config.overrides;
-        if let Some(ref c) = ov.success {
-            apply_color(&mut theme.success, c);
-        }
-        if let Some(ref c) = ov.warning {
-            apply_color(&mut theme.warning, c);
-        }
-        if let Some(ref c) = ov.error {
-            apply_color(&mut theme.error, c);
-        }
-        if let Some(ref c) = ov.info {
-            apply_color(&mut theme.info, c);
-        }
-        if let Some(ref c) = ov.muted {
-            apply_color(&mut theme.muted, c);
-        }
-        if let Some(ref c) = ov.header {
-            apply_color(&mut theme.header, c);
-        }
-        if let Some(ref c) = ov.diff_add {
-            apply_color(&mut theme.diff_add, c);
-        }
-        if let Some(ref c) = ov.diff_remove {
-            apply_color(&mut theme.diff_remove, c);
-        }
-        if let Some(ref c) = ov.diff_context {
-            apply_color(&mut theme.diff_context, c);
-        }
-
-        // Apply icon overrides (legacy field names map onto the renamed config keys
-        // via Theme::from_preset; per-icon overrides for the legacy module are limited
-        // to the icons that survived the v0.4 schema shrink).
-        if let Some(ref v) = ov.icon_ok {
-            theme.icon_success = v.clone();
-        }
-        if let Some(ref v) = ov.icon_warn {
-            theme.icon_warning = v.clone();
-        }
-        if let Some(ref v) = ov.icon_fail {
-            theme.icon_error = v.clone();
-        }
-        if let Some(ref v) = ov.icon_pending {
-            theme.icon_pending = v.clone();
-        }
-        if let Some(ref v) = ov.icon_arrow {
-            theme.icon_arrow = v.clone();
-        }
-
-        theme
-    }
-
     pub fn from_preset(name: &str) -> Self {
         match name {
             "dracula" => Self::dracula(),
@@ -135,110 +68,137 @@ impl Theme {
 
     fn dracula() -> Self {
         Self {
-            success: style_from_hex("#50fa7b"),
-            warning: style_from_hex("#f1fa8c"),
-            error: style_from_hex("#ff5555").bold(),
-            info: style_from_hex("#8be9fd"),
-            muted: style_from_hex("#6272a4"),
-
-            header: style_from_hex("#bd93f9").bold(),
-            subheader: Style::new().bold(),
-            key: style_from_hex("#ff79c6").bold(),
-            value: style_from_hex("#f8f8f2"),
-
-            diff_add: style_from_hex("#50fa7b"),
-            diff_remove: style_from_hex("#ff5555"),
-            diff_context: style_from_hex("#6272a4"),
-
-            icon_success: ICON_SUCCESS.into(),
-            icon_warning: ICON_WARNING.into(),
-            icon_error: ICON_ERROR.into(),
-            icon_info: ICON_INFO.into(),
-            icon_pending: ICON_PENDING.into(),
-            icon_arrow: ICON_ARROW.into(),
+            header: hex("#bd93f9").bold(),
+            success: hex("#50fa7b"),
+            warning: hex("#f1fa8c"),
+            error: hex("#ff5555").bold(),
+            info: hex("#8be9fd"),
+            muted: hex("#6272a4"),
+            running: hex("#8be9fd"),
+            diff_add: hex("#50fa7b"),
+            diff_remove: hex("#ff5555"),
+            diff_context: hex("#6272a4"),
+            ..Self::default()
         }
     }
 
     fn solarized_dark() -> Self {
         Self {
-            success: style_from_hex("#859900"),
-            warning: style_from_hex("#b58900"),
-            error: style_from_hex("#dc322f").bold(),
-            info: style_from_hex("#268bd2"),
-            muted: style_from_hex("#586e75"),
-
-            header: style_from_hex("#268bd2").bold(),
-            subheader: Style::new().bold(),
-            key: style_from_hex("#2aa198").bold(),
-            value: style_from_hex("#839496"),
-
-            diff_add: style_from_hex("#859900"),
-            diff_remove: style_from_hex("#dc322f"),
-            diff_context: style_from_hex("#586e75"),
-
-            icon_success: ICON_SUCCESS.into(),
-            icon_warning: ICON_WARNING.into(),
-            icon_error: ICON_ERROR.into(),
-            icon_info: ICON_INFO.into(),
-            icon_pending: ICON_PENDING.into(),
-            icon_arrow: ICON_ARROW.into(),
+            header: hex("#268bd2").bold(),
+            success: hex("#859900"),
+            warning: hex("#b58900"),
+            error: hex("#dc322f").bold(),
+            info: hex("#268bd2"),
+            muted: hex("#586e75"),
+            running: hex("#2aa198"),
+            diff_add: hex("#859900"),
+            diff_remove: hex("#dc322f"),
+            diff_context: hex("#586e75"),
+            ..Self::default()
         }
     }
 
     fn solarized_light() -> Self {
         Self {
-            success: style_from_hex("#859900"),
-            warning: style_from_hex("#b58900"),
-            error: style_from_hex("#dc322f").bold(),
-            info: style_from_hex("#268bd2"),
-            muted: style_from_hex("#93a1a1"),
-
-            header: style_from_hex("#268bd2").bold(),
-            subheader: Style::new().bold(),
-            key: style_from_hex("#2aa198").bold(),
-            value: style_from_hex("#657b83"),
-
-            diff_add: style_from_hex("#859900"),
-            diff_remove: style_from_hex("#dc322f"),
-            diff_context: style_from_hex("#93a1a1"),
-
-            icon_success: ICON_SUCCESS.into(),
-            icon_warning: ICON_WARNING.into(),
-            icon_error: ICON_ERROR.into(),
-            icon_info: ICON_INFO.into(),
-            icon_pending: ICON_PENDING.into(),
-            icon_arrow: ICON_ARROW.into(),
+            header: hex("#268bd2").bold(),
+            success: hex("#859900"),
+            warning: hex("#b58900"),
+            error: hex("#dc322f").bold(),
+            info: hex("#268bd2"),
+            muted: hex("#93a1a1"),
+            running: hex("#2aa198"),
+            diff_add: hex("#859900"),
+            diff_remove: hex("#dc322f"),
+            diff_context: hex("#93a1a1"),
+            ..Self::default()
         }
+    }
+
+    pub fn from_config(config: Option<&crate::config::ThemeConfig>) -> Self {
+        let Some(cfg) = config else {
+            return Self::default();
+        };
+        let mut t = Self::from_preset(&cfg.name);
+        let ov = &cfg.overrides;
+        // Style overrides
+        if let Some(c) = &ov.header {
+            apply_color(&mut t.header, c);
+        }
+        if let Some(c) = &ov.success {
+            apply_color(&mut t.success, c);
+        }
+        if let Some(c) = &ov.warning {
+            apply_color(&mut t.warning, c);
+        }
+        if let Some(c) = &ov.error {
+            apply_color(&mut t.error, c);
+        }
+        if let Some(c) = &ov.info {
+            apply_color(&mut t.info, c);
+        }
+        if let Some(c) = &ov.muted {
+            apply_color(&mut t.muted, c);
+        }
+        if let Some(c) = &ov.running {
+            apply_color(&mut t.running, c);
+        }
+        if let Some(c) = &ov.diff_add {
+            apply_color(&mut t.diff_add, c);
+        }
+        if let Some(c) = &ov.diff_remove {
+            apply_color(&mut t.diff_remove, c);
+        }
+        if let Some(c) = &ov.diff_context {
+            apply_color(&mut t.diff_context, c);
+        }
+        // Icon overrides
+        if let Some(v) = &ov.icon_ok {
+            t.icon_ok = v.clone();
+        }
+        if let Some(v) = &ov.icon_warn {
+            t.icon_warn = v.clone();
+        }
+        if let Some(v) = &ov.icon_fail {
+            t.icon_fail = v.clone();
+        }
+        if let Some(v) = &ov.icon_pending {
+            t.icon_pending = v.clone();
+        }
+        if let Some(v) = &ov.icon_running {
+            t.icon_running = v.clone();
+        }
+        if let Some(v) = &ov.icon_skipped {
+            t.icon_skipped = v.clone();
+        }
+        if let Some(v) = &ov.icon_arrow {
+            t.icon_arrow = v.clone();
+        }
+        t
     }
 
     fn minimal() -> Self {
         Self {
+            header: Style::new().bold(),
             success: Style::new(),
             warning: Style::new(),
             error: Style::new().bold(),
             info: Style::new(),
             muted: Style::new().dim(),
-
-            header: Style::new().bold(),
-            subheader: Style::new().bold(),
-            key: Style::new().bold(),
-            value: Style::new(),
-
+            running: Style::new(),
             diff_add: Style::new(),
             diff_remove: Style::new(),
             diff_context: Style::new().dim(),
-
-            icon_success: "+".into(),
-            icon_warning: "!".into(),
-            icon_error: "x".into(),
-            icon_info: "-".into(),
+            icon_ok: "+".into(),
+            icon_warn: "!".into(),
+            icon_fail: "x".into(),
             icon_pending: " ".into(),
+            icon_running: ".".into(),
+            icon_skipped: "-".into(),
             icon_arrow: ">".into(),
         }
     }
 }
 
-/// Parse a hex color string (#rrggbb or rrggbb) into a console::Color.
 pub(super) fn parse_hex_color(hex: &str) -> Option<Color> {
     let hex = hex.strip_prefix('#').unwrap_or(hex);
     if hex.len() != 6 {
@@ -250,9 +210,7 @@ pub(super) fn parse_hex_color(hex: &str) -> Option<Color> {
     Some(Color::Color256(ansi256_from_rgb(r, g, b)))
 }
 
-/// Map RGB to the nearest ANSI 256-color index.
 pub(super) fn ansi256_from_rgb(r: u8, g: u8, b: u8) -> u8 {
-    // Check grayscale ramp (232-255) first
     if r == g && g == b {
         if r < 8 {
             return 16;
@@ -262,22 +220,62 @@ pub(super) fn ansi256_from_rgb(r: u8, g: u8, b: u8) -> u8 {
         }
         return (((r as u16 - 8) * 24 / 247) as u8) + 232;
     }
-    // Map to 6x6x6 color cube (indices 16-231)
     let ri = (r as u16 * 5 / 255) as u8;
     let gi = (g as u16 * 5 / 255) as u8;
     let bi = (b as u16 * 5 / 255) as u8;
     16 + 36 * ri + 6 * gi + bi
 }
 
-fn style_from_hex(hex: &str) -> Style {
-    match parse_hex_color(hex) {
-        Some(color) => Style::new().fg(color),
+fn hex(s: &str) -> Style {
+    match parse_hex_color(s) {
+        Some(c) => Style::new().fg(c),
         None => Style::new(),
     }
 }
 
 fn apply_color(style: &mut Style, hex: &str) {
-    if let Some(color) = parse_hex_color(hex) {
-        *style = Style::new().fg(color);
+    if let Some(c) = parse_hex_color(hex) {
+        *style = Style::new().fg(c);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_has_seven_icons() {
+        let t = Theme::default();
+        assert_eq!(t.icon_ok, "✓");
+        assert_eq!(t.icon_warn, "⚠");
+        assert_eq!(t.icon_fail, "✗");
+        assert_eq!(t.icon_pending, "○");
+        assert_eq!(t.icon_running, "◐");
+        assert_eq!(t.icon_skipped, "—");
+        assert_eq!(t.icon_arrow, "→");
+    }
+
+    #[test]
+    fn presets_are_distinct() {
+        let d = Theme::default();
+        let dr = Theme::from_preset("dracula");
+        let m = Theme::from_preset("minimal");
+        // Default success is plain green; dracula uses hex; minimal is plain.
+        assert_ne!(format!("{:?}", d.success), format!("{:?}", dr.success));
+        assert_eq!(m.icon_ok, "+");
+    }
+
+    #[test]
+    fn unknown_preset_falls_back_to_default() {
+        let t = Theme::from_preset("not-a-real-preset");
+        assert_eq!(t.icon_ok, "✓"); // matches default
+    }
+
+    #[test]
+    fn hex_parses_six_chars() {
+        assert!(parse_hex_color("#abcdef").is_some());
+        assert!(parse_hex_color("abcdef").is_some());
+        assert!(parse_hex_color("#abc").is_none());
+        assert!(parse_hex_color("#zzzzzz").is_none());
     }
 }

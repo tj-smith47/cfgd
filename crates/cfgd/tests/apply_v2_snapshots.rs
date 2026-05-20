@@ -27,7 +27,7 @@ use std::path::Path;
 
 use cfgd::cli::apply::{build_apply_doc, cmd_apply};
 use cfgd::cli::output_types::ApplyOutput;
-use cfgd_core::output_v2::{Doc, Printer, Role};
+use cfgd_core::output::{Doc, Printer, Role};
 use pretty_assertions::assert_eq;
 
 use common::{

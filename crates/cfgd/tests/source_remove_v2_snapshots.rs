@@ -21,7 +21,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::source::cmd_source_remove;
-use cfgd_core::output_v2::{Printer, PromptAnswer};
+use cfgd_core::output::{Printer, PromptAnswer};
 
 use common::{cli_for, source_test_config_with_source_setup};
 

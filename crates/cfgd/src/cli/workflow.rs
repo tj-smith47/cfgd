@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
 
 pub fn cmd_workflow_generate(cli: &Cli, v2_printer: &PrinterV2, force: bool) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
@@ -56,7 +56,7 @@ pub fn cmd_workflow_generate(cli: &Cli, v2_printer: &PrinterV2, force: bool) -> 
     let yaml = generate_release_workflow_yaml(&module_names, &profile_names, &default_branch);
 
     std::fs::create_dir_all(&workflow_dir).map_err(|e| {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             &workflow_path.display().to_string(),
             "write_failed",
             format!("failed to create workflow directory: {}", e),
@@ -65,7 +65,7 @@ pub fn cmd_workflow_generate(cli: &Cli, v2_printer: &PrinterV2, force: bool) -> 
         anyhow::anyhow!("failed to create workflow directory: {}", e)
     })?;
     cfgd_core::atomic_write_str(&workflow_path, &yaml).map_err(|e| {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             &workflow_path.display().to_string(),
             "write_failed",
             format!("failed to write workflow file: {}", e),
@@ -287,7 +287,7 @@ pub(super) fn generate_release_workflow_yaml(
 
 pub(super) fn maybe_update_workflow(
     cli: &Cli,
-    v2_printer: &cfgd_core::output_v2::Printer,
+    v2_printer: &cfgd_core::output::Printer,
 ) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     init::regenerate_workflow(&config_dir, v2_printer)?;

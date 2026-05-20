@@ -340,9 +340,7 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
 
     // Create the tokio runtime on the main service thread so we can shut it down gracefully
     let rt = tokio::runtime::Runtime::new()?;
-    let printer = Arc::new(crate::output_v2::Printer::new(
-        crate::output_v2::Verbosity::Quiet,
-    ));
+    let printer = Arc::new(crate::output::Printer::new(crate::output::Verbosity::Quiet));
 
     // Spawn the daemon loop on the runtime
     rt.spawn(async move {

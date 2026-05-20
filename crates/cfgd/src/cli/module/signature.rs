@@ -1,5 +1,5 @@
 use super::*;
-use cfgd_core::output_v2::{Printer as PrinterV2, Role};
+use cfgd_core::output::{Printer as PrinterV2, Role};
 
 /// Cryptographically verify a git tag signature using `git tag -v`.
 /// Returns `Ok(true)` if verified, `Ok(false)` if verification fails (bad sig),
@@ -50,7 +50,7 @@ pub(crate) fn enforce_signature_policy(
 
     let Some(tag) = tag else {
         if require_signatures && !allow_unsigned {
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 module_name,
                 "signature_required",
                 format!(
@@ -77,7 +77,7 @@ pub(crate) fn enforce_signature_policy(
                     v2_printer.status_simple(Role::Ok, format!("Tag '{}' signature verified", tag))
                 }
                 Ok(false) => {
-                    v2_printer.emit(cfgd_core::output_v2::error_doc(
+                    v2_printer.emit(cfgd_core::output::error_doc(
                         module_name,
                         "signature_failed",
                         format!(
@@ -111,7 +111,7 @@ pub(crate) fn enforce_signature_policy(
                 _ => format!("Tag '{}' is unsigned", tag),
             };
             if require_signatures && !allow_unsigned {
-                v2_printer.emit(cfgd_core::output_v2::error_doc(
+                v2_printer.emit(cfgd_core::output::error_doc(
                     module_name,
                     "signature_required",
                     label.clone(),

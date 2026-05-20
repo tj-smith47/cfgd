@@ -1,6 +1,6 @@
 use super::*;
-use cfgd_core::output_v2::renderer::Table;
-use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+use cfgd_core::output::renderer::Table;
+use cfgd_core::output::{Doc, Printer as PrinterV2, Role};
 use serde::Serialize;
 
 /// JSON payload for `cfgd daemon install`.
@@ -39,12 +39,12 @@ pub(super) fn cmd_daemon(
 
     let config_path = std::fs::canonicalize(&cli.config).unwrap_or_else(|_| cli.config.clone());
     let profile_override = cli.profile.clone();
-    let printer = std::sync::Arc::new(cfgd_core::output_v2::Printer::new(if cli.quiet {
-        cfgd_core::output_v2::Verbosity::Quiet
+    let printer = std::sync::Arc::new(cfgd_core::output::Printer::new(if cli.quiet {
+        cfgd_core::output::Verbosity::Quiet
     } else if cli.verbose > 0 {
-        cfgd_core::output_v2::Verbosity::Verbose
+        cfgd_core::output::Verbosity::Verbose
     } else {
-        cfgd_core::output_v2::Verbosity::Normal
+        cfgd_core::output::Verbosity::Normal
     }));
 
     let hooks: std::sync::Arc<dyn cfgd_core::daemon::DaemonHooks> =
@@ -55,7 +55,7 @@ pub(super) fn cmd_daemon(
     });
     rt.shutdown_timeout(std::time::Duration::from_secs(2));
     if let Err(e) = result {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             "cfgd",
             "runtime_failed",
             format!("Daemon reconcile loop failed: {}", e),
@@ -71,7 +71,7 @@ pub fn cmd_daemon_status(v2_printer: &PrinterV2) -> anyhow::Result<()> {
     let status = match cfgd_core::daemon::query_daemon_status() {
         Ok(s) => s,
         Err(e) => {
-            v2_printer.emit(cfgd_core::output_v2::error_doc(
+            v2_printer.emit(cfgd_core::output::error_doc(
                 "cfgd",
                 "status_unavailable",
                 format!("Failed to query daemon status: {}", e),
@@ -171,7 +171,7 @@ pub(super) fn cmd_daemon_install(cli: &Cli, v2_printer: &PrinterV2) -> anyhow::R
     };
 
     if let Err(e) = cfgd_core::daemon::install_service(&cli.config, cli.profile.as_deref()) {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             "cfgd",
             "install_failed",
             format!("Failed to install daemon service: {}", e),
@@ -281,7 +281,7 @@ pub(super) fn cmd_daemon_uninstall(v2_printer: &PrinterV2) -> anyhow::Result<()>
     };
 
     if let Err(e) = cfgd_core::daemon::uninstall_service() {
-        v2_printer.emit(cfgd_core::output_v2::error_doc(
+        v2_printer.emit(cfgd_core::output::error_doc(
             "cfgd",
             "uninstall_failed",
             format!("Failed to uninstall daemon service: {}", e),

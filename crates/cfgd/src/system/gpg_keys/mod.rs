@@ -1,7 +1,7 @@
 use std::process::Command;
 
 use cfgd_core::errors::{CfgdError, Result};
-use cfgd_core::output_v2::{Printer, Role};
+use cfgd_core::output::{Printer, Role};
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
 /// Test seam env var for redirecting `gpg` invocations to a shim binary.
