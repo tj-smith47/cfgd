@@ -90,33 +90,29 @@ pub fn build_log_doc(output: &LogOutput) -> Doc {
     if output.entries.is_empty() {
         doc = doc.status(Role::Info, "No applies recorded yet");
     } else {
-        doc = doc.table(Table {
-            headers: vec![
-                "ID".into(),
-                "Time".into(),
-                "Profile".into(),
-                "Status".into(),
-                "Summary".into(),
-            ],
-            rows: output
-                .entries
-                .iter()
-                .map(|record| {
-                    vec![
-                        record.id.to_string(),
-                        record.timestamp.clone(),
-                        record.profile.clone(),
-                        match record.status {
-                            cfgd_core::state::ApplyStatus::Success => "success".into(),
-                            cfgd_core::state::ApplyStatus::Partial => "partial".into(),
-                            cfgd_core::state::ApplyStatus::Failed => "failed".into(),
-                            cfgd_core::state::ApplyStatus::InProgress => "in_progress".into(),
-                        },
-                        record.summary.clone().unwrap_or_else(|| "-".into()),
-                    ]
-                })
-                .collect(),
-        });
+        let rows: Vec<Vec<String>> = output
+            .entries
+            .iter()
+            .map(|record| {
+                vec![
+                    record.id.to_string(),
+                    record.timestamp.clone(),
+                    record.profile.clone(),
+                    match record.status {
+                        cfgd_core::state::ApplyStatus::Success => "success".into(),
+                        cfgd_core::state::ApplyStatus::Partial => "partial".into(),
+                        cfgd_core::state::ApplyStatus::Failed => "failed".into(),
+                        cfgd_core::state::ApplyStatus::InProgress => "in_progress".into(),
+                    },
+                    record.summary.clone().unwrap_or_else(|| "-".into()),
+                ]
+            })
+            .collect();
+        let mut t = Table::new(["ID", "Time", "Profile", "Status", "Summary"]);
+        for row in rows {
+            t = t.row(row);
+        }
+        doc = doc.table(t);
     }
     doc.with_data(output)
 }

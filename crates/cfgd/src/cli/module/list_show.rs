@@ -22,6 +22,20 @@ pub enum PackageDisplay {
     },
 }
 
+/// `secondary` (pink/magenta) attaches to remote-sourced modules so the
+/// upgrade-candidate set is scannable without re-reading the column. The
+/// literal value ("remote") still carries the meaning when colors are off.
+fn source_role(source: &str) -> Option<Role> {
+    (source == "remote").then_some(Role::Secondary)
+}
+
+/// `accent` (orange) tags rows that need a user action — currently `pending`
+/// (referenced in profile but not applied) and `out-of-date` (state drift
+/// detected). Other states stay plain so the call-to-action stays scannable.
+fn status_role(status: &str) -> Option<Role> {
+    matches!(status, "pending" | "out-of-date").then_some(Role::Accent)
+}
+
 /// Build the `cfgd module list` Doc. Caller owns `entries` (constructed from
 /// disk + state); this fn is pure.
 pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir: &Path) -> Doc {
@@ -39,26 +53,29 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
             "Module", "Active", "Source", "Status", "Packages", "Files", "Deps",
         ]);
         for e in entries {
-            t = t.row([
-                e.name.clone(),
-                if e.active { "yes" } else { "-" }.to_string(),
-                e.source.clone(),
-                e.status.clone(),
-                e.packages.to_string(),
-                e.files.to_string(),
-                e.depends.to_string(),
+            t = t.row_styled([
+                (e.name.clone(), None),
+                (if e.active { "yes" } else { "-" }.to_string(), None),
+                (e.source.clone(), source_role(&e.source)),
+                (e.status.clone(), status_role(&e.status)),
+                (e.packages.to_string(), None),
+                (e.files.to_string(), None),
+                (e.depends.to_string(), None),
             ]);
         }
         t
     } else {
         let mut t = Table::new(["Module", "Active", "Source", "Status", "Contents"]);
         for e in entries {
-            t = t.row([
-                e.name.clone(),
-                if e.active { "yes" } else { "-" }.to_string(),
-                e.source.clone(),
-                e.status.clone(),
-                format!("{} pkgs, {} files, {} deps", e.packages, e.files, e.depends),
+            t = t.row_styled([
+                (e.name.clone(), None),
+                (if e.active { "yes" } else { "-" }.to_string(), None),
+                (e.source.clone(), source_role(&e.source)),
+                (e.status.clone(), status_role(&e.status)),
+                (
+                    format!("{} pkgs, {} files, {} deps", e.packages, e.files, e.depends),
+                    None,
+                ),
             ]);
         }
         t

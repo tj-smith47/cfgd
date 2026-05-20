@@ -66,6 +66,7 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
             let t = Table {
                 headers: headers.clone(),
                 rows: rows.clone(),
+                row_roles: Vec::new(),
             };
             renderer.render_table(sink, depth, &t);
         }
