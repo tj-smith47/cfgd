@@ -291,7 +291,7 @@ fi
 
 log_section "Naming Convention — No kebab-case in serde or user-visible strings"
 # Detect any remaining kebab-case serde attributes (should all be camelCase now)
-serde_kebab=$(grep -rn 'rename_all = "kebab-case"\|rename_all = "lowercase"' "${SRC_ROOTS[@]}" --include='*.rs' 2>/dev/null | grep -v 'output_v2/' || true)
+serde_kebab=$(grep -rn 'rename_all = "kebab-case"\|rename_all = "lowercase"' "${SRC_ROOTS[@]}" --include='*.rs' 2>/dev/null | grep -v 'output/' || true)
 if [[ -n "$serde_kebab" ]]; then
     log_error "Found kebab-case/lowercase serde attributes (should be camelCase or removed):"
     echo "$serde_kebab"
@@ -369,7 +369,7 @@ check_pattern warn \
     'fn (chrono_now|local_now|get_now|timestamp_now|now_utc)\(' \
     ""
 
-# --- output_v2 banned patterns (R1.T34) -------------------------------------
+# --- output banned patterns (R1.T34) ----------------------------------------
 # These rules block the indent-hack and old-API patterns the redesign kills.
 # In R1, gated off so the script doesn't fail until R3 enables it
 # (CFGD_OUTPUT_V2_AUDIT=1) — this lets us land the rules + audit-tests
@@ -386,10 +386,9 @@ if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
   if violations=$(rg --type-add 'rust:*.txt' --type rust -n "$banned_methods" \
         "${CFGD_OUTPUT_V2_AUDIT_EXTRA_PATH:-crates/}" \
         --glob '!crates/cfgd-core/src/output/**' \
-        --glob '!crates/cfgd-core/src/output_v2/**' \
         --glob '!**/tests.rs' \
         --glob '!**/tests/**' 2>/dev/null) && [ -n "$violations" ]; then
-    log_error "BANNED OLD-API CALLS (Printer methods removed in output_v2):"
+    log_error "BANNED OLD-API CALLS (Printer methods removed in output):"
     echo "$violations"
   fi
 
@@ -405,7 +404,6 @@ if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
   if hack=$(rg --type-add 'rust:*.txt' --type rust -n 'printer\.\w+\(\s*&?(format!\()?"(  |\t|\\t)' \
         "${CFGD_OUTPUT_V2_AUDIT_EXTRA_PATH:-crates/}" \
         --glob '!crates/cfgd-core/src/output/**' \
-        --glob '!crates/cfgd-core/src/output_v2/**' \
         --glob '!**/tests.rs' \
         --glob '!**/tests/**' 2>/dev/null) && [ -n "$hack" ]; then
     log_error "INDENT HACK (>=2 spaces, tab byte, or \\t escape leading printer arg):"
@@ -416,7 +414,6 @@ if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
   if kv_hack=$(rg --type-add 'rust:*.txt' --type rust -n '\.kv\(\s*&?(format!\()?"(  |\t|\\t)' \
         "${CFGD_OUTPUT_V2_AUDIT_EXTRA_PATH:-crates/}" \
         --glob '!crates/cfgd-core/src/output/**' \
-        --glob '!crates/cfgd-core/src/output_v2/**' \
         --glob '!**/tests.rs' \
         --glob '!**/tests/**' 2>/dev/null) && [ -n "$kv_hack" ]; then
     log_error "KV KEY INDENT HACK (>=2 spaces, tab byte, or \\t escape leading kv key):"
@@ -428,7 +425,6 @@ if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
   if direct=$(rg --type-add 'rust:*.txt' --type rust -n '(console::|indicatif::(ProgressBar|MultiProgress)::new)' \
         "${CFGD_OUTPUT_V2_AUDIT_EXTRA_PATH:-crates/}" \
         --glob '!crates/cfgd-core/src/output/**' \
-        --glob '!crates/cfgd-core/src/output_v2/**' \
         --glob '!**/tests.rs' \
         --glob '!**/tests/**' 2>/dev/null) && [ -n "$direct" ]; then
     log_error "DIRECT TERMINAL TYPES (console::* / indicatif::*::new) outside output module:"
@@ -436,7 +432,7 @@ if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
   fi
 
 fi
-# --- end output_v2 audit block ----------------------------------------------
+# --- end output audit block -------------------------------------------------
 
 # --- Summary ---
 printf "\n"
