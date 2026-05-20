@@ -431,6 +431,26 @@ if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
     echo "$direct"
   fi
 
+  # 5. Structured-output coverage table — every cmd_* function in cli/ must
+  #    appear in .claude/rules/output-module.md's coverage table.
+  #    Only match file-scope definitions (no leading whitespace) to avoid
+  #    matching test helper functions inside #[cfg(test)] blocks.
+  cmds_in_code=$(rg --type rust --color never -n \
+        '^(pub(\(crate\)|(\(super\)))? fn |fn )cmd_' \
+        crates/cfgd/src/cli/ --glob '!**/tests.rs' --glob '!**/tests/**' \
+        2>/dev/null \
+        | sed -E 's/.*fn cmd_([a-z_]+).*/\1/' | sort -u)
+  rule_file=".claude/rules/output-module.md"
+  if [ -f "$rule_file" ]; then
+      cmds_in_table=$(awk '/^## Structured-output coverage/,0' "$rule_file" \
+          | grep -E '^\| [a-z]' | awk -F'|' '{print $2}' | tr -d ' ' | sort -u)
+      missing=$(comm -23 <(echo "$cmds_in_code") <(echo "$cmds_in_table" | tr ' ' '_'))
+      if [ -n "$missing" ]; then
+          log_error "Commands missing from structured-output coverage table in $rule_file:"
+          echo "$missing"
+      fi
+  fi
+
 fi
 # --- end output audit block -------------------------------------------------
 
