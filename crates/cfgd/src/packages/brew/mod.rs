@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 use cfgd_core::providers::PackageManager;
 
 use super::shared::{brew_available, brew_cmd, brew_path_dirs, run_pkg_cmd, run_pkg_cmd_live};
@@ -226,7 +226,7 @@ impl PackageManager for BrewManager {
 
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
             // Linuxbrew-as-root: create linuxbrew user, install as that user
-            printer.info("Creating linuxbrew system user");
+            printer.status_simple(Role::Info, "Creating linuxbrew system user");
             let user_status = Command::new("useradd")
                 .args([
                     "--system",
@@ -250,7 +250,7 @@ impl PackageManager for BrewManager {
             }
 
             let result = printer
-                .run_with_output(
+                .run(
                     Command::new("sudo")
                         .args(["-u", "linuxbrew", "bash", "-c"])
                         .arg(format!(
@@ -274,7 +274,7 @@ impl PackageManager for BrewManager {
             // PATH for brew commands will be augmented via brew_cmd()
         } else {
             let result = printer
-                .run_with_output(
+                .run(
                     Command::new("bash").arg("-c").arg(format!(
                         "NONINTERACTIVE=1 /bin/bash -c \"$(curl -fsSL {})\"",
                         install_url

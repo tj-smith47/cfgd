@@ -6,7 +6,7 @@ use std::process::Command;
 
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::Printer;
 use cfgd_core::providers::PackageManager;
 
 use super::shared::{
@@ -49,7 +49,7 @@ impl PackageManager for CargoManager {
 
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
         let result = printer
-            .run_with_output(
+            .run(
                 Command::new("bash")
                     .arg("-c")
                     .arg("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"),
@@ -194,7 +194,6 @@ pub(super) fn parse_cargo_install_list(stdout: &str) -> Vec<cfgd_core::providers
 
 #[cfg(test)]
 mod tests {
-    use cfgd_core::output::Printer;
     use cfgd_core::providers::PackageManager;
 
     use super::*;
@@ -260,7 +259,7 @@ mod tests {
     #[test]
     fn cargo_manager_update_is_noop() {
         let mgr = CargoManager;
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = cfgd_core::test_helpers::test_printer_v2();
         mgr.update(&printer).unwrap();
     }
 
@@ -349,7 +348,7 @@ tokei v12.1.2:
     #[test]
     fn cargo_update_returns_ok() {
         let mgr = CargoManager;
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = cfgd_core::test_helpers::test_printer_v2();
         mgr.update(&printer).unwrap();
     }
 
@@ -437,7 +436,7 @@ tokei v12.1.2:
     mod cargo_shim {
         use super::*;
         use cfgd_core::providers::PackageManager;
-        use cfgd_core::test_helpers::{ToolShim, test_printer};
+        use cfgd_core::test_helpers::{ToolShim, test_printer_v2};
         use serial_test::serial;
 
         const SHIM_ENV: &str = "CFGD_CARGO_BIN";
@@ -446,7 +445,7 @@ tokei v12.1.2:
         #[serial]
         fn cargo_install_runs_install_subcommand_per_package() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer();
+            let p = test_printer_v2();
             CargoManager
                 .install(&["ripgrep".into(), "fd-find".into()], &p)
                 .expect("Ok");
@@ -460,7 +459,7 @@ tokei v12.1.2:
         #[serial]
         fn cargo_uninstall_runs_uninstall_subcommand_per_package() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer();
+            let p = test_printer_v2();
             CargoManager.uninstall(&["ripgrep".into()], &p).expect("Ok");
             assert!(s.argv_log().contains("uninstall ripgrep"));
         }
@@ -469,7 +468,7 @@ tokei v12.1.2:
         #[serial]
         fn cargo_update_is_noop_no_command_spawned() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer();
+            let p = test_printer_v2();
             CargoManager.update(&p).expect("Ok");
             assert_eq!(
                 s.invocation_count(),

@@ -1,4 +1,4 @@
-use cfgd_core::output::{CommandOutput, Printer};
+use cfgd_core::output_v2::{CommandOutput, Printer, Verbosity};
 
 use super::*;
 
@@ -245,14 +245,14 @@ fn post_install_note_fields() {
 
 #[test]
 fn print_caveats_empty_is_noop() {
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = cfgd_core::test_helpers::test_printer_v2();
     // Should not panic
     print_caveats(&printer, &[]);
 }
 
 #[test]
 fn print_caveats_non_empty() {
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = cfgd_core::test_helpers::test_printer_v2();
     let notes = vec![PostInstallNote {
         manager: "brew".to_string(),
         message: "Add to PATH".to_string(),
@@ -310,7 +310,7 @@ fn extract_caveats_pip_in_stderr() {
 
 #[test]
 fn print_caveats_multiple_notes() {
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = cfgd_core::test_helpers::test_printer_v2();
     let notes = vec![
         PostInstallNote {
             manager: "brew".to_string(),
@@ -351,7 +351,7 @@ fn strip_sudo_if_root_non_sudo_first() {
 
 #[test]
 fn print_caveats_outputs_subheader_and_warnings() {
-    let (printer, buf) = Printer::for_test();
+    let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
     let notes = vec![
         PostInstallNote {
             manager: "brew".to_string(),
@@ -873,7 +873,7 @@ fn print_caveats_no_op_when_notes_empty() {
 
 #[test]
 fn print_caveats_emits_subheader_then_warning_per_note() {
-    let (printer, output) = Printer::for_test();
+    let (printer, output) = Printer::for_test_at(Verbosity::Normal);
     let notes = vec![
         PostInstallNote {
             manager: "brew".to_string(),

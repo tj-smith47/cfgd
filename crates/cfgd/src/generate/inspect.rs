@@ -187,7 +187,7 @@ mod tests {
     use std::collections::HashSet;
 
     use cfgd_core::errors::Result;
-    use cfgd_core::output::Printer;
+    use cfgd_core::output_v2::Printer;
     use cfgd_core::providers::PackageManager;
     use tempfile::TempDir;
 

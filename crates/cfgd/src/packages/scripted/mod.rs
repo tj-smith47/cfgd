@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::process::Command;
 
 use cfgd_core::errors::Result;
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 use cfgd_core::providers::PackageManager;
 
 use super::shared::{run_pkg_cmd, run_pkg_cmd_msg};
@@ -46,7 +46,7 @@ impl ScriptedManager {
             // surfaced as a per-package error so the caller can see which
             // member of the batch failed.
             for (cmd, pkg) in invocations.iter().zip(packages) {
-                printer.info(cmd);
+                printer.status_simple(Role::Info, cmd.as_str());
                 run_pkg_cmd_msg(
                     &self.mgr_name,
                     Command::new("sh").args(["-c", cmd]),
@@ -56,7 +56,7 @@ impl ScriptedManager {
             }
         } else if let Some(cmd) = invocations.first() {
             // Batch mode — build_template_invocations emits a single command.
-            printer.info(cmd);
+            printer.status_simple(Role::Info, cmd.as_str());
             run_pkg_cmd(
                 &self.mgr_name,
                 Command::new("sh").args(["-c", cmd]),
@@ -149,7 +149,7 @@ impl PackageManager for ScriptedManager {
 
     fn update(&self, printer: &Printer) -> Result<()> {
         if let Some(ref cmd) = self.update_cmd {
-            printer.info(cmd);
+            printer.status_simple(Role::Info, cmd.as_str());
             run_pkg_cmd_msg(
                 &self.mgr_name,
                 Command::new("sh").args(["-c", cmd]),

@@ -365,7 +365,7 @@ fn test_scan_shell_config_unknown_shell_returns_empty() {
 
 use std::collections::HashSet;
 
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::Printer;
 use cfgd_core::providers::PackageInfo;
 
 struct TestPackageManager {

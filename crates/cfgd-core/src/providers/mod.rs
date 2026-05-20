@@ -7,8 +7,7 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 
 use crate::errors::Result;
-use crate::output::Printer;
-use crate::output_v2::Printer as PrinterV2;
+use crate::output_v2::Printer;
 
 // --- PackageManager trait ---
 
@@ -78,7 +77,7 @@ pub trait SystemConfigurator: Send + Sync {
     fn diff(&self, desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>>;
 
     /// Apply desired state
-    fn apply(&self, desired: &serde_yaml::Value, printer: &PrinterV2) -> Result<()>;
+    fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()>;
 }
 
 // --- FileManager trait ---
@@ -160,7 +159,7 @@ pub trait FileManager: Send + Sync {
     fn scan_source(&self, layers: &[FileLayer]) -> Result<FileTree>;
     fn scan_target(&self, paths: &[PathBuf]) -> Result<FileTree>;
     fn diff(&self, source: &FileTree, target: &FileTree) -> Result<Vec<FileDiff>>;
-    fn apply(&self, actions: &[FileAction], printer: &PrinterV2) -> Result<()>;
+    fn apply(&self, actions: &[FileAction], printer: &Printer) -> Result<()>;
 }
 
 // --- PackageAction ---

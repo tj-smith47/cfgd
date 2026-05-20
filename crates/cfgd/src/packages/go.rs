@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::{Printer, Role};
 use cfgd_core::providers::PackageManager;
 
 use super::shared::{
@@ -54,7 +54,7 @@ impl PackageManager for GoInstallManager {
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
         if brew_available() {
             let result = printer
-                .run_with_output(brew_cmd().args(["install", "go"]), "Installing Go via brew")
+                .run(brew_cmd().args(["install", "go"]), "Installing Go via brew")
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: "go".into(),
                     message: format!("brew install go failed: {}", e),
@@ -117,7 +117,7 @@ impl PackageManager for GoInstallManager {
                 })?;
             let bin_path = bin_dir.join(bin_name);
             if bin_path.exists() {
-                printer.info(&format!("removing {}", bin_path.display()));
+                printer.status_simple(Role::Info, format!("removing {}", bin_path.display()));
                 std::fs::remove_file(&bin_path).map_err(|e| PackageError::UninstallFailed {
                     manager: "go".into(),
                     message: format!("failed to remove {}: {}", bin_path.display(), e),
@@ -188,7 +188,6 @@ pub(super) fn parse_go_module_version(output: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use cfgd_core::output::Printer;
     use cfgd_core::providers::PackageManager;
 
     use super::super::shared::any_system_manager_available;
@@ -203,7 +202,7 @@ mod tests {
     #[test]
     fn go_install_manager_update_is_noop() {
         let mgr = GoInstallManager;
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = cfgd_core::test_helpers::test_printer_v2();
         mgr.update(&printer).unwrap();
     }
 
@@ -289,7 +288,7 @@ mod tests {
     #[test]
     fn go_update_returns_ok() {
         let mgr = GoInstallManager;
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = cfgd_core::test_helpers::test_printer_v2();
         mgr.update(&printer).unwrap();
     }
 
@@ -373,7 +372,7 @@ mod tests {
     #[cfg(unix)]
     mod go_shim {
         use super::*;
-        use cfgd_core::test_helpers::{ToolShim, test_printer};
+        use cfgd_core::test_helpers::{ToolShim, test_printer_v2};
         use serial_test::serial;
 
         const SHIM_ENV: &str = "CFGD_GO_BIN";
@@ -382,7 +381,7 @@ mod tests {
         #[serial]
         fn go_install_appends_at_latest_to_unversioned_package() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer();
+            let p = test_printer_v2();
             GoInstallManager
                 .install(&["github.com/example/tool".into()], &p)
                 .expect("Ok");
@@ -398,7 +397,7 @@ mod tests {
         #[serial]
         fn go_install_passes_through_pre_pinned_version() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer();
+            let p = test_printer_v2();
             GoInstallManager
                 .install(&["github.com/example/tool@v1.2.3".into()], &p)
                 .expect("Ok");
@@ -414,7 +413,7 @@ mod tests {
         #[serial]
         fn go_install_runs_one_install_per_package() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer();
+            let p = test_printer_v2();
             GoInstallManager
                 .install(&["a.com/x".into(), "b.com/y".into()], &p)
                 .expect("Ok");
@@ -425,7 +424,7 @@ mod tests {
         #[serial]
         fn go_update_is_noop_no_command_spawned() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer();
+            let p = test_printer_v2();
             GoInstallManager.update(&p).expect("Ok");
             assert_eq!(
                 s.invocation_count(),

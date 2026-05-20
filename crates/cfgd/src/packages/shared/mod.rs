@@ -9,7 +9,7 @@ use std::process::{Command, Output};
 
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::{CommandOutput, Printer};
+use cfgd_core::output_v2::{CommandOutput, Printer, Role};
 
 /// Compute the canonical env-var seam name for a package-manager binary.
 /// Pattern: `CFGD_<NAME>_BIN`, with hyphens turned into underscores so
@@ -140,10 +140,9 @@ pub(super) fn print_caveats(printer: &Printer, notes: &[PostInstallNote]) {
     if notes.is_empty() {
         return;
     }
-    printer.newline();
-    printer.subheader("Post-install notes");
+    printer.status_simple(Role::Info, "Post-install notes");
     for note in notes {
-        printer.warning(&format!("[{}] {}", note.manager, note.message));
+        printer.status_simple(Role::Warn, format!("[{}] {}", note.manager, note.message));
     }
 }
 
@@ -228,7 +227,7 @@ pub(super) fn run_pkg_cmd_live(
     error_kind: &str,
 ) -> std::result::Result<CommandOutput, PackageError> {
     let output = printer
-        .run_with_output(cmd, label)
+        .run(cmd, label)
         .map_err(|e| PackageError::CommandFailed {
             manager: manager.into(),
             source: e,
@@ -422,9 +421,9 @@ pub(super) fn bootstrap_via_system_manager(
     for cmd_name in ["apt-get", "dnf", "zypper"] {
         if command_available(cmd_name) {
             let result = printer
-                .run_with_output(
+                .run(
                     sudo_cmd(cmd_name).args(["install", "-y", target_pkg]),
-                    &format!("Installing {} via {}", target_pkg, cmd_name),
+                    format!("Installing {} via {}", target_pkg, cmd_name),
                 )
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: manager_name.into(),
@@ -454,9 +453,9 @@ pub(super) fn bootstrap_via_brew_then_system(
 ) -> Result<bool> {
     if brew_available() {
         let result = printer
-            .run_with_output(
+            .run(
                 brew_cmd().args(["install", brew_pkg]),
-                &format!("Installing {} via brew", brew_pkg),
+                format!("Installing {} via brew", brew_pkg),
             )
             .map_err(|e| PackageError::BootstrapFailed {
                 manager: manager_name.into(),
@@ -470,9 +469,9 @@ pub(super) fn bootstrap_via_brew_then_system(
     for cmd_name in ["apt-get", "dnf"] {
         if command_available(cmd_name) {
             let result = printer
-                .run_with_output(
+                .run(
                     sudo_cmd(cmd_name).args(["install", "-y"]).args(system_pkgs),
-                    &format!("Installing {} via {}", manager_name, cmd_name),
+                    format!("Installing {} via {}", manager_name, cmd_name),
                 )
                 .map_err(|e| PackageError::BootstrapFailed {
                     manager: manager_name.into(),

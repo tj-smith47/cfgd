@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::Printer;
 use cfgd_core::providers::PackageManager;
 
 #[cfg(target_os = "linux")]
@@ -365,7 +365,7 @@ fd        9.0.0    100    latest/stable  -             -
     mod snap_shim {
         use super::*;
         use cfgd_core::providers::PackageManager;
-        use cfgd_core::test_helpers::{ToolShim, test_printer};
+        use cfgd_core::test_helpers::{ToolShim, test_printer_v2};
         use serial_test::serial;
 
         const SHIM_ENV: &str = "CFGD_SNAP_BIN";
@@ -374,7 +374,7 @@ fd        9.0.0    100    latest/stable  -             -
         #[serial]
         fn snap_install_runs_install_subcommand_per_package() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer();
+            let p = test_printer_v2();
             SnapManager
                 .install(&["ripgrep".into(), "fd".into()], &p)
                 .expect("Ok");
@@ -405,7 +405,7 @@ fd        9.0.0    100    latest/stable  -             -
                 "",
                 "snap \"ripgrep\" requires classic confinement",
             );
-            let p = test_printer();
+            let p = test_printer_v2();
             let _ = SnapManager.install(&["ripgrep".into()], &p);
             assert_eq!(
                 s.invocation_count(),
@@ -428,7 +428,7 @@ fd        9.0.0    100    latest/stable  -             -
         #[serial]
         fn snap_uninstall_runs_remove_with_all_packages_in_one_invocation() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer();
+            let p = test_printer_v2();
             SnapManager
                 .uninstall(&["ripgrep".into(), "fd".into()], &p)
                 .expect("Ok");
@@ -444,7 +444,7 @@ fd        9.0.0    100    latest/stable  -             -
         #[serial]
         fn snap_uninstall_is_noop_when_packages_empty() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer();
+            let p = test_printer_v2();
             SnapManager.uninstall(&[], &p).expect("Ok");
             assert_eq!(s.invocation_count(), 0, "no command spawned for empty");
         }
@@ -453,7 +453,7 @@ fd        9.0.0    100    latest/stable  -             -
         #[serial]
         fn snap_update_runs_refresh() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer();
+            let p = test_printer_v2();
             SnapManager.update(&p).expect("Ok");
             assert_eq!(s.invocation_count(), 1);
             assert!(s.argv_log().contains("refresh"), "argv: {}", s.argv_log());

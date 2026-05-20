@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::Printer;
 use cfgd_core::providers::PackageManager;
 
 use super::shared::{parse_version_field, run_pkg_cmd, run_pkg_cmd_live};
@@ -239,7 +239,7 @@ Git        Git.Git     2.43.0\n\
     #[test]
     fn winget_manager_bootstrap_returns_error() {
         let mgr = WingetManager;
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = cfgd_core::test_helpers::test_printer_v2();
         let result = mgr.bootstrap(&printer);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
@@ -357,7 +357,7 @@ SomeApp               Some.App                  1.0.0\n";
     #[test]
     fn winget_bootstrap_error_contains_microsoft_store_message() {
         let mgr = WingetManager;
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = cfgd_core::test_helpers::test_printer_v2();
         let result = mgr.bootstrap(&printer);
         let err = result.unwrap_err();
         let msg = err.to_string();

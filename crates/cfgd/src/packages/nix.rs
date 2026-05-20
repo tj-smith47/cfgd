@@ -6,7 +6,7 @@ use std::process::Command;
 
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::Printer;
 use cfgd_core::providers::PackageManager;
 
 use super::shared::{
@@ -55,7 +55,7 @@ impl PackageManager for NixManager {
 
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
         let result = printer
-            .run_with_output(
+            .run(
                 Command::new("bash")
                     .arg("-c")
                     .arg("curl -L https://nixos.org/nix/install | sh -s -- --daemon"),
@@ -227,7 +227,6 @@ pub(super) fn parse_nix_search_version(output: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use cfgd_core::command_available;
-    use cfgd_core::output::Printer;
     use cfgd_core::providers::PackageManager;
 
     use super::*;
@@ -241,7 +240,7 @@ mod tests {
     #[test]
     fn nix_manager_update_is_noop() {
         let mgr = NixManager;
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = cfgd_core::test_helpers::test_printer_v2();
         mgr.update(&printer).unwrap();
     }
 
@@ -356,7 +355,7 @@ mod tests {
     #[test]
     fn nix_update_returns_ok() {
         let mgr = NixManager;
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = cfgd_core::test_helpers::test_printer_v2();
         mgr.update(&printer).unwrap();
     }
 
@@ -442,7 +441,7 @@ mod tests {
     mod nix_shim {
         use super::*;
         use cfgd_core::providers::PackageManager;
-        use cfgd_core::test_helpers::{ToolShim, test_printer};
+        use cfgd_core::test_helpers::{ToolShim, test_printer_v2};
         use serial_test::serial;
 
         const SHIM_ENV: &str = "CFGD_NIX_BIN";
@@ -455,7 +454,7 @@ mod tests {
             // takes the `nix profile install` path. CFGD_NIX_ENV_BIN must
             // stay unset so the test fails loudly if the wrong branch fires.
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer();
+            let p = test_printer_v2();
             NixManager
                 .install(&["ripgrep".into(), "fd".into()], &p)
                 .expect("Ok");
@@ -478,7 +477,7 @@ mod tests {
         #[serial]
         fn nix_uninstall_routes_through_nix_profile_when_nix_available() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer();
+            let p = test_printer_v2();
             NixManager.uninstall(&["ripgrep".into()], &p).expect("Ok");
             assert!(
                 s.argv_log().contains("profile remove nixpkgs#ripgrep"),
@@ -543,7 +542,7 @@ mod tests {
             // Shim ONLY on CFGD_NIX_ENV_BIN — nix_available() is false, so
             // install routes through the nix-env -iA fallback path.
             let s = ToolShim::install(SHIM_ENV_NIX_ENV, 0, "", "");
-            let p = test_printer();
+            let p = test_printer_v2();
             NixManager.install(&["ripgrep".into()], &p).expect("Ok");
             let argv = s.argv_log();
             assert!(
@@ -556,7 +555,7 @@ mod tests {
         #[serial]
         fn nix_uninstall_uses_nix_env_when_only_nix_env_seam_set() {
             let s = ToolShim::install(SHIM_ENV_NIX_ENV, 0, "", "");
-            let p = test_printer();
+            let p = test_printer_v2();
             NixManager.uninstall(&["ripgrep".into()], &p).expect("Ok");
             assert!(
                 s.argv_log().contains("-e ripgrep"),

@@ -1,5 +1,4 @@
 use cfgd_core::command_available;
-use cfgd_core::output::Printer;
 use cfgd_core::providers::PackageManager;
 
 use super::*;
@@ -287,7 +286,7 @@ fn simple_manager_is_available_without_custom_fn() {
 #[test]
 fn simple_manager_bootstrap_is_noop() {
     let apt = apt_manager();
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = cfgd_core::test_helpers::test_printer_v2();
     apt.bootstrap(&printer).unwrap();
 }
 

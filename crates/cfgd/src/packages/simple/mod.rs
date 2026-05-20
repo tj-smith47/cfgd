@@ -11,7 +11,7 @@ use std::process::Command;
 
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::Printer;
 use cfgd_core::providers::PackageManager;
 
 use super::parsers::{
@@ -133,7 +133,7 @@ impl PackageManager for SimpleManager {
         if self.ignore_update_exit {
             // dnf/yum check-update returns 100 when updates are available
             let _ = printer
-                .run_with_output(Command::new(prog).args(args), &label)
+                .run(Command::new(prog).args(args), &label)
                 .map_err(|e| PackageError::CommandFailed {
                     manager: self.mgr_name.into(),
                     source: e,

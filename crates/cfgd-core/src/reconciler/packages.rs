@@ -13,9 +13,7 @@ impl<'a> super::Reconciler<'a> {
                 // Find in ALL managers (not just available — it isn't available yet)
                 for pm in &self.registry.package_managers {
                     if pm.name() == manager {
-                        let v1_forwarder =
-                            crate::output::Printer::new(crate::output::Verbosity::Quiet);
-                        pm.bootstrap(&v1_forwarder)?;
+                        pm.bootstrap(printer)?;
                         if !pm.is_available() {
                             return Err(crate::errors::PackageError::BootstrapFailed {
                                 manager: manager.clone(),
@@ -36,9 +34,7 @@ impl<'a> super::Reconciler<'a> {
             } => {
                 for pm in self.registry.available_package_managers() {
                     if pm.name() == manager {
-                        let v1_forwarder =
-                            crate::output::Printer::new(crate::output::Verbosity::Quiet);
-                        pm.install(packages, &v1_forwarder)?;
+                        pm.install(packages, printer)?;
                         return Ok(format!(
                             "package:{}:install:{}",
                             manager,
@@ -56,9 +52,7 @@ impl<'a> super::Reconciler<'a> {
             } => {
                 for pm in self.registry.available_package_managers() {
                     if pm.name() == manager {
-                        let v1_forwarder =
-                            crate::output::Printer::new(crate::output::Verbosity::Quiet);
-                        pm.uninstall(packages, &v1_forwarder)?;
+                        pm.uninstall(packages, printer)?;
                         return Ok(format!(
                             "package:{}:uninstall:{}",
                             manager,

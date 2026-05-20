@@ -6,7 +6,7 @@ use std::process::Command;
 
 use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
-use cfgd_core::output::Printer;
+use cfgd_core::output_v2::Printer;
 use cfgd_core::providers::PackageManager;
 
 use super::shared::{
@@ -85,7 +85,7 @@ impl PackageManager for NpmManager {
         // Fall back to nvm
         if command_available("curl") {
             let result = printer
-                .run_with_output(
+                .run(
                     Command::new("bash")
                         .arg("-c")
                         .arg(concat!(
@@ -511,7 +511,7 @@ mod tests {
     #[cfg(unix)]
     mod npm_shim {
         use super::*;
-        use cfgd_core::test_helpers::{ToolShim, test_printer};
+        use cfgd_core::test_helpers::{ToolShim, test_printer_v2};
         use serial_test::serial;
 
         const SHIM_ENV: &str = "CFGD_NPM_BIN";
@@ -520,7 +520,7 @@ mod tests {
         #[serial]
         fn npm_install_passes_install_g_with_packages() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer();
+            let p = test_printer_v2();
             NpmManager
                 .install(&["typescript".into(), "eslint".into()], &p)
                 .expect("Ok");
@@ -535,7 +535,7 @@ mod tests {
         #[serial]
         fn npm_install_skips_command_when_empty() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer();
+            let p = test_printer_v2();
             NpmManager.install(&[], &p).expect("Ok");
             assert_eq!(s.invocation_count(), 0);
         }
@@ -544,7 +544,7 @@ mod tests {
         #[serial]
         fn npm_uninstall_passes_uninstall_g_with_packages() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer();
+            let p = test_printer_v2();
             NpmManager
                 .uninstall(&["typescript".into()], &p)
                 .expect("Ok");
@@ -555,7 +555,7 @@ mod tests {
         #[serial]
         fn npm_update_runs_update_g() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
-            let p = test_printer();
+            let p = test_printer_v2();
             NpmManager.update(&p).expect("Ok");
             assert!(s.argv_log().contains("update -g"));
         }

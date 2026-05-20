@@ -77,11 +77,9 @@ impl<'a> super::Reconciler<'a> {
                             .find(|m| m.name() == first.manager);
 
                         if let Some(pm) = pm {
-                            let v1_forwarder =
-                                crate::output::Printer::new(crate::output::Verbosity::Quiet);
                             // Bootstrap if needed
                             if !pm.is_available() && pm.can_bootstrap() {
-                                pm.bootstrap(&v1_forwarder)?;
+                                pm.bootstrap(printer)?;
 
                                 // Persist bootstrapped manager's PATH to ~/.cfgd.env
                                 let path_dirs = pm.path_dirs();
@@ -122,10 +120,10 @@ impl<'a> super::Reconciler<'a> {
 
                             // Update package index before installing
                             if pm.is_available() {
-                                pm.update(&v1_forwarder)?;
+                                pm.update(printer)?;
                             }
 
-                            pm.install(&pkg_names, &v1_forwarder)?;
+                            pm.install(&pkg_names, printer)?;
                         }
                     }
                 }
