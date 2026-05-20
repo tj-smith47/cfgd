@@ -1227,7 +1227,7 @@ fn test_v2_printer() -> cfgd_core::output::Printer {
     cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet)
 }
 
-/// Capturing v2 printer at `Normal` verbosity for tests that need to inspect
+/// Capturing Printer at `Normal` verbosity for tests that need to inspect
 /// headings, sections, or other output that requires non-quiet verbosity.
 fn test_v2_printer_capture() -> (cfgd_core::output::Printer, Arc<Mutex<String>>) {
     cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal)

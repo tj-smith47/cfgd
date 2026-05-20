@@ -43,14 +43,14 @@ pub(super) fn collect_and_store_compliance_snapshot(
     Ok((cfg, snapshot))
 }
 
-/// Build a snapshot and emit a v2 summary Doc.
+/// Build a snapshot and emit a compliance summary Doc.
 pub(super) fn cmd_compliance_snapshot(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
     let (_cfg, snapshot) = collect_and_store_compliance_snapshot(cli)?;
     v2_printer.emit(build_compliance_summary_doc(&snapshot));
     Ok(())
 }
 
-/// Export snapshot to configured export path and emit a v2 summary Doc.
+/// Export snapshot to the configured export path and emit a compliance summary Doc.
 pub(super) fn cmd_compliance_export(cli: &Cli, v2_printer: &Printer) -> anyhow::Result<()> {
     let (cfg, snapshot) = collect_and_store_compliance_snapshot(cli)?;
 

@@ -1,8 +1,8 @@
 use super::*;
 use cfgd_core::output::{Printer, Verbosity as V2Verbosity};
 
-/// Build a quiet v2 printer for tests that only need to satisfy the v2
-/// signature without asserting on captured output. Mirrors the
+/// Build a quiet Printer for tests that only need to satisfy the signature
+/// without asserting on captured output. Mirrors the
 /// `Printer::new(Verbosity::Quiet)` pattern used for the legacy printer.
 fn v2_quiet() -> Printer {
     Printer::new(V2Verbosity::Quiet)
