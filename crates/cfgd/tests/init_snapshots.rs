@@ -152,9 +152,8 @@ fn init_with_apply_renders_apply_status_streaming() {
     // do" status), with no buffered human content trailing it. The
     // streaming → buffered one-blank-line invariant under apply data is
     // asserted by the `init_apply_then_next_steps_bridge_invariant` test
-    // below — kept
-    // separate because exercising it requires a buffered Doc with human
-    // content, which cmd_init does not emit on the apply branch.
+    // below — kept separate because exercising it requires a buffered Doc
+    // with human content, which cmd_init does not emit on the apply branch.
     let tmp = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(tmp.path());
     // Redirect the apply-step state store off the shared default DB so this

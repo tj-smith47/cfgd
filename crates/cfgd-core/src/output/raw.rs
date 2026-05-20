@@ -68,13 +68,13 @@ impl Renderer {
 }
 
 impl super::Printer {
-    /// Diff renderer (raw, depth 0). Goes to stderr.
+    /// Diff renderer. Goes to stderr.
     pub fn diff(&self, old: &str, new: &str) {
         self.renderer
             .render_diff(self.sink_stderr.as_ref(), old, new);
     }
 
-    /// Syntax-highlighted code (raw, depth 0). Goes to stderr.
+    /// Syntax-highlighted code. Goes to stderr.
     pub fn syntax_highlight(&self, code: &str, lang: &str) {
         self.renderer.render_syntax_highlight(
             self.sink_stderr.as_ref(),

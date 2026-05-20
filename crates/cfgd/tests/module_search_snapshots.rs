@@ -9,9 +9,9 @@
 //!
 //! `module_search/no_registries.txt` + the `happy_json` JSON-shape check
 //! live alongside the other registry snapshot tests in
-//! `module_registry_snapshots.rs` (historical grouping). The bridge
-//! case is split out here because the streaming-bearing surface deserves
-//! a standalone bridge anchor.
+//! `module_registry_snapshots.rs`. The bridge case is split out here
+//! because the streaming-bearing surface deserves a standalone bridge
+//! anchor.
 
 mod common;
 
