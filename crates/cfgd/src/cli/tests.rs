@@ -1223,13 +1223,13 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
     }
 }
 
-fn test_v2_printer() -> cfgd_core::output::Printer {
+fn test_printer() -> cfgd_core::output::Printer {
     cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet)
 }
 
 /// Capturing Printer at `Normal` verbosity for tests that need to inspect
 /// headings, sections, or other output that requires non-quiet verbosity.
-fn test_v2_printer_capture() -> (cfgd_core::output::Printer, Arc<Mutex<String>>) {
+fn test_printer_capture() -> (cfgd_core::output::Printer, Arc<Mutex<String>>) {
     cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal)
 }
 
@@ -1337,7 +1337,7 @@ fn module_create_with_flags_produces_valid_yaml() {
     std::fs::write(&test_file, "content").unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ModuleCreateArgs {
         description: Some("A test module".to_string()),
@@ -1394,7 +1394,7 @@ fn module_create_refuses_duplicate() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ModuleCreateArgs {
         description: Some("dup".to_string()),
@@ -1415,7 +1415,7 @@ fn module_update_add_and_remove_packages() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ModuleUpdateArgs {
         packages: vec!["ripgrep".to_string(), "-vim".to_string()],
@@ -1440,7 +1440,7 @@ fn module_update_set_overrides() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ModuleUpdateArgs {
         sets: vec![
@@ -1476,7 +1476,7 @@ fn module_delete_refuses_when_referenced() {
     std::fs::write(&profile_path, &yaml).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = module::cmd_module_delete(&cli, &printer, "used-mod", true, false);
     assert!(result.is_err());
@@ -1493,7 +1493,7 @@ fn module_delete_succeeds_when_unreferenced() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     module::cmd_module_delete(&cli, &printer, "orphan-mod", true, false).unwrap();
     assert!(!dir.path().join("modules").join("orphan-mod").exists());
@@ -1528,7 +1528,7 @@ fn module_delete_purge_removes_target_files() {
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     module::cmd_module_delete(&cli, &printer, "purge-mod", true, true).unwrap();
     assert!(!dir.path().join("modules").join("purge-mod").exists());
@@ -1552,7 +1552,7 @@ fn module_delete_no_purge_preserves_target_files() {
     create_module_in_dir(dir.path(), "keep-mod", &module_yaml);
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     module::cmd_module_delete(&cli, &printer, "keep-mod", true, false).unwrap();
     assert!(!dir.path().join("modules").join("keep-mod").exists());
@@ -1599,7 +1599,7 @@ fn module_update_idempotent_add() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ModuleUpdateArgs {
         packages: vec!["curl".to_string()],
@@ -1617,7 +1617,7 @@ fn module_update_idempotent_add() {
 fn profile_create_with_flags() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ProfileCreateArgs {
         inherits: vec!["default".to_string()],
@@ -1644,7 +1644,7 @@ fn profile_create_with_flags() {
 fn profile_create_refuses_duplicate() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = test_profile_create_args("default");
     let result = profile::cmd_profile_create(&cli, &printer, &args);
@@ -1656,7 +1656,7 @@ fn profile_create_refuses_duplicate() {
 fn profile_create_refuses_missing_parent() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ProfileCreateArgs {
         inherits: vec!["nonexistent".to_string()],
@@ -1671,7 +1671,7 @@ fn profile_create_refuses_missing_parent() {
 fn profile_update_add_and_remove() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ProfileUpdateArgs {
         modules: vec!["nvim".to_string()],
@@ -1699,7 +1699,7 @@ fn profile_delete_refuses_active() {
         .unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = profile::cmd_profile_delete(&cli, &printer, "default", true);
     assert!(result.is_err());
@@ -1710,7 +1710,7 @@ fn profile_delete_refuses_active() {
 fn profile_delete_refuses_when_inherited() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = profile::cmd_profile_delete(&cli, &printer, "default", true);
     assert!(result.is_err());
@@ -1721,7 +1721,7 @@ fn profile_delete_refuses_when_inherited() {
 fn profile_delete_succeeds() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     profile::cmd_profile_delete(&cli, &printer, "work", true).unwrap();
     assert!(!dir.path().join("profiles").join("work.yaml").exists());
@@ -1827,7 +1827,7 @@ fn parse_secret_spec_invalid() {
 fn profile_update_inherits() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // Add inherits
     let args = ProfileUpdateArgs {
@@ -1854,7 +1854,7 @@ fn profile_update_inherits() {
 fn profile_update_secrets() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // Add secret
     let args = ProfileUpdateArgs {
@@ -1882,7 +1882,7 @@ fn profile_update_secrets() {
 fn profile_update_scripts() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // Add pre-apply, post-apply, pre-reconcile, post-reconcile, on-change
     let args = ProfileUpdateArgs {
@@ -2000,7 +2000,7 @@ spec:
 fn config_show_fails_without_config() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let result = config_cmd::cmd_config_show(&cli, &test_v2_printer());
+    let result = config_cmd::cmd_config_show(&cli, &test_printer());
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -2017,7 +2017,7 @@ fn source_create_scaffolds_manifest() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = source::cmd_source_create(
         &cli,
@@ -2051,7 +2051,7 @@ fn source_create_refuses_duplicate() {
     std::fs::write(dir.path().join("cfgd-source.yaml"), "existing").unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
     let result = source::cmd_source_create(&cli, &printer, Some("x"), Some("x"), Some("1.0"));
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("already exists"));
@@ -2154,7 +2154,7 @@ fn source_edit_with_invalid_manifest_and_prompt_declined_breaks_with_warning() {
 fn source_edit_fails_without_manifest() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
     let result = source::cmd_source_edit(&cli, &printer);
     assert!(result.is_err());
     assert!(
@@ -2228,7 +2228,7 @@ fn workflow_generate_creates_file() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = workflow::cmd_workflow_generate(&cli, &printer, false);
     assert!(
@@ -2255,7 +2255,7 @@ fn workflow_generate_empty_repo() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
 
     // No profiles or modules — should warn and return Ok
     let result = workflow::cmd_workflow_generate(&cli, &printer, false);
@@ -2322,7 +2322,7 @@ fn workflow_generate_force_overwrites() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // First generate
     workflow::cmd_workflow_generate(&cli, &printer, false).unwrap();
@@ -2352,7 +2352,7 @@ fn source_create_with_modules() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = source::cmd_source_create(
         &cli,
@@ -2382,7 +2382,7 @@ fn source_create_output_is_parseable() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     source::cmd_source_create(
         &cli,
@@ -3253,7 +3253,7 @@ fn config_get_reads_value() {
         config: config_path.clone(),
         ..test_cli(dir.path())
     };
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::config_cmd::cmd_config_get(&cli, &printer, "profile");
     assert!(
@@ -3277,7 +3277,7 @@ fn cmd_config_get_missing_key_errors() {
         config: config_path,
         ..test_cli(dir.path())
     };
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     assert!(super::config_cmd::cmd_config_get(&cli, &printer, "nonexistent").is_err());
 }
@@ -3292,7 +3292,7 @@ fn config_set_and_get_roundtrip() {
         config: config_path.clone(),
         ..test_cli(dir.path())
     };
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     super::config_cmd::cmd_config_set(&cli, &printer, "profile", "work").unwrap();
 
@@ -3310,7 +3310,7 @@ fn cmd_config_unset_removes_key() {
         config: config_path.clone(),
         ..test_cli(dir.path())
     };
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::config_cmd::cmd_config_unset(&cli, &printer, "profile");
     assert!(
@@ -3337,7 +3337,7 @@ fn cmd_config_unset_missing_key_errors() {
         config: config_path,
         ..test_cli(dir.path())
     };
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     assert!(super::config_cmd::cmd_config_unset(&cli, &printer, "nope").is_err());
 }
@@ -3381,7 +3381,7 @@ fn config_show_errors_without_config() {
         ..test_cli(dir.path())
     };
 
-    assert!(super::config_cmd::cmd_config_show(&cli, &test_v2_printer()).is_err());
+    assert!(super::config_cmd::cmd_config_show(&cli, &test_printer()).is_err());
 }
 
 // --- secret_backend_from_config ---
@@ -3728,7 +3728,7 @@ fn cmd_apply_from_flag_parses() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
     let args = ApplyArgs {
         from: Some("https://github.com/example/config.git".to_string()),
         dry_run: true,
@@ -3907,7 +3907,7 @@ fn cmd_log_after_apply() {
     std::fs::write(config_dir.path().join("cfgd.yaml"), "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: empty\n").unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ApplyArgs {
         from: None,
@@ -3922,10 +3922,10 @@ fn cmd_log_after_apply() {
     };
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
 
-    let (log_v2_printer, log_v2_buf) = test_v2_printer_capture();
-    super::log::cmd_log(&log_v2_printer, 10, None, Some(state_dir.path())).unwrap();
-    drop(log_v2_printer);
-    let output = log_v2_buf.lock().unwrap();
+    let (log_printer, log_buf) = test_printer_capture();
+    super::log::cmd_log(&log_printer, 10, None, Some(state_dir.path())).unwrap();
+    drop(log_printer);
+    let output = log_buf.lock().unwrap();
     assert!(
         output.contains("Apply History"),
         "should contain Apply History header, got: {output}"
@@ -3975,7 +3975,7 @@ fn cmd_apply_dry_run_with_files() {
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
         from: None,
         dry_run: true,
@@ -4032,7 +4032,7 @@ fn cmd_apply_creates_file() {
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
     let args = ApplyArgs {
         from: None,
         dry_run: false,
@@ -4079,7 +4079,7 @@ fn cmd_apply_idempotent() {
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
         from: None,
         dry_run: false,
@@ -4141,7 +4141,7 @@ fn cmd_diff_with_files() {
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
 
     let result = super::diff::cmd_diff(&cli, &printer, None, false);
     assert!(result.is_ok(), "diff failed: {:?}", result.err());
@@ -4348,7 +4348,7 @@ fn execute_completions_bash() {
         }),
         ..test_cli(dir.path())
     };
-    let printer = test_v2_printer();
+    let printer = test_printer();
     // Completions write directly to stdout via clap_complete, not through Printer.
     // We verify execution succeeds; output content is clap_complete's responsibility.
     let result = super::execute(&cli, &printer);
@@ -4368,7 +4368,7 @@ fn execute_completions_zsh() {
         }),
         ..test_cli(dir.path())
     };
-    let printer = test_v2_printer();
+    let printer = test_printer();
     let result = super::execute(&cli, &printer);
     assert!(result.is_ok(), "zsh completions failed: {:?}", result.err());
 }
@@ -4382,7 +4382,7 @@ fn execute_completions_fish() {
         }),
         ..test_cli(dir.path())
     };
-    let printer = test_v2_printer();
+    let printer = test_printer();
     let result = super::execute(&cli, &printer);
     assert!(
         result.is_ok(),
@@ -4507,7 +4507,7 @@ fn cmd_apply_with_module_filter() {
     .unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
         from: None,
         dry_run: true,
@@ -4544,7 +4544,7 @@ fn cmd_apply_with_env_vars() {
     .unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
         from: None,
         dry_run: false,
@@ -4638,7 +4638,7 @@ fn cmd_status_with_drift_events() {
     std::fs::write(config_dir.path().join("cfgd.yaml"), empty_config).unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ApplyArgs {
         from: None,
@@ -4874,7 +4874,7 @@ fn execute_profile_switch() {
     };
 
     assert!(
-        super::execute(&cli, &test_v2_printer()).is_ok(),
+        super::execute(&cli, &test_printer()).is_ok(),
         "execute should dispatch Profile Switch command successfully"
     );
 
@@ -4917,7 +4917,7 @@ fn execute_workflow_generate() {
         }),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
 
     super::execute(&cli, &printer).unwrap();
     drop(printer);
@@ -4938,7 +4938,7 @@ fn cmd_sync_no_sources() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
 
     super::sync::cmd_sync(&cli, &printer).unwrap();
 
@@ -4954,7 +4954,7 @@ fn cmd_pull_no_sources() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
 
     super::pull::cmd_pull(&cli, &printer).unwrap();
     drop(printer);
@@ -4973,7 +4973,7 @@ fn cmd_apply_dry_run_each_phase() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let all_phases = [
         ApplyPhase::PreScripts,
@@ -5022,7 +5022,7 @@ fn cmd_verify_after_apply_with_env() {
     .unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ApplyArgs {
         from: None,
@@ -5037,12 +5037,12 @@ fn cmd_verify_after_apply_with_env() {
     };
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
 
-    let (verify_v2_printer, verify_v2_buf) =
+    let (verify_printer, verify_buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::verify::cmd_verify(&cli, &verify_v2_printer, None, false).unwrap();
-    verify_v2_printer.flush();
+    super::verify::cmd_verify(&cli, &verify_printer, None, false).unwrap();
+    verify_printer.flush();
 
-    let output = verify_v2_buf.lock().unwrap();
+    let output = verify_buf.lock().unwrap();
     assert!(
         output.contains("Verify"),
         "verify after apply should show Verify header, got: {output}"
@@ -5100,7 +5100,7 @@ fn cmd_plan_empty_profile() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
     let args = PlanArgs {
         from: None,
         phase: None,
@@ -5126,7 +5126,7 @@ fn cmd_plan_reconcile_context() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
     let args = PlanArgs {
         from: None,
         phase: None,
@@ -5152,7 +5152,7 @@ fn cmd_plan_invalid_context() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
     let args = PlanArgs {
         from: None,
         phase: None,
@@ -5173,7 +5173,7 @@ fn cmd_plan_with_phase_filter() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
     let args = PlanArgs {
         from: None,
         phase: Some(ApplyPhase::Packages),
@@ -5202,7 +5202,7 @@ fn cmd_plan_with_skip_filter() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
     let args = PlanArgs {
         from: None,
         phase: None,
@@ -5227,7 +5227,7 @@ fn cmd_plan_with_only_filter() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
     let args = PlanArgs {
         from: None,
         phase: None,
@@ -5252,7 +5252,7 @@ fn cmd_plan_with_skip_scripts() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
     let args = PlanArgs {
         from: None,
         phase: None,
@@ -5283,7 +5283,7 @@ fn cmd_plan_with_module_filter() {
     );
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
     let args = PlanArgs {
         from: None,
         phase: None,
@@ -5308,7 +5308,7 @@ fn cmd_plan_with_module_filter() {
 #[test]
 fn cmd_rollback_invalid_id_empty_state() {
     let state_dir = tempfile::tempdir().unwrap();
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::rollback::cmd_rollback(&printer, 9999, true, Some(state_dir.path()));
     assert!(result.is_err());
@@ -5338,7 +5338,7 @@ fn cmd_rollback_after_file_apply() {
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // Apply to create the file
     let args = ApplyArgs {
@@ -5364,7 +5364,7 @@ fn cmd_rollback_after_file_apply() {
     );
     let apply_id = history[0].id;
 
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
     let result = super::rollback::cmd_rollback(&printer, apply_id, true, Some(state_dir.path()));
     assert!(
         result.is_ok(),
@@ -5411,7 +5411,7 @@ fn apply_one_file_and_record(
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ApplyArgs {
         from: None,
@@ -5598,7 +5598,7 @@ fn cmd_compliance_history_invalid_since() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result =
         super::compliance::cmd_compliance_history(&cli, &printer, Some("invalid-duration"));
@@ -5615,7 +5615,7 @@ fn cmd_compliance_diff_missing_snapshots() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::compliance::cmd_compliance_diff(&cli, &printer, 1, 2);
     assert!(result.is_err());
@@ -5627,7 +5627,7 @@ fn cmd_compliance_diff_after_two_snapshots() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // Create two snapshots
     super::compliance::cmd_compliance_snapshot(&cli, &printer).unwrap();
@@ -5658,7 +5658,7 @@ fn cmd_compliance_history_after_snapshot() {
 
     // Take a snapshot first (separate printer so its output doesn't pollute the
     // history-capture assertions).
-    let snap_printer = test_v2_printer();
+    let snap_printer = test_printer();
     super::compliance::cmd_compliance_snapshot(&cli, &snap_printer).unwrap();
     drop(snap_printer);
 
@@ -5749,7 +5749,7 @@ fn empty_resolved_profile_contains_module_name() {
 #[test]
 fn cmd_log_show_output_nonexistent_apply() {
     let state_dir = tempfile::tempdir().unwrap();
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // show_output for a nonexistent apply ID should fail
     let result = super::log::cmd_log(&printer, 10, Some(9999), Some(state_dir.path()));
@@ -5764,7 +5764,7 @@ fn cmd_apply_dry_run_with_skip_scripts() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
         from: None,
         dry_run: true,
@@ -5813,7 +5813,7 @@ fn execute_plan_command() {
         })),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
 
     super::execute(&cli, &printer).unwrap();
     printer.flush();
@@ -5903,7 +5903,7 @@ fn execute_rollback_invalid() {
         ..test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()))
     };
 
-    let result = super::execute(&cli, &test_v2_printer());
+    let result = super::execute(&cli, &test_printer());
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -6141,7 +6141,7 @@ fn cmd_diff_with_module_filter() {
     );
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
 
     let result = super::diff::cmd_diff(&cli, &printer, Some("diff-mod"), false);
     assert!(
@@ -6204,7 +6204,7 @@ fn cmd_plan_module_with_packages() {
     .unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
     let args = PlanArgs {
         from: None,
         phase: None,
@@ -6458,7 +6458,7 @@ fn module_show_not_found() {
     std::fs::create_dir_all(dir.path().join("modules")).unwrap();
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = module::cmd_module_show(&cli, &printer, "nonexistent", false);
     assert!(result.is_err());
@@ -6589,7 +6589,7 @@ fn module_show_suggests_available_modules() {
     );
     let state_dir = dir.path().join("state");
     let cli = test_cli_with_state(dir.path(), Some(state_dir));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = module::cmd_module_show(&cli, &printer, "emacs", false);
     assert!(result.is_err());
@@ -6641,7 +6641,7 @@ spec:
 fn module_create_minimal() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ModuleCreateArgs {
         description: Some("Minimal module".to_string()),
@@ -6667,7 +6667,7 @@ fn module_create_minimal() {
 fn module_create_with_env_and_aliases() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ModuleCreateArgs {
         description: Some("Env module".to_string()),
@@ -6692,7 +6692,7 @@ fn module_create_with_env_and_aliases() {
 fn module_create_with_depends() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ModuleCreateArgs {
         depends: vec!["base".to_string(), "core".to_string()],
@@ -6708,7 +6708,7 @@ fn module_create_with_depends() {
 fn module_create_with_post_apply_normalizes_escapes() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ModuleCreateArgs {
         post_apply: vec!["echo \\!done".to_string()],
@@ -6727,7 +6727,7 @@ fn module_create_with_post_apply_normalizes_escapes() {
 fn module_create_rejects_invalid_name() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = test_module_create_args(".bad-name");
     let result = module::cmd_module_create(&cli, &printer, &args);
@@ -6751,7 +6751,7 @@ fn module_create_with_duplicate_file_basenames_fails() {
     std::fs::write(dir_b.join("config.toml"), "b").unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ModuleCreateArgs {
         files: vec![
@@ -6792,7 +6792,7 @@ spec:
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ModuleUpdateArgs {
         env: vec!["TERM=xterm".to_string(), "-PAGER".to_string()],
@@ -6827,7 +6827,7 @@ spec:
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ModuleUpdateArgs {
         aliases: vec!["gd=git diff".to_string(), "-gs".to_string()],
@@ -6860,7 +6860,7 @@ spec:
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ModuleUpdateArgs {
         depends: vec!["tools".to_string(), "-core".to_string()],
@@ -6893,7 +6893,7 @@ spec:
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ModuleUpdateArgs {
         post_apply: vec!["echo new-step".to_string(), "-echo cleanup".to_string()],
@@ -6919,7 +6919,7 @@ fn module_update_description() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ModuleUpdateArgs {
         description: Some("New description".to_string()),
@@ -6944,7 +6944,7 @@ fn module_update_clear_description() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ModuleUpdateArgs {
         description: Some(String::new()),
@@ -6966,7 +6966,7 @@ fn module_update_no_changes() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // No flags at all — should print "no changes" and succeed
     let args = empty_module_update_args("noop-mod");
@@ -6987,7 +6987,7 @@ fn module_update_no_changes() {
 fn module_update_nonexistent_module_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = empty_module_update_args("nonexistent");
     let result = module::cmd_module_update_local(&cli, &printer, &args);
@@ -7013,7 +7013,7 @@ fn module_update_add_files() {
     std::fs::write(&source_file, "key = \"value\"").unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ModuleUpdateArgs {
         files: vec![format!(
@@ -7058,7 +7058,7 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ModuleUpdateArgs {
         files: vec![format!("-{}", target_path)],
@@ -7093,7 +7093,7 @@ fn module_update_remove_nonexistent_warns() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // Try removing items that don't exist — should still succeed (just warns)
     let args = ModuleUpdateArgs {
@@ -7125,7 +7125,7 @@ fn module_update_remove_nonexistent_warns() {
 fn module_delete_nonexistent() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = module::cmd_module_delete(&cli, &printer, "nonexistent", true, false);
     assert!(result.is_err());
@@ -7154,7 +7154,7 @@ modules:
     std::fs::write(dir.path().join("modules.lock"), lockfile_content).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     module::cmd_module_delete(&cli, &printer, "remote-mod", true, false).unwrap();
 
@@ -7198,7 +7198,7 @@ fn module_delete_restores_symlinked_files() {
     std::fs::write(module_dir.join("module.yaml"), &module_yaml).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     module::cmd_module_delete(&cli, &printer, "link-mod", true, false).unwrap();
 
@@ -7233,7 +7233,7 @@ spec:
 
     let output = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = module::cmd_module_export(
         &cli,
@@ -7277,7 +7277,7 @@ fn module_export_nonexistent_module() {
     std::fs::create_dir_all(dir.path().join("modules")).unwrap();
     let cli = test_cli(dir.path());
 
-    let printer = test_v2_printer();
+    let printer = test_printer();
     let result = module::cmd_module_export(
         &cli,
         &printer,
@@ -7322,7 +7322,7 @@ spec:
 
     let output = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     module::cmd_module_export(
         &cli,
@@ -7360,7 +7360,7 @@ spec:
 fn module_registry_list_no_config() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
 
     module::cmd_module_registry_list(&cli, &printer).unwrap();
     drop(printer);
@@ -7378,7 +7378,7 @@ fn module_registry_list_empty_registries() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
 
     module::cmd_module_registry_list(&cli, &printer).unwrap();
     drop(printer);
@@ -7412,7 +7412,7 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
 
     module::cmd_module_registry_list(&cli, &printer).unwrap();
     drop(printer);
@@ -7434,7 +7434,7 @@ spec:
 fn module_registry_add_no_config() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = module::cmd_module_registry_add(
         &cli,
@@ -7452,7 +7452,7 @@ fn module_registry_add_success() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     module::cmd_module_registry_add(
         &cli,
@@ -7492,7 +7492,7 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // Adding the same registry again should succeed (idempotent) but not duplicate
     let result = module::cmd_module_registry_add(
@@ -7532,7 +7532,7 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     module::cmd_module_registry_add(
         &cli,
@@ -7554,7 +7554,7 @@ spec:
 fn module_registry_remove_no_config() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = module::cmd_module_registry_remove(&cli, &printer, "community");
     let err = result.unwrap_err();
@@ -7587,7 +7587,7 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     module::cmd_module_registry_remove(&cli, &printer, "community").unwrap();
 
@@ -7603,7 +7603,7 @@ fn module_registry_remove_not_found() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
 
     module::cmd_module_registry_remove(&cli, &printer, "nonexistent").unwrap();
     drop(printer);
@@ -7653,7 +7653,7 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
 
     module::cmd_module_registry_remove(&cli, &printer, "community").unwrap();
     drop(printer);
@@ -7694,7 +7694,7 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     module::cmd_module_registry_rename(&cli, &printer, "old-name", "new-name").unwrap();
 
@@ -7740,7 +7740,7 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     module::cmd_module_registry_rename(&cli, &printer, "old-reg", "new-reg").unwrap();
 
@@ -7765,7 +7765,7 @@ fn module_registry_rename_not_found() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = module::cmd_module_registry_rename(&cli, &printer, "nonexistent", "new-name");
     assert!(result.is_err());
@@ -7794,7 +7794,7 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = module::cmd_module_registry_rename(&cli, &printer, "alpha", "beta");
     assert!(result.is_err());
@@ -7805,7 +7805,7 @@ spec:
 fn module_registry_rename_no_config() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = module::cmd_module_registry_rename(&cli, &printer, "old", "new");
     let err = result.unwrap_err();
@@ -7855,7 +7855,7 @@ fn module_keys_list_with_pub_key() {
 fn module_create_with_manager_prefix_packages() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ModuleCreateArgs {
         packages: vec!["brew:ripgrep".to_string(), "cargo:bat".to_string()],
@@ -8620,7 +8620,7 @@ fn cmd_config_set_creates_nested_key() {
         config: config_path.clone(),
         ..test_cli(dir.path())
     };
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // Set a nested key
     super::config_cmd::cmd_config_set(&cli, &printer, "daemon.enabled", "true").unwrap();
@@ -8637,7 +8637,7 @@ fn cmd_config_set_no_config_errors() {
         config: dir.path().join("nonexistent.yaml"),
         ..test_cli(dir.path())
     };
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::config_cmd::cmd_config_set(&cli, &printer, "profile", "work");
     assert!(result.is_err());
@@ -8651,7 +8651,7 @@ fn cmd_config_unset_no_config_errors() {
         config: dir.path().join("nonexistent.yaml"),
         ..test_cli(dir.path())
     };
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::config_cmd::cmd_config_unset(&cli, &printer, "profile");
     assert!(result.is_err());
@@ -8687,7 +8687,7 @@ spec:
     assert_eq!(cfg.spec.sources[0].name, "team-config");
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::source::cmd_source_list(&cli, &printer);
     assert!(
@@ -8735,7 +8735,7 @@ fn cmd_source_show_not_found() {
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
 
-    let result = super::source::cmd_source_show(&cli, &test_v2_printer(), "nonexistent");
+    let result = super::source::cmd_source_show(&cli, &test_printer(), "nonexistent");
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -8789,7 +8789,7 @@ fn cmd_source_remove_not_found() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::source::cmd_source_remove(&cli, &printer, "nonexistent", true, false);
     assert!(result.is_err());
@@ -8801,7 +8801,7 @@ fn cmd_source_remove_keep_all_and_remove_all_conflict() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::source::cmd_source_remove(&cli, &printer, "anything", true, true);
     assert!(result.is_err());
@@ -8820,7 +8820,7 @@ fn cmd_source_override_source_not_found() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::source::cmd_source_override(
         &cli,
@@ -8859,7 +8859,7 @@ spec:
     std::fs::write(config_dir.path().join("cfgd.yaml"), config_with_source).unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::source::cmd_source_override(
         &cli,
@@ -8880,7 +8880,7 @@ fn cmd_source_priority_not_found() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::source::cmd_source_priority(&cli, &printer, "nonexistent", None);
     assert!(result.is_err());
@@ -8943,7 +8943,7 @@ spec:
     std::fs::write(config_dir.path().join("cfgd.yaml"), config_with_source).unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::source::cmd_source_priority(&cli, &printer, "team", Some(500));
     assert!(
@@ -9124,7 +9124,7 @@ fn cmd_workflow_generate_no_overwrite_without_force() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // First generate
     super::workflow::cmd_workflow_generate(&cli, &printer, false).unwrap();
@@ -9151,7 +9151,7 @@ fn cmd_workflow_generate_no_overwrite_without_force() {
 #[test]
 fn cmd_log_show_output_nonexistent_apply_via_dispatch() {
     let state_dir = tempfile::tempdir().unwrap();
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // Nonexistent apply ID should fail (routes through cmd_log → cmd_log_show_output)
     let result = super::log::cmd_log(&printer, 10, Some(9999), Some(state_dir.path()));
@@ -9190,7 +9190,7 @@ fn cmd_compliance_diff_missing_snapshot() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::compliance::cmd_compliance_diff(&cli, &printer, 1, 2);
     assert!(result.is_err());
@@ -9219,7 +9219,7 @@ fn cmd_apply_module_only_no_profile() {
     );
 
     let cli = test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
         from: None,
         dry_run: true,
@@ -9267,7 +9267,7 @@ fn cmd_plan_module_only_no_profile() {
     );
 
     let cli = test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
     let args = PlanArgs {
         from: None,
         phase: None,
@@ -9471,7 +9471,7 @@ fn execute_sync_command() {
         command: Some(Command::Sync),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
 
     super::execute(&cli, &printer).unwrap();
     drop(printer);
@@ -9490,7 +9490,7 @@ fn execute_pull_command() {
         command: Some(Command::Pull),
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
 
     super::execute(&cli, &printer).unwrap();
     drop(printer);
@@ -9515,7 +9515,7 @@ fn cmd_apply_with_aliases() {
     .unwrap();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
         from: None,
         dry_run: true,
@@ -9666,7 +9666,7 @@ fn cmd_plan_structured_output() {
 #[test]
 fn cmd_log_show_output_for_nonexistent_apply() {
     let state_dir = tempfile::tempdir().unwrap();
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // Nonexistent apply ID should fail
     let result = super::log::cmd_log(&printer, 10, Some(999), Some(state_dir.path()));
@@ -9762,7 +9762,7 @@ fn profile_update_add_and_remove_files() {
     std::fs::write(&test_file, "test content").unwrap();
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // Add file to profile
     let args = ProfileUpdateArgs {
@@ -9814,7 +9814,7 @@ fn profile_update_add_and_remove_files() {
 fn profile_update_env_add_and_remove() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // Add env var
     let args = ProfileUpdateArgs {
@@ -9843,7 +9843,7 @@ fn profile_update_env_add_and_remove() {
 fn profile_update_alias_add_and_remove() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // Add alias
     let args = ProfileUpdateArgs {
@@ -9872,7 +9872,7 @@ fn profile_update_alias_add_and_remove() {
 fn profile_update_modules_add_and_remove() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // Add module
     let args = ProfileUpdateArgs {
@@ -9901,7 +9901,7 @@ fn profile_update_modules_add_and_remove() {
 fn profile_update_packages_add_and_remove() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // Add package
     let args = ProfileUpdateArgs {
@@ -9932,7 +9932,7 @@ fn profile_update_packages_add_and_remove() {
 fn profile_create_with_aliases() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ProfileCreateArgs {
         aliases: vec!["ll=ls -la".to_string(), "gs=git status".to_string()],
@@ -9951,7 +9951,7 @@ fn profile_create_with_aliases() {
 fn profile_create_with_secrets() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ProfileCreateArgs {
         secrets: vec!["secrets/api.enc:~/.config/app/key".to_string()],
@@ -9969,7 +9969,7 @@ fn profile_create_with_secrets() {
 fn profile_create_with_scripts() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ProfileCreateArgs {
         pre_apply: vec!["scripts/pre.sh".to_string()],
@@ -9995,7 +9995,7 @@ fn profile_create_with_scripts() {
 fn profile_update_on_drift_scripts() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let args = ProfileUpdateArgs {
         on_drift: vec!["scripts/drift.sh".to_string()],
@@ -10034,7 +10034,7 @@ fn module_update_env_add_and_remove() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // Add env
     let args = ModuleUpdateArgs {
@@ -10069,7 +10069,7 @@ fn module_update_alias_add_and_remove() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // Add alias
     let args = ModuleUpdateArgs {
@@ -10104,7 +10104,7 @@ fn module_update_depends_add_and_remove() {
     );
 
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // Add dependency
     let args = ModuleUpdateArgs {
@@ -10151,7 +10151,7 @@ fn cmd_apply_dry_run_with_skip_and_only() {
     let (config_dir, state_dir) = setup_test_env();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
     let args = ApplyArgs {
         from: None,
         dry_run: true,
@@ -10293,7 +10293,7 @@ fn cmd_config_show_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
 
-    let result = super::config_cmd::cmd_config_show(&cli, &test_v2_printer());
+    let result = super::config_cmd::cmd_config_show(&cli, &test_printer());
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
 }
@@ -10357,7 +10357,7 @@ fn cmd_config_get_structured_json() {
 fn cmd_config_get_missing_key_fails() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::config_cmd::cmd_config_get(&cli, &printer, "nonexistent.path");
     let err = result.unwrap_err();
@@ -10372,7 +10372,7 @@ fn cmd_config_get_missing_key_fails() {
 fn cmd_config_get_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::config_cmd::cmd_config_get(&cli, &printer, "profile");
     assert!(result.is_err());
@@ -10385,7 +10385,7 @@ fn cmd_config_get_no_config_fails() {
 fn cmd_config_set_updates_value() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::config_cmd::cmd_config_set(&cli, &printer, "profile", "work");
     assert!(
@@ -10402,7 +10402,7 @@ fn cmd_config_set_updates_value() {
 fn cmd_config_set_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::config_cmd::cmd_config_set(&cli, &printer, "profile", "work");
     let err = result.unwrap_err();
@@ -10419,7 +10419,7 @@ fn cmd_config_set_no_config_fails() {
 fn cmd_config_unset_missing_key_fails() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::config_cmd::cmd_config_unset(&cli, &printer, "nonexistent");
     assert!(result.is_err());
@@ -10430,7 +10430,7 @@ fn cmd_config_unset_missing_key_fails() {
 fn cmd_config_unset_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::config_cmd::cmd_config_unset(&cli, &printer, "profile");
     let err = result.unwrap_err();
@@ -10791,7 +10791,7 @@ fn cmd_compliance_diff_missing_snapshots_fails() {
 fn cmd_source_remove_existing_removes_from_config() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let cfg = config::load_config(&config_dir.path().join("cfgd.yaml")).unwrap();
     assert_eq!(cfg.spec.sources.len(), 1);
@@ -10815,7 +10815,7 @@ fn cmd_source_remove_with_keep_all_transfers_resources_to_local_management() {
     // re-upsert each row with source="local" before removing the source.
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let store = cfgd_core::state::StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
     store
@@ -10859,7 +10859,7 @@ fn cmd_source_remove_with_keep_all_transfers_resources_to_local_management() {
 fn cmd_source_remove_nonexistent_fails() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::source::cmd_source_remove(&cli, &printer, "nonexistent", false, true);
     let err = result.unwrap_err();
@@ -10928,7 +10928,7 @@ fn cmd_source_override_set_succeeds() {
 fn cmd_source_override_nonexistent_source_fails() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::source::cmd_source_override(
         &cli,
@@ -10952,7 +10952,7 @@ fn cmd_source_override_nonexistent_source_fails() {
 fn cmd_source_priority_nonexistent_fails() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::source::cmd_source_priority(&cli, &printer, "nonexistent", None);
     let err = result.unwrap_err();
@@ -10967,7 +10967,7 @@ fn cmd_source_priority_nonexistent_fails() {
 fn cmd_source_priority_updates_config() {
     let (config_dir, state_dir) = setup_rich_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::source::cmd_source_priority(&cli, &printer, "team-config", Some(200));
     assert!(result.is_ok(), "source priority update: {:?}", result.err());
@@ -11027,7 +11027,7 @@ fn cmd_source_show_structured_json() {
 fn cmd_source_create_initializes_manifest() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     // source create writes manifest in the config directory itself
     let result = super::source::cmd_source_create(
@@ -11111,7 +11111,7 @@ fn cmd_workflow_generate_with_git_repo() {
         .ok();
 
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
 
     let result = super::workflow::cmd_workflow_generate(&cli, &printer, true);
     assert!(
@@ -11139,7 +11139,7 @@ fn cmd_workflow_generate_with_git_repo() {
 #[test]
 fn cmd_rollback_missing_apply_id_fails() {
     let state_dir = tempfile::tempdir().unwrap();
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = super::rollback::cmd_rollback(&printer, 99, true, Some(state_dir.path()));
     assert!(result.is_err(), "rollback with no history should fail");
@@ -11172,7 +11172,7 @@ fn open_state_store_creates_db_file() {
 fn cmd_module_search_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = module::cmd_module_search(&cli, &printer, "test");
     let err = result.unwrap_err();
@@ -11187,7 +11187,7 @@ fn cmd_module_search_no_config_fails() {
 fn cmd_module_search_no_registries() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let (printer, buf) = test_v2_printer_capture();
+    let (printer, buf) = test_printer_capture();
 
     // Config exists but has no module registries
     let result = module::cmd_module_search(&cli, &printer, "test");
@@ -11225,7 +11225,7 @@ fn cmd_module_search_no_registries_structured() {
 #[test]
 fn cmd_module_build_no_module_yaml_fails() {
     let dir = tempfile::tempdir().unwrap();
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = module::cmd_module_build(
         &printer,
@@ -11251,7 +11251,7 @@ fn cmd_module_keys_generate_no_cosign_fails() {
         // Skip test if cosign is actually available
         return;
     }
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = module::cmd_module_keys_generate(&printer, None);
     assert!(result.is_err());
@@ -11263,7 +11263,7 @@ fn cmd_module_keys_rotate_no_cosign_fails() {
     if cfgd_core::command_available("cosign") {
         return;
     }
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = module::cmd_module_keys_rotate(&printer, None, &[]);
     assert!(result.is_err());
@@ -11274,7 +11274,7 @@ fn cmd_module_keys_rotate_no_cosign_fails() {
 fn cmd_module_add_from_registry_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result =
         module::cmd_module_add_from_registry(&cli, &printer, "myregistry/mymod", false, false);
@@ -11290,7 +11290,7 @@ fn cmd_module_add_from_registry_no_config_fails() {
 fn cmd_module_add_from_registry_invalid_ref_fails() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
-    let printer = test_v2_printer();
+    let printer = test_printer();
 
     let result = module::cmd_module_add_from_registry(&cli, &printer, "no-slash", false, false);
     assert!(result.is_err());
@@ -11433,7 +11433,7 @@ fn cmd_sync_non_git_dir_shows_output() {
 fn cmd_config_edit_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = test_v2_printer();
+    let printer = test_printer();
     let result = super::config_cmd::cmd_config_edit(&cli, &printer);
     assert!(result.is_err());
     assert_error_contains(&result, "No cfgd.yaml");
@@ -12025,8 +12025,9 @@ fn checkin_fails_when_no_profile_configured() {
     let no_profile_config =
         "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec: {}\n";
     let h = CliTestHarness::builder().config(no_profile_config).build();
-    let v2 = test_v2_printer();
-    let result = super::checkin::cmd_checkin(&h.cli(), &v2, "http://localhost:8080", None, None);
+    let printer = test_printer();
+    let result =
+        super::checkin::cmd_checkin(&h.cli(), &printer, "http://localhost:8080", None, None);
     assert_error_contains(&result, "no profile configured");
 }
 
@@ -12035,8 +12036,8 @@ fn checkin_fails_when_config_file_missing() {
     let dir = tempfile::tempdir().unwrap();
     // Don't write any config file
     let cli = test_cli(dir.path());
-    let v2 = test_v2_printer();
-    let result = super::checkin::cmd_checkin(&cli, &v2, "http://localhost:8080", None, None);
+    let printer = test_printer();
+    let result = super::checkin::cmd_checkin(&cli, &printer, "http://localhost:8080", None, None);
     assert_error_contains(&result, "config file not found");
 }
 
@@ -12044,8 +12045,9 @@ fn checkin_fails_when_config_file_missing() {
 fn checkin_fails_when_profile_does_not_exist() {
     let bad_profile_config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: nonexistent\n";
     let h = CliTestHarness::builder().config(bad_profile_config).build();
-    let v2 = test_v2_printer();
-    let result = super::checkin::cmd_checkin(&h.cli(), &v2, "http://localhost:8080", None, None);
+    let printer = test_printer();
+    let result =
+        super::checkin::cmd_checkin(&h.cli(), &printer, "http://localhost:8080", None, None);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -13226,7 +13228,7 @@ fn cmd_config_show_with_rich_config_full() {
 fn cmd_config_show_missing_file_errors() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli_with_state(dir.path(), None);
-    let result = super::config_cmd::cmd_config_show(&cli, &test_v2_printer());
+    let result = super::config_cmd::cmd_config_show(&cli, &test_printer());
     assert!(result.is_err());
     assert!(
         result
@@ -15319,10 +15321,10 @@ spec:
 #[test]
 fn cmd_checkin_server_unreachable() {
     let h = CliTestHarness::builder().build();
-    let v2 = test_v2_printer();
+    let printer = test_printer();
     let result = super::checkin::cmd_checkin(
         &h.cli(),
-        &v2,
+        &printer,
         "http://127.0.0.1:19999",
         Some("test-api-key"),
         Some("test-device-42"),

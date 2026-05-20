@@ -92,13 +92,13 @@ fn parse_secret_spec_empty_target() {
 
 // --- update_script_list ---
 
-fn make_v2_printer() -> cfgd_core::output::Printer {
+fn make_printer() -> cfgd_core::output::Printer {
     cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet)
 }
 
 #[test]
 fn update_script_list_add_to_empty() {
-    let printer = make_v2_printer();
+    let printer = make_printer();
     let mut scripts: Option<config::ScriptSpec> = None;
     let add = vec!["setup.sh".to_string()];
     let changes = update_script_list(
@@ -119,7 +119,7 @@ fn update_script_list_add_to_empty() {
 
 #[test]
 fn update_script_list_add_to_existing() {
-    let printer = make_v2_printer();
+    let printer = make_printer();
     let mut scripts = Some(config::ScriptSpec {
         pre_apply: vec![config::ScriptEntry::Simple("a.sh".to_string())],
         ..Default::default()
@@ -145,7 +145,7 @@ fn update_script_list_add_to_existing() {
 
 #[test]
 fn update_script_list_add_duplicate() {
-    let printer = make_v2_printer();
+    let printer = make_printer();
     let mut scripts = Some(config::ScriptSpec {
         pre_apply: vec![config::ScriptEntry::Simple("a.sh".to_string())],
         ..Default::default()
@@ -165,7 +165,7 @@ fn update_script_list_add_duplicate() {
 
 #[test]
 fn update_script_list_remove_existing() {
-    let printer = make_v2_printer();
+    let printer = make_printer();
     let mut scripts = Some(config::ScriptSpec {
         pre_apply: vec![
             config::ScriptEntry::Simple("a.sh".to_string()),
@@ -191,7 +191,7 @@ fn update_script_list_remove_existing() {
 
 #[test]
 fn update_script_list_remove_nonexistent() {
-    let printer = make_v2_printer();
+    let printer = make_printer();
     let mut scripts = Some(config::ScriptSpec {
         pre_apply: vec![config::ScriptEntry::Simple("a.sh".to_string())],
         ..Default::default()
@@ -210,7 +210,7 @@ fn update_script_list_remove_nonexistent() {
 
 #[test]
 fn update_script_list_remove_from_none() {
-    let printer = make_v2_printer();
+    let printer = make_printer();
     let mut scripts: Option<config::ScriptSpec> = None;
     let remove = vec!["nope.sh".to_string()];
     let changes = update_script_list(
@@ -635,7 +635,7 @@ fn profile_list_empty_profiles_dir() {
 fn profile_switch_updates_config() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let result = cmd_profile_switch(&cli, "work", &printer);
     assert!(
@@ -653,7 +653,7 @@ fn profile_switch_updates_config() {
 fn profile_switch_nonexistent_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let result = cmd_profile_switch(&cli, "nonexistent", &printer);
     assert!(
@@ -673,7 +673,7 @@ fn profile_switch_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     // No cfgd.yaml
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let err = cmd_profile_switch(&cli, "default", &printer).unwrap_err();
     assert!(
@@ -686,7 +686,7 @@ fn profile_switch_no_config_fails() {
 fn profile_switch_preserves_other_config() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     // Start at default, switch to work
     cmd_profile_switch(&cli, "work", &printer).unwrap();
@@ -700,7 +700,7 @@ fn profile_switch_preserves_other_config() {
 fn profile_switch_error_lists_available_profiles() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let result = cmd_profile_switch(&cli, "nope", &printer);
     let err = result.unwrap_err().to_string();
@@ -774,7 +774,7 @@ fn profile_create_interactive_with_missing_parent_bails() {
 fn profile_create_minimal() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let mut args = make_profile_create_args("devops");
     // Need at least one flag to avoid interactive mode
@@ -802,7 +802,7 @@ fn profile_create_minimal() {
 fn profile_create_with_inherits() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let mut args = make_profile_create_args("child");
     args.inherits = vec!["default".to_string()];
@@ -822,7 +822,7 @@ fn profile_create_with_inherits() {
 fn profile_create_with_modules() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let mut args = make_profile_create_args("modular");
     args.modules = vec!["shell".to_string()];
@@ -842,7 +842,7 @@ fn profile_create_with_modules() {
 fn profile_create_duplicate_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let mut args = make_profile_create_args("default");
     args.env = vec!["X=1".to_string()]; // avoid interactive
@@ -860,7 +860,7 @@ fn profile_create_duplicate_fails() {
 fn profile_create_missing_parent_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let mut args = make_profile_create_args("orphan");
     args.inherits = vec!["nonexistent-parent".to_string()];
@@ -882,7 +882,7 @@ fn profile_create_missing_parent_fails() {
 fn profile_create_with_aliases() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let mut args = make_profile_create_args("alias-test");
     args.aliases = vec!["ll=ls -la".to_string()];
@@ -934,7 +934,7 @@ fn profile_create_with_system_settings() {
 fn profile_create_with_secrets() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let mut args = make_profile_create_args("secret-test");
     args.secrets = vec!["secrets/key.enc:/tmp/key".to_string()];
@@ -956,7 +956,7 @@ fn profile_create_with_secrets() {
 fn profile_create_with_scripts() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let mut args = make_profile_create_args("script-test");
     args.pre_apply = vec!["check.sh".to_string()];
@@ -984,7 +984,7 @@ fn profile_create_with_scripts() {
 fn profile_create_invalid_name_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let mut args = make_profile_create_args(".hidden");
     args.env = vec!["X=1".to_string()]; // avoid interactive
@@ -1091,7 +1091,7 @@ fn profile_update_add_alias() {
 fn profile_update_remove_alias() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     // First add an alias
     let mut args = make_profile_update_args();
@@ -1114,7 +1114,7 @@ fn profile_update_remove_alias() {
 fn profile_update_add_inherits() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     // Create a base profile to inherit from
     let mut create_args = make_profile_create_args("base");
@@ -1141,7 +1141,7 @@ fn profile_update_add_inherits() {
 fn profile_update_remove_inherits() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let mut args = make_profile_update_args();
     args.inherits = vec!["-default".to_string()];
@@ -1161,7 +1161,7 @@ fn profile_update_remove_inherits() {
 fn profile_update_add_module() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let mut args = make_profile_update_args();
     args.modules = vec!["shell".to_string()];
@@ -1181,7 +1181,7 @@ fn profile_update_add_module() {
 fn profile_update_remove_module() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     // First add a module
     let mut args = make_profile_update_args();
@@ -1237,7 +1237,7 @@ fn profile_update_add_system_setting() {
 fn profile_update_remove_system_setting() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     // First add a system setting
     let mut args = make_profile_update_args();
@@ -1260,7 +1260,7 @@ fn profile_update_remove_system_setting() {
 fn profile_update_add_secret() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let mut args = make_profile_update_args();
     args.secrets = vec!["secrets/key.enc:/tmp/out".to_string()];
@@ -1281,7 +1281,7 @@ fn profile_update_add_secret() {
 fn profile_update_remove_secret() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     // First add a secret
     let mut args = make_profile_update_args();
@@ -1301,7 +1301,7 @@ fn profile_update_remove_secret() {
 fn profile_update_add_scripts() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let mut args = make_profile_update_args();
     args.pre_apply = vec!["lint.sh".to_string()];
@@ -1326,7 +1326,7 @@ fn profile_update_add_scripts() {
 fn profile_update_remove_scripts() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     // Add scripts first
     let mut args = make_profile_update_args();
@@ -1351,7 +1351,7 @@ fn profile_update_remove_scripts() {
 fn profile_update_nonexistent_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let args = make_profile_update_args();
     let result = cmd_profile_update(&cli, &printer, "nonexistent", &args);
@@ -1389,7 +1389,7 @@ fn profile_update_no_changes_succeeds() {
 fn profile_update_invalid_name_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let args = make_profile_update_args();
     let err = cmd_profile_update(&cli, &printer, ".bad-name", &args).unwrap_err();
@@ -1403,7 +1403,7 @@ fn profile_update_invalid_name_fails() {
 fn profile_update_add_inherits_missing_parent_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let mut args = make_profile_update_args();
     args.inherits = vec!["ghost-parent".to_string()];
@@ -1447,7 +1447,7 @@ fn profile_delete_with_yes_flag() {
 fn profile_delete_nonexistent_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let result = cmd_profile_delete(&cli, &printer, "nonexistent", true);
     assert!(result.is_err(), "deleting nonexistent profile should fail");
@@ -1463,7 +1463,7 @@ fn profile_delete_nonexistent_fails() {
 fn profile_delete_active_profile_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     // 'default' is the active profile in cfgd.yaml
     let result = cmd_profile_delete(&cli, &printer, "default", true);
@@ -1481,7 +1481,7 @@ fn profile_delete_inherited_profile_fails() {
     let dir = setup_config_dir();
     // Switch active to 'work' so 'default' is not active but is inherited by 'work'
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
     cmd_profile_switch(&cli, "work", &printer).unwrap();
 
     let result = cmd_profile_delete(&cli, &printer, "default", true);
@@ -1498,7 +1498,7 @@ fn profile_delete_inherited_profile_fails() {
 fn profile_delete_cleans_files_dir() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     // Create a profile with a files subdirectory
     let files_dir = dir.path().join("profiles").join("ephemeral").join("files");
@@ -1522,7 +1522,7 @@ fn profile_delete_cleans_files_dir() {
 fn profile_delete_invalid_name_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let err = cmd_profile_delete(&cli, &printer, "-bad", true).unwrap_err();
     assert!(
@@ -1922,7 +1922,7 @@ fn profile_create_output_messages() {
 fn profile_update_add_multiple_script_hooks() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let mut args = make_profile_update_args();
     args.pre_reconcile = vec!["validate.sh".to_string()];
@@ -2316,7 +2316,7 @@ fn profile_update_add_package() {
 fn profile_update_remove_package() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     // Default profile has cargo: [bat], remove it
     let mut args = make_profile_update_args();
@@ -2487,7 +2487,7 @@ fn profile_update_remove_nonexistent_inherits() {
 fn profile_update_add_duplicate_secret() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     // Add a secret
     let mut args = make_profile_update_args();
@@ -2495,13 +2495,13 @@ fn profile_update_add_duplicate_secret() {
     cmd_profile_update(&cli, &printer, "default", &args).unwrap();
 
     // Try adding the same secret again
-    let (v2_printer2, buf2) =
+    let (printer2, buf2) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let mut args2 = make_profile_update_args();
     args2.secrets = vec!["other-source:~/target".to_string()];
-    cmd_profile_update(&cli, &v2_printer2, "default", &args2).unwrap();
+    cmd_profile_update(&cli, &printer2, "default", &args2).unwrap();
 
-    drop(v2_printer2);
+    drop(printer2);
     let output = buf2.lock().unwrap();
     assert!(
         output.contains("already exists"),
@@ -2515,7 +2515,7 @@ fn profile_update_add_duplicate_secret() {
 fn profile_create_with_packages() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let mut args = make_profile_create_args("pkg-test");
     args.packages = vec!["brew:ripgrep".to_string()];
@@ -2538,7 +2538,7 @@ fn profile_create_with_packages() {
 fn profile_update_add_and_remove_on_drift() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let mut args = make_profile_update_args();
     args.on_drift = vec!["alert.sh".to_string()];
@@ -2569,7 +2569,7 @@ fn profile_update_add_and_remove_on_drift() {
 fn profile_update_invalid_system_setting_format() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let mut args = make_profile_update_args();
     args.system = vec!["no-equals-sign".to_string()];
@@ -2589,7 +2589,7 @@ fn profile_update_invalid_system_setting_format() {
 fn profile_create_with_all_script_types() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = make_v2_printer();
+    let printer = make_printer();
 
     let mut args = make_profile_create_args("all-scripts");
     args.pre_apply = vec!["pre.sh".to_string()];
