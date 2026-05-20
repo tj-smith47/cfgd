@@ -70,10 +70,9 @@ if [[ -n "$WARNINGS" ]]; then
     echo -e "$WARNINGS"
 fi
 
-# --- output_v2 banned patterns (R1.T36) -------------------------------------
-# Mirrors .claude/scripts/audit.sh rules but per-file (fast). Gated off
-# until R3 enables it (CFGD_OUTPUT_V2_AUDIT=1); this lets the rules ship
-# without blocking edits to call-sites that have not yet migrated.
+# --- output banned patterns (R3) --------------------------------------------
+# Mirrors .claude/scripts/audit.sh rules but per-file (fast). Gated on
+# CFGD_OUTPUT_V2_AUDIT=1 (the default in CI since R3.S5).
 # Runs AFTER the legacy CRITICAL/WARNINGS block so legacy `exit 2` still wins.
 # Regex shape uses an ANSI-C $'...' literal so the alternation matches
 # two-or-more spaces, a real tab byte (0x09), or a backslash-t escape — the
@@ -96,8 +95,8 @@ if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
         # (`crates/...`) both match, without falsely exempting unrelated
         # paths that happen to contain "crates/cfgd-core/src/output/".
         case "$EDITED_FILE" in
-            */crates/cfgd-core/src/output/*|*/crates/cfgd-core/src/output_v2/*) exit 0 ;;
-            crates/cfgd-core/src/output/*|crates/cfgd-core/src/output_v2/*) exit 0 ;;
+            */crates/cfgd-core/src/output/*) exit 0 ;;
+            crates/cfgd-core/src/output/*) exit 0 ;;
             *tests.rs|*/tests/*) exit 0 ;;
         esac
 
@@ -105,9 +104,8 @@ if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
         if grep -nE 'printer\.(success|warning|info|error|header|subheader|key_value|newline|plan_phase|stdout_line)\(' "$EDITED_FILE" > /dev/null 2>&1; then
             echo
             echo "BANNED OLD-API CALL in $EDITED_FILE"
-            echo "  Replace with output_v2 vocabulary. See:"
-            echo "    .claude/specs/2026-05-14-output-system-redesign-design.md  (§5)"
-            echo "    .claude/plans/2026-05-14-output-system-redesign/interfaces.md  (Printer surface)"
+            echo "  Replace with output vocabulary. See:"
+            echo "    .claude/rules/output-module.md  (Printer surface)"
             exit 1
         fi
         if grep -nE $'printer\\.\\w+\\(\\s*&?(format!\\()?"(  |\t|\\\\t)' "$EDITED_FILE" > /dev/null 2>&1; then
@@ -132,6 +130,6 @@ if [ "${CFGD_OUTPUT_V2_AUDIT:-0}" = "1" ]; then
         fi
     fi
 fi
-# --- end output_v2 hook block ------------------------------------------------
+# --- end output banned-patterns block ----------------------------------------
 
 exit 0
