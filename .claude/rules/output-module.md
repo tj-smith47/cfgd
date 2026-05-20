@@ -5,7 +5,7 @@ paths: ["**/*.rs"]
 
 The `output` module (`crates/cfgd-core/src/output/`) provides:
 - `Printer` struct: the sole interface for writing to the terminal
-- Methods (v2 API):
+- Methods:
   - `printer.heading(text)` — top-level title
   - `printer.kv(key, value)` — single key/value pair
   - `printer.kv_block(pairs)` — multi-pair block

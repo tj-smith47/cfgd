@@ -368,7 +368,7 @@ check_pattern warn \
     'fn (chrono_now|local_now|get_now|timestamp_now|now_utc)\(' \
     ""
 
-# --- output banned patterns (R1.T34) ----------------------------------------
+# --- output banned patterns -------------------------------------------------
 # These rules block the indent-hack and old-API patterns the redesign kills.
 # In R1, gated off so the script doesn't fail until R3 enables it
 # (CFGD_OUTPUT_V2_AUDIT=1) — this lets us land the rules + audit-tests
