@@ -28,7 +28,7 @@ impl<'a> super::Reconciler<'a> {
 
         let mut phases = Vec::new();
 
-        // Phase 0: PreScripts — pre-apply or pre-reconcile hooks.
+        // PreScripts: pre-apply or pre-reconcile hooks.
         let (pre_script_actions, post_script_actions) =
             self.plan_scripts(&resolved.merged.scripts, context);
         phases.push(Phase {
@@ -36,7 +36,7 @@ impl<'a> super::Reconciler<'a> {
             actions: pre_script_actions,
         });
 
-        // Phase 1: Env — write ~/.cfgd.env and inject shell rc source line.
+        // Env: write ~/.cfgd.env and inject shell rc source line.
         // Runs early so that env vars (including PATH for bootstrapped managers)
         // are available to all subsequent phases.
         let (env_actions, warnings) = Self::plan_env(
@@ -51,7 +51,7 @@ impl<'a> super::Reconciler<'a> {
             actions: env_actions,
         });
 
-        // Phase 2: Modules — module packages, files, and post-apply scripts.
+        // Modules: module packages, files, and post-apply scripts.
         // Packages are grouped with system/native managers first, then
         // bootstrappable managers, so build deps are installed before
         // packages that need them.
@@ -61,7 +61,7 @@ impl<'a> super::Reconciler<'a> {
             actions: module_phase_actions,
         });
 
-        // Phase 3: Packages — profile-level packages, installed after modules
+        // Packages: profile-level packages, installed after modules
         // so module deps are available.
         let package_actions = pkg_actions.into_iter().map(Action::Package).collect();
         phases.push(Phase {
@@ -69,28 +69,28 @@ impl<'a> super::Reconciler<'a> {
             actions: package_actions,
         });
 
-        // Phase 4: System — runs after packages so required binaries exist
+        // System: runs after packages so required binaries exist.
         let system_actions = self.plan_system(&resolved.merged, &module_actions)?;
         phases.push(Phase {
             name: PhaseName::System,
             actions: system_actions,
         });
 
-        // Phase 5: Files
+        // Files.
         let fa = file_actions.into_iter().map(Action::File).collect();
         phases.push(Phase {
             name: PhaseName::Files,
             actions: fa,
         });
 
-        // Phase 6: Secrets
+        // Secrets.
         let secret_actions = self.plan_secrets(&resolved.merged);
         phases.push(Phase {
             name: PhaseName::Secrets,
             actions: secret_actions,
         });
 
-        // Phase 7: PostScripts — post-apply or post-reconcile hooks.
+        // PostScripts: post-apply or post-reconcile hooks.
         phases.push(Phase {
             name: PhaseName::PostScripts,
             actions: post_script_actions,

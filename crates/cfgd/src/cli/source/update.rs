@@ -73,9 +73,8 @@ pub fn cmd_source_update(cli: &Cli, printer: &Printer, name: Option<&str>) -> an
 
                     // Per-source SectionGuard binds across both the prompt
                     // and the success emit so the canonical
-                    // Accept-confirm-then-success line nests under the same
-                    // section header as the prompt context bullets (F3
-                    // README Accept-confirm-then-success pattern). The
+                    // accept-confirm-then-success line nests under the same
+                    // section header as the prompt context bullets. The
                     // section header phrasing pivots on whether permission
                     // changes were detected.
                     let source_sec = if perm_changes.is_empty() {

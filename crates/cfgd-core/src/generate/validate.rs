@@ -2,7 +2,7 @@ use crate::config::{CfgdConfig, ModuleDocument, ProfileDocument};
 use crate::generate::{SchemaKind, ValidationResult};
 
 pub fn validate_yaml(content: &str, kind: SchemaKind) -> ValidationResult {
-    // Step 1: Parse as generic YAML to check syntax
+    // Parse as generic YAML to check syntax.
     let value: serde_yaml::Value = match serde_yaml::from_str(content) {
         Ok(v) => v,
         Err(e) => {
@@ -13,7 +13,7 @@ pub fn validate_yaml(content: &str, kind: SchemaKind) -> ValidationResult {
         }
     };
 
-    // Step 2: Check kind field matches expected
+    // Check kind field matches expected.
     if let Some(doc_kind) = value.get("kind").and_then(|v| v.as_str())
         && doc_kind != kind.as_str()
     {
@@ -27,7 +27,7 @@ pub fn validate_yaml(content: &str, kind: SchemaKind) -> ValidationResult {
         };
     }
 
-    // Step 3: Attempt deserialization into concrete type
+    // Attempt deserialization into the concrete type.
     let deser_result = match kind {
         SchemaKind::Module => serde_yaml::from_str::<ModuleDocument>(content).map(|_| ()),
         SchemaKind::Profile => serde_yaml::from_str::<ProfileDocument>(content).map(|_| ()),

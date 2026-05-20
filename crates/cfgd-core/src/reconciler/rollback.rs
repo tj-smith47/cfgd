@@ -52,7 +52,7 @@ impl<'a> super::Reconciler<'a> {
         // Track which file paths we've already restored (avoid duplicate restores)
         let mut restored_paths = std::collections::HashSet::new();
 
-        // Phase 1: restore from target apply's post-apply snapshots
+        // Restore from target apply's post-apply snapshots.
         for (path, bk) in &target_snapshot {
             restored_paths.insert(path.clone());
             let target = std::path::Path::new(path);
@@ -64,7 +64,7 @@ impl<'a> super::Reconciler<'a> {
             }
         }
 
-        // Phase 2: fallback to earliest backup after target for remaining paths
+        // Fall back to earliest backup after target for remaining paths.
         for bk in &after_backups {
             if restored_paths.contains(&bk.file_path) {
                 continue;
@@ -79,7 +79,7 @@ impl<'a> super::Reconciler<'a> {
             }
         }
 
-        // Phase 3: handle files created by subsequent applies but not in target's snapshot
+        // Handle files created by subsequent applies but not in target's snapshot.
         for entry in &after_entries {
             let is_file = entry.phase == "files"
                 || entry.action_type == "file"
@@ -100,8 +100,9 @@ impl<'a> super::Reconciler<'a> {
             }
             restored_paths.insert(actual_path.to_string());
 
-            // If the file is in the target apply's snapshot, it was already handled in phase 1.
-            // If not, check the journal to see if it existed at the target apply.
+            // If the file is in the target apply's snapshot, it was already handled by the
+            // earlier snapshot-restore pass. If not, check the journal to see if it existed
+            // at the target apply.
             let target_entries = self.state.journal_completed_actions(apply_id)?;
             let target_had_file = target_entries.iter().any(|e| {
                 let target_path = e

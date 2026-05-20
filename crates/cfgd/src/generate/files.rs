@@ -46,13 +46,12 @@ pub struct DirectoryEntry {
 
 /// Check if a path is within home or repo root AND not matched by any blocked pattern.
 ///
-/// Steps:
-/// 1. Canonicalize the path (resolves symlinks — symlinks pointing outside allowed
-///    roots are caught here).
-/// 2. Check that the canonicalized path starts within `home` OR `repo_root`.
-/// 3. Check that the path string doesn't match any BLOCKED_PATTERNS substring.
+/// The check has two parts:
+/// - Canonicalize the path (resolves symlinks — symlinks pointing outside allowed
+///   roots are caught here) and confirm it starts within `home` OR `repo_root`.
+/// - Verify the path string doesn't match any BLOCKED_PATTERNS substring.
 fn is_path_allowed(path: &Path, home: &Path, repo_root: &Path) -> Result<(), CfgdError> {
-    // Step 1 & 2: canonicalize and check containment.
+    // Canonicalize and check containment.
     // We try home first, then repo_root. If both fail we reject.
     let in_home = cfgd_core::validate_path_within(path, home).is_ok();
     let in_repo = cfgd_core::validate_path_within(path, repo_root).is_ok();
@@ -64,7 +63,7 @@ fn is_path_allowed(path: &Path, home: &Path, repo_root: &Path) -> Result<(), Cfg
         }));
     }
 
-    // Step 3: check blocked patterns against the path string. Normalize backslashes
+    // Check blocked patterns against the path string. Normalize backslashes
     // to forward slashes so patterns like ".ssh/id_" match on Windows too.
     let path_str = path.to_string_lossy().replace('\\', "/");
     for pattern in BLOCKED_PATTERNS {
