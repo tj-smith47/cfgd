@@ -1,7 +1,7 @@
 use super::*;
 use cfgd_core::output::{Printer, Role};
 
-pub(in crate::cli) fn load_config_and_profile_v2(
+pub(in crate::cli) fn load_config_and_profile(
     cli: &Cli,
 ) -> anyhow::Result<(CfgdConfig, String, ResolvedProfile)> {
     let cfg = config::load_config(&cli.config)?;
@@ -281,7 +281,7 @@ pub(in crate::cli) fn module_state_map(
         .collect()
 }
 
-pub(in crate::cli) fn open_in_editor_v2(path: &Path, printer: &Printer) -> anyhow::Result<()> {
+pub(in crate::cli) fn open_in_editor(path: &Path, printer: &Printer) -> anyhow::Result<()> {
     let editor = std::env::var("EDITOR")
         .or_else(|_| std::env::var("VISUAL"))
         .unwrap_or_else(|_| "vi".to_string());
@@ -383,7 +383,7 @@ pub(in crate::cli) fn set_nested_yaml_value(
 
 // --- Plan integration with sources (Phase 9) ---
 
-pub(in crate::cli) fn compose_with_sources_v2(
+pub(in crate::cli) fn compose_with_sources(
     cli: &Cli,
     cfg: &config::CfgdConfig,
     local_resolved: &ResolvedProfile,

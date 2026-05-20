@@ -94,7 +94,7 @@ pub(crate) fn parse_priority_input(input: &str) -> anyhow::Result<u32> {
 /// kv ordering inside sections renders deterministically (the SectionGuard
 /// path defers kv emission past section close, mis-ordering with the
 /// section header).
-pub(crate) fn display_source_manifest_v2(
+pub(crate) fn display_source_manifest(
     printer: &Printer,
     manifest: &config::ConfigSourceDocument,
 ) -> Vec<String> {

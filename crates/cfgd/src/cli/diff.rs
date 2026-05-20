@@ -16,7 +16,7 @@ pub fn cmd_diff(
         return cmd_diff_module(cli, printer, mod_name, &config_dir, exit_code);
     }
 
-    let (_cfg, profile_name, mut resolved) = load_config_and_profile_v2(cli)?;
+    let (_cfg, profile_name, mut resolved) = load_config_and_profile(cli)?;
     printer.kv_block([
         ("Config".to_string(), cli.config.display().to_string()),
         ("Profile".to_string(), profile_name),
@@ -49,7 +49,7 @@ pub fn cmd_diff(
             .map(|m| m.as_ref())
             .collect();
         let pkg_actions = packages::plan_packages(&resolved.merged, &all_managers)?;
-        print_package_drift_v2(&pkg_actions, &pkg_sec, &mut diff_payload)
+        print_package_drift(&pkg_actions, &pkg_sec, &mut diff_payload)
     };
 
     {
@@ -219,7 +219,7 @@ fn cmd_diff_module(
     Ok(())
 }
 
-fn print_package_drift_v2(
+fn print_package_drift(
     pkg_actions: &[PackageAction],
     section: &SectionGuard<'_>,
     payload: &mut DiffOutput,
@@ -316,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn print_package_drift_v2_no_drift() {
+    fn print_package_drift_no_drift() {
         let (printer, cap) = Printer::for_test_doc();
         let mut payload = DiffOutput::default();
         let actions = vec![PackageAction::Skip {
@@ -326,7 +326,7 @@ mod tests {
         }];
         {
             let section = printer.section("Packages");
-            let has_drift = print_package_drift_v2(&actions, &section, &mut payload);
+            let has_drift = print_package_drift(&actions, &section, &mut payload);
             assert!(!has_drift, "all-skip should report no drift");
         }
         drop(printer);
@@ -340,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn print_package_drift_v2_missing_packages() {
+    fn print_package_drift_missing_packages() {
         let (printer, cap) = Printer::for_test_doc();
         let mut payload = DiffOutput::default();
         let actions = vec![
@@ -362,7 +362,7 @@ mod tests {
         ];
         {
             let section = printer.section("Packages");
-            let has_drift = print_package_drift_v2(&actions, &section, &mut payload);
+            let has_drift = print_package_drift(&actions, &section, &mut payload);
             assert!(has_drift, "non-Skip actions should report drift");
         }
         drop(printer);

@@ -893,7 +893,7 @@ impl Drop for EnvVarGuard {
 
 /// RAII guard that sets `EDITOR` for the duration of the closure. Pair with
 /// `#[serial]` so concurrent tests don't observe the override. Use in tests
-/// that drive `open_in_editor` / `open_in_editor_v2` against a known editor
+/// that drive `open_in_editor` / `open_in_editor` against a known editor
 /// binary (e.g. `/bin/true` for no-op, `/bin/sh -c '...'` for content
 /// rewrites). `unsafe` is sound under `#[serial]` since env mutation is
 /// process-global and the guard preserves the prior value across panics.

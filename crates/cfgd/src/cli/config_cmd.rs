@@ -112,7 +112,7 @@ pub fn cmd_config_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         anyhow::bail!("{}", MSG_NO_CONFIG);
     }
 
-    open_in_editor_v2(config_path, printer)?;
+    open_in_editor(config_path, printer)?;
 
     // Validate after editing — loop until valid or user cancels
     let mut valid = false;
@@ -127,7 +127,7 @@ pub fn cmd_config_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 if !printer.prompt_confirm("Re-open in editor to fix?")? {
                     break;
                 }
-                open_in_editor_v2(config_path, printer)?;
+                open_in_editor(config_path, printer)?;
             }
         }
     }

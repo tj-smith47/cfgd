@@ -12,7 +12,7 @@ pub fn cmd_checkin(
 ) -> anyhow::Result<()> {
     printer.heading("Checkin");
 
-    let (cfg, _profile_name, resolved) = load_config_and_profile_v2(cli)?;
+    let (cfg, _profile_name, resolved) = load_config_and_profile(cli)?;
     let registry = build_registry_with_profile(&resolved.merged.packages);
 
     let stored_cred = cfgd_core::server_client::load_credential().ok().flatten();

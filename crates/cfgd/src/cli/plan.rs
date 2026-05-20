@@ -41,7 +41,7 @@ pub fn cmd_plan(
 
     // Load config and profile — same pattern as cmd_apply
     let (cfg, resolved) = if let Some(mod_name) = module_filter {
-        match load_config_and_profile_v2(cli) {
+        match load_config_and_profile(cli) {
             Ok((cfg, profile_name, resolved)) => {
                 printer.kv_block([
                     ("Config".to_string(), cli.config.display().to_string()),
@@ -62,7 +62,7 @@ pub fn cmd_plan(
             }
         }
     } else {
-        let (cfg, profile_name, resolved) = load_config_and_profile_v2(cli)?;
+        let (cfg, profile_name, resolved) = load_config_and_profile(cli)?;
         printer.kv_block([
             ("Config".to_string(), cli.config.display().to_string()),
             ("Profile".to_string(), profile_name),
@@ -77,7 +77,7 @@ pub fn cmd_plan(
 
     // Compose with sources if configured
     let source_env = if !cfg.spec.sources.is_empty() {
-        let composition_result = compose_with_sources_v2(cli, &cfg, &resolved, printer)?;
+        let composition_result = compose_with_sources(cli, &cfg, &resolved, printer)?;
         let se = composition_result.source_env;
         (Some(composition_result.resolved), se)
     } else {

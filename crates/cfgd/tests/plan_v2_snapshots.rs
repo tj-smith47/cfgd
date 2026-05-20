@@ -128,7 +128,7 @@ fn plan_module_only_human() {
     let config_dir = tempfile::tempdir().unwrap();
     let state_dir = tempfile::tempdir().unwrap();
     // Bare config — no `spec.profile`, no profiles dir. Forces the
-    // `load_config_and_profile_v2` Err branch.
+    // `load_config_and_profile` Err branch.
     let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec: {}\n";
     std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
 

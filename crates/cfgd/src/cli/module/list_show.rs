@@ -193,7 +193,7 @@ pub(crate) fn cmd_module_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()
     }
 
     let active_modules: Vec<String> = if cli.config.exists() {
-        let (_, _, resolved) = helpers::load_config_and_profile_v2(cli)?;
+        let (_, _, resolved) = helpers::load_config_and_profile(cli)?;
         resolved.merged.modules
     } else {
         Vec::new()

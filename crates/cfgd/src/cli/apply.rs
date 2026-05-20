@@ -53,7 +53,7 @@ pub fn cmd_apply(
 
     // When --module is set, try loading profile but fall back to empty if none configured
     let (cfg, resolved) = if let Some(mod_name) = module_filter {
-        match load_config_and_profile_v2(cli) {
+        match load_config_and_profile(cli) {
             Ok((cfg, profile_name, resolved)) => {
                 printer.kv_block([
                     ("Config".to_string(), cli.config.display().to_string()),
@@ -74,7 +74,7 @@ pub fn cmd_apply(
             }
         }
     } else {
-        let (cfg, profile_name, resolved) = load_config_and_profile_v2(cli)?;
+        let (cfg, profile_name, resolved) = load_config_and_profile(cli)?;
         printer.kv_block([
             ("Config".to_string(), cli.config.display().to_string()),
             ("Profile".to_string(), profile_name),
@@ -89,7 +89,7 @@ pub fn cmd_apply(
 
     // Compose with sources if configured
     let (source_env, source_commits) = if !cfg.spec.sources.is_empty() {
-        let composition_result = compose_with_sources_v2(cli, &cfg, &resolved, printer)?;
+        let composition_result = compose_with_sources(cli, &cfg, &resolved, printer)?;
         let se = composition_result.source_env;
         let sc = composition_result.source_commits;
         ((Some(composition_result.resolved), se), sc)

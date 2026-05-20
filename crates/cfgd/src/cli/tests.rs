@@ -568,7 +568,7 @@ spec:
 fn display_source_manifest_returns_provided_profiles_in_listed_order() {
     let manifest = manifest_yaml("  provides:\n    profiles: [dev, prod, ci]\n");
     let (printer, _buf) = cfgd_core::output::Printer::for_test();
-    let profiles = super::display_source_manifest_v2(&printer, &manifest);
+    let profiles = super::display_source_manifest(&printer, &manifest);
     assert_eq!(profiles, vec!["dev", "prod", "ci"]);
 }
 
@@ -577,7 +577,7 @@ fn display_source_manifest_emits_metadata_header_kv_lines() {
     let manifest = manifest_yaml("  provides: {}\n");
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::display_source_manifest_v2(&printer, &manifest);
+    super::display_source_manifest(&printer, &manifest);
     drop(printer);
     let out = buf.lock().unwrap().clone();
     assert!(out.contains("Source Manifest"), "header missing: {out}");
@@ -601,7 +601,7 @@ fn display_source_manifest_omits_profiles_kv_when_empty() {
     // line is suppressed entirely (rather than printing an empty value).
     let manifest = manifest_yaml("  provides: {}\n");
     let (printer, buf) = cfgd_core::output::Printer::for_test();
-    let profiles = super::display_source_manifest_v2(&printer, &manifest);
+    let profiles = super::display_source_manifest(&printer, &manifest);
     assert!(profiles.is_empty());
     drop(printer);
     let out = buf.lock().unwrap().clone();
@@ -635,7 +635,7 @@ fn display_source_manifest_summarizes_required_recommended_locked_counts() {
     );
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::display_source_manifest_v2(&printer, &manifest);
+    super::display_source_manifest(&printer, &manifest);
     drop(printer);
     let out = buf.lock().unwrap().clone();
     assert!(out.contains("Policy"), "Policy header missing: {out}");
@@ -658,7 +658,7 @@ fn display_source_manifest_omits_zero_count_tiers() {
     // When a tier has zero items its line must NOT appear.
     let manifest = manifest_yaml("  provides: {}\n");
     let (printer, buf) = cfgd_core::output::Printer::for_test();
-    super::display_source_manifest_v2(&printer, &manifest);
+    super::display_source_manifest(&printer, &manifest);
     drop(printer);
     let out = buf.lock().unwrap().clone();
     assert!(
@@ -680,7 +680,7 @@ fn display_source_manifest_constraints_render_each_blocked_axis() {
     );
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::display_source_manifest_v2(&printer, &manifest);
+    super::display_source_manifest(&printer, &manifest);
     drop(printer);
     let out = buf.lock().unwrap().clone();
     assert!(
@@ -711,7 +711,7 @@ fn display_source_manifest_constraints_omitted_when_unrestricted() {
 "#,
     );
     let (printer, buf) = cfgd_core::output::Printer::for_test();
-    super::display_source_manifest_v2(&printer, &manifest);
+    super::display_source_manifest(&printer, &manifest);
     drop(printer);
     let out = buf.lock().unwrap().clone();
     assert!(
@@ -738,7 +738,7 @@ spec:
     .unwrap();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-    super::display_source_manifest_v2(&printer, &manifest);
+    super::display_source_manifest(&printer, &manifest);
     drop(printer);
     let out = buf.lock().unwrap().clone();
     assert!(out.contains("Name") && out.contains("minimal"));
@@ -2097,7 +2097,7 @@ use cfgd_core::test_helpers::EditorGuard;
 #[test]
 #[serial_test::serial]
 fn source_edit_with_valid_manifest_reports_valid_and_returns_ok() {
-    // EDITOR=/bin/true → open_in_editor_v2 exits 0 without touching the
+    // EDITOR=/bin/true → open_in_editor exits 0 without touching the
     // file, so the post-edit validation reads the same valid manifest we
     // wrote and lands in the "Source manifest is valid" success arm.
     let dir = create_test_config_dir();
@@ -4578,7 +4578,7 @@ fn cmd_apply_with_env_vars() {
     }
 
     // Verify the profile was loaded with env vars by loading config+profile
-    let (_, _, resolved) = super::load_config_and_profile_v2(&cli).unwrap();
+    let (_, _, resolved) = super::load_config_and_profile(&cli).unwrap();
     assert!(
         resolved.merged.env.iter().any(|e| e.name == "EDITOR"),
         "resolved profile should contain EDITOR env var"
@@ -7956,7 +7956,7 @@ fn load_config_and_profile_default_profile() {
 
     let cli = test_cli(dir.path());
 
-    let result = super::load_config_and_profile_v2(&cli);
+    let result = super::load_config_and_profile(&cli);
     assert!(
         result.is_ok(),
         "loading config and default profile should succeed: {:?}",
@@ -7976,7 +7976,7 @@ fn load_config_and_profile_with_override() {
     let mut cli = test_cli(dir.path());
     cli.profile = Some("work".to_string());
 
-    let result = super::load_config_and_profile_v2(&cli);
+    let result = super::load_config_and_profile(&cli);
     assert!(
         result.is_ok(),
         "loading config with profile override should succeed: {:?}",
@@ -7994,7 +7994,7 @@ fn load_config_and_profile_missing_config_errors() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
 
-    let result = super::load_config_and_profile_v2(&cli);
+    let result = super::load_config_and_profile(&cli);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -8014,7 +8014,7 @@ fn load_config_and_profile_missing_profile_errors() {
 
     let cli = test_cli(dir.path());
 
-    let result = super::load_config_and_profile_v2(&cli);
+    let result = super::load_config_and_profile(&cli);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -10483,7 +10483,7 @@ fn load_config_and_profile_returns_correct_config() {
     let (config_dir, state_dir) = setup_test_env();
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
 
-    let (cfg, _, resolved) = super::load_config_and_profile_v2(&cli).unwrap();
+    let (cfg, _, resolved) = super::load_config_and_profile(&cli).unwrap();
     assert_eq!(cfg.metadata.name, "t");
     assert!(
         !resolved.merged.env.is_empty(),
@@ -10499,7 +10499,7 @@ fn load_config_and_profile_missing_profile_fails() {
         ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
     };
 
-    let result = super::load_config_and_profile_v2(&cli);
+    let result = super::load_config_and_profile(&cli);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(

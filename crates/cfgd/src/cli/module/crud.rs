@@ -638,7 +638,7 @@ pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
         anyhow::bail!("Module '{}' not found at {}", name, module_yaml.display());
     }
 
-    open_in_editor_v2(&module_yaml, printer)?;
+    open_in_editor(&module_yaml, printer)?;
 
     // Validate after editing — loop until valid or user cancels
     let mut valid = false;
@@ -654,7 +654,7 @@ pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
                 if !printer.prompt_confirm("Re-open in editor?")? {
                     break;
                 }
-                open_in_editor_v2(&module_yaml, printer)?;
+                open_in_editor(&module_yaml, printer)?;
             }
         }
     }

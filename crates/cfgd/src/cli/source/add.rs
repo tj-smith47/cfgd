@@ -83,7 +83,7 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
 
     // Display source manifest info
     let manifest = &cached.manifest;
-    let provided_profiles = display_source_manifest_v2(printer, manifest);
+    let provided_profiles = display_source_manifest(printer, manifest);
 
     // Profile selection: explicit flag > platform auto-detect > single profile > interactive
     let auto_detected_profile =

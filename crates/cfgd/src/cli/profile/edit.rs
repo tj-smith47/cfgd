@@ -14,7 +14,7 @@ pub fn cmd_profile_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Res
         anyhow::bail!("Profile '{}' not found", name);
     }
 
-    open_in_editor_v2(&profile_path, printer)?;
+    open_in_editor(&profile_path, printer)?;
 
     let mut errors: Vec<String> = Vec::new();
     let valid = loop {
@@ -34,7 +34,7 @@ pub fn cmd_profile_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Res
                 if !printer.prompt_confirm("Re-open in editor?")? {
                     break false;
                 }
-                open_in_editor_v2(&profile_path, printer)?;
+                open_in_editor(&profile_path, printer)?;
             }
         }
     };

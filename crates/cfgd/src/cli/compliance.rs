@@ -8,7 +8,7 @@ use cfgd_core::state::ComplianceHistoryRow;
 pub(super) fn collect_and_store_compliance_snapshot(
     cli: &Cli,
 ) -> anyhow::Result<(CfgdConfig, ComplianceSnapshot)> {
-    let (cfg, _profile_name, mut resolved) = helpers::load_config_and_profile_v2(cli)?;
+    let (cfg, _profile_name, mut resolved) = helpers::load_config_and_profile(cli)?;
     let config_dir = config_dir(cli);
     packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
     let registry = build_registry_with_profile(&resolved.merged.packages);

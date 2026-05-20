@@ -36,9 +36,8 @@ pub(in crate::cli) use registry::*;
 #[cfg(test)]
 pub(in crate::cli) use source::{
     DEFAULT_NONINTERACTIVE_PRIORITY, add_source_to_config, build_subscription_preview_input,
-    count_policy_items, display_source_manifest_v2, format_conflict_preview_lines,
-    infer_source_name, parse_priority_input, remove_source_from_config,
-    resolve_non_interactive_profile,
+    count_policy_items, display_source_manifest, format_conflict_preview_lines, infer_source_name,
+    parse_priority_input, remove_source_from_config, resolve_non_interactive_profile,
 };
 pub(in crate::cli) use source::{
     build_pending_decisions_table_section, build_permission_input, mutate_config_yaml,

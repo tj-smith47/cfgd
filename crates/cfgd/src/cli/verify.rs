@@ -35,7 +35,7 @@ pub(super) fn cmd_verify(
         .unwrap_or_default();
         (resolved, mods, registry)
     } else {
-        let (_cfg, _profile_name, mut resolved) = load_config_and_profile_v2(cli)?;
+        let (_cfg, _profile_name, mut resolved) = load_config_and_profile(cli)?;
         packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
         let registry = build_registry_with_profile(&resolved.merged.packages);
         (resolved, Vec::new(), registry)

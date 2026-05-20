@@ -117,7 +117,7 @@ pub fn cmd_profile_show(cli: &Cli, printer: &Printer, name: Option<&str>) -> any
             (n.to_string(), resolved)
         }
         None => {
-            let (_cfg, active, resolved) = helpers::load_config_and_profile_v2(cli)?;
+            let (_cfg, active, resolved) = helpers::load_config_and_profile(cli)?;
             (active, resolved)
         }
     };

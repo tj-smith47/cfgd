@@ -20,7 +20,7 @@ pub fn cmd_source_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         );
     }
 
-    open_in_editor_v2(&source_path, printer)?;
+    open_in_editor(&source_path, printer)?;
 
     // Validate after editing — loop until valid or user cancels
     loop {
@@ -50,7 +50,7 @@ pub fn cmd_source_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                     );
                     break;
                 }
-                open_in_editor_v2(&source_path, printer)?;
+                open_in_editor(&source_path, printer)?;
             }
         }
     }

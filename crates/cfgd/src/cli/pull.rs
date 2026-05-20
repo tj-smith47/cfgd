@@ -5,7 +5,7 @@ use cfgd_core::output::{Doc, Printer, Role};
 pub fn cmd_pull(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     printer.heading("Pull");
 
-    let (_cfg, _profile_name, _resolved) = load_config_and_profile_v2(cli)?;
+    let (_cfg, _profile_name, _resolved) = load_config_and_profile(cli)?;
     let config_dir = config_dir(cli);
 
     let pull_result = cfgd_core::daemon::git_pull_sync(&config_dir);

@@ -5,7 +5,7 @@ use cfgd_core::output::{Doc, Role};
 pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Result<()> {
     printer.heading("Sync");
 
-    let (cfg, profile_name, _resolved) = load_config_and_profile_v2(cli)?;
+    let (cfg, profile_name, _resolved) = load_config_and_profile(cli)?;
     printer.kv_block([
         ("Config".to_string(), cli.config.display().to_string()),
         ("Profile".to_string(), profile_name),
