@@ -7,7 +7,7 @@
 //!   2. The apply lock is released after the run (re-acquire succeeds).
 //!
 //! Test asserts on *count*, not output — output shape is covered by
-//! `apply_v2_snapshots.rs`.
+//! `apply_snapshots.rs`.
 
 mod common;
 

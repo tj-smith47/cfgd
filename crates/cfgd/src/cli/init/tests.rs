@@ -2708,7 +2708,7 @@ mod enroll_mockito {
     #[serial]
     fn cmd_enroll_token_path_streaming_to_buffered_bridge_invariant() {
         // Bridge anchor under real cmd_enroll data — the existing
-        // `tests/enroll_v2_snapshots.rs` snapshots exercise
+        // `tests/enroll_snapshots.rs` snapshots exercise
         // `build_enroll_final_doc` in isolation and therefore miss the
         // streaming portion (kvs + heading + status_simple lines) that
         // `cmd_enroll` emits before the trailing buffered Doc. This test
@@ -2803,7 +2803,7 @@ mod enroll_mockito {
     }
 
     /// ANSI-stripping helper local to this module — mirrors the one in
-    /// `tests/init_v2_snapshots.rs`; both are tiny and isolated to keep the
+    /// `tests/init_snapshots.rs`; both are tiny and isolated to keep the
     /// snapshot pipeline self-contained per test file.
     fn strip_ansi(s: &str) -> String {
         let mut out = String::with_capacity(s.len());
