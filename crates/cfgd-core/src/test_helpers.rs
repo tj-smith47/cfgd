@@ -11,7 +11,6 @@ use std::sync::Mutex;
 use secrecy::SecretString;
 
 use crate::errors::{CfgdError, FileError, SecretError};
-use crate::output::{Printer, Verbosity};
 use crate::output_v2::Printer as PrinterV2;
 use crate::providers::{
     FileAction, FileDiff, FileLayer, FileTree, SecretBackend, SecretProvider, SystemConfigurator,
@@ -546,23 +545,15 @@ pub fn init_test_git_repo(dir: &Path) {
 // Printer helper
 // ---------------------------------------------------------------------------
 
-/// Create a quiet `Printer` suitable for tests (suppresses terminal output).
-/// Returns the [`crate::output::Printer`] type — used by mock trait impls
-/// (`MockPackageManager`, `MockSecretBackend`, `MockSystemConfigurator`)
-/// whose method signatures take this type, plus reconciler helpers that
-/// still accept it.
-pub fn test_printer() -> Printer {
-    Printer::new(Verbosity::Quiet)
-}
-
-/// Create a quiet [`crate::output_v2::Printer`] for tests that exercise
-/// the reconciler entry surface (`Reconciler::apply`,
-/// `Reconciler::apply_action`, and per-action helpers in `apply.rs` /
-/// `modules.rs` / `packages.rs` / `secrets.rs` / `system.rs`).
+/// Create a quiet `Printer` for tests that exercise the reconciler entry
+/// surface (`Reconciler::apply`, `Reconciler::apply_action`, and per-action
+/// helpers in `apply.rs` / `modules.rs` / `packages.rs` / `secrets.rs` /
+/// `system.rs`) plus mock trait impls (`MockPackageManager`,
+/// `MockSecretBackend`, `MockSystemConfigurator`).
 ///
 /// Returns a bare `Printer` (not the `(Printer, Buffer)` tuple from
-/// `Printer::for_test()`) so it drops in as a direct replacement for
-/// [`test_printer`] in fixtures that don't assert on captured output.
+/// `Printer::for_test()`) so it drops in as a direct replacement in fixtures
+/// that don't assert on captured output.
 pub fn test_printer_v2() -> crate::output_v2::Printer {
     crate::output_v2::Printer::new(crate::output_v2::Verbosity::Quiet)
 }
