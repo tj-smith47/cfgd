@@ -1,10 +1,9 @@
 use super::*;
 use cfgd_core::output::{Printer, Verbosity};
 
-/// Build a quiet Printer for tests that only need to satisfy the signature
-/// without asserting on captured output. Mirrors the
-/// `Printer::new(Verbosity::Quiet)` pattern used for the legacy printer.
-fn v2_quiet() -> Printer {
+/// Returns a `Printer` in `Verbosity::Quiet` mode for tests that only need
+/// to satisfy the signature without asserting on captured output.
+fn quiet_printer() -> Printer {
     Printer::new(Verbosity::Quiet)
 }
 
@@ -96,7 +95,7 @@ fn count_packages(spec: &config::ProfileSpec) -> usize {
 #[test]
 fn scaffold_creates_structure() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
 
     scaffold(dir.path(), Some("test-config"), None, &v2_printer).unwrap();
 
@@ -113,7 +112,7 @@ fn scaffold_creates_structure() {
 #[test]
 fn scaffold_with_theme() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
 
     scaffold(dir.path(), Some("themed"), Some("minimal"), &v2_printer).unwrap();
 
@@ -125,7 +124,7 @@ fn scaffold_with_theme() {
 #[test]
 fn scaffold_uses_dir_name_as_default() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
 
     scaffold(dir.path(), None, None, &v2_printer).unwrap();
 
@@ -262,7 +261,7 @@ fn regenerate_workflow_empty_repo() {
     std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
     std::fs::create_dir_all(dir.path().join("modules")).unwrap();
 
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     regenerate_workflow(dir.path(), &v2_printer).unwrap();
 
     // No profiles or modules → no workflow generated
@@ -285,7 +284,7 @@ fn regenerate_workflow_with_profile() {
     )
     .unwrap();
 
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     regenerate_workflow(dir.path(), &v2_printer).unwrap();
 
     let workflow = dir.path().join(".github/workflows/cfgd-release.yml");
@@ -297,7 +296,7 @@ fn regenerate_workflow_with_profile() {
 #[test]
 fn scaffold_includes_default_theme() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
 
     scaffold(dir.path(), Some("test"), None, &v2_printer).unwrap();
     let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
@@ -307,7 +306,7 @@ fn scaffold_includes_default_theme() {
 #[test]
 fn scaffold_with_custom_theme() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
 
     scaffold(dir.path(), Some("test"), Some("minimal"), &v2_printer).unwrap();
     let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
@@ -325,7 +324,7 @@ fn pick_profile_single_profile() {
     )
     .unwrap();
 
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let result = pick_profile(&profiles_dir, &v2_printer).unwrap();
     assert_eq!(result, "base");
 }
@@ -336,7 +335,7 @@ fn pick_profile_no_profiles_errors() {
     let profiles_dir = dir.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
 
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let err = pick_profile(&profiles_dir, &v2_printer).unwrap_err();
     assert!(
         err.to_string().contains("No profiles found"),
@@ -401,7 +400,7 @@ fn pick_profile_no_dir_errors() {
     let profiles_dir = dir.path().join("profiles");
     // Don't create the dir
 
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let err = pick_profile(&profiles_dir, &v2_printer).unwrap_err();
     assert!(
         err.to_string().contains("No profiles directory"),
@@ -443,7 +442,7 @@ fn resolve_from_local_path_with_config() {
     )
     .unwrap();
 
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let result = resolve_from(
         &dir.path().display().to_string(),
         None,
@@ -459,7 +458,7 @@ fn resolve_from_local_path_missing_config_errors() {
     let dir = tempfile::tempdir().unwrap();
     // No cfgd.yaml
 
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let result = resolve_from(
         &dir.path().display().to_string(),
         None,
@@ -474,7 +473,7 @@ fn resolve_from_local_path_missing_config_errors() {
 fn resolve_from_nonexistent_path_errors() {
     let dir = tempfile::tempdir().unwrap();
     let nonexistent = dir.path().join("does-not-exist");
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let result = resolve_from(
         &nonexistent.display().to_string(),
         None,
@@ -488,7 +487,7 @@ fn resolve_from_nonexistent_path_errors() {
 #[test]
 fn check_prerequisites_returns_true_when_git_available() {
     // git should be available in CI and dev environments
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let result = check_prerequisites(&v2_printer);
     if cfgd_core::command_available("git") {
         assert!(
@@ -509,7 +508,7 @@ fn cmd_init_scaffolds_local_directory() {
     let target = dir.path().join("my-config");
     std::fs::create_dir_all(&target).unwrap();
 
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let args = InitArgs {
         path: Some(target.to_str().unwrap()),
         from: None,
@@ -561,7 +560,7 @@ fn cmd_init_skips_if_already_initialized() {
     )
     .unwrap();
 
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let args = InitArgs {
         path: Some(target.to_str().unwrap()),
         from: None,
@@ -589,7 +588,7 @@ fn cmd_init_creates_directory_if_missing() {
     let target = dir.path().join("new-config");
     assert!(!target.exists());
 
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let args = InitArgs {
         path: Some(target.to_str().unwrap()),
         from: None,
@@ -704,7 +703,7 @@ fn resolve_from_git_source_local_repo() {
         .unwrap();
 
     let target = dir.path().join("target");
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let result = resolve_from(
         &origin.display().to_string(),
         Some(&target),
@@ -734,7 +733,7 @@ fn resolve_from_already_initialized_git_source() {
     )
     .unwrap();
 
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     // Using a git URL (https://) triggers the git source path
     let result = resolve_from(
         "https://example.com/repo.git",
@@ -750,7 +749,7 @@ fn resolve_from_already_initialized_git_source() {
 #[test]
 fn scaffold_creates_readme_with_name() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
 
     scaffold(dir.path(), Some("my-dotfiles"), None, &v2_printer).unwrap();
 
@@ -764,7 +763,7 @@ fn scaffold_creates_readme_with_name() {
 #[test]
 fn scaffold_creates_gitignore() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
 
     scaffold(dir.path(), Some("test"), None, &v2_printer).unwrap();
 
@@ -777,7 +776,7 @@ fn scaffold_creates_gitignore() {
 #[test]
 fn scaffold_creates_workflow() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
 
     scaffold(dir.path(), Some("test"), None, &v2_printer).unwrap();
 
@@ -954,7 +953,7 @@ fn cmd_init_with_theme() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("themed");
 
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let target_str = target.display().to_string();
     let args = InitArgs {
         path: Some(&target_str),
@@ -990,7 +989,7 @@ fn resolve_from_local_path_valid() {
     )
     .unwrap();
 
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let result = resolve_from(
         &dir.path().display().to_string(),
         None,
@@ -1004,7 +1003,7 @@ fn resolve_from_local_path_valid() {
 #[test]
 fn resolve_from_local_path_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
 
     let err = resolve_from(
         &dir.path().display().to_string(),
@@ -1021,7 +1020,7 @@ fn resolve_from_local_path_no_config_fails() {
 
 #[test]
 fn resolve_from_nonexistent_path_fails() {
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let err = resolve_from("/nonexistent/path/xyz", None, "master", &v2_printer).unwrap_err();
     assert!(
         err.to_string().contains("does not exist"),
@@ -1077,7 +1076,7 @@ fn is_git_source_local_git_repo() {
 #[test]
 fn scaffold_gitignore_content() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
 
     scaffold(dir.path(), Some("test"), None, &v2_printer).unwrap();
 
@@ -1093,7 +1092,7 @@ fn scaffold_gitignore_content() {
 #[test]
 fn scaffold_config_content() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
 
     scaffold(dir.path(), Some("my-dots"), Some("catppuccin"), &v2_printer).unwrap();
 
@@ -1111,7 +1110,7 @@ fn scaffold_uses_dir_name_when_no_name() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("cool-dotfiles");
     std::fs::create_dir_all(&target).unwrap();
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
 
     scaffold(&target, None, None, &v2_printer).unwrap();
 
@@ -1150,7 +1149,7 @@ fn pick_profile_single_profile_auto_selects() {
 fn pick_profile_no_dir_fails() {
     let dir = tempfile::tempdir().unwrap();
     let nonexistent = dir.path().join("nope");
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
 
     let err = pick_profile(&nonexistent, &v2_printer).unwrap_err();
     assert!(
@@ -1162,7 +1161,7 @@ fn pick_profile_no_dir_fails() {
 #[test]
 fn pick_profile_empty_dir_fails() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
 
     let err = pick_profile(dir.path(), &v2_printer).unwrap_err();
     assert!(
@@ -1178,7 +1177,7 @@ fn regenerate_workflow_skips_empty() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
     std::fs::create_dir_all(dir.path().join("modules")).unwrap();
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
 
     regenerate_workflow(dir.path(), &v2_printer).unwrap();
 
@@ -1203,7 +1202,7 @@ fn regenerate_workflow_creates_for_content() {
     .unwrap();
     std::fs::create_dir_all(dir.path().join("modules")).unwrap();
 
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     regenerate_workflow(dir.path(), &v2_printer).unwrap();
 
     let workflow_path = dir.path().join(".github/workflows/cfgd-release.yml");
@@ -1358,7 +1357,7 @@ fn resolve_from_local_path_returns_canonicalized_path() {
     )
     .unwrap();
 
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let result =
         resolve_from(&dir.path().display().to_string(), None, "main", &v2_printer).unwrap();
     // The result should be a valid path containing cfgd.yaml
@@ -1389,7 +1388,7 @@ fn resolve_from_git_source_with_target_creates_dir() {
     let target = dir.path().join("new-target");
     assert!(!target.exists());
 
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let result = resolve_from(
         &origin.display().to_string(),
         Some(&target),
@@ -1407,7 +1406,7 @@ fn resolve_from_git_source_with_target_creates_dir() {
 #[test]
 fn scaffold_config_has_api_version() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     scaffold(dir.path(), Some("my-cfg"), None, &v2_printer).unwrap();
 
     let config = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
@@ -1428,7 +1427,7 @@ fn scaffold_config_has_api_version() {
 #[test]
 fn scaffold_readme_contains_structure_docs() {
     let dir = tempfile::tempdir().unwrap();
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     scaffold(dir.path(), Some("documented"), None, &v2_printer).unwrap();
 
     let readme = std::fs::read_to_string(dir.path().join("README.md")).unwrap();
@@ -1454,7 +1453,7 @@ fn cmd_init_with_name_overrides_dir_name() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("generic-dir");
 
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let target_str = target.display().to_string();
     let args = InitArgs {
         path: Some(&target_str),
@@ -1484,7 +1483,7 @@ fn cmd_init_creates_git_repo() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("git-init-test");
 
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let target_str = target.display().to_string();
     let args = InitArgs {
         path: Some(&target_str),
@@ -1516,7 +1515,7 @@ fn cmd_init_with_theme_and_name_together() {
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("combo-test");
 
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let target_str = target.display().to_string();
     let args = InitArgs {
         path: Some(&target_str),
@@ -1674,7 +1673,7 @@ fn regenerate_workflow_with_modules_and_profiles() {
     )
     .unwrap();
 
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     regenerate_workflow(dir.path(), &v2_printer).unwrap();
 
     let workflow_path = dir.path().join(".github/workflows/cfgd-release.yml");
@@ -1818,7 +1817,7 @@ fn sign_with_gpg_requires_gpg() {
 
 #[test]
 fn detect_ssh_key_returns_option() {
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     // This will either find a key or return None — both are valid
     let result = detect_ssh_key(&v2_printer);
     // Just verify it doesn't panic and returns a valid type
@@ -2106,7 +2105,7 @@ fn cmd_init_from_git_source_with_explicit_target() {
         .unwrap();
 
     let target = dir.path().join("my-target");
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let origin_str = origin.display().to_string();
     let target_str = target.display().to_string();
     let args = InitArgs {
@@ -2159,7 +2158,7 @@ fn cmd_init_from_git_with_theme_override() {
         .unwrap();
 
     let target = dir.path().join("themed-target");
-    let v2_printer = v2_quiet();
+    let v2_printer = quiet_printer();
     let origin_str = origin.display().to_string();
     let target_str = target.display().to_string();
     let args = InitArgs {
@@ -2609,7 +2608,7 @@ mod enroll_mockito {
             assert_eq!(cred["apiKey"], "key-xyz-789");
             assert_eq!(cred["username"], "alice");
 
-            // v2 printer output should announce success and emit the Next
+            // Printer output should announce success and emit the Next
             // Steps section heading.
             drop(v2_printer);
             let captured = cap.human();
@@ -2637,7 +2636,7 @@ mod enroll_mockito {
                 .with_body(r#"{"error":"invalid token"}"#)
                 .create();
 
-            let v2_printer = super::v2_quiet();
+            let v2_printer = super::quiet_printer();
             let url = server.url();
             let result = cmd_enroll(
                 &v2_printer,
@@ -2667,7 +2666,7 @@ mod enroll_mockito {
                 .with_body(r#"{"method":"token"}"#)
                 .create();
 
-            let v2_printer = super::v2_quiet();
+            let v2_printer = super::quiet_printer();
             let url = server.url();
             // No --token but key-based attempted: should error with a
             // pointer to the token form.
@@ -2701,7 +2700,7 @@ mod enroll_mockito {
                 .with_body(r#"{"method":"key"}"#)
                 .create();
 
-            let v2_printer = super::v2_quiet();
+            let v2_printer = super::quiet_printer();
             let url = server.url();
             let result = cmd_enroll(&v2_printer, &url, None, None, None, Some("alice"));
             let err = result.unwrap_err().to_string();
@@ -2732,7 +2731,7 @@ mod enroll_mockito {
                 .with_body("internal error")
                 .create();
 
-            let v2_printer = super::v2_quiet();
+            let v2_printer = super::quiet_printer();
             let url = server.url();
             let result = cmd_enroll(&v2_printer, &url, None, None, None, Some("alice"));
             let err = result.unwrap_err().to_string();
@@ -3006,7 +3005,7 @@ mod cmd_init_from_local_bare {
         let target = tmp.path().join("dst");
         let url = format!("file://{}", bare.display());
 
-        let v2_printer = v2_quiet();
+        let v2_printer = quiet_printer();
         let args = InitArgs {
             path: Some(target.to_str().unwrap()),
             from: Some(&url),
@@ -3048,7 +3047,7 @@ mod cmd_init_from_local_bare {
         let target = tmp.path().join("dst");
         let url = format!("file://{}", bare.display());
 
-        let v2_printer = v2_quiet();
+        let v2_printer = quiet_printer();
         let args = InitArgs {
             path: Some(target.to_str().unwrap()),
             from: Some(&url),
@@ -3081,7 +3080,7 @@ mod cmd_init_from_local_bare {
         let target = tmp.path().join("empty-dst");
         let url = format!("file://{}", bare.display());
 
-        let v2_printer = v2_quiet();
+        let v2_printer = quiet_printer();
         let args = InitArgs {
             path: Some(target.to_str().unwrap()),
             from: Some(&url),
@@ -3143,7 +3142,7 @@ mod cmd_init_apply_orchestration {
         std::fs::create_dir_all(&target).unwrap();
         let state_dir = tmp.path().join("state");
 
-        let v2_printer = v2_quiet();
+        let v2_printer = quiet_printer();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3183,7 +3182,7 @@ mod cmd_init_apply_orchestration {
         std::fs::create_dir_all(&target).unwrap();
         let state_dir = tmp.path().join("state");
 
-        let v2_printer = v2_quiet();
+        let v2_printer = quiet_printer();
         with_state_dir(&state_dir, || {
             let modules = vec!["ghost-module".to_string()];
             let args = InitArgs {
@@ -3220,7 +3219,7 @@ mod cmd_init_apply_orchestration {
         std::fs::create_dir_all(&target).unwrap();
         let state_dir = tmp.path().join("state");
 
-        let v2_printer = v2_quiet();
+        let v2_printer = quiet_printer();
         with_state_dir(&state_dir, || {
             let args = InitArgs {
                 path: Some(target.to_str().unwrap()),
@@ -3689,7 +3688,7 @@ mod cmd_init_apply_orchestration {
         let state_dir = tmp.path().join("state");
         let url = format!("file://{}", bare.display());
 
-        let v2_printer = v2_quiet();
+        let v2_printer = quiet_printer();
         let modules = vec!["ghost-extra".to_string()];
         with_state_dir(&state_dir, || {
             let args = InitArgs {
