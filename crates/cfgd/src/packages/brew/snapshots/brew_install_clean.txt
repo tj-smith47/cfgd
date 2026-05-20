@@ -1,0 +1,5 @@
+◐ brew install git
+
+✓ brew install git
+
+✓ brew packages installed

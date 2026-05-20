@@ -601,3 +601,226 @@ fn is_insecure_registry_without_env_var() {
         }
     }
 }
+
+#[cfg(all(unix, feature = "test-helpers"))]
+mod bridge {
+    use crate::oci::archive::create_tar_gz;
+    use crate::oci::pull::pull_module;
+    use crate::oci::push::push_module;
+    use crate::oci::test_helpers::{create_test_module_dir, registry_from_url};
+    use crate::oci::{MEDIA_TYPE_MODULE_CONFIG, MEDIA_TYPE_MODULE_LAYER, MEDIA_TYPE_OCI_MANIFEST};
+    use crate::output_v2::test_capture::{assert_snapshot_at, strip_ansi};
+    use crate::output_v2::{Doc, Printer as PrinterV2, Role};
+    use crate::sha256_digest;
+
+    fn snapshot_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/oci/snapshots")
+    }
+
+    fn assert_snapshot(name: &str, actual: &str) {
+        assert_snapshot_at(&snapshot_dir(), name, actual);
+    }
+
+    fn normalize_mock_url(s: &str, server_url: &str, registry: &str) -> String {
+        s.replace(server_url, "<MOCK_URL>")
+            .replace(registry, "<MOCK_REGISTRY>")
+    }
+
+    /// Strip non-deterministic spinner finish durations like ` (0.0s)`.
+    fn strip_spinner_duration(s: String) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut rest = s.as_str();
+        while let Some(idx) = rest.find(" (") {
+            out.push_str(&rest[..idx]);
+            let after = &rest[idx + 2..];
+            let digit_end = after
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(after.len());
+            if digit_end > 0 && after.as_bytes().get(digit_end).copied() == Some(b'.') {
+                let frac_start = digit_end + 1;
+                let frac_rest = &after[frac_start..];
+                let frac_end = frac_rest
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(frac_rest.len());
+                let total = frac_start + frac_end;
+                if frac_end > 0
+                    && after.as_bytes().get(total).copied() == Some(b's')
+                    && after.as_bytes().get(total + 1).copied() == Some(b')')
+                {
+                    rest = &after[total + 2..];
+                    continue;
+                }
+            }
+            out.push_str(" (");
+            rest = after;
+        }
+        out.push_str(rest);
+        out
+    }
+
+    #[derive(serde::Serialize)]
+    struct OciPullSummary {
+        artifact: String,
+        signature_verified: bool,
+    }
+
+    #[derive(serde::Serialize)]
+    struct OciPushSummary {
+        artifact: String,
+        digest: String,
+    }
+
+    #[test]
+    fn snapshot_oci_pull_clean() {
+        let mut server = mockito::Server::new();
+        let server_url = server.url();
+        let registry = registry_from_url(&server_url);
+
+        let src_dir = create_test_module_dir();
+        let layer_data = create_tar_gz(src_dir.path()).unwrap();
+        let layer_digest = sha256_digest(&layer_data);
+
+        let config_blob = serde_json::to_vec(&serde_json::json!({
+            "moduleYaml": "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\n",
+        }))
+        .unwrap();
+        let config_digest = sha256_digest(&config_blob);
+
+        let manifest = serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+            "config": {
+                "mediaType": MEDIA_TYPE_MODULE_CONFIG,
+                "digest": config_digest,
+                "size": config_blob.len(),
+            },
+            "layers": [{
+                "mediaType": MEDIA_TYPE_MODULE_LAYER,
+                "digest": layer_digest,
+                "size": layer_data.len(),
+            }],
+        });
+
+        server
+            .mock("GET", "/v2/test/bridge-pull/manifests/v1")
+            .with_status(200)
+            .with_header("Content-Type", MEDIA_TYPE_OCI_MANIFEST)
+            .with_body(serde_json::to_string(&manifest).unwrap())
+            .create();
+
+        server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"/v2/test/bridge-pull/blobs/sha256:.*".to_string()),
+            )
+            .with_status(200)
+            .with_body(layer_data)
+            .create();
+
+        let output_dir = tempfile::tempdir().unwrap();
+        let artifact_ref = format!("{}/test/bridge-pull:v1", registry);
+
+        let (printer, cap) = PrinterV2::for_test_doc();
+        pull_module(&artifact_ref, output_dir.path(), false, Some(&printer)).unwrap();
+
+        let summary = OciPullSummary {
+            artifact: "<MOCK_URL>/test/bridge-pull:v1".to_string(),
+            signature_verified: false,
+        };
+        let doc = Doc::new()
+            .status(Role::Ok, "module pulled successfully")
+            .with_data(&summary);
+        printer.emit(doc);
+        drop(printer);
+
+        let raw = strip_ansi(&cap.human());
+        let url_normalized = normalize_mock_url(&raw, &server_url, &registry);
+        let captured = strip_spinner_duration(url_normalized);
+
+        assert!(
+            captured.contains("\n\n"),
+            "oci_pull_clean missing blank line at seam:\n{captured}"
+        );
+        assert!(
+            !captured.contains("\n\n\n"),
+            "oci_pull_clean has duplicate blank line:\n{captured}"
+        );
+
+        assert_snapshot("oci_pull_clean.txt", &captured);
+    }
+
+    #[test]
+    fn snapshot_oci_push_clean() {
+        let mut server = mockito::Server::new();
+        let server_url = server.url();
+        let registry = registry_from_url(&server_url);
+
+        let module_dir = create_test_module_dir();
+
+        // Mock blob HEAD (not found) for config + layer
+        server
+            .mock(
+                "HEAD",
+                mockito::Matcher::Regex(r"/v2/test/bridge-push/blobs/sha256:.*".to_string()),
+            )
+            .with_status(404)
+            .expect_at_least(2)
+            .create();
+
+        let upload_location = format!("{}/v2/test/bridge-push/blobs/uploads/upload-id", server_url);
+        server
+            .mock("POST", "/v2/test/bridge-push/blobs/uploads/")
+            .with_status(202)
+            .with_header("Location", &upload_location)
+            .expect_at_least(2)
+            .create();
+
+        server
+            .mock(
+                "PUT",
+                mockito::Matcher::Regex(
+                    r"/v2/test/bridge-push/blobs/uploads/upload-id\?digest=sha256:.*".to_string(),
+                ),
+            )
+            .with_status(201)
+            .expect_at_least(2)
+            .create();
+
+        server
+            .mock("PUT", "/v2/test/bridge-push/manifests/v1")
+            .with_status(201)
+            .create();
+
+        let artifact_ref = format!("{}/test/bridge-push:v1", registry);
+
+        let (printer, cap) = PrinterV2::for_test_doc();
+        let digest = push_module(module_dir.path(), &artifact_ref, None, Some(&printer)).unwrap();
+
+        let summary = OciPushSummary {
+            artifact: "<MOCK_URL>/test/bridge-push:v1".to_string(),
+            digest: "<DIGEST>".to_string(),
+        };
+        let doc = Doc::new()
+            .status(Role::Ok, "module pushed successfully")
+            .with_data(&summary);
+        printer.emit(doc);
+        drop(printer);
+
+        let raw = strip_ansi(&cap.human());
+        let url_normalized = normalize_mock_url(&raw, &server_url, &registry);
+        // Also normalize the actual digest (sha256:<hex>) since it's content-derived
+        let digest_normalized = url_normalized.replace(&digest, "<DIGEST>");
+        let captured = strip_spinner_duration(digest_normalized);
+
+        assert!(
+            captured.contains("\n\n"),
+            "oci_push_clean missing blank line at seam:\n{captured}"
+        );
+        assert!(
+            !captured.contains("\n\n\n"),
+            "oci_push_clean has duplicate blank line:\n{captured}"
+        );
+
+        assert_snapshot("oci_push_clean.txt", &captured);
+    }
+}

@@ -1,0 +1,3 @@
+✓ Pulled module from <MOCK_REGISTRY>/test/bridge-pull:v1
+
+✓ module pulled successfully

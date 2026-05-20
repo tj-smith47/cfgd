@@ -1,0 +1,3 @@
+✓ Pushed module to <MOCK_REGISTRY>/test/bridge-push:v1
+
+✓ module pushed successfully

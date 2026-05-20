@@ -580,3 +580,135 @@ mod brew_shim {
         assert_eq!(v.as_deref(), Some("117.0.1"));
     }
 }
+
+#[cfg(unix)]
+mod bridge {
+    use super::*;
+    use cfgd_core::output_v2::test_capture::{assert_snapshot_at, strip_ansi};
+    use cfgd_core::output_v2::{Doc, Printer as PrinterV2, Role};
+    use cfgd_core::providers::PackageManager;
+    use cfgd_core::test_helpers::ToolShim;
+    use serial_test::serial;
+
+    const SHIM_ENV: &str = "CFGD_BREW_BIN";
+
+    fn snapshot_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/packages/brew/snapshots")
+    }
+
+    fn assert_snapshot(name: &str, actual: &str) {
+        assert_snapshot_at(&snapshot_dir(), name, actual);
+    }
+
+    /// Strip non-deterministic spinner finish durations like ` (0.0s)`.
+    fn strip_spinner_duration(s: String) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut rest = s.as_str();
+        while let Some(idx) = rest.find(" (") {
+            out.push_str(&rest[..idx]);
+            let after = &rest[idx + 2..];
+            let digit_end = after
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(after.len());
+            if digit_end > 0 && after.as_bytes().get(digit_end).copied() == Some(b'.') {
+                let frac_start = digit_end + 1;
+                let frac_rest = &after[frac_start..];
+                let frac_end = frac_rest
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(frac_rest.len());
+                let total = frac_start + frac_end;
+                if frac_end > 0
+                    && after.as_bytes().get(total).copied() == Some(b's')
+                    && after.as_bytes().get(total + 1).copied() == Some(b')')
+                {
+                    rest = &after[total + 2..];
+                    continue;
+                }
+            }
+            out.push_str(" (");
+            rest = after;
+        }
+        out.push_str(rest);
+        out
+    }
+
+    #[derive(serde::Serialize)]
+    struct BrewInstallSummary {
+        packages_installed: usize,
+    }
+
+    #[test]
+    #[serial]
+    fn snapshot_brew_install_clean() {
+        let _shim = ToolShim::install(SHIM_ENV, 0, "", "");
+
+        let (printer, cap) = PrinterV2::for_test_doc();
+        BrewManager
+            .install(&["git".to_string()], &printer)
+            .expect("install ok");
+
+        let summary = BrewInstallSummary {
+            packages_installed: 1,
+        };
+        let doc = Doc::new()
+            .status(Role::Ok, "brew packages installed")
+            .with_data(&summary);
+        printer.emit(doc);
+        drop(printer);
+
+        let raw = strip_ansi(&cap.human());
+        let captured = strip_spinner_duration(raw);
+
+        assert!(
+            captured.contains("\n\n"),
+            "brew_install_clean missing blank line at seam:\n{captured}"
+        );
+        assert!(
+            !captured.contains("\n\n\n"),
+            "brew_install_clean has duplicate blank line:\n{captured}"
+        );
+
+        assert_snapshot("brew_install_clean.txt", &captured);
+    }
+
+    #[test]
+    #[serial]
+    fn snapshot_brew_install_with_warnings() {
+        // Shim emits brew-style caveats so extract_caveats + print_caveats fire.
+        // Caveat body must be a single line — renderer forbids embedded newlines.
+        let caveat_stdout = "==> Installing git\n\
+            ==> Caveats\n\
+            Run xcode-select --install to complete setup.\n\
+            ==> Summary\n\
+            git installed.\n";
+        let _shim = ToolShim::install(SHIM_ENV, 0, caveat_stdout, "");
+
+        let (printer, cap) = PrinterV2::for_test_doc();
+        BrewManager
+            .install(&["git".to_string()], &printer)
+            .expect("install ok with caveats");
+
+        let summary = BrewInstallSummary {
+            packages_installed: 1,
+        };
+        let doc = Doc::new()
+            .status(Role::Warn, "brew packages installed with notes")
+            .with_data(&summary);
+        printer.emit(doc);
+        drop(printer);
+
+        let raw = strip_ansi(&cap.human());
+        let captured = strip_spinner_duration(raw);
+
+        assert!(
+            captured.contains("\n\n"),
+            "brew_install_with_warnings missing blank line at seam:\n{captured}"
+        );
+        assert!(
+            !captured.contains("\n\n\n"),
+            "brew_install_with_warnings has duplicate blank line:\n{captured}"
+        );
+
+        assert_snapshot("brew_install_with_warnings.txt", &captured);
+    }
+}
