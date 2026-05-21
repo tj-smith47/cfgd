@@ -632,10 +632,6 @@ mod tests {
 
     use super::*;
 
-    // ---------------------------------------------------------------------------
-    // Fixture helpers
-    // ---------------------------------------------------------------------------
-
     fn file_create(target: &str) -> Action {
         Action::File(FileAction::Create {
             source: PathBuf::from("/src/dotfiles/.zshrc"),
@@ -857,10 +853,6 @@ mod tests {
         }
     }
 
-    // ---------------------------------------------------------------------------
-    // action_type_str
-    // ---------------------------------------------------------------------------
-
     #[test]
     fn action_type_str_file_variants() {
         assert_eq!(action_type_str(&file_create("/etc/foo")), "create");
@@ -909,10 +901,6 @@ mod tests {
         assert_eq!(action_type_str(&env_write()), "write");
         assert_eq!(action_type_str(&env_inject()), "inject");
     }
-
-    // ---------------------------------------------------------------------------
-    // action_path
-    // ---------------------------------------------------------------------------
 
     #[test]
     fn action_path_file_create() {
@@ -980,10 +968,6 @@ mod tests {
         assert_eq!(path, "env:/home/user/.zshrc");
     }
 
-    // ---------------------------------------------------------------------------
-    // pattern_matches
-    // ---------------------------------------------------------------------------
-
     #[test]
     fn pattern_matches_exact() {
         assert!(pattern_matches("files:/etc/foo", "files:/etc/foo"));
@@ -1009,10 +993,6 @@ mod tests {
     fn pattern_matches_no_match_different_phase() {
         assert!(!pattern_matches("secrets", "packages.brew.ripgrep"));
     }
-
-    // ---------------------------------------------------------------------------
-    // filter_plan
-    // ---------------------------------------------------------------------------
 
     #[test]
     fn filter_plan_noop_when_empty_filters() {
@@ -1156,9 +1136,42 @@ mod tests {
         }
     }
 
-    // ---------------------------------------------------------------------------
-    // strip_scripts_from_plan
-    // ---------------------------------------------------------------------------
+    #[test]
+    fn filter_plan_only_specific_manager_keeps_just_that_manager() {
+        let mut plan = make_plan(vec![(
+            PhaseName::Packages,
+            vec![
+                pkg_install("brew", vec!["ripgrep"]),
+                pkg_install("cargo", vec!["bat"]),
+            ],
+        )]);
+        filter_plan(&mut plan, &[], &["packages.brew".to_string()]);
+
+        let phase = &plan.phases[0];
+        assert_eq!(phase.actions.len(), 1, "only brew install should remain");
+        if let Action::Package(PackageAction::Install { manager, .. }) = &phase.actions[0] {
+            assert_eq!(manager, "brew");
+        } else {
+            panic!("expected brew Install action");
+        }
+    }
+
+    #[test]
+    fn filter_plan_skip_uninstall_individual_packages() {
+        let mut plan = make_plan(vec![(
+            PhaseName::Packages,
+            vec![pkg_uninstall("brew", vec!["old-tool", "keep-me"])],
+        )]);
+        filter_plan(&mut plan, &["packages.brew.old-tool".to_string()], &[]);
+
+        if let Action::Package(PackageAction::Uninstall { packages, .. }) =
+            &plan.phases[0].actions[0]
+        {
+            assert_eq!(packages, &["keep-me".to_string()]);
+        } else {
+            panic!("expected Uninstall action");
+        }
+    }
 
     #[test]
     fn strip_scripts_removes_pre_post_script_phases() {
@@ -1209,10 +1222,6 @@ mod tests {
             "no RunScript actions should remain"
         );
     }
-
-    // ---------------------------------------------------------------------------
-    // build_plan_output
-    // ---------------------------------------------------------------------------
 
     #[test]
     fn build_plan_output_counts_actions_and_sets_context() {
@@ -1267,10 +1276,6 @@ mod tests {
         assert_eq!(output.total_actions, 0);
         assert!(output.phases.is_empty());
     }
-
-    // ---------------------------------------------------------------------------
-    // print_apply_result
-    // ---------------------------------------------------------------------------
 
     #[test]
     fn print_apply_result_success_emits_ok_role() {
@@ -1341,16 +1346,41 @@ mod tests {
             &printer,
             Some(std::time::Duration::from_millis(1500)),
         );
-        let out = buf.lock().unwrap().clone();
+        let out = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
         assert!(
             out.contains("action(s) succeeded"),
-            "expected success in output, got: {out}"
+            "expected success subject in output, got: {out}"
+        );
+        // Renderer formats Duration::from_millis(1500) as " (1.5s)" — see
+        // `crates/cfgd-core/src/output/renderer/status.rs::duration_trailed_in_parens`.
+        assert!(
+            out.contains("(1.5s)"),
+            "expected '(1.5s)' duration suffix, got: {out}"
         );
     }
 
-    // ---------------------------------------------------------------------------
-    // display_plan_table
-    // ---------------------------------------------------------------------------
+    #[test]
+    fn print_apply_result_partial_with_elapsed_attaches_duration_to_failed_line() {
+        let result = apply_result(ApplyStatus::Partial, 1, 4);
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        print_apply_result(
+            &result,
+            &printer,
+            Some(std::time::Duration::from_millis(2500)),
+        );
+        let out = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+        // Partial branch emits the Accent-tagged failure line through the
+        // StatusBuilder path that attaches `.duration(d)`. The success line
+        // does not get the duration.
+        let failed_line = out
+            .lines()
+            .find(|l| l.contains("4 action(s) failed"))
+            .expect(&format!("expected failed line in output, got: {out}"));
+        assert!(
+            failed_line.contains("(2.5s)"),
+            "expected '(2.5s)' on failed line, got: {failed_line}"
+        );
+    }
 
     #[test]
     fn display_plan_table_empty_phase_shows_nothing_to_do() {
@@ -1401,10 +1431,6 @@ mod tests {
         );
     }
 
-    // ---------------------------------------------------------------------------
-    // is_unmanaged_file
-    // ---------------------------------------------------------------------------
-
     #[test]
     fn is_unmanaged_file_missing_path_returns_false() {
         let state = StateStore::open_in_memory().unwrap();
@@ -1435,10 +1461,6 @@ mod tests {
             "state-tracked file should not be considered unmanaged"
         );
     }
-
-    // ---------------------------------------------------------------------------
-    // backup_file
-    // ---------------------------------------------------------------------------
 
     #[test]
     fn backup_file_renames_with_cfgd_backup_suffix() {
@@ -1481,10 +1503,6 @@ mod tests {
             "error should describe backup failure, got: {err_msg}"
         );
     }
-
-    // ---------------------------------------------------------------------------
-    // apply_backup_choice
-    // ---------------------------------------------------------------------------
 
     #[test]
     fn apply_backup_choice_backup_renames_file() {
