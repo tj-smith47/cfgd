@@ -272,4 +272,39 @@ mod tests {
             "Cyrillic and ASCII rows must align by display width.\nout:\n{out}"
         );
     }
+
+    #[test]
+    fn table_does_not_panic_on_tab_or_control_chars_in_cells() {
+        // unicode_width::width treats \t and other C0 control codes as 0
+        // display cells. Lock in the current "tab/control = 0 width" outcome:
+        // the renderer must complete without panic or NaN widths, both rows
+        // must appear in the output, and the second-column value columns must
+        // align by display width across rows (the tab-bearing row's "0-width
+        // tab" + "b" column ends up shorter than "plain", padding makes up
+        // the difference).
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(Theme::default(), Verbosity::Normal);
+        let t = Table::new(["Key", "Value"])
+            .row(["a\tb\x0Bc", "ok"])
+            .row(["plain", "yep"]);
+        r.render_table(&sink, 0, &t);
+        let out = crate::output::strip_ansi(&buf.lock().unwrap().clone());
+        assert!(out.contains("ok"), "missing ok row: {out:?}");
+        assert!(out.contains("yep"), "missing yep row: {out:?}");
+        let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+        let ok_line = lines
+            .iter()
+            .find(|l| l.contains("ok"))
+            .expect("ok row missing");
+        let yep_line = lines
+            .iter()
+            .find(|l| l.contains("yep"))
+            .expect("yep row missing");
+        assert_eq!(
+            prefix_display_width(ok_line, "ok"),
+            prefix_display_width(yep_line, "yep"),
+            "tab/control-bearing row and plain row should align to the same display column"
+        );
+    }
 }
