@@ -146,6 +146,16 @@ jobs:
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
           CLOUDSMITH_TOKEN: ${{ secrets.CLOUDSMITH_TOKEN }}
 
+      # Bot reads .krew.yaml that anodizer just wrote in the previous step
+      # and opens the krew-index PR. Must run in the same job, after
+      # anodizer publishes the GitHub Release — addURIAndSha fetches each
+      # asset's bytes to compute SHAs.
+      - name: Update krew-index via krew-release-bot
+        if: needs.resolve.outputs.workspace == 'cfgd'
+        uses: rajatjindal/krew-release-bot@v0.0.46
+        with:
+          krew_template_file: .krew.yaml
+
   # --- Helm chart publish ---
   helm-chart:
     name: Publish Helm chart

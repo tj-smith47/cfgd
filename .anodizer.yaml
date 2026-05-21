@@ -321,7 +321,6 @@ workspaces:
               name: "TJ Smith"
               email: "tj@jarvispro.io"
           krew:
-            skip_upload: "true"
             repository:
               owner: tj-smith47
               name: krew-index
