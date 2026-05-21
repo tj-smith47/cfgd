@@ -963,14 +963,11 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, "dotfile.txt");
-        // File now lives in repo dir.
         assert!(dst_dir.path().join("dotfile.txt").exists());
-        // Source location is now a symlink.
         assert!(
             src_file.is_symlink(),
             "source should have been replaced with a symlink"
         );
-        // Symlink content is readable and correct.
         let content = std::fs::read_to_string(&src_file).unwrap();
         assert_eq!(content, "hello");
     }
@@ -1040,9 +1037,7 @@ mod tests {
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, "mydir");
-        // Directory should now live in repo dir.
         assert!(dst_dir.path().join("mydir").is_dir());
-        // Source should be replaced with a symlink.
         assert!(
             src_subdir.is_symlink(),
             "source dir should be a symlink after copy"
@@ -1151,37 +1146,36 @@ mod tests {
     }
 
     /// Build a minimal local git repo that acts as a cfgd source.
-    /// Returns the path to the repo directory (contains cfgd-source.yaml on `master`).
+    /// The source's `<profile_name>.yaml` profile declares a module named
+    /// `source-module` so the composition can be asserted on a non-empty
+    /// contribution from the source layer.
     fn create_local_source_repo(root: &std::path::Path, profile_name: &str) -> PathBuf {
         let repo_dir = root.join("source-repo");
         std::fs::create_dir_all(&repo_dir).unwrap();
 
-        // Init git repo.
-        std::process::Command::new("git")
+        cfgd_core::git_cmd_local()
             .args(["init", "-b", "master"])
             .current_dir(&repo_dir)
             .output()
             .unwrap();
-        std::process::Command::new("git")
+        cfgd_core::git_cmd_local()
             .args(["config", "user.email", "test@example.com"])
             .current_dir(&repo_dir)
             .output()
             .unwrap();
-        std::process::Command::new("git")
+        cfgd_core::git_cmd_local()
             .args(["config", "user.name", "Test"])
             .current_dir(&repo_dir)
             .output()
             .unwrap();
 
-        // Write cfgd-source.yaml.
         let manifest = format!(
             "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: test-src\nspec:\n  provides:\n    profiles:\n      - {profile_name}\n"
         );
         std::fs::write(repo_dir.join("cfgd-source.yaml"), &manifest).unwrap();
 
-        // Write a minimal profile YAML.
         let profile_yaml = format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: {profile_name}\nspec: {{}}\n"
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: {profile_name}\nspec:\n  modules:\n    - source-module\n"
         );
         std::fs::create_dir_all(repo_dir.join("profiles")).unwrap();
         std::fs::write(
@@ -1192,13 +1186,12 @@ mod tests {
         )
         .unwrap();
 
-        // Commit everything.
-        std::process::Command::new("git")
+        cfgd_core::git_cmd_local()
             .args(["add", "."])
             .current_dir(&repo_dir)
             .output()
             .unwrap();
-        std::process::Command::new("git")
+        cfgd_core::git_cmd_local()
             .args(["commit", "-m", "init"])
             .current_dir(&repo_dir)
             .output()
@@ -1209,13 +1202,15 @@ mod tests {
 
     #[test]
     #[serial]
-    fn compose_with_sources_with_local_source_returns_composition_result() {
+    fn compose_with_sources_with_local_source_merges_source_profile() {
         let tmp = tempdir().unwrap();
         let source_repo = create_local_source_repo(tmp.path(), "team");
 
-        // cfgd.yaml with one local source.
+        // cfgd.yaml with one local source that selects the "team" profile.
+        // The source's team.yaml declares the `source-module` module, which
+        // the composition must merge into the resolved profile.
         let config_yaml = format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: test-src\n      origin:\n        type: Git\n        url: {}\n        branch: master\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: test-src\n      origin:\n        type: Git\n        url: {}\n        branch: master\n      subscription:\n        profile: team\n",
             source_repo.display()
         );
         let config_path = tmp.path().join("cfgd.yaml");
@@ -1224,11 +1219,7 @@ mod tests {
         std::fs::create_dir_all(&profiles_dir).unwrap();
         std::fs::write(profiles_dir.join("default.yaml"), PROFILE_YAML).unwrap();
 
-        // Allow the local file path as a source origin.
         let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
-        // Point the source cache dir into our temp dir.
-        let cache_dir = tmp.path().join("source-cache");
-        std::fs::create_dir_all(&cache_dir).unwrap();
         let mut cli = make_cli(config_path.clone());
         cli.state_dir = Some(tmp.path().join("state"));
 
@@ -1238,8 +1229,31 @@ mod tests {
 
         let result = compose_with_sources(&cli, &cfg, &local, &printer).unwrap();
 
-        // The source was loaded (no error). Since the subscription has no
-        // profile selected, the source contributes no layers and no conflicts.
-        assert!(result.conflicts.is_empty());
+        // Source-commit field must be populated — proves the source was
+        // cloned, parsed, and tracked by the composition.
+        assert!(
+            result.source_commits.contains_key("test-src"),
+            "expected source_commits to record 'test-src', got: {:?}",
+            result.source_commits
+        );
+        let commit = &result.source_commits["test-src"];
+        assert_eq!(
+            commit.len(),
+            40,
+            "expected 40-char commit SHA, got '{commit}'"
+        );
+
+        // Behavior assertion: the source's team.yaml declares `source-module`,
+        // so the merged profile must contain it alongside the local
+        // `my-module`.
+        assert!(
+            result
+                .resolved
+                .merged
+                .modules
+                .contains(&"source-module".to_string()),
+            "merged modules missing source contribution: {:?}",
+            result.resolved.merged.modules
+        );
     }
 }
