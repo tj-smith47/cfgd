@@ -245,9 +245,7 @@ mod tests {
         r.write_line(&sink, 1, "- foo.txt");
         r.render_section_close(&sink);
         let s = buf.lock().unwrap();
-        // Header may carry bold SGR escapes (kept under NO_COLOR per attrs
-        // policy in theme::StyledText), so strip ANSI before structural
-        // assertions about line shape.
+        // Header carries bold SGR; strip ANSI before shape assertions.
         let plain = crate::output::tests::strip_ansi(&s);
         assert!(plain.starts_with("Files\n"), "got: {plain:?}");
         assert!(plain.contains("\n  - foo.txt\n"), "got: {plain:?}");

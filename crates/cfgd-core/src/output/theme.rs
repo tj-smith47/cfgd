@@ -39,31 +39,43 @@ struct AttrSet {
 }
 
 impl AttrSet {
-    /// Push attribute SGR parameters (without leading `\x1b[`, without
-    /// trailing `m`) joined by `;`. Returns the joined string or an empty
-    /// string if no attrs are set. Always followed by a foreground SGR by
-    /// callers.
-    fn sgr_params(&self) -> String {
-        let mut out = String::new();
-        let mut push = |s: &str| {
-            if !out.is_empty() {
-                out.push(';');
+    /// Whether any SGR attribute is set. Predicate guard for the
+    /// `Display`-into-formatter path so callers can branch without
+    /// pre-rendering an empty parameter string.
+    fn has_attrs(&self) -> bool {
+        self.bold || self.dim || self.italic || self.underline
+    }
+}
+
+/// Writes SGR attribute parameters (without leading `\x1b[`, without
+/// trailing `m`) joined by `;` directly into the formatter — no
+/// intermediate `String` allocation on the styled-write hot path.
+/// Always preceded by `\x1b[` and (optionally) followed by `;38;...` +
+/// `m` by the caller.
+impl Display for AttrSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut first = true;
+        let mut push = |f: &mut fmt::Formatter<'_>, s: &str| -> fmt::Result {
+            if !first {
+                f.write_str(";")?;
             }
-            out.push_str(s);
+            f.write_str(s)?;
+            first = false;
+            Ok(())
         };
         if self.bold {
-            push("1");
+            push(f, "1")?;
         }
         if self.dim {
-            push("2");
+            push(f, "2")?;
         }
         if self.italic {
-            push("3");
+            push(f, "3")?;
         }
         if self.underline {
-            push("4");
+            push(f, "4")?;
         }
-        out
+        Ok(())
     }
 }
 
@@ -184,28 +196,27 @@ pub struct StyledText<'a, D> {
 
 impl<D: Display> Display for StyledText<'_, D> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let colors_on = console::colors_enabled();
-        let params = self.style.attrs.sgr_params();
+        let attrs = &self.style.attrs;
 
-        if !colors_on {
+        if !console::colors_enabled() {
             // NO_COLOR / TERM=dumb / not a tty: emit attrs-only SGR (bold,
             // dim, italic, underlined are independent of color per
             // no-color.org) so the `default` italic accent and the
             // `minimal` italic accent / underlined secondary keep their
             // non-color differentiator. No allocation when no attrs set.
-            if params.is_empty() {
+            if !attrs.has_attrs() {
                 return write!(f, "{}", self.text);
             }
-            return write!(f, "\x1b[{params}m{}\x1b[0m", self.text);
+            return write!(f, "\x1b[{attrs}m{}\x1b[0m", self.text);
         }
 
         if let Some((r, g, b)) = self.style.rgb
             && supports_truecolor()
         {
-            if params.is_empty() {
+            if !attrs.has_attrs() {
                 return write!(f, "\x1b[38;2;{r};{g};{b}m{}\x1b[0m", self.text);
             }
-            return write!(f, "\x1b[{params};38;2;{r};{g};{b}m{}\x1b[0m", self.text);
+            return write!(f, "\x1b[{attrs};38;2;{r};{g};{b}m{}\x1b[0m", self.text);
         }
 
         write!(f, "{}", self.style.inner.apply_to(&self.text))
@@ -500,6 +511,29 @@ mod tests {
     use crate::test_helpers::EnvVarGuard;
     use serial_test::serial;
 
+    /// Panic-safe RAII guard for the process-global
+    /// `console::set_colors_enabled` flag. Captures the prior state on
+    /// construction and restores it on drop so an `assert_eq!` panic
+    /// inside a `#[serial]` test does not leak a `colors_enabled=false`
+    /// state into the next test in the serial chain.
+    struct ColorsEnabledGuard {
+        prior: bool,
+    }
+
+    impl ColorsEnabledGuard {
+        fn set(enabled: bool) -> Self {
+            let prior = console::colors_enabled();
+            console::set_colors_enabled(enabled);
+            Self { prior }
+        }
+    }
+
+    impl Drop for ColorsEnabledGuard {
+        fn drop(&mut self) {
+            console::set_colors_enabled(self.prior);
+        }
+    }
+
     #[test]
     fn default_has_seven_icons() {
         let t = Theme::default();
@@ -582,7 +616,7 @@ mod tests {
     fn hex_style_emits_truecolor_escape_when_supported() {
         let _no_color = EnvVarGuard::unset("NO_COLOR");
         let _ct = EnvVarGuard::set("COLORTERM", "truecolor");
-        console::set_colors_enabled(true);
+        let _colors = ColorsEnabledGuard::set(true);
         let style = ThemedStyle::from_hex("#bd93f9");
         let out = style.apply_to("hi").to_string();
         assert_eq!(out, "\x1b[38;2;189;147;249mhi\x1b[0m", "got: {out:?}");
@@ -593,7 +627,7 @@ mod tests {
     fn hex_style_with_bold_emits_truecolor_with_attr() {
         let _no_color = EnvVarGuard::unset("NO_COLOR");
         let _ct = EnvVarGuard::set("COLORTERM", "truecolor");
-        console::set_colors_enabled(true);
+        let _colors = ColorsEnabledGuard::set(true);
         let style = ThemedStyle::from_hex("#bd93f9").bold();
         let out = style.apply_to("hi").to_string();
         assert_eq!(out, "\x1b[1;38;2;189;147;249mhi\x1b[0m", "got: {out:?}");
@@ -604,7 +638,7 @@ mod tests {
     fn hex_style_falls_back_to_256_when_no_truecolor() {
         let _no_color = EnvVarGuard::unset("NO_COLOR");
         let _ct = EnvVarGuard::unset("COLORTERM");
-        console::set_colors_enabled(true);
+        let _colors = ColorsEnabledGuard::set(true);
         let style = ThemedStyle::from_hex("#bd93f9");
         let out = style.apply_to("hi").to_string();
         // Output must contain the 256-color SGR for the quantized slot.
@@ -626,68 +660,61 @@ mod tests {
     fn no_color_strips_color_keeps_attrs() {
         let _ct = EnvVarGuard::set("COLORTERM", "truecolor");
         let _no_color = EnvVarGuard::set("NO_COLOR", "1");
-        // NO_COLOR is honored by `console::set_colors_enabled(false)` set by
-        // `Printer::with_format`. Simulate that here.
-        console::set_colors_enabled(false);
+        // Simulate the colors-disabled state for this test.
+        let _colors = ColorsEnabledGuard::set(false);
         // Attrs are independent of color per no-color.org: bold survives.
         let style = ThemedStyle::from_hex("#bd93f9").bold();
         let out = style.apply_to("hi").to_string();
         assert_eq!(out, "\x1b[1mhi\x1b[0m", "got: {out:?}");
-        // Restore for subsequent serial tests.
-        console::set_colors_enabled(true);
     }
 
     #[test]
     #[serial]
     fn no_color_keeps_italic_for_default_accent() {
         let _no_color = EnvVarGuard::set("NO_COLOR", "1");
-        console::set_colors_enabled(false);
+        let _colors = ColorsEnabledGuard::set(false);
         // Matches the `default` preset's accent slot: hex("#d78700").italic()
         let style = ThemedStyle::from_hex("#d78700").italic();
         let out = style.apply_to("x").to_string();
         assert_eq!(out, "\x1b[3mx\x1b[0m", "got: {out:?}");
-        console::set_colors_enabled(true);
     }
 
     #[test]
     #[serial]
     fn no_color_keeps_bold_on_plain_style() {
         let _no_color = EnvVarGuard::set("NO_COLOR", "1");
-        console::set_colors_enabled(false);
+        let _colors = ColorsEnabledGuard::set(false);
         let out = ThemedStyle::plain().bold().apply_to("x").to_string();
         assert_eq!(out, "\x1b[1mx\x1b[0m", "got: {out:?}");
-        console::set_colors_enabled(true);
     }
 
     #[test]
     #[serial]
     fn no_color_keeps_underline_for_minimal_secondary() {
         let _no_color = EnvVarGuard::set("NO_COLOR", "1");
-        console::set_colors_enabled(false);
+        let _colors = ColorsEnabledGuard::set(false);
         // Matches the `minimal` preset's secondary slot.
         let out = ThemedStyle::plain().underlined().apply_to("x").to_string();
         assert_eq!(out, "\x1b[4mx\x1b[0m", "got: {out:?}");
-        console::set_colors_enabled(true);
     }
 
     #[test]
     #[serial]
     fn no_color_emits_no_escapes_when_no_attrs() {
         let _no_color = EnvVarGuard::set("NO_COLOR", "1");
-        console::set_colors_enabled(false);
+        let _colors = ColorsEnabledGuard::set(false);
         let out = ThemedStyle::plain().apply_to("x").to_string();
         assert_eq!(out, "x", "got: {out:?}");
         // Hex without attrs also emits no escapes when colors are off.
         let out2 = ThemedStyle::from_hex("#bd93f9").apply_to("y").to_string();
         assert_eq!(out2, "y", "got: {out2:?}");
-        console::set_colors_enabled(true);
     }
 
     #[test]
     #[serial]
     fn no_color_joins_multiple_attrs() {
         let _no_color = EnvVarGuard::set("NO_COLOR", "1");
-        console::set_colors_enabled(false);
+        let _colors = ColorsEnabledGuard::set(false);
         // bold + italic share the attrs path.
         let out = ThemedStyle::plain()
             .bold()
@@ -695,6 +722,5 @@ mod tests {
             .apply_to("x")
             .to_string();
         assert_eq!(out, "\x1b[1;3mx\x1b[0m", "got: {out:?}");
-        console::set_colors_enabled(true);
     }
 }
