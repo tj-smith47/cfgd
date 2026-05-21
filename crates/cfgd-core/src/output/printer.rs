@@ -364,40 +364,11 @@ impl Drop for Printer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::output::test_support::ColorsEnabledGuard;
     #[cfg(feature = "test-helpers")]
     use crate::output::tests::strip_ansi;
     use crate::test_helpers::EnvVarGuard;
     use serial_test::serial;
-
-    /// RAII guard for the process-global `console::set_colors_enabled` /
-    /// `set_colors_enabled_stderr` flags. Captures both prior states on
-    /// construction and restores them on drop so a panicking assertion in a
-    /// `#[serial]` test does not leak a `colors_enabled=false` state into
-    /// the next test in the serial chain.
-    struct ColorsEnabledGuard {
-        prior_stdout: bool,
-        prior_stderr: bool,
-    }
-
-    impl ColorsEnabledGuard {
-        fn set(enabled: bool) -> Self {
-            let prior_stdout = console::colors_enabled();
-            let prior_stderr = console::colors_enabled_stderr();
-            console::set_colors_enabled(enabled);
-            console::set_colors_enabled_stderr(enabled);
-            Self {
-                prior_stdout,
-                prior_stderr,
-            }
-        }
-    }
-
-    impl Drop for ColorsEnabledGuard {
-        fn drop(&mut self) {
-            console::set_colors_enabled(self.prior_stdout);
-            console::set_colors_enabled_stderr(self.prior_stderr);
-        }
-    }
 
     #[test]
     #[serial]

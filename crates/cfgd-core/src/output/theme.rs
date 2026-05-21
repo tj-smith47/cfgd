@@ -508,31 +508,9 @@ fn apply_color(style: &mut ThemedStyle, hex: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::output::test_support::ColorsEnabledGuard;
     use crate::test_helpers::EnvVarGuard;
     use serial_test::serial;
-
-    /// Panic-safe RAII guard for the process-global
-    /// `console::set_colors_enabled` flag. Captures the prior state on
-    /// construction and restores it on drop so an `assert_eq!` panic
-    /// inside a `#[serial]` test does not leak a `colors_enabled=false`
-    /// state into the next test in the serial chain.
-    struct ColorsEnabledGuard {
-        prior: bool,
-    }
-
-    impl ColorsEnabledGuard {
-        fn set(enabled: bool) -> Self {
-            let prior = console::colors_enabled();
-            console::set_colors_enabled(enabled);
-            Self { prior }
-        }
-    }
-
-    impl Drop for ColorsEnabledGuard {
-        fn drop(&mut self) {
-            console::set_colors_enabled(self.prior);
-        }
-    }
 
     #[test]
     fn default_has_seven_icons() {

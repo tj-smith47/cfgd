@@ -95,6 +95,9 @@ pub mod structured;
 pub mod test_capture;
 
 #[cfg(test)]
+pub(crate) mod test_support;
+
+#[cfg(test)]
 mod tests;
 
 #[cfg(test)]
