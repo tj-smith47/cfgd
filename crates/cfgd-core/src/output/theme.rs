@@ -158,7 +158,13 @@ impl ThemedStyle {
     /// Wrap `text` for `Display` rendering. Resolved at format-time:
     ///
     /// - `console::colors_enabled()` is false (NO_COLOR / TERM=dumb / not a
-    ///   tty) → emit `text` with no escapes.
+    ///   tty) AND no attrs → emit `text` with no escapes.
+    /// - `console::colors_enabled()` is false AND attrs are set → emit
+    ///   `\x1b[<attrs>m{text}\x1b[0m`. NO_COLOR (per no-color.org) governs
+    ///   color only — bold/dim/italic/underline are independent SGR signals
+    ///   load-bearing for the `default` (italic accent) and `minimal`
+    ///   (italic accent, underlined secondary) presets that intentionally
+    ///   carry the accent/secondary distinction in non-color attrs.
     /// - `supports_truecolor()` is true AND an RGB triple is present → emit
     ///   `\x1b[<attrs>;38;2;R;G;Bm{text}\x1b[0m`.
     /// - Otherwise → delegate to `console::Style::apply_to`, which yields
@@ -178,22 +184,30 @@ pub struct StyledText<'a, D> {
 
 impl<D: Display> Display for StyledText<'_, D> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // When colors are disabled (NO_COLOR, TERM=dumb, not a tty),
-        // emit text plain. `console::colors_enabled()` reflects both the
-        // env-var probe and `set_colors_enabled(false)` overrides set in
-        // `Printer::with_format` and `disable_colors`.
-        if !console::colors_enabled() {
-            return write!(f, "{}", self.text);
+        let colors_on = console::colors_enabled();
+        let params = self.style.attrs.sgr_params();
+
+        if !colors_on {
+            // NO_COLOR / TERM=dumb / not a tty: emit attrs-only SGR (bold,
+            // dim, italic, underlined are independent of color per
+            // no-color.org) so the `default` italic accent and the
+            // `minimal` italic accent / underlined secondary keep their
+            // non-color differentiator. No allocation when no attrs set.
+            if params.is_empty() {
+                return write!(f, "{}", self.text);
+            }
+            return write!(f, "\x1b[{params}m{}\x1b[0m", self.text);
         }
+
         if let Some((r, g, b)) = self.style.rgb
             && supports_truecolor()
         {
-            let params = self.style.attrs.sgr_params();
             if params.is_empty() {
                 return write!(f, "\x1b[38;2;{r};{g};{b}m{}\x1b[0m", self.text);
             }
             return write!(f, "\x1b[{params};38;2;{r};{g};{b}m{}\x1b[0m", self.text);
         }
+
         write!(f, "{}", self.style.inner.apply_to(&self.text))
     }
 }
@@ -609,16 +623,78 @@ mod tests {
 
     #[test]
     #[serial]
-    fn no_color_suppresses_all_escapes() {
+    fn no_color_strips_color_keeps_attrs() {
         let _ct = EnvVarGuard::set("COLORTERM", "truecolor");
         let _no_color = EnvVarGuard::set("NO_COLOR", "1");
         // NO_COLOR is honored by `console::set_colors_enabled(false)` set by
         // `Printer::with_format`. Simulate that here.
         console::set_colors_enabled(false);
+        // Attrs are independent of color per no-color.org: bold survives.
         let style = ThemedStyle::from_hex("#bd93f9").bold();
         let out = style.apply_to("hi").to_string();
-        assert_eq!(out, "hi");
+        assert_eq!(out, "\x1b[1mhi\x1b[0m", "got: {out:?}");
         // Restore for subsequent serial tests.
+        console::set_colors_enabled(true);
+    }
+
+    #[test]
+    #[serial]
+    fn no_color_keeps_italic_for_default_accent() {
+        let _no_color = EnvVarGuard::set("NO_COLOR", "1");
+        console::set_colors_enabled(false);
+        // Matches the `default` preset's accent slot: hex("#d78700").italic()
+        let style = ThemedStyle::from_hex("#d78700").italic();
+        let out = style.apply_to("x").to_string();
+        assert_eq!(out, "\x1b[3mx\x1b[0m", "got: {out:?}");
+        console::set_colors_enabled(true);
+    }
+
+    #[test]
+    #[serial]
+    fn no_color_keeps_bold_on_plain_style() {
+        let _no_color = EnvVarGuard::set("NO_COLOR", "1");
+        console::set_colors_enabled(false);
+        let out = ThemedStyle::plain().bold().apply_to("x").to_string();
+        assert_eq!(out, "\x1b[1mx\x1b[0m", "got: {out:?}");
+        console::set_colors_enabled(true);
+    }
+
+    #[test]
+    #[serial]
+    fn no_color_keeps_underline_for_minimal_secondary() {
+        let _no_color = EnvVarGuard::set("NO_COLOR", "1");
+        console::set_colors_enabled(false);
+        // Matches the `minimal` preset's secondary slot.
+        let out = ThemedStyle::plain().underlined().apply_to("x").to_string();
+        assert_eq!(out, "\x1b[4mx\x1b[0m", "got: {out:?}");
+        console::set_colors_enabled(true);
+    }
+
+    #[test]
+    #[serial]
+    fn no_color_emits_no_escapes_when_no_attrs() {
+        let _no_color = EnvVarGuard::set("NO_COLOR", "1");
+        console::set_colors_enabled(false);
+        let out = ThemedStyle::plain().apply_to("x").to_string();
+        assert_eq!(out, "x", "got: {out:?}");
+        // Hex without attrs also emits no escapes when colors are off.
+        let out2 = ThemedStyle::from_hex("#bd93f9").apply_to("y").to_string();
+        assert_eq!(out2, "y", "got: {out2:?}");
+        console::set_colors_enabled(true);
+    }
+
+    #[test]
+    #[serial]
+    fn no_color_joins_multiple_attrs() {
+        let _no_color = EnvVarGuard::set("NO_COLOR", "1");
+        console::set_colors_enabled(false);
+        // bold + italic share the attrs path.
+        let out = ThemedStyle::plain()
+            .bold()
+            .italic()
+            .apply_to("x")
+            .to_string();
+        assert_eq!(out, "\x1b[1;3mx\x1b[0m", "got: {out:?}");
         console::set_colors_enabled(true);
     }
 }
