@@ -163,3 +163,377 @@ fn build_checkin_client(
 pub fn build_checkin_doc(output: &CheckinOutput) -> Doc {
     Doc::new().with_data(output)
 }
+
+#[cfg(test)]
+mod tests {
+    use cfgd_core::output::{OutputFormat, Printer, Verbosity};
+    use cfgd_core::server_client::DeviceCredential;
+    use cfgd_core::test_helpers::EnvVarGuard;
+
+    use super::*;
+
+    // ---------------------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------------------
+
+    const MINIMAL_CONFIG: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n";
+
+    const MINIMAL_PROFILE: &str = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec: {}
+"#;
+
+    fn make_cred(server_url: &str, device_id: &str, api_key: &str) -> DeviceCredential {
+        DeviceCredential {
+            server_url: server_url.to_string(),
+            device_id: device_id.to_string(),
+            api_key: api_key.to_string(),
+            username: "test-user".to_string(),
+            team: None,
+            enrolled_at: "2026-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // build_checkin_doc
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn build_checkin_doc_carries_checkin_output_fields() {
+        let output = CheckinOutput {
+            server_status: "ok".to_string(),
+            config_changed: true,
+            drift_count: 3,
+            drift_status: "drift_reported".to_string(),
+            server_pushed_config: false,
+        };
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_checkin_doc(&output));
+        drop(printer);
+
+        let json = cap.json().expect("doc must carry structured data");
+        assert_eq!(
+            json["serverStatus"].as_str(),
+            Some("ok"),
+            "serverStatus mismatch: {json}"
+        );
+        assert_eq!(
+            json["configChanged"].as_bool(),
+            Some(true),
+            "configChanged mismatch: {json}"
+        );
+        assert_eq!(
+            json["driftCount"].as_u64(),
+            Some(3),
+            "driftCount mismatch: {json}"
+        );
+        assert_eq!(
+            json["driftStatus"].as_str(),
+            Some("drift_reported"),
+            "driftStatus mismatch: {json}"
+        );
+        assert_eq!(
+            json["serverPushedConfig"].as_bool(),
+            Some(false),
+            "serverPushedConfig mismatch: {json}"
+        );
+    }
+
+    #[test]
+    fn build_checkin_doc_no_drift_variant() {
+        let output = CheckinOutput {
+            server_status: "ok".to_string(),
+            config_changed: false,
+            drift_count: 0,
+            drift_status: "no_drift".to_string(),
+            server_pushed_config: false,
+        };
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_checkin_doc(&output));
+        drop(printer);
+
+        let json = cap.json().expect("doc must carry structured data");
+        assert_eq!(json["driftCount"].as_u64(), Some(0));
+        assert_eq!(json["driftStatus"].as_str(), Some("no_drift"));
+        assert_eq!(json["configChanged"].as_bool(), Some(false));
+    }
+
+    // ---------------------------------------------------------------------------
+    // build_checkin_client
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn build_checkin_client_uses_stored_cred_when_api_key_absent_and_urls_match() {
+        // Verify the stored-credential path: no api_key, URLs match → the
+        // returned client sends the stored credential's api_key in its requests.
+        let mut server = mockito::Server::new();
+        let cred = make_cred(&server.url(), "stored-device", "stored-key");
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .match_header("authorization", "Bearer stored-key")
+            .with_status(200)
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create();
+
+        let client = build_checkin_client(&server.url(), None, None, Some(&cred));
+        let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
+        let result = client.checkin("hash", None, &printer);
+
+        assert!(result.is_ok(), "checkin should succeed: {:?}", result);
+        mock.assert();
+    }
+
+    #[test]
+    fn build_checkin_client_uses_provided_api_key_over_stored_cred() {
+        // Explicit api_key overrides stored credential — even when URLs match.
+        let mut server = mockito::Server::new();
+        let cred = make_cred(&server.url(), "stored-device", "stored-key");
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .match_header("authorization", "Bearer explicit-key")
+            .with_status(200)
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create();
+
+        let client = build_checkin_client(
+            &server.url(),
+            Some("explicit-key"),
+            Some("dev-x"),
+            Some(&cred),
+        );
+        let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
+        let result = client.checkin("hash", None, &printer);
+
+        assert!(result.is_ok(), "checkin should succeed: {:?}", result);
+        mock.assert();
+    }
+
+    #[test]
+    fn build_checkin_client_ignores_stored_cred_when_urls_mismatch() {
+        // Stored cred URL differs from server_url → anonymous client, no stored key.
+        let mut server = mockito::Server::new();
+        let cred = make_cred("http://other-server:9999", "stored-device", "stored-key");
+        // The mock must NOT see the stored key — match absence of Authorization.
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create();
+
+        let client =
+            build_checkin_client(&server.url(), None, Some("explicit-device"), Some(&cred));
+        let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
+        let result = client.checkin("hash", None, &printer);
+
+        // The mock succeeds without requiring Bearer stored-key, confirming the
+        // anonymous (non-stored-cred) path was taken.
+        assert!(result.is_ok(), "checkin should succeed: {:?}", result);
+        mock.assert();
+    }
+
+    #[test]
+    fn build_checkin_client_trailing_slash_normalization() {
+        // Stored URL with trailing slash should match server_url without one.
+        let mut server = mockito::Server::new();
+        let server_url = server.url();
+        let cred_url = format!("{}/", server_url);
+        let cred = make_cred(&cred_url, "dev-1", "trailing-slash-key");
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .match_header("authorization", "Bearer trailing-slash-key")
+            .with_status(200)
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create();
+
+        let client = build_checkin_client(&server_url, None, None, Some(&cred));
+        let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
+        let result = client.checkin("hash", None, &printer);
+
+        assert!(
+            result.is_ok(),
+            "trailing-slash normalization failed: {:?}",
+            result
+        );
+        mock.assert();
+    }
+
+    // ---------------------------------------------------------------------------
+    // cmd_checkin — full command tests via mockito
+    // ---------------------------------------------------------------------------
+
+    fn make_test_config_dir() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(dir.path().join("cfgd.yaml"), MINIMAL_CONFIG).unwrap();
+        std::fs::write(profiles_dir.join("default.yaml"), MINIMAL_PROFILE).unwrap();
+        dir
+    }
+
+    fn test_cli_for(config_dir: &std::path::Path, state_dir: &std::path::Path) -> Cli {
+        Cli {
+            config: config_dir.join("cfgd.yaml"),
+            profile: None,
+            verbose: 0,
+            quiet: true,
+            no_color: true,
+            output: OutputFormatArg(OutputFormat::Table),
+            jsonpath: None,
+            state_dir: Some(state_dir.to_path_buf()),
+            command: None,
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cmd_checkin_happy_path_no_drift() {
+        let config_dir = make_test_config_dir();
+        let state_dir = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(config_dir.path());
+        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_body(r#"{"status":"ok","configChanged":false}"#)
+            .create();
+
+        let cli = test_cli_for(config_dir.path(), state_dir.path());
+        let (printer, cap) = Printer::for_test_doc();
+        let result = cmd_checkin(
+            &cli,
+            &printer,
+            &server.url(),
+            Some("test-key"),
+            Some("dev-1"),
+        );
+        drop(printer);
+
+        assert!(result.is_ok(), "cmd_checkin should succeed: {:?}", result);
+        mock.assert();
+
+        let human = cap.human();
+        assert!(
+            human.contains("Server status"),
+            "should print 'Server status', got: {human}"
+        );
+
+        let json = cap.json().expect("should emit structured Doc");
+        assert_eq!(
+            json["serverStatus"].as_str(),
+            Some("ok"),
+            "serverStatus should be 'ok': {json}"
+        );
+        assert_eq!(
+            json["driftStatus"].as_str(),
+            Some("no_drift"),
+            "no configurators → no_drift: {json}"
+        );
+        assert_eq!(
+            json["serverPushedConfig"].as_bool(),
+            Some(false),
+            "no desired_config in response: {json}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cmd_checkin_server_pushes_desired_config() {
+        let config_dir = make_test_config_dir();
+        let state_dir = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(config_dir.path());
+        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(200)
+            .with_body(
+                r#"{"status":"ok","configChanged":true,"desiredConfig":{"packages":["git","curl"]}}"#,
+            )
+            .create();
+
+        let cli = test_cli_for(config_dir.path(), state_dir.path());
+        let (printer, cap) = Printer::for_test_doc();
+        let result = cmd_checkin(
+            &cli,
+            &printer,
+            &server.url(),
+            Some("test-key"),
+            Some("dev-1"),
+        );
+        drop(printer);
+
+        assert!(result.is_ok(), "cmd_checkin should succeed: {:?}", result);
+        mock.assert();
+
+        // Pending config file must be written under the state dir.
+        let pending = state_dir.path().join("pending-server-config.json");
+        assert!(
+            pending.exists(),
+            "pending-server-config.json must be saved to state dir"
+        );
+        let saved_json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&pending).unwrap()).unwrap();
+        assert_eq!(
+            saved_json["packages"][0].as_str(),
+            Some("git"),
+            "saved config should contain pushed packages"
+        );
+
+        let json = cap.json().expect("should emit structured Doc");
+        assert_eq!(
+            json["serverPushedConfig"].as_bool(),
+            Some(true),
+            "serverPushedConfig should be true: {json}"
+        );
+        assert_eq!(
+            json["configChanged"].as_bool(),
+            Some(true),
+            "configChanged should reflect server response: {json}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cmd_checkin_server_500_returns_err() {
+        let config_dir = make_test_config_dir();
+        let state_dir = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(config_dir.path());
+        let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.path().to_str().unwrap());
+
+        let mut server = mockito::Server::new();
+        // The retry logic retries 500s, so allow at least 2 hits.
+        let mock = server
+            .mock("POST", "/api/v1/checkin")
+            .with_status(500)
+            .with_body("internal server error")
+            .expect_at_least(2)
+            .create();
+
+        let cli = test_cli_for(config_dir.path(), state_dir.path());
+        let (printer, _cap) = Printer::for_test_doc();
+        let result = cmd_checkin(
+            &cli,
+            &printer,
+            &server.url(),
+            Some("test-key"),
+            Some("dev-1"),
+        );
+        drop(printer);
+
+        assert!(
+            result.is_err(),
+            "cmd_checkin should return Err on server 500"
+        );
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_msg.contains("failed after") || err_msg.contains("server error"),
+            "error should describe server failure: {err_msg}"
+        );
+        mock.assert();
+    }
+}
