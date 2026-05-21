@@ -71,9 +71,14 @@ impl Printer {
         theme_name: Option<&str>,
         output_format: OutputFormat,
     ) -> Self {
-        // Honor NO_COLOR / TERM=dumb at construction.
+        // Honor NO_COLOR / TERM=dumb at construction. Also disable colors
+        // under structured output (Json / Yaml / Template / Jsonpath / Name)
+        // so a future role-styled emission cannot leak ANSI escapes into
+        // payload string fields — the contract is enforced at construction,
+        // not by every caller remembering to wrap with with_data.
         if std::env::var_os("NO_COLOR").is_some()
             || std::env::var_os("TERM").is_some_and(|t| t == "dumb")
+            || output_format.is_structured()
         {
             console::set_colors_enabled(false);
             console::set_colors_enabled_stderr(false);
@@ -361,7 +366,38 @@ mod tests {
     use super::*;
     #[cfg(feature = "test-helpers")]
     use crate::output::tests::strip_ansi;
+    use crate::test_helpers::EnvVarGuard;
     use serial_test::serial;
+
+    /// RAII guard for the process-global `console::set_colors_enabled` /
+    /// `set_colors_enabled_stderr` flags. Captures both prior states on
+    /// construction and restores them on drop so a panicking assertion in a
+    /// `#[serial]` test does not leak a `colors_enabled=false` state into
+    /// the next test in the serial chain.
+    struct ColorsEnabledGuard {
+        prior_stdout: bool,
+        prior_stderr: bool,
+    }
+
+    impl ColorsEnabledGuard {
+        fn set(enabled: bool) -> Self {
+            let prior_stdout = console::colors_enabled();
+            let prior_stderr = console::colors_enabled_stderr();
+            console::set_colors_enabled(enabled);
+            console::set_colors_enabled_stderr(enabled);
+            Self {
+                prior_stdout,
+                prior_stderr,
+            }
+        }
+    }
+
+    impl Drop for ColorsEnabledGuard {
+        fn drop(&mut self) {
+            console::set_colors_enabled(self.prior_stdout);
+            console::set_colors_enabled_stderr(self.prior_stderr);
+        }
+    }
 
     #[test]
     #[serial]
@@ -384,6 +420,55 @@ mod tests {
         assert!(p.is_structured());
         let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Table);
         assert!(!p.is_structured());
+    }
+
+    #[test]
+    #[serial]
+    fn structured_output_disables_colors() {
+        // Ensure NO_COLOR / TERM=dumb are not the ones triggering the gate.
+        let _no_color = EnvVarGuard::unset("NO_COLOR");
+        let _term = EnvVarGuard::set("TERM", "xterm-256color");
+        let _guard = ColorsEnabledGuard::set(true);
+
+        for fmt in [
+            OutputFormat::Json,
+            OutputFormat::Yaml,
+            OutputFormat::Name,
+            OutputFormat::Jsonpath("{.foo}".into()),
+            OutputFormat::Template("{{ . }}".into()),
+        ] {
+            console::set_colors_enabled(true);
+            console::set_colors_enabled_stderr(true);
+            let _p = Printer::with_format(Verbosity::Normal, None, fmt.clone());
+            assert!(
+                !console::colors_enabled(),
+                "stdout colors should be disabled for {fmt:?}"
+            );
+            assert!(
+                !console::colors_enabled_stderr(),
+                "stderr colors should be disabled for {fmt:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn table_format_does_not_disable_colors_implicitly() {
+        let _no_color = EnvVarGuard::unset("NO_COLOR");
+        let _term = EnvVarGuard::set("TERM", "xterm-256color");
+        let _guard = ColorsEnabledGuard::set(true);
+        console::set_colors_enabled(true);
+        console::set_colors_enabled_stderr(true);
+
+        let _p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Table);
+        assert!(
+            console::colors_enabled(),
+            "Table format must not implicitly disable colors"
+        );
+        assert!(
+            console::colors_enabled_stderr(),
+            "Table format must not implicitly disable stderr colors"
+        );
     }
 
     #[cfg(feature = "test-helpers")]
