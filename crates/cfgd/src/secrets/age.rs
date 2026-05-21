@@ -217,8 +217,6 @@ AGE-SECRET-KEY-1QJQF0XE6P3X2P5VFQK8WMZDNW3F6KGPNXS4Y0EKJY3NQVJQQQ9SJ8LKZP\n";
         key_path
     }
 
-    // --- Pure / no-shim tests ------------------------------------------------
-
     #[test]
     fn name_returns_age() {
         let backend = AgeBackend::new(PathBuf::from("/nonexistent"));
@@ -270,10 +268,10 @@ AGE-SECRET-KEY-1QJQF0XE6P3X2P5VFQK8WMZDNW3F6KGPNXS4Y0EKJY3NQVJQQQ9SJ8LKZP\n";
         );
     }
 
-    // --- Shim-based tests (Unix only) ----------------------------------------
-
     #[cfg(unix)]
     mod shim_tests {
+        use std::os::unix::fs::PermissionsExt;
+
         use secrecy::ExposeSecret;
         use serial_test::serial;
 
@@ -307,8 +305,7 @@ AGE-SECRET-KEY-1QJQF0XE6P3X2P5VFQK8WMZDNW3F6KGPNXS4Y0EKJY3NQVJQQQ9SJ8LKZP\n";
             let secret_path = dir.path().join("secret.txt");
             std::fs::write(&secret_path, "plaintext").expect("write secret");
 
-            // Pre-create the output path that encrypt_file will rename into place.
-            // encrypt_file calls age with --output <path>.txt.age, then renames to <path>.txt.
+            // pre-create so encrypt_file's rename step finds a target
             let output_path = secret_path.with_extension("txt.age");
             std::fs::write(&output_path, "fake-encrypted").expect("write fake output");
 
@@ -445,18 +442,13 @@ AGE-SECRET-KEY-1QJQF0XE6P3X2P5VFQK8WMZDNW3F6KGPNXS4Y0EKJY3NQVJQQQ9SJ8LKZP\n";
             let dir = tempfile::TempDir::new().expect("tempdir");
             let key_path = write_key_file(&dir);
 
-            // Write a key file used both for encrypting and for the age-key path
             let secret_path = dir.path().join("secret.txt");
             std::fs::write(&secret_path, "original-content").expect("write secret");
 
-            // Shim: decrypt returns the same content, so editor sees it unchanged.
-            // `true` as EDITOR exits 0 without modifying the temp file.
-            // The shim stdout is the "decrypted" content that gets written to the temp file.
             let shim = ToolShim::install(AGE_BIN_ENV, 0, "original-content", "");
             let _editor_guard = EnvVarGuard::set("EDITOR", "true");
             let backend = AgeBackend::new(key_path);
 
-            // edit_file decrypts (1 call), opens editor (no-op), sees content unchanged → no re-encrypt.
             backend
                 .edit_file(&secret_path)
                 .expect("edit should succeed");
@@ -476,31 +468,20 @@ AGE-SECRET-KEY-1QJQF0XE6P3X2P5VFQK8WMZDNW3F6KGPNXS4Y0EKJY3NQVJQQQ9SJ8LKZP\n";
             let secret_path = dir.path().join("secret.txt");
             std::fs::write(&secret_path, "original-content").expect("write secret");
 
-            // Decrypt shim: returns "original-content".
-            // The editor (a small shell script) writes "changed-content" to the temp file.
-            // Then edit_file sees content changed → calls encrypt_file → shim called again.
-            // We also need to pre-create the .txt.age output for the encrypt rename to succeed.
-            let output_path = secret_path.with_extension("txt.age");
-
-            // Use a shell command as EDITOR that overwrites the temp file.
-            // We need an EDITOR that writes different content to $1 (the temp file path).
             let editor_script = dir.path().join("fake-editor.sh");
             std::fs::write(
                 &editor_script,
                 "#!/bin/sh\nprintf 'changed-content' > \"$1\"\n",
             )
             .expect("write editor");
-            use std::os::unix::fs::PermissionsExt;
             let mut perms = std::fs::metadata(&editor_script)
                 .expect("stat")
                 .permissions();
             perms.set_mode(0o755);
             std::fs::set_permissions(&editor_script, perms).expect("chmod");
 
-            // Shim exit 0 for both decrypt and the subsequent encrypt call.
-            // For encrypt call we need the output file to exist (rename step).
-            // We create it lazily by hooking decrypt stdout → but that can't create a side-effect file.
-            // Instead: pre-create output_path before calling edit_file.
+            // pre-create so encrypt_file's rename step finds a target
+            let output_path = secret_path.with_extension("txt.age");
             std::fs::write(&output_path, "fake-encrypted").expect("pre-create output");
 
             let shim = ToolShim::install(AGE_BIN_ENV, 0, "original-content", "");
@@ -510,7 +491,6 @@ AGE-SECRET-KEY-1QJQF0XE6P3X2P5VFQK8WMZDNW3F6KGPNXS4Y0EKJY3NQVJQQQ9SJ8LKZP\n";
                 .edit_file(&secret_path)
                 .expect("edit should succeed");
 
-            // Decrypt (1) + encrypt (1) = 2 invocations.
             assert_eq!(
                 shim.invocation_count(),
                 2,
