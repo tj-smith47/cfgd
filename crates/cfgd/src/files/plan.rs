@@ -335,3 +335,529 @@ pub(super) fn detect_language(path: &Path) -> String {
         .unwrap_or("txt")
         .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    use cfgd_core::config::{
+        EncryptionMode, EncryptionSpec, FileStrategy, FilesSpec, LayerPolicy, ManagedFileSpec,
+        MergedProfile, ProfileLayer, ProfileSpec, ResolvedProfile,
+    };
+    use cfgd_core::output::{Printer, Verbosity};
+    use cfgd_core::providers::FileAction;
+
+    use super::super::CfgdFileManager;
+    use super::detect_language;
+
+    fn make_manager(config_dir: &std::path::Path) -> CfgdFileManager {
+        let resolved = make_resolved(FilesSpec::default());
+        CfgdFileManager::new(config_dir, &resolved).unwrap()
+    }
+
+    fn make_resolved(files: FilesSpec) -> ResolvedProfile {
+        ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".to_string(),
+                profile_name: "test".to_string(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile {
+                files,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn spec(
+        source: &str,
+        target: std::path::PathBuf,
+        strategy: Option<FileStrategy>,
+    ) -> ManagedFileSpec {
+        ManagedFileSpec {
+            source: source.to_string(),
+            target,
+            strategy,
+            private: false,
+            origin: None,
+            encryption: None,
+            permissions: None,
+        }
+    }
+
+    // --- detect_language ---
+
+    #[test]
+    fn detect_language_rs() {
+        assert_eq!(detect_language(std::path::Path::new("main.rs")), "rs");
+    }
+
+    #[test]
+    fn detect_language_py() {
+        assert_eq!(detect_language(std::path::Path::new("script.py")), "py");
+    }
+
+    #[test]
+    fn detect_language_sh() {
+        assert_eq!(detect_language(std::path::Path::new("run.sh")), "sh");
+    }
+
+    #[test]
+    fn detect_language_yaml() {
+        assert_eq!(detect_language(std::path::Path::new("config.yaml")), "yaml");
+        assert_eq!(detect_language(std::path::Path::new("other.yml")), "yml");
+    }
+
+    #[test]
+    fn detect_language_toml() {
+        assert_eq!(detect_language(std::path::Path::new("Cargo.toml")), "toml");
+    }
+
+    #[test]
+    fn detect_language_md() {
+        assert_eq!(detect_language(std::path::Path::new("README.md")), "md");
+    }
+
+    #[test]
+    fn detect_language_no_extension_returns_txt() {
+        assert_eq!(detect_language(std::path::Path::new("Makefile")), "txt");
+    }
+
+    // --- effective_strategy ---
+
+    #[test]
+    fn effective_strategy_tera_forces_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let fm = make_manager(dir.path());
+        let source = std::path::Path::new("template.conf.tera");
+        let result = fm.effective_strategy(source, None);
+        assert_eq!(result, FileStrategy::Copy);
+    }
+
+    #[test]
+    fn effective_strategy_tera_overrides_per_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let fm = make_manager(dir.path());
+        let source = std::path::Path::new("template.conf.tera");
+        let result = fm.effective_strategy(source, Some(FileStrategy::Symlink));
+        assert_eq!(result, FileStrategy::Copy);
+    }
+
+    #[test]
+    fn effective_strategy_returns_per_file_when_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let fm = make_manager(dir.path());
+        let source = std::path::Path::new("plain.txt");
+        let result = fm.effective_strategy(source, Some(FileStrategy::Hardlink));
+        assert_eq!(result, FileStrategy::Hardlink);
+    }
+
+    #[test]
+    fn effective_strategy_default_when_no_per_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let fm = make_manager(dir.path());
+        let source = std::path::Path::new("plain.txt");
+        let result = fm.effective_strategy(source, None);
+        assert_eq!(result, FileStrategy::Symlink);
+    }
+
+    // --- plan ---
+
+    #[test]
+    fn plan_empty_profile_returns_empty_vec() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = make_resolved(FilesSpec::default());
+        let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+        let actions = fm.plan(&resolved.merged).unwrap();
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn plan_private_file_with_explicit_origin_skips_and_carries_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let target = config_dir.join("secret.txt");
+
+        let resolved = make_resolved(FilesSpec {
+            managed: vec![ManagedFileSpec {
+                source: "nonexistent.txt".to_string(),
+                target: target.clone(),
+                strategy: Some(FileStrategy::Copy),
+                private: true,
+                origin: Some("acme-corp".to_string()),
+                encryption: None,
+                permissions: None,
+            }],
+            permissions: HashMap::new(),
+        });
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let actions = fm.plan(&resolved.merged).unwrap();
+
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], FileAction::Skip { origin, reason, .. }
+                if origin == "acme-corp" && reason.contains("private"))
+        );
+    }
+
+    #[test]
+    fn plan_source_path_traversal_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let target = config_dir.join("target.txt");
+
+        let resolved = make_resolved(FilesSpec {
+            managed: vec![spec("../../etc/passwd", target, Some(FileStrategy::Copy))],
+            permissions: HashMap::new(),
+        });
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let err = fm.plan(&resolved.merged).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("escapes root") || msg.contains(".."),
+            "error should describe traversal, got: {msg}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn plan_symlink_existing_wrong_link_produces_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        fs::write(files_dir.join("real.txt"), "content").unwrap();
+
+        let target = config_dir.join("output").join("real.txt");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        // Create a symlink pointing somewhere else
+        let other = config_dir.join("other.txt");
+        fs::write(&other, "other").unwrap();
+        std::os::unix::fs::symlink(&other, &target).unwrap();
+
+        let resolved = make_resolved(FilesSpec {
+            managed: vec![spec(
+                "files/real.txt",
+                target.clone(),
+                Some(FileStrategy::Symlink),
+            )],
+            permissions: HashMap::new(),
+        });
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let actions = fm.plan(&resolved.merged).unwrap();
+
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], FileAction::Update { target: t, .. } if *t == target),
+            "wrong symlink target should produce Update, got: {:?}",
+            actions
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn plan_symlink_is_current_with_permissions_mismatch_produces_set_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        let src = files_dir.join("key.txt");
+        fs::write(&src, "secret").unwrap();
+
+        let target = config_dir.join("output").join("key.txt");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&src, &target).unwrap();
+        // Give the symlink target file a permissive mode
+        fs::set_permissions(&src, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let mut permissions = HashMap::new();
+        permissions.insert(target.display().to_string(), "600".to_string());
+
+        let resolved = make_resolved(FilesSpec {
+            managed: vec![spec(
+                "files/key.txt",
+                target.clone(),
+                Some(FileStrategy::Symlink),
+            )],
+            permissions,
+        });
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let actions = fm.plan(&resolved.merged).unwrap();
+
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], FileAction::SetPermissions { target: t, mode: 0o600, .. } if *t == target),
+            "correct symlink with wrong permissions should produce SetPermissions, got: {:?}",
+            actions
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn plan_copy_content_match_with_permissions_mismatch_produces_set_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        fs::write(files_dir.join("cfg.txt"), "same content").unwrap();
+
+        let target = config_dir.join("output").join("cfg.txt");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, "same content").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let mut permissions = HashMap::new();
+        permissions.insert(target.display().to_string(), "600".to_string());
+
+        let resolved = make_resolved(FilesSpec {
+            managed: vec![spec(
+                "files/cfg.txt",
+                target.clone(),
+                Some(FileStrategy::Copy),
+            )],
+            permissions,
+        });
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let actions = fm.plan(&resolved.merged).unwrap();
+
+        assert_eq!(actions.len(), 1);
+        assert!(
+            matches!(&actions[0], FileAction::SetPermissions { target: t, mode: 0o600, .. } if *t == target),
+            "content match with wrong permissions should produce SetPermissions, got: {:?}",
+            actions
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn plan_copy_update_with_permissions_mismatch_produces_two_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        fs::write(files_dir.join("cfg.txt"), "new content").unwrap();
+
+        let target = config_dir.join("output").join("cfg.txt");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, "old content").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let mut permissions = HashMap::new();
+        permissions.insert(target.display().to_string(), "600".to_string());
+
+        let resolved = make_resolved(FilesSpec {
+            managed: vec![spec(
+                "files/cfg.txt",
+                target.clone(),
+                Some(FileStrategy::Copy),
+            )],
+            permissions,
+        });
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let actions = fm.plan(&resolved.merged).unwrap();
+
+        assert_eq!(actions.len(), 2, "expected Update + SetPermissions");
+        assert!(
+            matches!(&actions[0], FileAction::Update { target: t, .. } if *t == target),
+            "first action should be Update, got: {:?}",
+            &actions[0]
+        );
+        assert!(
+            matches!(&actions[1], FileAction::SetPermissions { target: t, mode: 0o600, .. } if *t == target),
+            "second action should be SetPermissions, got: {:?}",
+            &actions[1]
+        );
+    }
+
+    #[test]
+    fn plan_encryption_always_with_symlink_strategy_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let files_dir = config_dir.join("files");
+        fs::create_dir_all(&files_dir).unwrap();
+        fs::write(files_dir.join("enc.txt"), "data").unwrap();
+
+        let target = config_dir.join("output").join("enc.txt");
+
+        let resolved = make_resolved(FilesSpec {
+            managed: vec![ManagedFileSpec {
+                source: "files/enc.txt".to_string(),
+                target,
+                strategy: Some(FileStrategy::Symlink),
+                private: false,
+                origin: None,
+                encryption: Some(EncryptionSpec {
+                    backend: "sops".to_string(),
+                    mode: EncryptionMode::Always,
+                }),
+                permissions: None,
+            }],
+            permissions: HashMap::new(),
+        });
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let err = fm.plan(&resolved.merged).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Always") || msg.contains("incompatible"),
+            "error should mention encryption incompatibility, got: {msg}"
+        );
+    }
+
+    // --- check_permissions ---
+
+    #[test]
+    #[cfg(unix)]
+    fn check_permissions_per_file_field_takes_priority() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let target = config_dir.join("file.txt");
+        fs::write(&target, "data").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+
+        // Per-file permission on managed spec (not in profile.permissions map)
+        let managed = ManagedFileSpec {
+            source: "file.txt".to_string(),
+            target: target.clone(),
+            strategy: Some(FileStrategy::Copy),
+            private: false,
+            origin: None,
+            encryption: None,
+            permissions: Some("700".to_string()),
+        };
+        let resolved = make_resolved(FilesSpec {
+            managed: vec![managed.clone()],
+            permissions: HashMap::new(),
+        });
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let action = fm
+            .check_permissions(&target, &managed, &resolved.merged)
+            .unwrap();
+
+        assert!(action.is_some());
+        assert!(
+            matches!(
+                action.unwrap(),
+                FileAction::SetPermissions { mode: 0o700, .. }
+            ),
+            "per-file permissions field should produce SetPermissions 700"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn check_permissions_target_nonexistent_emits_set_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        // Target does not exist yet
+        let target = config_dir.join("newfile.txt");
+
+        let mut permissions = HashMap::new();
+        permissions.insert(target.display().to_string(), "600".to_string());
+
+        let managed = ManagedFileSpec {
+            source: "newfile.txt".to_string(),
+            target: target.clone(),
+            strategy: Some(FileStrategy::Copy),
+            private: false,
+            origin: None,
+            encryption: None,
+            permissions: None,
+        };
+        let resolved = make_resolved(FilesSpec {
+            managed: vec![managed.clone()],
+            permissions,
+        });
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let action = fm
+            .check_permissions(&target, &managed, &resolved.merged)
+            .unwrap();
+
+        assert!(
+            action.is_some(),
+            "nonexistent target should still emit SetPermissions"
+        );
+        assert!(matches!(
+            action.unwrap(),
+            FileAction::SetPermissions { mode: 0o600, .. }
+        ));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn check_permissions_invalid_mode_string_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+
+        let target = config_dir.join("file.txt");
+        fs::write(&target, "data").unwrap();
+
+        let managed = ManagedFileSpec {
+            source: "file.txt".to_string(),
+            target: target.clone(),
+            strategy: Some(FileStrategy::Copy),
+            private: false,
+            origin: None,
+            encryption: None,
+            permissions: Some("not-octal".to_string()),
+        };
+        let resolved = make_resolved(FilesSpec {
+            managed: vec![managed.clone()],
+            permissions: HashMap::new(),
+        });
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let err = fm
+            .check_permissions(&target, &managed, &resolved.merged)
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid permission mode"),
+            "error should describe invalid mode, got: {msg}"
+        );
+    }
+
+    // --- diff ---
+
+    #[test]
+    fn diff_empty_profile_returns_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = make_resolved(FilesSpec::default());
+        let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+        let printer = Printer::new(Verbosity::Quiet);
+        let has_diff = fm.diff(&resolved.merged, &printer).unwrap();
+        assert!(!has_diff);
+    }
+
+    #[test]
+    fn diff_missing_source_warns_and_continues() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let target = config_dir.join("target.txt");
+
+        let resolved = make_resolved(FilesSpec {
+            managed: vec![spec("nonexistent.txt", target, Some(FileStrategy::Copy))],
+            permissions: HashMap::new(),
+        });
+        let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        let has_diff = fm.diff(&resolved.merged, &printer).unwrap();
+
+        assert!(!has_diff, "missing source should not count as a diff");
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Source not found") || output.contains("nonexistent"),
+            "output should mention missing source, got: {output}"
+        );
+    }
+}
