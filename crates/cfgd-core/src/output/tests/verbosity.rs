@@ -3,7 +3,7 @@
 //! verbosity-suppression rules and the "emitted a child" rule.
 
 use crate::golden_at;
-use crate::output::{Role, Verbosity};
+use crate::output::{Printer, Role, Verbosity};
 
 // Heading × {Quiet, Normal, Verbose}
 golden_at!(verbosity, heading_quiet, Verbosity::Quiet, |p| {
@@ -112,3 +112,30 @@ golden_at!(verbosity, table_verbose, Verbosity::Verbose, |p| {
     use crate::output::renderer::Table;
     p.table(Table::new(["k"]).row(["v"]));
 });
+
+/// Per `.claude/rules/output-module.md`: `Role::Accent` and `Role::Secondary`
+/// are both suppressed at `Verbosity::Quiet` like every non-`Fail` role.
+/// Direct assertion (not a golden) so the suppression contract is named and
+/// the failure mode is a one-line message instead of a snapshot diff.
+#[test]
+fn accent_and_secondary_suppressed_at_quiet() {
+    let (p, buf) = Printer::for_test_at(Verbosity::Quiet);
+    p.status_simple(Role::Accent, "accent line");
+    p.status_simple(Role::Secondary, "secondary line");
+    p.status_simple(Role::Fail, "fail line");
+    p.flush();
+    let raw = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let out = crate::output::strip_ansi(&raw);
+    assert!(
+        !out.contains("accent line"),
+        "accent should be suppressed at Quiet: {out:?}"
+    );
+    assert!(
+        !out.contains("secondary line"),
+        "secondary should be suppressed at Quiet: {out:?}"
+    );
+    assert!(
+        out.contains("fail line"),
+        "fail should NOT be suppressed at Quiet: {out:?}"
+    );
+}

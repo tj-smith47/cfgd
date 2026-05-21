@@ -103,7 +103,7 @@ mod row_roles_round_trip_tests {
     //! Anchor that `Table::row_styled` survives the `Doc::table` →
     //! `Component::Table` → `render_doc::render_component` →
     //! `Renderer::render_table` round trip with real ANSI escapes on output.
-    //! Plain-text snapshots (default in this crate's other test buckets)
+    //! Plain-text snapshot tests (the default elsewhere in this crate)
     //! cannot catch a regression that drops `row_roles` mid-trip — the
     //! styling is invisible without colors enabled.
 

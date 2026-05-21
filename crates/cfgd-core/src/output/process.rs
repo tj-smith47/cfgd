@@ -294,8 +294,7 @@ mod tests {
         unsafe {
             std::env::remove_var("NO_COLOR");
         }
-        let was_enabled = console::colors_enabled();
-        console::set_colors_enabled(true);
+        let _guard = crate::output::test_support::ColorsEnabledGuard::set(true);
 
         let renderer = Renderer::new(Theme::default(), Verbosity::Normal);
         let foreign = "tool: \x1b[31mred\x1b[0m text \x1b[1mbold\x1b[0m";
@@ -318,7 +317,6 @@ mod tests {
             "foreign bold SGR must be stripped before muted wrap; got: {out:?}"
         );
 
-        console::set_colors_enabled(was_enabled);
         unsafe {
             match _restore_no_color {
                 Some(v) => std::env::set_var("NO_COLOR", v),

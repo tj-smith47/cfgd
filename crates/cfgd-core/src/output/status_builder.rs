@@ -170,8 +170,7 @@ mod tests {
         unsafe {
             std::env::remove_var("NO_COLOR");
         }
-        let was_enabled = console::colors_enabled();
-        console::set_colors_enabled(true);
+        let _guard = crate::output::test_support::ColorsEnabledGuard::set(true);
 
         let (r, buf) = build();
         let sink = sink_for(&buf);
@@ -204,7 +203,6 @@ mod tests {
             "no visible content may follow the label's inner reset; tail_visible={tail_visible:?}, line={line:?}"
         );
 
-        console::set_colors_enabled(was_enabled);
         unsafe {
             if let Some(v) = _restore_no_color {
                 std::env::set_var("NO_COLOR", v);

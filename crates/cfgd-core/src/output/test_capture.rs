@@ -56,8 +56,9 @@ impl Printer {
         (p, buf)
     }
 
-    /// Like `for_test_at` but with an explicit Theme. Used by bucket (d) to
-    /// snapshot per-preset output without the struct-literal Printer anti-pattern.
+    /// Like `for_test_at` but with an explicit Theme. Used by the themes
+    /// snapshot tests to capture per-preset output without the struct-literal
+    /// Printer anti-pattern.
     pub fn for_test_with_theme(theme: Theme, verbosity: Verbosity) -> (Self, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
         let p = build_test_printer(

@@ -111,6 +111,25 @@ mod tests {
     }
 
     #[test]
+    fn status_label_serializes_with_role_and_text() {
+        let c = Component::Status {
+            role: Role::Ok,
+            subject: "ok".into(),
+            detail: None,
+            duration_ms: None,
+            target: None,
+            label: Some(StatusLabel {
+                role: Role::Secondary,
+                text: "[team-config]".into(),
+            }),
+        };
+        let json = serde_json::to_value(&c).unwrap();
+        let label = json.get("label").expect("label must serialize when set");
+        assert_eq!(label["role"], "secondary");
+        assert_eq!(label["text"], "[team-config]");
+    }
+
+    #[test]
     fn section_keep_when_empty_distinguishes_variants() {
         let plain = Component::Section {
             name: "X".into(),

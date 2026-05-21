@@ -8,11 +8,7 @@ use crate::output::{Role, Theme, strip_ansi};
 /// the only safe nesting shape for the streaming renderer. Single source of
 /// truth shared by `StatusBuilder::drop` (streaming) and `render_doc`
 /// (buffered Doc tree) so the two paths stay byte-identical.
-pub(crate) fn compose_subject_with_label(
-    theme: &Theme,
-    subject: &str,
-    label: &StatusLabel,
-) -> String {
+fn compose_subject_with_label(theme: &Theme, subject: &str, label: &StatusLabel) -> String {
     let (_, style) = role_glyph(theme, label.role);
     let styled = style.apply_to(&label.text).to_string();
     format!("{subject} {styled}")

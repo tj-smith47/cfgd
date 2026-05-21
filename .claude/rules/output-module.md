@@ -10,7 +10,7 @@ The `output` module (`crates/cfgd-core/src/output/`) provides:
   - `printer.kv(key, value)` — single key/value pair
   - `printer.kv_block(pairs)` — multi-pair block
   - `printer.status_simple(role, subject)` — concise status line; `role: Role::{Ok, Info, Warn, Fail, Skipped, Pending, Running, Accent, Secondary}`. `Accent` = "attention without alarm" (orange-family); `Secondary` = "structural pivot / label / identifier" (pink/magenta-family). Both have no icon and are suppressed at `Verbosity::Quiet` like every non-`Fail` role.
-  - `printer.status(role, subject)` — returns `StatusBuilder` for `.detail(...)`, `.duration(...)`, `.with_data(...)`
+  - `printer.status(role, subject)` — returns `StatusBuilder` for `.detail(...)`, `.duration(...)`, `.label(label_role, label_text)`, `.with_data(...)`. The `.label(...)` form appends a styled label at end-of-subject (enforced by API construction — see `compose_subject_with_label`).
   - `printer.hint(text)`, `printer.note(text)` — supplementary output
   - `printer.table(table)` — tabular data
   - `printer.section(name)` — returns `SectionGuard` (drop ends the section)
