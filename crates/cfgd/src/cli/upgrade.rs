@@ -238,8 +238,6 @@ mod tests {
         assert_eq!(format_bytes(1_572_864), "1.5 MB");
     }
 
-    // --- cmd_upgrade: check_only=true path ---
-
     /// GitHub returns a 500 during `--check` → function returns Err and emits
     /// error_doc with kind "check_failed".
     #[test]
@@ -388,8 +386,6 @@ mod tests {
         let (printer, _cap) = Printer::for_test_doc();
         let _ = cmd_upgrade(&printer, true);
     }
-
-    // --- cmd_upgrade: check_only=false path ---
 
     /// GitHub returns 500 during the full upgrade flow → returns Err and emits
     /// error_doc with kind "check_failed".
