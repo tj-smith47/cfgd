@@ -309,13 +309,7 @@ mod tests {
 
     #[test]
     fn mask_value_long_shows_last_three() {
-        let result = mask_value("supersecret");
-        assert!(result.starts_with("***"), "must start with ***: {result}");
-        assert!(
-            result.ends_with("ret"),
-            "must end with last 3 chars 'ret': {result}"
-        );
-        assert_eq!(result, "***ret");
+        assert_eq!(mask_value("supersecret"), "***ret");
     }
 
     #[test]
@@ -328,10 +322,7 @@ mod tests {
     #[test]
     #[serial]
     fn generate_cosign_missing_emits_error_doc() {
-        let _unset = EnvVarGuard::unset("CFGD_COSIGN_BIN");
-        if cfgd_core::command_available("cosign") {
-            return;
-        }
+        let _g = EnvVarGuard::set("CFGD_COSIGN_BIN", "/nonexistent/cosign");
         let (printer, cap) = Printer::for_test_doc();
         let err = cmd_module_keys_generate(&printer, None).unwrap_err();
         assert!(
@@ -396,7 +387,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn list_empty_home_emits_no_keys_found() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let _home = with_test_home_guard(tmp.path());
@@ -410,7 +400,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn list_with_home_pub_key_present_shows_key() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let cfgd_dir = tmp.path().join(".cfgd");
