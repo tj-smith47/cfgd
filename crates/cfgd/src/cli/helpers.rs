@@ -528,3 +528,718 @@ pub(in crate::cli) fn compose_with_sources(
 
     Ok(result)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use serial_test::serial;
+    use tempfile::tempdir;
+
+    use super::*;
+    use cfgd_core::output::{OutputFormat, Printer, Verbosity};
+    use cfgd_core::test_helpers::EnvVarGuard;
+
+    // ---------------------------------------------------------------------------
+    // Helpers shared across tests
+    // ---------------------------------------------------------------------------
+
+    fn make_cli(config: PathBuf) -> Cli {
+        Cli {
+            config,
+            profile: None,
+            verbose: 0,
+            quiet: true,
+            no_color: true,
+            output: OutputFormatArg(OutputFormat::Table),
+            jsonpath: None,
+            state_dir: None,
+            command: None,
+        }
+    }
+
+    const CONFIG_YAML: &str = "apiVersion: cfgd.io/v1alpha1\n\
+                               kind: Config\n\
+                               metadata:\n  name: t\n\
+                               spec:\n  profile: default\n";
+
+    const PROFILE_YAML: &str = "apiVersion: cfgd.io/v1alpha1\n\
+                                kind: Profile\n\
+                                metadata:\n  name: default\n\
+                                spec: {}\n";
+
+    fn quiet_printer() -> Printer {
+        Printer::new(Verbosity::Quiet)
+    }
+
+    // ---------------------------------------------------------------------------
+    // parse_package_flag
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn parse_package_flag_bare_package_has_no_manager() {
+        let (mgr, pkg) = parse_package_flag("ripgrep", &["brew", "apt"]);
+        assert_eq!(mgr, None);
+        assert_eq!(pkg, "ripgrep");
+    }
+
+    #[test]
+    fn parse_package_flag_known_manager_prefix_splits() {
+        let (mgr, pkg) = parse_package_flag("brew:ripgrep", &["brew", "apt"]);
+        assert_eq!(mgr.as_deref(), Some("brew"));
+        assert_eq!(pkg, "ripgrep");
+    }
+
+    #[test]
+    fn parse_package_flag_unknown_manager_prefix_is_bare() {
+        let (mgr, pkg) = parse_package_flag("cargo:ripgrep", &["brew", "apt"]);
+        assert_eq!(mgr, None);
+        assert_eq!(pkg, "cargo:ripgrep");
+    }
+
+    #[test]
+    fn parse_package_flag_empty_prefix_is_bare() {
+        // ":ripgrep" has an empty prefix — treat as bare package name.
+        let (mgr, pkg) = parse_package_flag(":ripgrep", &["brew"]);
+        assert_eq!(mgr, None);
+        assert_eq!(pkg, ":ripgrep");
+    }
+
+    #[test]
+    fn parse_package_flag_empty_suffix_is_bare() {
+        // "brew:" has an empty suffix — treat as bare package name.
+        let (mgr, pkg) = parse_package_flag("brew:", &["brew"]);
+        assert_eq!(mgr, None);
+        assert_eq!(pkg, "brew:");
+    }
+
+    #[test]
+    fn parse_package_flag_no_known_managers_always_bare() {
+        let (mgr, pkg) = parse_package_flag("brew:ripgrep", &[]);
+        assert_eq!(mgr, None);
+        assert_eq!(pkg, "brew:ripgrep");
+    }
+
+    // ---------------------------------------------------------------------------
+    // empty_resolved_profile
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn empty_resolved_profile_contains_only_named_module() {
+        let rp = empty_resolved_profile("mymod");
+        assert!(rp.layers.is_empty());
+        assert_eq!(rp.merged.modules, vec!["mymod".to_string()]);
+        // All other merged fields are default-empty.
+        assert!(rp.merged.env.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // known_manager_names
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn known_manager_names_returns_non_empty_list() {
+        let names = known_manager_names();
+        assert!(
+            !names.is_empty(),
+            "expected at least one package manager registered"
+        );
+        // Every name must be a non-empty string.
+        for name in &names {
+            assert!(!name.is_empty(), "manager name must not be empty");
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // parse_file_spec
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn parse_file_spec_single_path_returns_same_src_and_dst() {
+        let (src, dst) = parse_file_spec("/home/user/.bashrc").unwrap();
+        assert_eq!(src, PathBuf::from("/home/user/.bashrc"));
+        assert_eq!(dst, PathBuf::from("/home/user/.bashrc"));
+    }
+
+    #[test]
+    fn parse_file_spec_src_colon_dst_splits_correctly() {
+        let (src, dst) = parse_file_spec("/tmp/a.txt:/etc/a.txt").unwrap();
+        assert_eq!(src, PathBuf::from("/tmp/a.txt"));
+        assert_eq!(dst, PathBuf::from("/etc/a.txt"));
+    }
+
+    #[test]
+    fn parse_file_spec_windows_drive_letter_no_split() {
+        // C:\foo has a colon at position 1 after an ASCII letter — must NOT split.
+        let (src, dst) = parse_file_spec("C:\\foo\\bar").unwrap();
+        assert_eq!(src, PathBuf::from("C:\\foo\\bar"));
+        assert_eq!(dst, PathBuf::from("C:\\foo\\bar"));
+    }
+
+    #[test]
+    fn parse_file_spec_windows_drive_as_source_with_target() {
+        // "C:\foo:/dest" — second colon is the src:dst separator.
+        let (src, dst) = parse_file_spec("C:\\foo:/dest").unwrap();
+        assert_eq!(src, PathBuf::from("C:\\foo"));
+        assert_eq!(dst, PathBuf::from("/dest"));
+    }
+
+    #[test]
+    fn parse_file_spec_empty_source_errors() {
+        let err = parse_file_spec(":/dst").unwrap_err();
+        assert!(
+            err.to_string().contains("empty source"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_file_spec_empty_target_errors() {
+        let err = parse_file_spec("/src:").unwrap_err();
+        assert!(
+            err.to_string().contains("empty target"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // validate_resource_name
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn validate_resource_name_accepts_valid_names() {
+        for name in &["mymod", "my-mod", "my_mod", "my.mod", "mod123", "m"] {
+            validate_resource_name(name, "module")
+                .unwrap_or_else(|e| panic!("rejected valid name '{name}': {e}"));
+        }
+    }
+
+    #[test]
+    fn validate_resource_name_rejects_empty() {
+        let err = validate_resource_name("", "module").unwrap_err();
+        assert!(err.to_string().contains("cannot be empty"), "{err}");
+    }
+
+    #[test]
+    fn validate_resource_name_rejects_leading_dot() {
+        let err = validate_resource_name(".hidden", "module").unwrap_err();
+        assert!(
+            err.to_string().contains("cannot start with"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_resource_name_rejects_leading_dash() {
+        let err = validate_resource_name("-start", "module").unwrap_err();
+        assert!(
+            err.to_string().contains("cannot start with"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_resource_name_rejects_invalid_chars() {
+        let err = validate_resource_name("my mod", "module").unwrap_err();
+        assert!(
+            err.to_string().contains("invalid characters"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_resource_name_rejects_name_too_long() {
+        let long = "a".repeat(129);
+        let err = validate_resource_name(&long, "module").unwrap_err();
+        assert!(err.to_string().contains("too long"), "unexpected: {err}");
+    }
+
+    // ---------------------------------------------------------------------------
+    // set_nested_yaml_value
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn set_nested_yaml_value_sets_top_level_key() {
+        let mut root = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        set_nested_yaml_value(
+            &mut root,
+            "name",
+            &serde_yaml::Value::String("alice".to_string()),
+        )
+        .unwrap();
+        assert_eq!(root["name"], serde_yaml::Value::String("alice".to_string()));
+    }
+
+    #[test]
+    fn set_nested_yaml_value_creates_intermediate_maps() {
+        let mut root = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+        set_nested_yaml_value(
+            &mut root,
+            "a.b.c",
+            &serde_yaml::Value::String("deep".to_string()),
+        )
+        .unwrap();
+        assert_eq!(
+            root["a"]["b"]["c"],
+            serde_yaml::Value::String("deep".to_string())
+        );
+    }
+
+    #[test]
+    fn set_nested_yaml_value_overwrites_existing_key() {
+        let mut root: serde_yaml::Value = serde_yaml::from_str("key: old").unwrap();
+        set_nested_yaml_value(
+            &mut root,
+            "key",
+            &serde_yaml::Value::String("new".to_string()),
+        )
+        .unwrap();
+        assert_eq!(root["key"], serde_yaml::Value::String("new".to_string()));
+    }
+
+    #[test]
+    fn set_nested_yaml_value_two_level_path() {
+        let mut root: serde_yaml::Value = serde_yaml::from_str("spec:\n  active: old").unwrap();
+        set_nested_yaml_value(
+            &mut root,
+            "spec.active",
+            &serde_yaml::Value::String("new".to_string()),
+        )
+        .unwrap();
+        assert_eq!(
+            root["spec"]["active"],
+            serde_yaml::Value::String("new".to_string())
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // default_device_id
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn default_device_id_returns_non_empty_string() {
+        let id = default_device_id();
+        assert!(!id.is_empty(), "device id must not be empty");
+    }
+
+    // ---------------------------------------------------------------------------
+    // config_dir / profiles_dir
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn config_dir_returns_parent_of_config_file() {
+        let tmp = tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        let cli = make_cli(config_path.clone());
+        assert_eq!(config_dir(&cli), tmp.path());
+    }
+
+    #[test]
+    fn profiles_dir_is_profiles_subdir_of_config_dir() {
+        let tmp = tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        let cli = make_cli(config_path);
+        assert_eq!(profiles_dir(&cli), tmp.path().join("profiles"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // add_to_gitignore
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn add_to_gitignore_creates_file_and_adds_entry() {
+        let tmp = tempdir().unwrap();
+        add_to_gitignore(tmp.path(), "secrets/").unwrap();
+        let contents = std::fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+        assert!(contents.contains("secrets/"), "entry missing: {contents}");
+    }
+
+    #[test]
+    fn add_to_gitignore_is_idempotent() {
+        let tmp = tempdir().unwrap();
+        add_to_gitignore(tmp.path(), "secrets/").unwrap();
+        add_to_gitignore(tmp.path(), "secrets/").unwrap();
+        let contents = std::fs::read_to_string(tmp.path().join(".gitignore")).unwrap();
+        let count = contents.lines().filter(|l| l.trim() == "secrets/").count();
+        assert_eq!(count, 1, "entry written more than once: {contents}");
+    }
+
+    #[test]
+    fn add_to_gitignore_appends_to_existing_file() {
+        let tmp = tempdir().unwrap();
+        let gitignore = tmp.path().join(".gitignore");
+        std::fs::write(&gitignore, "target/\n").unwrap();
+        add_to_gitignore(tmp.path(), "secrets/").unwrap();
+        let contents = std::fs::read_to_string(&gitignore).unwrap();
+        assert!(contents.contains("target/"), "original entry lost");
+        assert!(contents.contains("secrets/"), "new entry missing");
+    }
+
+    // ---------------------------------------------------------------------------
+    // list_yaml_stems
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn list_yaml_stems_empty_dir_returns_empty() {
+        let tmp = tempdir().unwrap();
+        let stems = list_yaml_stems(tmp.path()).unwrap();
+        assert!(stems.is_empty());
+    }
+
+    #[test]
+    fn list_yaml_stems_returns_sorted_stems() {
+        let tmp = tempdir().unwrap();
+        std::fs::write(tmp.path().join("zebra.yaml"), "").unwrap();
+        std::fs::write(tmp.path().join("alpha.yaml"), "").unwrap();
+        std::fs::write(tmp.path().join("middle.yml"), "").unwrap();
+        let stems = list_yaml_stems(tmp.path()).unwrap();
+        assert_eq!(stems, vec!["alpha", "middle", "zebra"]);
+    }
+
+    #[test]
+    fn list_yaml_stems_ignores_non_yaml_files() {
+        let tmp = tempdir().unwrap();
+        std::fs::write(tmp.path().join("notes.txt"), "").unwrap();
+        std::fs::write(tmp.path().join("config.yaml"), "").unwrap();
+        let stems = list_yaml_stems(tmp.path()).unwrap();
+        assert_eq!(stems, vec!["config"]);
+    }
+
+    #[test]
+    fn list_yaml_stems_missing_dir_returns_empty() {
+        let tmp = tempdir().unwrap();
+        let missing = tmp.path().join("does-not-exist");
+        let stems = list_yaml_stems(&missing).unwrap();
+        assert!(stems.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // scan_module_names
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn scan_module_names_empty_dir_returns_empty() {
+        let tmp = tempdir().unwrap();
+        let names = scan_module_names(tmp.path()).unwrap();
+        assert!(names.is_empty());
+    }
+
+    #[test]
+    fn scan_module_names_finds_modules_with_module_yaml() {
+        let tmp = tempdir().unwrap();
+        let mod_a = tmp.path().join("alpha");
+        let mod_b = tmp.path().join("beta");
+        std::fs::create_dir_all(&mod_a).unwrap();
+        std::fs::create_dir_all(&mod_b).unwrap();
+        std::fs::write(mod_a.join("module.yaml"), "").unwrap();
+        std::fs::write(mod_b.join("module.yaml"), "").unwrap();
+        // dir without module.yaml must NOT be included
+        std::fs::create_dir_all(tmp.path().join("not-a-module")).unwrap();
+        let names = scan_module_names(tmp.path()).unwrap();
+        assert_eq!(names, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn scan_module_names_missing_dir_returns_empty() {
+        let tmp = tempdir().unwrap();
+        let missing = tmp.path().join("does-not-exist");
+        let names = scan_module_names(&missing).unwrap();
+        assert!(names.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // copy_files_to_dir
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn copy_files_to_dir_copies_file_and_symlinks_back() {
+        let src_dir = tempdir().unwrap();
+        let dst_dir = tempdir().unwrap();
+        let src_file = src_dir.path().join("dotfile.txt");
+        std::fs::write(&src_file, "hello").unwrap();
+
+        let spec = src_file.to_string_lossy().to_string();
+        let results = copy_files_to_dir(&[spec], dst_dir.path()).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "dotfile.txt");
+        // File now lives in repo dir.
+        assert!(dst_dir.path().join("dotfile.txt").exists());
+        // Source location is now a symlink.
+        assert!(
+            src_file.is_symlink(),
+            "source should have been replaced with a symlink"
+        );
+        // Symlink content is readable and correct.
+        let content = std::fs::read_to_string(&src_file).unwrap();
+        assert_eq!(content, "hello");
+    }
+
+    #[test]
+    fn copy_files_to_dir_missing_source_errors() {
+        let dst_dir = tempdir().unwrap();
+        let err = copy_files_to_dir(&["/tmp/cfgd-nonexistent-9999.txt".into()], dst_dir.path())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("File not found"),
+            "unexpected: {err}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // open_in_editor — requires EDITOR env var; must be serial
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn open_in_editor_succeeds_when_editor_exits_zero() {
+        let tmp = tempdir().unwrap();
+        let file = tmp.path().join("edit_me.yaml");
+        std::fs::write(&file, "").unwrap();
+        let _editor = EnvVarGuard::set("EDITOR", "true");
+        let printer = quiet_printer();
+        open_in_editor(&file, &printer).unwrap();
+        // No panic and no error — that's the contract for a zero-exit editor.
+    }
+
+    #[test]
+    #[serial]
+    fn open_in_editor_nonzero_exit_prints_warn_but_does_not_error() {
+        let tmp = tempdir().unwrap();
+        let file = tmp.path().join("edit_me.yaml");
+        std::fs::write(&file, "").unwrap();
+        // `false` always exits 1.
+        let _editor = EnvVarGuard::set("EDITOR", "false");
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        // Must return Ok even when editor exits non-zero (only warns).
+        open_in_editor(&file, &printer).unwrap();
+        drop(printer);
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("non-zero"),
+            "expected warn about non-zero exit, got: {output}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // copy_files_to_dir — directory source path
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn copy_files_to_dir_copies_directory_and_symlinks_back() {
+        let src_base = tempdir().unwrap();
+        let dst_dir = tempdir().unwrap();
+
+        // Create a source directory with a file inside.
+        let src_subdir = src_base.path().join("mydir");
+        std::fs::create_dir_all(&src_subdir).unwrap();
+        std::fs::write(src_subdir.join("inner.txt"), "inner").unwrap();
+
+        let spec = src_subdir.to_string_lossy().to_string();
+        let results = copy_files_to_dir(&[spec], dst_dir.path()).unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "mydir");
+        // Directory should now live in repo dir.
+        assert!(dst_dir.path().join("mydir").is_dir());
+        // Source should be replaced with a symlink.
+        assert!(
+            src_subdir.is_symlink(),
+            "source dir should be a symlink after copy"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // resolve_profile_name
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn resolve_profile_name_returns_explicit_name_without_reading_config() {
+        // When an explicit name is provided, it is returned immediately —
+        // the config file need not exist.
+        let tmp = tempdir().unwrap();
+        let cli = make_cli(tmp.path().join("nonexistent.yaml"));
+        let name = resolve_profile_name(&cli, Some("staging")).unwrap();
+        assert_eq!(name, "staging");
+    }
+
+    #[test]
+    fn resolve_profile_name_errors_when_no_config_and_no_explicit_name() {
+        let tmp = tempdir().unwrap();
+        let cli = make_cli(tmp.path().join("nonexistent.yaml"));
+        let err = resolve_profile_name(&cli, None).unwrap_err();
+        assert!(
+            err.to_string().contains("cfgd init"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_profile_name_returns_cli_profile_override_when_set() {
+        let tmp = tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let mut cli = make_cli(config_path);
+        cli.profile = Some("override-profile".to_string());
+        // No explicit name passed → should fall through to cli.profile.
+        let name = resolve_profile_name(&cli, None).unwrap();
+        assert_eq!(name, "override-profile");
+    }
+
+    // ---------------------------------------------------------------------------
+    // managers_map
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn managers_map_empty_registry_returns_empty_map() {
+        let registry = ProviderRegistry::new();
+        let map = managers_map(&registry);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn managers_map_keys_match_manager_names() {
+        let mut registry = ProviderRegistry::new();
+        registry.package_managers = packages::all_package_managers();
+        let map = managers_map(&registry);
+        assert!(
+            !map.is_empty(),
+            "expected managers from all_package_managers"
+        );
+        // Every key must equal the corresponding manager's own name().
+        for (name, mgr) in &map {
+            assert_eq!(name, mgr.name(), "key mismatch for manager '{name}'");
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // module_state_map
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn module_state_map_empty_store_returns_empty_map() {
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        let map = module_state_map(&state);
+        assert!(map.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // compose_with_sources — no-sources fast path
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn compose_with_sources_no_sources_returns_local_profile_unchanged() {
+        let tmp = tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(profiles_dir.join("default.yaml"), PROFILE_YAML).unwrap();
+
+        let cli = make_cli(config_path.clone());
+        let cfg = config::load_config(&config_path).unwrap();
+        let local = empty_resolved_profile("my-module");
+        let printer = quiet_printer();
+
+        let result = compose_with_sources(&cli, &cfg, &local, &printer).unwrap();
+
+        // No sources → resolved must equal the local profile we passed in.
+        assert_eq!(result.resolved.merged.modules, local.merged.modules);
+        assert!(result.conflicts.is_empty());
+        assert!(result.source_env.is_empty());
+        assert!(result.source_commits.is_empty());
+    }
+
+    /// Build a minimal local git repo that acts as a cfgd source.
+    /// Returns the path to the repo directory (contains cfgd-source.yaml on `master`).
+    fn create_local_source_repo(root: &std::path::Path, profile_name: &str) -> PathBuf {
+        let repo_dir = root.join("source-repo");
+        std::fs::create_dir_all(&repo_dir).unwrap();
+
+        // Init git repo.
+        std::process::Command::new("git")
+            .args(["init", "-b", "master"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+
+        // Write cfgd-source.yaml.
+        let manifest = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: test-src\nspec:\n  provides:\n    profiles:\n      - {profile_name}\n"
+        );
+        std::fs::write(repo_dir.join("cfgd-source.yaml"), &manifest).unwrap();
+
+        // Write a minimal profile YAML.
+        let profile_yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: {profile_name}\nspec: {{}}\n"
+        );
+        std::fs::create_dir_all(repo_dir.join("profiles")).unwrap();
+        std::fs::write(
+            repo_dir
+                .join("profiles")
+                .join(format!("{profile_name}.yaml")),
+            &profile_yaml,
+        )
+        .unwrap();
+
+        // Commit everything.
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+
+        repo_dir
+    }
+
+    #[test]
+    #[serial]
+    fn compose_with_sources_with_local_source_returns_composition_result() {
+        let tmp = tempdir().unwrap();
+        let source_repo = create_local_source_repo(tmp.path(), "team");
+
+        // cfgd.yaml with one local source.
+        let config_yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: test-src\n      origin:\n        type: Git\n        url: {}\n        branch: master\n",
+            source_repo.display()
+        );
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, &config_yaml).unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(profiles_dir.join("default.yaml"), PROFILE_YAML).unwrap();
+
+        // Allow the local file path as a source origin.
+        let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        // Point the source cache dir into our temp dir.
+        let cache_dir = tmp.path().join("source-cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        let mut cli = make_cli(config_path.clone());
+        cli.state_dir = Some(tmp.path().join("state"));
+
+        let cfg = config::load_config(&config_path).unwrap();
+        let local = empty_resolved_profile("my-module");
+        let printer = quiet_printer();
+
+        let result = compose_with_sources(&cli, &cfg, &local, &printer).unwrap();
+
+        // The source was loaded (no error). Since the subscription has no
+        // profile selected, the source contributes no layers and no conflicts.
+        assert!(result.conflicts.is_empty());
+    }
+}
