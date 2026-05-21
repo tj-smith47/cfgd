@@ -283,3 +283,212 @@ pub(crate) fn mask_value(value: &str) -> String {
         format!("***{}", suffix)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use cfgd_core::output::Printer;
+    use cfgd_core::test_helpers::EnvVarGuard;
+    use cfgd_core::with_test_home_guard;
+    use serial_test::serial;
+
+    use super::mask_value;
+    use crate::cli::module::keys::{
+        cmd_module_keys_generate, cmd_module_keys_list, cmd_module_keys_rotate,
+    };
+
+    // --- mask_value ---
+
+    #[test]
+    fn mask_value_empty_returns_sentinel() {
+        assert_eq!(mask_value(""), "***");
+    }
+
+    #[test]
+    fn mask_value_short_fully_masked() {
+        assert_eq!(mask_value("ab"), "***");
+        assert_eq!(mask_value("abc"), "***");
+    }
+
+    #[test]
+    fn mask_value_long_shows_last_three() {
+        let result = mask_value("supersecret");
+        assert!(result.starts_with("***"), "must start with ***: {result}");
+        assert!(
+            result.ends_with("ret"),
+            "must end with last 3 chars 'ret': {result}"
+        );
+        assert_eq!(result, "***ret");
+    }
+
+    #[test]
+    fn mask_value_exactly_four_chars() {
+        let result = mask_value("abcd");
+        assert_eq!(result, "***bcd");
+    }
+
+    // --- cmd_module_keys_generate ---
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn generate_cosign_missing_emits_error_doc() {
+        let _unset = EnvVarGuard::unset("CFGD_COSIGN_BIN");
+        if cfgd_core::command_available("cosign") {
+            return;
+        }
+        let (printer, cap) = Printer::for_test_doc();
+        let err = cmd_module_keys_generate(&printer, None).unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("cosign"),
+            "error should mention cosign: {err}"
+        );
+        let human = cap.human();
+        assert!(
+            human.to_lowercase().contains("tool_missing")
+                || human.to_lowercase().contains("cosign"),
+            "captured output should mention tool_missing or cosign: {human}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn generate_cosign_exits_nonzero_returns_err() {
+        use cfgd_core::test_helpers::CosignTestShim;
+        let _shim = CosignTestShim::builder()
+            .with_exit(1)
+            .with_stderr("cosign error")
+            .install();
+        let _pw = EnvVarGuard::set("COSIGN_PASSWORD", "");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir_str = tmp.path().to_str().expect("utf8 path");
+        let (printer, _cap) = Printer::for_test_doc();
+        let err = cmd_module_keys_generate(&printer, Some(dir_str)).unwrap_err();
+        assert!(
+            err.to_string().contains("cosign generate-key-pair failed"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn generate_happy_path_writes_key_files() {
+        use cfgd_core::test_helpers::CosignTestShim;
+        let _shim = CosignTestShim::builder().with_keygen(true).install();
+        let _pw = EnvVarGuard::set("COSIGN_PASSWORD", "");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir_str = tmp.path().to_str().expect("utf8 path");
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_module_keys_generate(&printer, Some(dir_str)).expect("generate should succeed");
+        assert!(
+            tmp.path().join("cosign.key").exists(),
+            "cosign.key must exist"
+        );
+        assert!(
+            tmp.path().join("cosign.pub").exists(),
+            "cosign.pub must exist"
+        );
+        let key_content =
+            std::fs::read_to_string(tmp.path().join("cosign.key")).expect("read cosign.key");
+        assert_eq!(
+            key_content, "fake-private-key-bytes",
+            "key content should come from shim"
+        );
+        let json = cap.json().expect("doc should have json payload");
+        assert_eq!(json["dir"], dir_str, "data payload dir mismatch");
+    }
+
+    // --- cmd_module_keys_list ---
+
+    #[test]
+    #[serial]
+    fn list_empty_home_emits_no_keys_found() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _home = with_test_home_guard(tmp.path());
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_module_keys_list(&printer).expect("list should not error");
+        let human = cap.human();
+        assert!(
+            human.contains("No signing keys found"),
+            "expected 'No signing keys found' in output: {human}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn list_with_home_pub_key_present_shows_key() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cfgd_dir = tmp.path().join(".cfgd");
+        std::fs::create_dir_all(&cfgd_dir).expect("create .cfgd dir");
+        std::fs::write(cfgd_dir.join("cosign.pub"), "fake-pub-key").expect("write pub key");
+        let _home = with_test_home_guard(tmp.path());
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_module_keys_list(&printer).expect("list should not error");
+        let json = cap.json().expect("doc should have json payload");
+        let entries = json.as_array().expect("payload should be an array");
+        assert!(!entries.is_empty(), "should find at least one key entry");
+        let names: Vec<&str> = entries.iter().filter_map(|e| e["name"].as_str()).collect();
+        assert!(
+            names.iter().any(|n| n.contains("cosign.pub")),
+            "key name should contain 'cosign.pub': {names:?}"
+        );
+    }
+
+    // --- cmd_module_keys_rotate ---
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn rotate_errors_when_no_existing_key() {
+        use cfgd_core::test_helpers::CosignTestShim;
+        let _shim = CosignTestShim::builder().with_keygen(true).install();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir_str = tmp.path().to_str().expect("utf8 path");
+        let (printer, _cap) = Printer::for_test_doc();
+        let err = cmd_module_keys_rotate(&printer, Some(dir_str), &[]).unwrap_err();
+        assert!(
+            err.to_string().contains("No existing cosign.key"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn rotate_happy_path_backs_up_and_generates_new() {
+        use cfgd_core::test_helpers::CosignTestShim;
+        let _shim = CosignTestShim::builder().with_keygen(true).install();
+        let _pw = EnvVarGuard::set("COSIGN_PASSWORD", "");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir_str = tmp.path().to_str().expect("utf8 path");
+        std::fs::write(tmp.path().join("cosign.key"), "old-private-key").expect("write old key");
+        std::fs::write(tmp.path().join("cosign.pub"), "old-public-key").expect("write old pub");
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_module_keys_rotate(&printer, Some(dir_str), &[]).expect("rotate should succeed");
+        let new_key_content =
+            std::fs::read_to_string(tmp.path().join("cosign.key")).expect("read new cosign.key");
+        assert_eq!(
+            new_key_content, "fake-private-key-bytes",
+            "new key should come from shim"
+        );
+        let backup_key_exists = std::fs::read_dir(tmp.path())
+            .expect("read dir")
+            .filter_map(|e| e.ok())
+            .any(|e| {
+                let name = e.file_name();
+                let n = name.to_string_lossy();
+                n.starts_with("cosign.key.") && n != "cosign.key"
+            });
+        assert!(backup_key_exists, "a backup cosign.key.* file must exist");
+        let json = cap.json().expect("doc should have json payload");
+        assert_eq!(
+            json["dir"], dir_str,
+            "rotation doc should record the key dir"
+        );
+        assert!(
+            json["backupPrivateKey"].as_str().is_some(),
+            "backupPrivateKey must be in the payload"
+        );
+    }
+}
