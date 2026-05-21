@@ -5,3 +5,7 @@ Status
 Drift
   ⚠ shell-config
   ⚠ git-config
+
+Highlights
+  new release available
+  from registry: stable

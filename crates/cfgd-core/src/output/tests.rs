@@ -15,6 +15,8 @@ mod bucket_c_status_role;
 #[cfg(feature = "test-helpers")]
 mod bucket_d_themes;
 #[cfg(feature = "test-helpers")]
+mod bucket_d_themes_raw;
+#[cfg(feature = "test-helpers")]
 mod bucket_e_indent;
 #[cfg(feature = "test-helpers")]
 mod bucket_f_corners;

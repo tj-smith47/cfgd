@@ -15,6 +15,10 @@ golden_themed!(bucket_d, default_preset, "default", |p| {
         .section("Drift", |s| {
             s.status(Role::Warn, "shell-config")
                 .status(Role::Warn, "git-config")
+        })
+        .section("Highlights", |s| {
+            s.status(Role::Accent, "new release available")
+                .status(Role::Secondary, "from registry: stable")
         });
     p.emit(doc);
 });
@@ -26,6 +30,10 @@ golden_themed!(bucket_d, dracula_preset, "dracula", |p| {
         .section("Drift", |s| {
             s.status(Role::Warn, "shell-config")
                 .status(Role::Warn, "git-config")
+        })
+        .section("Highlights", |s| {
+            s.status(Role::Accent, "new release available")
+                .status(Role::Secondary, "from registry: stable")
         });
     p.emit(doc);
 });
@@ -37,6 +45,10 @@ golden_themed!(bucket_d, solarized_dark_preset, "solarized-dark", |p| {
         .section("Drift", |s| {
             s.status(Role::Warn, "shell-config")
                 .status(Role::Warn, "git-config")
+        })
+        .section("Highlights", |s| {
+            s.status(Role::Accent, "new release available")
+                .status(Role::Secondary, "from registry: stable")
         });
     p.emit(doc);
 });
@@ -48,6 +60,10 @@ golden_themed!(bucket_d, solarized_light_preset, "solarized-light", |p| {
         .section("Drift", |s| {
             s.status(Role::Warn, "shell-config")
                 .status(Role::Warn, "git-config")
+        })
+        .section("Highlights", |s| {
+            s.status(Role::Accent, "new release available")
+                .status(Role::Secondary, "from registry: stable")
         });
     p.emit(doc);
 });
@@ -59,6 +75,10 @@ golden_themed!(bucket_d, minimal_preset, "minimal", |p| {
         .section("Drift", |s| {
             s.status(Role::Warn, "shell-config")
                 .status(Role::Warn, "git-config")
+        })
+        .section("Highlights", |s| {
+            s.status(Role::Accent, "new release available")
+                .status(Role::Secondary, "from registry: stable")
         });
     p.emit(doc);
 });
