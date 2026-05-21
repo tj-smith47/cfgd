@@ -22,6 +22,7 @@ toml = "0.8"
 console = "0.15"
 indicatif = { version = "0.17", features = ["tokio"] }
 syntect = "5"
+unicode-width = "0.2"
 
 # Logging / Tracing
 tracing = "0.1"

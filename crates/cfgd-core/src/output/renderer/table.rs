@@ -1,4 +1,5 @@
 use serde::Serialize;
+use unicode_width::UnicodeWidthStr;
 
 use super::{Renderer, Writer, role_glyph};
 use crate::output::{Role, Verbosity};
@@ -62,19 +63,24 @@ impl Renderer {
         let cols = t.headers.len();
         let mut widths = vec![0usize; cols];
         for (i, h) in t.headers.iter().enumerate() {
-            widths[i] = h.len();
+            widths[i] = UnicodeWidthStr::width(h.as_str());
         }
         for row in &t.rows {
             for (i, cell) in row.iter().enumerate().take(cols) {
-                widths[i] = widths[i].max(cell.len());
+                widths[i] = widths[i].max(UnicodeWidthStr::width(cell.as_str()));
             }
         }
-        // Header row
+        // Header row. Pad by the display-width deficit so CJK / emoji / accented
+        // cells line up with ASCII neighbours — `format!("{:<w$}", ...)` pads by
+        // char count, which over-pads multi-byte and under-pads zero-width.
         let header_line: String = t
             .headers
             .iter()
             .enumerate()
-            .map(|(i, h)| format!("{:<width$}", h, width = widths[i]))
+            .map(|(i, h)| {
+                let pad = widths[i].saturating_sub(UnicodeWidthStr::width(h.as_str()));
+                format!("{h}{}", " ".repeat(pad))
+            })
             .collect::<Vec<_>>()
             .join("  ");
         let styled = self.theme.header.apply_to(&header_line).to_string();
@@ -97,7 +103,8 @@ impl Renderer {
                 .enumerate()
                 .take(cols)
                 .map(|(i, cell)| {
-                    let padded = format!("{:<width$}", cell, width = widths[i]);
+                    let pad = widths[i].saturating_sub(UnicodeWidthStr::width(cell.as_str()));
+                    let padded = format!("{cell}{}", " ".repeat(pad));
                     match roles_for_row.get(i).and_then(|r| *r) {
                         Some(role) => {
                             let (_icon, style) = role_glyph(&self.theme, role);
@@ -164,5 +171,105 @@ mod tests {
             .row_styled([("styled", Some(Role::Ok)), ("nostyle", None)]);
         assert_eq!(t.rows.len(), t.row_roles.len());
         assert_eq!(t.row_roles[1], vec![Some(Role::Ok), None]);
+    }
+
+    /// Returns the display-width prefix of `line` ending at the first byte
+    /// occurrence of `needle`. Drives the column-alignment assertions for
+    /// CJK / emoji rows where byte index ≠ display column.
+    fn prefix_display_width(line: &str, needle: &str) -> usize {
+        let idx = line
+            .find(needle)
+            .unwrap_or_else(|| panic!("needle {needle:?} missing in line {line:?}"));
+        UnicodeWidthStr::width(&line[..idx])
+    }
+
+    #[test]
+    fn table_aligns_cjk_cells_by_display_width() {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(Theme::default(), Verbosity::Normal);
+        let t = Table::new(["Name", "Score"])
+            .row(["京都", "100"])
+            .row(["Tokyo", "200"]);
+        r.render_table(&sink, 0, &t);
+        let out = crate::output::strip_ansi(&buf.lock().unwrap().clone());
+        let lines: Vec<&str> = out.lines().collect();
+        let kyoto = lines
+            .iter()
+            .find(|l| l.contains("京都"))
+            .expect("kyoto row missing");
+        let tokyo = lines
+            .iter()
+            .find(|l| l.contains("Tokyo"))
+            .expect("tokyo row missing");
+        assert_eq!(
+            prefix_display_width(kyoto, "100"),
+            prefix_display_width(tokyo, "200"),
+            "CJK and ASCII rows must align by display width.\nout:\n{out}"
+        );
+    }
+
+    #[test]
+    fn table_aligns_emoji_cells_by_display_width() {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(Theme::default(), Verbosity::Normal);
+        let t = Table::new(["Status", "Note"])
+            .row(["✓", "ok"])
+            .row(["⚠️", "warn"])
+            .row(["complete", "yep"]);
+        r.render_table(&sink, 0, &t);
+        let out = crate::output::strip_ansi(&buf.lock().unwrap().clone());
+        let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+        let ok_line = lines
+            .iter()
+            .find(|l| l.contains(" ok"))
+            .expect("ok row missing");
+        let warn_line = lines
+            .iter()
+            .find(|l| l.contains("warn"))
+            .expect("warn row missing");
+        let yep_line = lines
+            .iter()
+            .find(|l| l.contains("yep"))
+            .expect("yep row missing");
+        let positions = [
+            prefix_display_width(ok_line, "ok"),
+            prefix_display_width(warn_line, "warn"),
+            prefix_display_width(yep_line, "yep"),
+        ];
+        let first = positions[0];
+        for (i, p) in positions.iter().enumerate() {
+            assert_eq!(
+                *p, first,
+                "row {i} note column misaligned, got width {p}, expected {first}\nout:\n{out}"
+            );
+        }
+    }
+
+    #[test]
+    fn table_aligns_cyrillic_cells_by_display_width() {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(Theme::default(), Verbosity::Normal);
+        let t = Table::new(["Name", "City"])
+            .row(["Москва", "ru"])
+            .row(["Paris", "fr"]);
+        r.render_table(&sink, 0, &t);
+        let out = crate::output::strip_ansi(&buf.lock().unwrap().clone());
+        let lines: Vec<&str> = out.lines().collect();
+        let ru = lines
+            .iter()
+            .find(|l| l.contains("Москва"))
+            .expect("ru row missing");
+        let fr = lines
+            .iter()
+            .find(|l| l.contains("Paris"))
+            .expect("fr row missing");
+        assert_eq!(
+            prefix_display_width(ru, "ru"),
+            prefix_display_width(fr, "fr"),
+            "Cyrillic and ASCII rows must align by display width.\nout:\n{out}"
+        );
     }
 }

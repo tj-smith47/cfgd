@@ -600,6 +600,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-test",
+ "unicode-width 0.2.2",
  "ureq",
  "windows-service",
  "windows-sys 0.59.0",
