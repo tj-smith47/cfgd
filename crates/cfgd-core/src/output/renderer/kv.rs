@@ -122,7 +122,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::super::{Renderer, StringSink};
-    use crate::output::tests::strip_ansi;
+    use crate::output::strip_ansi;
     use crate::output::{Theme, Verbosity};
 
     fn capture() -> (Renderer, StringSink, Arc<Mutex<String>>) {

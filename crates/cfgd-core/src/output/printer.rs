@@ -364,9 +364,9 @@ impl Drop for Printer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::output::test_support::ColorsEnabledGuard;
     #[cfg(feature = "test-helpers")]
-    use crate::output::tests::strip_ansi;
+    use crate::output::strip_ansi;
+    use crate::output::test_support::ColorsEnabledGuard;
     use crate::test_helpers::EnvVarGuard;
     use serial_test::serial;
 

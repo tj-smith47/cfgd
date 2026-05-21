@@ -120,7 +120,7 @@ mod tests {
     use super::super::renderer::{Renderer, StringSink};
     use super::super::{Theme, Verbosity};
     use super::*;
-    use crate::output::tests::strip_ansi;
+    use crate::output::strip_ansi;
     use serial_test::serial;
 
     fn build() -> (Arc<Renderer>, Arc<Mutex<String>>) {

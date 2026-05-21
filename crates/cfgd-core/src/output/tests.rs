@@ -52,7 +52,7 @@ macro_rules! golden_at {
             $body
             $p.flush();
             let raw = buf.lock().unwrap().clone();
-            let actual = $crate::output::tests::strip_ansi(&raw);
+            let actual = $crate::output::strip_ansi(&raw);
             let path = std::path::Path::new("src/output/tests/snapshots")
                 .join(stringify!($bucket))
                 .join(format!("{}.txt", stringify!($name)));
@@ -84,7 +84,7 @@ macro_rules! golden_themed {
             $body
             $p.flush();
             let raw = buf.lock().unwrap().clone();
-            let actual = $crate::output::tests::strip_ansi(&raw);
+            let actual = $crate::output::strip_ansi(&raw);
             let path = std::path::Path::new("src/output/tests/snapshots")
                 .join(stringify!($bucket))
                 .join(format!("{}.txt", stringify!($name)));
@@ -98,30 +98,4 @@ macro_rules! golden_themed {
                 actual, expected, "snapshot mismatch: {}", stringify!($name));
         }
     };
-}
-
-/// ANSI-stripping helper used by `golden_at!` and by every per-module
-/// `#[cfg(test)] mod tests` block under `output/`. Lives at module scope so
-/// all buckets and sibling tests can reach it via
-/// `crate::output::tests::strip_ansi`.
-///
-/// Chars-based so it is safe across multi-byte UTF-8 glyphs (`✓ ✗ — →`). ANSI
-/// CSI sequences are all ASCII, so we can walk chars and skip them without
-/// splitting glyphs.
-pub(crate) fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' && chars.peek() == Some(&'[') {
-            chars.next(); // consume '['
-            for inner in chars.by_ref() {
-                if inner == 'm' {
-                    break;
-                }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }

@@ -225,28 +225,12 @@ pub fn assert_snapshot_at(base: &std::path::Path, name: &str, actual: &str) {
     pretty_assertions::assert_eq!(actual, expected, "snapshot mismatch: {name}");
 }
 
-/// ANSI-stripping helper used by `assert_*_snapshot`. Mirrors
-/// `crate::output::tests::strip_ansi` but lives here because this file is
-/// feature-gated (not test-gated) — `crate::output::tests` is only present
-/// under `#[cfg(test)]` and is unreachable from a `cargo build
-/// --features test-helpers` compile of this module.
-pub fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' && chars.peek() == Some(&'[') {
-            chars.next(); // consume '['
-            for inner in chars.by_ref() {
-                if inner == 'm' {
-                    break;
-                }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
+/// ANSI-stripping helper used by `assert_*_snapshot` and by external
+/// integration tests that consume the `test-helpers` feature. Re-exported
+/// from the canonical location at `crate::output::strip_ansi` so the
+/// long-established `crate::output::test_capture::strip_ansi` path keeps
+/// resolving from feature-gated callers.
+pub use crate::output::strip_ansi;
 
 /// Strip ` (N.Ns)` spinner finish-duration markers so snapshots survive
 /// runtime variance. Matches ` (` + digits + `.` + digits + `s)`.

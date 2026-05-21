@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use super::{Renderer, Writer, role_glyph};
-use crate::output::{Role, Verbosity};
+use crate::output::{Role, Verbosity, strip_ansi};
 
 /// Inputs to a single Status line. Builders convert to this for rendering.
 pub struct StatusFields<'a> {
@@ -83,7 +83,12 @@ impl Renderer {
         // own (Ns) parens block.
         if let Some(detail) = f.detail {
             line.push_str(" — ");
-            line.push_str(detail);
+            // Sanitize at the renderer boundary: detail may carry external
+            // tool stderr or `format!("{e}")` content with embedded ANSI
+            // escapes. A stray `\x1b[0m` would prematurely terminate the
+            // role styling above; foreign color escapes would paint
+            // subsequent terminal output until the next reset.
+            line.push_str(&strip_ansi(detail));
         }
         if let Some(target) = f.target {
             let dim = self
@@ -108,7 +113,7 @@ mod tests {
     use super::super::StringSink;
     use super::*;
     use crate::output::Theme;
-    use crate::output::tests::strip_ansi;
+    use crate::output::strip_ansi;
 
     fn capture() -> (Renderer, StringSink, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
@@ -232,5 +237,43 @@ mod tests {
             },
         );
         assert!(buf.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn detail_strips_ansi_to_prevent_terminal_paint() {
+        let (r, sink, buf) = capture();
+        let detail = "upstream: \x1b[31mred\x1b[0m text \x1b[1mbold\x1b[0m";
+        r.render_status(
+            &sink,
+            0,
+            &StatusFields {
+                role: Role::Fail,
+                subject: "sync failed",
+                detail: Some(detail),
+                duration: None,
+                target: None,
+            },
+        );
+        let raw = buf.lock().unwrap().clone();
+        let visible = strip_ansi(&raw);
+        assert!(
+            visible.contains("sync failed — upstream: red text bold"),
+            "visible composition mismatch; got: {visible:?}"
+        );
+        // The renderer's own SGR styles the Fail glyph + subject (bold red),
+        // so a blanket `!raw.contains("\\x1b[")` is too strict. Pick a SGR
+        // code the renderer would never emit for Fail (foreground red `31`)
+        // to prove the detail's escapes were sanitized away.
+        assert!(
+            !raw.contains("\x1b[31m"),
+            "detail's red SGR must be stripped before push_str; got raw: {raw:?}"
+        );
+        // And the stray `\x1b[0m` mid-detail must not survive — it would
+        // otherwise close the renderer's subject styling prematurely.
+        let detail_segment = raw.rsplit(" — ").next().unwrap_or("");
+        assert!(
+            !detail_segment.contains('\u{1b}'),
+            "detail segment must contain no ANSI escapes; got: {detail_segment:?}"
+        );
     }
 }
