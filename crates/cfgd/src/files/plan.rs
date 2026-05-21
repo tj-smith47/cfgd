@@ -390,8 +390,6 @@ mod tests {
         }
     }
 
-    // --- detect_language ---
-
     #[test]
     fn detect_language_rs() {
         assert_eq!(detect_language(std::path::Path::new("main.rs")), "rs");
@@ -428,8 +426,6 @@ mod tests {
         assert_eq!(detect_language(std::path::Path::new("Makefile")), "txt");
     }
 
-    // --- effective_strategy ---
-
     #[test]
     fn effective_strategy_tera_forces_copy() {
         let dir = tempfile::tempdir().unwrap();
@@ -465,8 +461,6 @@ mod tests {
         let result = fm.effective_strategy(source, None);
         assert_eq!(result, FileStrategy::Symlink);
     }
-
-    // --- plan ---
 
     #[test]
     fn plan_empty_profile_returns_empty_vec() {
@@ -713,8 +707,6 @@ mod tests {
         );
     }
 
-    // --- check_permissions ---
-
     #[test]
     #[cfg(unix)]
     fn check_permissions_per_file_field_takes_priority() {
@@ -826,8 +818,6 @@ mod tests {
             "error should describe invalid mode, got: {msg}"
         );
     }
-
-    // --- diff ---
 
     #[test]
     fn diff_empty_profile_returns_false() {
