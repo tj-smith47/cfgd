@@ -296,8 +296,6 @@ mod tests {
         cmd_module_keys_generate, cmd_module_keys_list, cmd_module_keys_rotate,
     };
 
-    // --- mask_value ---
-
     #[test]
     fn mask_value_empty_returns_sentinel() {
         assert_eq!(mask_value(""), "***");
@@ -325,8 +323,6 @@ mod tests {
         let result = mask_value("abcd");
         assert_eq!(result, "***bcd");
     }
-
-    // --- cmd_module_keys_generate ---
 
     #[cfg(unix)]
     #[test]
@@ -399,8 +395,6 @@ mod tests {
         assert_eq!(json["dir"], dir_str, "data payload dir mismatch");
     }
 
-    // --- cmd_module_keys_list ---
-
     #[test]
     #[serial]
     fn list_empty_home_emits_no_keys_found() {
@@ -434,8 +428,6 @@ mod tests {
             "key name should contain 'cosign.pub': {names:?}"
         );
     }
-
-    // --- cmd_module_keys_rotate ---
 
     #[cfg(unix)]
     #[test]

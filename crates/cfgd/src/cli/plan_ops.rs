@@ -1375,7 +1375,7 @@ mod tests {
         let failed_line = out
             .lines()
             .find(|l| l.contains("4 action(s) failed"))
-            .expect(&format!("expected failed line in output, got: {out}"));
+            .unwrap_or_else(|| panic!("expected failed line in output, got: {out}"));
         assert!(
             failed_line.contains("(2.5s)"),
             "expected '(2.5s)' on failed line, got: {failed_line}"
