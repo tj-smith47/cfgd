@@ -1043,3 +1043,390 @@ fn macos_write_launchd_plist_creates_parent_dir() {
             .exists()
     );
 }
+
+#[test]
+#[serial_test::serial]
+fn macos_launchctl_setenv_warns_through_printer_when_launchctl_unavailable() {
+    use cfgd_core::output::Verbosity;
+    let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
+
+    let mut managed = BTreeMap::new();
+    managed.insert("TEST_VAR".to_string(), "test_value".to_string());
+
+    EnvironmentConfigurator::macos_launchctl_setenv(&managed, &printer);
+
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        captured.contains("launchctl setenv"),
+        "printer should capture launchctl failure message, got: {captured}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn macos_launchctl_setenv_no_output_when_empty_managed() {
+    use cfgd_core::output::Verbosity;
+    let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
+
+    EnvironmentConfigurator::macos_launchctl_setenv(&BTreeMap::new(), &printer);
+
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        captured.is_empty(),
+        "no printer output expected for empty managed, got: {captured}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn windows_set_var_warns_through_printer_when_setx_unavailable() {
+    use cfgd_core::output::Verbosity;
+    let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
+
+    EnvironmentConfigurator::windows_set_var("MY_VAR", "my_value", &printer);
+
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        captured.contains("setx MY_VAR"),
+        "printer should capture setx failure message, got: {captured}"
+    );
+}
+
+#[test]
+fn apply_linux_warns_on_permission_errors_for_etc_paths() {
+    use cfgd_core::output::Verbosity;
+    let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
+    let ec = EnvironmentConfigurator;
+
+    let yaml: serde_yaml::Value = serde_yaml::from_str(
+        r#"
+TEST_ENV_VAR: "test_value"
+"#,
+    )
+    .unwrap();
+
+    let result = ec.apply(&yaml, &printer);
+    assert!(result.is_ok());
+
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        captured.contains("Managing 1 environment variable(s)"),
+        "expected managing message, got: {captured}"
+    );
+}
+
+#[test]
+fn apply_linux_writes_etc_environment_and_profile_d_with_tempdir() {
+    use cfgd_core::output::Verbosity;
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let etc_env = dir.path().join("environment");
+    let profile_d = dir.path().join("profile.d").join("cfgd-env.sh");
+
+    let mut managed = BTreeMap::new();
+    managed.insert("FOO".to_string(), "bar".to_string());
+
+    EnvironmentConfigurator::write_etc_environment_to(&etc_env, &managed).unwrap();
+    EnvironmentConfigurator::write_profile_d_to(&profile_d, &managed).unwrap();
+
+    let env_content = std::fs::read_to_string(&etc_env).unwrap();
+    assert!(env_content.contains("FOO=bar"), "got: {env_content}");
+    assert!(env_content.contains(CFGD_BLOCK_BEGIN));
+
+    let profile_content = std::fs::read_to_string(&profile_d).unwrap();
+    assert!(
+        profile_content.contains("export FOO=") && profile_content.contains("bar"),
+        "got: {profile_content}"
+    );
+
+    let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
+    let _ = Arc::new(&printer);
+
+    let yaml: serde_yaml::Value = serde_yaml::from_str(r#"FOO: "bar""#).unwrap();
+    let ec = EnvironmentConfigurator;
+    let result = ec.apply(&yaml, &printer);
+    assert!(result.is_ok());
+
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        captured.contains("Managing 1 environment variable(s)"),
+        "got: {captured}"
+    );
+}
+
+#[test]
+fn diff_no_drift_when_desired_is_empty() {
+    let ec = EnvironmentConfigurator;
+    let yaml = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+    let drifts = ec.diff(&yaml).unwrap();
+    assert!(drifts.is_empty(), "empty desired produces no drifts");
+}
+
+#[test]
+fn diff_reports_changed_value() {
+    let ec = EnvironmentConfigurator;
+    let yaml: serde_yaml::Value = serde_yaml::from_str(
+        r#"
+CFGD_NONEXISTENT_DRIFT_TEST_VAR: "expected_value"
+"#,
+    )
+    .unwrap();
+
+    let drifts = ec.diff(&yaml).unwrap();
+    assert_eq!(drifts.len(), 1);
+    let d = &drifts[0];
+    assert_eq!(d.key, "CFGD_NONEXISTENT_DRIFT_TEST_VAR");
+    assert_eq!(d.expected, "expected_value");
+    assert!(d.actual.is_empty(), "absent var should have empty actual");
+}
+
+#[test]
+fn current_state_returns_yaml_mapping() {
+    let ec = EnvironmentConfigurator;
+    let state = ec.current_state().unwrap();
+    assert!(
+        state.is_mapping(),
+        "current_state must return a YAML mapping"
+    );
+    let mapping = state.as_mapping().unwrap();
+    for (k, v) in mapping {
+        assert!(k.is_string(), "all keys must be strings");
+        assert!(v.is_string(), "all values must be strings");
+    }
+}
+
+#[test]
+fn is_available_returns_true_on_unix() {
+    let ec = EnvironmentConfigurator;
+    assert!(ec.is_available(), "should be available on unix");
+}
+
+#[test]
+fn macos_write_env_sh_overwrites_existing_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let _g = cfgd_core::with_test_home_guard(dir.path());
+
+    let env_sh = dir.path().join(".config/cfgd/env.sh");
+
+    let mut first = BTreeMap::new();
+    first.insert("OLD_VAR".to_string(), "old_value".to_string());
+    EnvironmentConfigurator::macos_write_env_sh(&first).unwrap();
+    let initial = std::fs::read_to_string(&env_sh).unwrap();
+    assert!(
+        initial.contains("OLD_VAR"),
+        "first write should have OLD_VAR"
+    );
+
+    let mut second = BTreeMap::new();
+    second.insert("NEW_VAR".to_string(), "new_value".to_string());
+    EnvironmentConfigurator::macos_write_env_sh(&second).unwrap();
+    let updated = std::fs::read_to_string(&env_sh).unwrap();
+    assert!(
+        !updated.contains("OLD_VAR"),
+        "second write should not contain OLD_VAR"
+    );
+    assert!(
+        updated.contains("NEW_VAR"),
+        "second write should have NEW_VAR"
+    );
+}
+
+fn write_fake_binary(bin_dir: &std::path::Path, name: &str, exit_code: u8, stderr: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let script = format!(
+        "#!/bin/sh\necho '{}' >&2\nexit {}\n",
+        stderr.replace('\'', "'\\''"),
+        exit_code
+    );
+    let path = bin_dir.join(name);
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+#[serial_test::serial]
+fn macos_launchctl_setenv_ok_success_path_with_fake_binary() {
+    use cfgd_core::output::Verbosity;
+    use cfgd_core::test_helpers::EnvVarGuard;
+
+    let bin_dir = tempfile::tempdir().unwrap();
+    write_fake_binary(bin_dir.path(), "launchctl", 0, "");
+
+    let old_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
+    let _path_guard = EnvVarGuard::set("PATH", &new_path);
+
+    let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
+    let mut managed = BTreeMap::new();
+    managed.insert("FOO".to_string(), "bar".to_string());
+
+    EnvironmentConfigurator::macos_launchctl_setenv(&managed, &printer);
+
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        captured.is_empty(),
+        "successful launchctl should produce no printer output, got: {captured}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn macos_launchctl_setenv_ok_failure_path_with_fake_binary() {
+    use cfgd_core::output::Verbosity;
+    use cfgd_core::test_helpers::EnvVarGuard;
+
+    let bin_dir = tempfile::tempdir().unwrap();
+    write_fake_binary(bin_dir.path(), "launchctl", 1, "operation not permitted");
+
+    let old_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
+    let _path_guard = EnvVarGuard::set("PATH", &new_path);
+
+    let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
+    let mut managed = BTreeMap::new();
+    managed.insert("BAR".to_string(), "baz".to_string());
+
+    EnvironmentConfigurator::macos_launchctl_setenv(&managed, &printer);
+
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        captured.contains("launchctl setenv BAR"),
+        "failed launchctl should print warning, got: {captured}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn windows_set_var_ok_success_path_with_fake_binary() {
+    use cfgd_core::output::Verbosity;
+    use cfgd_core::test_helpers::EnvVarGuard;
+
+    let bin_dir = tempfile::tempdir().unwrap();
+    write_fake_binary(bin_dir.path(), "setx", 0, "");
+
+    let old_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
+    let _path_guard = EnvVarGuard::set("PATH", &new_path);
+
+    let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
+
+    EnvironmentConfigurator::windows_set_var("MY_KEY", "my_val", &printer);
+
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        captured.is_empty(),
+        "successful setx should produce no printer output, got: {captured}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn windows_set_var_ok_failure_path_with_fake_binary() {
+    use cfgd_core::output::Verbosity;
+    use cfgd_core::test_helpers::EnvVarGuard;
+
+    let bin_dir = tempfile::tempdir().unwrap();
+    write_fake_binary(bin_dir.path(), "setx", 1, "ERROR: Invalid syntax");
+
+    let old_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
+    let _path_guard = EnvVarGuard::set("PATH", &new_path);
+
+    let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
+
+    EnvironmentConfigurator::windows_set_var("BAD_VAR", "val", &printer);
+
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        captured.contains("setx BAD_VAR"),
+        "failed setx should print warning, got: {captured}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn diff_detects_drift_when_current_has_different_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let env_path = dir.path().join("environment");
+
+    let mut current_managed = BTreeMap::new();
+    current_managed.insert("CFGD_DIFF_TEST_KEY".to_string(), "old_val".to_string());
+    EnvironmentConfigurator::write_etc_environment_to(&env_path, &current_managed).unwrap();
+
+    let vars = EnvironmentConfigurator::parse_env_file(env_path.to_str().unwrap());
+    assert_eq!(
+        vars.get("CFGD_DIFF_TEST_KEY").map(String::as_str),
+        Some("old_val")
+    );
+
+    let desired: serde_yaml::Value =
+        serde_yaml::from_str("CFGD_DIFF_TEST_KEY: \"new_val\"").unwrap();
+    let desired_vars = EnvironmentConfigurator::desired_vars(&desired);
+    let current_vars = vars;
+    let mut drifts = Vec::new();
+    for (key, desired_value) in &desired_vars {
+        match current_vars.get(key) {
+            Some(current_value) if current_value == desired_value => {}
+            Some(current_value) => {
+                drifts.push(cfgd_core::providers::SystemDrift {
+                    key: key.clone(),
+                    expected: desired_value.clone(),
+                    actual: current_value.clone(),
+                });
+            }
+            None => {
+                drifts.push(cfgd_core::providers::SystemDrift {
+                    key: key.clone(),
+                    expected: desired_value.clone(),
+                    actual: String::new(),
+                });
+            }
+        }
+    }
+    assert_eq!(drifts.len(), 1);
+    let d = &drifts[0];
+    assert_eq!(d.key, "CFGD_DIFF_TEST_KEY");
+    assert_eq!(d.expected, "new_val");
+    assert_eq!(d.actual, "old_val");
+}
+
+#[test]
+#[serial_test::serial]
+fn diff_no_drift_when_value_matches_current() {
+    let dir = tempfile::tempdir().unwrap();
+    let env_path = dir.path().join("environment");
+
+    let mut current_managed = BTreeMap::new();
+    current_managed.insert("CFGD_MATCH_TEST_KEY".to_string(), "exact_val".to_string());
+    EnvironmentConfigurator::write_etc_environment_to(&env_path, &current_managed).unwrap();
+
+    let current_vars = EnvironmentConfigurator::parse_env_file(env_path.to_str().unwrap());
+    assert_eq!(
+        current_vars.get("CFGD_MATCH_TEST_KEY").map(String::as_str),
+        Some("exact_val")
+    );
+
+    let desired_vars = current_managed;
+    let mut drifts = Vec::new();
+    for (key, desired_value) in &desired_vars {
+        match current_vars.get(key) {
+            Some(current_value) if current_value == desired_value => {}
+            Some(current_value) => {
+                drifts.push(cfgd_core::providers::SystemDrift {
+                    key: key.clone(),
+                    expected: desired_value.clone(),
+                    actual: current_value.clone(),
+                });
+            }
+            None => {
+                drifts.push(cfgd_core::providers::SystemDrift {
+                    key: key.clone(),
+                    expected: desired_value.clone(),
+                    actual: String::new(),
+                });
+            }
+        }
+    }
+    assert!(drifts.is_empty(), "matching value should produce no drift");
+}
