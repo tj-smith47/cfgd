@@ -297,14 +297,13 @@ golden_doc!(bucket_g, worked_example_init_next_steps, |p, cap| {
     next.bullet("cfgd apply                  — apply configuration");
 });
 
-// Surface: `cfgd module list` table — per-cell roles. The `Source` value "remote"
-// and `Status` value "pending" pick up secondary / accent styling via
-// `Table::row_styled`. Snapshot anchors the plain-text layout — width-aware
-// padding stays honest under embedded ANSI escapes (colors are off in tests, so
-// the visual is plain — the regression target is the row shape).
+// `cfgd module list` table — per-cell roles. The `Source` value "remote" and
+// `Status` value "pending" pick up secondary / accent styling via
+// `Table::row_styled`. Exercises the Doc emit path (not the streaming
+// `Printer::table`) because `build_module_list_doc` returns a Doc; the
+// streaming path doesn't validate that `row_roles` survive the
+// `Component::Table` round-trip.
 golden_doc!(bucket_g, module_list_table_styled_cells, |p, cap| {
-    let doc = Doc::new().heading("Modules");
-    p.emit(doc);
     use crate::output::renderer::Table;
     let t = Table::new(["Module", "Source", "Status"])
         .row_styled([
@@ -317,7 +316,7 @@ golden_doc!(bucket_g, module_list_table_styled_cells, |p, cap| {
             ("remote".to_string(), Some(Role::Secondary)),
             ("pending".to_string(), Some(Role::Accent)),
         ]);
-    p.table(t);
+    p.emit(Doc::new().heading("Modules").table(t));
 });
 
 // Surface: `cfgd sync` per-source pivot line. `Role::Secondary` status_simple

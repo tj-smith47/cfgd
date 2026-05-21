@@ -35,6 +35,11 @@ pub enum Component {
     Table {
         headers: Vec<String>,
         rows: Vec<Vec<String>>,
+        /// Per-cell role tags, parallel to `rows`. Skipped from JSON when all
+        /// cells are plain — keeps the structured-output shape stable for
+        /// consumers that don't care about presentation styling.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        row_roles: Vec<Vec<Option<Role>>>,
     },
     Section {
         name: String,

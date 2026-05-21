@@ -117,6 +117,16 @@ impl Printer {
         console::set_colors_enabled_stderr(false);
     }
 
+    /// Force color globally regardless of TTY detection. Symmetric to
+    /// `disable_colors` so demo / example binaries that pipe their output for
+    /// capture can still emit real ANSI escapes. Production CLI dispatch goes
+    /// through `with_format`, which honors `NO_COLOR` and structured-output
+    /// gating — call this only from non-production entry points.
+    pub fn enable_colors() {
+        console::set_colors_enabled(true);
+        console::set_colors_enabled_stderr(true);
+    }
+
     /// Style a string with the role's theme color, returning the pre-styled
     /// content for embedding inside another `status` / `kv` value. The
     /// terminal-write boundary stays inside `Printer` — callers pass the

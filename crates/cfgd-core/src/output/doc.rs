@@ -131,6 +131,7 @@ impl Doc {
         self.children.push(Component::Table {
             headers: t.headers,
             rows: t.rows,
+            row_roles: t.row_roles,
         });
         self
     }
@@ -291,6 +292,7 @@ impl SectionBuilder {
         self.children.push(Component::Table {
             headers: t.headers,
             rows: t.rows,
+            row_roles: t.row_roles,
         });
         self
     }

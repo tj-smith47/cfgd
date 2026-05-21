@@ -62,11 +62,15 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
         Component::Note { text } => {
             renderer.render_note(sink, depth, text);
         }
-        Component::Table { headers, rows } => {
+        Component::Table {
+            headers,
+            rows,
+            row_roles,
+        } => {
             let t = Table {
                 headers: headers.clone(),
                 rows: rows.clone(),
-                row_roles: Vec::new(),
+                row_roles: row_roles.clone(),
             };
             renderer.render_table(sink, depth, &t);
         }
@@ -84,6 +88,81 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
                 render_component(renderer, sink, child, depth + 1);
             }
             renderer.render_section_close(sink);
+        }
+    }
+}
+
+#[cfg(test)]
+mod row_roles_round_trip_tests {
+    //! Anchor that `Table::row_styled` survives the `Doc::table` →
+    //! `Component::Table` → `render_doc::render_component` →
+    //! `Renderer::render_table` round trip with real ANSI escapes on output.
+    //! Plain-text snapshots (default in this crate's other test buckets)
+    //! cannot catch a regression that drops `row_roles` mid-trip — the
+    //! styling is invisible without colors enabled.
+
+    use super::*;
+    use crate::output::renderer::Renderer;
+    use crate::output::{Role, Theme, Verbosity};
+    use std::sync::{Arc, Mutex};
+
+    struct StringSink(Arc<Mutex<String>>);
+    impl super::Writer for StringSink {
+        fn write_line(&self, text: &str) {
+            self.0.lock().unwrap().push_str(text);
+            self.0.lock().unwrap().push('\n');
+        }
+    }
+
+    #[test]
+    fn doc_table_row_roles_reach_renderer_with_truecolor_escapes() {
+        let _restore_no_color = std::env::var("NO_COLOR").ok();
+        let _restore_colorterm = std::env::var("COLORTERM").ok();
+        // SAFETY: setting env in a test process; restored in best-effort fashion
+        // below. Single-threaded test enforced by serial_test in callers that need it.
+        unsafe {
+            std::env::set_var("COLORTERM", "truecolor");
+            std::env::remove_var("NO_COLOR");
+        }
+        let was_enabled = console::colors_enabled();
+        console::set_colors_enabled(true);
+
+        let theme = Theme::from_preset("dracula");
+        let renderer = Renderer::new(theme, Verbosity::Normal);
+        let buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+
+        let t = Table::new(["Source", "Status"])
+            .row_styled([("local".to_string(), None), ("installed".to_string(), None)])
+            .row_styled([
+                ("remote".to_string(), Some(Role::Secondary)),
+                ("pending".to_string(), Some(Role::Accent)),
+            ]);
+        let doc = Doc::new().table(t);
+        render_doc(&renderer, &sink, &doc);
+
+        let out = buf.lock().unwrap().clone();
+        let dracula_pink = "\x1b[38;2;255;121;198m";
+        let dracula_orange = "\x1b[38;2;255;184;108m";
+        assert!(
+            out.contains(dracula_pink),
+            "secondary (pink) must reach renderer; got:\n{out:?}"
+        );
+        assert!(
+            out.contains(dracula_orange),
+            "accent (orange) must reach renderer; got:\n{out:?}"
+        );
+
+        console::set_colors_enabled(was_enabled);
+        unsafe {
+            match _restore_no_color {
+                Some(v) => std::env::set_var("NO_COLOR", v),
+                None => std::env::remove_var("NO_COLOR"),
+            }
+            match _restore_colorterm {
+                Some(v) => std::env::set_var("COLORTERM", v),
+                None => std::env::remove_var("COLORTERM"),
+            }
         }
     }
 }
