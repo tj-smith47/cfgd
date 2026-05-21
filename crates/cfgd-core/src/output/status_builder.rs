@@ -9,7 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::Role;
-use super::renderer::{Renderer, StatusFields, Writer};
+use super::component::StatusLabel;
+use super::renderer::{Renderer, StatusFields, Writer, compose_subject_with_label};
 
 /// Builder for one Status line. Commits on Drop.
 ///
@@ -26,7 +27,7 @@ pub struct StatusBuilder<'p> {
     pub(crate) detail: Option<String>,
     pub(crate) duration: Option<Duration>,
     pub(crate) target: Option<PathBuf>,
-    pub(crate) label: Option<(Role, String)>,
+    pub(crate) label: Option<StatusLabel>,
     /// Lifetime parameter binding to either Printer or SectionGuard.
     pub(crate) _phantom: std::marker::PhantomData<&'p ()>,
 }
@@ -83,18 +84,18 @@ impl<'p> StatusBuilder<'p> {
     /// styled segments mid-subject, which would break the outer role color
     /// via the inner SGR reset.
     pub fn label(mut self, role: Role, text: impl Into<String>) -> Self {
-        self.label = Some((role, text.into()));
+        self.label = Some(StatusLabel {
+            role,
+            text: text.into(),
+        });
         self
     }
 }
 
 impl Drop for StatusBuilder<'_> {
     fn drop(&mut self) {
-        if let Some((label_role, label_text)) = &self.label {
-            let (_, style) = super::renderer::role_glyph(&self.renderer.theme, *label_role);
-            let styled = style.apply_to(label_text).to_string();
-            self.subject.push(' ');
-            self.subject.push_str(&styled);
+        if let Some(lbl) = &self.label {
+            self.subject = compose_subject_with_label(&self.renderer.theme, &self.subject, lbl);
         }
         let detail = self.detail.as_deref();
         let target = self.target.as_deref();
@@ -120,10 +121,10 @@ mod tests {
     use super::super::{Theme, Verbosity};
     use super::*;
     use crate::output::tests::strip_ansi;
+    use serial_test::serial;
 
-    fn build(role: Role) -> (Arc<Renderer>, Arc<Mutex<String>>) {
+    fn build() -> (Arc<Renderer>, Arc<Mutex<String>>) {
         let buf = Arc::new(Mutex::new(String::new()));
-        let _ = role; // role used by caller
         (
             Arc::new(Renderer::new(Theme::default(), Verbosity::Normal)),
             buf,
@@ -136,42 +137,20 @@ mod tests {
 
     #[test]
     fn unbound_builder_commits_immediately_on_drop() {
-        let (r, buf) = build(Role::Ok);
+        let (r, buf) = build();
         let sink = sink_for(&buf);
-        StatusBuilder {
-            renderer: r,
-            sink,
-            depth: 0,
-            role: Role::Ok,
-            subject: "done".into(),
-            detail: None,
-            duration: None,
-            target: None,
-            label: None,
-            _phantom: std::marker::PhantomData,
-        }; // drops here
+        StatusBuilder::new(r, sink, 0, Role::Ok, "done"); // drops here
         let s = strip_ansi(&buf.lock().unwrap());
         assert!(s.contains("✓ done"), "got: {s:?}");
     }
 
     #[test]
     fn chained_detail_and_duration_render() {
-        let (r, buf) = build(Role::Fail);
+        let (r, buf) = build();
         let sink = sink_for(&buf);
-        let b = StatusBuilder {
-            renderer: r,
-            sink,
-            depth: 0,
-            role: Role::Fail,
-            subject: "/tmp/foo".into(),
-            detail: None,
-            duration: None,
-            target: None,
-            label: None,
-            _phantom: std::marker::PhantomData,
-        }
-        .detail("permission denied")
-        .duration(std::time::Duration::from_millis(2500));
+        let b = StatusBuilder::new(r, sink, 0, Role::Fail, "/tmp/foo")
+            .detail("permission denied")
+            .duration(std::time::Duration::from_millis(2500));
         drop(b);
         let s = strip_ansi(&buf.lock().unwrap());
         assert!(s.contains("✗ /tmp/foo — permission denied"), "got: {s:?}");
@@ -183,32 +162,19 @@ mod tests {
     /// reset closing the label's color cannot be followed by any further
     /// outer-role-styled text. Visible composition: "<glyph> <subject> <label>".
     #[test]
+    #[serial]
     fn label_appends_at_end_of_subject() {
         let _restore_no_color = std::env::var("NO_COLOR").ok();
-        // SAFETY: single-threaded test guarded by serial_test? No — but the
-        // test reads its own buffer; collateral damage to other tests would
-        // only suppress styling, which doesn't affect strip_ansi assertions.
         unsafe {
             std::env::remove_var("NO_COLOR");
         }
         let was_enabled = console::colors_enabled();
         console::set_colors_enabled(true);
 
-        let (r, buf) = build(Role::Warn);
+        let (r, buf) = build();
         let sink = sink_for(&buf);
-        let b = StatusBuilder {
-            renderer: r,
-            sink,
-            depth: 0,
-            role: Role::Warn,
-            subject: "subject text".into(),
-            detail: None,
-            duration: None,
-            target: None,
-            label: None,
-            _phantom: std::marker::PhantomData,
-        }
-        .label(Role::Secondary, "[meta]");
+        let b = StatusBuilder::new(r, sink, 0, Role::Warn, "subject text")
+            .label(Role::Secondary, "[meta]");
         drop(b);
         let raw = buf.lock().unwrap().clone();
         let s = strip_ansi(&raw);

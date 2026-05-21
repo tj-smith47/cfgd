@@ -20,7 +20,7 @@ pub mod kv;
 pub mod section;
 pub mod status;
 pub mod table;
-pub(crate) use glyphs::role_glyph;
+pub(crate) use glyphs::{compose_subject_with_label, role_glyph};
 pub use status::StatusFields;
 pub use table::Table;
 

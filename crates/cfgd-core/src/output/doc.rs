@@ -12,7 +12,7 @@ pub struct StatusFields {
     pub detail: Option<String>,
     pub duration: Option<Duration>,
     pub target: Option<String>,
-    pub label: Option<(Role, String)>,
+    pub label: Option<StatusLabel>,
 }
 
 impl StatusFields {
@@ -36,7 +36,10 @@ impl StatusFields {
     /// the subject so the inner SGR reset cannot be followed by outer-role
     /// styled text — the only safe nesting shape for the streaming renderer.
     pub fn label(mut self, role: Role, text: impl Into<String>) -> Self {
-        self.label = Some((role, text.into()));
+        self.label = Some(StatusLabel {
+            role,
+            text: text.into(),
+        });
         self
     }
 }
@@ -122,7 +125,7 @@ impl Doc {
             detail: f.detail,
             duration_ms: f.duration.map(|d| d.as_millis()),
             target: f.target,
-            label: f.label.map(|(role, text)| StatusLabel { role, text }),
+            label: f.label,
         });
         self
     }
@@ -285,7 +288,7 @@ impl SectionBuilder {
             detail: f.detail,
             duration_ms: f.duration.map(|d| d.as_millis()),
             target: f.target,
-            label: f.label.map(|(role, text)| StatusLabel { role, text }),
+            label: f.label,
         });
         self
     }

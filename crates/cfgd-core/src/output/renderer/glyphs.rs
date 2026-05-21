@@ -1,5 +1,22 @@
+use crate::output::component::StatusLabel;
 use crate::output::theme::ThemedStyle;
 use crate::output::{Role, Theme};
+
+/// Compose a `subject` with a trailing styled `label`, separated by one ASCII
+/// space. The label always lands at end-of-subject so the inner SGR reset
+/// closing the label's color cannot be followed by outer-role-styled text —
+/// the only safe nesting shape for the streaming renderer. Single source of
+/// truth shared by `StatusBuilder::drop` (streaming) and `render_doc`
+/// (buffered Doc tree) so the two paths stay byte-identical.
+pub(crate) fn compose_subject_with_label(
+    theme: &Theme,
+    subject: &str,
+    label: &StatusLabel,
+) -> String {
+    let (_, style) = role_glyph(theme, label.role);
+    let styled = style.apply_to(&label.text).to_string();
+    format!("{subject} {styled}")
+}
 
 /// Look up the icon glyph + style for a Role.
 pub(crate) fn role_glyph(theme: &Theme, role: Role) -> (Option<&str>, ThemedStyle) {

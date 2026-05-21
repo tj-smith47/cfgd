@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use super::component::Component;
 use super::doc::Doc;
-use super::renderer::{Renderer, StatusFields, Table, Writer, role_glyph};
+use super::renderer::{Renderer, StatusFields, Table, Writer, compose_subject_with_label};
 
 pub(crate) fn render_doc(renderer: &Renderer, sink: &dyn Writer, doc: &Doc) {
     if let Some(h) = &doc.heading {
@@ -45,16 +45,9 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
             label,
         } => {
             let target_pb: Option<PathBuf> = target.as_ref().map(PathBuf::from);
-            // Compose the styled label into the subject. The label always
-            // lands at end-of-subject, so the inner SGR reset closing the
-            // label's color cannot be followed by outer-role-styled text —
-            // the only safe nesting shape for the streaming renderer.
-            let subject_owned = if let Some(l) = label {
-                let (_, style) = role_glyph(&renderer.theme, l.role);
-                let styled = style.apply_to(&l.text).to_string();
-                format!("{subject} {styled}")
-            } else {
-                subject.clone()
+            let subject_owned = match label {
+                Some(l) => compose_subject_with_label(&renderer.theme, subject, l),
+                None => subject.clone(),
             };
             renderer.render_status(
                 sink,
