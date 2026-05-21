@@ -853,8 +853,6 @@ fn write_etc_environment_escapes_double_quotes_in_value() {
     );
 }
 
-// --- macOS write paths (testable on any host via `with_test_home_guard`) ---
-
 #[test]
 fn macos_env_sh_path_is_under_default_config_dir() {
     let dir = tempfile::tempdir().unwrap();
@@ -1106,7 +1104,7 @@ TEST_ENV_VAR: "test_value"
     .unwrap();
 
     let result = ec.apply(&yaml, &printer);
-    assert!(result.is_ok());
+    result.expect("apply should succeed on Linux even when /etc paths require root");
 
     let captured = buf.lock().unwrap().clone();
     assert!(
@@ -1146,7 +1144,7 @@ fn apply_linux_writes_etc_environment_and_profile_d_with_tempdir() {
     let yaml: serde_yaml::Value = serde_yaml::from_str(r#"FOO: "bar""#).unwrap();
     let ec = EnvironmentConfigurator;
     let result = ec.apply(&yaml, &printer);
-    assert!(result.is_ok());
+    result.expect("apply should succeed on Linux for a single managed var");
 
     let captured = buf.lock().unwrap().clone();
     assert!(
