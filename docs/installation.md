@@ -155,10 +155,16 @@ helm install cfgd oci://ghcr.io/tj-smith47/charts/cfgd
 See [docs/operator.md](operator.md) for the full Helm values reference and
 [docs/multi-tenancy.md](multi-tenancy.md) for tenancy scoping.
 
-The kubectl plugin (for debugging nodes from your workstation) ships inside
-the same `cfgd` binary — install `cfgd` by any channel above and place a
-symlink (or copy) named `kubectl-cfgd` somewhere on `PATH`. The binary
-dispatches on `argv[0]`, so kubectl picks it up as the `cfgd` plugin:
+The kubectl plugin (for debugging nodes from your workstation) installs via
+Krew:
+
+```sh
+kubectl krew install cfgd
+```
+
+The plugin ships inside the same `cfgd` binary and dispatches on `argv[0]`,
+so installing via any other channel works too — symlink (or copy) the
+binary as `kubectl-cfgd` somewhere on `PATH` and kubectl picks it up:
 
 ```sh
 ln -s "$(command -v cfgd)" "$HOME/.local/bin/kubectl-cfgd"
