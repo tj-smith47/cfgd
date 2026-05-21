@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use super::component::Component;
 use super::doc::Doc;
-use super::renderer::{Renderer, StatusFields, Table, Writer, compose_subject_with_label};
+use super::renderer::{Renderer, StatusFields, Table, Writer, finalize_subject};
 
 pub(crate) fn render_doc(renderer: &Renderer, sink: &dyn Writer, doc: &Doc) {
     if let Some(h) = &doc.heading {
@@ -45,10 +45,11 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
             label,
         } => {
             let target_pb: Option<PathBuf> = target.as_ref().map(PathBuf::from);
-            let subject_owned = match label {
-                Some(l) => compose_subject_with_label(&renderer.theme, subject, l),
-                None => subject.clone(),
-            };
+            // Sanitize caller-supplied subject ANSI BEFORE composing the
+            // renderer-owned label SGR; matches `StatusBuilder::Drop`'s
+            // boundary handling so both Doc and streaming paths stay
+            // byte-identical.
+            let subject_owned = finalize_subject(&renderer.theme, subject, label.as_ref());
             renderer.render_status(
                 sink,
                 depth,

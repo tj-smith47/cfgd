@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use super::renderer::{Renderer, StatusFields, Writer};
 use super::spinner::stderr_is_terminal;
-use super::{Role, Verbosity};
+use super::{Role, Verbosity, strip_ansi};
 
 pub struct CommandOutput {
     pub status: std::process::ExitStatus,
@@ -69,6 +69,16 @@ fn make_output(
         stderr: all_stderr.join("\n"),
         duration,
     }
+}
+
+/// Sanitize a captured external-tool line and wrap it in the renderer's
+/// `muted` style. Strips foreign ANSI BEFORE the style is applied so a
+/// stray `\x1b[0m` in the tool output cannot prematurely close the muted
+/// styling, and foreign color escapes cannot paint past the spinner /
+/// post-failure dump.
+fn sanitize_and_mute(renderer: &Renderer, line: &str) -> String {
+    let clean = strip_ansi(line);
+    renderer.theme.muted.apply_to(clean).to_string()
 }
 
 fn spawn_readers(child: &mut std::process::Child) -> mpsc::Receiver<Captured> {
@@ -146,7 +156,7 @@ fn run_with_progress(
             msg.push_str(&format!(
                 "\n{}{}",
                 "  ".repeat(depth + 1),
-                renderer.theme.muted.apply_to(display)
+                sanitize_and_mute(renderer, display)
             ));
         }
         pb.set_message(msg);
@@ -179,7 +189,7 @@ fn run_with_progress(
             },
         );
         for line in &all_stderr {
-            let dim = renderer.theme.muted.apply_to(line).to_string();
+            let dim = sanitize_and_mute(renderer, line);
             renderer.write_line(sink, depth + 1, &dim);
         }
     }
@@ -268,6 +278,53 @@ mod tests {
             let _ = tx.send(f());
         });
         rx.recv_timeout(d).expect("test exceeded deadline")
+    }
+
+    /// Foreign ANSI carried in a captured external-tool stdout/stderr line
+    /// must be stripped BEFORE the renderer's `muted` style wraps it. A stray
+    /// `\x1b[0m` in the tool output would otherwise prematurely close the
+    /// muted styling on the spinner display line (or the post-failure dump),
+    /// and foreign color escapes would paint past the spinner. `Printer::run`
+    /// hands captured lines through `sanitize_and_mute` for that reason.
+    #[test]
+    #[serial_test::serial]
+    fn run_spinner_strips_ansi_from_external_tool_output() {
+        let _restore_no_color = std::env::var("NO_COLOR").ok();
+        // SAFETY: single-threaded under serial_test::serial; restored below.
+        unsafe {
+            std::env::remove_var("NO_COLOR");
+        }
+        let was_enabled = console::colors_enabled();
+        console::set_colors_enabled(true);
+
+        let renderer = Renderer::new(Theme::default(), Verbosity::Normal);
+        let foreign = "tool: \x1b[31mred\x1b[0m text \x1b[1mbold\x1b[0m";
+        let out = sanitize_and_mute(&renderer, foreign);
+        // The visible payload survives sanitation.
+        let visible = crate::output::strip_ansi(&out);
+        assert!(
+            visible.contains("tool: red text bold"),
+            "visible payload mismatch; got: {visible:?}"
+        );
+        // None of the foreign SGRs survive. The renderer's `muted` style is a
+        // dim grey foreground; the foreign red foreground `31` would never be
+        // emitted by the renderer itself, so its absence proves sanitation.
+        assert!(
+            !out.contains("\x1b[31m"),
+            "foreign red SGR must be stripped before muted wrap; got: {out:?}"
+        );
+        assert!(
+            !out.contains("\x1b[1m"),
+            "foreign bold SGR must be stripped before muted wrap; got: {out:?}"
+        );
+
+        console::set_colors_enabled(was_enabled);
+        unsafe {
+            match _restore_no_color {
+                Some(v) => std::env::set_var("NO_COLOR", v),
+                None => std::env::remove_var("NO_COLOR"),
+            }
+        }
     }
 
     // serial_test::serial because the test mutates the process's stdio inheritance

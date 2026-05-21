@@ -1,6 +1,6 @@
 use crate::output::component::StatusLabel;
 use crate::output::theme::ThemedStyle;
-use crate::output::{Role, Theme};
+use crate::output::{Role, Theme, strip_ansi};
 
 /// Compose a `subject` with a trailing styled `label`, separated by one ASCII
 /// space. The label always lands at end-of-subject so the inner SGR reset
@@ -16,6 +16,25 @@ pub(crate) fn compose_subject_with_label(
     let (_, style) = role_glyph(theme, label.role);
     let styled = style.apply_to(&label.text).to_string();
     format!("{subject} {styled}")
+}
+
+/// Sanitize a caller-supplied status subject and optionally append a styled
+/// label. The subject may carry foreign ANSI from a captured error string
+/// (`format!("sync failed for {url}: {e}")`); a stray `\x1b[0m` would
+/// prematurely close the role styling at the inner reset, and foreign color
+/// escapes would paint trailing characters until the next reset. Strip ANSI
+/// from the subject FIRST, then append the legitimate (renderer-controlled)
+/// label SGR so it survives sanitation.
+pub(crate) fn finalize_subject(
+    theme: &Theme,
+    subject: &str,
+    label: Option<&StatusLabel>,
+) -> String {
+    let sanitized = strip_ansi(subject);
+    match label {
+        Some(lbl) => compose_subject_with_label(theme, &sanitized, lbl),
+        None => sanitized,
+    }
 }
 
 /// Look up the icon glyph + style for a Role.

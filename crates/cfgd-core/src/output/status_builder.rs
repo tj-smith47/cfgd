@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use super::Role;
 use super::component::StatusLabel;
-use super::renderer::{Renderer, StatusFields, Writer, compose_subject_with_label};
+use super::renderer::{Renderer, StatusFields, Writer, finalize_subject};
 
 /// Builder for one Status line. Commits on Drop.
 ///
@@ -94,9 +94,11 @@ impl<'p> StatusBuilder<'p> {
 
 impl Drop for StatusBuilder<'_> {
     fn drop(&mut self) {
-        if let Some(lbl) = &self.label {
-            self.subject = compose_subject_with_label(&self.renderer.theme, &self.subject, lbl);
-        }
+        // Sanitize caller-supplied subject ANSI BEFORE composing the
+        // renderer-owned label SGR (foreign `\x1b[0m` in a captured error
+        // would otherwise prematurely close the role styling at the inner
+        // reset). The label SGR is appended after sanitation so it survives.
+        self.subject = finalize_subject(&self.renderer.theme, &self.subject, self.label.as_ref());
         let detail = self.detail.as_deref();
         let target = self.target.as_deref();
         self.renderer.render_status(
@@ -208,5 +210,55 @@ mod tests {
                 std::env::set_var("NO_COLOR", v);
             }
         }
+    }
+
+    /// Foreign ANSI carried in a caller-supplied subject (e.g. a captured
+    /// error formatted via `format!("sync failed for {url}: {e}")`) must be
+    /// stripped at the renderer boundary, so a stray `\x1b[0m` mid-subject
+    /// cannot prematurely terminate the role styling and foreign color
+    /// escapes cannot paint trailing characters.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    #[serial]
+    fn subject_strips_foreign_ansi_before_role_styling() {
+        use crate::output::Printer;
+
+        let (p, cap) = Printer::for_test_doc();
+        p.status(Role::Fail, "subject \x1b[31mforeign red\x1b[0m text")
+            .detail("plain detail");
+        p.flush();
+        let raw = cap.human();
+        assert!(
+            !raw.contains("\x1b[31m"),
+            "foreign red SGR must be stripped from subject; raw={raw:?}"
+        );
+        let visible = strip_ansi(&raw);
+        assert!(
+            visible.contains("subject foreign red text"),
+            "got: {visible:?}"
+        );
+    }
+
+    /// Mirror of the streaming-path test for the buffered `Doc` path through
+    /// `render_doc::render_component` (Status arm). Both call sites compose
+    /// the subject via the shared `finalize_subject` helper so the byte
+    /// shape must match.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    #[serial]
+    fn doc_subject_strips_foreign_ansi_before_role_styling() {
+        use crate::output::{Doc, Printer};
+
+        let (p, cap) = Printer::for_test_doc();
+        let doc = Doc::new().status(Role::Fail, "subject with \x1b[31mfoo\x1b[0m");
+        p.emit(doc);
+        p.flush();
+        let raw = cap.human();
+        assert!(
+            !raw.contains("\x1b[31m"),
+            "foreign red SGR must be stripped from Doc subject; raw={raw:?}"
+        );
+        let visible = strip_ansi(&raw);
+        assert!(visible.contains("subject with foo"), "got: {visible:?}");
     }
 }
