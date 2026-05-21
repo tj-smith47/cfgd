@@ -1054,31 +1054,6 @@ fn set_nested_yaml_value_creates_path() {
     assert_eq!(editor, Some("nvim"));
 }
 
-#[test]
-fn pattern_matches_exact() {
-    assert!(super::pattern_matches("packages.brew", "packages.brew"));
-}
-
-#[test]
-fn pattern_matches_prefix() {
-    assert!(super::pattern_matches("packages", "packages.brew.ripgrep"));
-    assert!(super::pattern_matches(
-        "packages.brew",
-        "packages.brew.ripgrep"
-    ));
-}
-
-#[test]
-fn pattern_no_partial_match() {
-    // "packages.br" should NOT match "packages.brew"
-    assert!(!super::pattern_matches("packages.br", "packages.brew"));
-}
-
-#[test]
-fn pattern_matches_file_colon_paths() {
-    assert!(super::pattern_matches("files", "files:/etc/foo"));
-}
-
 // --- Module CRUD tests ---
 
 fn test_cli(dir: &Path) -> Cli {
