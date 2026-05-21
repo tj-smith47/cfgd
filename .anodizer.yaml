@@ -321,11 +321,6 @@ workspaces:
               name: "TJ Smith"
               email: "tj@jarvispro.io"
           krew:
-            # cfgd is in krew-index as of the accepted initial submission PR;
-            # subsequent version bumps go through krew-release-bot (triggered
-            # by the cfgd repo's own tag push), NOT anodizer's pr-direct flow.
-            # Block kept intact so the publisher config is one toggle away if
-            # we ever drop the bot pattern.
             skip_upload: "true"
             repository:
               owner: tj-smith47
