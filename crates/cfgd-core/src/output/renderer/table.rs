@@ -5,15 +5,15 @@ use crate::output::{Role, Verbosity};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Table {
-    pub headers: Vec<String>,
-    pub rows: Vec<Vec<String>>,
+    pub(crate) headers: Vec<String>,
+    pub(crate) rows: Vec<Vec<String>>,
     /// Per-cell role tags, parallel to `rows`. Each inner vec is the same
     /// length as its row's cell count, with `Some(role)` for cells that
     /// should be re-styled by the renderer after width-aware padding.
     /// Width calculation still uses the plain string in `rows`, so ANSI
     /// escapes from styling never inflate column widths.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub row_roles: Vec<Vec<Option<Role>>>,
+    pub(crate) row_roles: Vec<Vec<Option<Role>>>,
 }
 
 impl Table {
@@ -147,5 +147,22 @@ mod tests {
         assert!(out.contains("─"));
         assert!(out.contains("alice"));
         assert!(out.contains("bob"));
+    }
+
+    #[test]
+    fn row_appends_keep_rows_and_roles_in_lockstep() {
+        let t = Table::new(["a", "b"]).row(["1", "2"]).row(["3", "4"]);
+        assert_eq!(t.rows.len(), t.row_roles.len());
+        assert_eq!(t.rows[0].len(), t.row_roles[0].len());
+        assert_eq!(t.rows[1].len(), t.row_roles[1].len());
+    }
+
+    #[test]
+    fn row_styled_appends_keep_rows_and_roles_in_lockstep() {
+        let t = Table::new(["a", "b"])
+            .row(["plain", "plain"])
+            .row_styled([("styled", Some(Role::Ok)), ("nostyle", None)]);
+        assert_eq!(t.rows.len(), t.row_roles.len());
+        assert_eq!(t.row_roles[1], vec![Some(Role::Ok), None]);
     }
 }
