@@ -614,3 +614,936 @@ fn filter_package_list(
         .cloned()
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use cfgd_core::config::{FileStrategy, ScriptEntry};
+    use cfgd_core::output::{Printer, Verbosity};
+    use cfgd_core::providers::{FileAction, PackageAction, SecretAction};
+    use cfgd_core::reconciler::ActionResult;
+    use cfgd_core::reconciler::ApplyResult;
+    use cfgd_core::reconciler::{
+        Action, EnvAction, ModuleAction, ModuleActionKind, Phase, PhaseName, Plan, ScriptAction,
+        ScriptPhase, SystemAction,
+    };
+    use cfgd_core::state::{ApplyStatus, StateStore};
+
+    use super::*;
+
+    // ---------------------------------------------------------------------------
+    // Fixture helpers
+    // ---------------------------------------------------------------------------
+
+    fn file_create(target: &str) -> Action {
+        Action::File(FileAction::Create {
+            source: PathBuf::from("/src/dotfiles/.zshrc"),
+            target: PathBuf::from(target),
+            origin: "test".to_string(),
+            strategy: FileStrategy::Symlink,
+            source_hash: None,
+        })
+    }
+
+    fn file_update(target: &str) -> Action {
+        Action::File(FileAction::Update {
+            source: PathBuf::from("/src/dotfiles/.zshrc"),
+            target: PathBuf::from(target),
+            diff: "--- old\n+++ new\n".to_string(),
+            origin: "test".to_string(),
+            strategy: FileStrategy::Copy,
+            source_hash: None,
+        })
+    }
+
+    fn file_delete(target: &str) -> Action {
+        Action::File(FileAction::Delete {
+            target: PathBuf::from(target),
+            origin: "test".to_string(),
+        })
+    }
+
+    fn file_chmod(target: &str) -> Action {
+        Action::File(FileAction::SetPermissions {
+            target: PathBuf::from(target),
+            mode: 0o755,
+            origin: "test".to_string(),
+        })
+    }
+
+    fn file_skip(target: &str) -> Action {
+        Action::File(FileAction::Skip {
+            target: PathBuf::from(target),
+            reason: "already in sync".to_string(),
+            origin: "test".to_string(),
+        })
+    }
+
+    fn pkg_bootstrap() -> Action {
+        Action::Package(PackageAction::Bootstrap {
+            manager: "brew".to_string(),
+            method: "script".to_string(),
+            origin: "test".to_string(),
+        })
+    }
+
+    fn pkg_install(manager: &str, packages: Vec<&str>) -> Action {
+        Action::Package(PackageAction::Install {
+            manager: manager.to_string(),
+            packages: packages.into_iter().map(|s| s.to_string()).collect(),
+            origin: "test".to_string(),
+        })
+    }
+
+    fn pkg_uninstall(manager: &str, packages: Vec<&str>) -> Action {
+        Action::Package(PackageAction::Uninstall {
+            manager: manager.to_string(),
+            packages: packages.into_iter().map(|s| s.to_string()).collect(),
+            origin: "test".to_string(),
+        })
+    }
+
+    fn pkg_skip() -> Action {
+        Action::Package(PackageAction::Skip {
+            manager: "apt".to_string(),
+            reason: "not available".to_string(),
+            origin: "test".to_string(),
+        })
+    }
+
+    fn secret_decrypt() -> Action {
+        Action::Secret(SecretAction::Decrypt {
+            source: PathBuf::from("/secrets/foo.enc"),
+            target: PathBuf::from("/secrets/foo"),
+            backend: "age".to_string(),
+            origin: "test".to_string(),
+        })
+    }
+
+    fn secret_resolve() -> Action {
+        Action::Secret(SecretAction::Resolve {
+            provider: "1password".to_string(),
+            reference: "op://vault/item".to_string(),
+            target: PathBuf::from("/etc/foo"),
+            origin: "test".to_string(),
+        })
+    }
+
+    fn secret_resolve_env() -> Action {
+        Action::Secret(SecretAction::ResolveEnv {
+            provider: "vault".to_string(),
+            reference: "secret/data/app".to_string(),
+            envs: vec!["TOKEN".to_string(), "KEY".to_string()],
+            origin: "test".to_string(),
+        })
+    }
+
+    fn secret_skip() -> Action {
+        Action::Secret(SecretAction::Skip {
+            source: "bitwarden".to_string(),
+            reason: "unavailable".to_string(),
+            origin: "test".to_string(),
+        })
+    }
+
+    fn system_set() -> Action {
+        Action::System(SystemAction::SetValue {
+            configurator: "sysctl".to_string(),
+            key: "net.ipv4.ip_forward".to_string(),
+            desired: "1".to_string(),
+            current: "0".to_string(),
+            origin: "test".to_string(),
+        })
+    }
+
+    fn system_skip() -> Action {
+        Action::System(SystemAction::Skip {
+            configurator: "sysctl".to_string(),
+            reason: "already set".to_string(),
+            origin: "test".to_string(),
+        })
+    }
+
+    fn script_run() -> Action {
+        Action::Script(ScriptAction::Run {
+            entry: ScriptEntry::Simple("setup.sh".to_string()),
+            phase: ScriptPhase::PreApply,
+            origin: "test".to_string(),
+        })
+    }
+
+    fn module_install() -> Action {
+        Action::Module(ModuleAction {
+            module_name: "dev-tools".to_string(),
+            kind: ModuleActionKind::InstallPackages { resolved: vec![] },
+        })
+    }
+
+    fn module_run_script() -> Action {
+        Action::Module(ModuleAction {
+            module_name: "dev-tools".to_string(),
+            kind: ModuleActionKind::RunScript {
+                script: ScriptEntry::Simple("install.sh".to_string()),
+                phase: ScriptPhase::PostApply,
+            },
+        })
+    }
+
+    fn module_deploy_files() -> Action {
+        Action::Module(ModuleAction {
+            module_name: "dotfiles".to_string(),
+            kind: ModuleActionKind::DeployFiles { files: vec![] },
+        })
+    }
+
+    fn module_skip() -> Action {
+        Action::Module(ModuleAction {
+            module_name: "optional".to_string(),
+            kind: ModuleActionKind::Skip {
+                reason: "dependency not met".to_string(),
+            },
+        })
+    }
+
+    fn env_write() -> Action {
+        Action::Env(EnvAction::WriteEnvFile {
+            path: PathBuf::from("/home/user/.cfgd.env"),
+            content: "export FOO=bar".to_string(),
+        })
+    }
+
+    fn env_inject() -> Action {
+        Action::Env(EnvAction::InjectSourceLine {
+            rc_path: PathBuf::from("/home/user/.zshrc"),
+            line: "source ~/.cfgd.env".to_string(),
+        })
+    }
+
+    fn make_plan(phases: Vec<(PhaseName, Vec<Action>)>) -> Plan {
+        Plan {
+            phases: phases
+                .into_iter()
+                .map(|(name, actions)| Phase { name, actions })
+                .collect(),
+            warnings: vec![],
+        }
+    }
+
+    fn apply_result(status: ApplyStatus, succeeded: usize, failed: usize) -> ApplyResult {
+        let mut results = Vec::new();
+        for _ in 0..succeeded {
+            results.push(ActionResult {
+                phase: "files".to_string(),
+                description: "create /etc/foo".to_string(),
+                success: true,
+                error: None,
+                changed: true,
+            });
+        }
+        for _ in 0..failed {
+            results.push(ActionResult {
+                phase: "packages".to_string(),
+                description: "install brew:rg".to_string(),
+                success: false,
+                error: Some("exit code 1".to_string()),
+                changed: false,
+            });
+        }
+        ApplyResult {
+            action_results: results,
+            status,
+            apply_id: 0,
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // action_type_str
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn action_type_str_file_variants() {
+        assert_eq!(action_type_str(&file_create("/etc/foo")), "create");
+        assert_eq!(action_type_str(&file_update("/etc/foo")), "update");
+        assert_eq!(action_type_str(&file_delete("/etc/foo")), "delete");
+        assert_eq!(action_type_str(&file_chmod("/etc/foo")), "chmod");
+        assert_eq!(action_type_str(&file_skip("/etc/foo")), "skip");
+    }
+
+    #[test]
+    fn action_type_str_package_variants() {
+        assert_eq!(action_type_str(&pkg_bootstrap()), "bootstrap");
+        assert_eq!(action_type_str(&pkg_install("brew", vec!["rg"])), "install");
+        assert_eq!(
+            action_type_str(&pkg_uninstall("brew", vec!["rg"])),
+            "uninstall"
+        );
+        assert_eq!(action_type_str(&pkg_skip()), "skip");
+    }
+
+    #[test]
+    fn action_type_str_secret_variants() {
+        assert_eq!(action_type_str(&secret_decrypt()), "decrypt");
+        assert_eq!(action_type_str(&secret_resolve()), "resolve");
+        assert_eq!(action_type_str(&secret_resolve_env()), "resolve-env");
+        assert_eq!(action_type_str(&secret_skip()), "skip");
+    }
+
+    #[test]
+    fn action_type_str_system_variants() {
+        assert_eq!(action_type_str(&system_set()), "set");
+        assert_eq!(action_type_str(&system_skip()), "skip");
+    }
+
+    #[test]
+    fn action_type_str_script_and_module_variants() {
+        assert_eq!(action_type_str(&script_run()), "run");
+        assert_eq!(action_type_str(&module_install()), "install");
+        assert_eq!(action_type_str(&module_deploy_files()), "deploy");
+        assert_eq!(action_type_str(&module_run_script()), "run");
+        assert_eq!(action_type_str(&module_skip()), "skip");
+    }
+
+    #[test]
+    fn action_type_str_env_variants() {
+        assert_eq!(action_type_str(&env_write()), "write");
+        assert_eq!(action_type_str(&env_inject()), "inject");
+    }
+
+    // ---------------------------------------------------------------------------
+    // action_path
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn action_path_file_create() {
+        let path = action_path(&PhaseName::Files, &file_create("/home/user/.zshrc"));
+        assert_eq!(path, "files:/home/user/.zshrc");
+    }
+
+    #[test]
+    fn action_path_package_install() {
+        let path = action_path(&PhaseName::Packages, &pkg_install("brew", vec!["rg"]));
+        assert_eq!(path, "packages.brew");
+    }
+
+    #[test]
+    fn action_path_system_set_value() {
+        let path = action_path(&PhaseName::System, &system_set());
+        assert_eq!(path, "system.sysctl.net.ipv4.ip_forward");
+    }
+
+    #[test]
+    fn action_path_system_skip() {
+        let path = action_path(&PhaseName::System, &system_skip());
+        assert_eq!(path, "system.sysctl");
+    }
+
+    #[test]
+    fn action_path_secret_resolve() {
+        let path = action_path(&PhaseName::Secrets, &secret_resolve());
+        assert_eq!(path, "secrets.1password.op://vault/item");
+    }
+
+    #[test]
+    fn action_path_secret_resolve_env() {
+        let path = action_path(&PhaseName::Secrets, &secret_resolve_env());
+        assert_eq!(path, "secrets.vault.secret/data/app:[TOKEN,KEY]");
+    }
+
+    #[test]
+    fn action_path_secret_skip() {
+        let path = action_path(&PhaseName::Secrets, &secret_skip());
+        assert_eq!(path, "secrets.bitwarden");
+    }
+
+    #[test]
+    fn action_path_script_run() {
+        let path = action_path(&PhaseName::PreScripts, &script_run());
+        assert_eq!(path, "pre-scripts:setup.sh");
+    }
+
+    #[test]
+    fn action_path_module() {
+        let path = action_path(&PhaseName::Modules, &module_install());
+        assert_eq!(path, "modules.dev-tools");
+    }
+
+    #[test]
+    fn action_path_env_write() {
+        let path = action_path(&PhaseName::Env, &env_write());
+        assert_eq!(path, "env:/home/user/.cfgd.env");
+    }
+
+    #[test]
+    fn action_path_env_inject() {
+        let path = action_path(&PhaseName::Env, &env_inject());
+        assert_eq!(path, "env:/home/user/.zshrc");
+    }
+
+    // ---------------------------------------------------------------------------
+    // pattern_matches
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn pattern_matches_exact() {
+        assert!(pattern_matches("files:/etc/foo", "files:/etc/foo"));
+    }
+
+    #[test]
+    fn pattern_matches_prefix_dot_separator() {
+        assert!(pattern_matches("packages", "packages.brew.ripgrep"));
+        assert!(pattern_matches("packages.brew", "packages.brew.ripgrep"));
+    }
+
+    #[test]
+    fn pattern_matches_prefix_colon_separator() {
+        assert!(pattern_matches("files", "files:/etc/foo"));
+    }
+
+    #[test]
+    fn pattern_matches_no_partial_word_match() {
+        assert!(!pattern_matches("pack", "packages.brew.ripgrep"));
+    }
+
+    #[test]
+    fn pattern_matches_no_match_different_phase() {
+        assert!(!pattern_matches("secrets", "packages.brew.ripgrep"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // filter_plan
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn filter_plan_noop_when_empty_filters() {
+        let mut plan = make_plan(vec![(
+            PhaseName::Files,
+            vec![file_create("/etc/foo"), file_update("/etc/bar")],
+        )]);
+        filter_plan(&mut plan, &[], &[]);
+        assert_eq!(plan.phases[0].actions.len(), 2);
+    }
+
+    #[test]
+    fn filter_plan_skip_removes_matching_file_actions() {
+        let mut plan = make_plan(vec![
+            (
+                PhaseName::Files,
+                vec![file_create("/etc/foo"), file_update("/etc/bar")],
+            ),
+            (
+                PhaseName::Packages,
+                vec![pkg_install("brew", vec!["rg", "fd"])],
+            ),
+        ]);
+        filter_plan(&mut plan, &["files".to_string()], &[]);
+
+        let file_phase = plan
+            .phases
+            .iter()
+            .find(|p| p.name == PhaseName::Files)
+            .unwrap();
+        assert_eq!(
+            file_phase.actions.len(),
+            0,
+            "all file actions should be skipped"
+        );
+        let pkg_phase = plan
+            .phases
+            .iter()
+            .find(|p| p.name == PhaseName::Packages)
+            .unwrap();
+        assert_eq!(
+            pkg_phase.actions.len(),
+            1,
+            "package actions should be untouched"
+        );
+    }
+
+    #[test]
+    fn filter_plan_only_keeps_matching_actions() {
+        let mut plan = make_plan(vec![
+            (
+                PhaseName::Files,
+                vec![file_create("/etc/foo"), file_update("/etc/bar")],
+            ),
+            (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
+        ]);
+        filter_plan(&mut plan, &[], &["packages".to_string()]);
+
+        let file_phase = plan
+            .phases
+            .iter()
+            .find(|p| p.name == PhaseName::Files)
+            .unwrap();
+        assert_eq!(
+            file_phase.actions.len(),
+            0,
+            "file actions outside --only scope should be removed"
+        );
+        let pkg_phase = plan
+            .phases
+            .iter()
+            .find(|p| p.name == PhaseName::Packages)
+            .unwrap();
+        assert_eq!(
+            pkg_phase.actions.len(),
+            1,
+            "package actions inside --only scope should remain"
+        );
+    }
+
+    #[test]
+    fn filter_plan_skip_individual_packages() {
+        let mut plan = make_plan(vec![(
+            PhaseName::Packages,
+            vec![pkg_install("brew", vec!["rg", "fd", "bat"])],
+        )]);
+        filter_plan(&mut plan, &["packages.brew.rg".to_string()], &[]);
+
+        let phase = &plan.phases[0];
+        assert_eq!(phase.actions.len(), 1);
+        if let Action::Package(PackageAction::Install { packages, .. }) = &phase.actions[0] {
+            assert!(
+                !packages.contains(&"rg".to_string()),
+                "rg should be skipped"
+            );
+            assert!(packages.contains(&"fd".to_string()), "fd should remain");
+            assert!(packages.contains(&"bat".to_string()), "bat should remain");
+        } else {
+            panic!("expected Install action");
+        }
+    }
+
+    #[test]
+    fn filter_plan_only_specific_packages() {
+        let mut plan = make_plan(vec![(
+            PhaseName::Packages,
+            vec![pkg_install("brew", vec!["rg", "fd", "bat"])],
+        )]);
+        filter_plan(&mut plan, &[], &["packages.brew.rg".to_string()]);
+
+        let phase = &plan.phases[0];
+        assert_eq!(phase.actions.len(), 1);
+        if let Action::Package(PackageAction::Install { packages, .. }) = &phase.actions[0] {
+            assert_eq!(packages, &["rg"], "only rg should remain");
+        } else {
+            panic!("expected Install action");
+        }
+    }
+
+    #[test]
+    fn filter_plan_skip_removes_entire_manager_with_all_packages_skipped() {
+        let mut plan = make_plan(vec![(
+            PhaseName::Packages,
+            vec![
+                pkg_install("brew", vec!["rg"]),
+                pkg_install("cargo", vec!["bat"]),
+            ],
+        )]);
+        filter_plan(&mut plan, &["packages.brew".to_string()], &[]);
+
+        let phase = &plan.phases[0];
+        assert_eq!(
+            phase.actions.len(),
+            1,
+            "brew install should be fully removed"
+        );
+        if let Action::Package(PackageAction::Install { manager, .. }) = &phase.actions[0] {
+            assert_eq!(manager, "cargo");
+        } else {
+            panic!("expected cargo Install action");
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // strip_scripts_from_plan
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn strip_scripts_removes_pre_post_script_phases() {
+        let mut plan = make_plan(vec![
+            (PhaseName::PreScripts, vec![script_run()]),
+            (PhaseName::Files, vec![file_create("/etc/foo")]),
+            (PhaseName::PostScripts, vec![script_run()]),
+        ]);
+        strip_scripts_from_plan(&mut plan);
+
+        assert!(
+            plan.phases
+                .iter()
+                .all(|p| p.name != PhaseName::PreScripts && p.name != PhaseName::PostScripts),
+            "pre/post-script phases must be removed"
+        );
+        assert_eq!(plan.phases.len(), 1, "only the Files phase should remain");
+    }
+
+    #[test]
+    fn strip_scripts_removes_module_run_script_actions() {
+        let mut plan = make_plan(vec![(
+            PhaseName::Modules,
+            vec![module_install(), module_run_script(), module_deploy_files()],
+        )]);
+        strip_scripts_from_plan(&mut plan);
+
+        let modules_phase = plan
+            .phases
+            .iter()
+            .find(|p| p.name == PhaseName::Modules)
+            .unwrap();
+        assert_eq!(
+            modules_phase.actions.len(),
+            2,
+            "RunScript action should be removed, others kept"
+        );
+        assert!(
+            modules_phase.actions.iter().all(|a| {
+                !matches!(
+                    a,
+                    Action::Module(ModuleAction {
+                        kind: ModuleActionKind::RunScript { .. },
+                        ..
+                    })
+                )
+            }),
+            "no RunScript actions should remain"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // build_plan_output
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn build_plan_output_counts_actions_and_sets_context() {
+        let plan = make_plan(vec![
+            (
+                PhaseName::Files,
+                vec![file_create("/etc/foo"), file_update("/etc/bar")],
+            ),
+            (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
+        ]);
+        let output = build_plan_output(&plan, "my-machine", None);
+
+        assert_eq!(output.context, "my-machine");
+        assert_eq!(output.total_actions, 3);
+        assert_eq!(output.phases.len(), 2);
+        let files_phase = output.phases.iter().find(|p| p.phase == "Files").unwrap();
+        assert_eq!(files_phase.actions.len(), 2);
+        assert!(
+            files_phase
+                .actions
+                .iter()
+                .any(|a| a.action_type == "create"),
+            "expected create action type"
+        );
+        assert!(
+            files_phase
+                .actions
+                .iter()
+                .any(|a| a.action_type == "update"),
+            "expected update action type"
+        );
+    }
+
+    #[test]
+    fn build_plan_output_phase_filter_excludes_other_phases() {
+        let plan = make_plan(vec![
+            (PhaseName::Files, vec![file_create("/etc/foo")]),
+            (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
+        ]);
+        let output = build_plan_output(&plan, "ctx", Some(&PhaseName::Files));
+
+        assert_eq!(output.phases.len(), 1);
+        assert_eq!(output.phases[0].phase, "Files");
+        assert_eq!(output.total_actions, 1);
+    }
+
+    #[test]
+    fn build_plan_output_empty_plan_has_zero_actions() {
+        let plan = make_plan(vec![]);
+        let output = build_plan_output(&plan, "ctx", None);
+
+        assert_eq!(output.total_actions, 0);
+        assert!(output.phases.is_empty());
+    }
+
+    // ---------------------------------------------------------------------------
+    // print_apply_result
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn print_apply_result_success_emits_ok_role() {
+        let result = apply_result(ApplyStatus::Success, 5, 0);
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        let status = print_apply_result(&result, &printer, None);
+
+        assert_eq!(status, ApplyStatus::Success);
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("5 action(s) succeeded"),
+            "expected success count in output, got: {out}"
+        );
+    }
+
+    #[test]
+    fn print_apply_result_failure_emits_fail_role() {
+        let result = apply_result(ApplyStatus::Failed, 0, 3);
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        let status = print_apply_result(&result, &printer, None);
+
+        assert_eq!(status, ApplyStatus::Failed);
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("3 action(s) failed"),
+            "expected failure count in output, got: {out}"
+        );
+    }
+
+    #[test]
+    fn print_apply_result_partial_emits_both_lines() {
+        let result = apply_result(ApplyStatus::Partial, 4, 2);
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        let status = print_apply_result(&result, &printer, None);
+
+        assert_eq!(status, ApplyStatus::Partial);
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("4 action(s) succeeded"),
+            "expected success line in partial output, got: {out}"
+        );
+        assert!(
+            out.contains("2 action(s) failed"),
+            "expected failure line in partial output, got: {out}"
+        );
+    }
+
+    #[test]
+    fn print_apply_result_in_progress_emits_warn() {
+        let result = apply_result(ApplyStatus::InProgress, 0, 0);
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        let status = print_apply_result(&result, &printer, None);
+
+        assert_eq!(status, ApplyStatus::InProgress);
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("in progress"),
+            "expected in-progress message, got: {out}"
+        );
+    }
+
+    #[test]
+    fn print_apply_result_with_elapsed_includes_duration() {
+        let result = apply_result(ApplyStatus::Success, 2, 0);
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        print_apply_result(
+            &result,
+            &printer,
+            Some(std::time::Duration::from_millis(1500)),
+        );
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("action(s) succeeded"),
+            "expected success in output, got: {out}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // display_plan_table
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn display_plan_table_empty_phase_shows_nothing_to_do() {
+        let plan = make_plan(vec![(PhaseName::Files, vec![])]);
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        display_plan_table(&plan, &printer, None);
+
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("nothing to do"),
+            "expected empty-state message, got: {out}"
+        );
+    }
+
+    #[test]
+    fn display_plan_table_populated_plan_shows_phase_header() {
+        let plan = make_plan(vec![(
+            PhaseName::Files,
+            vec![file_create("/etc/foo"), file_update("/etc/bar")],
+        )]);
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        display_plan_table(&plan, &printer, None);
+
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("Files"),
+            "expected phase header in output, got: {out}"
+        );
+    }
+
+    #[test]
+    fn display_plan_table_phase_filter_omits_other_phases() {
+        let plan = make_plan(vec![
+            (PhaseName::Files, vec![file_create("/etc/foo")]),
+            (PhaseName::Packages, vec![pkg_install("brew", vec!["rg"])]),
+        ]);
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        display_plan_table(&plan, &printer, Some(&PhaseName::Files));
+
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("Files"),
+            "expected Files phase header, got: {out}"
+        );
+        assert!(
+            !out.contains("Packages"),
+            "Packages phase should be filtered out, got: {out}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // is_unmanaged_file
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn is_unmanaged_file_missing_path_returns_false() {
+        let state = StateStore::open_in_memory().unwrap();
+        let config_dir = PathBuf::from("/config");
+        let result = is_unmanaged_file(
+            &PathBuf::from("/nonexistent/path/that/does/not/exist/abc123"),
+            &config_dir,
+            &state,
+        );
+        assert!(!result, "missing file should not be considered unmanaged");
+    }
+
+    #[test]
+    fn is_unmanaged_file_managed_path_returns_false() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("foo");
+        std::fs::write(&file_path, "content").unwrap();
+
+        let state = StateStore::open_in_memory().unwrap();
+        state
+            .upsert_managed_resource("file", &file_path.display().to_string(), "test", None, None)
+            .unwrap();
+
+        let config_dir = PathBuf::from("/config");
+        let result = is_unmanaged_file(&file_path, &config_dir, &state);
+        assert!(
+            !result,
+            "state-tracked file should not be considered unmanaged"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // backup_file
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn backup_file_renames_with_cfgd_backup_suffix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let original = tmp.path().join("myfile.txt");
+        std::fs::write(&original, "original content").unwrap();
+
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        backup_file(&original, &printer).unwrap();
+
+        let backup = tmp.path().join("myfile.txt.cfgd-backup");
+        assert!(backup.exists(), "backup file should exist at expected path");
+        assert!(
+            !original.exists(),
+            "original file should be gone after rename"
+        );
+
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("Backed up to"),
+            "expected backup confirmation in output, got: {out}"
+        );
+        assert!(
+            out.contains("cfgd-backup"),
+            "output should mention backup path, got: {out}"
+        );
+    }
+
+    #[test]
+    fn backup_file_nonexistent_target_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("does_not_exist.txt");
+        let (printer, _) = Printer::for_test_at(Verbosity::Normal);
+
+        let result = backup_file(&missing, &printer);
+        assert!(result.is_err(), "backup of nonexistent file should fail");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Failed to backup"),
+            "error should describe backup failure, got: {err_msg}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // apply_backup_choice
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn apply_backup_choice_backup_renames_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("target.txt");
+        std::fs::write(&file, "content").unwrap();
+
+        let mut action = file_create(file.to_str().unwrap());
+        let (printer, _) = Printer::for_test_at(Verbosity::Normal);
+        apply_backup_choice(
+            "Backup (save as .cfgd-backup, then overwrite)",
+            &file,
+            &mut action,
+            &printer,
+        )
+        .unwrap();
+
+        let backup = tmp.path().join("target.txt.cfgd-backup");
+        assert!(
+            backup.exists(),
+            "backup file should exist after Backup choice"
+        );
+    }
+
+    #[test]
+    fn apply_backup_choice_skip_converts_action_to_skip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("target.txt");
+        std::fs::write(&file, "content").unwrap();
+
+        let mut action = file_create(file.to_str().unwrap());
+        let (printer, _) = Printer::for_test_at(Verbosity::Normal);
+        apply_backup_choice("Skip (leave file untouched)", &file, &mut action, &printer).unwrap();
+
+        assert!(
+            matches!(action, Action::File(FileAction::Skip { .. })),
+            "action should be converted to Skip after Skip choice"
+        );
+    }
+
+    #[test]
+    fn apply_backup_choice_adopt_leaves_action_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("target.txt");
+        std::fs::write(&file, "content").unwrap();
+
+        let mut action = file_create(file.to_str().unwrap());
+        let (printer, _) = Printer::for_test_at(Verbosity::Normal);
+        apply_backup_choice(
+            "Adopt (overwrite with cfgd-managed version)",
+            &file,
+            &mut action,
+            &printer,
+        )
+        .unwrap();
+
+        assert!(
+            matches!(action, Action::File(FileAction::Create { .. })),
+            "action should remain Create after Adopt choice"
+        );
+    }
+}
