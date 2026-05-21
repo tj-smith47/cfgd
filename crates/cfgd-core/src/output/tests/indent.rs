@@ -1,22 +1,22 @@
-//! Bucket (e): indent invariant. 6 cases — covers the runtime indent check
+//! Indent invariant: indent invariant. 6 cases — covers the runtime indent check
 //! at depths 1/2/3, the empty-section collapse rule, suppressed-child
 //! collapse, and the buffered-Doc path that never needs the runtime check.
 
 use crate::golden_doc;
 use crate::output::Doc;
 
-golden_doc!(bucket_e, depth_one, |p, cap| {
+golden_doc!(indent, depth_one, |p, cap| {
     let s = p.section("X");
     s.bullet("at depth 1");
 });
 
-golden_doc!(bucket_e, depth_two, |p, cap| {
+golden_doc!(indent, depth_two, |p, cap| {
     let s = p.section("Outer");
     let n = s.section("Inner");
     n.bullet("at depth 2");
 });
 
-golden_doc!(bucket_e, depth_three, |p, cap| {
+golden_doc!(indent, depth_three, |p, cap| {
     let s = p.section("L1");
     let m = s.section("L2");
     let n = m.section("L3");
@@ -24,7 +24,7 @@ golden_doc!(bucket_e, depth_three, |p, cap| {
 });
 
 golden_doc!(
-    bucket_e,
+    indent,
     section_or_collapse_with_no_children_renders_nothing,
     |p, cap| {
         p.heading("Before");
@@ -36,7 +36,7 @@ golden_doc!(
 );
 
 golden_doc!(
-    bucket_e,
+    indent,
     section_with_only_suppressed_hint_collapses,
     |p, cap| {
         // Verbosity-suppressed components don't count as emitted children.
@@ -47,7 +47,7 @@ golden_doc!(
     }
 );
 
-golden_doc!(bucket_e, buffered_doc_no_runtime_check_needed, |p, cap| {
+golden_doc!(indent, buffered_doc_no_runtime_check_needed, |p, cap| {
     let doc = Doc::new()
         .heading("Buffered")
         .section("Files", |s| s.bullet("foo"));

@@ -1,4 +1,4 @@
-//! Bucket (d): one representative Doc rendered against every theme preset.
+//! Theme presets: one representative Doc rendered against every theme preset.
 //! 5 cases — default, dracula, solarized-dark, solarized-light, minimal.
 //!
 //! Goldens are ANSI-stripped, so themes that differ only by color produce
@@ -8,7 +8,7 @@
 use crate::golden_themed;
 use crate::output::{Doc, Role};
 
-golden_themed!(bucket_d, default_preset, "default", |p| {
+golden_themed!(themes, default_preset, "default", |p| {
     let doc = Doc::new()
         .heading("Status")
         .kv_block([("Profile", "dev"), ("Modules", "12")])
@@ -23,7 +23,7 @@ golden_themed!(bucket_d, default_preset, "default", |p| {
     p.emit(doc);
 });
 
-golden_themed!(bucket_d, dracula_preset, "dracula", |p| {
+golden_themed!(themes, dracula_preset, "dracula", |p| {
     let doc = Doc::new()
         .heading("Status")
         .kv_block([("Profile", "dev"), ("Modules", "12")])
@@ -38,7 +38,7 @@ golden_themed!(bucket_d, dracula_preset, "dracula", |p| {
     p.emit(doc);
 });
 
-golden_themed!(bucket_d, solarized_dark_preset, "solarized-dark", |p| {
+golden_themed!(themes, solarized_dark_preset, "solarized-dark", |p| {
     let doc = Doc::new()
         .heading("Status")
         .kv_block([("Profile", "dev"), ("Modules", "12")])
@@ -53,7 +53,7 @@ golden_themed!(bucket_d, solarized_dark_preset, "solarized-dark", |p| {
     p.emit(doc);
 });
 
-golden_themed!(bucket_d, solarized_light_preset, "solarized-light", |p| {
+golden_themed!(themes, solarized_light_preset, "solarized-light", |p| {
     let doc = Doc::new()
         .heading("Status")
         .kv_block([("Profile", "dev"), ("Modules", "12")])
@@ -68,7 +68,7 @@ golden_themed!(bucket_d, solarized_light_preset, "solarized-light", |p| {
     p.emit(doc);
 });
 
-golden_themed!(bucket_d, minimal_preset, "minimal", |p| {
+golden_themed!(themes, minimal_preset, "minimal", |p| {
     let doc = Doc::new()
         .heading("Status")
         .kv_block([("Profile", "dev"), ("Modules", "12")])

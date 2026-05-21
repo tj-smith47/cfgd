@@ -3,25 +3,25 @@
 //! Goldens live in `snapshots/`. Refresh by running:
 //!   INSTA_UPDATE=always cargo test -p cfgd-core --features test-helpers output::tests
 //!
-//! Organized into 7 buckets covering ~91 cases — baseline, verbosity,
+//! Organized by topic covering ~91 cases — baseline, verbosity,
 //! status × role, themes, indent, corners, and regression.
 
 #[cfg(feature = "test-helpers")]
-mod bucket_a_baseline;
+mod baseline;
 #[cfg(feature = "test-helpers")]
-mod bucket_b_verbosity;
+mod corners;
 #[cfg(feature = "test-helpers")]
-mod bucket_c_status_role;
+mod indent;
 #[cfg(feature = "test-helpers")]
-mod bucket_d_themes;
+mod regression;
 #[cfg(feature = "test-helpers")]
-mod bucket_d_themes_raw;
+mod status_role;
 #[cfg(feature = "test-helpers")]
-mod bucket_e_indent;
+mod themes;
 #[cfg(feature = "test-helpers")]
-mod bucket_f_corners;
+mod themes_raw;
 #[cfg(feature = "test-helpers")]
-mod bucket_g_regression;
+mod verbosity;
 
 /// Macro: build a Printer via `for_test_doc()`, run the body with `&p` and
 /// `&cap`, then assert against `snapshots/<bucket>/<name>.txt`.
@@ -42,9 +42,9 @@ macro_rules! golden_doc {
     };
 }
 
-/// Macro: like `golden_doc!` but with explicit Verbosity. Used by bucket (b)
-/// to test verbosity gating without `for_test_doc()`'s default Normal.
-/// Strips ANSI codes before snapshot comparison.
+/// Macro: like `golden_doc!` but with explicit Verbosity. Used by the
+/// verbosity tests to exercise verbosity gating without `for_test_doc()`'s
+/// default Normal. Strips ANSI codes before snapshot comparison.
 #[macro_export]
 macro_rules! golden_at {
     ($bucket:ident, $name:ident, $verbosity:expr, |$p:ident| $body:block) => {
@@ -71,7 +71,7 @@ macro_rules! golden_at {
 }
 
 /// Macro: like `golden_at!` but with an explicit Theme preset (Normal verbosity).
-/// Used by bucket (d) to render a representative Doc against every preset.
+/// Used by the themes tests to render a representative Doc against every preset.
 /// Strips ANSI codes before snapshot comparison so color-only theme differences
 /// collapse — preset divergence comes from glyph swaps (e.g., `minimal`).
 #[macro_export]
