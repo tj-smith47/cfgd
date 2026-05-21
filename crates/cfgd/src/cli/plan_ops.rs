@@ -8,6 +8,25 @@ pub(in crate::cli) fn print_apply_result(
     printer: &Printer,
     elapsed: Option<std::time::Duration>,
 ) -> cfgd_core::state::ApplyStatus {
+    // Partial splits into two role-tagged lines so the success count and the
+    // failure count read as distinct outcomes — fusing them into one Warn line
+    // makes a "9 succeeded, 1 failed" run look the same colour as a "1
+    // succeeded, 9 failed" run.
+    if matches!(result.status, cfgd_core::state::ApplyStatus::Partial) {
+        printer.status_simple(
+            Role::Ok,
+            format!("{} action(s) succeeded", result.succeeded()),
+        );
+        let failed_subject = format!("{} action(s) failed", result.failed());
+        match elapsed {
+            Some(d) => {
+                printer.status(Role::Accent, failed_subject).duration(d);
+            }
+            None => printer.status_simple(Role::Accent, failed_subject),
+        }
+        return result.status.clone();
+    }
+
     let (role, subject) = match result.status {
         cfgd_core::state::ApplyStatus::Success => (
             Role::Ok,
@@ -16,14 +35,7 @@ pub(in crate::cli) fn print_apply_result(
                 result.succeeded()
             ),
         ),
-        cfgd_core::state::ApplyStatus::Partial => (
-            Role::Warn,
-            format!(
-                "Apply partially complete — {} succeeded, {} failed",
-                result.succeeded(),
-                result.failed()
-            ),
-        ),
+        cfgd_core::state::ApplyStatus::Partial => unreachable!("handled above"),
         cfgd_core::state::ApplyStatus::Failed => (
             Role::Fail,
             format!("Apply failed — {} action(s) failed", result.failed()),
