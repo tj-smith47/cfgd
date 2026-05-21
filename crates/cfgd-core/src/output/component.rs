@@ -25,6 +25,12 @@ pub enum Component {
         duration_ms: Option<u128>,
         #[serde(skip_serializing_if = "Option::is_none")]
         target: Option<String>,
+        /// Trailing styled label (e.g. `[source-name]`). Rendered at the END of
+        /// the subject by `render_doc` so the inner SGR reset can never be
+        /// followed by outer-role-styled text — enforces the at-end layout that
+        /// nested ANSI styling requires.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        label: Option<StatusLabel>,
     },
     Hint {
         text: String,
@@ -49,6 +55,12 @@ pub enum Component {
         empty_state: Option<String>,
         children: Vec<Component>,
     },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StatusLabel {
+    pub role: Role,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -88,11 +100,13 @@ mod tests {
             detail: None,
             duration_ms: None,
             target: None,
+            label: None,
         };
         let json = serde_json::to_value(&c).unwrap();
         assert!(json.get("detail").is_none());
         assert!(json.get("duration_ms").is_none());
         assert!(json.get("target").is_none());
+        assert!(json.get("label").is_none());
         assert_eq!(json["role"], "ok");
     }
 

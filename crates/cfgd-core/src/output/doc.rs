@@ -3,7 +3,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use super::Role;
-use super::component::{Component, KvPair};
+use super::component::{Component, KvPair, StatusLabel};
 use super::renderer::Table;
 
 /// One status row's optional fields, used by `status_with`.
@@ -12,6 +12,7 @@ pub struct StatusFields {
     pub detail: Option<String>,
     pub duration: Option<Duration>,
     pub target: Option<String>,
+    pub label: Option<(Role, String)>,
 }
 
 impl StatusFields {
@@ -29,6 +30,13 @@ impl StatusFields {
     }
     pub fn target(mut self, s: impl Into<String>) -> Self {
         self.target = Some(s.into());
+        self
+    }
+    /// Trailing styled label (e.g. `[source-name]`). Rendered at the END of
+    /// the subject so the inner SGR reset cannot be followed by outer-role
+    /// styled text — the only safe nesting shape for the streaming renderer.
+    pub fn label(mut self, role: Role, text: impl Into<String>) -> Self {
+        self.label = Some((role, text.into()));
         self
     }
 }
@@ -96,6 +104,7 @@ impl Doc {
             detail: None,
             duration_ms: None,
             target: None,
+            label: None,
         });
         self
     }
@@ -113,6 +122,7 @@ impl Doc {
             detail: f.detail,
             duration_ms: f.duration.map(|d| d.as_millis()),
             target: f.target,
+            label: f.label.map(|(role, text)| StatusLabel { role, text }),
         });
         self
     }
@@ -257,6 +267,7 @@ impl SectionBuilder {
             detail: None,
             duration_ms: None,
             target: None,
+            label: None,
         });
         self
     }
@@ -274,6 +285,7 @@ impl SectionBuilder {
             detail: f.detail,
             duration_ms: f.duration.map(|d| d.as_millis()),
             target: f.target,
+            label: f.label.map(|(role, text)| StatusLabel { role, text }),
         });
         self
     }

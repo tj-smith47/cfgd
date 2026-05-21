@@ -333,16 +333,16 @@ golden_doc!(bucket_g, sync_per_source_secondary_marker, |p, cap| {
         .detail("network unreachable");
 });
 
-// Surface: `cfgd status` drift attribution. The ` [source-name]` suffix is
-// pre-styled in `secondary` so the warn subject's yellow stays intact up to
-// the suffix, then the suffix renders in pink. Tests run with colors off, so
-// the snapshot shows the plain composed subject — the regression target is
-// that the suffix lands at end-of-subject without breaking the line.
+// Surface: `cfgd status` drift attribution. The `[source-name]` suffix is
+// styled in `secondary` so the warn subject's yellow stays intact up to the
+// suffix, then the suffix renders in pink. Tests run with colors off, so the
+// snapshot shows the plain composed subject — the regression target is that
+// the suffix lands at end-of-subject without breaking the line.
 golden_doc!(bucket_g, status_drift_secondary_suffix, |p, cap| {
     let s = p.section("Drift");
-    let suffix = p.style(Role::Secondary, " [team-config]");
     s.status(
         Role::Warn,
-        format!("file /etc/hosts — want: managed, have: external{suffix}"),
-    );
+        "file /etc/hosts — want: managed, have: external",
+    )
+    .label(Role::Secondary, "[team-config]");
 });
