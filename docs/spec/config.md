@@ -506,6 +506,8 @@ strings. An omitted field inherits the value from the active theme.
 | `diffAdd` | string | Colour for added lines in diffs. |
 | `diffRemove` | string | Colour for removed lines in diffs. |
 | `diffContext` | string | Colour for context lines in diffs. |
+| `accent` | string | Colour for "attention without alarm" highlights (notable but non-severity changes, e.g. new versions). |
+| `secondary` | string | Colour for structural pivots / identifiers (source names, scope labels). |
 | `iconOk` | string | Icon character for success state. |
 | `iconWarn` | string | Icon character for warning state. |
 | `iconFail` | string | Icon character for error state. |

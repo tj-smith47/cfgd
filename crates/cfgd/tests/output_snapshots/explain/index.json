@@ -972,6 +972,18 @@
                 "type": "string"
               },
               {
+                "description": "Hex color for accent (attention without alarm) styling",
+                "name": "accent",
+                "required": false,
+                "type": "string"
+              },
+              {
+                "description": "Hex color for secondary (structural pivot / identifier) styling",
+                "name": "secondary",
+                "required": false,
+                "type": "string"
+              },
+              {
                 "description": "Custom success icon (default: ✓)",
                 "name": "iconOk",
                 "required": false,

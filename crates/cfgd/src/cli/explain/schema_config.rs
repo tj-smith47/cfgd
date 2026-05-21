@@ -449,6 +449,20 @@ pub(super) static SCHEMA_CONFIG: ResourceSchema = ResourceSchema {
                             children: &[],
                         },
                         SchemaField {
+                            name: "accent",
+                            type_desc: "string",
+                            required: false,
+                            description: "Hex color for accent (attention without alarm) styling",
+                            children: &[],
+                        },
+                        SchemaField {
+                            name: "secondary",
+                            type_desc: "string",
+                            required: false,
+                            description: "Hex color for secondary (structural pivot / identifier) styling",
+                            children: &[],
+                        },
+                        SchemaField {
                             name: "iconOk",
                             type_desc: "string",
                             required: false,
