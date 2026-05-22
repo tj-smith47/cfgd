@@ -25,13 +25,13 @@ fn parse_apt_candidate_version(stdout: &str) -> Option<String> {
 
 /// Simulate the version extraction from apk policy output as done in query_version_apk.
 fn parse_apk_policy_version(stdout: &str) -> Option<String> {
-    if let Some(first_line) = stdout.lines().next() {
-        let trimmed = first_line.trim().trim_end_matches(':');
-        let bytes = trimmed.as_bytes();
-        for i in (0..bytes.len()).rev() {
-            if bytes[i] == b'-' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
-                return Some(trimmed[i + 1..].to_string());
-            }
+    for line in stdout.lines() {
+        if !line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let trimmed = line.trim().trim_end_matches(':');
+        if trimmed.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            return Some(trimmed.to_string());
         }
     }
     None
@@ -275,16 +275,26 @@ fn apt_candidate_version_revision_only_no_epoch() {
 
 #[test]
 fn apk_policy_version_basic() {
-    let stdout = "curl-8.5.0-r0:\n  lib/apk/db/installed\n";
+    // Real apk policy output: header line + indented "<version>:" + indented "lib/apk/db/installed".
+    let stdout = "\
+busybox policy:
+  1.36.1-r29:
+    lib/apk/db/installed
+    https://dl-cdn.alpinelinux.org/alpine/v3.19/main
+";
     assert_eq!(
         parse_apk_policy_version(stdout),
-        Some("8.5.0-r0".to_string())
+        Some("1.36.1-r29".to_string())
     );
 }
 
 #[test]
 fn apk_policy_version_compound_name() {
-    let stdout = "alpine-baselayout-3.4.3-r2:\n";
+    let stdout = "\
+alpine-baselayout policy:
+  3.4.3-r2:
+    lib/apk/db/installed
+";
     assert_eq!(
         parse_apk_policy_version(stdout),
         Some("3.4.3-r2".to_string())
@@ -293,7 +303,7 @@ fn apk_policy_version_compound_name() {
 
 #[test]
 fn apk_policy_version_no_version() {
-    let stdout = "busybox:\n";
+    let stdout = "nonexistent policy:\n";
     assert_eq!(parse_apk_policy_version(stdout), None);
 }
 
@@ -301,6 +311,22 @@ fn apk_policy_version_no_version() {
 fn apk_policy_version_empty() {
     let stdout = "";
     assert_eq!(parse_apk_policy_version(stdout), None);
+}
+
+#[test]
+fn apk_policy_version_takes_first_indented_version() {
+    // Multiple repos may list multiple versions; parser returns the first encountered.
+    let stdout = "\
+curl policy:
+  7.88.1-r0:
+    https://dl-cdn.alpinelinux.org/alpine/v3.17/main
+  8.5.0-r0:
+    https://dl-cdn.alpinelinux.org/alpine/v3.19/main
+";
+    assert_eq!(
+        parse_apk_policy_version(stdout),
+        Some("7.88.1-r0".to_string())
+    );
 }
 
 #[test]
@@ -413,14 +439,19 @@ fn dnf_aliases_returns_correct_mappings() {
 mod shim_tests {
     use serial_test::serial;
 
-    use cfgd_core::test_helpers::ToolShim;
+    use cfgd_core::errors::{CfgdError, PackageError};
+    use cfgd_core::test_helpers::{EnvVarGuard, ToolShim};
 
+    use super::super::{
+        APK_BIN_ENV, APT_CACHE_BIN_ENV, DNF_BIN_ENV, DPKG_QUERY_BIN_ENV, PACMAN_BIN_ENV,
+        PKG_BIN_ENV, RPM_BIN_ENV, YUM_BIN_ENV, ZYPPER_BIN_ENV,
+    };
     use super::{
         list_apt_with_versions, list_dnf_with_versions, query_version_apk, query_version_apt,
         query_version_info, query_version_pkg,
     };
 
-    const APT_CACHE_BIN_ENV: &str = "CFGD_APT_CACHE_BIN";
+    const MISSING_BIN: &str = "/var/empty/cfgd-test-no-such-binary";
 
     #[test]
     #[serial]
@@ -466,18 +497,29 @@ mod shim_tests {
 
     #[test]
     #[serial]
-    fn query_version_apt_passes_policy_and_package_to_shim() {
+    fn query_version_apt_invokes_shim_with_policy_then_package_arg_order() {
         let shim = ToolShim::install(APT_CACHE_BIN_ENV, 0, "curl:\n  Candidate: 1.0\n", "");
         query_version_apt("apt", "curl").expect("query should succeed");
         let log = shim.argv_log();
         assert!(
-            log.contains("policy"),
-            "argv should contain policy; got: {log}"
+            log.contains("policy curl"),
+            "argv should be `policy curl` in that order; got: {log}"
         );
-        assert!(log.contains("curl"), "argv should contain curl; got: {log}");
     }
 
-    const APK_BIN_ENV: &str = "CFGD_APK_BIN";
+    #[test]
+    #[serial]
+    fn query_version_apt_maps_spawn_failure_to_command_failed() {
+        let _guard = EnvVarGuard::set(APT_CACHE_BIN_ENV, MISSING_BIN);
+        let err = query_version_apt("apt", "curl").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CfgdError::Package(PackageError::CommandFailed { ref manager, .. }) if manager == "apt"
+            ),
+            "expected CommandFailed{{manager:\"apt\"}}; got: {err:?}"
+        );
+    }
 
     #[test]
     #[serial]
@@ -485,7 +527,7 @@ mod shim_tests {
         let _shim = ToolShim::install(
             APK_BIN_ENV,
             0,
-            "curl-8.5.0-r0:\n  lib/apk/db/installed\n",
+            "curl policy:\n  8.5.0-r0:\n    lib/apk/db/installed\n",
             "",
         );
         let version = query_version_apk("apk", "curl").expect("query should succeed");
@@ -502,13 +544,25 @@ mod shim_tests {
 
     #[test]
     #[serial]
-    fn query_version_apk_returns_none_when_no_version_in_name() {
-        let _shim = ToolShim::install(APK_BIN_ENV, 0, "busybox:\n", "");
-        let version = query_version_apk("apk", "busybox").expect("query should succeed");
+    fn query_version_apk_returns_none_when_only_header_line() {
+        let _shim = ToolShim::install(APK_BIN_ENV, 0, "nonexistent policy:\n", "");
+        let version = query_version_apk("apk", "nonexistent").expect("query should succeed");
         assert_eq!(version, None);
     }
 
-    const PKG_BIN_ENV: &str = "CFGD_PKG_BIN";
+    #[test]
+    #[serial]
+    fn query_version_apk_maps_spawn_failure_to_command_failed() {
+        let _guard = EnvVarGuard::set(APK_BIN_ENV, MISSING_BIN);
+        let err = query_version_apk("apk", "curl").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CfgdError::Package(PackageError::CommandFailed { ref manager, .. }) if manager == "apk"
+            ),
+            "expected CommandFailed{{manager:\"apk\"}}; got: {err:?}"
+        );
+    }
 
     #[test]
     #[serial]
@@ -539,14 +593,23 @@ mod shim_tests {
         assert_eq!(version, None);
     }
 
-    const PACMAN_BIN_ENV: &str = "CFGD_PACMAN_BIN";
-    const DNF_BIN_ENV: &str = "CFGD_DNF_BIN";
-    const YUM_BIN_ENV: &str = "CFGD_YUM_BIN";
-    const ZYPPER_BIN_ENV: &str = "CFGD_ZYPPER_BIN";
+    #[test]
+    #[serial]
+    fn query_version_pkg_maps_spawn_failure_to_command_failed() {
+        let _guard = EnvVarGuard::set(PKG_BIN_ENV, MISSING_BIN);
+        let err = query_version_pkg("pkg", "curl").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CfgdError::Package(PackageError::CommandFailed { ref manager, .. }) if manager == "pkg"
+            ),
+            "expected CommandFailed{{manager:\"pkg\"}}; got: {err:?}"
+        );
+    }
 
     #[test]
     #[serial]
-    fn query_version_info_pacman_returns_version_via_shim() {
+    fn query_version_info_pacman_returns_version_and_invokes_shim_with_si_then_pkg() {
         let shim = ToolShim::install(
             PACMAN_BIN_ENV,
             0,
@@ -557,15 +620,14 @@ mod shim_tests {
         assert_eq!(version, Some("9.0.2167-1".to_string()));
         let log = shim.argv_log();
         assert!(
-            log.contains("-Si"),
-            "pacman argv should contain -Si; got: {log}"
+            log.contains("-Si vim"),
+            "pacman argv should be `-Si vim` in that order; got: {log}"
         );
-        assert!(log.contains("vim"), "argv should contain vim; got: {log}");
     }
 
     #[test]
     #[serial]
-    fn query_version_info_dnf_returns_version_via_shim() {
+    fn query_version_info_dnf_returns_version_and_invokes_shim_with_info_then_pkg() {
         let shim = ToolShim::install(
             DNF_BIN_ENV,
             0,
@@ -576,10 +638,9 @@ mod shim_tests {
         assert_eq!(version, Some("8.5.0".to_string()));
         let log = shim.argv_log();
         assert!(
-            log.contains("info"),
-            "dnf argv should contain info; got: {log}"
+            log.contains("info curl"),
+            "dnf argv should be `info curl` in that order; got: {log}"
         );
-        assert!(log.contains("curl"), "argv should contain curl; got: {log}");
     }
 
     #[test]
@@ -624,7 +685,19 @@ mod shim_tests {
         assert_eq!(version, None);
     }
 
-    const DPKG_QUERY_BIN_ENV: &str = "CFGD_DPKG_QUERY_BIN";
+    #[test]
+    #[serial]
+    fn query_version_info_maps_spawn_failure_to_command_failed() {
+        let _guard = EnvVarGuard::set(DNF_BIN_ENV, MISSING_BIN);
+        let err = query_version_info("dnf", "curl").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CfgdError::Package(PackageError::CommandFailed { ref manager, .. }) if manager == "dnf"
+            ),
+            "expected CommandFailed{{manager:\"dnf\"}}; got: {err:?}"
+        );
+    }
 
     #[test]
     #[serial]
@@ -653,17 +726,36 @@ mod shim_tests {
 
     #[test]
     #[serial]
-    fn list_apt_with_versions_errors_on_non_zero_exit() {
+    fn list_apt_with_versions_surfaces_stderr_on_non_zero_exit() {
         let _shim = ToolShim::install(DPKG_QUERY_BIN_ENV, 1, "", "dpkg-query failed");
         let err = list_apt_with_versions("apt").unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("dpkg-query failed") || msg.contains("apt"),
-            "error should surface stderr or manager; got: {msg}"
+            msg.contains("dpkg-query failed"),
+            "error should include stderr; got: {msg}"
+        );
+        assert!(
+            matches!(
+                err,
+                CfgdError::Package(PackageError::ListFailed { ref manager, .. }) if manager == "apt"
+            ),
+            "expected ListFailed{{manager:\"apt\"}}; got: {err:?}"
         );
     }
 
-    const RPM_BIN_ENV: &str = "CFGD_RPM_BIN";
+    #[test]
+    #[serial]
+    fn list_apt_with_versions_maps_spawn_failure_to_command_failed() {
+        let _guard = EnvVarGuard::set(DPKG_QUERY_BIN_ENV, MISSING_BIN);
+        let err = list_apt_with_versions("apt").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CfgdError::Package(PackageError::CommandFailed { ref manager, .. }) if manager == "apt"
+            ),
+            "expected CommandFailed{{manager:\"apt\"}}; got: {err:?}"
+        );
+    }
 
     #[test]
     #[serial]
@@ -692,13 +784,34 @@ mod shim_tests {
 
     #[test]
     #[serial]
-    fn list_dnf_with_versions_errors_on_non_zero_exit() {
+    fn list_dnf_with_versions_surfaces_stderr_on_non_zero_exit() {
         let _shim = ToolShim::install(RPM_BIN_ENV, 1, "", "rpm query failed");
         let err = list_dnf_with_versions("dnf").unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("rpm query failed") || msg.contains("dnf"),
-            "error should surface stderr or manager; got: {msg}"
+            msg.contains("rpm query failed"),
+            "error should include stderr; got: {msg}"
+        );
+        assert!(
+            matches!(
+                err,
+                CfgdError::Package(PackageError::ListFailed { ref manager, .. }) if manager == "dnf"
+            ),
+            "expected ListFailed{{manager:\"dnf\"}}; got: {err:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn list_dnf_with_versions_maps_spawn_failure_to_command_failed() {
+        let _guard = EnvVarGuard::set(RPM_BIN_ENV, MISSING_BIN);
+        let err = list_dnf_with_versions("dnf").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CfgdError::Package(PackageError::CommandFailed { ref manager, .. }) if manager == "dnf"
+            ),
+            "expected CommandFailed{{manager:\"dnf\"}}; got: {err:?}"
         );
     }
 }

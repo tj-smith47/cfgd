@@ -9,10 +9,10 @@
 use std::collections::HashSet;
 use std::process::Command;
 
-use cfgd_core::command_available;
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::Printer;
 use cfgd_core::providers::PackageManager;
+use cfgd_core::{command_available, command_available_with_seam};
 
 use super::parsers::{
     parse_apk_lines, parse_dnf_lines, parse_pkg_lines, parse_simple_lines, parse_yum_lines,
@@ -20,9 +20,28 @@ use super::parsers::{
 };
 use super::shared::{run_pkg_cmd, run_pkg_cmd_live, strip_sudo_if_root};
 use super::versions::{
-    apt_aliases, dnf_aliases, list_apt_with_versions, list_dnf_with_versions, query_version_apk,
+    APK_BIN_ENV, DNF_BIN_ENV, PACMAN_BIN_ENV, YUM_BIN_ENV, ZYPPER_BIN_ENV, apt_aliases,
+    dnf_aliases, list_apt_with_versions, list_dnf_with_versions, query_version_apk,
     query_version_apt, query_version_info, query_version_pkg,
 };
+
+/// Map a SimpleManager `mgr_name` to the `CFGD_*_BIN` env-var seam that targets
+/// the SAME binary. Used so `is_available()` honors the same test-shim seam
+/// `query_version_*` honors — without this, a test that shims CFGD_DNF_BIN
+/// cannot make dnf_manager.is_available() return true on a host without real
+/// dnf on PATH. Returns None when the manager binary differs from any seamed
+/// query tool (e.g., apt's mgr_name is "apt" but the query backend is
+/// apt-cache / dpkg-query — those use their own seams in versions/mod.rs).
+fn mgr_seam_env(mgr_name: &str) -> Option<&'static str> {
+    match mgr_name {
+        "apk" => Some(APK_BIN_ENV),
+        "dnf" => Some(DNF_BIN_ENV),
+        "yum" => Some(YUM_BIN_ENV),
+        "pacman" => Some(PACMAN_BIN_ENV),
+        "zypper" => Some(ZYPPER_BIN_ENV),
+        _ => None,
+    }
+}
 
 /// Function pointer type for `installed_packages_with_versions` overrides.
 type ListWithVersionsFn = fn(&str) -> Result<Vec<cfgd_core::providers::PackageInfo>>;
@@ -69,6 +88,8 @@ impl PackageManager for SimpleManager {
     fn is_available(&self) -> bool {
         if let Some(f) = self.is_available_fn {
             f()
+        } else if let Some(env) = mgr_seam_env(self.mgr_name) {
+            command_available_with_seam(env, self.mgr_name)
         } else {
             command_available(self.mgr_name)
         }
@@ -223,7 +244,10 @@ pub(super) fn yum_manager() -> SimpleManager {
         ignore_update_exit: true,
         parse_list: parse_yum_lines,
         query_version: query_version_info,
-        is_available_fn: Some(|| !command_available("dnf") && command_available("yum")),
+        is_available_fn: Some(|| {
+            !command_available_with_seam(DNF_BIN_ENV, "dnf")
+                && command_available_with_seam(YUM_BIN_ENV, "yum")
+        }),
         list_with_versions: Some(list_dnf_with_versions),
         aliases_fn: Some(dnf_aliases),
     }

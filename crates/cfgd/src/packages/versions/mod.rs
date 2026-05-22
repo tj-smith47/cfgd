@@ -5,36 +5,49 @@
 //! installed packages with versions for `installed_packages_with_versions`.
 //! `*_aliases` map canonical package names to their distro-specific aliases.
 //!
-//! All shell-outs route through `cfgd_core::tool_cmd(env_var, default)` so the
-//! `CFGD_*_BIN` test-shim seams can drive the binaries without a real package
-//! manager installed. `query_version_info` dispatches the seam per `manager`
-//! arg (pacman / dnf / yum / zypper) so each manager has an independent
-//! override knob.
+//! Every shell-out IN THIS MODULE routes through `cfgd_core::tool_cmd(env_var,
+//! default)` so the `CFGD_*_BIN` test-shim seams can drive the binaries without
+//! a real package manager installed. `query_version_info` dispatches the seam
+//! per `manager` arg (pacman / dnf / yum / zypper) so each manager has an
+//! independent override knob. The install/uninstall/list paths in
+//! `packages::simple::mod` still shell out via raw `Command::new` and are not
+//! yet seamed.
 
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::tool_cmd;
 
 use super::shared::run_pkg_cmd;
 
-const APT_CACHE_BIN_ENV: &str = "CFGD_APT_CACHE_BIN";
-const APK_BIN_ENV: &str = "CFGD_APK_BIN";
-const PKG_BIN_ENV: &str = "CFGD_PKG_BIN";
-const PACMAN_BIN_ENV: &str = "CFGD_PACMAN_BIN";
-const DNF_BIN_ENV: &str = "CFGD_DNF_BIN";
-const YUM_BIN_ENV: &str = "CFGD_YUM_BIN";
-const ZYPPER_BIN_ENV: &str = "CFGD_ZYPPER_BIN";
-const DPKG_QUERY_BIN_ENV: &str = "CFGD_DPKG_QUERY_BIN";
-const RPM_BIN_ENV: &str = "CFGD_RPM_BIN";
+pub(super) const APT_CACHE_BIN_ENV: &str = "CFGD_APT_CACHE_BIN";
+pub(super) const APK_BIN_ENV: &str = "CFGD_APK_BIN";
+pub(super) const PKG_BIN_ENV: &str = "CFGD_PKG_BIN";
+pub(super) const PACMAN_BIN_ENV: &str = "CFGD_PACMAN_BIN";
+pub(super) const DNF_BIN_ENV: &str = "CFGD_DNF_BIN";
+pub(super) const YUM_BIN_ENV: &str = "CFGD_YUM_BIN";
+pub(super) const ZYPPER_BIN_ENV: &str = "CFGD_ZYPPER_BIN";
+pub(super) const DPKG_QUERY_BIN_ENV: &str = "CFGD_DPKG_QUERY_BIN";
+pub(super) const RPM_BIN_ENV: &str = "CFGD_RPM_BIN";
 
-/// Map an `info`-style manager name to its env-var seam. Unknown managers get
-/// an empty seam, which `tool_cmd` resolves to the default binary via PATH.
+/// Map an `info`-style manager name to its env-var seam. Unknown managers
+/// debug-assert (catches typos in tests) and log a warning, then fall through
+/// to an empty seam so production keeps working via PATH lookup of `default`.
 fn info_bin_env(manager: &str) -> &'static str {
     match manager {
         "pacman" => PACMAN_BIN_ENV,
         "dnf" => DNF_BIN_ENV,
         "yum" => YUM_BIN_ENV,
         "zypper" => ZYPPER_BIN_ENV,
-        _ => "",
+        other => {
+            debug_assert!(
+                false,
+                "query_version_info called with unknown manager {other:?}; CFGD_*_BIN seam silently bypassed"
+            );
+            tracing::warn!(
+                manager = other,
+                "query_version_info: no CFGD_*_BIN seam registered; falling through to PATH"
+            );
+            ""
+        }
     }
 }
 
@@ -114,14 +127,18 @@ pub(super) fn query_version_apk(manager: &str, package: &str) -> Result<Option<S
         return Ok(None);
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // apk policy output format: "package-version:" on first line
-    if let Some(first_line) = stdout.lines().next() {
-        let trimmed = first_line.trim().trim_end_matches(':');
-        let bytes = trimmed.as_bytes();
-        for i in (0..bytes.len()).rev() {
-            if bytes[i] == b'-' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
-                return Ok(Some(trimmed[i + 1..].to_string()));
-            }
+    // apk policy <pkg> output:
+    //   <pkg> policy:        (column 0)
+    //     <version>:          (indented)
+    //       <repo-url>        (deeper indent)
+    // Return the first indented line whose trimmed/colon-stripped value starts with a digit.
+    for line in stdout.lines() {
+        if !line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        let trimmed = line.trim().trim_end_matches(':');
+        if trimmed.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            return Ok(Some(trimmed.to_string()));
         }
     }
     Ok(None)

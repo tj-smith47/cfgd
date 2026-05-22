@@ -143,13 +143,20 @@ pub fn require_tool(name: &str, install_hint: Option<&str>) -> std::result::Resu
 /// resolves via `PATH`); tests set `env_var` to an absolute path of a shim
 /// binary. This is the SOLE supported override pattern for external CLIs.
 ///
-/// Catalog of seams currently in use:
-/// - `CFGD_COSIGN_BIN` / `cosign` — Sigstore signature ops
-/// - `CFGD_AGE_BIN` / `age` — opaque-binary file encryption
+/// Empty `env_var` (`""`) is treated as "no seam" and returns `default`
+/// unchanged; callers may dispatch a per-binary seam via match and fall
+/// through to `""` for unseamed binaries without panicking.
 ///
-/// New backends should reuse this helper rather than reinventing the override
-/// shape — keeps the test-shim ergonomics uniform.
+/// Naming convention: every active seam uses `CFGD_<NAME>_BIN` (e.g.
+/// `CFGD_COSIGN_BIN`, `CFGD_AGE_BIN`, `CFGD_BREW_BIN`, `CFGD_APT_CACHE_BIN`).
+/// New backends MUST follow this shape and reuse this helper rather than
+/// reinventing the override surface — keeps the test-shim ergonomics uniform.
+/// Pair every seam consumer with `serial_test::serial` because env-var mutation
+/// is process-global.
 pub fn tool_binary_name(env_var: &str, default: &str) -> String {
+    if env_var.is_empty() {
+        return default.to_string();
+    }
     std::env::var(env_var).unwrap_or_else(|_| default.to_string())
 }
 
