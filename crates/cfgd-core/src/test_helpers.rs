@@ -925,6 +925,36 @@ impl Drop for EditorGuard {
     }
 }
 
+/// RAII guard that saves the current working directory on construction,
+/// changes to a new directory, and restores the prior directory on drop —
+/// even if a test panics between construction and drop. Pair with
+/// `serial_test::serial` because `set_current_dir` is process-global.
+///
+/// Use this instead of paired `std::env::set_current_dir(&orig)` calls in
+/// tests that need to drive CWD-sensitive helpers (e.g. git rev-parse,
+/// path resolution from "."). The paired form leaks a dangling CWD when
+/// an assertion between the two calls panics, causing the next serial
+/// test to inherit a deleted tempdir.
+pub struct CwdGuard {
+    orig: PathBuf,
+}
+
+impl CwdGuard {
+    /// Capture the current working directory, then change to `new`.
+    /// Returns an error if either step fails.
+    pub fn set(new: impl AsRef<Path>) -> std::io::Result<Self> {
+        let orig = std::env::current_dir()?;
+        std::env::set_current_dir(new)?;
+        Ok(Self { orig })
+    }
+}
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.orig);
+    }
+}
+
 /// Function-call style env-var scope: capture prior, set/unset `var` to
 /// `value`, run `f`, then restore. `value = None` removes the var for the
 /// duration of `f`.

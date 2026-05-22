@@ -329,15 +329,10 @@ pub fn cmd_module_pull(
 
 #[cfg(test)]
 mod tests {
-    use std::net::TcpListener;
-
     use cfgd_core::output::Printer;
+    use cfgd_core::test_helpers::test_printer;
 
     use super::{PushOptions, cmd_module_pull, cmd_module_push};
-
-    fn make_printer() -> Printer {
-        Printer::new(cfgd_core::output::Verbosity::Quiet)
-    }
 
     fn write_module_yaml(dir: &std::path::Path) {
         std::fs::write(
@@ -347,11 +342,8 @@ mod tests {
         .expect("write module.yaml");
     }
 
-    fn closed_port_ref() -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = listener.local_addr().expect("addr").port();
-        drop(listener);
-        format!("localhost:{}/test/mod:v1", port)
+    fn unreachable_ref(name: &str) -> String {
+        format!("localhost:1/{name}:v1")
     }
 
     fn no_flags() -> PushOptions<'static> {
@@ -367,7 +359,7 @@ mod tests {
     #[test]
     fn push_errors_when_module_yaml_missing() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let printer = make_printer();
+        let printer = test_printer();
 
         let err = cmd_module_push(
             &printer,
@@ -411,8 +403,8 @@ mod tests {
     fn push_errors_when_registry_unreachable() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_module_yaml(dir.path());
-        let artifact = closed_port_ref();
-        let printer = make_printer();
+        let artifact = unreachable_ref("test/push-unreachable");
+        let printer = test_printer();
 
         let err = cmd_module_push(
             &printer,
@@ -432,7 +424,7 @@ mod tests {
     fn push_error_doc_kind_is_push_failed() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_module_yaml(dir.path());
-        let artifact = closed_port_ref();
+        let artifact = unreachable_ref("test/push-doc");
         let (printer, cap) = Printer::for_test_doc();
 
         let _ = cmd_module_push(
@@ -453,8 +445,8 @@ mod tests {
     #[test]
     fn pull_errors_when_registry_unreachable() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let artifact = closed_port_ref();
-        let printer = make_printer();
+        let artifact = unreachable_ref("test/pull-unreachable");
+        let printer = test_printer();
 
         let err = cmd_module_pull(
             &printer,
@@ -479,7 +471,7 @@ mod tests {
     #[test]
     fn pull_error_doc_kind_is_pull_failed() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let artifact = closed_port_ref();
+        let artifact = unreachable_ref("test/pull-doc");
         let (printer, cap) = Printer::for_test_doc();
 
         let _ = cmd_module_pull(
@@ -510,7 +502,7 @@ mod tests {
         use serial_test::serial;
 
         use super::super::{PushOptions, cmd_module_pull, cmd_module_push};
-        use super::{closed_port_ref, write_module_yaml};
+        use super::{unreachable_ref, write_module_yaml};
 
         #[test]
         #[serial]
@@ -587,7 +579,7 @@ mod tests {
         #[serial]
         fn pull_require_signature_emits_verify_failed_when_cosign_exits_nonzero() {
             let dir = tempfile::tempdir().expect("tempdir");
-            let artifact = closed_port_ref();
+            let artifact = unreachable_ref("test/verify-sig");
 
             let _shim = CosignTestShim::builder()
                 .with_argv_logging(false)
@@ -622,7 +614,7 @@ mod tests {
         #[serial]
         fn pull_verify_attestation_emits_verify_failed_when_cosign_exits_nonzero() {
             let dir = tempfile::tempdir().expect("tempdir");
-            let artifact = closed_port_ref();
+            let artifact = unreachable_ref("test/verify-attest");
 
             let _shim = CosignTestShim::builder()
                 .with_argv_logging(false)
@@ -655,152 +647,153 @@ mod tests {
                 "step must be 'attestation': {doc}"
             );
         }
+    }
 
-        #[test]
-        fn pull_happy_path_emits_doc_with_artifact_and_output() {
-            let mut server = mockito::Server::new();
-            let registry = server.url().trim_start_matches("http://").to_string();
+    #[test]
+    fn pull_happy_path_emits_doc_with_artifact_and_output() {
+        let mut server = mockito::Server::new();
+        let registry = server.url().trim_start_matches("http://").to_string();
 
-            let src_dir = tempfile::tempdir().expect("src module dir");
-            write_module_yaml(src_dir.path());
+        let src_dir = tempfile::tempdir().expect("src module dir");
+        write_module_yaml(src_dir.path());
 
-            let layer_data = cfgd_core::oci::create_tar_gz(src_dir.path()).expect("create layer");
-            let config_blob =
-                serde_json::to_vec(&serde_json::json!({ "moduleYaml": "name: test-mod" })).unwrap();
-            let config_digest = cfgd_core::sha256_digest(&config_blob);
-            let layer_digest = cfgd_core::sha256_digest(&layer_data);
+        let layer_data = cfgd_core::oci::create_tar_gz(src_dir.path()).expect("create layer");
+        let config_blob =
+            serde_json::to_vec(&serde_json::json!({ "moduleYaml": "name: test-mod" })).unwrap();
+        let config_digest = cfgd_core::sha256_digest(&config_blob);
+        let layer_digest = cfgd_core::sha256_digest(&layer_data);
 
-            let manifest = serde_json::json!({
-                "schemaVersion": 2,
-                "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                "config": {
-                    "mediaType": cfgd_core::oci::MEDIA_TYPE_MODULE_CONFIG,
-                    "digest": config_digest,
-                    "size": config_blob.len(),
-                },
-                "layers": [{
-                    "mediaType": cfgd_core::oci::MEDIA_TYPE_MODULE_LAYER,
-                    "digest": layer_digest,
-                    "size": layer_data.len(),
-                }],
-            });
+        let manifest = serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {
+                "mediaType": cfgd_core::oci::MEDIA_TYPE_MODULE_CONFIG,
+                "digest": config_digest,
+                "size": config_blob.len(),
+            },
+            "layers": [{
+                "mediaType": cfgd_core::oci::MEDIA_TYPE_MODULE_LAYER,
+                "digest": layer_digest,
+                "size": layer_data.len(),
+            }],
+        });
 
-            server
-                .mock("GET", "/v2/test/mod/manifests/v1")
-                .with_status(200)
-                .with_header("Content-Type", "application/vnd.oci.image.manifest.v1+json")
-                .with_body(serde_json::to_string(&manifest).unwrap())
-                .create();
+        server
+            .mock("GET", "/v2/test/mod/manifests/v1")
+            .with_status(200)
+            .with_header("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+            .with_body(serde_json::to_string(&manifest).unwrap())
+            .create();
 
-            server
-                .mock(
-                    "GET",
-                    mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
-                )
-                .with_status(200)
-                .with_body(layer_data)
-                .create();
-
-            let artifact_ref = format!("{}/test/mod:v1", registry);
-            let output_dir = tempfile::tempdir().expect("output dir");
-            let (printer, cap) = Printer::for_test_doc();
-
-            cmd_module_pull(
-                &printer,
-                &artifact_ref,
-                output_dir.path().to_str().unwrap(),
-                false,
-                false,
-                cfgd_core::oci::VerifyOptions {
-                    key: None,
-                    identity: None,
-                    issuer: None,
-                },
+        server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
             )
-            .expect("pull happy path must succeed");
-            drop(printer);
+            .with_status(200)
+            .with_body(layer_data)
+            .create();
 
-            let doc = cap.json().expect("success doc must be emitted");
-            assert_eq!(doc["artifact"], artifact_ref, "artifact field must match");
-            assert!(
-                doc["output"].is_string(),
-                "output field must be present: {doc}"
-            );
-        }
+        let artifact_ref = format!("{}/test/mod:v1", registry);
+        let output_dir = tempfile::tempdir().expect("output dir");
+        let (printer, cap) = Printer::for_test_doc();
 
-        #[test]
-        fn push_happy_path_emits_doc_with_digest() {
-            let dir = tempfile::tempdir().expect("tempdir");
-            write_module_yaml(dir.path());
+        cmd_module_pull(
+            &printer,
+            &artifact_ref,
+            output_dir.path().to_str().unwrap(),
+            false,
+            false,
+            cfgd_core::oci::VerifyOptions {
+                key: None,
+                identity: None,
+                issuer: None,
+            },
+        )
+        .expect("pull happy path must succeed");
+        drop(printer);
 
-            let mut server = mockito::Server::new();
-            let registry = server.url().trim_start_matches("http://").to_string();
-            let artifact = format!("{}/test/mod:v1", registry);
-            let upload_location = format!("{}/v2/test/mod/blobs/uploads/up-id", server.url());
+        let doc = cap.json().expect("success doc must be emitted");
+        assert_eq!(doc["artifact"], artifact_ref, "artifact field must match");
+        assert!(
+            doc["output"].is_string(),
+            "output field must be present: {doc}"
+        );
+    }
 
-            server
-                .mock(
-                    "HEAD",
-                    mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
-                )
-                .with_status(404)
-                .expect_at_least(2)
-                .create();
+    #[test]
+    fn push_happy_path_emits_doc_with_digest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_module_yaml(dir.path());
 
-            server
-                .mock("POST", "/v2/test/mod/blobs/uploads/")
-                .with_status(202)
-                .with_header("Location", &upload_location)
-                .expect_at_least(2)
-                .create();
+        let mut server = mockito::Server::new();
+        let registry = server.url().trim_start_matches("http://").to_string();
+        let artifact = format!("{}/test/mod:v1", registry);
+        let upload_location = format!("{}/v2/test/mod/blobs/uploads/up-id", server.url());
 
-            server
-                .mock(
-                    "PUT",
-                    mockito::Matcher::Regex(
-                        r"/v2/test/mod/blobs/uploads/up-id\?digest=sha256:.*".to_string(),
-                    ),
-                )
-                .with_status(201)
-                .expect_at_least(2)
-                .create();
-
-            server
-                .mock("PUT", "/v2/test/mod/manifests/v1")
-                .with_status(201)
-                .create();
-
-            let (printer, cap) = Printer::for_test_doc();
-            cmd_module_push(
-                &printer,
-                dir.path().to_str().unwrap(),
-                &artifact,
-                PushOptions {
-                    platform: None,
-                    apply: false,
-                    sign: false,
-                    key: None,
-                    attest: false,
-                },
+        server
+            .mock(
+                "HEAD",
+                mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
             )
-            .expect("push happy path must succeed");
-            drop(printer);
+            .with_status(404)
+            .expect_at_least(2)
+            .create();
 
-            let doc = cap.json().expect("success doc must be emitted");
-            let digest = doc["digest"].as_str().expect("digest must be a string");
-            assert!(
-                digest.starts_with("sha256:"),
-                "digest must be a sha256 hash: {digest}"
-            );
-            assert_eq!(doc["signed"], false, "signed must be false: {doc}");
-            assert_eq!(
-                doc["attestation"], false,
-                "attestation must be false: {doc}"
-            );
-        }
+        server
+            .mock("POST", "/v2/test/mod/blobs/uploads/")
+            .with_status(202)
+            .with_header("Location", &upload_location)
+            .expect_at_least(2)
+            .create();
+
+        server
+            .mock(
+                "PUT",
+                mockito::Matcher::Regex(
+                    r"/v2/test/mod/blobs/uploads/up-id\?digest=sha256:.*".to_string(),
+                ),
+            )
+            .with_status(201)
+            .expect_at_least(2)
+            .create();
+
+        server
+            .mock("PUT", "/v2/test/mod/manifests/v1")
+            .with_status(201)
+            .create();
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_module_push(
+            &printer,
+            dir.path().to_str().unwrap(),
+            &artifact,
+            PushOptions {
+                platform: None,
+                apply: false,
+                sign: false,
+                key: None,
+                attest: false,
+            },
+        )
+        .expect("push happy path must succeed");
+        drop(printer);
+
+        let doc = cap.json().expect("success doc must be emitted");
+        let digest = doc["digest"].as_str().expect("digest must be a string");
+        assert!(
+            digest.starts_with("sha256:"),
+            "digest must be a sha256 hash: {digest}"
+        );
+        assert_eq!(doc["signed"], false, "signed must be false: {doc}");
+        assert_eq!(
+            doc["attestation"], false,
+            "attestation must be false: {doc}"
+        );
     }
 
     mod git_helpers {
+        use cfgd_core::test_helpers::CwdGuard;
         use serial_test::serial;
 
         use super::super::{detect_git_head_for_tests, detect_git_remote_for_tests};
@@ -819,10 +812,8 @@ mod tests {
         fn detect_git_remote_returns_none_in_fresh_repo() {
             let dir = tempfile::tempdir().expect("tempdir");
             git(dir.path(), &["init"]);
-            let orig = std::env::current_dir().expect("cwd");
-            std::env::set_current_dir(dir.path()).expect("set_current_dir");
+            let _cwd = CwdGuard::set(dir.path()).expect("cwd guard");
             let result = detect_git_remote_for_tests();
-            std::env::set_current_dir(&orig).expect("restore cwd");
             assert!(
                 result.is_none(),
                 "fresh repo with no remote must return None, got: {result:?}"
@@ -840,10 +831,8 @@ mod tests {
             git(dir.path(), &["add", "."]);
             git(dir.path(), &["commit", "-m", "init"]);
 
-            let orig = std::env::current_dir().expect("cwd");
-            std::env::set_current_dir(dir.path()).expect("set_current_dir");
+            let _cwd = CwdGuard::set(dir.path()).expect("cwd guard");
             let result = detect_git_head_for_tests();
-            std::env::set_current_dir(&orig).expect("restore cwd");
 
             let sha = result.expect("HEAD must be Some after initial commit");
             assert_eq!(sha.len(), 40, "HEAD SHA must be 40 hex chars: {sha}");
@@ -858,10 +847,8 @@ mod tests {
         fn detect_git_head_returns_none_in_empty_repo() {
             let dir = tempfile::tempdir().expect("tempdir");
             git(dir.path(), &["init"]);
-            let orig = std::env::current_dir().expect("cwd");
-            std::env::set_current_dir(dir.path()).expect("set_current_dir");
+            let _cwd = CwdGuard::set(dir.path()).expect("cwd guard");
             let result = detect_git_head_for_tests();
-            std::env::set_current_dir(&orig).expect("restore cwd");
             assert!(
                 result.is_none(),
                 "empty repo has no HEAD, must return None: {result:?}"
