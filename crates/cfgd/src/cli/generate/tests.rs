@@ -1,3 +1,6 @@
+use cfgd_core::test_helpers::EnvVarGuard;
+use serial_test::serial;
+
 use super::*;
 
 #[test]
@@ -80,6 +83,533 @@ fn dirs_from_env_uses_home_env() {
             "should fall back to /tmp when HOME is not set"
         );
     }
+}
+
+#[test]
+fn target_label_returns_full_for_none() {
+    assert_eq!(target_label(&None), "full");
+}
+
+#[test]
+fn target_label_returns_module_slug() {
+    let t = Some(GenerateTarget::Module {
+        name: "neovim".into(),
+    });
+    assert_eq!(target_label(&t), "module/neovim");
+}
+
+#[test]
+fn target_label_returns_profile_slug() {
+    let t = Some(GenerateTarget::Profile {
+        name: "work-laptop".into(),
+    });
+    assert_eq!(target_label(&t), "profile/work-laptop");
+}
+
+#[test]
+#[serial]
+fn dirs_from_env_fallback_to_tmp_when_home_unset() {
+    let _guard = EnvVarGuard::unset("HOME");
+    let result = dirs_from_env();
+    assert_eq!(
+        result,
+        std::path::PathBuf::from("/tmp"),
+        "dirs_from_env should fall back to /tmp when $HOME is unset"
+    );
+}
+
+#[test]
+fn dirs_from_env_uses_home_arg_in_scan_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let args = GenerateArgs {
+        target: None,
+        model: None,
+        provider: None,
+        yes: false,
+        scan_only: true,
+        shell: Some("bash".into()),
+        home: Some(dir.path().to_str().unwrap().to_string()),
+    };
+    let result = cmd_generate_scan_only(&printer, &args);
+    assert!(
+        result.is_ok(),
+        "scan_only with explicit --home should succeed: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn handle_present_yaml_reject_serialises_action_field() {
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let input = serde_json::json!({
+        "content": "key: value\n",
+        "kind": "Module",
+        "description": "test"
+    });
+    let result = handle_present_yaml(&printer, "tool-reject-001", &input, true);
+    let block = result.expect("handle_present_yaml must not fail");
+    match block {
+        crate::ai::client::ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        } => {
+            assert_eq!(tool_use_id, "tool-reject-001");
+            assert!(is_error.is_none());
+            let parsed: serde_json::Value =
+                serde_json::from_str(&content).expect("content must be valid JSON");
+            assert!(
+                parsed.get("action").is_some(),
+                "ToolResult content must carry an 'action' field: {content}"
+            );
+        }
+        _ => panic!("expected ToolResult variant"),
+    }
+}
+
+#[test]
+#[serial]
+fn cmd_generate_scan_only_defaults_shell_to_zsh_when_shell_env_unset() {
+    let dir = tempfile::tempdir().unwrap();
+    let _shell_guard = EnvVarGuard::unset("SHELL");
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let args = GenerateArgs {
+        target: None,
+        model: None,
+        provider: None,
+        yes: false,
+        scan_only: true,
+        shell: None,
+        home: Some(dir.path().to_str().unwrap().to_string()),
+    };
+    let result = cmd_generate_scan_only(&printer, &args);
+    assert!(
+        result.is_ok(),
+        "scan_only default-shell path must succeed: {:?}",
+        result.err()
+    );
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Scanning zsh config"),
+        "should default to zsh when $SHELL is unset, got: {output}"
+    );
+}
+
+#[test]
+fn cmd_generate_scan_only_data_payload_has_expected_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(".zshrc"),
+        "alias g='git'\nexport EDITOR=nvim\nexport PATH=$HOME/.cargo/bin:$PATH\n",
+    )
+    .unwrap();
+
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let args = GenerateArgs {
+        target: None,
+        model: None,
+        provider: None,
+        yes: false,
+        scan_only: true,
+        shell: Some("zsh".into()),
+        home: Some(dir.path().to_str().unwrap().to_string()),
+    };
+    let result = cmd_generate_scan_only(&printer, &args);
+    assert!(
+        result.is_ok(),
+        "scan_only should succeed: {:?}",
+        result.err()
+    );
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Scan complete"),
+        "should print completion line, got: {output}"
+    );
+    assert!(
+        output.contains("Scanning zsh config"),
+        "should print zsh scanning header, got: {output}"
+    );
+}
+
+#[test]
+fn cmd_generate_scan_only_path_additions_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(".bashrc"),
+        "export PATH=$HOME/.local/bin:$HOME/.cargo/bin:$PATH\n",
+    )
+    .unwrap();
+
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let args = GenerateArgs {
+        target: None,
+        model: None,
+        provider: None,
+        yes: false,
+        scan_only: true,
+        shell: Some("bash".into()),
+        home: Some(dir.path().to_str().unwrap().to_string()),
+    };
+    let result = cmd_generate_scan_only(&printer, &args);
+    assert!(result.is_ok(), "should succeed: {:?}", result.err());
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Scan complete") || output.contains("PATH additions"),
+        "should complete scan, got: {output}"
+    );
+}
+
+#[test]
+fn handle_present_yaml_tool_use_id_round_trips() {
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let input = serde_json::json!({
+        "content": "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: git\nspec: {}\n",
+        "kind": "Module",
+        "description": "git module"
+    });
+    let id = "toolu_abc_123_xyz";
+    let result = handle_present_yaml(&printer, id, &input, true).unwrap();
+    match result {
+        crate::ai::client::ContentBlock::ToolResult { tool_use_id, .. } => {
+            assert_eq!(
+                tool_use_id, id,
+                "tool_use_id must round-trip through handle_present_yaml"
+            );
+        }
+        _ => panic!("expected ToolResult"),
+    }
+}
+
+#[test]
+fn generate_target_debug_format_is_not_empty() {
+    let m = GenerateTarget::Module { name: "vim".into() };
+    let p = GenerateTarget::Profile {
+        name: "home".into(),
+    };
+    assert!(!format!("{m:?}").is_empty());
+    assert!(!format!("{p:?}").is_empty());
+}
+
+#[test]
+fn generate_args_debug_format_is_not_empty() {
+    let args = GenerateArgs {
+        target: None,
+        model: None,
+        provider: None,
+        yes: false,
+        scan_only: false,
+        shell: None,
+        home: None,
+    };
+    assert!(!format!("{args:?}").is_empty());
+}
+
+#[test]
+fn cmd_generate_scan_only_entries_count_in_data_payload() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".vimrc"), "set nu\n").unwrap();
+    std::fs::write(dir.path().join(".tmux.conf"), "set -g mouse on\n").unwrap();
+
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let args = GenerateArgs {
+        target: None,
+        model: None,
+        provider: None,
+        yes: false,
+        scan_only: true,
+        shell: Some("zsh".into()),
+        home: Some(dir.path().to_str().unwrap().to_string()),
+    };
+    let result = cmd_generate_scan_only(&printer, &args);
+    assert!(result.is_ok(), "should succeed: {:?}", result.err());
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Entries"),
+        "should report dotfile entry count, got: {output}"
+    );
+}
+
+#[test]
+fn target_label_preserves_special_chars_in_name() {
+    let t = Some(GenerateTarget::Module {
+        name: "my-tool_v2".into(),
+    });
+    assert_eq!(target_label(&t), "module/my-tool_v2");
+}
+
+#[test]
+fn handle_present_yaml_content_is_valid_json() {
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let yaml_content =
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: minimal\nspec: {}\n";
+    let input = serde_json::json!({
+        "content": yaml_content,
+        "kind": "Profile",
+        "description": "minimal profile for round-trip check"
+    });
+    let block = handle_present_yaml(&printer, "round-trip-001", &input, true).unwrap();
+    match block {
+        crate::ai::client::ContentBlock::ToolResult { content, .. } => {
+            let v: serde_json::Value =
+                serde_json::from_str(&content).expect("ToolResult content must be valid JSON");
+            assert_eq!(
+                v["action"], "accept",
+                "auto-accept must serialise to action=accept"
+            );
+        }
+        _ => panic!("expected ToolResult"),
+    }
+}
+
+#[test]
+fn cmd_generate_scan_only_with_aliases_count_in_payload() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(".zshrc"),
+        "alias ll='ls -la'\nalias gs='git status'\nalias gc='git commit'\n",
+    )
+    .unwrap();
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let args = GenerateArgs {
+        target: None,
+        model: None,
+        provider: None,
+        yes: false,
+        scan_only: true,
+        shell: Some("zsh".into()),
+        home: Some(dir.path().to_str().unwrap().to_string()),
+    };
+    let result = cmd_generate_scan_only(&printer, &args);
+    assert!(result.is_ok(), "should succeed: {:?}", result.err());
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Scan complete"),
+        "should complete scan: {output}"
+    );
+    assert!(
+        output.contains("3") || output.contains("Aliases"),
+        "should report at least the alias count, got: {output}"
+    );
+}
+
+#[test]
+fn cmd_generate_scan_only_exports_count_in_payload() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(".bashrc"),
+        "export GOPATH=$HOME/go\nexport RUST_LOG=info\nexport EDITOR=vim\n",
+    )
+    .unwrap();
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let args = GenerateArgs {
+        target: None,
+        model: None,
+        provider: None,
+        yes: false,
+        scan_only: true,
+        shell: Some("bash".into()),
+        home: Some(dir.path().to_str().unwrap().to_string()),
+    };
+    let result = cmd_generate_scan_only(&printer, &args);
+    assert!(result.is_ok(), "should succeed: {:?}", result.err());
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Scan complete"),
+        "should complete scan: {output}"
+    );
+    assert!(
+        output.contains("3") || output.contains("Export"),
+        "should report export count, got: {output}"
+    );
+}
+
+#[test]
+#[serial]
+fn dirs_from_env_with_home_set_returns_that_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let _guard = EnvVarGuard::set("HOME", dir.path().to_str().unwrap());
+    let result = dirs_from_env();
+    assert_eq!(
+        result,
+        dir.path(),
+        "dirs_from_env must return the $HOME value when it is explicitly set"
+    );
+}
+
+#[test]
+fn cmd_generate_scan_only_scan_complete_message_present() {
+    let dir = tempfile::tempdir().unwrap();
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let args = GenerateArgs {
+        target: None,
+        model: None,
+        provider: None,
+        yes: false,
+        scan_only: true,
+        shell: Some("zsh".into()),
+        home: Some(dir.path().to_str().unwrap().to_string()),
+    };
+    let result = cmd_generate_scan_only(&printer, &args);
+    assert!(result.is_ok(), "should succeed: {:?}", result.err());
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("use without --scan-only to generate config"),
+        "completion hint must be present, got: {output}"
+    );
+}
+
+#[test]
+fn cmd_generate_scan_only_with_shell_flag_overrides_env() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".bashrc"), "alias g='git'\n").unwrap();
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let args = GenerateArgs {
+        target: None,
+        model: None,
+        provider: None,
+        yes: false,
+        scan_only: true,
+        shell: Some("bash".into()),
+        home: Some(dir.path().to_str().unwrap().to_string()),
+    };
+    let result = cmd_generate_scan_only(&printer, &args);
+    assert!(result.is_ok(), "should succeed: {:?}", result.err());
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("bash"),
+        "explicit --shell flag must select the bash scanner, got: {output}"
+    );
+}
+
+#[test]
+fn handle_present_yaml_missing_description_field_fails() {
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let input = serde_json::json!({
+        "content": "key: value\n",
+        "kind": "Module"
+    });
+    let result = handle_present_yaml(&printer, "id-missing-desc", &input, true);
+    assert!(
+        result.is_err(),
+        "missing 'description' field must cause deserialization error"
+    );
+}
+
+#[test]
+fn handle_present_yaml_missing_kind_field_fails() {
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let input = serde_json::json!({
+        "content": "key: value\n",
+        "description": "some description"
+    });
+    let result = handle_present_yaml(&printer, "id-missing-kind", &input, true);
+    assert!(
+        result.is_err(),
+        "missing 'kind' field must cause deserialization error"
+    );
+}
+
+#[test]
+fn handle_present_yaml_interactive_reject_returns_reject_action() {
+    let responses = vec![cfgd_core::output::PromptAnswer::Select("Reject".into())];
+    let (printer, _buf) = Printer::for_test_with_prompt_responses(responses);
+    let input = serde_json::json!({
+        "content": "key: value\n",
+        "kind": "Module",
+        "description": "test reject"
+    });
+    let block = handle_present_yaml(&printer, "tool-reject", &input, false).unwrap();
+    match block {
+        crate::ai::client::ContentBlock::ToolResult { content, .. } => {
+            let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+            assert_eq!(
+                parsed["action"], "reject",
+                "Reject selection must serialise to action=reject"
+            );
+        }
+        _ => panic!("expected ToolResult"),
+    }
+}
+
+#[test]
+fn handle_present_yaml_interactive_step_through_returns_step_action() {
+    let responses = vec![cfgd_core::output::PromptAnswer::Select(
+        "Step through".into(),
+    )];
+    let (printer, _buf) = Printer::for_test_with_prompt_responses(responses);
+    let input = serde_json::json!({
+        "content": "key: value\n",
+        "kind": "Module",
+        "description": "test step-through"
+    });
+    let block = handle_present_yaml(&printer, "tool-step", &input, false).unwrap();
+    match block {
+        crate::ai::client::ContentBlock::ToolResult { content, .. } => {
+            let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+            assert_eq!(
+                parsed["action"], "stepThrough",
+                "Step through selection must serialise to action=stepThrough"
+            );
+        }
+        _ => panic!("expected ToolResult"),
+    }
+}
+
+#[test]
+fn handle_present_yaml_interactive_feedback_returns_feedback_action() {
+    let responses = vec![
+        cfgd_core::output::PromptAnswer::Select("Give feedback".into()),
+        cfgd_core::output::PromptAnswer::Text("please retry without symlinks".into()),
+    ];
+    let (printer, _buf) = Printer::for_test_with_prompt_responses(responses);
+    let input = serde_json::json!({
+        "content": "key: value\n",
+        "kind": "Profile",
+        "description": "test feedback"
+    });
+    let block = handle_present_yaml(&printer, "tool-fb", &input, false).unwrap();
+    match block {
+        crate::ai::client::ContentBlock::ToolResult { content, .. } => {
+            let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+            assert_eq!(parsed["action"], "feedback");
+            assert_eq!(parsed["message"], "please retry without symlinks");
+        }
+        _ => panic!("expected ToolResult"),
+    }
+}
+
+#[test]
+fn handle_present_yaml_interactive_accept_returns_accept_action() {
+    let responses = vec![cfgd_core::output::PromptAnswer::Select("Accept".into())];
+    let (printer, _buf) = Printer::for_test_with_prompt_responses(responses);
+    let input = serde_json::json!({
+        "content": "key: value\n",
+        "kind": "Module",
+        "description": "test accept"
+    });
+    let block = handle_present_yaml(&printer, "tool-acc", &input, false).unwrap();
+    match block {
+        crate::ai::client::ContentBlock::ToolResult { content, .. } => {
+            let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+            assert_eq!(parsed["action"], "accept");
+        }
+        _ => panic!("expected ToolResult"),
+    }
+}
+
+#[test]
+fn handle_present_yaml_missing_content_field_fails() {
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let input = serde_json::json!({
+        "kind": "Profile",
+        "description": "no content"
+    });
+    let result = handle_present_yaml(&printer, "id-missing-content", &input, true);
+    assert!(
+        result.is_err(),
+        "missing 'content' field must cause deserialization error"
+    );
 }
 
 // --- GenerateArgs construction tests ---
@@ -941,6 +1471,491 @@ mod cmd_generate_mockito {
         assert!(
             msg.contains("ANTHROPIC_API_KEY"),
             "error should name the missing env var: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_generate_writes_generated_files_and_runs_git_commit_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-write");
+
+        let repo_root = tmp.path().to_path_buf();
+        cfgd_core::git_cmd_local()
+            .arg("init")
+            .arg(&repo_root)
+            .output()
+            .expect("git init must succeed");
+        cfgd_core::git_cmd_local()
+            .args([
+                "-C",
+                repo_root.to_str().unwrap(),
+                "config",
+                "user.email",
+                "test@example.com",
+            ])
+            .output()
+            .expect("git config email must succeed");
+        cfgd_core::git_cmd_local()
+            .args([
+                "-C",
+                repo_root.to_str().unwrap(),
+                "config",
+                "user.name",
+                "Test",
+            ])
+            .output()
+            .expect("git config name must succeed");
+
+        let mut server = mockito::Server::new();
+        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+
+        let turn1 = server
+            .mock("POST", "/v1/messages")
+            .match_body(mockito::Matcher::Regex("scan my system".to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "msg_write_001",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_write_001",
+                        "name": "write_module_yaml",
+                        "input": {
+                            "name": "git",
+                            "content": "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: git\nspec: {}\n"
+                        }
+                    }],
+                    "stop_reason": "tool_use",
+                    "usage": {"input_tokens": 11, "output_tokens": 4}
+                }"#,
+            )
+            .expect(1)
+            .create();
+
+        let turn2 = server
+            .mock("POST", "/v1/messages")
+            .match_body(mockito::Matcher::Regex("tool_result".to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "msg_write_002",
+                    "content": [{"type": "text", "text": "Module written."}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 6, "output_tokens": 3}
+                }"#,
+            )
+            .expect(1)
+            .create();
+
+        let cli = super::super::super::Cli {
+            command: Some(super::super::super::Command::Status {
+                module: None,
+                exit_code: false,
+            }),
+            config: repo_root.join("cfgd.yaml"),
+            profile: None,
+            verbose: 0,
+            quiet: true,
+            no_color: true,
+            output: super::super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+            jsonpath: None,
+            state_dir: None,
+        };
+        let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let args = GenerateArgs {
+            target: None,
+            model: None,
+            provider: None,
+            yes: true,
+            scan_only: false,
+            shell: None,
+            home: None,
+        };
+
+        cmd_generate(&cli, &printer, &args).expect("two-turn write_module_yaml loop must succeed");
+
+        turn1.assert();
+        turn2.assert();
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Generated files") || output.contains("Generated 1 file"),
+            "must surface the generated-files summary: {output}"
+        );
+        assert!(
+            output.contains("git"),
+            "summary must mention the module name: {output}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_generate_with_profile_target_uses_profile_mode_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-prof");
+
+        let mut server = mockito::Server::new();
+        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .match_body(mockito::Matcher::Regex(
+                "Please help me create a cfgd profile named 'work-laptop'".to_string(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "msg_prof_001",
+                    "content": [{"type": "text", "text": "Profile sketch ready."}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 7, "output_tokens": 2}
+                }"#,
+            )
+            .expect(1)
+            .create();
+
+        let cli = test_cli(tmp.path().join("cfgd.yaml"));
+        let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let args = GenerateArgs {
+            target: Some(GenerateTarget::Profile {
+                name: "work-laptop".into(),
+            }),
+            model: None,
+            provider: None,
+            yes: true,
+            scan_only: false,
+            shell: None,
+            home: None,
+        };
+
+        cmd_generate(&cli, &printer, &args).expect("profile-target one-turn loop must succeed");
+        mock.assert();
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Profile sketch ready."),
+            "assistant text must print for profile target: {output}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_generate_tool_error_surfaces_is_error_in_tool_result() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-err");
+
+        let mut server = mockito::Server::new();
+        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+
+        let turn1 = server
+            .mock("POST", "/v1/messages")
+            .match_body(mockito::Matcher::Regex("scan my system".to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "msg_err_001",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_err_001",
+                        "name": "write_module_yaml",
+                        "input": {}
+                    }],
+                    "stop_reason": "tool_use",
+                    "usage": {"input_tokens": 5, "output_tokens": 2}
+                }"#,
+            )
+            .expect(1)
+            .create();
+
+        let turn2 = server
+            .mock("POST", "/v1/messages")
+            .match_body(mockito::Matcher::Regex("tool_result".to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "msg_err_002",
+                    "content": [{"type": "text", "text": "Acknowledged tool error."}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 3, "output_tokens": 1}
+                }"#,
+            )
+            .expect(1)
+            .create();
+
+        let cli = test_cli(tmp.path().join("cfgd.yaml"));
+        let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let args = GenerateArgs {
+            target: None,
+            model: None,
+            provider: None,
+            yes: true,
+            scan_only: false,
+            shell: None,
+            home: None,
+        };
+
+        cmd_generate(&cli, &printer, &args)
+            .expect("tool error path must complete; cmd_generate returns Ok even on tool error");
+        turn1.assert();
+        turn2.assert();
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Acknowledged tool error."),
+            "final text must print after tool-error round-trip: {output}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_generate_consent_declined_emits_aborted_doc_and_returns_ok() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-abort");
+
+        let mut server = mockito::Server::new();
+        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+
+        let must_not_fire = server
+            .mock("POST", "/v1/messages")
+            .expect(0)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"x","content":[],"stop_reason":"end_turn","usage":{"input_tokens":0,"output_tokens":0}}"#)
+            .create();
+
+        let cli = test_cli(tmp.path().join("cfgd.yaml"));
+        let (printer, buf) = Printer::for_test_with_prompt_responses_at(
+            vec![cfgd_core::output::PromptAnswer::Confirm(false)],
+            cfgd_core::output::Verbosity::Normal,
+        );
+        let args = GenerateArgs {
+            target: None,
+            model: None,
+            provider: None,
+            yes: false,
+            scan_only: false,
+            shell: None,
+            home: None,
+        };
+
+        cmd_generate(&cli, &printer, &args)
+            .expect("declining consent must return Ok with an 'Aborted.' doc, not Err");
+        must_not_fire.assert();
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Aborted."),
+            "declined-consent must print 'Aborted.': {output}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_generate_commits_generated_files_when_user_confirms_commit_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-commit");
+
+        let repo_root = tmp.path().to_path_buf();
+        cfgd_core::git_cmd_local()
+            .arg("init")
+            .arg(&repo_root)
+            .output()
+            .expect("git init");
+        cfgd_core::git_cmd_local()
+            .args([
+                "-C",
+                repo_root.to_str().unwrap(),
+                "config",
+                "user.email",
+                "t@example.com",
+            ])
+            .output()
+            .expect("git config email");
+        cfgd_core::git_cmd_local()
+            .args([
+                "-C",
+                repo_root.to_str().unwrap(),
+                "config",
+                "user.name",
+                "T",
+            ])
+            .output()
+            .expect("git config name");
+
+        let mut server = mockito::Server::new();
+        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+
+        let turn1 = server
+            .mock("POST", "/v1/messages")
+            .match_body(mockito::Matcher::Regex("scan my system".to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "msg_commit_001",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_commit_001",
+                        "name": "write_module_yaml",
+                        "input": {
+                            "name": "tmux",
+                            "content": "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: tmux\nspec: {}\n"
+                        }
+                    }],
+                    "stop_reason": "tool_use",
+                    "usage": {"input_tokens": 4, "output_tokens": 2}
+                }"#,
+            )
+            .expect(1)
+            .create();
+
+        let turn2 = server
+            .mock("POST", "/v1/messages")
+            .match_body(mockito::Matcher::Regex("tool_result".to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "msg_commit_002",
+                    "content": [{"type": "text", "text": "Wrote tmux module."}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 2, "output_tokens": 1}
+                }"#,
+            )
+            .expect(1)
+            .create();
+
+        let cli = super::super::super::Cli {
+            command: Some(super::super::super::Command::Status {
+                module: None,
+                exit_code: false,
+            }),
+            config: repo_root.join("cfgd.yaml"),
+            profile: None,
+            verbose: 0,
+            quiet: true,
+            no_color: true,
+            output: super::super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+            jsonpath: None,
+            state_dir: None,
+        };
+        let (printer, buf) = Printer::for_test_with_prompt_responses_at(
+            vec![
+                cfgd_core::output::PromptAnswer::Confirm(true),
+                cfgd_core::output::PromptAnswer::Confirm(true),
+            ],
+            cfgd_core::output::Verbosity::Normal,
+        );
+        let args = GenerateArgs {
+            target: None,
+            model: None,
+            provider: None,
+            yes: false,
+            scan_only: false,
+            shell: None,
+            home: None,
+        };
+
+        cmd_generate(&cli, &printer, &args)
+            .expect("consent + commit confirms must drive a successful end-to-end commit");
+
+        turn1.assert();
+        turn2.assert();
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Changes committed.") || output.contains("Generated"),
+            "user-confirmed commit path must surface the commit notice: {output}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_generate_user_declines_commit_prompt_does_not_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        let _api = EnvVarGuard::set("ANTHROPIC_API_KEY", "test-key-nocommit");
+
+        let mut server = mockito::Server::new();
+        let _url = EnvVarGuard::set("CFGD_ANTHROPIC_URL", &server.url());
+
+        let turn1 = server
+            .mock("POST", "/v1/messages")
+            .match_body(mockito::Matcher::Regex("scan my system".to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "msg_nc_001",
+                    "content": [{
+                        "type": "tool_use",
+                        "id": "toolu_nc_001",
+                        "name": "write_profile_yaml",
+                        "input": {
+                            "name": "personal",
+                            "content": "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: personal\nspec: {}\n"
+                        }
+                    }],
+                    "stop_reason": "tool_use",
+                    "usage": {"input_tokens": 5, "output_tokens": 1}
+                }"#,
+            )
+            .expect(1)
+            .create();
+
+        let turn2 = server
+            .mock("POST", "/v1/messages")
+            .match_body(mockito::Matcher::Regex("tool_result".to_string()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "id": "msg_nc_002",
+                    "content": [{"type": "text", "text": "Done."}],
+                    "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 1, "output_tokens": 1}
+                }"#,
+            )
+            .expect(1)
+            .create();
+
+        let cli = test_cli(tmp.path().join("cfgd.yaml"));
+        let (printer, buf) = Printer::for_test_with_prompt_responses_at(
+            vec![
+                cfgd_core::output::PromptAnswer::Confirm(true),
+                cfgd_core::output::PromptAnswer::Confirm(false),
+            ],
+            cfgd_core::output::Verbosity::Normal,
+        );
+        let args = GenerateArgs {
+            target: None,
+            model: None,
+            provider: None,
+            yes: false,
+            scan_only: false,
+            shell: None,
+            home: None,
+        };
+
+        cmd_generate(&cli, &printer, &args)
+            .expect("declining commit must still return Ok and just skip the commit");
+        turn1.assert();
+        turn2.assert();
+        let output = buf.lock().unwrap();
+        assert!(
+            !output.contains("Changes committed."),
+            "no commit notice must appear when user declined commit prompt: {output}"
+        );
+        assert!(
+            output.contains("Generated") || output.contains("Done."),
+            "must still print the generated-summary + final assistant text: {output}"
         );
     }
 }
