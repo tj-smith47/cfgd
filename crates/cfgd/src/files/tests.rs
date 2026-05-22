@@ -3174,11 +3174,6 @@ fn scan_target_io_error_when_path_is_a_directory() {
     );
 }
 
-// -----------------------------------------------------------------------
-// Non-local origin, copy-source-is-directory, secret refs,
-// ensure_target_writable parent-is-file
-// -----------------------------------------------------------------------
-
 #[test]
 fn apply_create_non_local_origin_writes_file() {
     // Exercises the `file_origin = Some(origin.as_str())` arm (apply.rs ~140)
