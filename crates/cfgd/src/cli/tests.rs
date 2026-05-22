@@ -16380,3 +16380,503 @@ fn decide_action_resolution_pins_accepted_and_rejected_strings() {
     assert_eq!(super::DecideAction::Accept.resolution(), "accepted");
     assert_eq!(super::DecideAction::Reject.resolution(), "rejected");
 }
+
+#[test]
+fn expand_aliases_flags_only_returns_args_unchanged() {
+    // When find_subcommand_index returns None (no positional found), expand_aliases
+    // returns args unchanged — exercises the None branch at line 129.
+    let args = vec![
+        "cfgd".to_string(),
+        "--verbose".to_string(),
+        "--no-color".to_string(),
+    ];
+    let result = super::expand_aliases(args.clone());
+    assert_eq!(result, args);
+}
+
+#[test]
+fn expand_aliases_double_dash_separator_returns_args_unchanged() {
+    // Double-dash stops scanning → find_subcommand_index returns None.
+    let args = vec!["cfgd".to_string(), "--".to_string(), "apply".to_string()];
+    let result = super::expand_aliases(args.clone());
+    assert_eq!(result, args);
+}
+
+#[test]
+fn execute_profile_create_dispatch() {
+    let h = CliTestHarness::builder().build();
+    // Provide a post_apply script so interactive mode is not triggered.
+    let cli = h.cli_with_command(Command::Profile {
+        command: ProfileCommand::Create(Box::new(ProfileCreateArgs {
+            post_apply: vec!["echo done".to_string()],
+            ..test_profile_create_args("newprof")
+        })),
+    });
+    super::execute(&cli, h.printer()).expect("Profile Create dispatch must succeed");
+    let profiles_dir = h.config_path().join("profiles");
+    assert!(
+        profiles_dir.join("newprof.yaml").exists(),
+        "new profile file should have been created"
+    );
+}
+
+#[test]
+fn execute_profile_update_dispatch() {
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Profile {
+        command: ProfileCommand::Update(Box::new(empty_profile_update_args())),
+    });
+    super::execute(&cli, h.printer()).expect("Profile Update dispatch must succeed");
+}
+
+#[test]
+fn execute_profile_delete_dispatch() {
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Profile {
+        command: ProfileCommand::Delete {
+            name: "work".to_string(),
+            yes: true,
+        },
+    });
+    super::execute(&cli, h.printer()).expect("Profile Delete dispatch must succeed");
+}
+
+#[test]
+fn execute_module_show_dispatch() {
+    let h = CliTestHarness::builder()
+        .module("test-mod", SIMPLE_MODULE_YAML)
+        .build();
+    let cli = h.cli_with_command(Command::Module {
+        command: ModuleCommand::Show {
+            name: "test-mod".to_string(),
+            show_values: false,
+        },
+    });
+    super::execute(&cli, h.printer()).expect("Module Show dispatch must succeed");
+    h.assert_output_contains("test-mod");
+}
+
+#[test]
+fn execute_module_create_dispatch() {
+    let h = CliTestHarness::builder().build();
+    // Provide a post_apply script so interactive mode is not triggered.
+    let cli = h.cli_with_command(Command::Module {
+        command: ModuleCommand::Create(Box::new(ModuleCreateArgs {
+            post_apply: vec!["echo done".to_string()],
+            ..test_module_create_args("new-mod")
+        })),
+    });
+    super::execute(&cli, h.printer()).expect("Module Create dispatch must succeed");
+    assert!(
+        h.config_path()
+            .join("modules")
+            .join("new-mod")
+            .join("module.yaml")
+            .exists(),
+        "module.yaml should have been created"
+    );
+}
+
+#[test]
+fn execute_module_update_dispatch() {
+    let h = CliTestHarness::builder()
+        .module("test-mod", SIMPLE_MODULE_YAML)
+        .build();
+    let cli = h.cli_with_command(Command::Module {
+        command: ModuleCommand::Update(Box::new(empty_module_update_args("test-mod"))),
+    });
+    super::execute(&cli, h.printer()).expect("Module Update dispatch must succeed");
+}
+
+#[test]
+fn execute_module_delete_dispatch() {
+    let h = CliTestHarness::builder()
+        .module("test-mod", SIMPLE_MODULE_YAML)
+        .build();
+    let cli = h.cli_with_command(Command::Module {
+        command: ModuleCommand::Delete {
+            name: "test-mod".to_string(),
+            yes: true,
+            purge: false,
+        },
+    });
+    super::execute(&cli, h.printer()).expect("Module Delete dispatch must succeed");
+}
+
+#[test]
+fn execute_module_search_dispatch() {
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Module {
+        command: ModuleCommand::Search {
+            query: "networking".to_string(),
+        },
+    });
+    super::execute(&cli, h.printer()).expect("Module Search dispatch must succeed");
+}
+
+#[test]
+fn execute_module_registry_list_dispatch() {
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Module {
+        command: ModuleCommand::Registry {
+            command: ModuleRegistryCommand::List,
+        },
+    });
+    super::execute(&cli, h.printer()).expect("Module Registry List dispatch must succeed");
+}
+
+#[test]
+fn execute_module_registry_add_dispatch() {
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Module {
+        command: ModuleCommand::Registry {
+            command: ModuleRegistryCommand::Add {
+                url: "https://github.com/example/modules".to_string(),
+                name: Some("example".to_string()),
+            },
+        },
+    });
+    // Add may fail (network) but dispatch arm is exercised.
+    let result = super::execute(&cli, h.printer());
+    let _ = result;
+}
+
+#[test]
+fn execute_module_registry_remove_dispatch() {
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Module {
+        command: ModuleCommand::Registry {
+            command: ModuleRegistryCommand::Remove {
+                name: "nonexistent".to_string(),
+            },
+        },
+    });
+    // Removing a nonexistent registry returns Ok (info message, not error).
+    super::execute(&cli, h.printer()).expect("Module Registry Remove dispatch must succeed");
+}
+
+#[test]
+fn execute_module_registry_rename_dispatch() {
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Module {
+        command: ModuleCommand::Registry {
+            command: ModuleRegistryCommand::Rename {
+                name: "nonexistent".to_string(),
+                new_name: "new-name".to_string(),
+            },
+        },
+    });
+    let result = super::execute(&cli, h.printer());
+    assert!(result.is_err(), "renaming nonexistent registry should fail");
+}
+
+#[test]
+fn execute_module_export_dispatch() {
+    let h = CliTestHarness::builder()
+        .module("test-mod", SIMPLE_MODULE_YAML)
+        .build();
+    let cli = h.cli_with_command(Command::Module {
+        command: ModuleCommand::Export {
+            name: "test-mod".to_string(),
+            as_format: ExportFormat::Devcontainer,
+            dir: None,
+        },
+    });
+    // Export writes to cwd; may fail on filesystem issues but dispatch is exercised.
+    let result = super::execute(&cli, h.printer());
+    let _ = result;
+}
+
+#[test]
+fn execute_module_push_dispatch() {
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Module {
+        command: ModuleCommand::Push {
+            dir: "/nonexistent/module".to_string(),
+            artifact: "ghcr.io/example/module:v0.0.0".to_string(),
+            platform: None,
+            apply: false,
+            sign: false,
+            key: None,
+            attest: false,
+        },
+    });
+    let result = super::execute(&cli, h.printer());
+    // Fails because dir doesn't contain module.yaml, but dispatch arm was reached.
+    assert!(
+        result.is_err(),
+        "push of nonexistent module dir should fail"
+    );
+}
+
+#[test]
+fn execute_module_pull_dispatch() {
+    let h = CliTestHarness::builder().build();
+    let out_dir = tempfile::tempdir().unwrap();
+    let cli = h.cli_with_command(Command::Module {
+        command: ModuleCommand::Pull {
+            artifact_ref: "ghcr.io/example/module:v0.0.0".to_string(),
+            dir: out_dir.path().display().to_string(),
+            require_signature: false,
+            verify_attestation: false,
+            key: None,
+            certificate_identity: None,
+            certificate_oidc_issuer: None,
+        },
+    });
+    let result = super::execute(&cli, h.printer());
+    // Fails on network/registry, but dispatch arm was reached.
+    assert!(result.is_err(), "pull of unreachable artifact should fail");
+}
+
+#[test]
+fn execute_module_build_dispatch() {
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Module {
+        command: ModuleCommand::Build {
+            dir: "/nonexistent/module".to_string(),
+            target: None,
+            base_image: None,
+            artifact: None,
+            sign: false,
+            key: None,
+        },
+    });
+    let result = super::execute(&cli, h.printer());
+    // Fails because dir doesn't contain module.yaml, but dispatch arm was reached.
+    assert!(result.is_err(), "build of nonexistent dir should fail");
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("module.yaml") || msg.contains("nonexistent"),
+        "error should describe the missing module, got: {msg}"
+    );
+}
+
+#[test]
+fn execute_module_keys_list_dispatch() {
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Module {
+        command: ModuleCommand::Keys {
+            command: ModuleKeysCommand::List,
+        },
+    });
+    super::execute(&cli, h.printer()).expect("Module Keys List dispatch must succeed");
+}
+
+#[test]
+fn execute_module_keys_generate_dispatch() {
+    let out_dir = tempfile::tempdir().unwrap();
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Module {
+        command: ModuleCommand::Keys {
+            command: ModuleKeysCommand::Generate {
+                dir: Some(out_dir.path().display().to_string()),
+            },
+        },
+    });
+    // Fails when cosign is absent; still exercises the dispatch arm.
+    let result = super::execute(&cli, h.printer());
+    let _ = result;
+}
+
+#[test]
+fn execute_module_keys_rotate_dispatch() {
+    let out_dir = tempfile::tempdir().unwrap();
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Module {
+        command: ModuleCommand::Keys {
+            command: ModuleKeysCommand::Rotate {
+                dir: Some(out_dir.path().display().to_string()),
+                artifacts: vec![],
+            },
+        },
+    });
+    let result = super::execute(&cli, h.printer());
+    let _ = result;
+}
+
+#[test]
+fn execute_module_upgrade_dispatch() {
+    let h = CliTestHarness::builder()
+        .module("test-mod", SIMPLE_MODULE_YAML)
+        .build();
+    let cli = h.cli_with_command(Command::Module {
+        command: ModuleCommand::Upgrade {
+            name: "test-mod".to_string(),
+            ref_: None,
+            yes: true,
+            allow_unsigned: false,
+        },
+    });
+    // Upgrade of a local (non-locked-remote) module fails, but dispatch arm reached.
+    let result = super::execute(&cli, h.printer());
+    let _ = result;
+}
+
+#[test]
+fn execute_config_unset_dispatch() {
+    // Set a key first so unset has something to remove.
+    let h = CliTestHarness::builder().build();
+    let set_cli = h.cli_with_command(Command::Config {
+        command: ConfigCommand::Set {
+            key: "theme".to_string(),
+            value: "dracula".to_string(),
+        },
+    });
+    super::execute(&set_cli, h.printer()).expect("Config Set must succeed");
+
+    let unset_cli = h.cli_with_command(Command::Config {
+        command: ConfigCommand::Unset {
+            key: "theme".to_string(),
+        },
+    });
+    super::execute(&unset_cli, h.printer()).expect("Config Unset dispatch must succeed");
+}
+
+#[test]
+fn execute_source_show_dispatch() {
+    let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  profile: default
+  sources:
+    - name: my-src
+      origin:
+        url: https://github.com/example/config
+        branch: main
+        type: Git
+      subscription:
+        priority: 500
+"#;
+    let h = CliTestHarness::builder().config(config_with_source).build();
+    let cli = h.cli_with_command(Command::Source {
+        command: SourceCommand::Show {
+            name: "my-src".to_string(),
+        },
+    });
+    super::execute(&cli, h.printer()).expect("Source Show dispatch must succeed");
+    h.assert_output_contains("my-src");
+}
+
+#[test]
+fn execute_source_remove_dispatch() {
+    let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  profile: default
+  sources:
+    - name: removable
+      origin:
+        url: https://github.com/example/config
+        branch: main
+        type: Git
+      subscription:
+        priority: 500
+"#;
+    let h = CliTestHarness::builder().config(config_with_source).build();
+    let cli = h.cli_with_command(Command::Source {
+        command: SourceCommand::Remove {
+            name: "removable".to_string(),
+            keep_all: true,
+            remove_all: false,
+            yes: true,
+        },
+    });
+    super::execute(&cli, h.printer()).expect("Source Remove dispatch must succeed");
+}
+
+#[test]
+fn execute_source_override_dispatch() {
+    let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  profile: default
+  sources:
+    - name: my-src
+      origin:
+        url: https://github.com/example/config
+        branch: main
+        type: Git
+      subscription:
+        priority: 500
+"#;
+    let h = CliTestHarness::builder().config(config_with_source).build();
+    let cli = h.cli_with_command(Command::Source {
+        command: SourceCommand::Override {
+            source: "my-src".to_string(),
+            action: SourceOverrideAction::Reject,
+            path: "env.EDITOR".to_string(),
+            value: None,
+        },
+    });
+    super::execute(&cli, h.printer()).expect("Source Override dispatch must succeed");
+}
+
+#[test]
+fn execute_source_create_dispatch() {
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Source {
+        command: SourceCommand::Create {
+            name: Some("my-source".to_string()),
+            description: Some("test source".to_string()),
+            version: Some("1.0.0".to_string()),
+        },
+    });
+    super::execute(&cli, h.printer()).expect("Source Create dispatch must succeed");
+}
+
+#[test]
+fn execute_daemon_status_dispatch() {
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Daemon {
+        command: Some(DaemonCommand::Status),
+    });
+    super::execute(&cli, h.printer()).expect("Daemon Status dispatch must succeed");
+}
+
+#[test]
+fn execute_compliance_history_dispatch() {
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Compliance {
+        command: Some(ComplianceCommand::History { since: None }),
+    });
+    super::execute(&cli, h.printer()).expect("Compliance History dispatch must succeed");
+}
+
+#[test]
+fn execute_compliance_diff_dispatch() {
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Compliance {
+        command: Some(ComplianceCommand::Diff {
+            base_id: 1,
+            target_id: 2,
+        }),
+    });
+    // Fails when snapshots 1 and 2 don't exist, but dispatch arm is exercised.
+    let result = super::execute(&cli, h.printer());
+    let _ = result;
+}
+
+#[test]
+fn execute_enroll_dispatch() {
+    let h = CliTestHarness::builder().build();
+    let cli = h.cli_with_command(Command::Enroll {
+        server_url: "http://127.0.0.1:19999".to_string(),
+        token: Some("test-token".to_string()),
+        ssh_key: None,
+        gpg_key: None,
+        username: None,
+    });
+    // Fails because server is unreachable, but dispatch arm is exercised.
+    let result = super::execute(&cli, h.printer());
+    assert!(
+        result.is_err(),
+        "enroll with unreachable server should fail"
+    );
+}
