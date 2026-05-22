@@ -579,6 +579,229 @@ mod brew_shim {
         let v = BrewCaskManager.available_version("firefox").expect("Ok");
         assert_eq!(v.as_deref(), Some("117.0.1"));
     }
+
+    #[test]
+    #[serial]
+    fn brew_uninstall_translates_nonzero_exit_into_uninstall_failed() {
+        let _shim = ToolShim::install(SHIM_ENV, 1, "", "Error: no such formula");
+        let p = test_printer();
+        let err = BrewManager
+            .uninstall(&["nosuchpkg".into()], &p)
+            .expect_err("non-zero → Err");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("brew") && msg.contains("uninstall"),
+            "error must be tagged as a brew uninstall failure: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn brew_available_version_errors_on_invalid_json_stdout() {
+        let _shim = ToolShim::install(SHIM_ENV, 0, "not valid json", "");
+        let err = BrewManager
+            .available_version("git")
+            .expect_err("invalid JSON → Err");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("brew") && msg.contains("failed to parse brew info output"),
+            "error must reference brew + parse failure: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn brew_tap_install_translates_nonzero_exit_into_install_failed() {
+        let _shim = ToolShim::install(SHIM_ENV, 1, "", "already tapped");
+        let p = test_printer();
+        let err = BrewTapManager
+            .install(&["org/badtap".into()], &p)
+            .expect_err("non-zero → Err");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("brew-tap") && msg.contains("install"),
+            "error must be tagged as brew-tap install failure: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn brew_tap_uninstall_translates_nonzero_exit_into_uninstall_failed() {
+        let _shim = ToolShim::install(SHIM_ENV, 1, "", "tap not found");
+        let p = test_printer();
+        let err = BrewTapManager
+            .uninstall(&["org/missing".into()], &p)
+            .expect_err("non-zero → Err");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("brew-tap") && msg.contains("uninstall"),
+            "error must be tagged as brew-tap uninstall failure: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn brew_tap_installed_packages_parses_tap_list() {
+        let _shim = ToolShim::install(SHIM_ENV, 0, "homebrew/core\norg/mytap\n\norg/other\n", "");
+        let installed = BrewTapManager
+            .installed_packages()
+            .expect("installed_packages Ok");
+        assert_eq!(installed.len(), 3, "3 non-empty tap lines: {:?}", installed);
+        assert!(installed.contains("homebrew/core"));
+        assert!(installed.contains("org/mytap"));
+        assert!(installed.contains("org/other"));
+    }
+
+    #[test]
+    #[serial]
+    fn brew_cask_uninstall_skips_command_when_empty() {
+        let shim = ToolShim::install(SHIM_ENV, 0, "", "");
+        let p = test_printer();
+        BrewCaskManager.uninstall(&[], &p).expect("Ok");
+        assert_eq!(shim.invocation_count(), 0);
+    }
+
+    #[test]
+    #[serial]
+    fn brew_cask_uninstall_translates_nonzero_exit_into_uninstall_failed() {
+        let _shim = ToolShim::install(SHIM_ENV, 1, "", "Error: cask not installed");
+        let p = test_printer();
+        let err = BrewCaskManager
+            .uninstall(&["vlc".into()], &p)
+            .expect_err("non-zero → Err");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("brew-cask") && msg.contains("uninstall"),
+            "error must be tagged as brew-cask uninstall failure: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn brew_cask_install_translates_nonzero_exit_into_install_failed() {
+        let _shim = ToolShim::install(SHIM_ENV, 1, "", "Error: no cask named vlc");
+        let p = test_printer();
+        let err = BrewCaskManager
+            .install(&["vlc".into()], &p)
+            .expect_err("non-zero → Err");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("brew-cask") && msg.contains("install"),
+            "error must be tagged as brew-cask install failure: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn brew_cask_installed_packages_parses_cask_list() {
+        let _shim = ToolShim::install(SHIM_ENV, 0, "firefox\nvlc\n\nalacritty\n", "");
+        let installed = BrewCaskManager
+            .installed_packages()
+            .expect("installed_packages Ok");
+        assert_eq!(
+            installed.len(),
+            3,
+            "3 non-empty cask lines: {:?}",
+            installed
+        );
+        assert!(installed.contains("firefox"));
+        assert!(installed.contains("vlc"));
+        assert!(installed.contains("alacritty"));
+    }
+
+    #[test]
+    #[serial]
+    fn brew_cask_available_version_returns_none_on_nonzero_exit() {
+        let _shim = ToolShim::install(SHIM_ENV, 1, "", "Error: no cask found");
+        let v = BrewCaskManager
+            .available_version("nosuchcask")
+            .expect("non-zero exit returns Ok(None), not Err");
+        assert_eq!(v, None);
+    }
+
+    #[test]
+    #[serial]
+    fn brew_cask_available_version_errors_on_invalid_json_stdout() {
+        let _shim = ToolShim::install(SHIM_ENV, 0, "not valid json", "");
+        let err = BrewCaskManager
+            .available_version("firefox")
+            .expect_err("invalid JSON → Err");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("brew-cask") && msg.contains("failed to parse brew info output"),
+            "error must reference brew-cask + parse failure: {msg}"
+        );
+    }
+
+    fn write_shim(dir: &std::path::Path, name: &str, exit_code: i32) {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\nexit {}\n", exit_code)).expect("write shim");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod shim");
+    }
+
+    #[test]
+    #[serial]
+    fn brew_manager_bootstrap_linux_root_path_success() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_shim(tmp.path(), "useradd", 0);
+        write_shim(tmp.path(), "sudo", 0);
+        write_shim(tmp.path(), "bash", 0);
+        let orig_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", tmp.path().display(), orig_path);
+        let _guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
+        let p = test_printer();
+        if cfg!(target_os = "linux") && cfgd_core::is_root() {
+            BrewManager.bootstrap(&p).expect("bootstrap ok with shim");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn brew_manager_bootstrap_linux_root_useradd_failure_returns_err() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_shim(tmp.path(), "useradd", 1);
+        write_shim(tmp.path(), "sudo", 0);
+        write_shim(tmp.path(), "bash", 0);
+        let orig_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", tmp.path().display(), orig_path);
+        let _guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
+        let p = test_printer();
+        if cfg!(target_os = "linux") && cfgd_core::is_root() {
+            let err = BrewManager
+                .bootstrap(&p)
+                .expect_err("useradd exit 1 → BootstrapFailed");
+            assert!(
+                err.to_string().contains("brew"),
+                "error must reference brew manager: {}",
+                err
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn brew_manager_bootstrap_linux_root_install_script_failure_returns_err() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        write_shim(tmp.path(), "useradd", 0);
+        write_shim(tmp.path(), "sudo", 1);
+        write_shim(tmp.path(), "bash", 1);
+        let orig_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", tmp.path().display(), orig_path);
+        let _guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
+        let p = test_printer();
+        if cfg!(target_os = "linux") && cfgd_core::is_root() {
+            let err = BrewManager
+                .bootstrap(&p)
+                .expect_err("sudo exit 1 → BootstrapFailed");
+            assert!(
+                err.to_string().contains("brew"),
+                "error must reference brew manager: {}",
+                err
+            );
+        }
+    }
 }
 
 #[cfg(unix)]
