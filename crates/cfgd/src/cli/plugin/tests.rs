@@ -1,3 +1,7 @@
+use cfgd_core::output::{OutputFormat, Printer};
+use cfgd_core::test_helpers::EnvVarGuard;
+use serial_test::serial;
+
 use super::*;
 
 #[test]
@@ -446,4 +450,116 @@ fn build_inject_patch_json_empty_input_emits_empty_annotation_value() {
         .and_then(|v| v.as_str())
         .unwrap();
     assert_eq!(val, "");
+}
+
+#[test]
+#[serial]
+fn cmd_debug_kube_connect_failed_emits_error_doc() {
+    let _kc = EnvVarGuard::set("KUBECONFIG", "/nonexistent-kubeconfig-cfgd-test");
+    let (printer, cap) = Printer::for_test_doc();
+    let modules = vec!["nettools:1.0.0".to_string()];
+
+    let err = cmd_debug(&printer, "mypod", &modules, "prod", "ubuntu:22.04");
+    drop(printer);
+
+    assert!(err.is_err(), "must fail when cluster is unreachable");
+    let err_msg = err.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("connect") || err_msg.contains("cluster") || err_msg.contains("kube"),
+        "error must mention cluster connection, got: {err_msg}"
+    );
+
+    let json = cap.json().expect("error_doc must carry with_data payload");
+    assert_eq!(
+        json["error"], "kube_connect_failed",
+        "error kind must be kube_connect_failed, got: {}",
+        json["error"]
+    );
+    assert_eq!(json["namespace"], "prod");
+    assert_eq!(json["pod"], "mypod");
+}
+
+#[test]
+#[serial]
+fn cmd_debug_kube_connect_failed_with_format_json() {
+    let _kc = EnvVarGuard::set("KUBECONFIG", "/nonexistent-kubeconfig-cfgd-test");
+    let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+    let modules = vec!["nettools:1.0.0".to_string()];
+
+    let err = cmd_debug(&printer, "mypod", &modules, "default", "ubuntu:22.04");
+    drop(printer);
+
+    assert!(err.is_err(), "must fail when cluster is unreachable");
+    let json = cap.json().expect("error_doc must carry with_data payload");
+    assert_eq!(json["error"], "kube_connect_failed");
+}
+
+#[test]
+#[serial]
+fn cmd_status_kube_connect_failed_emits_error_doc() {
+    let _kc = EnvVarGuard::set("KUBECONFIG", "/nonexistent-kubeconfig-cfgd-test");
+    let (printer, cap) = Printer::for_test_doc();
+
+    let err = cmd_status(&printer);
+    drop(printer);
+
+    assert!(err.is_err(), "must fail when cluster is unreachable");
+    let err_msg = err.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("connect") || err_msg.contains("cluster") || err_msg.contains("kube"),
+        "error must mention cluster connection, got: {err_msg}"
+    );
+
+    let json = cap.json().expect("error_doc must carry with_data payload");
+    assert_eq!(
+        json["error"], "kube_connect_failed",
+        "error kind must be kube_connect_failed, got: {}",
+        json["error"]
+    );
+}
+
+#[test]
+#[serial]
+fn cmd_version_no_cluster_succeeds_with_not_connected_label() {
+    let _kc = EnvVarGuard::set("KUBECONFIG", "/nonexistent-kubeconfig-cfgd-test");
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_version(&printer).expect("cmd_version must succeed even without cluster");
+    drop(printer);
+
+    let json = cap
+        .json()
+        .expect("cmd_version must emit a with_data payload");
+    assert_eq!(
+        json["kubectl"], "not connected",
+        "disconnected label must be 'not connected', got: {}",
+        json["kubectl"]
+    );
+    assert!(
+        json["version"].as_str().is_some(),
+        "version field must be a string"
+    );
+    assert_eq!(
+        json["version"], json["cfgd"],
+        "version and cfgd fields must match"
+    );
+}
+
+#[test]
+#[serial]
+fn cmd_version_emits_client_version_string() {
+    let _kc = EnvVarGuard::set("KUBECONFIG", "/nonexistent-kubeconfig-cfgd-test");
+    let (printer, cap) = Printer::for_test_doc();
+
+    cmd_version(&printer).expect("cmd_version must succeed");
+    drop(printer);
+
+    let json = cap.json().expect("doc must carry json payload");
+    let version = json["version"].as_str().expect("version must be a string");
+    assert!(!version.is_empty(), "version string must not be empty");
+    assert_eq!(
+        json["cfgd"].as_str().expect("cfgd field must be a string"),
+        version,
+        "cfgd field must equal version field"
+    );
 }
