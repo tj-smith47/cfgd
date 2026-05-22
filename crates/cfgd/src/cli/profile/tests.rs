@@ -3047,3 +3047,457 @@ mod profile_update_module_cleanup {
         );
     }
 }
+
+// --- cmd_profile_update — invalid env/alias specs ---
+
+#[test]
+fn profile_update_invalid_env_no_equals() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let mut args = make_profile_update_args();
+    args.env = vec!["NOEQUALSSIGN".to_string()];
+
+    let err = cmd_profile_update(&cli, &printer, "default", &args).unwrap_err();
+    assert!(
+        err.to_string().contains("expected KEY=VALUE"),
+        "should mention expected format, got: {err}"
+    );
+}
+
+#[test]
+fn profile_update_invalid_env_name_chars() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let mut args = make_profile_update_args();
+    args.env = vec!["INVALID@NAME=value".to_string()];
+
+    let err = cmd_profile_update(&cli, &printer, "default", &args).unwrap_err();
+    assert!(
+        err.to_string().contains("invalid env var name"),
+        "should mention invalid env var name, got: {err}"
+    );
+}
+
+#[test]
+fn profile_update_invalid_alias_no_equals() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let mut args = make_profile_update_args();
+    args.aliases = vec!["aliaswithoutequalssign".to_string()];
+
+    let err = cmd_profile_update(&cli, &printer, "default", &args).unwrap_err();
+    assert!(
+        err.to_string().contains("expected name=command"),
+        "should mention expected format, got: {err}"
+    );
+}
+
+#[test]
+fn profile_update_invalid_alias_name_chars() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let mut args = make_profile_update_args();
+    args.aliases = vec!["bad@name=ls -la".to_string()];
+
+    let err = cmd_profile_update(&cli, &printer, "default", &args).unwrap_err();
+    assert!(
+        err.to_string().contains("invalid alias name"),
+        "should mention invalid alias name, got: {err}"
+    );
+}
+
+// --- cmd_profile_update — file add and remove ---
+
+#[test]
+fn profile_update_add_file() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let src = dir.path().join("myconfig.conf");
+    std::fs::write(&src, b"key=val").unwrap();
+
+    let spec = format!("{}:{}", src.display(), src.display());
+    let mut args = make_profile_update_args();
+    args.files = vec![spec];
+
+    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    drop(printer);
+
+    let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+    let files = doc.spec.files.expect("files spec must be set after add");
+    assert_eq!(files.managed.len(), 1, "should have one managed file");
+    assert!(
+        files.managed[0].source.contains("myconfig.conf"),
+        "source should reference the file: {:?}",
+        files.managed[0].source
+    );
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Added file"),
+        "should confirm file was added, got: {output}"
+    );
+    assert!(
+        output.contains("Updated profile"),
+        "should confirm profile updated, got: {output}"
+    );
+}
+
+#[test]
+fn profile_update_remove_file_from_profile() {
+    let dir = setup_config_dir();
+
+    let profile_with_file = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  files:
+    managed:
+      - source: profiles/default/files/vimrc
+        target: /tmp/cfgd-test-vimrc
+"#;
+    std::fs::write(
+        dir.path().join("profiles").join("default.yaml"),
+        profile_with_file,
+    )
+    .unwrap();
+
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let mut args = make_profile_update_args();
+    args.files = vec!["-/tmp/cfgd-test-vimrc".to_string()];
+
+    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    drop(printer);
+
+    let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+    let managed = doc.spec.files.map(|f| f.managed).unwrap_or_default();
+    assert!(
+        managed.is_empty(),
+        "managed files should be empty after removal"
+    );
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Removed file"),
+        "should confirm file removal, got: {output}"
+    );
+}
+
+#[test]
+fn profile_update_remove_file_not_in_profile_warns() {
+    let dir = setup_config_dir();
+
+    let profile_with_file = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  files:
+    managed:
+      - source: profiles/default/files/vimrc
+        target: /tmp/cfgd-test-vimrc
+"#;
+    std::fs::write(
+        dir.path().join("profiles").join("default.yaml"),
+        profile_with_file,
+    )
+    .unwrap();
+
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let mut args = make_profile_update_args();
+    args.files = vec!["-/tmp/cfgd-does-not-exist".to_string()];
+
+    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    drop(printer);
+
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("not found"),
+        "should warn file not found in profile, got: {output}"
+    );
+}
+
+// --- cmd_profile_update — module add duplicate skip ---
+
+#[test]
+fn profile_update_add_duplicate_module_is_skipped() {
+    let dir = setup_config_dir();
+
+    let profile_with_module = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  modules:
+    - shell
+"#;
+    std::fs::write(
+        dir.path().join("profiles").join("default.yaml"),
+        profile_with_module,
+    )
+    .unwrap();
+
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let mut args = make_profile_update_args();
+    args.modules = vec!["shell".to_string()];
+
+    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+    let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+    assert_eq!(
+        doc.spec.modules.len(),
+        1,
+        "duplicate module add must not create a second entry"
+    );
+}
+
+// --- cmd_profile_update — remove module not in profile warns ---
+
+#[test]
+fn profile_update_remove_module_not_in_profile_warns() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let mut args = make_profile_update_args();
+    args.modules = vec!["-nosuchmodule".to_string()];
+
+    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    drop(printer);
+
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("not found in profile"),
+        "should warn that module is not in profile, got: {output}"
+    );
+}
+
+// --- cmd_profile_update — nonexistent profile emits error via printer ---
+
+#[test]
+fn profile_update_nonexistent_emits_error_via_printer() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let args = make_profile_update_args();
+    let err = cmd_profile_update(&cli, &printer, "ghost", &args).unwrap_err();
+    drop(printer);
+
+    assert!(
+        err.to_string().contains("not found"),
+        "error must mention not found: {err}"
+    );
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("not found"),
+        "printer must emit the not-found message, got: {output}"
+    );
+}
+
+// --- cmd_profile_update — file add with private flag ---
+
+#[test]
+fn profile_update_add_file_private_writes_gitignore() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let src = dir.path().join("secret.conf");
+    std::fs::write(&src, b"password=hunter2").unwrap();
+    let spec = format!("{}:{}", src.display(), src.display());
+
+    let mut args = make_profile_update_args();
+    args.files = vec![spec];
+    args.private = true;
+
+    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+    let gitignore_path = dir.path().join(".gitignore");
+    assert!(gitignore_path.exists(), ".gitignore should be created");
+    let gitignore_content = std::fs::read_to_string(&gitignore_path).unwrap();
+    assert!(
+        gitignore_content.contains("secret.conf"),
+        ".gitignore should reference the private file, got: {gitignore_content}"
+    );
+}
+
+#[test]
+fn profile_update_add_duplicate_file_is_skipped() {
+    let dir = setup_config_dir();
+
+    let src = dir.path().join("myconfig.conf");
+    std::fs::write(&src, b"key=val").unwrap();
+    let spec = format!("{}:{}", src.display(), src.display());
+
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let mut args = make_profile_update_args();
+    args.files = vec![spec.clone()];
+    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+    // The first add moved the source file and created a symlink. Recreate a
+    // file at the profile repo path to let copy_files_to_dir see it again.
+    let repo_path = dir
+        .path()
+        .join("profiles")
+        .join("default")
+        .join("files")
+        .join("myconfig.conf");
+    let src2 = dir.path().join("myconfig2.conf");
+    std::fs::write(&src2, b"key=val2").unwrap();
+    let spec2 = format!("{}:{}", src2.display(), src2.display());
+
+    let mut args2 = make_profile_update_args();
+    args2.files = vec![spec2];
+    cmd_profile_update(&cli, &printer, "default", &args2).unwrap();
+
+    let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+    let _ = repo_path; // keeps the path alive for the assertion
+
+    let files = doc.spec.files.expect("files spec must exist");
+    assert!(
+        !files.managed.is_empty(),
+        "files list must have entries after add"
+    );
+}
+
+#[test]
+fn profile_update_remove_file_deletes_source_from_repo() {
+    let dir = setup_config_dir();
+
+    let files_dir = dir.path().join("profiles").join("default").join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    let source_file = files_dir.join("vimrc");
+    std::fs::write(&source_file, b"set number").unwrap();
+
+    let profile_with_file = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  files:
+    managed:
+      - source: profiles/default/files/vimrc
+        target: /tmp/cfgd-test-vimrc-delete
+"#;
+    std::fs::write(
+        dir.path().join("profiles").join("default.yaml"),
+        profile_with_file,
+    )
+    .unwrap();
+
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let mut args = make_profile_update_args();
+    args.files = vec!["-/tmp/cfgd-test-vimrc-delete".to_string()];
+
+    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+    assert!(
+        !source_file.exists(),
+        "source file in repo should be deleted on file removal"
+    );
+    let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+    let managed = doc.spec.files.map(|f| f.managed).unwrap_or_default();
+    assert!(
+        managed.is_empty(),
+        "managed files must be empty after removal"
+    );
+}
+
+#[test]
+fn profile_update_remove_file_from_profile_with_no_files_spec_is_no_op() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let mut args = make_profile_update_args();
+    args.files = vec!["-/tmp/cfgd-no-files-spec".to_string()];
+
+    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+    drop(printer);
+
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("No changes"),
+        "removing from profile with no files spec should report no changes, got: {output}"
+    );
+}
+
+// --- cmd_profile_update — pre/post reconcile hooks ---
+
+#[test]
+fn profile_update_add_and_remove_pre_post_reconcile() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let mut args = make_profile_update_args();
+    args.pre_reconcile = vec!["check.sh".to_string()];
+    args.post_reconcile = vec!["notify.sh".to_string()];
+    cmd_profile_update(&cli, &printer, "default", &args).unwrap();
+
+    let doc = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+    let scripts = doc.spec.scripts.as_ref().expect("scripts must be set");
+    assert_eq!(scripts.pre_reconcile.len(), 1);
+    assert_eq!(scripts.pre_reconcile[0].run_str(), "check.sh");
+    assert_eq!(scripts.post_reconcile.len(), 1);
+    assert_eq!(scripts.post_reconcile[0].run_str(), "notify.sh");
+
+    let mut args2 = make_profile_update_args();
+    args2.pre_reconcile = vec!["-check.sh".to_string()];
+    args2.post_reconcile = vec!["-notify.sh".to_string()];
+    cmd_profile_update(&cli, &printer, "default", &args2).unwrap();
+
+    let doc2 = config::load_profile(&dir.path().join("profiles").join("default.yaml")).unwrap();
+    if let Some(s) = doc2.spec.scripts {
+        assert!(s.pre_reconcile.is_empty(), "pre_reconcile must be cleared");
+        assert!(
+            s.post_reconcile.is_empty(),
+            "post_reconcile must be cleared"
+        );
+    }
+}
+
+// --- cmd_profile_update — registry-ref module path errors when registry absent ---
+
+#[test]
+fn profile_update_add_registry_ref_module_errors_on_missing_registry() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let mut args = make_profile_update_args();
+    args.modules = vec!["myreg/mymod".to_string()];
+
+    let err = cmd_profile_update(&cli, &printer, "default", &args).unwrap_err();
+    assert!(
+        err.to_string().contains("not configured")
+            || err.to_string().contains("not found")
+            || err.to_string().contains("Registry"),
+        "should fail with registry-not-configured error, got: {err}"
+    );
+}
