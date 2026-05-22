@@ -966,3 +966,391 @@ fn linux_system_manager_available_returns_bool_without_panic() {
 fn any_system_manager_available_returns_bool_without_panic() {
     let _b = any_system_manager_available();
 }
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn run_pkg_cmd_live_success_returns_command_output() {
+    let _shim =
+        cfgd_core::test_helpers::ToolShim::install("CFGD_SH_BIN", 0, "hello from shim\n", "");
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_BIN").unwrap());
+    cmd.args(["arg1"]);
+    let out = run_pkg_cmd_live(&printer, "test-mgr", &mut cmd, "running test", "install")
+        .expect("run_pkg_cmd_live should succeed with exit 0");
+    assert!(out.status.success(), "exit status should be success");
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn run_pkg_cmd_live_install_failure_maps_to_install_failed() {
+    let _shim =
+        cfgd_core::test_helpers::ToolShim::install("CFGD_SH_FAIL_BIN", 1, "", "install broke\n");
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_FAIL_BIN").unwrap());
+    let err = run_pkg_cmd_live(&printer, "test-mgr", &mut cmd, "running test", "install")
+        .err()
+        .expect("expected Err from exit-1 shim");
+    assert!(
+        matches!(&err, PackageError::InstallFailed { manager, message }
+            if manager == "test-mgr" && message.contains("install broke")),
+        "expected InstallFailed with stderr, got: {:?}",
+        err
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn run_pkg_cmd_live_uninstall_failure_maps_to_uninstall_failed() {
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_SH_UNINST_BIN",
+        2,
+        "",
+        "uninstall failed\n",
+    );
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_UNINST_BIN").unwrap());
+    let err = run_pkg_cmd_live(&printer, "test-mgr", &mut cmd, "removing test", "uninstall")
+        .err()
+        .expect("expected Err from exit-2 shim");
+    assert!(
+        matches!(&err, PackageError::UninstallFailed { manager, .. }
+            if manager == "test-mgr"),
+        "expected UninstallFailed, got: {:?}",
+        err
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn run_pkg_cmd_live_failure_with_no_stderr_includes_exit_code() {
+    let _shim = cfgd_core::test_helpers::ToolShim::install("CFGD_SH_NOOUT_BIN", 42, "", "");
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_NOOUT_BIN").unwrap());
+    let err = run_pkg_cmd_live(&printer, "test-mgr", &mut cmd, "test label", "install")
+        .err()
+        .expect("expected Err from exit-42 shim");
+    assert!(
+        matches!(&err, PackageError::InstallFailed { message, .. }
+            if message.contains("42")),
+        "expected exit code in error message, got: {:?}",
+        err
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn run_pkg_cmd_live_install_success_extracts_brew_caveats() {
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_SH_CAVEAT_BIN",
+        0,
+        "==> Caveats\nAdd to PATH.\n==> Summary\n",
+        "",
+    );
+    let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_CAVEAT_BIN").unwrap());
+    run_pkg_cmd_live(
+        &printer,
+        "brew",
+        &mut cmd,
+        "installing brew package",
+        "install",
+    )
+    .expect("should succeed");
+    let captured = buf.lock().unwrap().clone();
+    assert!(
+        captured.contains("Post-install notes"),
+        "expected caveats header in output, got: {captured}"
+    );
+    assert!(
+        captured.contains("Add to PATH"),
+        "expected caveat message in output, got: {captured}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn bootstrap_via_system_manager_succeeds_with_apt_get_shim() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let shim = dir.path().join("apt-get");
+    std::fs::write(
+        &shim,
+        b"#!/bin/sh\necho 'Reading package lists...'\necho 'Done.'\nexit 0\n",
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&shim).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&shim, perms).unwrap();
+
+    let prev_path = std::env::var_os("PATH");
+    // SAFETY: serial; PATH restored below.
+    unsafe {
+        let new_path = format!(
+            "{}:{}",
+            dir.path().display(),
+            prev_path
+                .as_ref()
+                .map(|v| v.to_string_lossy())
+                .unwrap_or_default()
+        );
+        std::env::set_var("PATH", &new_path);
+    }
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let result = bootstrap_via_system_manager(&printer, "snapd", "snap");
+    // SAFETY: serial.
+    unsafe {
+        match prev_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+    assert!(result.is_ok(), "expected Ok when apt-get shim exits 0");
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn bootstrap_via_system_manager_fails_when_all_managers_absent() {
+    use std::os::unix::fs::PermissionsExt;
+    // Build a minimal PATH dir that contains `sh` (needed by concurrent non-serial
+    // tests that use Command::new("sh")) but none of apt-get / dnf / zypper.
+    let dir = tempfile::tempdir().unwrap();
+    let sh_link = dir.path().join("sh");
+    std::os::unix::fs::symlink("/bin/sh", &sh_link).unwrap();
+    // Also expose the C runtime tools Printer::run may need (printf, etc.)
+    // by symlinking from /bin into the scratch dir.
+    for tool in &["printf", "env"] {
+        for prefix in &["/bin", "/usr/bin"] {
+            let src = std::path::PathBuf::from(prefix).join(tool);
+            if src.exists() {
+                let _ = std::os::unix::fs::symlink(&src, dir.path().join(tool));
+                break;
+            }
+        }
+    }
+    let mut perms = std::fs::metadata(&sh_link).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&sh_link, perms).unwrap();
+
+    let prev_path = std::env::var_os("PATH");
+    // SAFETY: serial; PATH restored below.
+    unsafe {
+        std::env::set_var("PATH", dir.path());
+    }
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let result = bootstrap_via_system_manager(&printer, "snapd", "snap");
+    // SAFETY: serial.
+    unsafe {
+        match prev_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+    assert!(
+        result.is_err(),
+        "expected BootstrapFailed when no package manager is available"
+    );
+    let err_str = result.unwrap_err().to_string();
+    assert!(
+        err_str.contains("apt") || err_str.contains("dnf") || err_str.contains("zypper"),
+        "error should mention managers, got: {err_str}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn bootstrap_via_brew_then_system_succeeds_via_brew_shim() {
+    let _shim = cfgd_core::test_helpers::ToolShim::install(
+        "CFGD_BREW_BIN",
+        0,
+        "==> Installing ripgrep\n",
+        "",
+    );
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let result = bootstrap_via_brew_then_system(&printer, "test-mgr", "ripgrep", &["ripgrep"]);
+    assert!(
+        result.expect("should succeed via brew"),
+        "expected true when brew install exits 0"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn bootstrap_via_brew_then_system_falls_back_when_brew_fails_and_no_system_manager() {
+    use std::os::unix::fs::PermissionsExt;
+    let _shim =
+        cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 1, "", "brew install failed\n");
+
+    // Minimal PATH: contains sh (needed by concurrent tests) but not apt-get / dnf.
+    let dir = tempfile::tempdir().unwrap();
+    let sh_link = dir.path().join("sh");
+    std::os::unix::fs::symlink("/bin/sh", &sh_link).unwrap();
+    let mut perms = std::fs::metadata(&sh_link).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&sh_link, perms).unwrap();
+
+    let prev_path = std::env::var_os("PATH");
+    // SAFETY: serial; PATH restored below.
+    // CFGD_BREW_BIN is already set by ToolShim — brew_available() finds the shim
+    // via the env var before consulting PATH, so the brew path is intact.
+    unsafe {
+        std::env::set_var("PATH", dir.path());
+    }
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let result = bootstrap_via_brew_then_system(&printer, "test-mgr", "ripgrep", &["ripgrep"]);
+    unsafe {
+        match prev_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+    assert!(
+        !result.expect("no error when both paths simply unavailable"),
+        "expected false when brew fails and no system manager present"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn run_pkg_cmd_live_unknown_error_kind_maps_to_install_failed() {
+    let _shim =
+        cfgd_core::test_helpers::ToolShim::install("CFGD_SH_UPDATE_BIN", 1, "", "update broke\n");
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut cmd = std::process::Command::new(std::env::var("CFGD_SH_UPDATE_BIN").unwrap());
+    let err = run_pkg_cmd_live(&printer, "test-mgr", &mut cmd, "updating", "update")
+        .err()
+        .expect("expected Err from exit-1 shim");
+    assert!(
+        matches!(&err, PackageError::InstallFailed { manager, .. }
+            if manager == "test-mgr"),
+        "unknown error_kind should map to InstallFailed, got: {:?}",
+        err
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn bootstrap_via_system_manager_continues_on_nonzero_exit_then_fails() {
+    use std::os::unix::fs::PermissionsExt;
+    // apt-get shim exits 1 — function should try the next manager, then fail.
+    let dir = tempfile::tempdir().unwrap();
+    let shim = dir.path().join("apt-get");
+    std::fs::write(&shim, b"#!/bin/sh\nexit 1\n").unwrap();
+    let mut perms = std::fs::metadata(&shim).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&shim, perms).unwrap();
+
+    let prev_path = std::env::var_os("PATH");
+    // SAFETY: serial; PATH restored below.
+    unsafe {
+        std::env::set_var("PATH", dir.path());
+    }
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let result = bootstrap_via_system_manager(&printer, "snapd", "snap");
+    // SAFETY: serial.
+    unsafe {
+        match prev_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+    assert!(
+        result.is_err(),
+        "expected BootstrapFailed when apt-get exits 1 and dnf/zypper absent"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn bootstrap_via_brew_then_system_uses_apt_get_fallback_when_brew_absent() {
+    use std::os::unix::fs::PermissionsExt;
+    // No CFGD_BREW_BIN set; brew not on PATH. apt-get shim succeeds.
+    let dir = tempfile::tempdir().unwrap();
+    let shim = dir.path().join("apt-get");
+    std::fs::write(&shim, b"#!/bin/sh\necho 'installed via apt-get'\nexit 0\n").unwrap();
+    let mut perms = std::fs::metadata(&shim).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&shim, perms).unwrap();
+
+    // Also expose sh for Printer::run.
+    let sh_link = dir.path().join("sh");
+    std::os::unix::fs::symlink("/bin/sh", &sh_link).unwrap();
+
+    let prev_path = std::env::var_os("PATH");
+    let prev_brew = std::env::var_os("CFGD_BREW_BIN");
+    // SAFETY: serial; PATH + CFGD_BREW_BIN restored below.
+    unsafe {
+        std::env::set_var("PATH", dir.path());
+        std::env::remove_var("CFGD_BREW_BIN");
+    }
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let result = bootstrap_via_brew_then_system(&printer, "test-mgr", "ripgrep", &["ripgrep"]);
+    // SAFETY: serial.
+    unsafe {
+        match prev_path {
+            Some(v) => std::env::set_var("PATH", v),
+            None => std::env::remove_var("PATH"),
+        }
+        match prev_brew {
+            Some(v) => std::env::set_var("CFGD_BREW_BIN", v),
+            None => std::env::remove_var("CFGD_BREW_BIN"),
+        }
+    }
+    assert!(
+        result.expect("apt-get fallback should succeed"),
+        "expected true when apt-get shim exits 0"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn resolve_tool_with_fallbacks_uses_path_when_command_available() {
+    // "sh" is always on PATH; the env seam must not be set so command_available
+    // is tried and returns the plain name.
+    let prev = std::env::var_os("CFGD_SH_BIN");
+    // SAFETY: serial.
+    unsafe {
+        std::env::remove_var("CFGD_SH_BIN");
+    }
+    let resolved = resolve_tool_with_fallbacks("sh", &[]);
+    // SAFETY: serial.
+    unsafe {
+        match prev {
+            Some(v) => std::env::set_var("CFGD_SH_BIN", v),
+            None => std::env::remove_var("CFGD_SH_BIN"),
+        }
+    }
+    assert_eq!(
+        resolved,
+        Some(std::path::PathBuf::from("sh")),
+        "expected plain 'sh' when command_available returns true"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn run_pkg_cmd_live_spawn_error_maps_to_command_failed() {
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut cmd = std::process::Command::new("/nonexistent/binary/cfgd-test-path-xyz");
+    let err = run_pkg_cmd_live(&printer, "test-mgr", &mut cmd, "spawn test", "install")
+        .err()
+        .expect("expected Err when binary does not exist");
+    assert!(
+        matches!(&err, PackageError::CommandFailed { manager, .. }
+            if manager == "test-mgr"),
+        "expected CommandFailed on spawn error, got: {:?}",
+        err
+    );
+}
