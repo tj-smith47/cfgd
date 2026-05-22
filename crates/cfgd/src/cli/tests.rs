@@ -14628,10 +14628,6 @@ spec:
     );
 }
 
-// -----------------------------------------------------------------------
-// build_doctor_doc — direct section-builder branch coverage
-// -----------------------------------------------------------------------
-
 fn base_doctor_output() -> super::output_types::DoctorOutput {
     super::output_types::DoctorOutput {
         config: super::output_types::DoctorConfigCheck {
