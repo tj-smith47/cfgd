@@ -212,7 +212,122 @@ impl SystemConfigurator for ShellConfigurator {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
+    use cfgd_core::output::Verbosity;
+    use cfgd_core::test_helpers::EnvVarGuard;
+
     use super::*;
+
+    #[test]
+    fn windows_terminal_settings_path_returns_none_on_linux() {
+        let _la = EnvVarGuard::unset("LOCALAPPDATA");
+        let _up = EnvVarGuard::unset("USERPROFILE");
+        assert!(windows_terminal_settings_path().is_none());
+    }
+
+    #[test]
+    fn load_terminal_settings_returns_ok_none_on_linux() {
+        let _la = EnvVarGuard::unset("LOCALAPPDATA");
+        let result =
+            load_terminal_settings().expect("load_terminal_settings should not error on Linux");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn current_state_returns_shell_env_var() {
+        let _g = EnvVarGuard::set("SHELL", "/usr/bin/zsh");
+        let sc = ShellConfigurator;
+        let state = sc.current_state().expect("current_state should succeed");
+        assert_eq!(state.as_str(), Some("/usr/bin/zsh"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn diff_desired_matches_shell_returns_empty() {
+        let _g = EnvVarGuard::set("SHELL", "/usr/bin/zsh");
+        let sc = ShellConfigurator;
+        let desired = serde_yaml::Value::String("/usr/bin/zsh".to_string());
+        let drifts = sc.diff(&desired).expect("diff should succeed");
+        assert!(
+            drifts.is_empty(),
+            "expected no drift when desired matches SHELL"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn diff_desired_differs_from_shell_returns_drift() {
+        let _g = EnvVarGuard::set("SHELL", "/bin/bash");
+        let sc = ShellConfigurator;
+        let desired = serde_yaml::Value::String("/usr/bin/zsh".to_string());
+        let drifts = sc.diff(&desired).expect("diff should succeed");
+        assert_eq!(drifts.len(), 1, "expected one drift entry");
+        assert_eq!(drifts[0].key, "default-shell");
+        assert_eq!(drifts[0].expected, "/usr/bin/zsh");
+        assert_eq!(drifts[0].actual, "/bin/bash");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn apply_runs_chsh_on_happy_path() {
+        let bin_dir = tempfile::tempdir().expect("tempdir");
+        let chsh_path = bin_dir.path().join("chsh");
+        std::fs::write(&chsh_path, "#!/bin/sh\nexit 0\n").expect("write fake chsh");
+        let mut perms = std::fs::metadata(&chsh_path).expect("stat").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&chsh_path, perms).expect("chmod");
+
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
+        let _path_guard = EnvVarGuard::set("PATH", &new_path);
+
+        let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
+        let sc = ShellConfigurator;
+        let desired = serde_yaml::Value::String("/usr/bin/zsh".to_string());
+        sc.apply(&desired, &printer)
+            .expect("apply should succeed when chsh exits 0");
+
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("/usr/bin/zsh"),
+            "printer should mention the target shell, got: {captured:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn apply_chsh_failure_returns_ok_with_warning() {
+        let bin_dir = tempfile::tempdir().expect("tempdir");
+        let chsh_path = bin_dir.path().join("chsh");
+        std::fs::write(
+            &chsh_path,
+            "#!/bin/sh\necho 'PAM auth failed' >&2\nexit 1\n",
+        )
+        .expect("write fake chsh");
+        let mut perms = std::fs::metadata(&chsh_path).expect("stat").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&chsh_path, perms).expect("chmod");
+
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
+        let _path_guard = EnvVarGuard::set("PATH", &new_path);
+
+        let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
+        let sc = ShellConfigurator;
+        let desired = serde_yaml::Value::String("/usr/bin/zsh".to_string());
+        sc.apply(&desired, &printer)
+            .expect("apply should return Ok even when chsh fails");
+
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("chsh failed"),
+            "printer should emit chsh failure warning, got: {captured:?}"
+        );
+    }
 
     #[test]
     fn shell_configurator_current_state() {
