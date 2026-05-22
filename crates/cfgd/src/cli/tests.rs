@@ -14629,6 +14629,551 @@ spec:
 }
 
 // -----------------------------------------------------------------------
+// build_doctor_doc — direct section-builder branch coverage
+// -----------------------------------------------------------------------
+
+fn base_doctor_output() -> super::output_types::DoctorOutput {
+    super::output_types::DoctorOutput {
+        config: super::output_types::DoctorConfigCheck {
+            valid: true,
+            path: "/etc/cfgd.yaml".into(),
+            name: Some("mybox".into()),
+            profile: Some("default".into()),
+            error: None,
+        },
+        git: true,
+        secrets: super::output_types::DoctorSecretsCheck {
+            sops_available: true,
+            sops_version: Some("3.8.0".into()),
+            age_key_exists: true,
+            age_key_path: Some("/home/user/.config/cfgd/keys/age.key".into()),
+            sops_config_exists: true,
+            sops_config_path: Some("/etc/.sops.yaml".into()),
+            providers: vec![],
+        },
+        package_managers: vec![],
+        modules: vec![],
+        system_configurators: vec![],
+    }
+}
+
+fn emit_doc(
+    output: &super::output_types::DoctorOutput,
+    extras: &super::doctor::DoctorExtras,
+) -> String {
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+    let doc = super::doctor::build_doctor_doc(output, extras);
+    printer.emit(doc);
+    drop(printer);
+    cap.human()
+}
+
+#[test]
+fn build_doctor_doc_config_invalid_parse_error_emits_fail() {
+    let mut output = base_doctor_output();
+    output.config.valid = false;
+    output.config.error = Some("unexpected key 'x'".into());
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("Config file") && text.contains("unexpected key"),
+        "should show parse error, got: {text}"
+    );
+    assert!(
+        text.contains("Some checks failed"),
+        "all_passed should be false, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_config_invalid_no_error_field_emits_fail() {
+    let mut output = base_doctor_output();
+    output.config.valid = false;
+    output.config.error = None;
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("Config file: invalid"),
+        "should show 'Config file: invalid', got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_git_missing_emits_fail_status() {
+    let mut output = base_doctor_output();
+    output.git = false;
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("git: not found"),
+        "should mention git missing, got: {text}"
+    );
+    assert!(
+        text.contains("Some checks failed"),
+        "all_passed should be false when git missing, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_sops_missing_emits_warn() {
+    let mut output = base_doctor_output();
+    output.secrets.sops_available = false;
+    output.secrets.sops_version = None;
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("sops: not found"),
+        "should warn about missing sops, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_age_key_missing_with_path_emits_warn() {
+    let mut output = base_doctor_output();
+    output.secrets.age_key_exists = false;
+    output.secrets.age_key_path = Some("/home/user/.config/cfgd/keys/age.key".into());
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("age key: not found at") && text.contains("cfgd init"),
+        "should warn about missing age key and suggest cfgd init, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_sops_config_present_no_path_emits_ok() {
+    let mut output = base_doctor_output();
+    output.secrets.sops_config_exists = true;
+    output.secrets.sops_config_path = None;
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains(".sops.yaml: present"),
+        "should show '.sops.yaml: present' when path is None, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_sops_config_missing_emits_warn() {
+    let mut output = base_doctor_output();
+    output.secrets.sops_config_exists = false;
+    output.secrets.sops_config_path = None;
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains(".sops.yaml: not found"),
+        "should warn about missing .sops.yaml, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_provider_unavailable_emits_info() {
+    let mut output = base_doctor_output();
+    output.secrets.providers = vec![super::output_types::DoctorProviderCheck {
+        name: "1password".into(),
+        available: false,
+    }];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("1password") && text.contains("not installed"),
+        "should show unavailable provider as info, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_manager_declared_unavailable_can_bootstrap_emits_warn() {
+    let mut output = base_doctor_output();
+    output.package_managers = vec![super::output_types::DoctorManagerCheck {
+        name: "brew".into(),
+        available: false,
+        declared: true,
+        can_bootstrap: true,
+        bootstrap_method: Some("curl".into()),
+    }];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("brew") && text.contains("not found"),
+        "should show brew not found, got: {text}"
+    );
+    assert!(
+        text.contains("auto-bootstrap") && text.contains("curl"),
+        "should mention auto-bootstrap method, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_manager_declared_unavailable_no_bootstrap_emits_fail() {
+    let mut output = base_doctor_output();
+    output.package_managers = vec![super::output_types::DoctorManagerCheck {
+        name: "apt".into(),
+        available: false,
+        declared: true,
+        can_bootstrap: false,
+        bootstrap_method: None,
+    }];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("apt") && text.contains("not found") && text.contains("declared in config"),
+        "should show apt declared but not available fail, got: {text}"
+    );
+    assert!(
+        text.contains("Some checks failed"),
+        "all_passed should be false when declared manager unavailable, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_manager_undeclared_unavailable_emits_nothing_for_that_entry() {
+    let mut output = base_doctor_output();
+    output.package_managers = vec![super::output_types::DoctorManagerCheck {
+        name: "winget".into(),
+        available: false,
+        declared: false,
+        can_bootstrap: false,
+        bootstrap_method: None,
+    }];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        !text.contains("winget"),
+        "undeclared+unavailable manager should not appear in output, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_module_invalid_emits_fail_with_detail() {
+    let mut output = base_doctor_output();
+    output.modules = vec![super::output_types::DoctorModuleCheck {
+        name: "broken-mod".into(),
+        valid: false,
+        error: Some("YAML parse error".into()),
+        packages: vec![],
+    }];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("broken-mod") && text.contains("YAML parse error"),
+        "should show module error detail, got: {text}"
+    );
+    assert!(
+        text.contains("Some checks failed"),
+        "all_passed should be false for invalid module, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_module_valid_no_packages_emits_ok() {
+    let mut output = base_doctor_output();
+    output.modules = vec![super::output_types::DoctorModuleCheck {
+        name: "empty-mod".into(),
+        valid: true,
+        error: None,
+        packages: vec![],
+    }];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("empty-mod"),
+        "should list module with no packages, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_module_package_with_error_emits_fail() {
+    let mut output = base_doctor_output();
+    output.modules = vec![super::output_types::DoctorModuleCheck {
+        name: "mod-a".into(),
+        valid: true,
+        error: None,
+        packages: vec![super::output_types::DoctorModulePackageCheck {
+            name: "ripgrep".into(),
+            resolved_name: "ripgrep".into(),
+            manager: "cargo".into(),
+            installed: false,
+            version: None,
+            skip_reason: None,
+            error: Some("resolver error".into()),
+        }],
+    }];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("ripgrep") && text.contains("resolver error"),
+        "should show package error detail, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_module_package_skipped_emits_info() {
+    let mut output = base_doctor_output();
+    output.modules = vec![super::output_types::DoctorModuleCheck {
+        name: "mod-b".into(),
+        valid: true,
+        error: None,
+        packages: vec![super::output_types::DoctorModulePackageCheck {
+            name: "brew-only".into(),
+            resolved_name: "brew-only".into(),
+            manager: String::new(),
+            installed: false,
+            version: None,
+            skip_reason: Some("platform".into()),
+            error: None,
+        }],
+    }];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("brew-only") && text.contains("skipped") && text.contains("platform"),
+        "should show platform-skipped package as info, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_module_package_not_installed_emits_fail() {
+    let mut output = base_doctor_output();
+    output.modules = vec![super::output_types::DoctorModuleCheck {
+        name: "mod-c".into(),
+        valid: true,
+        error: None,
+        packages: vec![super::output_types::DoctorModulePackageCheck {
+            name: "fd".into(),
+            resolved_name: "fd-find".into(),
+            manager: "apt".into(),
+            installed: false,
+            version: None,
+            skip_reason: None,
+            error: None,
+        }],
+    }];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("fd") && text.contains("not installed"),
+        "should show not-installed package as fail, got: {text}"
+    );
+    assert!(
+        text.contains("Some checks failed"),
+        "all_passed should be false for uninstalled package, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_module_package_installed_with_version_emits_ok() {
+    let mut output = base_doctor_output();
+    output.modules = vec![super::output_types::DoctorModuleCheck {
+        name: "mod-d".into(),
+        valid: true,
+        error: None,
+        packages: vec![super::output_types::DoctorModulePackageCheck {
+            name: "bat".into(),
+            resolved_name: "bat".into(),
+            manager: "cargo".into(),
+            installed: true,
+            version: Some("0.24.0".into()),
+            skip_reason: None,
+            error: None,
+        }],
+    }];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("bat") && text.contains("0.24.0") && text.contains("cargo"),
+        "should show installed package with version and manager, got: {text}"
+    );
+    assert!(
+        text.contains("All checks passed"),
+        "all_passed should be true when package is installed, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_system_state_store_inaccessible_emits_warn() {
+    let output = base_doctor_output();
+    let extras = super::doctor::DoctorExtras {
+        state_store: Some(super::doctor::DoctorStateStore {
+            accessible: false,
+            message: Some("database locked".into()),
+        }),
+        profiles_dir: None,
+        config_sources: vec![],
+    };
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("State store: unavailable") && text.contains("database locked"),
+        "should warn about inaccessible state store with message, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_system_profiles_dir_missing_emits_warn() {
+    let output = base_doctor_output();
+    let extras = super::doctor::DoctorExtras {
+        state_store: None,
+        profiles_dir: Some(super::doctor::DoctorProfilesDir {
+            path: "/etc/cfgd/profiles".into(),
+            exists: false,
+            profile_count: 0,
+        }),
+        config_sources: vec![],
+    };
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("Profiles directory not found") && text.contains("/etc/cfgd/profiles"),
+        "should warn about missing profiles directory, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_source_cached_emits_ok() {
+    let output = base_doctor_output();
+    let extras = super::doctor::DoctorExtras {
+        state_store: None,
+        profiles_dir: None,
+        config_sources: vec![super::doctor::DoctorConfigSource {
+            name: "team-config".into(),
+            cached_path: Some("/home/user/.cache/cfgd/sources/team-config".into()),
+        }],
+    };
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("team-config") && text.contains("cached at"),
+        "should show cached source path, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_all_passed_true_when_everything_ok() {
+    let output = base_doctor_output();
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("All checks passed"),
+        "should show all-passed when output is clean, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_all_passed_false_when_config_invalid() {
+    let mut output = base_doctor_output();
+    output.config.valid = false;
+    output.config.error = Some("not found".into());
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("Some checks failed"),
+        "all_passed must be false when config.valid=false, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_provider_available_emits_ok() {
+    let mut output = base_doctor_output();
+    output.secrets.providers = vec![super::output_types::DoctorProviderCheck {
+        name: "bitwarden".into(),
+        available: true,
+    }];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("bitwarden") && text.contains("available"),
+        "should show available provider as ok, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_manager_can_bootstrap_no_method_emits_generic_hint() {
+    let mut output = base_doctor_output();
+    output.package_managers = vec![super::output_types::DoctorManagerCheck {
+        name: "nix".into(),
+        available: false,
+        declared: true,
+        can_bootstrap: true,
+        bootstrap_method: None,
+    }];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("nix") && text.contains("auto-bootstrap"),
+        "should show generic auto-bootstrap hint when method is None, got: {text}"
+    );
+}
+
+const MODULE_WITH_PACKAGES_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: tools-mod
+spec:
+  packages:
+    - name: bat
+      prefer: [cargo]
+    - name: fd
+      platforms: [macos]
+"#;
+
+#[test]
+fn cmd_doctor_with_module_with_packages_exercises_resolution_loop() {
+    let profile_yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  modules:
+    - tools-mod
+"#;
+    let h = CliTestHarness::builder()
+        .profile("default", profile_yaml)
+        .module("tools-mod", MODULE_WITH_PACKAGES_YAML)
+        .build();
+
+    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
+
+    let output = h.output();
+    assert!(
+        output.contains("tools-mod"),
+        "should list tools-mod in Modules section, got: {output}"
+    );
+}
+
+const CUSTOM_PKG_CONFIG_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: custom-box
+spec:
+  profile: default
+"#;
+
+const CUSTOM_PKG_PROFILE_YAML: &str = r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  packages:
+    custom:
+      - name: my-tool
+        packages:
+          - my-pkg
+"#;
+
+#[test]
+fn cmd_doctor_with_custom_package_manager_declared_exercises_custom_branch() {
+    let h = CliTestHarness::builder()
+        .config(CUSTOM_PKG_CONFIG_YAML)
+        .profile("default", CUSTOM_PKG_PROFILE_YAML)
+        .build();
+
+    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
+
+    let output = h.output();
+    assert!(
+        output.contains("Doctor"),
+        "should show Doctor header with custom package manager, got: {output}"
+    );
+}
+
+// -----------------------------------------------------------------------
 // cmd_decide — exercise decision resolution logic with state verification
 // -----------------------------------------------------------------------
 
