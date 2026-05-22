@@ -797,7 +797,7 @@ fn cmd_generate_scan_only_default_shell_is_zsh() {
     };
 
     let result = cmd_generate_scan_only(&printer, &args);
-    assert!(result.is_ok());
+    result.expect("command should succeed");
 
     let output = buf.lock().unwrap();
     // Should detect shell from $SHELL env or default to zsh
@@ -837,7 +837,7 @@ fn cmd_generate_scan_only_shell_with_aliases_and_exports() {
     };
 
     let result = cmd_generate_scan_only(&printer, &args);
-    assert!(result.is_ok());
+    result.expect("command should succeed");
 
     let output = buf.lock().unwrap();
     // The scanner should find aliases and exports
@@ -859,9 +859,9 @@ fn handle_present_yaml_auto_accept() {
     });
 
     let result = handle_present_yaml(&printer, "tool-123", &input, true);
-    assert!(result.is_ok());
+    let content = result.expect("handle_present_yaml should succeed");
 
-    match result.unwrap() {
+    match content {
         crate::ai::client::ContentBlock::ToolResult {
             tool_use_id,
             content,
@@ -890,7 +890,7 @@ fn handle_present_yaml_shows_header_and_syntax() {
     });
 
     let result = handle_present_yaml(&printer, "tool-456", &input, true);
-    assert!(result.is_ok());
+    result.expect("command should succeed");
 
     let output = buf.lock().unwrap();
     assert!(
@@ -937,7 +937,7 @@ fn cmd_generate_scan_only_with_fish_shell() {
     };
 
     let result = cmd_generate_scan_only(&printer, &args);
-    assert!(result.is_ok());
+    result.expect("command should succeed");
 
     let output = buf.lock().unwrap();
     assert!(
@@ -963,7 +963,7 @@ fn cmd_generate_scan_only_no_dotfiles_reports_none() {
     };
 
     let result = cmd_generate_scan_only(&printer, &args);
-    assert!(result.is_ok());
+    result.expect("command should succeed");
 
     let output = buf.lock().unwrap();
     assert!(
@@ -991,7 +991,7 @@ fn cmd_generate_scan_only_detects_tool_from_dotfiles() {
     };
 
     let result = cmd_generate_scan_only(&printer, &args);
-    assert!(result.is_ok());
+    result.expect("command should succeed");
 
     let output = buf.lock().unwrap();
     // Scanner should detect tmux and vim from the dotfiles
@@ -1023,7 +1023,7 @@ fn cmd_generate_scan_only_with_plugin_manager() {
     };
 
     let result = cmd_generate_scan_only(&printer, &args);
-    assert!(result.is_ok());
+    result.expect("command should succeed");
 
     let output = buf.lock().unwrap();
     // Should detect oh-my-zsh as plugin manager
