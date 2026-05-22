@@ -52,7 +52,7 @@ pub fn cmd_module_build(
                 printer.emit(cfgd_core::output::error_doc(
                     dir,
                     "build_failed",
-                    e.to_string(),
+                    cfgd_core::output::collapse_to_subject_line(&e),
                     serde_json::json!({ "dir": dir, "target": targets[0] }),
                 ));
                 anyhow::anyhow!("{e}")
@@ -67,7 +67,7 @@ pub fn cmd_module_build(
                         printer.emit(cfgd_core::output::error_doc(
                             art,
                             "push_failed",
-                            e.to_string(),
+                            cfgd_core::output::collapse_to_subject_line(&e),
                             serde_json::json!({ "artifact": art, "target": targets[0] }),
                         ));
                         anyhow::anyhow!("{e}")
@@ -80,7 +80,7 @@ pub fn cmd_module_build(
                     printer.emit(cfgd_core::output::error_doc(
                         art,
                         "sign_failed",
-                        e.to_string(),
+                        cfgd_core::output::collapse_to_subject_line(&e),
                         serde_json::json!({ "artifact": art }),
                     ));
                     anyhow::anyhow!("{e}")
@@ -99,11 +99,11 @@ pub fn cmd_module_build(
                 }
                 Err(e) => {
                     sp.finish_fail(format!("Build failed for {t}"))
-                        .detail(e.to_string());
+                        .detail(cfgd_core::output::collapse_to_subject_line(&e));
                     printer.emit(cfgd_core::output::error_doc(
                         dir,
                         "build_failed",
-                        e.to_string(),
+                        cfgd_core::output::collapse_to_subject_line(&e),
                         serde_json::json!({ "dir": dir, "target": *t }),
                     ));
                     return Err(anyhow::anyhow!("{e}"));
@@ -123,7 +123,7 @@ pub fn cmd_module_build(
                     printer.emit(cfgd_core::output::error_doc(
                         art,
                         "push_failed",
-                        e.to_string(),
+                        cfgd_core::output::collapse_to_subject_line(&e),
                         serde_json::json!({ "artifact": art, "targets": &targets }),
                     ));
                     anyhow::anyhow!("{e}")
@@ -136,7 +136,7 @@ pub fn cmd_module_build(
                     printer.emit(cfgd_core::output::error_doc(
                         art,
                         "sign_failed",
-                        e.to_string(),
+                        cfgd_core::output::collapse_to_subject_line(&e),
                         serde_json::json!({ "artifact": art }),
                     ));
                     anyhow::anyhow!("{e}")
@@ -179,4 +179,209 @@ pub fn cmd_module_build(
     printer.emit(Doc::new().with_data(serde_json::Value::Object(payload)));
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MODULE_YAML: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-build\nspec:\n  packages: []\n";
+
+    fn write_module_yaml(dir: &std::path::Path) {
+        std::fs::write(dir.join("module.yaml"), MODULE_YAML).unwrap();
+    }
+
+    #[test]
+    fn missing_module_yaml_emits_error_doc() {
+        let dir = tempfile::tempdir().unwrap();
+        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+
+        let err = cmd_module_build(
+            &printer,
+            dir.path().to_str().unwrap(),
+            None,
+            None,
+            None,
+            false,
+            None,
+        )
+        .expect_err("missing module.yaml must be rejected");
+        drop(printer);
+
+        assert!(
+            err.to_string().contains("does not contain a module.yaml"),
+            "error message must describe the problem: {err}"
+        );
+        let json = cap.json().expect("error_doc must be emitted");
+        assert_eq!(json["error"], "module_yaml_missing", "error key: {json}");
+        assert!(json["dir"].is_string(), "payload must include dir: {json}");
+    }
+
+    #[test]
+    fn build_fails_single_target_emits_build_failed_error_doc() {
+        if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write_module_yaml(dir.path());
+
+        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+        let err = cmd_module_build(
+            &printer,
+            dir.path().to_str().unwrap(),
+            None,
+            Some("localhost:1/cfgd-test-nonexistent:latest"),
+            None,
+            false,
+            None,
+        )
+        .expect_err("unreachable base image must cause build failure");
+        drop(printer);
+
+        assert!(
+            !err.to_string().is_empty(),
+            "error message must be non-empty: {err}"
+        );
+        let json = cap.json().expect("build_failed error_doc must be emitted");
+        assert_eq!(json["error"], "build_failed", "error key: {json}");
+        assert!(json["dir"].is_string(), "payload must include dir: {json}");
+    }
+
+    #[test]
+    fn build_fails_single_target_includes_target_in_header_output() {
+        if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write_module_yaml(dir.path());
+
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let _ = cmd_module_build(
+            &printer,
+            dir.path().to_str().unwrap(),
+            Some("linux/amd64"),
+            Some("localhost:1/cfgd-test-nonexistent:latest"),
+            None,
+            false,
+            None,
+        );
+        drop(printer);
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("linux/amd64"),
+            "target must appear in header kv block: {output}"
+        );
+        assert!(
+            output.contains("localhost:1/cfgd-test-nonexistent:latest"),
+            "base image must appear in header kv block: {output}"
+        );
+    }
+
+    #[test]
+    fn build_fails_multi_target_emits_build_failed_error_doc() {
+        if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write_module_yaml(dir.path());
+
+        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+        let err = cmd_module_build(
+            &printer,
+            dir.path().to_str().unwrap(),
+            Some("linux/amd64,linux/arm64"),
+            Some("localhost:1/cfgd-test-nonexistent:latest"),
+            None,
+            false,
+            None,
+        )
+        .expect_err("multi-target build with unreachable image must fail");
+        drop(printer);
+
+        assert!(
+            !err.to_string().is_empty(),
+            "error message must be non-empty: {err}"
+        );
+        let json = cap.json().expect("build_failed error_doc must be emitted");
+        assert_eq!(
+            json["error"], "build_failed",
+            "error key on multi-target: {json}"
+        );
+    }
+
+    #[test]
+    fn target_split_comma_produces_multi_target_path() {
+        if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write_module_yaml(dir.path());
+
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let _ = cmd_module_build(
+            &printer,
+            dir.path().to_str().unwrap(),
+            Some("linux/amd64,linux/arm64"),
+            Some("localhost:1/cfgd-test-nonexistent:latest"),
+            None,
+            false,
+            None,
+        );
+        drop(printer);
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("linux/amd64") || output.contains("linux/arm64"),
+            "spinner output must mention at least one target: {output}"
+        );
+    }
+
+    #[cfg(unix)]
+    mod sign_path {
+        use super::*;
+        use cfgd_core::test_helpers::CosignTestShim;
+        use serial_test::serial;
+
+        #[test]
+        #[serial]
+        fn sign_fails_when_cosign_exits_nonzero_emits_sign_failed_error_doc() {
+            if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
+                return;
+            }
+            let _shim = CosignTestShim::builder()
+                .with_argv_logging(false)
+                .with_exit(2)
+                .with_stderr("simulated sign failure")
+                .install();
+
+            let dir = tempfile::tempdir().unwrap();
+            write_module_yaml(dir.path());
+
+            let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+            let err = cmd_module_build(
+                &printer,
+                dir.path().to_str().unwrap(),
+                None,
+                Some("localhost:1/cfgd-test-nonexistent:latest"),
+                Some("localhost:1/test/build:latest"),
+                true,
+                None,
+            )
+            .expect_err("build must fail before sign is reached");
+            drop(printer);
+
+            assert!(
+                !err.to_string().is_empty(),
+                "error must not be empty: {err}"
+            );
+            let json = cap.json().expect("some error_doc must be emitted");
+            assert!(
+                json["error"] == "build_failed" || json["error"] == "sign_failed",
+                "error must be build_failed or sign_failed: {json}"
+            );
+        }
+    }
 }
