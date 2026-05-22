@@ -12,7 +12,7 @@ use std::process::Command;
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::Printer;
 use cfgd_core::providers::PackageManager;
-use cfgd_core::{command_available, command_available_with_seam};
+use cfgd_core::{command_available, command_available_with_seam, tool_cmd};
 
 use super::parsers::{
     parse_apk_lines, parse_dnf_lines, parse_pkg_lines, parse_simple_lines, parse_yum_lines,
@@ -20,10 +20,13 @@ use super::parsers::{
 };
 use super::shared::{run_pkg_cmd, run_pkg_cmd_live, strip_sudo_if_root};
 use super::versions::{
-    APK_BIN_ENV, DNF_BIN_ENV, PACMAN_BIN_ENV, YUM_BIN_ENV, ZYPPER_BIN_ENV, apt_aliases,
-    dnf_aliases, list_apt_with_versions, list_dnf_with_versions, query_version_apk,
-    query_version_apt, query_version_info, query_version_pkg,
+    APK_BIN_ENV, APT_CACHE_BIN_ENV, DNF_BIN_ENV, DPKG_QUERY_BIN_ENV, PACMAN_BIN_ENV, PKG_BIN_ENV,
+    RPM_BIN_ENV, YUM_BIN_ENV, ZYPPER_BIN_ENV, apt_aliases, dnf_aliases, list_apt_with_versions,
+    list_dnf_with_versions, query_version_apk, query_version_apt, query_version_info,
+    query_version_pkg,
 };
+
+pub(super) const APT_GET_BIN_ENV: &str = "CFGD_APT_GET_BIN";
 
 /// Map a SimpleManager `mgr_name` to the `CFGD_*_BIN` env-var seam that targets
 /// the SAME binary. Used so `is_available()` honors the same test-shim seam
@@ -41,6 +44,29 @@ fn mgr_seam_env(mgr_name: &str) -> Option<&'static str> {
         "zypper" => Some(ZYPPER_BIN_ENV),
         _ => None,
     }
+}
+
+/// Build a `Command` for a package-manager binary, routing through the same
+/// `CFGD_*_BIN` seams the query helpers honor. Unknown binaries (most commonly
+/// `"sudo"`) fall through to plain `Command::new`. This is the single entry
+/// point for install / uninstall / update / list shell-outs in this module,
+/// so a test that shims CFGD_DPKG_QUERY_BIN sees its shim drive both
+/// `installed_packages` and `list_apt_with_versions`.
+fn cmd_with_seam(prog: &str) -> Command {
+    let env = match prog {
+        "apt-cache" => APT_CACHE_BIN_ENV,
+        "apt-get" => APT_GET_BIN_ENV,
+        "apk" => APK_BIN_ENV,
+        "dnf" => DNF_BIN_ENV,
+        "yum" => YUM_BIN_ENV,
+        "pacman" => PACMAN_BIN_ENV,
+        "zypper" => ZYPPER_BIN_ENV,
+        "pkg" => PKG_BIN_ENV,
+        "dpkg-query" => DPKG_QUERY_BIN_ENV,
+        "rpm" => RPM_BIN_ENV,
+        _ => return Command::new(prog),
+    };
+    tool_cmd(env, prog)
 }
 
 /// Function pointer type for `installed_packages_with_versions` overrides.
@@ -105,7 +131,7 @@ impl PackageManager for SimpleManager {
 
     fn installed_packages(&self) -> Result<HashSet<String>> {
         let (prog, args) = self.list_cmd.split_first().unwrap_or((&"true", &[]));
-        let output = run_pkg_cmd(self.mgr_name, Command::new(prog).args(args), "list")?;
+        let output = run_pkg_cmd(self.mgr_name, cmd_with_seam(prog).args(args), "list")?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         Ok((self.parse_list)(&stdout))
     }
@@ -120,7 +146,7 @@ impl PackageManager for SimpleManager {
         run_pkg_cmd_live(
             printer,
             self.mgr_name,
-            Command::new(prog).args(args).args(packages),
+            cmd_with_seam(prog).args(args).args(packages),
             &label,
             "install",
         )?;
@@ -137,7 +163,7 @@ impl PackageManager for SimpleManager {
         run_pkg_cmd_live(
             printer,
             self.mgr_name,
-            Command::new(prog).args(args).args(packages),
+            cmd_with_seam(prog).args(args).args(packages),
             &label,
             "uninstall",
         )?;
@@ -154,7 +180,7 @@ impl PackageManager for SimpleManager {
         if self.ignore_update_exit {
             // dnf/yum check-update returns 100 when updates are available
             let _ = printer
-                .run(Command::new(prog).args(args), &label)
+                .run(cmd_with_seam(prog).args(args), &label)
                 .map_err(|e| PackageError::CommandFailed {
                     manager: self.mgr_name.into(),
                     source: e,
@@ -163,7 +189,7 @@ impl PackageManager for SimpleManager {
             run_pkg_cmd_live(
                 printer,
                 self.mgr_name,
-                Command::new(prog).args(args),
+                cmd_with_seam(prog).args(args),
                 &label,
                 "update",
             )?;

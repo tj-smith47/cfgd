@@ -379,3 +379,26 @@ fn simple_manager_display_cmd_concatenates_correctly() {
     assert!(label.contains("vim"));
     assert!(label.contains("git"));
 }
+
+#[cfg(unix)]
+mod seam_tests {
+    use serial_test::serial;
+
+    use cfgd_core::providers::PackageManager;
+    use cfgd_core::test_helpers::ToolShim;
+
+    use super::super::DPKG_QUERY_BIN_ENV;
+    use super::super::apt_manager;
+
+    #[test]
+    #[serial]
+    fn apt_manager_installed_packages_honors_dpkg_query_seam() {
+        let _shim = ToolShim::install(DPKG_QUERY_BIN_ENV, 0, "curl\nwget\nbash\n", "");
+        let pkgs = apt_manager()
+            .installed_packages()
+            .expect("installed_packages should succeed with shim");
+        assert!(pkgs.contains("curl"));
+        assert!(pkgs.contains("wget"));
+        assert!(pkgs.contains("bash"));
+    }
+}
