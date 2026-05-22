@@ -158,12 +158,11 @@ jobs:
         with:
           version: "25.x"
           repo-token: ${{ github.token }}
+      - uses: arduino/setup-task@v2
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
-      - name: Run tests with coverage
-        run: cargo llvm-cov --cobertura --output-path cobertura.xml
-      - name: Update coverage badge
-        run: bash .claude/scripts/update-coverage-badge.sh cobertura.xml
+      - name: Run coverage and update badge
+        run: task coverage
 
   package:
     name: Package (dry-run)

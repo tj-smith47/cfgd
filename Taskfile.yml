@@ -4,7 +4,10 @@ dotenv: [".env"]
 
 vars:
   REGISTRY:
-    sh: echo "${REGISTRY:-ghcr.io/cfgd-org}"
+    sh: echo "${REGISTRY:-registry.jarvispro.io}"
+
+env:
+  REGISTRY: '{{.REGISTRY}}'
   VERSION:
     sh: git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0"
   VERSION_NUM:
@@ -102,6 +105,12 @@ tasks:
     cmds:
       - bash .claude/scripts/audit.sh
 
+  coverage:
+    desc: Run workspace test coverage and update the badge from cobertura.xml
+    cmds:
+      - cargo llvm-cov --cobertura --output-path cobertura.xml
+      - bash .claude/scripts/update-coverage-badge.sh cobertura.xml
+
   audit:test:
     desc: Validate audit.sh's banned-pattern rules against paired fixtures
     cmds:
@@ -198,6 +207,8 @@ tasks:
     cmds:
       - task: e2e:cli
       - task: e2e:node
+      - task: e2e:node:helm
+      - task: e2e:node:server
       - task: e2e:operator
       - task: e2e:full-stack
       - task: e2e:crossplane
@@ -205,33 +216,52 @@ tasks:
 
   e2e:cli:
     desc: Run CLI exhaustive E2E tests
+    env:
+      NO_COLOR: '{{.NO_COLOR | default "1"}}'
+      EDITOR: '{{.EDITOR | default "true"}}'
     cmds:
+      - cargo build --release --bin cfgd
       - bash tests/e2e/cli/scripts/run-all.sh
 
   e2e:node:
-    desc: Run node E2E tests (binary, helm, server, drift)
+    desc: Run node E2E tests (binary, drift, daemon)
+    deps: [e2e:setup]
     cmds:
       - bash tests/e2e/node/scripts/run-all.sh
+
+  e2e:node:helm:
+    desc: Run node Helm E2E tests
+    deps: [e2e:setup]
+    cmds:
       - bash tests/e2e/node/scripts/test-helm.sh
+
+  e2e:node:server:
+    desc: Run node server integration E2E tests
+    deps: [e2e:setup]
+    cmds:
       - bash tests/e2e/node/scripts/test-server.sh
 
   e2e:operator:
     desc: Run operator E2E tests
+    deps: [e2e:setup]
     cmds:
       - bash tests/e2e/operator/scripts/run-all.sh
 
   e2e:full-stack:
     desc: Run full-stack E2E tests
+    deps: [e2e:setup]
     cmds:
       - bash tests/e2e/full-stack/scripts/run-all.sh
 
   e2e:crossplane:
     desc: Run Crossplane E2E tests
+    deps: [e2e:setup]
     cmds:
       - bash tests/e2e/crossplane/scripts/run-crossplane-tests.sh
 
   e2e:gateway:
     desc: Run gateway E2E tests
+    deps: [e2e:setup]
     cmds:
       - bash tests/e2e/gateway/scripts/run-all.sh
 
