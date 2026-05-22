@@ -1,8 +1,6 @@
 use super::*;
 use cfgd_core::output::{Doc, Printer, Role};
 
-// --- OCI Push / Pull ---
-
 pub struct PushOptions<'a> {
     pub platform: Option<&'a str>,
     pub apply: bool,
@@ -64,7 +62,6 @@ pub fn cmd_module_push(
 
     printer.kv("Digest", &digest);
 
-    // Sign if requested
     if sign {
         cfgd_core::oci::sign_artifact(artifact, key).map_err(|e| {
             printer.emit(cfgd_core::output::error_doc(
@@ -80,7 +77,6 @@ pub fn cmd_module_push(
 
     let mut attestation_attached = false;
 
-    // Attach SLSA provenance attestation if requested
     if attest {
         let repo = detect_git_remote().unwrap_or_else(|| "unknown".to_string());
         let commit = detect_git_head().unwrap_or_else(|| "unknown".to_string());
@@ -256,7 +252,6 @@ pub fn cmd_module_pull(
     printer.heading("Pull Module");
     printer.kv_block([("Artifact", artifact_ref), ("Output", output)]);
 
-    // Verify signature if requested (uses cosign, not the old tag-check)
     if require_signature {
         cfgd_core::oci::verify_signature(artifact_ref, &verify_opts).map_err(|e| {
             printer.emit(cfgd_core::output::error_doc(
@@ -270,7 +265,6 @@ pub fn cmd_module_pull(
         printer.status_simple(Role::Ok, "Signature verified");
     }
 
-    // Verify attestation if requested
     if verify_attestation {
         cfgd_core::oci::verify_attestation(artifact_ref, "slsaprovenance", &verify_opts).map_err(
             |e| {
@@ -286,7 +280,6 @@ pub fn cmd_module_pull(
         printer.status_simple(Role::Ok, "SLSA provenance attestation verified");
     }
 
-    // Pull uses the existing require_signature=false since we've already verified above
     cfgd_core::oci::pull_module(artifact_ref, output_path, false, Some(printer)).map_err(|e| {
         printer.emit(cfgd_core::output::error_doc(
             artifact_ref,
@@ -299,7 +292,6 @@ pub fn cmd_module_pull(
 
     printer.status_simple(Role::Ok, format!("Pulled {artifact_ref} to {output}"));
 
-    // Check if module.yaml exists in extracted content
     let mut module_name: Option<String> = None;
     let mut module_description: Option<String> = None;
     let mut package_count: Option<usize> = None;
@@ -333,4 +325,547 @@ pub fn cmd_module_pull(
     })));
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::TcpListener;
+
+    use cfgd_core::output::Printer;
+
+    use super::{PushOptions, cmd_module_pull, cmd_module_push};
+
+    fn make_printer() -> Printer {
+        Printer::new(cfgd_core::output::Verbosity::Quiet)
+    }
+
+    fn write_module_yaml(dir: &std::path::Path) {
+        std::fs::write(
+            dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages:\n    - name: curl\n",
+        )
+        .expect("write module.yaml");
+    }
+
+    fn closed_port_ref() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        drop(listener);
+        format!("localhost:{}/test/mod:v1", port)
+    }
+
+    fn no_flags() -> PushOptions<'static> {
+        PushOptions {
+            platform: None,
+            apply: false,
+            sign: false,
+            key: None,
+            attest: false,
+        }
+    }
+
+    #[test]
+    fn push_errors_when_module_yaml_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let printer = make_printer();
+
+        let err = cmd_module_push(
+            &printer,
+            dir.path().to_str().unwrap(),
+            "localhost:5000/test/mod:v1",
+            no_flags(),
+        )
+        .expect_err("missing module.yaml must return Err");
+
+        assert!(
+            err.to_string().contains("module.yaml"),
+            "error must mention module.yaml: {err}"
+        );
+    }
+
+    #[test]
+    fn push_error_doc_kind_is_module_yaml_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (printer, cap) = Printer::for_test_doc();
+
+        let _ = cmd_module_push(
+            &printer,
+            dir.path().to_str().unwrap(),
+            "localhost:5000/test/mod:v1",
+            no_flags(),
+        );
+        drop(printer);
+
+        let doc = cap.json().expect("error_doc must be emitted");
+        assert_eq!(
+            doc["error"], "module_yaml_missing",
+            "emitted doc error must be module_yaml_missing: {doc}"
+        );
+        assert!(
+            doc["dir"].is_string(),
+            "emitted doc must carry dir payload: {doc}"
+        );
+    }
+
+    #[test]
+    fn push_errors_when_registry_unreachable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_module_yaml(dir.path());
+        let artifact = closed_port_ref();
+        let printer = make_printer();
+
+        let err = cmd_module_push(
+            &printer,
+            dir.path().to_str().unwrap(),
+            &artifact,
+            no_flags(),
+        )
+        .expect_err("unreachable registry must return Err");
+
+        assert!(
+            !err.to_string().is_empty(),
+            "error must have a message: {err}"
+        );
+    }
+
+    #[test]
+    fn push_error_doc_kind_is_push_failed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_module_yaml(dir.path());
+        let artifact = closed_port_ref();
+        let (printer, cap) = Printer::for_test_doc();
+
+        let _ = cmd_module_push(
+            &printer,
+            dir.path().to_str().unwrap(),
+            &artifact,
+            no_flags(),
+        );
+        drop(printer);
+
+        let doc = cap.json().expect("error_doc must be emitted");
+        assert_eq!(
+            doc["error"], "push_failed",
+            "emitted doc error must be push_failed: {doc}"
+        );
+    }
+
+    #[test]
+    fn pull_errors_when_registry_unreachable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let artifact = closed_port_ref();
+        let printer = make_printer();
+
+        let err = cmd_module_pull(
+            &printer,
+            &artifact,
+            dir.path().to_str().unwrap(),
+            false,
+            false,
+            cfgd_core::oci::VerifyOptions {
+                key: None,
+                identity: None,
+                issuer: None,
+            },
+        )
+        .expect_err("unreachable registry must return Err");
+
+        assert!(
+            !err.to_string().is_empty(),
+            "error must have a message: {err}"
+        );
+    }
+
+    #[test]
+    fn pull_error_doc_kind_is_pull_failed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let artifact = closed_port_ref();
+        let (printer, cap) = Printer::for_test_doc();
+
+        let _ = cmd_module_pull(
+            &printer,
+            &artifact,
+            dir.path().to_str().unwrap(),
+            false,
+            false,
+            cfgd_core::oci::VerifyOptions {
+                key: None,
+                identity: None,
+                issuer: None,
+            },
+        );
+        drop(printer);
+
+        let doc = cap.json().expect("error_doc must be emitted");
+        assert_eq!(
+            doc["error"], "pull_failed",
+            "emitted doc error must be pull_failed: {doc}"
+        );
+    }
+
+    #[cfg(unix)]
+    mod with_cosign_shim {
+        use cfgd_core::output::Printer;
+        use cfgd_core::test_helpers::CosignTestShim;
+        use serial_test::serial;
+
+        use super::super::{PushOptions, cmd_module_pull, cmd_module_push};
+        use super::{closed_port_ref, write_module_yaml};
+
+        #[test]
+        #[serial]
+        fn push_sign_flag_emits_sign_failed_when_cosign_exits_nonzero() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_module_yaml(dir.path());
+
+            let mut server = mockito::Server::new();
+            let registry = server.url().trim_start_matches("http://").to_string();
+            let artifact = format!("{}/test/mod:v1", registry);
+            let upload_location = format!("{}/v2/test/mod/blobs/uploads/up-id", server.url());
+
+            server
+                .mock(
+                    "HEAD",
+                    mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
+                )
+                .with_status(404)
+                .expect_at_least(2)
+                .create();
+
+            server
+                .mock("POST", "/v2/test/mod/blobs/uploads/")
+                .with_status(202)
+                .with_header("Location", &upload_location)
+                .expect_at_least(2)
+                .create();
+
+            server
+                .mock(
+                    "PUT",
+                    mockito::Matcher::Regex(
+                        r"/v2/test/mod/blobs/uploads/up-id\?digest=sha256:.*".to_string(),
+                    ),
+                )
+                .with_status(201)
+                .expect_at_least(2)
+                .create();
+
+            server
+                .mock("PUT", "/v2/test/mod/manifests/v1")
+                .with_status(201)
+                .create();
+
+            let _shim = CosignTestShim::builder()
+                .with_argv_logging(false)
+                .with_exit(1)
+                .with_stderr("cosign sign failed: unauthorized")
+                .install();
+
+            let (printer, cap) = Printer::for_test_doc();
+            let _ = cmd_module_push(
+                &printer,
+                dir.path().to_str().unwrap(),
+                &artifact,
+                PushOptions {
+                    platform: None,
+                    apply: false,
+                    sign: true,
+                    key: Some("cosign.key"),
+                    attest: false,
+                },
+            );
+            drop(printer);
+
+            let doc = cap.json().expect("error_doc must be emitted");
+            assert_eq!(
+                doc["error"], "sign_failed",
+                "emitted doc error must be sign_failed: {doc}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn pull_require_signature_emits_verify_failed_when_cosign_exits_nonzero() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let artifact = closed_port_ref();
+
+            let _shim = CosignTestShim::builder()
+                .with_argv_logging(false)
+                .with_exit(1)
+                .with_stderr("cosign verify failed")
+                .install();
+
+            let (printer, cap) = Printer::for_test_doc();
+            let _ = cmd_module_pull(
+                &printer,
+                &artifact,
+                dir.path().to_str().unwrap(),
+                true,
+                false,
+                cfgd_core::oci::VerifyOptions {
+                    key: Some("cosign.pub"),
+                    identity: None,
+                    issuer: None,
+                },
+            );
+            drop(printer);
+
+            let doc = cap.json().expect("error_doc must be emitted");
+            assert_eq!(
+                doc["error"], "verify_failed",
+                "emitted doc error must be verify_failed: {doc}"
+            );
+            assert_eq!(doc["step"], "signature", "step must be 'signature': {doc}");
+        }
+
+        #[test]
+        #[serial]
+        fn pull_verify_attestation_emits_verify_failed_when_cosign_exits_nonzero() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let artifact = closed_port_ref();
+
+            let _shim = CosignTestShim::builder()
+                .with_argv_logging(false)
+                .with_exit(1)
+                .with_stderr("cosign verify-attestation failed")
+                .install();
+
+            let (printer, cap) = Printer::for_test_doc();
+            let _ = cmd_module_pull(
+                &printer,
+                &artifact,
+                dir.path().to_str().unwrap(),
+                false,
+                true,
+                cfgd_core::oci::VerifyOptions {
+                    key: Some("cosign.pub"),
+                    identity: None,
+                    issuer: None,
+                },
+            );
+            drop(printer);
+
+            let doc = cap.json().expect("error_doc must be emitted");
+            assert_eq!(
+                doc["error"], "verify_failed",
+                "emitted doc error must be verify_failed: {doc}"
+            );
+            assert_eq!(
+                doc["step"], "attestation",
+                "step must be 'attestation': {doc}"
+            );
+        }
+
+        #[test]
+        fn pull_happy_path_emits_doc_with_artifact_and_output() {
+            let mut server = mockito::Server::new();
+            let registry = server.url().trim_start_matches("http://").to_string();
+
+            let src_dir = tempfile::tempdir().expect("src module dir");
+            write_module_yaml(src_dir.path());
+
+            let layer_data = cfgd_core::oci::create_tar_gz(src_dir.path()).expect("create layer");
+            let config_blob =
+                serde_json::to_vec(&serde_json::json!({ "moduleYaml": "name: test-mod" })).unwrap();
+            let config_digest = cfgd_core::sha256_digest(&config_blob);
+            let layer_digest = cfgd_core::sha256_digest(&layer_data);
+
+            let manifest = serde_json::json!({
+                "schemaVersion": 2,
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "config": {
+                    "mediaType": cfgd_core::oci::MEDIA_TYPE_MODULE_CONFIG,
+                    "digest": config_digest,
+                    "size": config_blob.len(),
+                },
+                "layers": [{
+                    "mediaType": cfgd_core::oci::MEDIA_TYPE_MODULE_LAYER,
+                    "digest": layer_digest,
+                    "size": layer_data.len(),
+                }],
+            });
+
+            server
+                .mock("GET", "/v2/test/mod/manifests/v1")
+                .with_status(200)
+                .with_header("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+                .with_body(serde_json::to_string(&manifest).unwrap())
+                .create();
+
+            server
+                .mock(
+                    "GET",
+                    mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
+                )
+                .with_status(200)
+                .with_body(layer_data)
+                .create();
+
+            let artifact_ref = format!("{}/test/mod:v1", registry);
+            let output_dir = tempfile::tempdir().expect("output dir");
+            let (printer, cap) = Printer::for_test_doc();
+
+            cmd_module_pull(
+                &printer,
+                &artifact_ref,
+                output_dir.path().to_str().unwrap(),
+                false,
+                false,
+                cfgd_core::oci::VerifyOptions {
+                    key: None,
+                    identity: None,
+                    issuer: None,
+                },
+            )
+            .expect("pull happy path must succeed");
+            drop(printer);
+
+            let doc = cap.json().expect("success doc must be emitted");
+            assert_eq!(doc["artifact"], artifact_ref, "artifact field must match");
+            assert!(
+                doc["output"].is_string(),
+                "output field must be present: {doc}"
+            );
+        }
+
+        #[test]
+        fn push_happy_path_emits_doc_with_digest() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_module_yaml(dir.path());
+
+            let mut server = mockito::Server::new();
+            let registry = server.url().trim_start_matches("http://").to_string();
+            let artifact = format!("{}/test/mod:v1", registry);
+            let upload_location = format!("{}/v2/test/mod/blobs/uploads/up-id", server.url());
+
+            server
+                .mock(
+                    "HEAD",
+                    mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
+                )
+                .with_status(404)
+                .expect_at_least(2)
+                .create();
+
+            server
+                .mock("POST", "/v2/test/mod/blobs/uploads/")
+                .with_status(202)
+                .with_header("Location", &upload_location)
+                .expect_at_least(2)
+                .create();
+
+            server
+                .mock(
+                    "PUT",
+                    mockito::Matcher::Regex(
+                        r"/v2/test/mod/blobs/uploads/up-id\?digest=sha256:.*".to_string(),
+                    ),
+                )
+                .with_status(201)
+                .expect_at_least(2)
+                .create();
+
+            server
+                .mock("PUT", "/v2/test/mod/manifests/v1")
+                .with_status(201)
+                .create();
+
+            let (printer, cap) = Printer::for_test_doc();
+            cmd_module_push(
+                &printer,
+                dir.path().to_str().unwrap(),
+                &artifact,
+                PushOptions {
+                    platform: None,
+                    apply: false,
+                    sign: false,
+                    key: None,
+                    attest: false,
+                },
+            )
+            .expect("push happy path must succeed");
+            drop(printer);
+
+            let doc = cap.json().expect("success doc must be emitted");
+            let digest = doc["digest"].as_str().expect("digest must be a string");
+            assert!(
+                digest.starts_with("sha256:"),
+                "digest must be a sha256 hash: {digest}"
+            );
+            assert_eq!(doc["signed"], false, "signed must be false: {doc}");
+            assert_eq!(
+                doc["attestation"], false,
+                "attestation must be false: {doc}"
+            );
+        }
+    }
+
+    mod git_helpers {
+        use serial_test::serial;
+
+        use super::super::{detect_git_head_for_tests, detect_git_remote_for_tests};
+
+        fn git(dir: &std::path::Path, args: &[&str]) {
+            let status = cfgd_core::git_cmd_local()
+                .args(args)
+                .current_dir(dir)
+                .status()
+                .expect("git command");
+            assert!(status.success(), "git {:?} failed", args);
+        }
+
+        #[test]
+        #[serial]
+        fn detect_git_remote_returns_none_in_fresh_repo() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            git(dir.path(), &["init"]);
+            let orig = std::env::current_dir().expect("cwd");
+            std::env::set_current_dir(dir.path()).expect("set_current_dir");
+            let result = detect_git_remote_for_tests();
+            std::env::set_current_dir(&orig).expect("restore cwd");
+            assert!(
+                result.is_none(),
+                "fresh repo with no remote must return None, got: {result:?}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn detect_git_head_returns_some_after_initial_commit() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            git(dir.path(), &["init"]);
+            git(dir.path(), &["config", "user.email", "test@example.com"]);
+            git(dir.path(), &["config", "user.name", "Test"]);
+            std::fs::write(dir.path().join("f.txt"), b"hello").expect("write file");
+            git(dir.path(), &["add", "."]);
+            git(dir.path(), &["commit", "-m", "init"]);
+
+            let orig = std::env::current_dir().expect("cwd");
+            std::env::set_current_dir(dir.path()).expect("set_current_dir");
+            let result = detect_git_head_for_tests();
+            std::env::set_current_dir(&orig).expect("restore cwd");
+
+            let sha = result.expect("HEAD must be Some after initial commit");
+            assert_eq!(sha.len(), 40, "HEAD SHA must be 40 hex chars: {sha}");
+            assert!(
+                sha.chars().all(|c| c.is_ascii_hexdigit()),
+                "HEAD SHA must be hex: {sha}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn detect_git_head_returns_none_in_empty_repo() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            git(dir.path(), &["init"]);
+            let orig = std::env::current_dir().expect("cwd");
+            std::env::set_current_dir(dir.path()).expect("set_current_dir");
+            let result = detect_git_head_for_tests();
+            std::env::set_current_dir(&orig).expect("restore cwd");
+            assert!(
+                result.is_none(),
+                "empty repo has no HEAD, must return None: {result:?}"
+            );
+        }
+    }
 }

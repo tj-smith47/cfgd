@@ -443,7 +443,7 @@ fn cmd_module_list_json_with_modules() {
 fn cmd_module_show_not_found() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (printer, _v2_buf) =
+    let (printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let err = cmd_module_show(&cli, &printer, "ghost", false).unwrap_err();
