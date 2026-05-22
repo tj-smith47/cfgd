@@ -891,3 +891,367 @@ fn test_scan_dotfiles_symlink_entry_type() {
         .expect("should find .linked_config");
     assert_eq!(linked.entry_type, "symlink");
 }
+
+#[test]
+fn test_build_tool_map_home_dotfiles() {
+    let map = build_tool_map();
+    assert_eq!(map.get(".zshrc"), Some(&"zsh"));
+    assert_eq!(map.get(".bashrc"), Some(&"bash"));
+    assert_eq!(map.get(".vimrc"), Some(&"vim"));
+    assert_eq!(map.get(".tmux.conf"), Some(&"tmux"));
+    assert_eq!(map.get(".gitconfig"), Some(&"git"));
+    assert_eq!(map.get(".cargo"), Some(&"cargo"));
+    assert_eq!(map.get(".kube"), Some(&"kubectl"));
+    assert_eq!(map.get(".docker"), Some(&"docker"));
+    assert_eq!(map.get(".ssh"), Some(&"ssh"));
+    assert_eq!(map.get(".rustup"), Some(&"rustup"));
+    assert_eq!(map.get("not_a_dotfile"), None);
+}
+
+#[test]
+fn test_build_tool_map_xdg_entries() {
+    let map = build_tool_map();
+    assert_eq!(map.get("nvim"), Some(&"nvim"));
+    assert_eq!(map.get("alacritty"), Some(&"alacritty"));
+    assert_eq!(map.get("starship.toml"), Some(&"starship"));
+    assert_eq!(map.get("fzf"), Some(&"fzf"));
+    assert_eq!(map.get("gh"), Some(&"gh"));
+    assert_eq!(map.get("helix"), Some(&"helix"));
+    assert_eq!(map.get("nonexistent_tool"), None);
+}
+
+#[test]
+fn test_scan_dotfiles_file_size_bytes_nonzero() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    let content = "export EDITOR=nvim\n";
+    fs::write(home.join(".bashrc"), content).unwrap();
+
+    let entries = scan_dotfiles(home).unwrap();
+    let entry = entries
+        .iter()
+        .find(|e| e.path == home.join(".bashrc"))
+        .expect(".bashrc should be found");
+
+    assert_eq!(entry.entry_type, "file");
+    assert_eq!(
+        entry.size_bytes,
+        content.len() as u64,
+        "size_bytes should match file content length"
+    );
+}
+
+#[test]
+fn test_scan_dotfiles_directory_size_bytes_zero() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    fs::create_dir_all(home.join(".config")).unwrap();
+    fs::create_dir_all(home.join(".cargo")).unwrap();
+
+    let entries = scan_dotfiles(home).unwrap();
+    let cargo_entry = entries
+        .iter()
+        .find(|e| e.path == home.join(".cargo"))
+        .expect(".cargo should be found");
+
+    assert_eq!(cargo_entry.entry_type, "directory");
+    assert_eq!(cargo_entry.size_bytes, 0, "directory size_bytes must be 0");
+}
+
+#[test]
+fn test_scan_dotfiles_xdg_config_entries_included() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    let config_dir = home.join(".config");
+    fs::create_dir_all(config_dir.join("alacritty")).unwrap();
+    fs::create_dir_all(config_dir.join("helix")).unwrap();
+    fs::write(config_dir.join("starship.toml"), "# starship config").unwrap();
+
+    let entries = scan_dotfiles(home).unwrap();
+    let paths: Vec<_> = entries.iter().map(|e| &e.path).collect();
+
+    assert!(
+        paths.contains(&&config_dir.join("alacritty")),
+        "alacritty dir should appear as xdg entry"
+    );
+    assert!(
+        paths.contains(&&config_dir.join("helix")),
+        "helix dir should appear as xdg entry"
+    );
+    assert!(
+        paths.contains(&&config_dir.join("starship.toml")),
+        "starship.toml should appear as xdg entry"
+    );
+
+    let alacritty = entries
+        .iter()
+        .find(|e| e.path == config_dir.join("alacritty"))
+        .unwrap();
+    assert_eq!(alacritty.tool_guess.as_deref(), Some("alacritty"));
+
+    let starship = entries
+        .iter()
+        .find(|e| e.path == config_dir.join("starship.toml"))
+        .unwrap();
+    assert_eq!(starship.tool_guess.as_deref(), Some("starship"));
+}
+
+#[test]
+fn test_scan_dotfiles_no_config_dir() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    fs::write(home.join(".gitconfig"), "[user]\nname=Test\n").unwrap();
+
+    let entries = scan_dotfiles(home).unwrap();
+    let paths: Vec<_> = entries.iter().map(|e| &e.path).collect();
+    assert!(paths.contains(&&home.join(".gitconfig")));
+    assert!(
+        !paths.iter().any(|p| p.starts_with(home.join(".config"))),
+        "no xdg entries when .config does not exist"
+    );
+}
+
+#[test]
+fn test_scan_dotfiles_skips_non_dotfiles() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    fs::write(home.join("README.md"), "not a dotfile").unwrap();
+    fs::write(home.join("notes.txt"), "also not a dotfile").unwrap();
+    fs::write(home.join(".zshrc"), "# zsh").unwrap();
+
+    let entries = scan_dotfiles(home).unwrap();
+    let paths: Vec<_> = entries.iter().map(|e| &e.path).collect();
+
+    assert!(
+        !paths.contains(&&home.join("README.md")),
+        "README.md should be skipped"
+    );
+    assert!(
+        !paths.contains(&&home.join("notes.txt")),
+        "notes.txt should be skipped"
+    );
+    assert!(
+        paths.contains(&&home.join(".zshrc")),
+        ".zshrc should be included"
+    );
+}
+
+#[test]
+fn test_parse_shell_file_nonexistent_returns_empty() {
+    let mut aliases = vec![];
+    let mut exports = vec![];
+    let mut paths = vec![];
+    let mut pm = None;
+    let sourced = parse_shell_file(
+        std::path::Path::new("/nonexistent/path/that/does/not/exist.sh"),
+        &mut aliases,
+        &mut exports,
+        &mut paths,
+        &mut pm,
+    );
+    assert!(sourced.is_empty());
+    assert!(aliases.is_empty());
+    assert!(exports.is_empty());
+    assert!(paths.is_empty());
+    assert!(pm.is_none());
+}
+
+#[test]
+fn test_parse_shell_file_full_parsing() {
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("test.sh");
+    fs::write(
+        &file,
+        "alias ll='ls -la'\nexport EDITOR=nvim\nexport PATH=\"$HOME/bin:$PATH\"\nsource ~/.extra\n",
+    )
+    .unwrap();
+
+    let mut aliases = vec![];
+    let mut exports = vec![];
+    let mut paths = vec![];
+    let mut pm = None;
+    let sourced = parse_shell_file(&file, &mut aliases, &mut exports, &mut paths, &mut pm);
+
+    assert_eq!(aliases.len(), 1);
+    assert_eq!(aliases[0].name, "ll");
+    assert_eq!(aliases[0].command, "ls -la");
+
+    assert_eq!(exports.len(), 1);
+    assert_eq!(exports[0].name, "EDITOR");
+    assert_eq!(exports[0].value, "nvim");
+
+    assert_eq!(paths.len(), 1);
+    assert!(paths[0].contains("$HOME/bin"));
+
+    assert_eq!(sourced.len(), 1);
+    assert_eq!(sourced[0], std::path::PathBuf::from("~/.extra"));
+}
+
+#[test]
+fn test_parse_shell_file_plugin_manager_non_source_line() {
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("test.sh");
+    fs::write(&file, "zinit light zsh-users/zsh-autosuggestions\n").unwrap();
+
+    let mut aliases = vec![];
+    let mut exports = vec![];
+    let mut paths = vec![];
+    let mut pm = None;
+    parse_shell_file(&file, &mut aliases, &mut exports, &mut paths, &mut pm);
+    assert_eq!(pm.as_deref(), Some("zinit"));
+}
+
+#[test]
+fn test_scan_installed_packages_error_manager_does_not_abort() {
+    struct ErrorManager;
+    impl cfgd_core::providers::PackageManager for ErrorManager {
+        fn name(&self) -> &str {
+            "erroring"
+        }
+        fn is_available(&self) -> bool {
+            true
+        }
+        fn can_bootstrap(&self) -> bool {
+            false
+        }
+        fn bootstrap(&self, _p: &cfgd_core::output::Printer) -> cfgd_core::errors::Result<()> {
+            Ok(())
+        }
+        fn installed_packages(
+            &self,
+        ) -> cfgd_core::errors::Result<std::collections::HashSet<String>> {
+            Ok(Default::default())
+        }
+        fn install(
+            &self,
+            _pkgs: &[String],
+            _p: &cfgd_core::output::Printer,
+        ) -> cfgd_core::errors::Result<()> {
+            Ok(())
+        }
+        fn uninstall(
+            &self,
+            _pkgs: &[String],
+            _p: &cfgd_core::output::Printer,
+        ) -> cfgd_core::errors::Result<()> {
+            Ok(())
+        }
+        fn update(&self, _p: &cfgd_core::output::Printer) -> cfgd_core::errors::Result<()> {
+            Ok(())
+        }
+        fn available_version(&self, _pkg: &str) -> cfgd_core::errors::Result<Option<String>> {
+            Ok(None)
+        }
+        fn installed_packages_with_versions(
+            &self,
+        ) -> cfgd_core::errors::Result<Vec<cfgd_core::providers::PackageInfo>> {
+            Err(cfgd_core::errors::CfgdError::Package(
+                cfgd_core::errors::PackageError::ListFailed {
+                    manager: "erroring".into(),
+                    message: "simulated list failure".into(),
+                },
+            ))
+        }
+    }
+
+    let good = TestPackageManager {
+        manager_name: "apt",
+        available: true,
+        packages: vec![pkg("curl", "7.88.1")],
+    };
+
+    let err_mgr = ErrorManager;
+    let managers: Vec<&dyn cfgd_core::providers::PackageManager> = vec![&err_mgr, &good];
+    let entries = scan_installed_packages(&managers, None)
+        .expect("scan_installed_packages should not fail when one manager errors");
+
+    assert_eq!(
+        entries.len(),
+        1,
+        "only the successful manager's packages returned"
+    );
+    assert_eq!(entries[0].name, "curl");
+}
+
+#[test]
+fn test_detect_plugin_manager_zplugin_alias() {
+    assert_eq!(
+        detect_plugin_manager("source ~/.zplugin/bin/zplugin.zsh"),
+        Some("zinit")
+    );
+}
+
+#[test]
+fn test_detect_plugin_manager_ohmyzsh_github_url() {
+    assert_eq!(
+        detect_plugin_manager("ZSH_CUSTOM=${ZSH_CUSTOM:-~/.oh-my-zsh/custom}"),
+        Some("oh-my-zsh")
+    );
+}
+
+#[test]
+fn test_detect_plugin_manager_zdharma_zinit_url() {
+    assert_eq!(
+        detect_plugin_manager("zinit ice as\"null\" from\"zdharma-continuum/zinit\""),
+        Some("zinit")
+    );
+}
+
+#[test]
+fn test_strip_quotes_double_empty() {
+    assert_eq!(strip_quotes("\"\""), "");
+}
+
+#[test]
+fn test_strip_quotes_single_empty() {
+    assert_eq!(strip_quotes("''"), "");
+}
+
+#[test]
+fn test_strip_inline_comment_only_hash() {
+    assert_eq!(strip_inline_comment("#"), "");
+}
+
+#[test]
+fn test_strip_inline_comment_space_then_hash() {
+    assert_eq!(strip_inline_comment("export X=1 # comment"), "export X=1");
+}
+
+#[test]
+fn test_scan_shell_config_bash_login() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    fs::write(home.join(".bash_login"), "alias ll='ls -la'\n").unwrap();
+
+    let result = scan_shell_config("bash", home).unwrap();
+    assert!(
+        result.aliases.iter().any(|a| a.name == "ll"),
+        "alias from .bash_login should be included"
+    );
+}
+
+#[test]
+fn test_scan_shell_config_dot_source_syntax() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    fs::write(home.join(".zshrc"), ". ~/.posix_funcs\n").unwrap();
+
+    let result = scan_shell_config("zsh", home).unwrap();
+    let sourced_strs: Vec<_> = result
+        .sourced_files
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    assert!(
+        sourced_strs.iter().any(|s| s.contains(".posix_funcs")),
+        "dot-syntax sourced file should be captured: {:?}",
+        sourced_strs
+    );
+}
