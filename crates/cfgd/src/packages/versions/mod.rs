@@ -4,12 +4,39 @@
 //! out to the underlying package manager. `list_*_with_versions` enumerate
 //! installed packages with versions for `installed_packages_with_versions`.
 //! `*_aliases` map canonical package names to their distro-specific aliases.
-
-use std::process::Command;
+//!
+//! All shell-outs route through `cfgd_core::tool_cmd(env_var, default)` so the
+//! `CFGD_*_BIN` test-shim seams can drive the binaries without a real package
+//! manager installed. `query_version_info` dispatches the seam per `manager`
+//! arg (pacman / dnf / yum / zypper) so each manager has an independent
+//! override knob.
 
 use cfgd_core::errors::{PackageError, Result};
+use cfgd_core::tool_cmd;
 
 use super::shared::run_pkg_cmd;
+
+const APT_CACHE_BIN_ENV: &str = "CFGD_APT_CACHE_BIN";
+const APK_BIN_ENV: &str = "CFGD_APK_BIN";
+const PKG_BIN_ENV: &str = "CFGD_PKG_BIN";
+const PACMAN_BIN_ENV: &str = "CFGD_PACMAN_BIN";
+const DNF_BIN_ENV: &str = "CFGD_DNF_BIN";
+const YUM_BIN_ENV: &str = "CFGD_YUM_BIN";
+const ZYPPER_BIN_ENV: &str = "CFGD_ZYPPER_BIN";
+const DPKG_QUERY_BIN_ENV: &str = "CFGD_DPKG_QUERY_BIN";
+const RPM_BIN_ENV: &str = "CFGD_RPM_BIN";
+
+/// Map an `info`-style manager name to its env-var seam. Unknown managers get
+/// an empty seam, which `tool_cmd` resolves to the default binary via PATH.
+fn info_bin_env(manager: &str) -> &'static str {
+    match manager {
+        "pacman" => PACMAN_BIN_ENV,
+        "dnf" => DNF_BIN_ENV,
+        "yum" => YUM_BIN_ENV,
+        "zypper" => ZYPPER_BIN_ENV,
+        _ => "",
+    }
+}
 
 /// Query version via `<cmd> info <pkg>` and parse "Version:" field.
 /// Used by dnf, yum, pacman (-Si), zypper.
@@ -18,7 +45,7 @@ pub(super) fn query_version_info(manager: &str, package: &str) -> Result<Option<
         "pacman" => ("pacman", &["-Si"]),
         _ => (manager, &["info"]),
     };
-    let output = Command::new(cmd)
+    let output = tool_cmd(info_bin_env(manager), cmd)
         .args(args)
         .arg(package)
         .output()
@@ -42,7 +69,7 @@ pub(super) fn query_version_info(manager: &str, package: &str) -> Result<Option<
 }
 
 pub(super) fn query_version_apt(manager: &str, package: &str) -> Result<Option<String>> {
-    let output = Command::new("apt-cache")
+    let output = tool_cmd(APT_CACHE_BIN_ENV, "apt-cache")
         .args(["policy", package])
         .output()
         .map_err(|e| PackageError::CommandFailed {
@@ -76,7 +103,7 @@ pub(super) fn query_version_apt(manager: &str, package: &str) -> Result<Option<S
 }
 
 pub(super) fn query_version_apk(manager: &str, package: &str) -> Result<Option<String>> {
-    let output = Command::new("apk")
+    let output = tool_cmd(APK_BIN_ENV, "apk")
         .args(["policy", package])
         .output()
         .map_err(|e| PackageError::CommandFailed {
@@ -101,7 +128,7 @@ pub(super) fn query_version_apk(manager: &str, package: &str) -> Result<Option<S
 }
 
 pub(super) fn query_version_pkg(manager: &str, package: &str) -> Result<Option<String>> {
-    let output = Command::new("pkg")
+    let output = tool_cmd(PKG_BIN_ENV, "pkg")
         .args(["search", "-e", package])
         .output()
         .map_err(|e| PackageError::CommandFailed {
@@ -166,7 +193,7 @@ pub(super) fn list_apt_with_versions(
 ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
     let output = run_pkg_cmd(
         manager,
-        Command::new("dpkg-query").args(["-W", "-f=${Package}\t${Version}\n"]),
+        tool_cmd(DPKG_QUERY_BIN_ENV, "dpkg-query").args(["-W", "-f=${Package}\t${Version}\n"]),
         "list",
     )?;
     Ok(parse_apt_versions(&String::from_utf8_lossy(&output.stdout)))
@@ -177,7 +204,12 @@ pub(super) fn list_dnf_with_versions(
 ) -> Result<Vec<cfgd_core::providers::PackageInfo>> {
     let output = run_pkg_cmd(
         manager,
-        Command::new("rpm").args(["--query", "--all", "--queryformat", "%{NAME}\t%{VERSION}\n"]),
+        tool_cmd(RPM_BIN_ENV, "rpm").args([
+            "--query",
+            "--all",
+            "--queryformat",
+            "%{NAME}\t%{VERSION}\n",
+        ]),
         "list",
     )?;
     Ok(parse_rpm_versions(&String::from_utf8_lossy(&output.stdout)))

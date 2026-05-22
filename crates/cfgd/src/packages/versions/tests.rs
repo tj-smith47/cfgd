@@ -408,3 +408,297 @@ fn dnf_aliases_returns_correct_mappings() {
         assert_eq!(actual, expected, "dnf_aliases({}) mismatch", input);
     }
 }
+
+#[cfg(unix)]
+mod shim_tests {
+    use serial_test::serial;
+
+    use cfgd_core::test_helpers::ToolShim;
+
+    use super::{
+        list_apt_with_versions, list_dnf_with_versions, query_version_apk, query_version_apt,
+        query_version_info, query_version_pkg,
+    };
+
+    const APT_CACHE_BIN_ENV: &str = "CFGD_APT_CACHE_BIN";
+
+    #[test]
+    #[serial]
+    fn query_version_apt_returns_candidate_via_shim() {
+        let _shim = ToolShim::install(
+            APT_CACHE_BIN_ENV,
+            0,
+            "curl:\n  Installed: 7.88.1-10+deb12u1\n  Candidate: 7.88.1-10+deb12u5\n",
+            "",
+        );
+        let version = query_version_apt("apt", "curl").expect("query should succeed");
+        assert_eq!(version, Some("7.88.1".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn query_version_apt_returns_none_on_non_zero_exit() {
+        let _shim = ToolShim::install(APT_CACHE_BIN_ENV, 1, "", "apt-cache failed");
+        let version = query_version_apt("apt", "curl").expect("query should not error");
+        assert_eq!(version, None);
+    }
+
+    #[test]
+    #[serial]
+    fn query_version_apt_returns_none_when_candidate_is_none() {
+        let _shim = ToolShim::install(
+            APT_CACHE_BIN_ENV,
+            0,
+            "nonexistent:\n  Candidate: (none)\n",
+            "",
+        );
+        let version = query_version_apt("apt", "nonexistent").expect("query should succeed");
+        assert_eq!(version, None);
+    }
+
+    #[test]
+    #[serial]
+    fn query_version_apt_returns_none_when_no_candidate_line() {
+        let _shim = ToolShim::install(APT_CACHE_BIN_ENV, 0, "curl:\n  Installed: 7.88.1\n", "");
+        let version = query_version_apt("apt", "curl").expect("query should succeed");
+        assert_eq!(version, None);
+    }
+
+    #[test]
+    #[serial]
+    fn query_version_apt_passes_policy_and_package_to_shim() {
+        let shim = ToolShim::install(APT_CACHE_BIN_ENV, 0, "curl:\n  Candidate: 1.0\n", "");
+        query_version_apt("apt", "curl").expect("query should succeed");
+        let log = shim.argv_log();
+        assert!(
+            log.contains("policy"),
+            "argv should contain policy; got: {log}"
+        );
+        assert!(log.contains("curl"), "argv should contain curl; got: {log}");
+    }
+
+    const APK_BIN_ENV: &str = "CFGD_APK_BIN";
+
+    #[test]
+    #[serial]
+    fn query_version_apk_returns_version_via_shim() {
+        let _shim = ToolShim::install(
+            APK_BIN_ENV,
+            0,
+            "curl-8.5.0-r0:\n  lib/apk/db/installed\n",
+            "",
+        );
+        let version = query_version_apk("apk", "curl").expect("query should succeed");
+        assert_eq!(version, Some("8.5.0-r0".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn query_version_apk_returns_none_on_non_zero_exit() {
+        let _shim = ToolShim::install(APK_BIN_ENV, 2, "", "apk policy failed");
+        let version = query_version_apk("apk", "curl").expect("query should not error");
+        assert_eq!(version, None);
+    }
+
+    #[test]
+    #[serial]
+    fn query_version_apk_returns_none_when_no_version_in_name() {
+        let _shim = ToolShim::install(APK_BIN_ENV, 0, "busybox:\n", "");
+        let version = query_version_apk("apk", "busybox").expect("query should succeed");
+        assert_eq!(version, None);
+    }
+
+    const PKG_BIN_ENV: &str = "CFGD_PKG_BIN";
+
+    #[test]
+    #[serial]
+    fn query_version_pkg_returns_version_on_exact_name_match() {
+        let _shim = ToolShim::install(
+            PKG_BIN_ENV,
+            0,
+            "curl-8.5.0                     Command line tool for transferring data\n",
+            "",
+        );
+        let version = query_version_pkg("pkg", "curl").expect("query should succeed");
+        assert_eq!(version, Some("8.5.0".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn query_version_pkg_returns_none_on_no_match() {
+        let _shim = ToolShim::install(PKG_BIN_ENV, 0, "wget-1.21.4    GNU Wget\n", "");
+        let version = query_version_pkg("pkg", "curl").expect("query should succeed");
+        assert_eq!(version, None);
+    }
+
+    #[test]
+    #[serial]
+    fn query_version_pkg_returns_none_on_non_zero_exit() {
+        let _shim = ToolShim::install(PKG_BIN_ENV, 70, "", "pkg search failed");
+        let version = query_version_pkg("pkg", "curl").expect("query should not error");
+        assert_eq!(version, None);
+    }
+
+    const PACMAN_BIN_ENV: &str = "CFGD_PACMAN_BIN";
+    const DNF_BIN_ENV: &str = "CFGD_DNF_BIN";
+    const YUM_BIN_ENV: &str = "CFGD_YUM_BIN";
+    const ZYPPER_BIN_ENV: &str = "CFGD_ZYPPER_BIN";
+
+    #[test]
+    #[serial]
+    fn query_version_info_pacman_returns_version_via_shim() {
+        let shim = ToolShim::install(
+            PACMAN_BIN_ENV,
+            0,
+            "Repository      : extra\nName            : vim\nVersion         : 9.0.2167-1\n",
+            "",
+        );
+        let version = query_version_info("pacman", "vim").expect("query should succeed");
+        assert_eq!(version, Some("9.0.2167-1".to_string()));
+        let log = shim.argv_log();
+        assert!(
+            log.contains("-Si"),
+            "pacman argv should contain -Si; got: {log}"
+        );
+        assert!(log.contains("vim"), "argv should contain vim; got: {log}");
+    }
+
+    #[test]
+    #[serial]
+    fn query_version_info_dnf_returns_version_via_shim() {
+        let shim = ToolShim::install(
+            DNF_BIN_ENV,
+            0,
+            "Name        : curl\nVersion     : 8.5.0\nRelease     : 1.fc39\n",
+            "",
+        );
+        let version = query_version_info("dnf", "curl").expect("query should succeed");
+        assert_eq!(version, Some("8.5.0".to_string()));
+        let log = shim.argv_log();
+        assert!(
+            log.contains("info"),
+            "dnf argv should contain info; got: {log}"
+        );
+        assert!(log.contains("curl"), "argv should contain curl; got: {log}");
+    }
+
+    #[test]
+    #[serial]
+    fn query_version_info_yum_returns_version_via_shim() {
+        let _shim = ToolShim::install(
+            YUM_BIN_ENV,
+            0,
+            "Name        : bash\nVersion     : 4.4.20\n",
+            "",
+        );
+        let version = query_version_info("yum", "bash").expect("query should succeed");
+        assert_eq!(version, Some("4.4.20".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn query_version_info_zypper_returns_version_via_shim() {
+        let _shim = ToolShim::install(
+            ZYPPER_BIN_ENV,
+            0,
+            "Information for package wget:\nVersion        : 1.20.3\n",
+            "",
+        );
+        let version = query_version_info("zypper", "wget").expect("query should succeed");
+        assert_eq!(version, Some("1.20.3".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn query_version_info_returns_none_on_non_zero_exit() {
+        let _shim = ToolShim::install(DNF_BIN_ENV, 1, "", "dnf info failed");
+        let version = query_version_info("dnf", "curl").expect("query should not error");
+        assert_eq!(version, None);
+    }
+
+    #[test]
+    #[serial]
+    fn query_version_info_returns_none_when_version_field_missing() {
+        let _shim = ToolShim::install(DNF_BIN_ENV, 0, "Name: curl\nRelease: 1.fc39\n", "");
+        let version = query_version_info("dnf", "curl").expect("query should succeed");
+        assert_eq!(version, None);
+    }
+
+    const DPKG_QUERY_BIN_ENV: &str = "CFGD_DPKG_QUERY_BIN";
+
+    #[test]
+    #[serial]
+    fn list_apt_with_versions_parses_dpkg_query_output() {
+        let _shim = ToolShim::install(
+            DPKG_QUERY_BIN_ENV,
+            0,
+            "curl\t7.88.1\nwget\t1.21.3\ngit\t2.39.0\n",
+            "",
+        );
+        let pkgs = list_apt_with_versions("apt").expect("list should succeed");
+        assert_eq!(pkgs.len(), 3);
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "curl" && p.version == "7.88.1")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "wget" && p.version == "1.21.3")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "git" && p.version == "2.39.0")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn list_apt_with_versions_errors_on_non_zero_exit() {
+        let _shim = ToolShim::install(DPKG_QUERY_BIN_ENV, 1, "", "dpkg-query failed");
+        let err = list_apt_with_versions("apt").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("dpkg-query failed") || msg.contains("apt"),
+            "error should surface stderr or manager; got: {msg}"
+        );
+    }
+
+    const RPM_BIN_ENV: &str = "CFGD_RPM_BIN";
+
+    #[test]
+    #[serial]
+    fn list_dnf_with_versions_parses_rpm_output() {
+        let _shim = ToolShim::install(
+            RPM_BIN_ENV,
+            0,
+            "bash\t5.1.16\ncoreutils\t8.32\nglibc\t2.35\n",
+            "",
+        );
+        let pkgs = list_dnf_with_versions("dnf").expect("list should succeed");
+        assert_eq!(pkgs.len(), 3);
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "bash" && p.version == "5.1.16")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "coreutils" && p.version == "8.32")
+        );
+        assert!(
+            pkgs.iter()
+                .any(|p| p.name == "glibc" && p.version == "2.35")
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn list_dnf_with_versions_errors_on_non_zero_exit() {
+        let _shim = ToolShim::install(RPM_BIN_ENV, 1, "", "rpm query failed");
+        let err = list_dnf_with_versions("dnf").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("rpm query failed") || msg.contains("dnf"),
+            "error should surface stderr or manager; got: {msg}"
+        );
+    }
+}
