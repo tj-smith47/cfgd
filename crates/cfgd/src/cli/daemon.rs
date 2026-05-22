@@ -324,3 +324,374 @@ pub(super) fn cmd_daemon_service() -> anyhow::Result<()> {
     cfgd_core::daemon::run_as_windows_service(hooks)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cfgd_core::output::Verbosity;
+
+    fn make_printer() -> Printer {
+        Printer::new(Verbosity::Quiet)
+    }
+
+    fn make_status(running: bool) -> cfgd_core::daemon::DaemonStatusResponse {
+        cfgd_core::daemon::DaemonStatusResponse {
+            running,
+            pid: if running { 12345 } else { 0 },
+            uptime_secs: if running { 300 } else { 0 },
+            last_reconcile: if running {
+                Some("2026-05-22T10:00:00Z".to_string())
+            } else {
+                None
+            },
+            last_sync: if running {
+                Some("2026-05-22T10:01:00Z".to_string())
+            } else {
+                None
+            },
+            drift_count: if running { 2 } else { 0 },
+            sources: vec![],
+            update_available: None,
+            module_reconcile: vec![],
+        }
+    }
+
+    fn make_cli() -> Cli {
+        let dir = tempfile::tempdir().unwrap();
+        Cli {
+            config: dir.path().join("cfgd.yaml"),
+            profile: None,
+            no_color: true,
+            verbose: 0,
+            quiet: true,
+            output: crate::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+            jsonpath: None,
+            state_dir: None,
+            command: None,
+        }
+    }
+
+    #[test]
+    fn placeholder_status_defaults() {
+        let s = placeholder_status();
+        assert!(!s.running);
+        assert_eq!(s.pid, 0);
+        assert_eq!(s.uptime_secs, 0);
+        assert!(s.last_reconcile.is_none());
+        assert!(s.last_sync.is_none());
+        assert_eq!(s.drift_count, 0);
+        assert!(s.sources.is_empty());
+        assert!(s.update_available.is_none());
+        assert!(s.module_reconcile.is_empty());
+    }
+
+    #[test]
+    fn build_daemon_status_doc_none_contains_not_running() {
+        let (printer, cap) = Printer::for_test_doc();
+        let doc = build_daemon_status_doc(None);
+        printer.emit(doc);
+        let human = cap.human();
+        assert!(
+            human.contains("not running"),
+            "expected 'not running' in output, got: {human}"
+        );
+    }
+
+    #[test]
+    fn build_daemon_status_doc_none_json_payload() {
+        let (printer, cap) = Printer::for_test_doc();
+        let doc = build_daemon_status_doc(None);
+        printer.emit(doc);
+        let json = cap.json().expect("doc must carry JSON payload");
+        assert_eq!(json["running"], false);
+        assert_eq!(json["pid"], 0);
+    }
+
+    #[test]
+    fn build_daemon_status_doc_some_contains_pid() {
+        let status = make_status(true);
+        let (printer, cap) = Printer::for_test_doc();
+        let doc = build_daemon_status_doc(Some(&status));
+        printer.emit(doc);
+        let human = cap.human();
+        assert!(
+            human.contains("12345"),
+            "expected PID 12345 in output, got: {human}"
+        );
+    }
+
+    #[test]
+    fn build_daemon_status_doc_some_json_payload() {
+        let status = make_status(true);
+        let (printer, cap) = Printer::for_test_doc();
+        let doc = build_daemon_status_doc(Some(&status));
+        printer.emit(doc);
+        let json = cap.json().expect("doc must carry JSON payload");
+        assert_eq!(json["running"], true);
+        assert_eq!(json["pid"], 12345);
+        assert_eq!(json["driftCount"], 2);
+    }
+
+    #[test]
+    fn build_daemon_status_doc_update_available_renders() {
+        let mut status = make_status(true);
+        status.update_available = Some("v1.2.3".to_string());
+        let (printer, cap) = Printer::for_test_doc();
+        let doc = build_daemon_status_doc(Some(&status));
+        printer.emit(doc);
+        let human = cap.human();
+        assert!(
+            human.contains("v1.2.3"),
+            "expected version in output, got: {human}"
+        );
+    }
+
+    #[test]
+    fn build_daemon_install_doc_linux() {
+        let payload = DaemonInstallOutput {
+            platform: "linux".to_string(),
+            service: "cfgd.service".to_string(),
+            path: "~/.config/systemd/user/cfgd.service".to_string(),
+            started: false,
+            windows_event_log: None,
+        };
+        let (printer, cap) = Printer::for_test_doc();
+        let doc = build_daemon_install_doc(&payload);
+        printer.emit(doc);
+        let json = cap.json().expect("doc must carry JSON payload");
+        assert_eq!(json["platform"], "linux");
+        assert_eq!(json["service"], "cfgd.service");
+        assert_eq!(json["started"], false);
+        assert!(json.get("windowsEventLog").is_none());
+        let human = cap.human();
+        assert!(
+            human.contains("cfgd.service"),
+            "expected service name in output, got: {human}"
+        );
+    }
+
+    #[test]
+    fn build_daemon_install_doc_macos() {
+        let payload = DaemonInstallOutput {
+            platform: "macos".to_string(),
+            service: "com.cfgd.daemon".to_string(),
+            path: "~/Library/LaunchAgents/com.cfgd.daemon.plist".to_string(),
+            started: false,
+            windows_event_log: None,
+        };
+        let (printer, cap) = Printer::for_test_doc();
+        let doc = build_daemon_install_doc(&payload);
+        printer.emit(doc);
+        let json = cap.json().expect("doc must carry JSON payload");
+        assert_eq!(json["platform"], "macos");
+        assert_eq!(json["service"], "com.cfgd.daemon");
+        let human = cap.human();
+        assert!(
+            human.contains("launchctl"),
+            "expected launchctl hint in output, got: {human}"
+        );
+    }
+
+    #[test]
+    fn build_daemon_install_doc_windows_event_log_some() {
+        let payload = DaemonInstallOutput {
+            platform: "windows".to_string(),
+            service: "cfgd".to_string(),
+            path: "%LOCALAPPDATA%\\cfgd\\daemon.log".to_string(),
+            started: true,
+            windows_event_log: Some(true),
+        };
+        let (printer, cap) = Printer::for_test_doc();
+        let doc = build_daemon_install_doc(&payload);
+        printer.emit(doc);
+        let json = cap.json().expect("doc must carry JSON payload");
+        assert_eq!(json["platform"], "windows");
+        assert_eq!(json["started"], true);
+        assert_eq!(json["windowsEventLog"], true);
+        let human = cap.human();
+        assert!(
+            human.contains("Event Log"),
+            "expected event-log mention in output, got: {human}"
+        );
+    }
+
+    #[test]
+    fn build_daemon_install_doc_windows_event_log_disabled() {
+        let payload = DaemonInstallOutput {
+            platform: "windows".to_string(),
+            service: "cfgd".to_string(),
+            path: "%LOCALAPPDATA%\\cfgd\\daemon.log".to_string(),
+            started: true,
+            windows_event_log: Some(false),
+        };
+        let (printer, cap) = Printer::for_test_doc();
+        let doc = build_daemon_install_doc(&payload);
+        printer.emit(doc);
+        let json = cap.json().expect("doc must carry JSON payload");
+        assert_eq!(json["windowsEventLog"], false);
+        let human = cap.human();
+        assert!(
+            human.contains("windowsEventLog"),
+            "expected event-log hint in output, got: {human}"
+        );
+    }
+
+    #[test]
+    fn build_daemon_uninstall_doc_linux() {
+        let payload = DaemonUninstallOutput {
+            platform: "linux".to_string(),
+            service: "cfgd.service".to_string(),
+            removed: true,
+        };
+        let (printer, cap) = Printer::for_test_doc();
+        let doc = build_daemon_uninstall_doc(&payload);
+        printer.emit(doc);
+        let json = cap.json().expect("doc must carry JSON payload");
+        assert_eq!(json["platform"], "linux");
+        assert_eq!(json["service"], "cfgd.service");
+        assert_eq!(json["removed"], true);
+        let human = cap.human();
+        assert!(
+            human.contains("systemctl"),
+            "expected systemctl in output, got: {human}"
+        );
+    }
+
+    #[test]
+    fn build_daemon_uninstall_doc_macos() {
+        let payload = DaemonUninstallOutput {
+            platform: "macos".to_string(),
+            service: "com.cfgd.daemon".to_string(),
+            removed: true,
+        };
+        let (printer, cap) = Printer::for_test_doc();
+        let doc = build_daemon_uninstall_doc(&payload);
+        printer.emit(doc);
+        let human = cap.human();
+        assert!(
+            human.contains("launchctl"),
+            "expected launchctl in output, got: {human}"
+        );
+        let json = cap.json().expect("doc must carry JSON payload");
+        assert_eq!(json["platform"], "macos");
+    }
+
+    #[test]
+    fn build_daemon_uninstall_doc_windows() {
+        let payload = DaemonUninstallOutput {
+            platform: "windows".to_string(),
+            service: "cfgd".to_string(),
+            removed: true,
+        };
+        let (printer, cap) = Printer::for_test_doc();
+        let doc = build_daemon_uninstall_doc(&payload);
+        printer.emit(doc);
+        let human = cap.human();
+        assert!(
+            human.contains("Windows Service"),
+            "expected Windows Service in output, got: {human}"
+        );
+        let json = cap.json().expect("doc must carry JSON payload");
+        assert_eq!(json["platform"], "windows");
+    }
+
+    #[test]
+    fn daemon_install_output_serde_roundtrip_without_event_log() {
+        let original = DaemonInstallOutput {
+            platform: "linux".to_string(),
+            service: "cfgd.service".to_string(),
+            path: "~/.config/systemd/user/cfgd.service".to_string(),
+            started: false,
+            windows_event_log: None,
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        assert!(
+            json.contains("\"platform\""),
+            "camelCase key missing: {json}"
+        );
+        assert!(
+            json.contains("\"service\""),
+            "camelCase key missing: {json}"
+        );
+        assert!(
+            !json.contains("windowsEventLog"),
+            "None field must be skipped: {json}"
+        );
+    }
+
+    #[test]
+    fn daemon_install_output_serde_roundtrip_with_event_log() {
+        let original = DaemonInstallOutput {
+            platform: "windows".to_string(),
+            service: "cfgd".to_string(),
+            path: "%LOCALAPPDATA%\\cfgd\\daemon.log".to_string(),
+            started: true,
+            windows_event_log: Some(true),
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        assert!(
+            json.contains("\"windowsEventLog\""),
+            "windowsEventLog key missing: {json}"
+        );
+        assert!(json.contains("true"), "value missing: {json}");
+    }
+
+    #[test]
+    fn daemon_uninstall_output_serde_roundtrip() {
+        let original = DaemonUninstallOutput {
+            platform: "linux".to_string(),
+            service: "cfgd.service".to_string(),
+            removed: true,
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        assert!(
+            json.contains("\"platform\""),
+            "camelCase key missing: {json}"
+        );
+        assert!(
+            json.contains("\"service\""),
+            "camelCase key missing: {json}"
+        );
+        assert!(
+            json.contains("\"removed\""),
+            "camelCase key missing: {json}"
+        );
+    }
+
+    #[test]
+    fn cmd_daemon_status_returns_ok_when_no_daemon() {
+        let printer = make_printer();
+        let result = cmd_daemon_status(&printer);
+        result.expect("cmd_daemon_status must succeed when daemon is not running");
+    }
+
+    #[test]
+    fn cmd_daemon_dispatches_status() {
+        let cli = make_cli();
+        let printer = make_printer();
+        let result = cmd_daemon(&cli, &printer, Some(&DaemonCommand::Status));
+        result.expect("daemon status dispatch must succeed");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cmd_daemon_install_writes_unit_file() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let cli = make_cli();
+        let printer = make_printer();
+        let result = cmd_daemon(&cli, &printer, Some(&DaemonCommand::Install));
+        result.expect("install must succeed with user-level systemd dir");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cmd_daemon_uninstall_ok_when_no_service() {
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let cli = make_cli();
+        let printer = make_printer();
+        let result = cmd_daemon(&cli, &printer, Some(&DaemonCommand::Uninstall));
+        result.expect("uninstall must succeed when service file is absent");
+    }
+}
