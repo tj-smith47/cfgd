@@ -3173,3 +3173,561 @@ fn scan_target_io_error_when_path_is_a_directory() {
         "expected directory-related error, got: {msg}"
     );
 }
+
+// -----------------------------------------------------------------------
+// Non-local origin, copy-source-is-directory, secret refs,
+// ensure_target_writable parent-is-file
+// -----------------------------------------------------------------------
+
+#[test]
+fn apply_create_non_local_origin_writes_file() {
+    // Exercises the `file_origin = Some(origin.as_str())` arm (apply.rs ~140)
+    // when origin != "local".  Uses a plain (non-template) file so the Copy
+    // path is taken and no source-context lookup is required.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let source = dir.path().join("src.txt");
+    fs::write(&source, "content from remote source").unwrap();
+    let target = dir.path().join("out").join("dst.txt");
+
+    let actions = vec![FileAction::Create {
+        source: source.clone(),
+        target: target.clone(),
+        origin: "remote-source".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Copy,
+        source_hash: None,
+    }];
+
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
+        .expect("apply with non-local origin must succeed");
+
+    assert_eq!(
+        fs::read_to_string(&target).unwrap(),
+        "content from remote source"
+    );
+}
+
+#[test]
+fn apply_update_non_local_origin_writes_file() {
+    // Same coverage target as the create variant above, but via the Update arm.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let source = dir.path().join("src.txt");
+    fs::write(&source, "updated remote content").unwrap();
+    let target = dir.path().join("dst.txt");
+    fs::write(&target, "old content").unwrap();
+
+    let actions = vec![FileAction::Update {
+        source: source.clone(),
+        target: target.clone(),
+        origin: "team-source".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Copy,
+        source_hash: None,
+        diff: String::new(),
+    }];
+
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
+        .expect("apply Update with non-local origin must succeed");
+
+    assert_eq!(
+        fs::read_to_string(&target).unwrap(),
+        "updated remote content"
+    );
+}
+
+#[test]
+fn apply_create_copy_with_source_directory_returns_io_error() {
+    // Exercises the `fs::read_to_string` error closure (apply.rs ~177-179):
+    // when the source path is a directory (not a .tera template), read_to_string
+    // returns "Is a directory" and the error is wrapped in FileError::Io.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let source_dir = dir.path().join("not-a-file");
+    fs::create_dir(&source_dir).unwrap();
+    let target = dir.path().join("out").join("dst.txt");
+
+    let actions = vec![FileAction::Create {
+        source: source_dir.clone(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Copy,
+        source_hash: None,
+    }];
+
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let err =
+        <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
+            .expect_err("applying Create with a directory as source must fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not-a-file") || msg.contains("directory") || msg.contains("Is a directory"),
+        "expected IO error mentioning the path, got: {msg}"
+    );
+}
+
+#[test]
+fn apply_update_copy_with_source_directory_returns_io_error() {
+    // Same as the Create variant above but via the Update arm, ensuring
+    // the same error closure fires for both action kinds.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let source_dir = dir.path().join("src-dir");
+    fs::create_dir(&source_dir).unwrap();
+    let target = dir.path().join("dst.txt");
+    fs::write(&target, "old").unwrap();
+
+    let actions = vec![FileAction::Update {
+        source: source_dir.clone(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Copy,
+        source_hash: None,
+        diff: String::new(),
+    }];
+
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let err =
+        <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
+            .expect_err("applying Update with a directory as source must fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("src-dir") || msg.contains("directory") || msg.contains("Is a directory"),
+        "expected IO error mentioning the path, got: {msg}"
+    );
+}
+
+#[test]
+fn apply_create_with_secret_ref_resolved_by_provider() {
+    // Exercises the `content.contains("${secret:")` branch (apply.rs ~199-206).
+    // A mock SecretProvider resolves the inline secret reference so the final
+    // file contains the plaintext value.
+    use cfgd_core::errors::Result as CfgdResult;
+    use cfgd_core::providers::SecretProvider;
+    use secrecy::SecretString;
+
+    struct MockProvider {
+        secret: String,
+    }
+    impl SecretProvider for MockProvider {
+        fn name(&self) -> &str {
+            "1password"
+        }
+        fn is_available(&self) -> bool {
+            true
+        }
+        fn resolve(&self, _reference: &str) -> CfgdResult<SecretString> {
+            Ok(SecretString::from(self.secret.clone()))
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let mut fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+    fm.set_secret_providers(
+        None,
+        vec![Box::new(MockProvider {
+            secret: "s3cr3t_value".to_string(),
+        })],
+    );
+
+    let source = dir.path().join("template.txt");
+    fs::write(&source, "token=${secret:1password://Vault/Item/Field}").unwrap();
+    let target = dir.path().join("out").join("config.txt");
+
+    let actions = vec![FileAction::Create {
+        source: source.clone(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Copy,
+        source_hash: None,
+    }];
+
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
+        .expect("apply with secret ref must succeed");
+
+    assert_eq!(
+        fs::read_to_string(&target).unwrap(),
+        "token=s3cr3t_value",
+        "secret ref must be resolved in the output file"
+    );
+}
+
+#[test]
+fn ensure_target_writable_errors_when_parent_component_is_a_file() {
+    // Exercises `fs::create_dir_all` error (apply.rs ~306-308): when an
+    // intermediate path component is a regular file, create_dir_all cannot
+    // create the directory and returns an error.
+    let dir = tempfile::tempdir().unwrap();
+    let blocking_file = dir.path().join("not-a-dir");
+    fs::write(&blocking_file, "i am a file").unwrap();
+
+    // Target path whose parent requires treating `not-a-dir` as a directory.
+    let target = blocking_file.join("child.txt");
+
+    let err = ensure_target_writable(&target)
+        .expect_err("create_dir_all must fail when an intermediate path component is a file");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not-a-dir") || msg.contains("Not a directory") || msg.contains("IO error"),
+        "expected create_dir_all IO error, got: {msg}"
+    );
+}
+
+#[test]
+fn apply_create_with_update_action_source_hash_present() {
+    // Exercises the `FileAction::Update { source_hash, .. }` arm of the
+    // expected_hash extraction (apply.rs ~184-185) when source_hash is Some
+    // and the content matches — TOCTOU check passes, file is written.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let body = "update toctou content";
+    let source = dir.path().join("src.txt");
+    fs::write(&source, body).unwrap();
+    let target = dir.path().join("dst.txt");
+    fs::write(&target, "old content").unwrap();
+
+    let actions = vec![FileAction::Update {
+        source: source.clone(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Copy,
+        source_hash: Some(cfgd_core::sha256_hex(body.as_bytes())),
+        diff: String::new(),
+    }];
+
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
+        .expect("apply Update with matching source_hash must succeed");
+
+    assert_eq!(
+        fs::read_to_string(&target).unwrap(),
+        body,
+        "target must contain updated content"
+    );
+}
+
+#[test]
+fn apply_update_with_stale_source_hash_returns_source_changed() {
+    // Exercises the `FileAction::Update { source_hash, .. }` stale-hash path
+    // (apply.rs ~184-195): when source_hash is Some but doesn't match the
+    // current content, SourceChanged is returned.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let source = dir.path().join("src.txt");
+    fs::write(&source, "current content").unwrap();
+    let target = dir.path().join("dst.txt");
+    fs::write(&target, "old content").unwrap();
+
+    let actions = vec![FileAction::Update {
+        source: source.clone(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Copy,
+        source_hash: Some(cfgd_core::sha256_hex(b"stale content from plan time")),
+        diff: String::new(),
+    }];
+
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let err =
+        <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
+            .expect_err("stale source_hash in Update must return SourceChanged");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("source") && (msg.contains("changed") || msg.contains("modified")),
+        "expected SourceChanged-style error for Update, got: {msg}"
+    );
+}
+
+#[test]
+fn scan_source_multiple_layers_second_wins_for_same_relative_path() {
+    // Exercises scan_source with two layers where both contain the same
+    // relative filename: the second layer's entry must overwrite the first
+    // because BTreeMap::insert replaces on duplicate key.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let layer1_root = dir.path().join("layer1");
+    let layer2_root = dir.path().join("layer2");
+    fs::create_dir_all(&layer1_root).unwrap();
+    fs::create_dir_all(&layer2_root).unwrap();
+
+    fs::write(layer1_root.join("common.txt"), "from layer1").unwrap();
+    fs::write(layer2_root.join("common.txt"), "from layer2").unwrap();
+    fs::write(layer1_root.join("only-in-layer1.txt"), "unique").unwrap();
+
+    let layers = vec![
+        FileLayer {
+            source_dir: layer1_root.clone(),
+            origin_source: "layer1".to_string(),
+            priority: 100,
+        },
+        FileLayer {
+            source_dir: layer2_root.clone(),
+            origin_source: "layer2".to_string(),
+            priority: 200,
+        },
+    ];
+
+    let tree =
+        <CfgdFileManager as cfgd_core::providers::FileManager>::scan_source(&fm, &layers).unwrap();
+
+    assert_eq!(
+        tree.files.len(),
+        2,
+        "common.txt should be deduplicated; only-in-layer1.txt is unique"
+    );
+    let common = tree
+        .files
+        .get(std::path::Path::new("common.txt"))
+        .expect("common.txt must be in tree");
+    assert_eq!(
+        common.origin_source, "layer2",
+        "second layer must overwrite first for the same relative path"
+    );
+    assert_eq!(
+        common.content_hash,
+        cfgd_core::sha256_hex(b"from layer2"),
+        "content hash must match layer2's content"
+    );
+}
+
+#[test]
+fn scan_source_empty_layers_returns_empty_tree() {
+    // Exercises scan_source with no layers at all — the loop body is never
+    // entered and an empty FileTree is returned immediately.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let tree =
+        <CfgdFileManager as cfgd_core::providers::FileManager>::scan_source(&fm, &[]).unwrap();
+    assert!(
+        tree.files.is_empty(),
+        "empty layer list must yield empty tree"
+    );
+}
+
+#[test]
+fn diff_permissions_changed_ignored_when_either_side_is_none() {
+    // Exercises the `if let (Some(desired), Some(current))` guard (apply.rs ~81-83):
+    // when one or both sides have no Unix permissions (None), the diff falls
+    // through to the Unchanged arm rather than emitting PermissionsChanged.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let target_path = std::path::PathBuf::from("/home/user/.cfg");
+
+    let mut source = FileTree {
+        files: BTreeMap::new(),
+    };
+    // permissions: None (Windows-style entry)
+    source.files.insert(
+        target_path.clone(),
+        make_entry("samehash", None, "/opt/cfgd/files/.cfg"),
+    );
+
+    let mut target = FileTree {
+        files: BTreeMap::new(),
+    };
+    // Different None permissions — hashes match so we enter the permissions arm,
+    // but `if let (Some, Some)` fails and Unchanged is emitted.
+    target.files.insert(
+        target_path.clone(),
+        make_entry("samehash", None, &target_path.display().to_string()),
+    );
+
+    let diffs = trait_diff(&fm, &source, &target).unwrap();
+    assert_eq!(diffs.len(), 1);
+    assert!(
+        matches!(&diffs[0].kind, FileDiffKind::Unchanged),
+        "None permissions on both sides must yield Unchanged, got: {:?}",
+        diffs[0].kind
+    );
+}
+
+#[test]
+fn apply_create_when_target_is_directory_returns_io_error() {
+    // Exercises the `fs::remove_file` error closure (apply.rs ~152-154):
+    // when the target path exists as a directory, `remove_file` fails with
+    // EISDIR (Is a directory), which wraps into FileError::Io.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let source = dir.path().join("src.txt");
+    fs::write(&source, "content").unwrap();
+    let target = dir.path().join("target-dir");
+    fs::create_dir(&target).unwrap();
+
+    let actions = vec![FileAction::Create {
+        source: source.clone(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Copy,
+        source_hash: None,
+    }];
+
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let err =
+        <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
+            .expect_err("Create with a directory at the target path must fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("target-dir") || msg.contains("directory") || msg.contains("Is a directory"),
+        "expected EISDIR error for directory target, got: {msg}"
+    );
+}
+
+#[test]
+fn apply_delete_when_target_is_directory_returns_io_error() {
+    // Exercises the `fs::remove_file` error closure in the Delete arm
+    // (apply.rs ~221-223): `remove_file` on a directory fails with EISDIR.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let target = dir.path().join("not-a-file-dir");
+    fs::create_dir(&target).unwrap();
+
+    let actions = vec![FileAction::Delete {
+        target: target.clone(),
+        origin: "local".to_string(),
+    }];
+
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let err =
+        <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
+            .expect_err("Delete with a directory at the target path must fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not-a-file-dir")
+            || msg.contains("directory")
+            || msg.contains("Is a directory"),
+        "expected EISDIR error when deleting a directory, got: {msg}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn apply_create_symlink_with_too_long_filename_returns_io_error() {
+    // Exercises the `create_symlink` error closure (apply.rs ~160-164):
+    // a filename component that exceeds NAME_MAX (255 bytes on Linux) causes
+    // the underlying `symlink` syscall to return ENAMETOOLONG.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let source = dir.path().join("src.txt");
+    fs::write(&source, "data").unwrap();
+    let long_name = "x".repeat(256);
+    let target = dir.path().join(long_name);
+
+    let actions = vec![FileAction::Create {
+        source: source.clone(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Symlink,
+        source_hash: None,
+    }];
+
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let err =
+        <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
+            .expect_err("symlink creation with name > NAME_MAX must fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("too long")
+            || msg.contains("ENAMETOOLONG")
+            || msg.contains("File name too long"),
+        "expected ENAMETOOLONG error, got: {msg}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn apply_create_hardlink_with_too_long_filename_returns_io_error() {
+    // Exercises the `hard_link` error closure (apply.rs ~168-170):
+    // a filename component exceeding NAME_MAX returns ENAMETOOLONG.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let source = dir.path().join("orig.txt");
+    fs::write(&source, "data").unwrap();
+    let long_name = "y".repeat(256);
+    let target = dir.path().join(long_name);
+
+    let actions = vec![FileAction::Create {
+        source: source.clone(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Hardlink,
+        source_hash: None,
+    }];
+
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let err =
+        <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
+            .expect_err("hard_link with name > NAME_MAX must fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("too long")
+            || msg.contains("ENAMETOOLONG")
+            || msg.contains("File name too long"),
+        "expected ENAMETOOLONG error, got: {msg}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn apply_create_copy_with_too_long_target_filename_returns_io_error() {
+    // Exercises the `atomic_write` error closure (apply.rs ~210-214):
+    // atomic_write creates a temp file next to the target, then renames it.
+    // A filename component exceeding NAME_MAX fails at the temp-file creation
+    // step, returning ENAMETOOLONG wrapped as FileError::Io.
+    let dir = tempfile::tempdir().unwrap();
+    let resolved = make_resolved_profile(vec![], FilesSpec::default());
+    let fm = CfgdFileManager::new(dir.path(), &resolved).unwrap();
+
+    let source = dir.path().join("src.txt");
+    fs::write(&source, "content").unwrap();
+    let long_name = "z".repeat(256);
+    let target = dir.path().join(long_name);
+
+    let actions = vec![FileAction::Create {
+        source: source.clone(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: cfgd_core::config::FileStrategy::Copy,
+        source_hash: None,
+    }];
+
+    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let err =
+        <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
+            .expect_err("atomic_write with name > NAME_MAX must fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("too long")
+            || msg.contains("ENAMETOOLONG")
+            || msg.contains("File name too long"),
+        "expected ENAMETOOLONG error for atomic_write, got: {msg}"
+    );
+}
