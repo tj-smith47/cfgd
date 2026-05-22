@@ -17116,14 +17116,14 @@ fn execute_module_export_dispatch() {
     let h = CliTestHarness::builder()
         .module("test-mod", SIMPLE_MODULE_YAML)
         .build();
+    let out = tempfile::tempdir().expect("tempdir");
     let cli = h.cli_with_command(Command::Module {
         command: ModuleCommand::Export {
             name: "test-mod".to_string(),
             as_format: ExportFormat::Devcontainer,
-            dir: None,
+            dir: Some(out.path().to_string_lossy().into_owned()),
         },
     });
-    // Export writes to cwd; may fail on filesystem issues but dispatch is exercised.
     let result = super::execute(&cli, h.printer());
     let _ = result;
 }
