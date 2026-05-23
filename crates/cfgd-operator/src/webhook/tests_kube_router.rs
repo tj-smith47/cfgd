@@ -94,6 +94,54 @@ fn ccp_object(
     })
 }
 
+/// Build a ClusterConfigPolicy with explicit debugModules and a
+/// `match_labels` namespaceSelector.
+fn ccp_object_with_debug_modules(
+    name: &str,
+    required_modules: &[&str],
+    debug_modules: &[&str],
+    match_labels: serde_json::Value,
+) -> serde_json::Value {
+    let req: Vec<_> = required_modules
+        .iter()
+        .map(|n| json!({ "name": n, "required": true }))
+        .collect();
+    let dbg: Vec<_> = debug_modules.iter().map(|n| json!({ "name": n })).collect();
+    json!({
+        "apiVersion": "cfgd.io/v1alpha1",
+        "kind": "ClusterConfigPolicy",
+        "metadata": { "name": name, "uid": format!("uid-{name}"), "generation": 1 },
+        "spec": {
+            "namespaceSelector": { "matchLabels": match_labels },
+            "requiredModules": req,
+            "debugModules": dbg,
+            "security": {
+                "trustedRegistries": [],
+                "allowUnsigned": true,
+            },
+        },
+    })
+}
+
+/// Build a namespaced ConfigPolicy with required + debug modules.
+fn cp_object(name: &str, required_modules: &[&str], debug_modules: &[&str]) -> serde_json::Value {
+    let req: Vec<_> = required_modules
+        .iter()
+        .map(|n| json!({ "name": n, "required": true }))
+        .collect();
+    let dbg: Vec<_> = debug_modules.iter().map(|n| json!({ "name": n })).collect();
+    json!({
+        "apiVersion": "cfgd.io/v1alpha1",
+        "kind": "ConfigPolicy",
+        "metadata": { "name": name, "namespace": NS, "uid": format!("uid-{name}"), "generation": 1 },
+        "spec": {
+            "requiredModules": req,
+            "debugModules": dbg,
+            "packages": [],
+        },
+    })
+}
+
 fn module_object(name: &str, oci_artifact: Option<&str>) -> serde_json::Value {
     let mut spec = json!({
         "packages": [],
@@ -540,4 +588,282 @@ async fn mutate_pods_proceeds_without_policy_modules_when_cp_list_returns_5xx() 
         3,
         "all three policy-collection calls observed even after CP LIST 5xx"
     );
+}
+
+// -----------------------------------------------------------------------
+// validate-module — structural validation denial through the live router
+// (exercises the handle_validate_module deny arm + metric)
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn validate_module_router_denies_invalid_spec_before_policy_call() {
+    // Structural validation fires before enforce_module_policy — when the
+    // spec itself is invalid (empty package name), the handler must deny
+    // and record the "denied" metric without making any kube calls.
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![]);
+
+    let (router, metrics) = test_webhook_router_with_client(ctx.client.clone());
+
+    let response = router
+        .oneshot(post(
+            "/validate-module",
+            module_admission_review(json!({
+                "packages": [{"name": ""}],
+            })),
+        ))
+        .await
+        .expect("router responds");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let review = parse_response(response).await;
+    let resp = review.response.expect("response present");
+    assert!(
+        !resp.allowed,
+        "empty package name must be denied by structural validation"
+    );
+    assert!(
+        resp.result.message.contains("packages"),
+        "denial must reference packages: {}",
+        resp.result.message
+    );
+
+    let denied = metrics
+        .webhook_requests_total
+        .get_or_create(&crate::metrics::WebhookLabels {
+            operation: "validate_module".to_string(),
+            result: "denied".to_string(),
+        })
+        .get();
+    assert_eq!(
+        denied, 1,
+        "structural-validation denial must record denied metric"
+    );
+
+    let report = harness.finish().await;
+    assert!(
+        report.captured.is_empty(),
+        "structural validation must short-circuit before any kube call"
+    );
+}
+
+// -----------------------------------------------------------------------
+// mutate-pods — required modules pulled from namespaced ConfigPolicy
+// (exercises collect_policy_modules ConfigPolicy items branch +
+// "policy.required added to all_modules" loop)
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn mutate_pods_uses_required_modules_from_namespaced_config_policy() {
+    let cp = cp_object("cp-app", &["sidecar"], &[]);
+    let module = module_object("sidecar", Some("ghcr.io/myorg/sidecar:v1"));
+
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list(config_policies_path(NS)).returning_json(&cp_list(vec![cp])),
+        ExpectedCall::get(namespace_path(NS)).returning_json(&namespace_object(NS, json!({}))),
+        ExpectedCall::list(cluster_config_policies_path()).returning_json(&ccp_list(vec![])),
+        ExpectedCall::get(module_path("sidecar")).returning_json(&module),
+    ]);
+
+    let (router, _metrics) = test_webhook_router_with_client(ctx.client.clone());
+
+    let response = router
+        .oneshot(post("/mutate-pods", pod_admission_review(json!({}))))
+        .await
+        .expect("router responds");
+    let review = parse_response(response).await;
+    let resp = review.response.expect("response present");
+    assert!(resp.allowed);
+    let patch = resp
+        .patch
+        .expect("namespaced CP-required module must produce a patch");
+    let patch_str = String::from_utf8(patch).expect("patch is utf-8");
+    assert!(
+        patch_str.contains("cfgd-module-sidecar"),
+        "patch must add namespaced-CP-required module volume: {patch_str}"
+    );
+
+    let _ = harness.finish().await;
+}
+
+// -----------------------------------------------------------------------
+// mutate-pods — debug modules from CCP override Module.mountPolicy
+// (exercises lines: CCP debug_modules add to policy.debug, policy.debug
+// loop adds to all_modules, and the policy.debug.contains() branch that
+// flips spec.mount_policy to Debug)
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn mutate_pods_ccp_debug_modules_emit_csi_volume_without_volume_mount() {
+    // CCP requires no modules but lists "tcpdump" as a debug module. The
+    // Module CRD says Always, but the policy.debug branch must flip it to
+    // Debug — so the patch contains the CSI volume but no volumeMount
+    // entry referencing it on the declared container.
+    let ccp = ccp_object_with_debug_modules("ccp-debug", &[], &["tcpdump"], json!({}));
+    // Module CRD declares mountPolicy: Always; policy.debug override
+    // must change it.
+    let module = module_object("tcpdump", Some("ghcr.io/myorg/tcpdump:v1"));
+
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list(config_policies_path(NS)).returning_json(&cp_list(vec![])),
+        ExpectedCall::get(namespace_path(NS)).returning_json(&namespace_object(NS, json!({}))),
+        ExpectedCall::list(cluster_config_policies_path()).returning_json(&ccp_list(vec![ccp])),
+        ExpectedCall::get(module_path("tcpdump")).returning_json(&module),
+    ]);
+
+    let (router, _metrics) = test_webhook_router_with_client(ctx.client.clone());
+
+    let response = router
+        .oneshot(post("/mutate-pods", pod_admission_review(json!({}))))
+        .await
+        .expect("router responds");
+    let review = parse_response(response).await;
+    let resp = review.response.expect("response present");
+    assert!(resp.allowed);
+    let patch = resp.patch.expect("debug module must still produce a patch");
+    let patch_str = String::from_utf8(patch).expect("patch is utf-8");
+    assert!(
+        patch_str.contains("cfgd-module-tcpdump"),
+        "debug module must add CSI volume: {patch_str}"
+    );
+    // Debug modules must NOT inject a volumeMount on declared containers.
+    // The patch will not contain any volumeMount op referencing tcpdump's
+    // mountPath.
+    assert!(
+        !patch_str.contains("\"mountPath\":\"/cfgd-modules/tcpdump\""),
+        "debug module must NOT add volumeMount: {patch_str}"
+    );
+
+    let _ = harness.finish().await;
+}
+
+// -----------------------------------------------------------------------
+// mutate-pods — CCP that doesn't match namespace labels is skipped
+// (exercises the `if !matches_selector { continue; }` branch in
+// collect_policy_modules)
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn mutate_pods_ccp_with_non_matching_namespace_selector_is_skipped() {
+    // CCP requires "logger" but its namespaceSelector only matches
+    // namespaces labelled env=prod. The target namespace has env=dev,
+    // so the CCP must be skipped and the pod allowed without a patch.
+    let ccp = ccp_object_with_debug_modules("ccp-prod", &["logger"], &[], json!({ "env": "prod" }));
+
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list(config_policies_path(NS)).returning_json(&cp_list(vec![])),
+        ExpectedCall::get(namespace_path(NS))
+            .returning_json(&namespace_object(NS, json!({ "env": "dev" }))),
+        ExpectedCall::list(cluster_config_policies_path()).returning_json(&ccp_list(vec![ccp])),
+    ]);
+
+    let (router, _metrics) = test_webhook_router_with_client(ctx.client.clone());
+
+    let response = router
+        .oneshot(post("/mutate-pods", pod_admission_review(json!({}))))
+        .await
+        .expect("router responds");
+    let review = parse_response(response).await;
+    let resp = review.response.expect("response present");
+    assert!(
+        resp.allowed,
+        "selector-skipped CCP must allow the pod without injection"
+    );
+    assert!(
+        resp.patch.is_none(),
+        "selector-skipped CCP must not inject any module: patch={:?}",
+        resp.patch
+    );
+
+    let _ = harness.finish().await;
+}
+
+// -----------------------------------------------------------------------
+// mutate-pods — namespaced ConfigPolicy debug_modules collected and
+// applied (exercises the ConfigPolicy debug_modules push loop + the
+// MountPolicy::Debug override on the Module CRD)
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn mutate_pods_namespaced_cp_debug_modules_override_module_mount_policy() {
+    let cp = cp_object("cp-dbg", &[], &["strace"]);
+    // Module CRD declares Always, policy.debug must override.
+    let module = module_object("strace", Some("ghcr.io/myorg/strace:v1"));
+
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list(config_policies_path(NS)).returning_json(&cp_list(vec![cp])),
+        ExpectedCall::get(namespace_path(NS)).returning_json(&namespace_object(NS, json!({}))),
+        ExpectedCall::list(cluster_config_policies_path()).returning_json(&ccp_list(vec![])),
+        ExpectedCall::get(module_path("strace")).returning_json(&module),
+    ]);
+
+    let (router, _metrics) = test_webhook_router_with_client(ctx.client.clone());
+
+    let response = router
+        .oneshot(post("/mutate-pods", pod_admission_review(json!({}))))
+        .await
+        .expect("router responds");
+    let review = parse_response(response).await;
+    let resp = review.response.expect("response present");
+    assert!(resp.allowed);
+    let patch = resp.patch.expect("patch must contain CSI volume");
+    let patch_str = String::from_utf8(patch).expect("patch is utf-8");
+    assert!(
+        patch_str.contains("cfgd-module-strace"),
+        "patch must add CSI volume for namespaced-CP debug module: {patch_str}"
+    );
+    assert!(
+        !patch_str.contains("\"mountPath\":\"/cfgd-modules/strace\""),
+        "namespaced-CP debug module must NOT add volumeMount: {patch_str}"
+    );
+
+    let _ = harness.finish().await;
+}
+
+// -----------------------------------------------------------------------
+// mutate-pods — annotation already requests a module, then CCP debug
+// pushes it as debug. The annotation arrives first → the policy.debug
+// loop's `iter().any(...)` dedup keeps the annotation entry, but the
+// policy.debug.contains() check still flips mount_policy to Debug on
+// the resolved spec. The patch should still emit volume-only (no mount).
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn mutate_pods_annotation_module_listed_as_ccp_debug_is_flipped_to_debug_mount() {
+    let ccp = ccp_object_with_debug_modules("ccp-dbg", &[], &["editor"], json!({}));
+    let module = module_object("editor", Some("ghcr.io/myorg/editor:v1"));
+
+    let (ctx, _registry, harness) = MockKubeHarness::new(vec![
+        ExpectedCall::list(config_policies_path(NS)).returning_json(&cp_list(vec![])),
+        ExpectedCall::get(namespace_path(NS)).returning_json(&namespace_object(NS, json!({}))),
+        ExpectedCall::list(cluster_config_policies_path()).returning_json(&ccp_list(vec![ccp])),
+        ExpectedCall::get(module_path("editor")).returning_json(&module),
+    ]);
+
+    let (router, _metrics) = test_webhook_router_with_client(ctx.client.clone());
+
+    let response = router
+        .oneshot(post(
+            "/mutate-pods",
+            pod_admission_review(json!({
+                cfgd_core::MODULES_ANNOTATION: "editor:v1",
+            })),
+        ))
+        .await
+        .expect("router responds");
+    let review = parse_response(response).await;
+    let resp = review.response.expect("response present");
+    assert!(resp.allowed);
+    let patch = resp.patch.expect("patch must be present");
+    let patch_str = String::from_utf8(patch).expect("patch is utf-8");
+    assert!(
+        patch_str.contains("cfgd-module-editor"),
+        "annotation module must produce CSI volume: {patch_str}"
+    );
+    // policy.debug override → no volumeMount for the editor.
+    assert!(
+        !patch_str.contains("\"mountPath\":\"/cfgd-modules/editor\""),
+        "policy.debug override must suppress volumeMount even for annotation-listed module: {patch_str}"
+    );
+
+    let _ = harness.finish().await;
 }

@@ -1881,3 +1881,62 @@ fn build_patches_default_post_apply_script_path() {
         "should use the specified postApply script path"
     );
 }
+
+// --- load_certs / load_private_key — parse-error closure paths ---
+
+#[test]
+fn load_certs_malformed_pem_block_returns_parse_error() {
+    // A truncated CERTIFICATE block (missing the END marker) trips
+    // rustls_pemfile's parser mid-stream. The map_err closure must
+    // surface a "failed to parse certs from <path>" error including
+    // the file path so operators can find the offending file.
+    let dir = tempfile::tempdir().unwrap();
+    let cert_path = dir.path().join("malformed.crt");
+    std::fs::write(
+        &cert_path,
+        "-----BEGIN CERTIFICATE-----\nnot-actually-base64-data-here\n",
+    )
+    .unwrap();
+    let result = load_certs(&cert_path);
+    assert!(
+        result.is_err(),
+        "truncated PEM block must surface as parse error"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("failed to parse certs"),
+        "error must call out 'failed to parse certs': {err}"
+    );
+    assert!(
+        err.contains("malformed.crt"),
+        "error must include the offending path: {err}"
+    );
+}
+
+#[test]
+fn load_private_key_malformed_pem_block_returns_parse_error() {
+    // Same shape as the cert parse-error test — a truncated key block
+    // trips rustls_pemfile::private_key's parser, which the map_err
+    // closure wraps as "failed to parse key from <path>".
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = dir.path().join("malformed.key");
+    std::fs::write(
+        &key_path,
+        "-----BEGIN PRIVATE KEY-----\nnot-actually-base64-data-here\n",
+    )
+    .unwrap();
+    let result = load_private_key(&key_path);
+    assert!(
+        result.is_err(),
+        "truncated key PEM block must surface as parse error"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("failed to parse key") || err.contains("no private key"),
+        "error must call out either parse failure or no-key: {err}"
+    );
+    assert!(
+        err.contains("malformed.key"),
+        "error must include the offending path: {err}"
+    );
+}

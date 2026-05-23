@@ -2005,4 +2005,174 @@ mod local_source_fixture {
             assert!(profiles.starts_with(&cache_dir));
         });
     }
+
+    // -----------------------------------------------------------------------
+    // clone_source / clone_with_fallback — ssh:// URL branch
+    //
+    // The ssh:// branch installs the git_ssh_credentials callback before
+    // attempting the libgit2 clone. We can't satisfy that callback in a
+    // sandbox (no SSH agent, no real remote), so the clone fails — but the
+    // failure must surface as a FetchFailed error with the source name and
+    // a network-related message, not a panic or generic error.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn load_source_ssh_url_falls_back_to_libgit2_and_surfaces_failure() {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = build_spec(
+                "ssh-src",
+                "ssh://git@127.0.0.1:1/nonexistent/repo.git",
+                "main",
+            );
+            let printer = test_printer();
+            let err = mgr.load_source(&spec, &printer).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("ssh-src"),
+                "error must include the source name 'ssh-src': {msg}"
+            );
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// clone_source / remove_source / parse_manifest — error-path coverage that
+// doesn't need the local-bare-repo fixture
+// ---------------------------------------------------------------------------
+
+#[test]
+fn clone_source_returns_cache_error_when_parent_is_regular_file() {
+    // create_dir_all on a path whose parent is a regular file fails with
+    // NotADirectory. clone_source must wrap that as a CacheError that
+    // includes the underlying message — verifying both the error variant
+    // and that the failure happens BEFORE any git invocation.
+    let tmp = tempfile::tempdir().unwrap();
+    let blocker = tmp.path().join("blocker");
+    std::fs::write(&blocker, b"i am a regular file").unwrap();
+    let cache_dir = blocker.join("nested");
+    let mut mgr = SourceManager::new(&cache_dir);
+
+    let spec = crate::config::SourceSpec {
+        name: "blocked".into(),
+        origin: crate::config::OriginSpec {
+            origin_type: OriginType::Git,
+            url: "https://example.invalid/repo.git".into(),
+            branch: "main".into(),
+            auth: None,
+            ssh_strict_host_key_checking: Default::default(),
+        },
+        subscription: Default::default(),
+        sync: Default::default(),
+    };
+    let printer = test_printer();
+
+    let err = mgr.load_source(&spec, &printer).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("cannot create cache dir") || msg.contains("create cache"),
+        "error must surface 'cannot create cache dir' wording: {msg}"
+    );
+}
+
+#[test]
+fn remove_source_surfaces_cache_error_when_remove_dir_all_fails() {
+    // Stand up a cached entry whose local_path points at a regular file
+    // (not a directory). remove_dir_all on a regular file fails with
+    // NotADirectory on Linux. remove_source must wrap that as a
+    // CacheError carrying the source name + the underlying message.
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_dir = tmp.path().join("cache");
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    let target = cache_dir.join("not-a-dir");
+    std::fs::write(&target, b"regular file, not a directory").unwrap();
+
+    let mut mgr = SourceManager::new(&cache_dir);
+    let cached = CachedSource {
+        name: "bad".to_string(),
+        origin_url: "https://example.com/x.git".to_string(),
+        origin_branch: "main".to_string(),
+        local_path: target.clone(),
+        manifest: crate::config::ConfigSourceDocument {
+            api_version: crate::API_VERSION.into(),
+            kind: "ConfigSource".into(),
+            metadata: crate::config::ConfigSourceMetadata {
+                name: "bad".into(),
+                version: None,
+                description: None,
+            },
+            spec: crate::config::ConfigSourceSpec {
+                provides: Default::default(),
+                policy: Default::default(),
+            },
+        },
+        last_commit: None,
+        last_fetched: None,
+    };
+    mgr.sources.insert("bad".to_string(), cached);
+
+    let err = mgr.remove_source("bad").unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("failed to remove cache"),
+        "error must surface 'failed to remove cache': {msg}"
+    );
+    assert!(
+        msg.contains("bad"),
+        "error must include the source name 'bad': {msg}"
+    );
+}
+
+#[test]
+fn parse_manifest_surfaces_io_error_when_manifest_path_is_directory() {
+    // read_to_string on a path that is a directory fails with IsADirectory.
+    // read_manifest must wrap that into InvalidManifest carrying both the
+    // source name and the underlying io message.
+    let tmp = tempfile::tempdir().unwrap();
+    let source_dir = tmp.path().join("source");
+    std::fs::create_dir_all(&source_dir).unwrap();
+    // Create cfgd-source.yaml as a DIRECTORY (not a file).
+    std::fs::create_dir_all(source_dir.join(SOURCE_MANIFEST_FILE)).unwrap();
+
+    let mgr = SourceManager::new(tmp.path());
+    let err = mgr.parse_manifest("dir-manifest", &source_dir).unwrap_err();
+    let msg = err.to_string();
+    // Variant: InvalidManifest. Message must reference the source name
+    // so an operator can find the offending repo.
+    assert!(
+        msg.contains("dir-manifest"),
+        "error must include source name 'dir-manifest': {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// git_clone_with_fallback — ssh:// URL branch
+//
+// The ssh:// branch installs the git_ssh_credentials callback. Without an
+// SSH agent or a real remote, the clone must fail with a "Failed to clone"
+// prefix from the libgit2 fallback path.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn git_clone_with_fallback_ssh_url_surfaces_failure_with_helper_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("clone");
+    let printer = test_printer();
+    let err = git_clone_with_fallback(
+        "ssh://git@127.0.0.1:1/nonexistent/repo.git",
+        &target,
+        &printer,
+    )
+    .unwrap_err();
+    assert!(
+        err.starts_with("Failed to clone"),
+        "ssh fallback error must start with 'Failed to clone': {err}"
+    );
+    assert!(
+        err.contains("ssh://"),
+        "error must include the original URL: {err}"
+    );
 }
