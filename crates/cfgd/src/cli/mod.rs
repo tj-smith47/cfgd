@@ -948,7 +948,7 @@ pub enum AliasCommand {
         /// Alias name
         name: String,
     },
-    /// List all configured aliases
+    /// List all configured aliases (alias: ls)
     #[command(alias = "ls")]
     List,
     /// Delete an alias (alias: rm)
@@ -1697,18 +1697,22 @@ pub fn execute(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resul
             }
             ConfigCommand::Unset { key } => config_cmd::cmd_config_unset(cli, printer, key),
         },
-        Command::Alias { command } => match command {
-            AliasCommand::Set { name, command: cmd } => {
-                config_cmd::cmd_config_set(cli, printer, &format!("aliases.{name}"), cmd)
+        Command::Alias { command } => {
+            // cmd_config_* peels `spec` first before walking the dotted path, so the
+            // prefix here is `aliases.` (not `spec.aliases.`) to land at spec.aliases.<name>.
+            match command {
+                AliasCommand::Set { name, command: cmd } => {
+                    config_cmd::cmd_config_set(cli, printer, &format!("aliases.{name}"), cmd)
+                }
+                AliasCommand::Delete { name } => {
+                    config_cmd::cmd_config_unset(cli, printer, &format!("aliases.{name}"))
+                }
+                AliasCommand::Show { name } => {
+                    config_cmd::cmd_config_get(cli, printer, &format!("aliases.{name}"))
+                }
+                AliasCommand::List => alias::cmd_alias_list(cli, printer),
             }
-            AliasCommand::Delete { name } => {
-                config_cmd::cmd_config_unset(cli, printer, &format!("aliases.{name}"))
-            }
-            AliasCommand::Show { name } => {
-                config_cmd::cmd_config_get(cli, printer, &format!("aliases.{name}"))
-            }
-            AliasCommand::List => alias::cmd_alias_list(cli, printer),
-        },
+        }
         Command::Workflow { command } => match command {
             WorkflowCommand::Generate { force } => {
                 workflow::cmd_workflow_generate(cli, printer, *force)
