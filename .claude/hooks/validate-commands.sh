@@ -7,9 +7,17 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
 
 [[ -z "$COMMAND" ]] && exit 0
 
-# Block destructive filesystem operations
+# Block destructive filesystem operations EXCEPT when targeted at this repo's
+# target/ build dir — cargo build artifacts are reproducible, so allowing
+# `rm -rf target/...` keeps cleanup ergonomic. The target-path check requires
+# `target/` (or its absolute form) as the argument's prefix, so `rm -rf ..`,
+# `rm -rf /`, `rm -rf $HOME` still fail.
 if echo "$COMMAND" | grep -qE '^rm -rf|cargo clean.*--release'; then
+    if echo "$COMMAND" | grep -qE '^rm -rf (target/|/opt/repos/cfgd/target/)[^[:space:]]+[[:space:]]*$'; then
+        exit 0
+    fi
     echo "Blocked: destructive operation. Use targeted deletes instead." >&2
+    echo "  (rm -rf is allowed when the path starts with target/ or /opt/repos/cfgd/target/)" >&2
     exit 2
 fi
 
