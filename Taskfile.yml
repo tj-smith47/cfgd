@@ -98,7 +98,7 @@ tasks:
     desc: Run tests for a specific crate
     deps: [_check:tmp-headroom]
     cmds:
-      - cargo test -p {{.CLI_ARGS}}
+      - cargo test -p {{.CLI_ARGS}} --features cfgd-core/test-helpers
 
   audit:
     desc: Run project-specific code quality audit
