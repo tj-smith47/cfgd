@@ -254,6 +254,22 @@ if assert_fail; then
     pass_test "P40"
 else fail_test "P40"; fi
 
+begin_test "P40a: profile rm (alias for delete)"
+run $C profile create test-rm-alias --env RM_ALIAS=true
+if [ "$RC" -ne 0 ]; then
+    fail_test "P40a" "profile create failed (exit $RC)"
+else
+    run $C profile rm test-rm-alias --yes
+    if ! assert_ok; then
+        fail_test "P40a"
+    else
+        run $C profile list
+        if assert_ok && assert_not_contains "$OUTPUT" "test-rm-alias"; then
+            pass_test "P40a"
+        else fail_test "P40a" "profile still present after rm"; fi
+    fi
+fi
+
 # SECTION 36: profile create additional flags
 
 begin_test "P41: profile create --alias"

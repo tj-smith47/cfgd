@@ -180,6 +180,22 @@ if assert_fail; then
     pass_test "M28"
 else fail_test "M28"; fi
 
+begin_test "M28a: module rm (alias for delete)"
+run $C module create rm-alias-mod --description "rm alias test"
+if [ "$RC" -ne 0 ]; then
+    fail_test "M28a" "module create failed (exit $RC)"
+else
+    run $C module rm rm-alias-mod --yes
+    if ! assert_ok; then
+        fail_test "M28a"
+    else
+        run $C module list
+        if assert_ok && assert_not_contains "$OUTPUT" "rm-alias-mod"; then
+            pass_test "M28a"
+        else fail_test "M28a" "module still present after rm"; fi
+    fi
+fi
+
 begin_test "M29: module upgrade (no remote — should fail gracefully)"
 run $C module upgrade nvim --yes
 # No remote source for local module — expected to fail

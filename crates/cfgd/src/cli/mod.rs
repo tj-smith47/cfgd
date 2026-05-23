@@ -1020,6 +1020,7 @@ pub enum ProfileCommand {
         name: String,
     },
     /// Delete a profile
+    #[command(alias = "rm")]
     Delete {
         /// Profile name
         name: String,
@@ -1124,6 +1125,7 @@ pub enum ModuleCommand {
         name: String,
     },
     /// Delete a local module
+    #[command(alias = "rm")]
     Delete {
         /// Module name
         name: String,
