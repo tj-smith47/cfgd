@@ -701,4 +701,268 @@ mod tests {
             .to_string();
         assert_eq!(out, "\x1b[1;3mx\x1b[0m", "got: {out:?}");
     }
+
+    #[test]
+    fn from_hex_invalid_returns_plain_default() {
+        let s = ThemedStyle::from_hex("not-a-color");
+        assert!(s.rgb.is_none(), "invalid hex must not carry an rgb triple");
+        assert!(!s.attrs.has_attrs(), "invalid hex must not carry any attrs");
+    }
+
+    #[test]
+    fn from_hex_three_char_short_form_rejected() {
+        // The parser requires six hex chars; the three-char short form is
+        // not accepted and must round-trip to the default style.
+        assert!(parse_hex_rgb("#abc").is_none());
+        let s = ThemedStyle::from_hex("#abc");
+        assert!(s.rgb.is_none());
+    }
+
+    #[test]
+    fn with_attrs_preserves_italic_and_underline_through_color_swap() {
+        // `cyan()` reconstructs the style from a console color and then calls
+        // `with_attrs` to re-apply the prior attribute set. This exercises the
+        // italic + underlined branches inside `with_attrs` that the existing
+        // bold-only tests don't reach.
+        let s = ThemedStyle::plain().italic().underlined().cyan();
+        assert!(s.attrs.italic, "italic should survive color swap");
+        assert!(s.attrs.underline, "underline should survive color swap");
+        assert!(!s.attrs.bold);
+        assert!(!s.attrs.dim);
+    }
+
+    #[test]
+    fn with_attrs_preserves_dim_through_color_swap() {
+        // `red()`/`green()`/etc. all funnel through `with_attrs`; verify the
+        // `dim` branch (line 158) is reached and preserved.
+        let s = ThemedStyle::plain().dim().red();
+        assert!(s.attrs.dim, "dim attr should survive color swap");
+        assert!(!s.attrs.bold);
+    }
+
+    #[test]
+    fn with_attrs_preserves_all_attrs_through_yellow_swap() {
+        let s = ThemedStyle::plain()
+            .bold()
+            .dim()
+            .italic()
+            .underlined()
+            .yellow();
+        assert!(s.attrs.bold);
+        assert!(s.attrs.dim);
+        assert!(s.attrs.italic);
+        assert!(s.attrs.underline);
+    }
+
+    #[test]
+    fn ansi256_grayscale_low_clamps_to_pure_black() {
+        // r == g == b, with r < 8 → ANSI slot 16 (pure black).
+        assert_eq!(ansi256_from_rgb(0, 0, 0), 16);
+        assert_eq!(ansi256_from_rgb(7, 7, 7), 16);
+    }
+
+    #[test]
+    fn ansi256_grayscale_high_clamps_to_pure_white() {
+        // r == g == b, with r > 248 → ANSI slot 231 (pure white).
+        assert_eq!(ansi256_from_rgb(255, 255, 255), 231);
+        assert_eq!(ansi256_from_rgb(249, 249, 249), 231);
+    }
+
+    #[test]
+    fn ansi256_grayscale_ramp_midrange_maps_into_232_to_255() {
+        // r == g == b, with 8 <= r <= 248 → grayscale ramp 232..=255.
+        let mid = ansi256_from_rgb(128, 128, 128);
+        assert!(
+            (232..=255).contains(&mid),
+            "expected grayscale-ramp slot for #808080, got: {mid}"
+        );
+        // Edge: r == 8 lands at 232 (first ramp slot).
+        assert_eq!(ansi256_from_rgb(8, 8, 8), 232);
+        // Edge: r == 248 maps near the top of the ramp.
+        let high = ansi256_from_rgb(248, 248, 248);
+        assert!(
+            (232..=255).contains(&high),
+            "r==248 should still be in the ramp, got: {high}"
+        );
+    }
+
+    #[test]
+    fn ansi256_non_gray_lands_in_color_cube() {
+        // Color cube spans 16..=231 (16 + 6*6*6 - 1 = 231); pure red lands at
+        // the cube's max-red plane.
+        let red = ansi256_from_rgb(255, 0, 0);
+        assert_eq!(red, 16 + 36 * 5);
+        let green = ansi256_from_rgb(0, 255, 0);
+        assert_eq!(green, 16 + 6 * 5);
+        let blue = ansi256_from_rgb(0, 0, 255);
+        assert_eq!(blue, 16 + 5);
+    }
+
+    #[test]
+    fn from_config_none_yields_default_theme() {
+        let t = Theme::from_config(None);
+        assert_eq!(t.icon_ok, "✓");
+        assert!(
+            t.success.rgb.is_none(),
+            "default success uses console color"
+        );
+    }
+
+    #[test]
+    fn from_config_picks_named_preset_via_name() {
+        let cfg = crate::config::ThemeConfig {
+            name: "dracula".to_string(),
+            overrides: crate::config::ThemeOverrides::default(),
+        };
+        let t = Theme::from_config(Some(&cfg));
+        // Dracula's success is the green hex #50fa7b.
+        assert_eq!(t.success.rgb, Some((0x50, 0xfa, 0x7b)));
+    }
+
+    #[test]
+    fn from_config_unknown_preset_falls_back_to_default() {
+        let cfg = crate::config::ThemeConfig {
+            name: "no-such-preset".to_string(),
+            overrides: crate::config::ThemeOverrides::default(),
+        };
+        let t = Theme::from_config(Some(&cfg));
+        assert!(t.success.rgb.is_none(), "fallback to default → no rgb");
+    }
+
+    #[test]
+    fn from_config_style_overrides_apply_all_twelve_slots() {
+        // Each slot gets a distinct hex; verify the resolved Theme carries
+        // back the exact rgb triple for each.
+        let cfg = crate::config::ThemeConfig {
+            name: "minimal".to_string(),
+            overrides: crate::config::ThemeOverrides {
+                header: Some("#010203".into()),
+                success: Some("#040506".into()),
+                warning: Some("#070809".into()),
+                error: Some("#0a0b0c".into()),
+                info: Some("#0d0e0f".into()),
+                muted: Some("#101112".into()),
+                running: Some("#131415".into()),
+                diff_add: Some("#161718".into()),
+                diff_remove: Some("#191a1b".into()),
+                diff_context: Some("#1c1d1e".into()),
+                accent: Some("#1f2021".into()),
+                secondary: Some("#222324".into()),
+                ..Default::default()
+            },
+        };
+        let t = Theme::from_config(Some(&cfg));
+        assert_eq!(t.header.rgb, Some((0x01, 0x02, 0x03)));
+        assert_eq!(t.success.rgb, Some((0x04, 0x05, 0x06)));
+        assert_eq!(t.warning.rgb, Some((0x07, 0x08, 0x09)));
+        assert_eq!(t.error.rgb, Some((0x0a, 0x0b, 0x0c)));
+        assert_eq!(t.info.rgb, Some((0x0d, 0x0e, 0x0f)));
+        assert_eq!(t.muted.rgb, Some((0x10, 0x11, 0x12)));
+        assert_eq!(t.running.rgb, Some((0x13, 0x14, 0x15)));
+        assert_eq!(t.diff_add.rgb, Some((0x16, 0x17, 0x18)));
+        assert_eq!(t.diff_remove.rgb, Some((0x19, 0x1a, 0x1b)));
+        assert_eq!(t.diff_context.rgb, Some((0x1c, 0x1d, 0x1e)));
+        assert_eq!(t.accent.rgb, Some((0x1f, 0x20, 0x21)));
+        assert_eq!(t.secondary.rgb, Some((0x22, 0x23, 0x24)));
+    }
+
+    #[test]
+    fn from_config_style_override_preserves_preset_attrs() {
+        // Minimal's `error` slot is plain().bold(); overriding the color via
+        // apply_color must not strip the bold attr.
+        let cfg = crate::config::ThemeConfig {
+            name: "minimal".to_string(),
+            overrides: crate::config::ThemeOverrides {
+                error: Some("#abcdef".into()),
+                ..Default::default()
+            },
+        };
+        let t = Theme::from_config(Some(&cfg));
+        assert_eq!(t.error.rgb, Some((0xab, 0xcd, 0xef)));
+        assert!(
+            t.error.attrs.bold,
+            "minimal preset's error slot is bold; override must preserve it"
+        );
+    }
+
+    #[test]
+    fn from_config_icon_overrides_apply_all_seven_slots() {
+        let cfg = crate::config::ThemeConfig {
+            name: "default".to_string(),
+            overrides: crate::config::ThemeOverrides {
+                icon_ok: Some("[ok]".into()),
+                icon_warn: Some("[!]".into()),
+                icon_fail: Some("[X]".into()),
+                icon_pending: Some("[.]".into()),
+                icon_running: Some("[*]".into()),
+                icon_skipped: Some("[-]".into()),
+                icon_arrow: Some("=>".into()),
+                ..Default::default()
+            },
+        };
+        let t = Theme::from_config(Some(&cfg));
+        assert_eq!(t.icon_ok, "[ok]");
+        assert_eq!(t.icon_warn, "[!]");
+        assert_eq!(t.icon_fail, "[X]");
+        assert_eq!(t.icon_pending, "[.]");
+        assert_eq!(t.icon_running, "[*]");
+        assert_eq!(t.icon_skipped, "[-]");
+        assert_eq!(t.icon_arrow, "=>");
+    }
+
+    #[test]
+    fn from_config_invalid_hex_override_leaves_slot_unchanged() {
+        // apply_color's parse_hex_rgb returns None for malformed input; the
+        // slot stays as the preset's value, including its rgb triple.
+        let preset = Theme::from_preset("dracula");
+        let original_rgb = preset.header.rgb;
+        let cfg = crate::config::ThemeConfig {
+            name: "dracula".to_string(),
+            overrides: crate::config::ThemeOverrides {
+                header: Some("not-a-hex-string".into()),
+                ..Default::default()
+            },
+        };
+        let t = Theme::from_config(Some(&cfg));
+        assert_eq!(
+            t.header.rgb, original_rgb,
+            "invalid override must not mutate the slot"
+        );
+    }
+
+    #[test]
+    fn from_config_partial_override_only_touches_specified_slots() {
+        // Override `header` only; the rest of the dracula preset slots stay.
+        let cfg = crate::config::ThemeConfig {
+            name: "dracula".to_string(),
+            overrides: crate::config::ThemeOverrides {
+                header: Some("#112233".into()),
+                ..Default::default()
+            },
+        };
+        let t = Theme::from_config(Some(&cfg));
+        assert_eq!(t.header.rgb, Some((0x11, 0x22, 0x33)));
+        // Dracula's success stays at #50fa7b.
+        assert_eq!(t.success.rgb, Some((0x50, 0xfa, 0x7b)));
+        // And the icons stay at the default.
+        assert_eq!(t.icon_ok, "✓");
+    }
+
+    #[test]
+    fn solarized_dark_preset_has_expected_palette() {
+        let t = Theme::from_preset("solarized-dark");
+        assert_eq!(t.success.rgb, Some((0x85, 0x99, 0x00)));
+        assert_eq!(t.muted.rgb, Some((0x58, 0x6e, 0x75)));
+    }
+
+    #[test]
+    fn solarized_light_preset_distinct_muted_from_dark() {
+        let dark = Theme::from_preset("solarized-dark");
+        let light = Theme::from_preset("solarized-light");
+        // Only the muted/diff_context slot differs between solarized-dark and
+        // solarized-light; everything else matches.
+        assert_ne!(dark.muted.rgb, light.muted.rgb);
+        assert_eq!(light.muted.rgb, Some((0x93, 0xa1, 0xa1)));
+        assert_eq!(dark.success.rgb, light.success.rgb);
+    }
 }
