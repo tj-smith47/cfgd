@@ -105,11 +105,18 @@ tasks:
     cmds:
       - bash .claude/scripts/audit.sh
 
-  coverage:
-    desc: Run workspace test coverage and update the badge from cobertura.xml
+  coverage:check:
+    desc: Run workspace test coverage and write cobertura.xml. Prints the same percentage the README badge shows. No branch switching, no push.
     cmds:
       - cargo llvm-cov --cobertura --output-path cobertura.xml
-      - bash .claude/scripts/update-coverage-badge.sh cobertura.xml
+      - 'echo "Coverage (line, cobertura): $(bash .claude/scripts/coverage-percent.sh cobertura.xml)"'
+
+  coverage:publish:
+    desc: Run workspace test coverage and publish the badge update to origin/badges. Switches branches via the badge script; release/CI only.
+    cmds:
+      - cargo llvm-cov --cobertura --output-path cobertura.xml
+      - bash .claude/scripts/coverage-percent.sh cobertura.xml
+      - bash .claude/scripts/publish-coverage.sh cobertura.xml
 
   audit:test:
     desc: Validate audit.sh's banned-pattern rules against paired fixtures

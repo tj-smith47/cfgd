@@ -57,7 +57,8 @@
 !.claude/scripts/audit.sh
 !.claude/scripts/audit-tests/
 !.claude/scripts/audit-tests/**
-!.claude/scripts/update-coverage-badge.sh
+!.claude/scripts/publish-coverage.sh
+!.claude/scripts/coverage-percent.sh
 !.claude/rules/
 !.claude/rules/**
 .claude/rules/user-layer-notes.md

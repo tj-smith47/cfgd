@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
-# Update the coverage badge on the orphan 'badges' branch.
-# Usage: update-coverage-badge.sh <cobertura.xml>
+# Publish the coverage percentage to the orphan 'badges' branch as a Shields.io
+# endpoint payload. Switches branches; intended for CI / release use only.
+# Local runs that just need the number should use `task coverage:check`.
+# Usage: publish-coverage.sh <cobertura.xml>
 set -euo pipefail
 
-XML="${1:?Usage: update-coverage-badge.sh <cobertura.xml>}"
+XML="${1:?Usage: publish-coverage.sh <cobertura.xml>}"
 
 if [ ! -f "$XML" ]; then
   echo "::error::Coverage XML not found: $XML"
   exit 1
 fi
 
-# Extract line-rate from the first occurrence. Using -m1 avoids the grep|head
-# SIGPIPE that breaks under set -o pipefail.
-LINE_RATE=$(grep -oP -m1 'line-rate="\K[^"]+' "$XML")
-COVERAGE=$(awk "BEGIN {printf \"%.1f\", $LINE_RATE * 100}")
+# Reuse the same percentage extraction `task coverage:check` prints, so the
+# README badge and local stdout never drift.
+COVERAGE=$(bash "$(dirname "$0")/coverage-percent.sh" "$XML")
+COVERAGE="${COVERAGE%\%}"
 
 if (( $(echo "$COVERAGE >= 90" | bc -l) )); then COLOR="brightgreen"
 elif (( $(echo "$COVERAGE >= 80" | bc -l) )); then COLOR="green"

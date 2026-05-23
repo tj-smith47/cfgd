@@ -162,7 +162,7 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Run coverage and update badge
-        run: task coverage
+        run: task coverage:publish
 
   package:
     name: Package (dry-run)
