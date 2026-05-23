@@ -593,7 +593,7 @@ pub enum Command {
 
     /// View or edit the cfgd configuration
     #[command(
-        long_about = "Show, edit, get, set, or unset config values.\n\nExamples:\n  cfgd config show\n  cfgd config get spec.theme\n  cfgd config set spec.theme dracula\n  cfgd config unset spec.theme"
+        long_about = "Show, edit, get, set, or unset config values.\n\nExamples:\n  cfgd config show\n  cfgd config ls\n  cfgd config get theme\n  cfgd config set theme dracula\n  cfgd config unset theme\n  cfgd config rm theme"
     )]
     Config {
         #[command(subcommand)]
@@ -900,7 +900,8 @@ pub enum SecretCommand {
 
 #[derive(Subcommand)]
 pub enum ConfigCommand {
-    /// Show the current cfgd configuration
+    /// Show the current cfgd configuration (alias: ls)
+    #[command(alias = "ls")]
     Show,
     /// Open cfgd.yaml in $EDITOR
     Edit,
@@ -916,7 +917,8 @@ pub enum ConfigCommand {
         /// Value to set
         value: String,
     },
-    /// Remove a config value (resets to default)
+    /// Remove a config value (resets to default) (alias: rm)
+    #[command(alias = "rm")]
     Unset {
         /// Dotted key path to remove
         key: String,
