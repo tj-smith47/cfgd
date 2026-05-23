@@ -198,6 +198,7 @@ fn template_rendering_with_env() {
     .unwrap();
 
     let target = config_dir.join("target").join("config.txt");
+    let expected_target = target.clone();
 
     let env = vec![
         EnvVar {
@@ -230,7 +231,17 @@ fn template_rendering_with_env() {
     let actions = fm.plan(&resolved.merged).unwrap();
 
     assert_eq!(actions.len(), 1);
-    assert!(matches!(&actions[0], FileAction::Create { .. }));
+    match &actions[0] {
+        FileAction::Create {
+            target: t,
+            strategy,
+            ..
+        } => {
+            assert_eq!(t, &expected_target);
+            assert_eq!(*strategy, FileStrategy::Copy);
+        }
+        other => panic!("expected Create, got: {other:?}"),
+    }
 }
 
 #[test]
@@ -650,10 +661,19 @@ fn source_template_can_access_own_env() {
     );
     fm.set_source_env(&source_vars);
 
-    // Should succeed — template only uses its own env vars
     let actions = fm.plan(&resolved.merged).unwrap();
     assert_eq!(actions.len(), 1);
-    assert!(matches!(&actions[0], FileAction::Create { .. }));
+    match &actions[0] {
+        FileAction::Create {
+            target: t,
+            strategy,
+            ..
+        } => {
+            assert_eq!(t, &target);
+            assert_eq!(*strategy, FileStrategy::Copy);
+        }
+        other => panic!("expected Create, got: {other:?}"),
+    }
 }
 
 #[test]
@@ -695,10 +715,19 @@ fn source_template_can_access_system_facts() {
     source_vars.insert("acme-corp".to_string(), vec![]);
     fm.set_source_env(&source_vars);
 
-    // Should succeed — system facts are always available
     let actions = fm.plan(&resolved.merged).unwrap();
     assert_eq!(actions.len(), 1);
-    assert!(matches!(&actions[0], FileAction::Create { .. }));
+    match &actions[0] {
+        FileAction::Create {
+            target: t,
+            strategy,
+            ..
+        } => {
+            assert_eq!(t, &target);
+            assert_eq!(*strategy, FileStrategy::Copy);
+        }
+        other => panic!("expected Create, got: {other:?}"),
+    }
 }
 
 #[test]

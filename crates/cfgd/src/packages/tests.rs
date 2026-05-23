@@ -126,7 +126,15 @@ fn plan_skips_unavailable_manager() {
     let actions = plan_packages(&profile, &managers).unwrap();
 
     assert_eq!(actions.len(), 1);
-    assert!(matches!(&actions[0], PackageAction::Skip { .. }));
+    match &actions[0] {
+        PackageAction::Skip {
+            manager, reason, ..
+        } => {
+            assert_eq!(manager, "brew");
+            assert!(reason.contains("not available"), "reason: {reason}");
+        }
+        other => panic!("expected Skip, got: {other:?}"),
+    }
 }
 
 #[test]
@@ -1034,7 +1042,15 @@ fn plan_skip_unavailable_no_bootstrap() {
     let actions = plan_packages(&profile, &managers).unwrap();
 
     assert_eq!(actions.len(), 1);
-    assert!(matches!(&actions[0], PackageAction::Skip { .. }));
+    match &actions[0] {
+        PackageAction::Skip {
+            manager, reason, ..
+        } => {
+            assert_eq!(manager, "snap");
+            assert!(reason.contains("not available"), "reason: {reason}");
+        }
+        other => panic!("expected Skip, got: {other:?}"),
+    }
 }
 
 // --- resolve_manifest_packages ---

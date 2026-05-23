@@ -2743,7 +2743,12 @@ fn fetch_latest_release_api_error_on_http_500() {
         crate::errors::CfgdError::Upgrade(u) => u,
         other => panic!("expected CfgdError::Upgrade, got: {other:?}"),
     };
-    assert!(matches!(inner, UpgradeError::ApiError { .. }));
+    match inner {
+        UpgradeError::ApiError { message } => {
+            assert!(message.contains("500"), "message: {message}");
+        }
+        other => panic!("expected ApiError, got: {other:?}"),
+    }
 }
 
 #[test]
@@ -2760,7 +2765,15 @@ fn fetch_latest_release_api_error_on_invalid_json_body() {
         crate::errors::CfgdError::Upgrade(u) => u,
         other => panic!("expected CfgdError::Upgrade, got: {other:?}"),
     };
-    assert!(matches!(inner, UpgradeError::ApiError { .. }));
+    match inner {
+        UpgradeError::ApiError { message } => {
+            assert!(
+                message.contains("json") || message.contains("parse") || message.contains("JSON"),
+                "expected JSON parse error, got: {message}"
+            );
+        }
+        other => panic!("expected ApiError, got: {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------

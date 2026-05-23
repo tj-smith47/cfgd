@@ -645,11 +645,13 @@ fn run_pkg_cmd_unknown_error_kind_maps_to_install_failed() {
         "update",
     );
     let err = result.unwrap_err();
-    assert!(
-        matches!(&err, PackageError::InstallFailed { .. }),
-        "unknown error kind should map to InstallFailed, got: {:?}",
-        err
-    );
+    match &err {
+        PackageError::InstallFailed { manager, message } => {
+            assert_eq!(manager, "test-mgr");
+            assert!(message.contains("unknown-err"), "message: {message}");
+        }
+        other => panic!("expected InstallFailed, got: {other:?}"),
+    }
 }
 
 #[test]
