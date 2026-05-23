@@ -279,6 +279,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn go_install_manager_is_available_checks_go() {
         let mgr = GoInstallManager;
         let available = mgr.is_available();

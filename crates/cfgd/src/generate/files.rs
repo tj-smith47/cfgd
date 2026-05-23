@@ -498,4 +498,208 @@ mod tests {
             "symlink escape should be blocked, got: {msg}"
         );
     }
+
+    // ---------------------------------------------------------------------------
+    // read_file — error paths
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn read_file_nonexistent_within_home_returns_access_denied_error() {
+        let (_home_dir, home) = make_home();
+        let (_repo_dir, repo) = make_repo();
+        // metadata() lookup fails — the function maps to FileAccessDenied.
+        let missing = home.join("does-not-exist.txt");
+        let err = read_file(&missing, &home, &repo).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("does-not-exist.txt") || msg.contains("access denied"),
+            "error must reference the missing path: {msg}"
+        );
+    }
+
+    #[test]
+    fn read_file_blocked_pattern_pem_rejected() {
+        let (_home_dir, home) = make_home();
+        let (_repo_dir, repo) = make_repo();
+        let pem = home.join("server.pem");
+        fs::write(&pem, "fake pem").unwrap();
+        let err = read_file(&pem, &home, &repo).unwrap_err();
+        assert!(
+            err.to_string().contains(".pem") || err.to_string().contains("blocked"),
+            "blocked-pattern path must surface in error"
+        );
+    }
+
+    #[test]
+    fn read_file_blocked_pattern_credentials_rejected() {
+        let (_home_dir, home) = make_home();
+        let (_repo_dir, repo) = make_repo();
+        let path = home.join("aws-credentials.txt");
+        fs::write(&path, "fake creds").unwrap();
+        let err = read_file(&path, &home, &repo).unwrap_err();
+        assert!(err.to_string().contains("blocked") || err.to_string().contains("credentials"));
+    }
+
+    #[test]
+    fn read_file_blocked_pattern_secret_rejected() {
+        let (_home_dir, home) = make_home();
+        let (_repo_dir, repo) = make_repo();
+        let path = home.join("my-secret-token");
+        fs::write(&path, "data").unwrap();
+        // Matches multiple patterns ("secret" and "token") — either is fine.
+        let err = read_file(&path, &home, &repo).unwrap_err();
+        assert!(err.to_string().contains("blocked"));
+    }
+
+    #[test]
+    fn read_file_just_under_size_limit_reads_full_content() {
+        let (_home_dir, home) = make_home();
+        let (_repo_dir, repo) = make_repo();
+        let file = home.join("near-limit.txt");
+        let content = vec![b'C'; MAX_FILE_SIZE as usize - 1];
+        fs::write(&file, &content).unwrap();
+
+        let result = read_file(&file, &home, &repo).unwrap();
+        assert!(!result.truncated);
+        assert_eq!(result.size_bytes, MAX_FILE_SIZE - 1);
+        assert_eq!(result.content.len(), (MAX_FILE_SIZE - 1) as usize);
+    }
+
+    // ---------------------------------------------------------------------------
+    // list_directory — error and edge cases
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn list_directory_nonexistent_within_home_returns_access_denied() {
+        let (_home_dir, home) = make_home();
+        let (_repo_dir, repo) = make_repo();
+        let missing = home.join("no-such-dir");
+        // No mkdir — read_dir will fail with NotFound and map to access denied.
+        let err = list_directory(&missing, &home, &repo).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no-such-dir") || msg.contains("access denied"),
+            "error must reference the missing dir: {msg}"
+        );
+    }
+
+    #[test]
+    fn list_directory_empty_directory_returns_empty_vec() {
+        let (_home_dir, home) = make_home();
+        let (_repo_dir, repo) = make_repo();
+        let empty = home.join("empty-dir");
+        fs::create_dir_all(&empty).unwrap();
+        let entries = list_directory(&empty, &home, &repo).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn list_directory_entries_sorted_alphabetically() {
+        let (_home_dir, home) = make_home();
+        let (_repo_dir, repo) = make_repo();
+        let dir = home.join("sorted");
+        fs::create_dir_all(&dir).unwrap();
+        // Insertion order != sorted order; output must be sorted.
+        for name in ["zeta.txt", "alpha.txt", "mid.txt"] {
+            fs::write(dir.join(name), "x").unwrap();
+        }
+        let entries = list_directory(&dir, &home, &repo).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha.txt", "mid.txt", "zeta.txt"]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn list_directory_classifies_symlinks_with_no_size() {
+        let (_home_dir, home) = make_home();
+        let (_repo_dir, repo) = make_repo();
+        let dir = home.join("withlink");
+        fs::create_dir_all(&dir).unwrap();
+        // Target file inside home so containment check passes.
+        let target = home.join("target.txt");
+        fs::write(&target, "target").unwrap();
+        let link = dir.join("the_link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let entries = list_directory(&dir, &home, &repo).unwrap();
+        let sym = entries
+            .iter()
+            .find(|e| e.name == "the_link")
+            .expect("symlink entry present");
+        assert_eq!(sym.entry_type, "symlink");
+        assert!(
+            sym.size_bytes.is_none(),
+            "symlinks must not report a file size (size_bytes is for regular files only)"
+        );
+    }
+
+    #[test]
+    fn list_directory_within_repo_root_allowed() {
+        let (_home_dir, home) = make_home();
+        let (_repo_dir, repo) = make_repo();
+        let dir = repo.join("subdir");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.yaml"), "x").unwrap();
+        let entries = list_directory(&dir, &home, &repo).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "a.yaml");
+        assert_eq!(entries[0].entry_type, "file");
+    }
+
+    // ---------------------------------------------------------------------------
+    // adopt_files — error paths
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn adopt_files_nonexistent_source_returns_access_denied() {
+        let (_home_dir, home) = make_home();
+        let target = TempDir::new().unwrap();
+        let missing = home.join("does-not-exist.txt");
+        let pairs = vec![(missing.clone(), PathBuf::from("dst/file"))];
+        let err = adopt_files(&pairs, target.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("does-not-exist.txt") || msg.contains("access denied"),
+            "error must reference the missing source path: {msg}"
+        );
+    }
+
+    #[test]
+    fn adopt_files_empty_pairs_returns_empty_vec() {
+        let target = TempDir::new().unwrap();
+        let written = adopt_files(&[], target.path()).unwrap();
+        assert!(written.is_empty());
+    }
+
+    #[test]
+    fn adopt_files_overwrites_existing_destination() {
+        let (_home_dir, home) = make_home();
+        let target = TempDir::new().unwrap();
+        let src = home.join("config.toml");
+        fs::write(&src, "new content").unwrap();
+        // Pre-existing destination file with old content.
+        let dest_rel = PathBuf::from("dotfiles/config.toml");
+        let dest_abs = target.path().join(&dest_rel);
+        fs::create_dir_all(dest_abs.parent().unwrap()).unwrap();
+        fs::write(&dest_abs, "old content").unwrap();
+
+        let pairs = vec![(src.clone(), dest_rel.clone())];
+        let written = adopt_files(&pairs, target.path()).unwrap();
+        assert_eq!(written.len(), 1);
+        assert_eq!(written[0], dest_abs);
+        let content = fs::read_to_string(&dest_abs).unwrap();
+        assert_eq!(content, "new content");
+    }
+
+    #[test]
+    fn adopt_files_returns_absolute_destination_paths() {
+        let (_home_dir, home) = make_home();
+        let target = TempDir::new().unwrap();
+        let src = home.join("a");
+        fs::write(&src, "1").unwrap();
+        let pairs = vec![(src, PathBuf::from("nested/a"))];
+        let written = adopt_files(&pairs, target.path()).unwrap();
+        assert!(written[0].is_absolute());
+        assert!(written[0].starts_with(target.path()));
+    }
 }

@@ -254,6 +254,7 @@ nodejs  20.11.1  main     2024-02-01\n";
     }
 
     #[test]
+    #[serial_test::serial]
     fn scoop_manager_is_available_checks_scoop() {
         let mgr = ScoopManager;
         let available = mgr.is_available();
@@ -264,5 +265,146 @@ nodejs  20.11.1  main     2024-02-01\n";
     fn scoop_manager_can_bootstrap_true() {
         let mgr = ScoopManager;
         assert!(mgr.can_bootstrap());
+    }
+
+    // ---------------------------------------------------------------------------
+    // PackageManager trait impls via a fake scoop binary on PATH. scoop uses
+    // `Command::new("scoop")` directly (no resolver indirection), so PATH
+    // manipulation routes the invocation through our shim.
+    // ---------------------------------------------------------------------------
+
+    #[cfg(unix)]
+    mod scoop_shim {
+        use super::*;
+        use cfgd_core::test_helpers::{ToolShim, test_printer};
+        use serial_test::serial;
+
+        // ToolShim's first arg is the env-var that resolves the binary path.
+        // scoop doesn't use a resolver; the binary is found via PATH. So we
+        // hand-roll a shim that writes a script named `scoop` under a tempdir
+        // and prepends it to PATH for the duration of the test.
+        fn install_scoop_shim(
+            exit_code: u8,
+            stdout: &str,
+            stderr: &str,
+        ) -> (tempfile::TempDir, cfgd_core::test_helpers::EnvVarGuard) {
+            use std::os::unix::fs::PermissionsExt;
+            let bin_dir = tempfile::tempdir().unwrap();
+            let script = format!(
+                "#!/bin/sh\nprintf '%s' \"{}\"\nprintf '%s' \"{}\" >&2\nexit {}\n",
+                stdout.replace('"', "\\\""),
+                stderr.replace('"', "\\\""),
+                exit_code
+            );
+            let path = bin_dir.path().join("scoop");
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let old_path = std::env::var("PATH").unwrap_or_default();
+            let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
+            let path_guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
+            (bin_dir, path_guard)
+        }
+
+        // Discourage tree-shake of the ToolShim import; we still use the
+        // underlying serial gate to keep PATH mutations from racing.
+        const _: fn() = || {
+            let _ = ToolShim::install;
+        };
+
+        #[test]
+        #[serial]
+        fn scoop_install_invokes_per_package() {
+            let (_bin, _path) = install_scoop_shim(0, "", "");
+            let p = test_printer();
+            ScoopManager
+                .install(&["git".into(), "ripgrep".into()], &p)
+                .expect("install Ok");
+        }
+
+        #[test]
+        #[serial]
+        fn scoop_install_propagates_nonzero_exit_as_install_failed() {
+            let (_bin, _path) = install_scoop_shim(1, "", "couldn't find git");
+            let p = test_printer();
+            let err = ScoopManager
+                .install(&["git".into()], &p)
+                .expect_err("non-zero scoop install must error");
+            let msg = err.to_string();
+            // Error kind is "install" — surfaces as InstallFailed and carries
+            // the manager name in the error.
+            assert!(
+                msg.contains("scoop"),
+                "error must reference manager name, got: {msg}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn scoop_uninstall_invokes_per_package() {
+            let (_bin, _path) = install_scoop_shim(0, "", "");
+            let p = test_printer();
+            ScoopManager
+                .uninstall(&["git".into()], &p)
+                .expect("uninstall Ok");
+        }
+
+        #[test]
+        #[serial]
+        fn scoop_uninstall_propagates_nonzero_exit_as_uninstall_failed() {
+            let (_bin, _path) = install_scoop_shim(1, "", "no such package");
+            let p = test_printer();
+            let err = ScoopManager
+                .uninstall(&["git".into()], &p)
+                .expect_err("non-zero scoop uninstall must error");
+            assert!(err.to_string().contains("scoop"));
+        }
+
+        #[test]
+        #[serial]
+        fn scoop_update_runs_update_star() {
+            let (_bin, _path) = install_scoop_shim(0, "", "");
+            let p = test_printer();
+            ScoopManager.update(&p).expect("update Ok");
+        }
+
+        #[test]
+        #[serial]
+        fn scoop_installed_packages_parses_list_output() {
+            let stdout = "Installed apps:\n\nName  Version  Source\n----  -------  ------\ngit  2.44.0  main\nfd  9.0.0  main\n";
+            let (_bin, _path) = install_scoop_shim(0, stdout, "");
+            let pkgs = ScoopManager.installed_packages().expect("Ok");
+            assert!(pkgs.contains("git"));
+            assert!(pkgs.contains("fd"));
+            assert_eq!(pkgs.len(), 2);
+        }
+
+        #[test]
+        #[serial]
+        fn scoop_installed_packages_empty_when_no_separator() {
+            let (_bin, _path) = install_scoop_shim(0, "no apps installed\n", "");
+            let pkgs = ScoopManager.installed_packages().expect("Ok");
+            assert!(pkgs.is_empty());
+        }
+
+        #[test]
+        #[serial]
+        fn scoop_available_version_returns_none_on_nonzero_exit() {
+            let (_bin, _path) = install_scoop_shim(1, "", "package not found");
+            let v = ScoopManager
+                .available_version("nonexistent")
+                .expect("non-zero → Ok(None)");
+            assert_eq!(v, None);
+        }
+
+        #[test]
+        #[serial]
+        fn scoop_available_version_extracts_version_field_from_info_output() {
+            // `scoop info <pkg>` prints "Version: X.Y.Z" among other fields;
+            // parse_version_field plucks that line.
+            let info = "Name: git\nVersion: 2.44.0\nDescription: git\n";
+            let (_bin, _path) = install_scoop_shim(0, info, "");
+            let v = ScoopManager.available_version("git").expect("Ok");
+            assert_eq!(v.as_deref(), Some("2.44.0"));
+        }
     }
 }

@@ -378,6 +378,7 @@ Tags: git vcs dvcs
     }
 
     #[test]
+    #[serial_test::serial]
     fn chocolatey_manager_is_available_checks_choco() {
         let mgr = ChocolateyManager;
         let available = mgr.is_available();
@@ -388,5 +389,140 @@ Tags: git vcs dvcs
     fn chocolatey_manager_can_bootstrap_true() {
         let mgr = ChocolateyManager;
         assert!(mgr.can_bootstrap());
+    }
+
+    // ---------------------------------------------------------------------------
+    // PackageManager trait impls via a fake `choco` binary on PATH. Mirrors
+    // the scoop shim approach — choco methods call `Command::new("choco")`
+    // directly, so prepending a tempdir with our shim to PATH routes the call
+    // through it.
+    // ---------------------------------------------------------------------------
+
+    #[cfg(unix)]
+    mod choco_shim {
+        use super::*;
+        use cfgd_core::test_helpers::test_printer;
+        use serial_test::serial;
+
+        fn install_choco_shim(
+            exit_code: u8,
+            stdout: &str,
+            stderr: &str,
+        ) -> (tempfile::TempDir, cfgd_core::test_helpers::EnvVarGuard) {
+            use std::os::unix::fs::PermissionsExt;
+            let bin_dir = tempfile::tempdir().unwrap();
+            let script = format!(
+                "#!/bin/sh\nprintf '%s' \"{}\"\nprintf '%s' \"{}\" >&2\nexit {}\n",
+                stdout.replace('"', "\\\""),
+                stderr.replace('"', "\\\""),
+                exit_code
+            );
+            let path = bin_dir.path().join("choco");
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let old_path = std::env::var("PATH").unwrap_or_default();
+            let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
+            let path_guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
+            (bin_dir, path_guard)
+        }
+
+        #[test]
+        #[serial]
+        fn install_succeeds_when_choco_exits_zero() {
+            let (_bin, _path) = install_choco_shim(0, "", "");
+            let p = test_printer();
+            ChocolateyManager
+                .install(&["git".into(), "nodejs".into()], &p)
+                .expect("install Ok");
+        }
+
+        #[test]
+        #[serial]
+        fn install_propagates_nonzero_exit_as_install_failed() {
+            let (_bin, _path) = install_choco_shim(1, "", "package not found");
+            let p = test_printer();
+            let err = ChocolateyManager
+                .install(&["git".into()], &p)
+                .expect_err("non-zero choco install must error");
+            assert!(err.to_string().contains("chocolatey"));
+        }
+
+        #[test]
+        #[serial]
+        fn uninstall_succeeds_when_choco_exits_zero() {
+            let (_bin, _path) = install_choco_shim(0, "", "");
+            let p = test_printer();
+            ChocolateyManager
+                .uninstall(&["git".into()], &p)
+                .expect("uninstall Ok");
+        }
+
+        #[test]
+        #[serial]
+        fn uninstall_propagates_nonzero_exit_as_uninstall_failed() {
+            let (_bin, _path) = install_choco_shim(2, "", "no such package");
+            let p = test_printer();
+            let err = ChocolateyManager
+                .uninstall(&["git".into()], &p)
+                .expect_err("non-zero choco uninstall must error");
+            assert!(err.to_string().contains("chocolatey"));
+        }
+
+        #[test]
+        #[serial]
+        fn update_runs_upgrade_all() {
+            let (_bin, _path) = install_choco_shim(0, "", "");
+            let p = test_printer();
+            ChocolateyManager.update(&p).expect("update Ok");
+        }
+
+        #[test]
+        #[serial]
+        fn installed_packages_parses_choco_list_output() {
+            let stdout = "Chocolatey v2.2.2\ngit 2.44.0\nnodejs 20.11.1\npython 3.12.1\n3 packages installed.\n";
+            let (_bin, _path) = install_choco_shim(0, stdout, "");
+            let pkgs = ChocolateyManager.installed_packages().expect("Ok");
+            assert!(pkgs.contains("git"));
+            assert!(pkgs.contains("nodejs"));
+            assert!(pkgs.contains("python"));
+            assert_eq!(pkgs.len(), 3);
+        }
+
+        #[test]
+        #[serial]
+        fn installed_packages_empty_when_output_only_has_summary() {
+            let (_bin, _path) =
+                install_choco_shim(0, "Chocolatey v2.2.2\n0 packages installed.\n", "");
+            let pkgs = ChocolateyManager.installed_packages().expect("Ok");
+            assert!(pkgs.is_empty());
+        }
+
+        #[test]
+        #[serial]
+        fn available_version_returns_none_on_nonzero_exit() {
+            let (_bin, _path) = install_choco_shim(1, "", "not found");
+            let v = ChocolateyManager
+                .available_version("nonexistent")
+                .expect("non-zero → Ok(None)");
+            assert_eq!(v, None);
+        }
+
+        #[test]
+        #[serial]
+        fn available_version_extracts_pipe_separated_field_from_title_line() {
+            let info = "Chocolatey v2.2.2\nTitle: Git | 2.44.0\nPublished: now\n";
+            let (_bin, _path) = install_choco_shim(0, info, "");
+            let v = ChocolateyManager.available_version("git").expect("Ok");
+            assert_eq!(v.as_deref(), Some("2.44.0"));
+        }
+
+        #[test]
+        #[serial]
+        fn available_version_returns_none_when_title_field_missing() {
+            let info = "Chocolatey v2.2.2\nSummary: foo\n";
+            let (_bin, _path) = install_choco_shim(0, info, "");
+            let v = ChocolateyManager.available_version("foo").expect("Ok");
+            assert_eq!(v, None);
+        }
     }
 }

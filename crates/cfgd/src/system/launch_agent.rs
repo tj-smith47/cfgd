@@ -457,4 +457,331 @@ mod tests {
         );
         assert!(!plist.contains("<true />"));
     }
+
+    // ---------------------------------------------------------------------------
+    // diff — drives the per-agent loop with a redirected HOME so reads land
+    // inside a tempdir instead of the real ~/Library/LaunchAgents.
+    // ---------------------------------------------------------------------------
+
+    fn make_agent_yaml(
+        name: &str,
+        program: &str,
+        args: &[&str],
+        run_at_load: bool,
+    ) -> serde_yaml::Value {
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String(name.into()),
+        );
+        m.insert(
+            serde_yaml::Value::String("program".into()),
+            serde_yaml::Value::String(program.into()),
+        );
+        m.insert(
+            serde_yaml::Value::String("runAtLoad".into()),
+            serde_yaml::Value::Bool(run_at_load),
+        );
+        let arg_seq: Vec<serde_yaml::Value> = args
+            .iter()
+            .map(|a| serde_yaml::Value::String((*a).into()))
+            .collect();
+        m.insert(
+            serde_yaml::Value::String("args".into()),
+            serde_yaml::Value::Sequence(arg_seq),
+        );
+        serde_yaml::Value::Mapping(m)
+    }
+
+    #[test]
+    fn diff_reports_missing_when_plist_does_not_exist() {
+        let home = tempfile::tempdir().unwrap();
+        let _g = cfgd_core::with_test_home_guard(home.path());
+        // No plist file written → diff should report it as missing.
+        let la = LaunchAgentConfigurator;
+        let yaml = serde_yaml::Value::Sequence(vec![make_agent_yaml(
+            "com.cfgd.test.missing",
+            "/usr/bin/true",
+            &[],
+            true,
+        )]);
+        let drifts = la.diff(&yaml).unwrap();
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].key, "com.cfgd.test.missing.plist");
+        assert_eq!(drifts[0].expected, "present");
+        assert_eq!(drifts[0].actual, "missing");
+    }
+
+    #[test]
+    fn diff_reports_outdated_when_plist_content_differs() {
+        let home = tempfile::tempdir().unwrap();
+        let _g = cfgd_core::with_test_home_guard(home.path());
+        let plist_dir = home.path().join("Library/LaunchAgents");
+        std::fs::create_dir_all(&plist_dir).unwrap();
+        // Pre-write a stale plist whose content won't match the generated one.
+        std::fs::write(
+            plist_dir.join("com.cfgd.test.outdated.plist"),
+            "stale plist content",
+        )
+        .unwrap();
+
+        let la = LaunchAgentConfigurator;
+        let yaml = serde_yaml::Value::Sequence(vec![make_agent_yaml(
+            "com.cfgd.test.outdated",
+            "/usr/bin/true",
+            &[],
+            true,
+        )]);
+        let drifts = la.diff(&yaml).unwrap();
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].key, "com.cfgd.test.outdated.plist");
+        assert_eq!(drifts[0].expected, "updated");
+        assert_eq!(drifts[0].actual, "outdated");
+    }
+
+    #[test]
+    fn diff_no_drift_when_plist_content_matches() {
+        let home = tempfile::tempdir().unwrap();
+        let _g = cfgd_core::with_test_home_guard(home.path());
+        let plist_dir = home.path().join("Library/LaunchAgents");
+        std::fs::create_dir_all(&plist_dir).unwrap();
+
+        let expected = generate_launch_agent_plist(
+            "com.cfgd.test.matches",
+            "/usr/bin/true",
+            &["--flag"],
+            false,
+        );
+        std::fs::write(plist_dir.join("com.cfgd.test.matches.plist"), &expected).unwrap();
+
+        let la = LaunchAgentConfigurator;
+        let yaml = serde_yaml::Value::Sequence(vec![make_agent_yaml(
+            "com.cfgd.test.matches",
+            "/usr/bin/true",
+            &["--flag"],
+            false,
+        )]);
+        let drifts = la.diff(&yaml).unwrap();
+        assert!(
+            drifts.is_empty(),
+            "no drift when plist content matches generated output, got: {} drifts",
+            drifts.len()
+        );
+    }
+
+    #[test]
+    fn diff_handles_multiple_agents_separately() {
+        let home = tempfile::tempdir().unwrap();
+        let _g = cfgd_core::with_test_home_guard(home.path());
+        let plist_dir = home.path().join("Library/LaunchAgents");
+        std::fs::create_dir_all(&plist_dir).unwrap();
+
+        // First agent: file exists and matches.
+        let agent_a = generate_launch_agent_plist("com.a", "/bin/sh", &[], true);
+        std::fs::write(plist_dir.join("com.a.plist"), &agent_a).unwrap();
+        // Second agent: file missing.
+        // Third agent: file exists but outdated.
+        std::fs::write(plist_dir.join("com.c.plist"), "old").unwrap();
+
+        let la = LaunchAgentConfigurator;
+        let yaml = serde_yaml::Value::Sequence(vec![
+            make_agent_yaml("com.a", "/bin/sh", &[], true),
+            make_agent_yaml("com.b", "/bin/sh", &[], true),
+            make_agent_yaml("com.c", "/bin/sh", &[], true),
+        ]);
+        let drifts = la.diff(&yaml).unwrap();
+        // Two drifts: missing (b) and outdated (c). a matches — no drift entry.
+        assert_eq!(drifts.len(), 2);
+        let keys: Vec<&str> = drifts.iter().map(|d| d.key.as_str()).collect();
+        assert!(keys.contains(&"com.b.plist"));
+        assert!(keys.contains(&"com.c.plist"));
+        let actuals: Vec<&str> = drifts.iter().map(|d| d.actual.as_str()).collect();
+        assert!(actuals.contains(&"missing"));
+        assert!(actuals.contains(&"outdated"));
+    }
+
+    #[test]
+    fn diff_with_args_field_as_non_sequence_falls_back_to_empty_args() {
+        let home = tempfile::tempdir().unwrap();
+        let _g = cfgd_core::with_test_home_guard(home.path());
+
+        let la = LaunchAgentConfigurator;
+        // args is a string instead of a sequence — should fall back to empty,
+        // not crash. Resulting plist is what generate_launch_agent_plist
+        // emits with args=[].
+        let mut m = serde_yaml::Mapping::new();
+        m.insert(
+            serde_yaml::Value::String("name".into()),
+            serde_yaml::Value::String("com.cfgd.bad-args".into()),
+        );
+        m.insert(
+            serde_yaml::Value::String("program".into()),
+            serde_yaml::Value::String("/bin/sh".into()),
+        );
+        m.insert(
+            serde_yaml::Value::String("args".into()),
+            serde_yaml::Value::String("not-a-sequence".into()),
+        );
+        let yaml = serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(m)]);
+        let drifts = la.diff(&yaml).unwrap();
+        // File missing → drift entry.
+        assert_eq!(drifts.len(), 1);
+        assert_eq!(drifts[0].key, "com.cfgd.bad-args.plist");
+        assert_eq!(drifts[0].actual, "missing");
+    }
+
+    // ---------------------------------------------------------------------------
+    // apply — drives the per-agent loop with a redirected HOME and a fake
+    // launchctl on PATH (load exits 0 → no warning; load exits non-zero →
+    // warning printed). The on-disk plist write is what we assert directly.
+    // ---------------------------------------------------------------------------
+
+    /// Install a fake launchctl shim that exits with the given code. Returns
+    /// (bin_dir tempdir kept alive for the duration of the test, PATH guard).
+    fn install_fake_launchctl(
+        exit_code: u8,
+        stderr: &str,
+    ) -> (tempfile::TempDir, cfgd_core::test_helpers::EnvVarGuard) {
+        use std::os::unix::fs::PermissionsExt;
+        let bin_dir = tempfile::tempdir().unwrap();
+        let script = format!(
+            "#!/bin/sh\necho '{}' >&2\nexit {}\n",
+            stderr.replace('\'', "'\\''"),
+            exit_code
+        );
+        let path = bin_dir.path().join("launchctl");
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let old_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
+        let path_guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
+        (bin_dir, path_guard)
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn apply_writes_plist_for_each_agent_to_test_home() {
+        let home = tempfile::tempdir().unwrap();
+        let _g = cfgd_core::with_test_home_guard(home.path());
+        let (_bin, _path) = install_fake_launchctl(0, "");
+
+        let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
+        let la = LaunchAgentConfigurator;
+        let yaml = serde_yaml::Value::Sequence(vec![
+            make_agent_yaml("com.cfgd.apply.one", "/bin/sh", &["-c", "echo"], true),
+            make_agent_yaml("com.cfgd.apply.two", "/bin/sh", &[], false),
+        ]);
+        la.apply(&yaml, &printer).unwrap();
+
+        let plist_dir = home.path().join("Library/LaunchAgents");
+        let one = plist_dir.join("com.cfgd.apply.one.plist");
+        let two = plist_dir.join("com.cfgd.apply.two.plist");
+        assert!(one.exists(), "first agent plist should be written");
+        assert!(two.exists(), "second agent plist should be written");
+        let content_one = std::fs::read_to_string(&one).unwrap();
+        assert!(content_one.contains("<string>com.cfgd.apply.one</string>"));
+        assert!(content_one.contains("<true />"));
+        let content_two = std::fs::read_to_string(&two).unwrap();
+        assert!(content_two.contains("<string>com.cfgd.apply.two</string>"));
+        assert!(content_two.contains("<false />"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn apply_skips_entries_without_name_but_writes_others() {
+        let home = tempfile::tempdir().unwrap();
+        let _g = cfgd_core::with_test_home_guard(home.path());
+        let (_bin, _path) = install_fake_launchctl(0, "");
+
+        let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
+        let la = LaunchAgentConfigurator;
+        // First entry has no name field — must be skipped.
+        let mut nameless = serde_yaml::Mapping::new();
+        nameless.insert(
+            serde_yaml::Value::String("program".into()),
+            serde_yaml::Value::String("/bin/sh".into()),
+        );
+        let yaml = serde_yaml::Value::Sequence(vec![
+            serde_yaml::Value::Mapping(nameless),
+            make_agent_yaml("com.cfgd.named", "/bin/sh", &[], true),
+        ]);
+        la.apply(&yaml, &printer).unwrap();
+
+        let plist_dir = home.path().join("Library/LaunchAgents");
+        assert!(plist_dir.join("com.cfgd.named.plist").exists());
+        // No file should exist for the nameless entry.
+        let entries: Vec<_> = std::fs::read_dir(&plist_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "exactly one plist should be written, got count {}",
+            entries.len()
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn apply_emits_info_status_through_printer_for_each_written_plist() {
+        use cfgd_core::output::Verbosity;
+        let home = tempfile::tempdir().unwrap();
+        let _g = cfgd_core::with_test_home_guard(home.path());
+        let (_bin, _path) = install_fake_launchctl(0, "");
+
+        let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
+        let la = LaunchAgentConfigurator;
+        let yaml = serde_yaml::Value::Sequence(vec![make_agent_yaml(
+            "com.cfgd.print.test",
+            "/bin/sh",
+            &[],
+            true,
+        )]);
+        la.apply(&yaml, &printer).unwrap();
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("Writing launch agent"),
+            "printer should announce plist write, got: {captured}"
+        );
+        assert!(
+            captured.contains("com.cfgd.print.test.plist"),
+            "printer should mention plist filename, got: {captured}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn apply_warns_when_launchctl_load_returns_nonzero() {
+        use cfgd_core::output::Verbosity;
+        let home = tempfile::tempdir().unwrap();
+        let _g = cfgd_core::with_test_home_guard(home.path());
+        let (_bin, _path) = install_fake_launchctl(1, "load: error: not bootstrapped");
+
+        let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
+        let la = LaunchAgentConfigurator;
+        let yaml = serde_yaml::Value::Sequence(vec![make_agent_yaml(
+            "com.cfgd.load.fail",
+            "/bin/sh",
+            &[],
+            true,
+        )]);
+        // apply should still return Ok — load failure is a printed warning.
+        la.apply(&yaml, &printer).unwrap();
+        // Plist still gets written.
+        assert!(
+            home.path()
+                .join("Library/LaunchAgents/com.cfgd.load.fail.plist")
+                .exists()
+        );
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("launchctl load failed"),
+            "warning should surface launchctl failure, got: {captured}"
+        );
+        assert!(
+            captured.contains("com.cfgd.load.fail"),
+            "warning should name the agent that failed to load, got: {captured}"
+        );
+    }
 }

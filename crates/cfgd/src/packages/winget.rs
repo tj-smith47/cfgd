@@ -348,6 +348,7 @@ SomeApp               Some.App                  1.0.0\n";
     }
 
     #[test]
+    #[serial_test::serial]
     fn winget_manager_is_available_checks_winget() {
         let mgr = WingetManager;
         let available = mgr.is_available();
@@ -365,5 +366,122 @@ SomeApp               Some.App                  1.0.0\n";
             msg.contains("winget") && msg.contains("Microsoft Store"),
             "got: {msg}"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // PackageManager trait impls via a fake `winget` binary on PATH.
+    // ---------------------------------------------------------------------------
+
+    #[cfg(unix)]
+    mod winget_shim {
+        use super::*;
+        use cfgd_core::test_helpers::test_printer;
+        use serial_test::serial;
+
+        fn install_winget_shim(
+            exit_code: u8,
+            stdout: &str,
+            stderr: &str,
+        ) -> (tempfile::TempDir, cfgd_core::test_helpers::EnvVarGuard) {
+            use std::os::unix::fs::PermissionsExt;
+            let bin_dir = tempfile::tempdir().unwrap();
+            let script = format!(
+                "#!/bin/sh\nprintf '%s' \"{}\"\nprintf '%s' \"{}\" >&2\nexit {}\n",
+                stdout.replace('"', "\\\""),
+                stderr.replace('"', "\\\""),
+                exit_code
+            );
+            let path = bin_dir.path().join("winget");
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let old_path = std::env::var("PATH").unwrap_or_default();
+            let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
+            let path_guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
+            (bin_dir, path_guard)
+        }
+
+        #[test]
+        #[serial]
+        fn install_succeeds_per_package_when_winget_exits_zero() {
+            let (_bin, _path) = install_winget_shim(0, "", "");
+            let p = test_printer();
+            WingetManager
+                .install(&["Git.Git".into(), "Microsoft.VisualStudio".into()], &p)
+                .expect("install Ok");
+        }
+
+        #[test]
+        #[serial]
+        fn install_propagates_nonzero_exit_as_install_failed() {
+            let (_bin, _path) = install_winget_shim(1, "", "no manifest found");
+            let p = test_printer();
+            let err = WingetManager
+                .install(&["NoSuch".into()], &p)
+                .expect_err("non-zero winget install must error");
+            assert!(err.to_string().contains("winget"));
+        }
+
+        #[test]
+        #[serial]
+        fn uninstall_succeeds_per_package_when_winget_exits_zero() {
+            let (_bin, _path) = install_winget_shim(0, "", "");
+            let p = test_printer();
+            WingetManager
+                .uninstall(&["Git.Git".into()], &p)
+                .expect("uninstall Ok");
+        }
+
+        #[test]
+        #[serial]
+        fn uninstall_propagates_nonzero_exit_as_uninstall_failed() {
+            let (_bin, _path) = install_winget_shim(1, "", "not installed");
+            let p = test_printer();
+            let err = WingetManager
+                .uninstall(&["Git.Git".into()], &p)
+                .expect_err("non-zero winget uninstall must error");
+            assert!(err.to_string().contains("winget"));
+        }
+
+        #[test]
+        #[serial]
+        fn update_runs_upgrade_all() {
+            let (_bin, _path) = install_winget_shim(0, "", "");
+            let p = test_printer();
+            WingetManager.update(&p).expect("update Ok");
+        }
+
+        #[test]
+        #[serial]
+        fn installed_packages_parses_winget_list_output() {
+            let stdout = "\
+Name            Id                    Version
+------------------------------------------------
+Visual Studio   Microsoft.VisualStudio 17.8.3
+Git             Git.Git                2.43.0
+";
+            let (_bin, _path) = install_winget_shim(0, stdout, "");
+            let pkgs = WingetManager.installed_packages().expect("Ok");
+            assert!(pkgs.contains("Microsoft.VisualStudio"));
+            assert!(pkgs.contains("Git.Git"));
+        }
+
+        #[test]
+        #[serial]
+        fn available_version_returns_none_on_nonzero_exit() {
+            let (_bin, _path) = install_winget_shim(1, "", "not found");
+            let v = WingetManager
+                .available_version("Foo.Bar")
+                .expect("non-zero → Ok(None)");
+            assert_eq!(v, None);
+        }
+
+        #[test]
+        #[serial]
+        fn available_version_extracts_version_field_from_show_output() {
+            let info = "Found Git [Git.Git]\nVersion: 2.43.0\nPublisher: Git\n";
+            let (_bin, _path) = install_winget_shim(0, info, "");
+            let v = WingetManager.available_version("Git.Git").expect("Ok");
+            assert_eq!(v.as_deref(), Some("2.43.0"));
+        }
     }
 }

@@ -392,6 +392,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn npm_manager_is_available_checks_npm() {
         let mgr = NpmManager;
         let available = mgr.is_available();

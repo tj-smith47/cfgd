@@ -518,4 +518,154 @@ mod tests {
         let drifts = sc.diff(&serde_yaml::Value::Number(42.into())).unwrap();
         assert!(drifts.is_empty());
     }
+
+    // ---------------------------------------------------------------------------
+    // windows_terminal_settings_path — drive the candidate-priority logic from
+    // Linux by setting LOCALAPPDATA at a tempdir + creating one of the
+    // candidate paths. The function is OS-agnostic: it reads the env var and
+    // walks a fixed candidate list. We only need to ensure the priority order
+    // is honored.
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    #[serial_test::serial]
+    fn windows_terminal_settings_path_returns_store_path_when_present() {
+        let appdata = tempfile::tempdir().unwrap();
+        let store_dir = appdata
+            .path()
+            .join("Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState");
+        std::fs::create_dir_all(&store_dir).unwrap();
+        std::fs::write(store_dir.join("settings.json"), "{}").unwrap();
+
+        let _g = EnvVarGuard::set("LOCALAPPDATA", &appdata.path().display().to_string());
+        let p = windows_terminal_settings_path().expect("store path present");
+        assert!(
+            p.to_string_lossy()
+                .contains("Microsoft.WindowsTerminal_8wekyb3d8bbwe"),
+            "expected store path, got {p:?}"
+        );
+        assert!(p.ends_with("settings.json"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn windows_terminal_settings_path_falls_back_to_preview_when_store_missing() {
+        let appdata = tempfile::tempdir().unwrap();
+        let preview_dir = appdata
+            .path()
+            .join("Packages/Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe/LocalState");
+        std::fs::create_dir_all(&preview_dir).unwrap();
+        std::fs::write(preview_dir.join("settings.json"), "{}").unwrap();
+
+        let _g = EnvVarGuard::set("LOCALAPPDATA", &appdata.path().display().to_string());
+        let p = windows_terminal_settings_path().expect("preview path present");
+        assert!(
+            p.to_string_lossy().contains("WindowsTerminalPreview"),
+            "expected preview path, got {p:?}"
+        );
+        assert!(p.ends_with("settings.json"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn windows_terminal_settings_path_falls_back_to_non_store() {
+        let appdata = tempfile::tempdir().unwrap();
+        let ns_dir = appdata.path().join("Microsoft/Windows Terminal");
+        std::fs::create_dir_all(&ns_dir).unwrap();
+        std::fs::write(ns_dir.join("settings.json"), "{}").unwrap();
+
+        let _g = EnvVarGuard::set("LOCALAPPDATA", &appdata.path().display().to_string());
+        let p = windows_terminal_settings_path().expect("non-store path present");
+        let s = p.to_string_lossy();
+        assert!(
+            s.contains("Microsoft") && s.contains("Windows Terminal"),
+            "expected non-store path, got {p:?}"
+        );
+        assert!(p.ends_with("settings.json"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn windows_terminal_settings_path_prefers_store_over_preview_and_non_store() {
+        let appdata = tempfile::tempdir().unwrap();
+        // Create all three so the priority order matters.
+        for sub in [
+            "Packages/Microsoft.WindowsTerminal_8wekyb3d8bbwe/LocalState",
+            "Packages/Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe/LocalState",
+            "Microsoft/Windows Terminal",
+        ] {
+            let dir = appdata.path().join(sub);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("settings.json"), "{}").unwrap();
+        }
+
+        let _g = EnvVarGuard::set("LOCALAPPDATA", &appdata.path().display().to_string());
+        let p = windows_terminal_settings_path().expect("at least one path present");
+        // Store wins the priority race.
+        assert!(
+            p.to_string_lossy()
+                .contains("Microsoft.WindowsTerminal_8wekyb3d8bbwe"),
+            "store should win priority over preview / non-store, got {p:?}"
+        );
+        // Specifically NOT the preview path.
+        assert!(
+            !p.to_string_lossy().contains("Preview"),
+            "preview must lose to store, got {p:?}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn windows_terminal_settings_path_returns_none_when_no_candidates_exist() {
+        let appdata = tempfile::tempdir().unwrap();
+        let _g = EnvVarGuard::set("LOCALAPPDATA", &appdata.path().display().to_string());
+        assert!(windows_terminal_settings_path().is_none());
+    }
+
+    // ---------------------------------------------------------------------------
+    // load_terminal_settings — drives both the read and parse error paths plus
+    // the happy path with a real LOCALAPPDATA-rooted tempdir.
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    #[serial_test::serial]
+    fn load_terminal_settings_returns_parsed_settings_on_valid_json() {
+        let appdata = tempfile::tempdir().unwrap();
+        let dir = appdata.path().join("Microsoft/Windows Terminal");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("settings.json"),
+            r#"{"defaultProfile":"{abc}","profiles":{"list":[]}}"#,
+        )
+        .unwrap();
+
+        let _g = EnvVarGuard::set("LOCALAPPDATA", &appdata.path().display().to_string());
+        let (path, settings) = load_terminal_settings()
+            .expect("load should succeed")
+            .expect("settings should be present");
+        assert!(path.to_string_lossy().ends_with("settings.json"));
+        assert_eq!(
+            settings.get("defaultProfile").and_then(|v| v.as_str()),
+            Some("{abc}")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn load_terminal_settings_errors_on_invalid_json() {
+        let appdata = tempfile::tempdir().unwrap();
+        let dir = appdata.path().join("Microsoft/Windows Terminal");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("settings.json"), "not valid json {{{").unwrap();
+
+        let _g = EnvVarGuard::set("LOCALAPPDATA", &appdata.path().display().to_string());
+        let err = load_terminal_settings().expect_err("parse should fail");
+        // Error must propagate JSON parse failure — the function maps serde_json
+        // errors into ConfigError::Invalid.
+        let msg = err.to_string();
+        assert!(
+            !msg.is_empty(),
+            "error must have a message describing the parse failure"
+        );
+    }
 }
