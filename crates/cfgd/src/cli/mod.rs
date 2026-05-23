@@ -85,8 +85,8 @@ fn builtin_aliases() -> HashMap<String, String> {
 /// Mirrors the `#[arg(global = true)]` flags on the `Cli` struct that are NOT
 /// `ArgAction::Count` / `bool`. The short-flag-glued form (`-oVALUE`) is not
 /// covered: cfgd's docs and tests only show the space form (`-o VALUE`) and
-/// the inline-`=` form (`-o=VALUE`), both of which this scanner already
-/// handles via the long-flag branches and the dedicated short-flag case.
+/// the inline-`=` form (`-o=VALUE`), both of which this scanner handles
+/// via the same helpers used for long flags — no dedicated short-flag branch.
 fn is_value_taking_flag(flag: &str) -> bool {
     matches!(
         flag,
