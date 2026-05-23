@@ -26,8 +26,8 @@ setup_config_dir "$ALIAS_CFG" "$ALIAS_TGT"
 ALIAS_CONF="$ALIAS_CFG/cfgd.yaml"
 ALIAS_PROFILE="$ALIAS_CFG/profiles/dev.yaml"
 export CFGD_STATE_DIR="$ALIAS_STATE"
+trap 'unset CFGD_STATE_DIR' EXIT
 
-# The file the alias adds to / removes from the profile's spec.files.
 ALIAS_FILE="$ALIAS_TGT/foo.txt"
 touch "$ALIAS_FILE"
 
@@ -35,7 +35,7 @@ begin_test "AL01: cfgd add <path> appends to spec.files"
 run --config "$ALIAS_CONF" --no-color add "$ALIAS_FILE"
 if ! assert_ok; then
     fail_test "AL01" "alias exit code != 0"
-elif ! grep -qF "target: $ALIAS_FILE" "$ALIAS_PROFILE"; then
+elif ! grep -qE "^[[:space:]]*target: ${ALIAS_FILE//\//\\/}\$" "$ALIAS_PROFILE"; then
     echo "  ASSERT FAILED: spec.files missing entry for $ALIAS_FILE"
     echo "  Profile YAML:"
     sed 's/^/    /' "$ALIAS_PROFILE"
@@ -48,7 +48,7 @@ begin_test "AL02: cfgd remove -<path> drops the spec.files entry"
 run --config "$ALIAS_CONF" --no-color remove "-$ALIAS_FILE"
 if ! assert_ok; then
     fail_test "AL02" "alias exit code != 0"
-elif grep -qF "target: $ALIAS_FILE" "$ALIAS_PROFILE"; then
+elif grep -qE "^[[:space:]]*target: ${ALIAS_FILE//\//\\/}\$" "$ALIAS_PROFILE"; then
     echo "  ASSERT FAILED: spec.files still contains $ALIAS_FILE"
     echo "  Profile YAML:"
     sed 's/^/    /' "$ALIAS_PROFILE"
@@ -56,7 +56,5 @@ elif grep -qF "target: $ALIAS_FILE" "$ALIAS_PROFILE"; then
 else
     pass_test "AL02"
 fi
-
-unset CFGD_STATE_DIR
 
 print_summary "Aliases"
