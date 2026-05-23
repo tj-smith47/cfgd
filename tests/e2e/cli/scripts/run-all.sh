@@ -12,6 +12,7 @@ trap 'rm -rf "$CLI_SCRATCH"' EXIT
 SUITES=(
     test-global.sh
     test-init.sh
+    test-aliases.sh
     test-apply.sh
     test-status.sh
     test-diff.sh
