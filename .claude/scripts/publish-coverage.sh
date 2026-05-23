@@ -7,6 +7,15 @@ set -euo pipefail
 
 XML="${1:?Usage: publish-coverage.sh <cobertura.xml>}"
 
+# Refuse to run outside CI — this script switches branches and mutates local
+# git config, both of which surprise local users. Local dev should use
+# `task coverage:check` instead.
+if [ -z "${CI:-}${GITHUB_ACTIONS:-}" ]; then
+  echo "error: publish-coverage.sh is CI-only (CI or GITHUB_ACTIONS env var required)." >&2
+  echo "       For local coverage, run \`task coverage:check\` instead." >&2
+  exit 2
+fi
+
 if [ ! -f "$XML" ]; then
   echo "::error::Coverage XML not found: $XML"
   exit 1
