@@ -79,11 +79,42 @@ fn builtin_aliases() -> HashMap<String, String> {
     HashMap::new()
 }
 
+/// Returns true if `flag` is a global flag on `Cli` that consumes the next
+/// argv slot as its value (space form: `--flag value` or `-x value`).
+///
+/// Mirrors the `#[arg(global = true)]` flags on the `Cli` struct that are NOT
+/// `ArgAction::Count` / `bool`. The short-flag-glued form (`-oVALUE`) is not
+/// covered: cfgd's docs and tests only show the space form (`-o VALUE`) and
+/// the inline-`=` form (`-o=VALUE`), both of which this scanner already
+/// handles via the long-flag branches and the dedicated short-flag case.
+fn is_value_taking_flag(flag: &str) -> bool {
+    matches!(
+        flag,
+        "--config" | "--profile" | "--output" | "-o" | "--jsonpath" | "--state-dir"
+    )
+}
+
+/// Returns true if `arg` is the inline-`=` form of a value-taking global
+/// flag (e.g. `--config=foo.yaml`, `-o=json`). The value is glued to the
+/// flag, so the next argv slot is NOT consumed.
+fn is_value_taking_flag_inline(arg: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "--config=",
+        "--profile=",
+        "--output=",
+        "-o=",
+        "--jsonpath=",
+        "--state-dir=",
+    ];
+    PREFIXES.iter().any(|p| arg.starts_with(p))
+}
+
 /// Locate the index of the first positional argument in `args` (i.e. the
 /// subcommand slot), skipping global flags and their values.
 ///
-/// Knows that `--config` / `--profile` take a value in the next slot, while
-/// `--config=value` / `--profile=value` glue the value to the flag (no skip).
+/// Value-taking global flags (`--config`, `--profile`, `--output` / `-o`,
+/// `--jsonpath`, `--state-dir`) consume the next argv slot in space form;
+/// the `--flag=value` / `-o=value` inline form glues the value to the flag.
 /// Boolean flags (`--verbose`, `-v`, `--quiet`, `-q`, `--no-color`) take no
 /// value. Stops scanning at the first `--` separator (POSIX end-of-options).
 ///
@@ -98,9 +129,9 @@ pub(super) fn find_subcommand_index(args: &[String]) -> Option<usize> {
             return None;
         }
         if arg.starts_with('-') {
-            if matches!(arg.as_str(), "--config" | "--profile") {
+            if is_value_taking_flag(arg.as_str()) {
                 i += 1;
-            } else if arg.starts_with("--config=") || arg.starts_with("--profile=") {
+            } else if is_value_taking_flag_inline(arg.as_str()) {
                 // inline value, no skip
             }
             // boolean flags fall through with no extra skip

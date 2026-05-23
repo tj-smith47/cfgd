@@ -2487,6 +2487,110 @@ fn find_subcommand_index_returns_first_positional_when_subcommand_at_position_on
 }
 
 #[test]
+fn find_subcommand_index_skips_value_taking_global_flags() {
+    // Table covers every value-taking global flag on `Cli` (--config,
+    // --profile, --output/-o, --jsonpath, --state-dir) in both space and
+    // inline-`=` forms, plus the boolean fall-through and the POSIX `--`
+    // sentinel. Each row carries a label so a failure pinpoints the case.
+    let cases: &[(&[&str], Option<usize>, &str)] = &[
+        (&["cfgd", "apply"], Some(1), "baseline"),
+        (
+            &["cfgd", "--config", "foo.yaml", "apply"],
+            Some(3),
+            "--config space",
+        ),
+        (
+            &["cfgd", "--config=foo.yaml", "apply"],
+            Some(2),
+            "--config inline",
+        ),
+        (
+            &["cfgd", "--state-dir", "/tmp/x", "add", "f.txt"],
+            Some(3),
+            "--state-dir space",
+        ),
+        (
+            &["cfgd", "--state-dir=/tmp/x", "add", "f.txt"],
+            Some(2),
+            "--state-dir inline",
+        ),
+        (&["cfgd", "-o", "json", "status"], Some(3), "-o space"),
+        (&["cfgd", "-o=json", "status"], Some(2), "-o inline"),
+        (
+            &["cfgd", "--output", "json", "status"],
+            Some(3),
+            "--output space",
+        ),
+        (
+            &["cfgd", "--output=json", "status"],
+            Some(2),
+            "--output inline",
+        ),
+        (
+            &["cfgd", "--jsonpath", "{.name}", "status"],
+            Some(3),
+            "--jsonpath space",
+        ),
+        (
+            &["cfgd", "--jsonpath={.name}", "status"],
+            Some(2),
+            "--jsonpath inline",
+        ),
+        (
+            &["cfgd", "--profile", "dev", "apply"],
+            Some(3),
+            "--profile space",
+        ),
+        (
+            &["cfgd", "--profile=dev", "apply"],
+            Some(2),
+            "--profile inline",
+        ),
+        (
+            &["cfgd", "--verbose", "apply"],
+            Some(2),
+            "--verbose boolean",
+        ),
+        (&["cfgd", "-v", "apply"], Some(2), "-v boolean"),
+        (&["cfgd", "-q", "apply"], Some(2), "-q boolean"),
+        (&["cfgd", "--quiet", "apply"], Some(2), "--quiet boolean"),
+        (
+            &["cfgd", "--no-color", "apply"],
+            Some(2),
+            "--no-color boolean",
+        ),
+        (
+            &[
+                "cfgd",
+                "--state-dir",
+                "/x",
+                "--verbose",
+                "--output",
+                "json",
+                "status",
+            ],
+            Some(6),
+            "mixed value + boolean globals",
+        ),
+        (&["cfgd", "--", "literal"], None, "POSIX -- sentinel"),
+        (&["cfgd"], None, "no args"),
+        (
+            &["cfgd", "--config", "foo.yaml"],
+            None,
+            "only flags + value, no positional",
+        ),
+    ];
+    for (argv, expected, label) in cases {
+        let args: Vec<String> = argv.iter().map(|x| x.to_string()).collect();
+        assert_eq!(
+            super::find_subcommand_index(&args),
+            *expected,
+            "case: {label}",
+        );
+    }
+}
+
+#[test]
 fn resolve_profile_name_explicit_takes_precedence() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
