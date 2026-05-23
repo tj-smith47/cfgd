@@ -409,6 +409,60 @@ fn cli_has_source_subcommand() {
 }
 
 #[test]
+fn cli_has_alias_subcommand() {
+    use clap::CommandFactory;
+    let cmd = Cli::command();
+    let alias_cmd = cmd.get_subcommands().find(|c| c.get_name() == "alias");
+    assert!(alias_cmd.is_some(), "alias subcommand should exist");
+
+    let alias_cmd = alias_cmd.unwrap();
+    let subnames: Vec<&str> = alias_cmd.get_subcommands().map(|c| c.get_name()).collect();
+    assert!(subnames.contains(&"set"), "missing 'set': {subnames:?}");
+    assert!(
+        subnames.contains(&"delete"),
+        "missing 'delete': {subnames:?}"
+    );
+    assert!(subnames.contains(&"list"), "missing 'list': {subnames:?}");
+    assert!(subnames.contains(&"show"), "missing 'show': {subnames:?}");
+
+    // Pin the clap-level aliases on the canonical subcommand definitions —
+    // each alias is part of the contractual CLI surface (mc-style ergonomic
+    // entry points), not just sugar.
+    let find_sub = |name: &str| {
+        alias_cmd
+            .get_subcommands()
+            .find(|s| s.get_name() == name)
+            .unwrap_or_else(|| panic!("alias '{name}' subcommand missing"))
+    };
+    let set_aliases: Vec<&str> = find_sub("set").get_all_aliases().collect();
+    assert!(
+        set_aliases.contains(&"add"),
+        "'set' missing 'add' alias: {set_aliases:?}"
+    );
+    let delete_aliases: Vec<&str> = find_sub("delete").get_all_aliases().collect();
+    assert!(
+        delete_aliases.contains(&"rm"),
+        "'delete' missing 'rm' alias: {delete_aliases:?}"
+    );
+    let list_aliases: Vec<&str> = find_sub("list").get_all_aliases().collect();
+    assert!(
+        list_aliases.contains(&"ls"),
+        "'list' missing 'ls' alias: {list_aliases:?}"
+    );
+
+    // Sanity-check both canonical and alias entry points actually parse —
+    // catches regressions where the enum variant exists but clap routing
+    // breaks (e.g. duplicate alias collision).
+    assert!(Cli::try_parse_from(["cfgd", "alias", "set", "n", "v"]).is_ok());
+    assert!(Cli::try_parse_from(["cfgd", "alias", "add", "n", "v"]).is_ok());
+    assert!(Cli::try_parse_from(["cfgd", "alias", "delete", "n"]).is_ok());
+    assert!(Cli::try_parse_from(["cfgd", "alias", "rm", "n"]).is_ok());
+    assert!(Cli::try_parse_from(["cfgd", "alias", "list"]).is_ok());
+    assert!(Cli::try_parse_from(["cfgd", "alias", "ls"]).is_ok());
+    assert!(Cli::try_parse_from(["cfgd", "alias", "show", "n"]).is_ok());
+}
+
+#[test]
 fn infer_source_name_from_ssh_url() {
     assert_eq!(
         super::infer_source_name("git@github.com:acme-corp/dev-config.git"),

@@ -41,6 +41,7 @@ missing from the table.
 
 | Command                      | has_data_payload? | Why / Why not                                      |
 |------------------------------|-------------------|----------------------------------------------------|
+| alias_list                   | yes               | alias inventory                                    |
 | apply                        | yes               | apply-result records consumed by CI                |
 | checkin                      | yes               | machine identity exposed to gateway                |
 | compliance_diff              | yes               | drift reporting                                    |

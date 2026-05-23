@@ -1,3 +1,4 @@
+pub mod alias;
 pub mod apply;
 pub mod checkin;
 pub mod compliance;
@@ -599,6 +600,15 @@ pub enum Command {
         command: ConfigCommand,
     },
 
+    /// Manage user-level CLI aliases stored in cfgd.yaml spec.aliases
+    #[command(
+        long_about = "Add, remove, show, or list CLI aliases (entries under spec.aliases in cfgd.yaml).\n\nExamples:\n  cfgd alias set greet 'status'\n  cfgd alias ls\n  cfgd alias show greet\n  cfgd alias rm greet"
+    )]
+    Alias {
+        #[command(subcommand)]
+        command: AliasCommand,
+    },
+
     /// Manage GitHub Actions workflows for config repo releases
     #[command(
         long_about = "Generate or refresh GitHub Actions workflows for releasing config repo modules.\n\nExamples:\n  cfgd workflow generate\n  cfgd workflow generate --force"
@@ -920,6 +930,32 @@ pub enum WorkflowCommand {
         /// Overwrite existing workflow files
         #[arg(long, short = 'y', alias = "yes", env = "CFGD_YES")]
         force: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AliasCommand {
+    /// Add or update an alias (alias: add)
+    #[command(alias = "add")]
+    Set {
+        /// Alias name
+        name: String,
+        /// Command string the alias expands to (e.g. "profile update --file")
+        command: String,
+    },
+    /// Show the command for a single alias
+    Show {
+        /// Alias name
+        name: String,
+    },
+    /// List all configured aliases
+    #[command(alias = "ls")]
+    List,
+    /// Delete an alias (alias: rm)
+    #[command(alias = "rm")]
+    Delete {
+        /// Alias name
+        name: String,
     },
 }
 
@@ -1660,6 +1696,18 @@ pub fn execute(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resul
                 config_cmd::cmd_config_set(cli, printer, key, value)
             }
             ConfigCommand::Unset { key } => config_cmd::cmd_config_unset(cli, printer, key),
+        },
+        Command::Alias { command } => match command {
+            AliasCommand::Set { name, command: cmd } => {
+                config_cmd::cmd_config_set(cli, printer, &format!("aliases.{name}"), cmd)
+            }
+            AliasCommand::Delete { name } => {
+                config_cmd::cmd_config_unset(cli, printer, &format!("aliases.{name}"))
+            }
+            AliasCommand::Show { name } => {
+                config_cmd::cmd_config_get(cli, printer, &format!("aliases.{name}"))
+            }
+            AliasCommand::List => alias::cmd_alias_list(cli, printer),
         },
         Command::Workflow { command } => match command {
             WorkflowCommand::Generate { force } => {

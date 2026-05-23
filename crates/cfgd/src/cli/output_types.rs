@@ -324,6 +324,13 @@ pub(in crate::cli) struct RegistryListEntry {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AliasListEntry {
+    pub name: String,
+    pub command: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(in crate::cli) struct KeyListEntry {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
