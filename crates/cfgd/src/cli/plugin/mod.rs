@@ -198,8 +198,22 @@ pub fn cmd_debug(
         .collect::<Result<_, _>>()?;
 
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        let client = kube::Client::try_default().await.map_err(|e| {
+    rt.block_on(cmd_debug_async(
+        printer, pod, &parsed, namespace, image, None,
+    ))
+}
+
+pub(crate) async fn cmd_debug_async(
+    printer: &Printer,
+    pod: &str,
+    parsed: &[(&str, &str)],
+    namespace: &str,
+    image: &str,
+    client: Option<kube::Client>,
+) -> anyhow::Result<()> {
+    let client = match client {
+        Some(c) => c,
+        None => kube::Client::try_default().await.map_err(|e| {
             printer.emit(cfgd_core::output::error_doc(
                 pod,
                 "kube_connect_failed",
@@ -207,81 +221,77 @@ pub fn cmd_debug(
                 serde_json::json!({ "namespace": namespace, "pod": pod }),
             ));
             anyhow::anyhow!("Failed to connect to cluster: {e}")
-        })?;
-        let pods: kube::Api<k8s_openapi::api::core::v1::Pod> =
-            kube::Api::namespaced(client, namespace);
+        })?,
+    };
+    let pods: kube::Api<k8s_openapi::api::core::v1::Pod> = kube::Api::namespaced(client, namespace);
 
-        // Ephemeral containers can only mount volumes already on the pod.
-        // The pod must have been created with modules injected (via mutating
-        // webhook or `kubectl cfgd inject` followed by rollout).
-        let mut volume_mounts = Vec::new();
-        let mut path_extensions = Vec::new();
+    let mut volume_mounts = Vec::new();
+    let mut path_extensions = Vec::new();
 
-        for (name, _version) in &parsed {
-            volume_mounts.push(build_volume_mount(name));
-            path_extensions.push(format!("/cfgd-modules/{name}/bin"));
+    for (name, _version) in parsed {
+        volume_mounts.push(build_volume_mount(name));
+        path_extensions.push(format!("/cfgd-modules/{name}/bin"));
+    }
+
+    let path_prefix = path_extensions.join(":");
+    let module_names: Vec<_> = parsed.iter().map(|(n, v)| format!("{n}:{v}")).collect();
+    let ps1 = format!("\\[cfgd:{}\\] \\w $ ", module_names.join(","));
+
+    let ec = serde_json::json!({
+        "name": "cfgd-debug",
+        "image": image,
+        "command": ["sh"],
+        "stdin": true,
+        "tty": true,
+        "env": [
+            {"name": "PATH", "value": format!("{path_prefix}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")},
+            {"name": "PS1", "value": ps1}
+        ],
+        "volumeMounts": volume_mounts
+    });
+
+    let patch = serde_json::json!({
+        "spec": {
+            "ephemeralContainers": [ec]
         }
+    });
 
-        let path_prefix = path_extensions.join(":");
-        let module_names: Vec<_> = parsed.iter().map(|(n, v)| format!("{n}:{v}")).collect();
-        let ps1 = format!("\\[cfgd:{}\\] \\w $ ", module_names.join(","));
-
-        let ec = serde_json::json!({
-            "name": "cfgd-debug",
-            "image": image,
-            "command": ["sh"],
-            "stdin": true,
-            "tty": true,
-            "env": [
-                {"name": "PATH", "value": format!("{path_prefix}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")},
-                {"name": "PS1", "value": ps1}
-            ],
-            "volumeMounts": volume_mounts
-        });
-
-        let patch = serde_json::json!({
-            "spec": {
-                "ephemeralContainers": [ec]
-            }
-        });
-
-        pods.patch_ephemeral_containers(
+    pods.patch_ephemeral_containers(
+        pod,
+        &kube::api::PatchParams::default(),
+        &kube::api::Patch::Strategic(patch),
+    )
+    .await
+    .map_err(|e| {
+        printer.emit(cfgd_core::output::error_doc(
             pod,
-            &kube::api::PatchParams::default(),
-            &kube::api::Patch::Strategic(patch),
-        )
-        .await
-        .map_err(|e| {
-            printer.emit(cfgd_core::output::error_doc(
-                pod,
-                "inject_failed",
-                format!("failed to create ephemeral container: {e}"),
-                serde_json::json!({ "namespace": namespace, "pod": pod }),
-            ));
-            anyhow::anyhow!("failed to create ephemeral container: {e}")
-        })?;
+            "inject_failed",
+            format!("failed to create ephemeral container: {e}"),
+            serde_json::json!({ "namespace": namespace, "pod": pod }),
+        ));
+        anyhow::anyhow!("failed to create ephemeral container: {e}")
+    })?;
 
-        printer.emit(
-            Doc::new()
-                .status(
-                    Role::Ok,
-                    format!("Ephemeral debug container created on pod {namespace}/{pod}"),
-                )
-                .kv("Modules", module_names.join(", "))
-                .hint(format!(
-                    "Attach with: kubectl attach -n {namespace} {pod} -c cfgd-debug -it"
-                ))
-                .with_data(serde_json::json!({
-                    "namespace": namespace,
-                    "pod": pod,
-                    "modules": &module_names,
-                    "image": image,
-                    "verified": true,
-                })),
-        );
+    printer.emit(
+        Doc::new()
+            .status(
+                Role::Ok,
+                format!("Ephemeral debug container created on pod {namespace}/{pod}"),
+            )
+            .kv("Modules", module_names.join(", "))
+            .hint(format!(
+                "Attach with: kubectl attach -n {namespace} {pod} -c cfgd-debug -it"
+            ))
+            .with_data(serde_json::json!({
+                "namespace": namespace,
+                "pod": pod,
+                "modules": &module_names,
+                "image": image,
+                "verified": true,
+            })),
+    );
 
-        Ok(())
-    })
+    Ok(())
 }
 
 pub fn cmd_exec(
@@ -455,8 +465,16 @@ pub fn cmd_inject(
 
 pub fn cmd_status(printer: &Printer) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async {
-        let client = kube::Client::try_default().await.map_err(|e| {
+    rt.block_on(cmd_status_async(printer, None))
+}
+
+pub(crate) async fn cmd_status_async(
+    printer: &Printer,
+    client: Option<kube::Client>,
+) -> anyhow::Result<()> {
+    let client = match client {
+        Some(c) => c,
+        None => kube::Client::try_default().await.map_err(|e| {
             printer.emit(cfgd_core::output::error_doc(
                 "cluster",
                 "kube_connect_failed",
@@ -464,37 +482,62 @@ pub fn cmd_status(printer: &Printer) -> anyhow::Result<()> {
                 serde_json::json!({}),
             ));
             anyhow::anyhow!("Failed to connect to cluster: {e}")
+        })?,
+    };
+
+    let modules: kube::Api<kube::core::DynamicObject> = kube::Api::all_with(
+        client,
+        &kube::discovery::ApiResource {
+            group: "cfgd.io".into(),
+            version: "v1alpha1".into(),
+            api_version: cfgd_core::API_VERSION.into(),
+            kind: "Module".into(),
+            plural: "modules".into(),
+        },
+    );
+
+    let list = modules
+        .list(&kube::api::ListParams::default())
+        .await
+        .map_err(|e| {
+            printer.emit(cfgd_core::output::error_doc(
+                "modules",
+                "list_failed",
+                format!("failed to list modules: {e}"),
+                serde_json::json!({}),
+            ));
+            anyhow::anyhow!("failed to list modules: {e}")
         })?;
 
-        // List Module CRDs
-        let modules: kube::Api<kube::core::DynamicObject> = kube::Api::all_with(
-            client,
-            &kube::discovery::ApiResource {
-                group: "cfgd.io".into(),
-                version: "v1alpha1".into(),
-                api_version: cfgd_core::API_VERSION.into(),
-                kind: "Module".into(),
-                plural: "modules".into(),
-            },
-        );
+    let entries: Vec<serde_json::Value> = list
+        .items
+        .iter()
+        .map(|module| {
+            let name = module.metadata.name.as_deref().unwrap_or("?");
+            let verified = module
+                .data
+                .pointer("/status/verified")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let artifact = module
+                .data
+                .pointer("/spec/ociArtifact")
+                .and_then(|v| v.as_str())
+                .unwrap_or("-");
+            serde_json::json!({
+                "name": name,
+                "artifact": artifact,
+                "verified": verified,
+            })
+        })
+        .collect();
 
-        let list = modules
-            .list(&kube::api::ListParams::default())
-            .await
-            .map_err(|e| {
-                printer.emit(cfgd_core::output::error_doc(
-                    "modules",
-                    "list_failed",
-                    format!("failed to list modules: {e}"),
-                    serde_json::json!({}),
-                ));
-                anyhow::anyhow!("failed to list modules: {e}")
-            })?;
-
-        let entries: Vec<serde_json::Value> = list
-            .items
-            .iter()
-            .map(|module| {
+    let doc = Doc::new().section_or_collapse("Modules", |sb| {
+        if list.items.is_empty() {
+            sb.status(Role::Info, "No modules found")
+        } else {
+            let mut sb = sb;
+            for module in &list.items {
                 let name = module.metadata.name.as_deref().unwrap_or("?");
                 let verified = module
                     .data
@@ -506,54 +549,39 @@ pub fn cmd_status(printer: &Printer) -> anyhow::Result<()> {
                     .pointer("/spec/ociArtifact")
                     .and_then(|v| v.as_str())
                     .unwrap_or("-");
-                serde_json::json!({
-                    "name": name,
-                    "artifact": artifact,
-                    "verified": verified,
-                })
-            })
-            .collect();
-
-        let doc = Doc::new().section_or_collapse("Modules", |sb| {
-            if list.items.is_empty() {
-                sb.status(Role::Info, "No modules found")
-            } else {
-                let mut sb = sb;
-                for module in &list.items {
-                    let name = module.metadata.name.as_deref().unwrap_or("?");
-                    let verified = module
-                        .data
-                        .pointer("/status/verified")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    let artifact = module
-                        .data
-                        .pointer("/spec/ociArtifact")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("-");
-                    let status_icon = if verified { "verified" } else { "unverified" };
-                    sb = sb.kv(name, format!("{artifact} ({status_icon})"));
-                }
-                sb
+                let status_icon = if verified { "verified" } else { "unverified" };
+                sb = sb.kv(name, format!("{artifact} ({status_icon})"));
             }
-        });
+            sb
+        }
+    });
 
-        printer.emit(doc.with_data(serde_json::json!({
-            "modules": entries,
-            "pods": Vec::<serde_json::Value>::new(),
-        })));
+    printer.emit(doc.with_data(serde_json::json!({
+        "modules": entries,
+        "pods": Vec::<serde_json::Value>::new(),
+    })));
 
-        Ok(())
-    })
+    Ok(())
 }
 
 pub fn cmd_version(printer: &Printer) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
-    let server_version = rt.block_on(async {
-        let client = kube::Client::try_default().await.ok()?;
+    rt.block_on(cmd_version_async(printer, None))
+}
+
+pub(crate) async fn cmd_version_async(
+    printer: &Printer,
+    client: Option<kube::Client>,
+) -> anyhow::Result<()> {
+    let server_version = async {
+        let client = match client {
+            Some(c) => c,
+            None => kube::Client::try_default().await.ok()?,
+        };
         let version = client.apiserver_version().await.ok()?;
         Some(format!("{}.{}", version.major, version.minor))
-    });
+    }
+    .await;
 
     let server_label = server_version
         .clone()

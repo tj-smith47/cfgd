@@ -6,14 +6,26 @@ use std::path::Path;
 
 use crate::errors::OciError;
 
+const DOCKER_BIN_ENV: &str = "CFGD_DOCKER_BIN";
+const PODMAN_BIN_ENV: &str = "CFGD_PODMAN_BIN";
+
 /// Detect which container runtime is available (docker or podman).
 pub fn detect_container_runtime() -> Option<&'static str> {
-    if crate::command_available("docker") {
+    if crate::command_available_with_seam(DOCKER_BIN_ENV, "docker") {
         Some("docker")
-    } else if crate::command_available("podman") {
+    } else if crate::command_available_with_seam(PODMAN_BIN_ENV, "podman") {
         Some("podman")
     } else {
         None
+    }
+}
+
+/// Build a `Command` for the given container runtime, honoring env-var seams.
+fn runtime_cmd(runtime: &str) -> std::process::Command {
+    match runtime {
+        "docker" => crate::tool_cmd(DOCKER_BIN_ENV, "docker"),
+        "podman" => crate::tool_cmd(PODMAN_BIN_ENV, "podman"),
+        _ => unreachable!(),
     }
 }
 
@@ -119,7 +131,7 @@ pub fn build_module(
         crate::utc_now_filename_safe(),
     );
 
-    let mut build_cmd = std::process::Command::new(runtime);
+    let mut build_cmd = runtime_cmd(runtime);
     build_cmd.arg("build").arg("-t").arg(&tag);
 
     if let Some(platform) = target_platform {
@@ -149,7 +161,7 @@ pub fn build_module(
         message: format!("cannot create output dir: {e}"),
     })?;
 
-    let create_output = std::process::Command::new(runtime)
+    let create_output = runtime_cmd(runtime)
         .args(["create", "--name", &container_name, &tag])
         .output()
         .map_err(|e| OciError::BuildError {
@@ -166,7 +178,7 @@ pub fn build_module(
     }
 
     // Copy /build directory out of the container
-    let cp_output = std::process::Command::new(runtime)
+    let cp_output = runtime_cmd(runtime)
         .args([
             "cp",
             &format!("{container_name}:/build/."),
@@ -178,12 +190,10 @@ pub fn build_module(
         })?;
 
     // Cleanup container and image (best effort)
-    let _ = std::process::Command::new(runtime)
+    let _ = runtime_cmd(runtime)
         .args(["rm", "-f", &container_name])
         .output();
-    let _ = std::process::Command::new(runtime)
-        .args(["rmi", "-f", &tag])
-        .output();
+    let _ = runtime_cmd(runtime).args(["rmi", "-f", &tag]).output();
 
     if !cp_output.status.success() {
         return Err(OciError::BuildError {
@@ -527,5 +537,104 @@ mod tests {
         // The function lowercases the image name
         assert_eq!(detect_pkg_install_cmd("ALPINE:3.19"), "apk add --no-cache");
         assert_eq!(detect_pkg_install_cmd("Fedora:39"), "dnf install -y");
+    }
+
+    // --- ToolShim-based tests for env-var seams ---
+
+    #[cfg(unix)]
+    mod shim_tests {
+        use serial_test::serial;
+
+        use super::*;
+        use crate::test_helpers::ToolShim;
+
+        fn sample_module_yaml() -> &'static str {
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages:\n    - name: curl\n"
+        }
+
+        #[test]
+        #[serial]
+        fn build_module_passes_platform_flag() {
+            let _shim = ToolShim::install("CFGD_DOCKER_BIN", 0, "", "");
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("module.yaml"), sample_module_yaml()).unwrap();
+
+            let _ = build_module(dir.path(), Some("linux/arm64"), None);
+            let log = _shim.argv_log();
+            assert!(log.contains("--platform"), "must pass --platform flag");
+            assert!(log.contains("linux/arm64"));
+        }
+
+        #[test]
+        #[serial]
+        fn build_module_failure_propagates_error() {
+            let _shim = ToolShim::install("CFGD_DOCKER_BIN", 1, "", "build error: out of disk");
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("module.yaml"), sample_module_yaml()).unwrap();
+
+            let result = build_module(dir.path(), None, None);
+            assert!(result.is_err());
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("build failed"),
+                "error should mention build failure: {err}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn build_module_passes_tag_flag() {
+            let _shim = ToolShim::install("CFGD_DOCKER_BIN", 0, "", "");
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("module.yaml"), sample_module_yaml()).unwrap();
+
+            let _ = build_module(dir.path(), None, None);
+            let log = _shim.argv_log();
+            assert!(log.contains("-t"), "must pass -t flag for image tag");
+            assert!(
+                log.contains("cfgd-build-test-mod:"),
+                "tag should include module name"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn detect_runtime_podman_fallback() {
+            // Docker shim missing (env var set to non-existent path), podman present
+            let _docker_guard = crate::test_helpers::EnvVarGuard::set(
+                "CFGD_DOCKER_BIN",
+                "/nonexistent/docker-fake",
+            );
+            let _podman_shim = ToolShim::install("CFGD_PODMAN_BIN", 0, "", "");
+
+            let rt = detect_container_runtime();
+            assert_eq!(rt, Some("podman"));
+        }
+
+        #[test]
+        #[serial]
+        fn detect_runtime_docker_preferred() {
+            let _docker_shim = ToolShim::install("CFGD_DOCKER_BIN", 0, "", "");
+            let _podman_shim = ToolShim::install("CFGD_PODMAN_BIN", 0, "", "");
+
+            let rt = detect_container_runtime();
+            assert_eq!(rt, Some("docker"));
+        }
+
+        #[test]
+        #[serial]
+        fn detect_runtime_none_available() {
+            let _docker_guard = crate::test_helpers::EnvVarGuard::set(
+                "CFGD_DOCKER_BIN",
+                "/nonexistent/docker-fake",
+            );
+            let _podman_guard = crate::test_helpers::EnvVarGuard::set(
+                "CFGD_PODMAN_BIN",
+                "/nonexistent/podman-fake",
+            );
+
+            let rt = detect_container_runtime();
+            assert_eq!(rt, None);
+        }
     }
 }

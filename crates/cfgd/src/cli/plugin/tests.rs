@@ -563,3 +563,369 @@ fn cmd_version_emits_client_version_string() {
         "cfgd field must equal version field"
     );
 }
+
+// ============================================================================
+// Mock kube-rs tests — happy paths via injected Client
+// ============================================================================
+
+mod mock_kube {
+    use super::*;
+    use http::Response;
+    use kube::client::Body;
+    use std::convert::Infallible;
+
+    fn mock_client<F>(handler: F) -> kube::Client
+    where
+        F: Fn(http::Request<Body>) -> Response<Body> + Send + Clone + 'static,
+    {
+        let svc = tower::service_fn(move |req: http::Request<Body>| {
+            let resp = handler(req);
+            async move { Ok::<_, Infallible>(resp) }
+        });
+        kube::Client::new(svc, "default")
+    }
+
+    fn json_response(status: u16, body: &serde_json::Value) -> Response<Body> {
+        let bytes = serde_json::to_vec(body).unwrap();
+        Response::builder()
+            .status(status)
+            .header("content-type", "application/json")
+            .body(Body::from(bytes))
+            .unwrap()
+    }
+
+    fn pod_json(name: &str, namespace: &str) -> serde_json::Value {
+        serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": name,
+                "namespace": namespace
+            },
+            "spec": {
+                "containers": [{"name": "main", "image": "nginx:1.25"}],
+                "ephemeralContainers": [{
+                    "name": "cfgd-debug",
+                    "image": "ubuntu:22.04"
+                }]
+            }
+        })
+    }
+
+    // --- cmd_debug happy path ---
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cmd_debug_happy_path_creates_ephemeral_container() {
+        let client = mock_client(|req| {
+            let path = req.uri().path().to_string();
+            if path.contains("/ephemeralcontainers") {
+                json_response(200, &pod_json("mypod", "prod"))
+            } else {
+                json_response(404, &serde_json::json!({"message": "not found"}))
+            }
+        });
+
+        let (printer, cap) = Printer::for_test_doc();
+        let parsed = [("nettools", "1.0.0")];
+
+        let result = cmd_debug_async(
+            &printer,
+            "mypod",
+            &parsed,
+            "prod",
+            "ubuntu:22.04",
+            Some(client),
+        )
+        .await;
+        drop(printer);
+
+        assert!(result.is_ok(), "cmd_debug should succeed, got: {result:?}");
+        let json = cap.json().expect("success doc must carry data payload");
+        assert_eq!(json["pod"], "mypod");
+        assert_eq!(json["namespace"], "prod");
+        assert_eq!(json["verified"], true);
+        assert_eq!(json["modules"][0], "nettools:1.0.0");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cmd_debug_multiple_modules_happy_path() {
+        let client = mock_client(|req| {
+            let path = req.uri().path().to_string();
+            if path.contains("/ephemeralcontainers") {
+                json_response(200, &pod_json("mypod", "default"))
+            } else {
+                json_response(404, &serde_json::json!({"message": "not found"}))
+            }
+        });
+
+        let (printer, cap) = Printer::for_test_doc();
+        let parsed = [("nettools", "1.0.0"), ("debug-utils", "2.1.0")];
+
+        let result = cmd_debug_async(
+            &printer,
+            "mypod",
+            &parsed,
+            "default",
+            "alpine:3.20",
+            Some(client),
+        )
+        .await;
+        drop(printer);
+
+        assert!(result.is_ok(), "cmd_debug should succeed, got: {result:?}");
+        let json = cap.json().unwrap();
+        assert_eq!(json["modules"][0], "nettools:1.0.0");
+        assert_eq!(json["modules"][1], "debug-utils:2.1.0");
+        assert_eq!(json["image"], "alpine:3.20");
+    }
+
+    // --- cmd_debug error paths ---
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cmd_debug_pod_not_found_returns_error() {
+        let client = mock_client(|_req| {
+            let err_body = serde_json::json!({
+                "kind": "Status",
+                "apiVersion": "v1",
+                "metadata": {},
+                "status": "Failure",
+                "message": "pods \"ghost\" not found",
+                "reason": "NotFound",
+                "code": 404
+            });
+            json_response(404, &err_body)
+        });
+
+        let (printer, _cap) = Printer::for_test_doc();
+        let parsed = [("nettools", "1.0.0")];
+
+        let result = cmd_debug_async(
+            &printer,
+            "ghost",
+            &parsed,
+            "default",
+            "ubuntu:22.04",
+            Some(client),
+        )
+        .await;
+
+        assert!(result.is_err(), "must fail when pod is not found");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("ephemeral container") || err_msg.contains("not found"),
+            "error should mention the failure, got: {err_msg}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cmd_debug_permission_denied_returns_error() {
+        let client = mock_client(|_req| {
+            let err_body = serde_json::json!({
+                "kind": "Status",
+                "apiVersion": "v1",
+                "metadata": {},
+                "status": "Failure",
+                "message": "pods \"mypod\" is forbidden: User \"test\" cannot patch resource \"pods/ephemeralcontainers\"",
+                "reason": "Forbidden",
+                "code": 403
+            });
+            json_response(403, &err_body)
+        });
+
+        let (printer, _cap) = Printer::for_test_doc();
+        let parsed = [("nettools", "1.0.0")];
+
+        let result = cmd_debug_async(
+            &printer,
+            "mypod",
+            &parsed,
+            "default",
+            "ubuntu:22.04",
+            Some(client),
+        )
+        .await;
+
+        assert!(result.is_err(), "must fail on 403");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("forbidden")
+                || err_msg.contains("Forbidden")
+                || err_msg.contains("ephemeral"),
+            "error should mention permission failure, got: {err_msg}"
+        );
+    }
+
+    // --- cmd_status happy path ---
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cmd_status_happy_path_lists_modules() {
+        let client = mock_client(|req| {
+            let path = req.uri().path().to_string();
+            if path.contains("/modules") {
+                let list = serde_json::json!({
+                    "apiVersion": "cfgd.io/v1alpha1",
+                    "kind": "ModuleList",
+                    "metadata": {"resourceVersion": "1234"},
+                    "items": [
+                        {
+                            "apiVersion": "cfgd.io/v1alpha1",
+                            "kind": "Module",
+                            "metadata": {"name": "nettools"},
+                            "spec": {"ociArtifact": "ghcr.io/cfgd/nettools:1.0.0"},
+                            "status": {"verified": true}
+                        },
+                        {
+                            "apiVersion": "cfgd.io/v1alpha1",
+                            "kind": "Module",
+                            "metadata": {"name": "debug-utils"},
+                            "spec": {"ociArtifact": "ghcr.io/cfgd/debug-utils:2.0.0"},
+                            "status": {"verified": false}
+                        }
+                    ]
+                });
+                json_response(200, &list)
+            } else {
+                json_response(404, &serde_json::json!({"message": "not found"}))
+            }
+        });
+
+        let (printer, cap) = Printer::for_test_doc();
+
+        let result = cmd_status_async(&printer, Some(client)).await;
+        drop(printer);
+
+        assert!(result.is_ok(), "cmd_status should succeed, got: {result:?}");
+        let json = cap.json().expect("status doc must carry data payload");
+        let modules = json["modules"].as_array().expect("modules should be array");
+        assert_eq!(modules.len(), 2);
+        assert_eq!(modules[0]["name"], "nettools");
+        assert_eq!(modules[0]["artifact"], "ghcr.io/cfgd/nettools:1.0.0");
+        assert_eq!(modules[0]["verified"], true);
+        assert_eq!(modules[1]["name"], "debug-utils");
+        assert_eq!(modules[1]["verified"], false);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cmd_status_empty_module_list() {
+        let client = mock_client(|req| {
+            let path = req.uri().path().to_string();
+            if path.contains("/modules") {
+                let list = serde_json::json!({
+                    "apiVersion": "cfgd.io/v1alpha1",
+                    "kind": "ModuleList",
+                    "metadata": {"resourceVersion": "1"},
+                    "items": []
+                });
+                json_response(200, &list)
+            } else {
+                json_response(404, &serde_json::json!({"message": "not found"}))
+            }
+        });
+
+        let (printer, cap) = Printer::for_test_doc();
+
+        let result = cmd_status_async(&printer, Some(client)).await;
+        drop(printer);
+
+        assert!(result.is_ok(), "cmd_status should succeed with empty list");
+        let json = cap.json().unwrap();
+        let modules = json["modules"].as_array().unwrap();
+        assert!(modules.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cmd_status_permission_denied_returns_error() {
+        let client = mock_client(|_req| {
+            let err_body = serde_json::json!({
+                "kind": "Status",
+                "apiVersion": "v1",
+                "metadata": {},
+                "status": "Failure",
+                "message": "modules.cfgd.io is forbidden: User \"test\" cannot list resource \"modules\"",
+                "reason": "Forbidden",
+                "code": 403
+            });
+            json_response(403, &err_body)
+        });
+
+        let (printer, _cap) = Printer::for_test_doc();
+
+        let result = cmd_status_async(&printer, Some(client)).await;
+
+        assert!(result.is_err(), "must fail on 403");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("list modules")
+                || err_msg.contains("forbidden")
+                || err_msg.contains("Forbidden"),
+            "error should mention permission failure, got: {err_msg}"
+        );
+    }
+
+    // --- cmd_version happy path ---
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cmd_version_happy_path_reports_server_version() {
+        let client = mock_client(|req| {
+            let path = req.uri().path().to_string();
+            if path == "/version" || path == "/version/" {
+                let version_info = serde_json::json!({
+                    "major": "1",
+                    "minor": "29",
+                    "gitVersion": "v1.29.2",
+                    "gitCommit": "abc123",
+                    "gitTreeState": "clean",
+                    "buildDate": "2024-02-14T00:00:00Z",
+                    "goVersion": "go1.21.7",
+                    "compiler": "gc",
+                    "platform": "linux/amd64"
+                });
+                json_response(200, &version_info)
+            } else {
+                json_response(404, &serde_json::json!({"message": "not found"}))
+            }
+        });
+
+        let (printer, cap) = Printer::for_test_doc();
+
+        let result = cmd_version_async(&printer, Some(client)).await;
+        drop(printer);
+
+        assert!(
+            result.is_ok(),
+            "cmd_version should succeed, got: {result:?}"
+        );
+        let json = cap.json().expect("version doc must carry data payload");
+        assert_eq!(
+            json["kubectl"], "1.29",
+            "server version should be major.minor"
+        );
+        assert!(json["version"].as_str().is_some());
+        assert_eq!(json["version"], json["cfgd"]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cmd_version_server_unreachable_shows_not_connected() {
+        let client = mock_client(|_req| {
+            json_response(
+                500,
+                &serde_json::json!({"message": "internal server error"}),
+            )
+        });
+
+        let (printer, cap) = Printer::for_test_doc();
+
+        let result = cmd_version_async(&printer, Some(client)).await;
+        drop(printer);
+
+        assert!(
+            result.is_ok(),
+            "cmd_version succeeds even when server is unreachable"
+        );
+        let json = cap.json().unwrap();
+        assert_eq!(
+            json["kubectl"], "not connected",
+            "should show 'not connected' when server returns error"
+        );
+    }
+}
