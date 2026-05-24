@@ -538,6 +538,317 @@ pub fn init_test_git_repo(dir: &Path) {
 }
 
 // ---------------------------------------------------------------------------
+// BareGitRepo — bare-repo fixture for tests needing a "remote"
+// ---------------------------------------------------------------------------
+
+/// A commit specification for the `BareGitRepoBuilder`.
+struct BareGitCommitSpec {
+    message: String,
+    files: Vec<(String, String)>,
+}
+
+/// A branch specification: branch name plus commits to add on top of the main
+/// branch tip when the branch was created.
+struct BareGitBranchSpec {
+    name: String,
+    files: Vec<(String, String)>,
+}
+
+/// Builder for a bare git repository used as a test "remote".
+///
+/// Creates a bare repo backed by `tempfile::TempDir`, populated via a temporary
+/// working clone. Supports adding sequential commits, tags (on HEAD at the time
+/// `.tag()` is called), and branches with additional files.
+pub struct BareGitRepoBuilder {
+    commits: Vec<BareGitCommitSpec>,
+    tags: Vec<(String, usize)>,
+    branches: Vec<BareGitBranchSpec>,
+}
+
+impl BareGitRepoBuilder {
+    fn new() -> Self {
+        Self {
+            commits: Vec::new(),
+            tags: Vec::new(),
+            branches: Vec::new(),
+        }
+    }
+
+    /// Add a commit with the given message and file contents.
+    /// Files are specified as `(path, content)` pairs.
+    pub fn commit(mut self, message: &str, files: &[(&str, &str)]) -> Self {
+        self.commits.push(BareGitCommitSpec {
+            message: message.to_string(),
+            files: files
+                .iter()
+                .map(|(p, c)| (p.to_string(), c.to_string()))
+                .collect(),
+        });
+        self
+    }
+
+    /// Tag the most recent commit (at the time of this call in builder order).
+    /// Panics if no commits have been added yet.
+    pub fn tag(mut self, name: &str) -> Self {
+        assert!(
+            !self.commits.is_empty(),
+            "BareGitRepoBuilder::tag() requires at least one prior commit"
+        );
+        self.tags.push((name.to_string(), self.commits.len() - 1));
+        self
+    }
+
+    /// Create a branch off the current HEAD with an additional commit
+    /// containing the given files.
+    pub fn branch(mut self, name: &str, files: &[(&str, &str)]) -> Self {
+        self.branches.push(BareGitBranchSpec {
+            name: name.to_string(),
+            files: files
+                .iter()
+                .map(|(p, c)| (p.to_string(), c.to_string()))
+                .collect(),
+        });
+        self
+    }
+
+    /// Build the bare repository and return a `BareGitRepo` handle.
+    pub fn build(self) -> BareGitRepo {
+        assert!(
+            !self.commits.is_empty(),
+            "BareGitRepoBuilder requires at least one commit"
+        );
+
+        let bare_dir = tempfile::TempDir::new().expect("create bare repo tempdir");
+        let work_dir = tempfile::TempDir::new().expect("create working clone tempdir");
+
+        let bare_repo = git2::Repository::init_bare(bare_dir.path()).expect("git init --bare");
+
+        // Working clone to make commits
+        let work_path = work_dir.path().join("work");
+        let work_repo = git2::Repository::init(&work_path).expect("git init work clone");
+
+        // Configure committer identity
+        let mut config = work_repo.config().expect("repo config");
+        config
+            .set_str("user.name", "cfgd-test")
+            .expect("set user.name");
+        config
+            .set_str("user.email", "test@cfgd.io")
+            .expect("set user.email");
+
+        // Add bare as remote
+        let bare_url = format!("file://{}", bare_dir.path().display());
+        work_repo
+            .remote("origin", &bare_url)
+            .expect("add origin remote");
+
+        let sig = git2::Signature::now("cfgd-test", "test@cfgd.io").expect("signature");
+
+        // Apply commits sequentially, tracking OIDs for tag placement
+        let mut commit_oids: Vec<git2::Oid> = Vec::new();
+        for spec in &self.commits {
+            for (path, content) in &spec.files {
+                let full_path = work_path.join(path);
+                if let Some(parent) = full_path.parent() {
+                    std::fs::create_dir_all(parent).expect("create parent dirs");
+                }
+                std::fs::write(&full_path, content).expect("write file");
+            }
+
+            let mut index = work_repo.index().expect("repo index");
+            index
+                .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+                .expect("add all to index");
+            index.write().expect("write index");
+
+            let tree_id = index.write_tree().expect("write tree");
+            let tree = work_repo.find_tree(tree_id).expect("find tree");
+
+            let parents: Vec<git2::Commit<'_>> = if commit_oids.is_empty() {
+                vec![]
+            } else {
+                let last_oid = *commit_oids.last().expect("last oid");
+                vec![work_repo.find_commit(last_oid).expect("find parent commit")]
+            };
+            let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
+
+            let oid = work_repo
+                .commit(Some("HEAD"), &sig, &sig, &spec.message, &tree, &parent_refs)
+                .expect("commit");
+            commit_oids.push(oid);
+        }
+
+        // Determine the branch name from HEAD
+        let head_branch = work_repo
+            .head()
+            .expect("HEAD")
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+
+        // Push main branch to bare
+        let mut remote = work_repo.find_remote("origin").expect("find origin remote");
+        remote
+            .push(
+                &[&format!(
+                    "refs/heads/{head_branch}:refs/heads/{head_branch}"
+                )],
+                None,
+            )
+            .expect("push main branch to bare");
+
+        // Create tags on the bare repo
+        for (tag_name, commit_idx) in &self.tags {
+            let oid = commit_oids[*commit_idx];
+            let obj = bare_repo
+                .find_object(oid, None)
+                .expect("find tagged object in bare");
+            bare_repo
+                .tag_lightweight(tag_name, &obj, false)
+                .expect("create tag in bare");
+        }
+
+        // Create branches
+        for branch_spec in &self.branches {
+            // Start from HEAD of the working clone
+            let head_commit = work_repo
+                .head()
+                .expect("HEAD")
+                .peel_to_commit()
+                .expect("peel HEAD to commit");
+
+            // Create branch at HEAD
+            work_repo
+                .branch(&branch_spec.name, &head_commit, false)
+                .expect("create branch");
+
+            // Checkout the branch
+            work_repo
+                .set_head(&format!("refs/heads/{}", branch_spec.name))
+                .expect("set HEAD to branch");
+            work_repo
+                .checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+                .expect("checkout branch");
+
+            // Add files and commit on the branch
+            for (path, content) in &branch_spec.files {
+                let full_path = work_path.join(path);
+                if let Some(parent) = full_path.parent() {
+                    std::fs::create_dir_all(parent).expect("create parent dirs");
+                }
+                std::fs::write(&full_path, content).expect("write file");
+            }
+
+            let mut index = work_repo.index().expect("repo index");
+            index
+                .add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)
+                .expect("add all to index");
+            index.write().expect("write index");
+
+            let tree_id = index.write_tree().expect("write tree");
+            let tree = work_repo.find_tree(tree_id).expect("find tree");
+            let branch_head = work_repo
+                .head()
+                .expect("HEAD")
+                .peel_to_commit()
+                .expect("peel HEAD");
+
+            work_repo
+                .commit(
+                    Some("HEAD"),
+                    &sig,
+                    &sig,
+                    &format!("branch commit: {}", branch_spec.name),
+                    &tree,
+                    &[&branch_head],
+                )
+                .expect("commit on branch");
+
+            // Push branch to bare
+            remote
+                .push(
+                    &[&format!(
+                        "refs/heads/{}:refs/heads/{}",
+                        branch_spec.name, branch_spec.name
+                    )],
+                    None,
+                )
+                .expect("push branch to bare");
+
+            // Return to main branch
+            work_repo
+                .set_head(&format!("refs/heads/{head_branch}"))
+                .expect("set HEAD back to main");
+            work_repo
+                .checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+                .expect("checkout main");
+        }
+
+        BareGitRepo {
+            _bare_dir: bare_dir,
+            _work_dir: work_dir,
+            bare_repo,
+            head_branch,
+        }
+    }
+}
+
+/// A bare git repository fixture for tests that need a "remote" to clone/fetch.
+///
+/// Created via `BareGitRepo::builder()`. The bare repo is backed by a
+/// `TempDir` and cleaned up automatically on drop.
+pub struct BareGitRepo {
+    _bare_dir: tempfile::TempDir,
+    _work_dir: tempfile::TempDir,
+    bare_repo: git2::Repository,
+    head_branch: String,
+}
+
+impl BareGitRepo {
+    /// Start building a bare git repo fixture.
+    pub fn builder() -> BareGitRepoBuilder {
+        BareGitRepoBuilder::new()
+    }
+
+    /// The `file://` URL for this bare repo, suitable for clone/fetch.
+    pub fn url(&self) -> String {
+        format!("file://{}", self.bare_repo.path().display())
+    }
+
+    /// The path to the bare repo on disk.
+    pub fn path(&self) -> &Path {
+        self.bare_repo.path()
+    }
+
+    /// The name of the main branch (usually "master" or "main").
+    pub fn head_branch(&self) -> &str {
+        &self.head_branch
+    }
+
+    /// Check whether a lightweight tag exists in the bare repo.
+    pub fn has_tag(&self, name: &str) -> bool {
+        self.bare_repo
+            .find_reference(&format!("refs/tags/{name}"))
+            .is_ok()
+    }
+
+    /// Check whether a branch exists in the bare repo.
+    pub fn has_branch(&self, name: &str) -> bool {
+        self.bare_repo
+            .find_reference(&format!("refs/heads/{name}"))
+            .is_ok()
+    }
+
+    /// List all tag names in the bare repo.
+    pub fn tags(&self) -> Vec<String> {
+        self.bare_repo
+            .tag_names(None)
+            .map(|names| names.iter().flatten().map(|s| s.to_string()).collect())
+            .unwrap_or_default()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Printer helper
 // ---------------------------------------------------------------------------
 
@@ -1623,6 +1934,108 @@ mod tests {
 
         let commit = head.peel_to_commit().unwrap();
         assert_eq!(commit.message().unwrap(), "initial commit");
+    }
+
+    // -----------------------------------------------------------------------
+    // BareGitRepo
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn bare_git_repo_clone_from_fixture() {
+        let repo = BareGitRepo::builder()
+            .commit("initial", &[("README.md", "hello")])
+            .commit(
+                "second",
+                &[("module.yaml", "apiVersion: cfgd.io/v1alpha1\n")],
+            )
+            .tag("v1.0.0")
+            .branch("feature", &[("extra.txt", "data")])
+            .build();
+
+        // Verify URL is file:// protocol
+        let url = repo.url();
+        assert!(
+            url.starts_with("file://"),
+            "url should be file://, got: {url}"
+        );
+
+        // Verify tags and branches exist
+        assert!(repo.has_tag("v1.0.0"));
+        assert!(!repo.has_tag("v2.0.0"));
+        assert!(repo.has_branch("feature"));
+        assert!(repo.has_branch(repo.head_branch()));
+
+        // Clone from the bare repo and verify contents
+        let clone_dir = tempfile::TempDir::new().unwrap();
+        let cloned = git2::Repository::clone(&url, clone_dir.path()).unwrap();
+
+        // Verify files from commits are present
+        let readme = std::fs::read_to_string(clone_dir.path().join("README.md")).unwrap();
+        assert_eq!(readme, "hello");
+        let module = std::fs::read_to_string(clone_dir.path().join("module.yaml")).unwrap();
+        assert_eq!(module, "apiVersion: cfgd.io/v1alpha1\n");
+
+        // Verify commit history (2 commits on main)
+        let head = cloned.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(head.message().unwrap(), "second");
+        let parent = head.parent(0).unwrap();
+        assert_eq!(parent.message().unwrap(), "initial");
+    }
+
+    #[test]
+    fn bare_git_repo_fetch_branch_from_fixture() {
+        let repo = BareGitRepo::builder()
+            .commit("base", &[("base.txt", "base content")])
+            .branch("dev", &[("dev.txt", "dev content")])
+            .build();
+
+        // Clone only the main branch
+        let clone_dir = tempfile::TempDir::new().unwrap();
+        let cloned = git2::Repository::clone(&repo.url(), clone_dir.path()).unwrap();
+
+        // Fetch the dev branch
+        let mut remote = cloned.find_remote("origin").unwrap();
+        remote
+            .fetch(&["refs/heads/dev:refs/remotes/origin/dev"], None, None)
+            .unwrap();
+
+        // Checkout origin/dev
+        let dev_ref = cloned.find_reference("refs/remotes/origin/dev").unwrap();
+        let dev_commit = dev_ref.peel_to_commit().unwrap();
+
+        // The branch commit should contain the extra file
+        let dev_tree = dev_commit.tree().unwrap();
+        assert!(
+            dev_tree.get_name("dev.txt").is_some(),
+            "dev branch should contain dev.txt"
+        );
+        assert!(
+            dev_tree.get_name("base.txt").is_some(),
+            "dev branch should also contain base.txt"
+        );
+
+        // Verify tag listing
+        let tags = repo.tags();
+        assert!(tags.is_empty(), "no tags were added");
+    }
+
+    #[test]
+    fn bare_git_repo_multiple_tags() {
+        let repo = BareGitRepo::builder()
+            .commit("first", &[("a.txt", "a")])
+            .tag("v0.1.0")
+            .commit("second", &[("b.txt", "b")])
+            .tag("v0.2.0")
+            .build();
+
+        assert!(repo.has_tag("v0.1.0"));
+        assert!(repo.has_tag("v0.2.0"));
+        assert!(!repo.has_tag("v0.3.0"));
+
+        let tags = repo.tags();
+        assert_eq!(tags.len(), 2);
+        assert!(tags.contains(&"v0.1.0".to_string()));
+        assert!(tags.contains(&"v0.2.0".to_string()));
     }
 
     // -----------------------------------------------------------------------
