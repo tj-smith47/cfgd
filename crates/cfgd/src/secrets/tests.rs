@@ -1696,6 +1696,65 @@ mod provider_shim {
         assert_eq!(secret.expose_secret(), "topsecret", "stdout → SecretString");
     }
 
+    #[test]
+    #[serial]
+    fn op_resolve_propagates_failure_with_stderr_in_error() {
+        let _shim = ToolShim::install("CFGD_OP_BIN", 1, "", "could not find item");
+        let err = OnePasswordProvider
+            .resolve("op://Personal/Login/password")
+            .expect_err("non-zero → Err");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("could not find item"),
+            "stderr must surface in error: {msg}"
+        );
+        assert!(
+            msg.contains("op://Personal/Login/password"),
+            "reference must surface in error: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn op_resolve_passes_separator_to_prevent_argument_injection() {
+        let shim = ToolShim::install("CFGD_OP_BIN", 0, "val", "");
+        OnePasswordProvider
+            .resolve("op://Vault/--help/field")
+            .expect("Ok");
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains("-- op://Vault/--help/field"),
+            "double-dash separator must precede the reference to prevent injection: {argv}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn op_is_available_true_when_seam_points_to_existing_file() {
+        let shim = ToolShim::install("CFGD_OP_BIN", 0, "", "");
+        assert!(
+            OnePasswordProvider.is_available(),
+            "seam points at installed shim binary: {}",
+            shim.argv_log()
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn op_is_available_false_when_seam_points_to_missing_file() {
+        unsafe {
+            std::env::set_var("CFGD_OP_BIN", "/nonexistent/path/to/op");
+        }
+        let available = OnePasswordProvider.is_available();
+        unsafe {
+            std::env::remove_var("CFGD_OP_BIN");
+        }
+        assert!(
+            !available,
+            "must return false when CFGD_OP_BIN points to a nonexistent path"
+        );
+    }
+
     // --- LastPassProvider ---
 
     #[test]

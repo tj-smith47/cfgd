@@ -203,11 +203,107 @@ elif assert_fail; then
     pass_test "SEC09"
 else fail_test "SEC09" "expected error output for unknown provider scheme"; fi
 
-begin_test "SEC10: 1Password full flow (gated)"
-if [ -z "${OP_SERVICE_ACCOUNT_TOKEN:-}" ]; then
-    skip_test "SEC10" "OP_SERVICE_ACCOUNT_TOKEN not set"
+begin_test "SEC10: 1Password full flow via mock op binary"
+SEC10_CFG="$SCRATCH/sec10/cfg"
+SEC10_TGT="$SCRATCH/sec10/home"
+SEC10_STATE="$SCRATCH/sec10/state"
+SEC10_MOCK="$SCRATCH/sec10/mock-op"
+mkdir -p "$SEC10_CFG/profiles" "$SEC10_TGT" "$SEC10_STATE"
+
+cat > "$SEC10_MOCK" << 'SCRIPT'
+#!/bin/sh
+# Mock op CLI: validates args and returns a known secret
+if [ "$1" = "read" ] && [ "$2" = "--" ]; then
+    ref="$3"
+    case "$ref" in
+        op://TestVault/GitHubToken/credential)
+            printf 'ghp_mock1234567890abcdef'
+            exit 0
+            ;;
+        op://TestVault/Missing/field)
+            printf 'could not find item "Missing" in vault "TestVault"' >&2
+            exit 1
+            ;;
+        *)
+            printf 'unknown item reference: %s' "$ref" >&2
+            exit 1
+            ;;
+    esac
+fi
+printf 'unexpected invocation: %s' "$*" >&2
+exit 2
+SCRIPT
+chmod +x "$SEC10_MOCK"
+
+cat > "$SEC10_CFG/cfgd.yaml" << 'YAML'
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: sec10
+spec:
+  profile: sec10-profile
+YAML
+cat > "$SEC10_CFG/profiles/sec10-profile.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: sec10-profile
+spec:
+  secrets:
+    - source: "1password://TestVault/GitHubToken/credential"
+      target: $SEC10_TGT/github-token
+YAML
+
+export CFGD_OP_BIN="$SEC10_MOCK"
+run --config "$SEC10_CFG/cfgd.yaml" --state-dir "$SEC10_STATE" --no-color apply --yes
+unset CFGD_OP_BIN
+
+if assert_ok && [ -f "$SEC10_TGT/github-token" ]; then
+    CONTENT=$(cat "$SEC10_TGT/github-token")
+    if [ "$CONTENT" = "ghp_mock1234567890abcdef" ]; then
+        pass_test "SEC10"
+    else
+        fail_test "SEC10" "secret file content mismatch: got '$CONTENT'"
+    fi
 else
-    skip_test "SEC10" "1Password full flow not yet implemented"
+    fail_test "SEC10" "apply failed or target file not created"
+fi
+
+begin_test "SEC11: 1Password provider error propagation via mock"
+SEC11_CFG="$SCRATCH/sec11/cfg"
+SEC11_TGT="$SCRATCH/sec11/home"
+SEC11_STATE="$SCRATCH/sec11/state"
+mkdir -p "$SEC11_CFG/profiles" "$SEC11_TGT" "$SEC11_STATE"
+
+cat > "$SEC11_CFG/cfgd.yaml" << 'YAML'
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: sec11
+spec:
+  profile: sec11-profile
+YAML
+cat > "$SEC11_CFG/profiles/sec11-profile.yaml" << YAML
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: sec11-profile
+spec:
+  secrets:
+    - source: "1password://TestVault/Missing/field"
+      target: $SEC11_TGT/should-not-exist
+YAML
+
+export CFGD_OP_BIN="$SEC10_MOCK"
+run --config "$SEC11_CFG/cfgd.yaml" --state-dir "$SEC11_STATE" --no-color apply --yes
+unset CFGD_OP_BIN
+
+if assert_fail && assert_contains "$OUTPUT" "could not find item" && [ ! -f "$SEC11_TGT/should-not-exist" ]; then
+    pass_test "SEC11"
+elif assert_ok && echo "$OUTPUT" | grep -qi "could not find item\|unresolvable\|error"; then
+    pass_test "SEC11"
+else
+    fail_test "SEC11" "expected error about missing item"
 fi
 
 print_summary "Secret"
