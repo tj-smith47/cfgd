@@ -1428,3 +1428,216 @@ fn diff_no_drift_when_value_matches_current() {
     }
     assert!(drifts.is_empty(), "matching value should produce no drift");
 }
+
+// ---- Additional coverage: write_etc_environment_to edge cases ----
+
+#[test]
+fn write_etc_environment_preserves_multiple_non_managed_vars() {
+    let dir = tempfile::tempdir().unwrap();
+    let env_path = dir.path().join("environment");
+    std::fs::write(
+        &env_path,
+        "PATH=/usr/bin\nHOME=/root\nSHELL=/bin/bash\nLANG=C\n",
+    )
+    .unwrap();
+
+    let mut managed = BTreeMap::new();
+    managed.insert("EDITOR".to_string(), "vim".to_string());
+
+    EnvironmentConfigurator::write_etc_environment_to(&env_path, &managed).unwrap();
+
+    let content = std::fs::read_to_string(&env_path).unwrap();
+    assert!(content.contains("PATH=/usr/bin"), "PATH preserved");
+    assert!(content.contains("HOME=/root"), "HOME preserved");
+    assert!(content.contains("SHELL=/bin/bash"), "SHELL preserved");
+    assert!(content.contains("LANG=C"), "LANG preserved");
+    assert!(content.contains("EDITOR=vim"), "managed var present");
+}
+
+#[test]
+fn write_etc_environment_handles_value_with_all_special_chars() {
+    let dir = tempfile::tempdir().unwrap();
+    let env_path = dir.path().join("environment");
+
+    let mut managed = BTreeMap::new();
+    managed.insert(
+        "COMPLEX".to_string(),
+        "path with spaces and $HOME and # and \"quotes\"".to_string(),
+    );
+
+    EnvironmentConfigurator::write_etc_environment_to(&env_path, &managed).unwrap();
+
+    let content = std::fs::read_to_string(&env_path).unwrap();
+    assert!(
+        content.contains("COMPLEX=\""),
+        "complex value should be quoted"
+    );
+    assert!(
+        content.contains("\\\"quotes\\\""),
+        "internal quotes escaped"
+    );
+}
+
+#[test]
+fn write_profile_d_empty_managed_nonexistent_file_is_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    let profile_path = dir.path().join("nonexistent_dir").join("cfgd-env.sh");
+
+    let managed = BTreeMap::new();
+    EnvironmentConfigurator::write_profile_d_to(&profile_path, &managed).unwrap();
+    assert!(
+        !profile_path.exists(),
+        "empty managed should not create file"
+    );
+}
+
+#[test]
+fn write_profile_d_multiple_vars_all_exported() {
+    let dir = tempfile::tempdir().unwrap();
+    let profile_path = dir.path().join("cfgd-env.sh");
+
+    let mut managed = BTreeMap::new();
+    managed.insert("A_VAR".to_string(), "alpha".to_string());
+    managed.insert("B_VAR".to_string(), "beta".to_string());
+    managed.insert("C_VAR".to_string(), "gamma".to_string());
+
+    EnvironmentConfigurator::write_profile_d_to(&profile_path, &managed).unwrap();
+
+    let content = std::fs::read_to_string(&profile_path).unwrap();
+    assert!(content.contains("export A_VAR="));
+    assert!(content.contains("export B_VAR="));
+    assert!(content.contains("export C_VAR="));
+    // BTreeMap ordering means A < B < C
+    let a_pos = content.find("A_VAR").unwrap();
+    let b_pos = content.find("B_VAR").unwrap();
+    let c_pos = content.find("C_VAR").unwrap();
+    assert!(
+        a_pos < b_pos && b_pos < c_pos,
+        "vars should be in sorted order"
+    );
+}
+
+// ---- Additional coverage: parse_env_file edge cases ----
+
+#[test]
+fn parse_env_file_multiple_equals_in_value() {
+    let dir = tempfile::tempdir().unwrap();
+    let env_path = dir.path().join("env");
+    std::fs::write(&env_path, "OPTS=--key=val --other=thing\n").unwrap();
+
+    let vars = EnvironmentConfigurator::parse_env_file(env_path.to_str().unwrap());
+    assert_eq!(vars["OPTS"], "--key=val --other=thing");
+}
+
+#[test]
+fn parse_env_file_inline_quotes_preserved() {
+    let dir = tempfile::tempdir().unwrap();
+    let env_path = dir.path().join("env");
+    std::fs::write(&env_path, "MSG=\"hello world\"\n").unwrap();
+
+    let vars = EnvironmentConfigurator::parse_env_file(env_path.to_str().unwrap());
+    assert_eq!(
+        vars["MSG"], "hello world",
+        "outer quotes should be stripped"
+    );
+}
+
+// ---- Additional coverage: parse_export_file edge cases ----
+
+#[test]
+fn parse_export_file_whitespace_around_export() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("env.sh");
+    std::fs::write(&file_path, "  export INDENT=\"yes\"  \n").unwrap();
+
+    let vars = EnvironmentConfigurator::parse_export_file(file_path.to_str().unwrap());
+    assert_eq!(vars["INDENT"], "yes");
+}
+
+#[test]
+fn parse_export_file_value_with_spaces_unquoted() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("env.sh");
+    std::fs::write(&file_path, "export SPACED=has spaces here\n").unwrap();
+
+    let vars = EnvironmentConfigurator::parse_export_file(file_path.to_str().unwrap());
+    assert_eq!(vars["SPACED"], "has spaces here");
+}
+
+#[test]
+fn parse_export_file_export_without_equals_skipped() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("env.sh");
+    std::fs::write(&file_path, "export NOEQUALS\nexport VALID=yes\n").unwrap();
+
+    let vars = EnvironmentConfigurator::parse_export_file(file_path.to_str().unwrap());
+    assert_eq!(vars.len(), 1);
+    assert_eq!(vars["VALID"], "yes");
+}
+
+// ---- Additional coverage: desired_vars with edge-case YAML ----
+
+#[test]
+fn desired_vars_empty_string_value_preserved() {
+    let yaml: serde_yaml::Value = serde_yaml::from_str(
+        r#"
+EMPTY_VAL: ""
+"#,
+    )
+    .unwrap();
+
+    let vars = EnvironmentConfigurator::desired_vars(&yaml);
+    assert_eq!(vars["EMPTY_VAL"], "");
+}
+
+#[test]
+fn desired_vars_large_number_values() {
+    let yaml: serde_yaml::Value = serde_yaml::from_str(
+        r#"
+BIG_INT: 999999999
+PORT: 8080
+"#,
+    )
+    .unwrap();
+
+    let vars = EnvironmentConfigurator::desired_vars(&yaml);
+    assert_eq!(vars["BIG_INT"], "999999999");
+    assert_eq!(vars["PORT"], "8080");
+}
+
+#[test]
+fn write_etc_environment_block_markers_on_separate_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let env_path = dir.path().join("environment");
+
+    let mut managed = BTreeMap::new();
+    managed.insert("KEY".to_string(), "val".to_string());
+
+    EnvironmentConfigurator::write_etc_environment_to(&env_path, &managed).unwrap();
+
+    let content = std::fs::read_to_string(&env_path).unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    let begin_idx = lines
+        .iter()
+        .position(|l| l.contains(CFGD_BLOCK_BEGIN))
+        .unwrap();
+    let end_idx = lines
+        .iter()
+        .position(|l| l.contains(CFGD_BLOCK_END))
+        .unwrap();
+    assert!(
+        end_idx > begin_idx,
+        "END marker must come after BEGIN marker"
+    );
+    assert_eq!(
+        end_idx - begin_idx,
+        2,
+        "one var should produce exactly one line between markers"
+    );
+}
+
+#[test]
+fn environment_name_returns_environment() {
+    let ec = EnvironmentConfigurator;
+    assert_eq!(ec.name(), "environment");
+}

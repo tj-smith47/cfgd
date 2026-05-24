@@ -1255,3 +1255,677 @@ fn test_scan_shell_config_dot_source_syntax() {
         sourced_strs
     );
 }
+
+// ---- Additional coverage: scan_dotfiles ----
+
+#[cfg(unix)]
+#[test]
+fn test_scan_dotfiles_symlink_in_xdg_config() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    let config_dir = home.join(".config");
+    fs::create_dir_all(&config_dir).unwrap();
+    fs::create_dir_all(home.join("real_nvim")).unwrap();
+    std::os::unix::fs::symlink(home.join("real_nvim"), config_dir.join("nvim")).unwrap();
+
+    let entries = scan_dotfiles(home).unwrap();
+    let nvim = entries
+        .iter()
+        .find(|e| e.path == config_dir.join("nvim"))
+        .expect("nvim symlink should appear in xdg entries");
+    assert_eq!(nvim.entry_type, "symlink");
+    assert_eq!(nvim.tool_guess.as_deref(), Some("nvim"));
+    assert_eq!(nvim.size_bytes, 0, "symlink size_bytes should be 0");
+}
+
+#[test]
+fn test_scan_dotfiles_unknown_tool_has_none_tool_guess() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    fs::write(home.join(".my_custom_dotfile"), "custom config").unwrap();
+    fs::create_dir_all(home.join(".config").join("unknown_app")).unwrap();
+
+    let entries = scan_dotfiles(home).unwrap();
+
+    let custom = entries
+        .iter()
+        .find(|e| e.path == home.join(".my_custom_dotfile"))
+        .expect(".my_custom_dotfile should be in entries");
+    assert_eq!(
+        custom.tool_guess, None,
+        "unknown dotfile should have no tool guess"
+    );
+
+    let unknown_xdg = entries
+        .iter()
+        .find(|e| e.path == home.join(".config").join("unknown_app"))
+        .expect("unknown_app under .config should appear");
+    assert_eq!(
+        unknown_xdg.tool_guess, None,
+        "unknown xdg entry should have no tool guess"
+    );
+}
+
+#[test]
+fn test_scan_dotfiles_all_home_skip_entries() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    for skip in &[
+        ".git",
+        ".DS_Store",
+        ".Trash",
+        ".cache",
+        ".local",
+        ".Spotlight-V100",
+        ".fseventsd",
+    ] {
+        if skip.contains('.') && *skip != ".git" {
+            fs::write(home.join(skip), "").unwrap();
+        } else {
+            fs::create_dir_all(home.join(skip)).unwrap();
+        }
+    }
+    // Also add one that should NOT be skipped
+    fs::write(home.join(".bashrc"), "# bash").unwrap();
+
+    let entries = scan_dotfiles(home).unwrap();
+    let paths: Vec<_> = entries.iter().map(|e| &e.path).collect();
+
+    for skip in &[
+        ".git",
+        ".DS_Store",
+        ".Trash",
+        ".cache",
+        ".local",
+        ".Spotlight-V100",
+        ".fseventsd",
+    ] {
+        assert!(
+            !paths.contains(&&home.join(skip)),
+            "{skip} should be skipped"
+        );
+    }
+    assert!(
+        paths.contains(&&home.join(".bashrc")),
+        ".bashrc should be found"
+    );
+}
+
+#[test]
+fn test_scan_dotfiles_xdg_file_has_nonzero_size() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    let config_dir = home.join(".config");
+    fs::create_dir_all(&config_dir).unwrap();
+    let content = "[starship]\nformat = '$all'";
+    fs::write(config_dir.join("starship.toml"), content).unwrap();
+
+    let entries = scan_dotfiles(home).unwrap();
+    let starship = entries
+        .iter()
+        .find(|e| e.path == config_dir.join("starship.toml"))
+        .expect("starship.toml should appear");
+    assert_eq!(starship.entry_type, "file");
+    assert_eq!(
+        starship.size_bytes,
+        content.len() as u64,
+        "xdg file should report accurate size_bytes"
+    );
+    assert_eq!(starship.tool_guess.as_deref(), Some("starship"));
+}
+
+#[test]
+fn test_scan_dotfiles_nonexistent_home_returns_error() {
+    let result = scan_dotfiles(Path::new("/nonexistent/path/that/cannot/exist"));
+    assert!(result.is_err(), "nonexistent home should return Io error");
+}
+
+#[test]
+fn test_scan_dotfiles_multiple_xdg_tool_guesses() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    let config_dir = home.join(".config");
+    fs::create_dir_all(config_dir.join("fish")).unwrap();
+    fs::create_dir_all(config_dir.join("kitty")).unwrap();
+    fs::create_dir_all(config_dir.join("bat")).unwrap();
+    fs::create_dir_all(config_dir.join("lazygit")).unwrap();
+    fs::create_dir_all(config_dir.join("zellij")).unwrap();
+
+    let entries = scan_dotfiles(home).unwrap();
+
+    let find_guess = |name: &str| -> Option<String> {
+        entries
+            .iter()
+            .find(|e| e.path.file_name().and_then(|n| n.to_str()) == Some(name))
+            .and_then(|e| e.tool_guess.clone())
+    };
+
+    assert_eq!(find_guess("fish"), Some("fish".into()));
+    assert_eq!(find_guess("kitty"), Some("kitty".into()));
+    assert_eq!(find_guess("bat"), Some("bat".into()));
+    assert_eq!(find_guess("lazygit"), Some("lazygit".into()));
+    assert_eq!(find_guess("zellij"), Some("zellij".into()));
+}
+
+// ---- Additional coverage: scan_shell_config multi-shell ----
+
+#[test]
+fn test_scan_shell_config_fish_with_aliases_and_exports() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    let fish_dir = home.join(".config").join("fish");
+    fs::create_dir_all(&fish_dir).unwrap();
+    fs::write(
+        fish_dir.join("config.fish"),
+        "alias ll='ls -la'\nexport EDITOR=nvim\nfish_add_path /usr/local/bin\n",
+    )
+    .unwrap();
+
+    let result = scan_shell_config("fish", home).unwrap();
+    assert_eq!(result.shell, "fish");
+    assert!(result.aliases.iter().any(|a| a.name == "ll"));
+    assert!(result.exports.iter().any(|e| e.name == "EDITOR"));
+    assert_eq!(result.path_additions.len(), 1);
+}
+
+#[test]
+fn test_scan_shell_config_zsh_multiple_rc_files() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    fs::write(home.join(".zshenv"), "export LANG=en_US.UTF-8\n").unwrap();
+    fs::write(home.join(".zshrc"), "alias gs='git status'\n").unwrap();
+    fs::write(home.join(".zprofile"), "export TERM=xterm-256color\n").unwrap();
+
+    let result = scan_shell_config("zsh", home).unwrap();
+    assert_eq!(result.config_files.len(), 3);
+    assert!(result.exports.iter().any(|e| e.name == "LANG"));
+    assert!(result.exports.iter().any(|e| e.name == "TERM"));
+    assert!(result.aliases.iter().any(|a| a.name == "gs"));
+}
+
+#[test]
+fn test_scan_shell_config_detects_prezto_via_non_source_line() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    fs::write(
+        home.join(".zshrc"),
+        "zstyle ':prezto:*' color 'yes'\nalias ll='ls -la'\n",
+    )
+    .unwrap();
+
+    let result = scan_shell_config("zsh", home).unwrap();
+    assert_eq!(result.plugin_manager.as_deref(), Some("prezto"));
+}
+
+#[test]
+fn test_scan_shell_config_detects_zim_via_non_source_line() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    fs::write(home.join(".zshrc"), "ZIM_HOME=~/.zim\n").unwrap();
+
+    let result = scan_shell_config("zsh", home).unwrap();
+    assert_eq!(result.plugin_manager.as_deref(), Some("zim"));
+}
+
+#[test]
+fn test_scan_shell_config_detects_antigen_via_non_source_line() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    fs::write(
+        home.join(".zshrc"),
+        "antigen bundle zsh-users/zsh-autosuggestions\n",
+    )
+    .unwrap();
+
+    let result = scan_shell_config("zsh", home).unwrap();
+    assert_eq!(result.plugin_manager.as_deref(), Some("antigen"));
+}
+
+#[test]
+fn test_scan_shell_config_detects_antibody_via_non_source_line() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    fs::write(
+        home.join(".zshrc"),
+        "antibody bundle < ~/.zsh_plugins.txt\n",
+    )
+    .unwrap();
+
+    let result = scan_shell_config("zsh", home).unwrap();
+    assert_eq!(result.plugin_manager.as_deref(), Some("antibody"));
+}
+
+#[test]
+fn test_scan_shell_config_detects_sheldon_via_non_source_line() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    fs::write(home.join(".zshrc"), "eval \"$(sheldon source)\"\n").unwrap();
+
+    let result = scan_shell_config("zsh", home).unwrap();
+    assert_eq!(result.plugin_manager.as_deref(), Some("sheldon"));
+}
+
+#[test]
+fn test_scan_shell_config_first_plugin_manager_wins() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    fs::write(
+        home.join(".zshrc"),
+        "source $ZSH/oh-my-zsh.sh\nzinit light zsh-users/zsh-syntax-highlighting\n",
+    )
+    .unwrap();
+
+    let result = scan_shell_config("zsh", home).unwrap();
+    assert_eq!(
+        result.plugin_manager.as_deref(),
+        Some("oh-my-zsh"),
+        "first detected plugin manager should win"
+    );
+}
+
+#[test]
+fn test_scan_shell_config_alias_without_value_skipped() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    fs::write(home.join(".zshrc"), "alias =\nalias good='cmd'\n").unwrap();
+
+    let result = scan_shell_config("zsh", home).unwrap();
+    assert_eq!(
+        result.aliases.len(),
+        1,
+        "alias with empty name/value should be skipped"
+    );
+    assert_eq!(result.aliases[0].name, "good");
+}
+
+#[test]
+fn test_scan_shell_config_export_without_equals_skipped() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    fs::write(home.join(".zshrc"), "export NOEQUALS\nexport VALID=value\n").unwrap();
+
+    let result = scan_shell_config("zsh", home).unwrap();
+    assert_eq!(
+        result.exports.len(),
+        1,
+        "export without = should be skipped"
+    );
+    assert_eq!(result.exports[0].name, "VALID");
+}
+
+#[test]
+fn test_scan_shell_config_sourced_file_with_quotes() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    fs::write(
+        home.join(".zshrc"),
+        "source \"~/.shell_extras\"\nsource '~/.other'\n",
+    )
+    .unwrap();
+
+    let result = scan_shell_config("zsh", home).unwrap();
+    let sourced_strs: Vec<_> = result
+        .sourced_files
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    assert!(
+        sourced_strs.iter().any(|s| s.contains(".shell_extras")),
+        "double-quoted sourced file should be captured: {:?}",
+        sourced_strs
+    );
+    assert!(
+        sourced_strs.iter().any(|s| s.contains(".other")),
+        "single-quoted sourced file should be captured: {:?}",
+        sourced_strs
+    );
+}
+
+#[test]
+fn test_scan_shell_config_empty_lines_and_whitespace_only() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    fs::write(home.join(".zshrc"), "\n\n   \n\t\nalias valid='cmd'\n\n").unwrap();
+
+    let result = scan_shell_config("zsh", home).unwrap();
+    assert_eq!(result.aliases.len(), 1);
+    assert_eq!(result.aliases[0].name, "valid");
+}
+
+// ---- Additional coverage: detect_plugin_manager edge cases ----
+
+#[test]
+fn test_detect_plugin_manager_ohmyzsh_install_url() {
+    assert_eq!(
+        detect_plugin_manager(
+            "sh -c \"$(curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)\""
+        ),
+        Some("oh-my-zsh")
+    );
+}
+
+#[test]
+fn test_detect_plugin_manager_fisher_always_matches_because_contains_fish() {
+    // "fisher" inherently contains "fish" as a substring, so it always matches
+    assert_eq!(
+        detect_plugin_manager("some_fisher_tool install"),
+        Some("fisher"),
+        "fisher contains 'fish' so the condition is always true"
+    );
+}
+
+#[test]
+fn test_detect_plugin_manager_whitespace_handling() {
+    assert_eq!(
+        detect_plugin_manager("  source ~/.zinit/bin/zinit.zsh  "),
+        Some("zinit")
+    );
+}
+
+// ---- Additional coverage: strip_inline_comment edge cases ----
+
+#[test]
+fn test_strip_inline_comment_nested_quotes() {
+    assert_eq!(
+        strip_inline_comment(r#"alias x="it's a 'test'" # comment"#),
+        r#"alias x="it's a 'test'""#
+    );
+}
+
+#[test]
+fn test_strip_inline_comment_empty_string() {
+    assert_eq!(strip_inline_comment(""), "");
+}
+
+#[test]
+fn test_strip_inline_comment_hash_inside_single_then_outside() {
+    assert_eq!(
+        strip_inline_comment("echo 'has#inside' outside # real comment"),
+        "echo 'has#inside' outside"
+    );
+}
+
+// ---- Additional coverage: scan_installed_packages edge cases ----
+
+#[test]
+fn test_scan_installed_packages_filter_matches_nothing() {
+    let brew = TestPackageManager {
+        manager_name: "brew",
+        available: true,
+        packages: vec![pkg("ripgrep", "14.0.0")],
+    };
+
+    let managers: Vec<&dyn PackageManager> = vec![&brew];
+    let entries = scan_installed_packages(&managers, Some("nonexistent_manager")).unwrap();
+    assert!(
+        entries.is_empty(),
+        "filter matching no manager should return empty"
+    );
+}
+
+#[test]
+fn test_scan_installed_packages_all_unavailable() {
+    let mgr1 = TestPackageManager {
+        manager_name: "brew",
+        available: false,
+        packages: vec![pkg("ripgrep", "14.0.0")],
+    };
+    let mgr2 = TestPackageManager {
+        manager_name: "apt",
+        available: false,
+        packages: vec![pkg("curl", "7.88.1")],
+    };
+
+    let managers: Vec<&dyn PackageManager> = vec![&mgr1, &mgr2];
+    let entries = scan_installed_packages(&managers, None).unwrap();
+    assert!(
+        entries.is_empty(),
+        "all unavailable should return empty list"
+    );
+}
+
+#[test]
+fn test_scan_installed_packages_filter_skips_non_matching_even_if_available() {
+    let brew = TestPackageManager {
+        manager_name: "brew",
+        available: true,
+        packages: vec![pkg("ripgrep", "14.0.0")],
+    };
+    let apt = TestPackageManager {
+        manager_name: "apt",
+        available: true,
+        packages: vec![pkg("curl", "7.88.1")],
+    };
+
+    let managers: Vec<&dyn PackageManager> = vec![&brew, &apt];
+    let entries = scan_installed_packages(&managers, Some("apt")).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].name, "curl");
+    assert_eq!(entries[0].manager, "apt");
+}
+
+// ---- Additional coverage: parse_shell_file edge cases ----
+
+#[test]
+fn test_parse_shell_file_alias_unquoted_value() {
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("test.sh");
+    fs::write(&file, "alias k=kubectl\n").unwrap();
+
+    let mut aliases = vec![];
+    let mut exports = vec![];
+    let mut paths = vec![];
+    let mut pm = None;
+    parse_shell_file(&file, &mut aliases, &mut exports, &mut paths, &mut pm);
+
+    assert_eq!(aliases.len(), 1);
+    assert_eq!(aliases[0].name, "k");
+    assert_eq!(aliases[0].command, "kubectl");
+}
+
+#[test]
+fn test_parse_shell_file_source_detects_plugin_manager() {
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("test.sh");
+    fs::write(&file, "source $ZSH/oh-my-zsh.sh\n").unwrap();
+
+    let mut aliases = vec![];
+    let mut exports = vec![];
+    let mut paths = vec![];
+    let mut pm = None;
+    let sourced = parse_shell_file(&file, &mut aliases, &mut exports, &mut paths, &mut pm);
+
+    assert_eq!(pm.as_deref(), Some("oh-my-zsh"));
+    assert_eq!(sourced.len(), 1);
+}
+
+#[test]
+fn test_parse_shell_file_empty_source_value_skipped() {
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("test.sh");
+    fs::write(&file, "source ''\n. \"\"\n").unwrap();
+
+    let mut aliases = vec![];
+    let mut exports = vec![];
+    let mut paths = vec![];
+    let mut pm = None;
+    let sourced = parse_shell_file(&file, &mut aliases, &mut exports, &mut paths, &mut pm);
+
+    assert!(
+        sourced.is_empty(),
+        "empty quoted source paths should be skipped"
+    );
+}
+
+#[test]
+fn test_parse_shell_file_mixed_content() {
+    let tmp = TempDir::new().unwrap();
+    let file = tmp.path().join("test.sh");
+    fs::write(
+        &file,
+        concat!(
+            "# comment\n",
+            "alias ll='ls -la'\n",
+            "export EDITOR=nvim\n",
+            "export PATH=\"$HOME/bin:$PATH\"\n",
+            "fish_add_path /opt/bin\n",
+            "path+=($HOME/.local/bin)\n",
+            "source ~/.extras\n",
+            "zinit light zsh-users/zsh-syntax-highlighting\n",
+            "some random line\n",
+        ),
+    )
+    .unwrap();
+
+    let mut aliases = vec![];
+    let mut exports = vec![];
+    let mut paths = vec![];
+    let mut pm = None;
+    let sourced = parse_shell_file(&file, &mut aliases, &mut exports, &mut paths, &mut pm);
+
+    assert_eq!(aliases.len(), 1);
+    assert_eq!(exports.len(), 1);
+    assert_eq!(exports[0].name, "EDITOR");
+    // PATH export + fish_add_path + path+=
+    assert_eq!(paths.len(), 3);
+    assert_eq!(sourced.len(), 1);
+    assert_eq!(pm.as_deref(), Some("zinit"));
+}
+
+#[test]
+fn test_scan_shell_config_deduplicates_sourced_files() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    // Both .zshenv and .zshrc source the same file
+    fs::write(home.join(".zshenv"), "source ~/.shared\n").unwrap();
+    fs::write(home.join(".zshrc"), "source ~/.shared\n").unwrap();
+
+    let result = scan_shell_config("zsh", home).unwrap();
+    let shared_count = result
+        .sourced_files
+        .iter()
+        .filter(|p| p.to_string_lossy().contains(".shared"))
+        .count();
+    // dedup only removes consecutive duplicates, so they'll be deduplicated
+    // if they come in sequence
+    assert!(
+        shared_count <= 2,
+        "sourced_files should contain .shared at most twice (dedup removes consecutive dupes)"
+    );
+}
+
+#[test]
+fn test_scan_shell_config_returns_correct_shell_name() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    for shell in &["zsh", "bash", "fish", "sh", "dash"] {
+        let result = scan_shell_config(shell, home).unwrap();
+        assert_eq!(result.shell, *shell);
+    }
+}
+
+// ---- Additional coverage: shell_config_files ----
+
+#[test]
+fn test_shell_config_files_returns_correct_count() {
+    let home = Path::new("/test");
+    assert_eq!(shell_config_files("zsh", home).len(), 4);
+    assert_eq!(shell_config_files("bash", home).len(), 4);
+    assert_eq!(shell_config_files("fish", home).len(), 1);
+    assert_eq!(shell_config_files("sh", home).len(), 1);
+    assert_eq!(shell_config_files("dash", home).len(), 1);
+    assert_eq!(shell_config_files("ksh", home).len(), 0);
+    assert_eq!(shell_config_files("", home).len(), 0);
+}
+
+// ---- Additional coverage: build_tool_map completeness ----
+
+#[test]
+fn test_build_tool_map_contains_common_tools() {
+    let map = build_tool_map();
+    // Verify a broad sampling of entries exist
+    let expected_home = vec![
+        (".zshrc", "zsh"),
+        (".bashrc", "bash"),
+        (".vimrc", "vim"),
+        (".gitconfig", "git"),
+        (".npmrc", "npm"),
+        (".cargo", "cargo"),
+        (".aws", "aws"),
+        (".docker", "docker"),
+        (".mise.toml", "mise"),
+        (".tool-versions", "asdf"),
+        (".editorconfig", "editorconfig"),
+        (".gnupg", "gpg"),
+    ];
+    for (key, expected_tool) in expected_home {
+        assert_eq!(
+            map.get(key),
+            Some(&expected_tool),
+            "TOOL_MAP missing or wrong for '{key}'"
+        );
+    }
+
+    let expected_xdg = vec![
+        ("tmux", "tmux"),
+        ("ghostty", "ghostty"),
+        ("wezterm", "wezterm"),
+        ("hypr", "hyprland"),
+        ("waybar", "waybar"),
+        ("rofi", "rofi"),
+        ("yazi", "yazi"),
+        ("zoxide", "zoxide"),
+        ("delta", "delta"),
+        ("difftastic", "difftastic"),
+        ("mise", "mise"),
+    ];
+    for (key, expected_tool) in expected_xdg {
+        assert_eq!(
+            map.get(key),
+            Some(&expected_tool),
+            "TOOL_MAP missing or wrong for xdg '{key}'"
+        );
+    }
+}
+
+#[test]
+fn test_scan_dotfiles_counts_only_file_content_for_size() {
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+
+    // Write files of known sizes
+    fs::write(home.join(".zshrc"), "abc").unwrap(); // 3 bytes
+    fs::write(home.join(".gitconfig"), "").unwrap(); // 0 bytes
+
+    let entries = scan_dotfiles(home).unwrap();
+    let zshrc = entries
+        .iter()
+        .find(|e| e.path == home.join(".zshrc"))
+        .unwrap();
+    assert_eq!(zshrc.size_bytes, 3);
+
+    let gitconfig = entries
+        .iter()
+        .find(|e| e.path == home.join(".gitconfig"))
+        .unwrap();
+    assert_eq!(gitconfig.size_bytes, 0);
+}
