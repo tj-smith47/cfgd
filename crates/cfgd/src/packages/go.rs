@@ -475,5 +475,93 @@ mod tests {
                 .expect("non-zero → Ok(None)");
             assert_eq!(v, None);
         }
+
+        #[test]
+        #[serial]
+        fn go_uninstall_removes_binary_from_gopath_bin() {
+            let dir = tempfile::tempdir().unwrap();
+            let bin_dir = dir.path().join("bin");
+            std::fs::create_dir(&bin_dir).unwrap();
+            std::fs::write(bin_dir.join("gopls"), b"fake-binary").unwrap();
+            assert!(bin_dir.join("gopls").exists());
+
+            let _guard =
+                cfgd_core::test_helpers::EnvVarGuard::set("GOPATH", dir.path().to_str().unwrap());
+            let p = test_printer();
+            GoInstallManager
+                .uninstall(&["golang.org/x/tools/gopls".into()], &p)
+                .expect("uninstall succeeds");
+            assert!(
+                !bin_dir.join("gopls").exists(),
+                "binary must be removed from $GOPATH/bin"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn go_uninstall_noop_when_binary_missing() {
+            let dir = tempfile::tempdir().unwrap();
+            let bin_dir = dir.path().join("bin");
+            std::fs::create_dir(&bin_dir).unwrap();
+
+            let _guard =
+                cfgd_core::test_helpers::EnvVarGuard::set("GOPATH", dir.path().to_str().unwrap());
+            let p = test_printer();
+            GoInstallManager
+                .uninstall(&["github.com/nonexistent/tool".into()], &p)
+                .expect("uninstall of missing binary is a no-op");
+        }
+
+        #[test]
+        #[serial]
+        fn go_uninstall_multiple_packages() {
+            let dir = tempfile::tempdir().unwrap();
+            let bin_dir = dir.path().join("bin");
+            std::fs::create_dir(&bin_dir).unwrap();
+            std::fs::write(bin_dir.join("gopls"), b"").unwrap();
+            std::fs::write(bin_dir.join("staticcheck"), b"").unwrap();
+
+            let _guard =
+                cfgd_core::test_helpers::EnvVarGuard::set("GOPATH", dir.path().to_str().unwrap());
+            let p = test_printer();
+            GoInstallManager
+                .uninstall(
+                    &[
+                        "golang.org/x/tools/gopls".into(),
+                        "honnef.co/go/tools/cmd/staticcheck".into(),
+                    ],
+                    &p,
+                )
+                .expect("multi-uninstall succeeds");
+            assert!(!bin_dir.join("gopls").exists());
+            assert!(!bin_dir.join("staticcheck").exists());
+        }
+
+        #[test]
+        #[serial]
+        fn go_installed_packages_scans_gopath_bin() {
+            let dir = tempfile::tempdir().unwrap();
+            let bin_dir = dir.path().join("bin");
+            std::fs::create_dir(&bin_dir).unwrap();
+            std::fs::write(bin_dir.join("gopls"), b"").unwrap();
+            std::fs::write(bin_dir.join("dlv"), b"").unwrap();
+
+            let _guard =
+                cfgd_core::test_helpers::EnvVarGuard::set("GOPATH", dir.path().to_str().unwrap());
+            let pkgs = GoInstallManager.installed_packages().expect("Ok");
+            assert_eq!(pkgs.len(), 2);
+            assert!(pkgs.contains("gopls"));
+            assert!(pkgs.contains("dlv"));
+        }
+
+        #[test]
+        #[serial]
+        fn go_installed_packages_empty_when_no_bin_dir() {
+            let dir = tempfile::tempdir().unwrap();
+            let _guard =
+                cfgd_core::test_helpers::EnvVarGuard::set("GOPATH", dir.path().to_str().unwrap());
+            let pkgs = GoInstallManager.installed_packages().expect("Ok");
+            assert!(pkgs.is_empty());
+        }
     }
 }

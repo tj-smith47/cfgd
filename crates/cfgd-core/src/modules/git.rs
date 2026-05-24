@@ -458,3 +458,283 @@ pub fn check_tag_signature(
         Ok(TagSignatureStatus::Unsigned)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- is_git_source ---
+
+    #[test]
+    fn is_git_source_accepts_https() {
+        assert!(is_git_source("https://github.com/user/repo.git"));
+    }
+
+    #[test]
+    fn is_git_source_accepts_http() {
+        assert!(is_git_source("http://example.com/repo"));
+    }
+
+    #[test]
+    fn is_git_source_accepts_ssh() {
+        assert!(is_git_source("ssh://git@github.com/user/repo.git"));
+    }
+
+    #[test]
+    fn is_git_source_accepts_git_at() {
+        assert!(is_git_source("git@github.com:user/repo.git"));
+    }
+
+    #[test]
+    fn is_git_source_rejects_local_path() {
+        assert!(!is_git_source("/home/user/dotfiles"));
+        assert!(!is_git_source("./local/path"));
+        assert!(!is_git_source("relative/path"));
+    }
+
+    #[test]
+    fn is_git_source_rejects_file_url_by_default() {
+        assert!(!is_git_source("file:///tmp/repo"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn is_git_source_accepts_file_url_when_env_set() {
+        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        assert!(is_git_source("file:///tmp/repo"));
+    }
+
+    // --- parse_git_source ---
+
+    #[test]
+    fn parse_plain_https_url() {
+        let gs = parse_git_source("https://github.com/user/repo.git").unwrap();
+        assert_eq!(gs.repo_url, "https://github.com/user/repo.git");
+        assert_eq!(gs.tag, None);
+        assert_eq!(gs.git_ref, None);
+        assert_eq!(gs.subdir, None);
+    }
+
+    #[test]
+    fn parse_https_with_tag() {
+        let gs = parse_git_source("https://github.com/user/repo.git@v2.1.0").unwrap();
+        assert_eq!(gs.repo_url, "https://github.com/user/repo.git");
+        assert_eq!(gs.tag.as_deref(), Some("v2.1.0"));
+    }
+
+    #[test]
+    fn parse_https_with_ref() {
+        let gs = parse_git_source("https://github.com/user/repo.git?ref=dev").unwrap();
+        assert_eq!(gs.repo_url, "https://github.com/user/repo.git");
+        assert_eq!(gs.git_ref.as_deref(), Some("dev"));
+        assert_eq!(gs.tag, None);
+    }
+
+    #[test]
+    fn parse_https_with_subdir() {
+        let gs = parse_git_source("https://github.com/user/repo.git//configs/base").unwrap();
+        assert_eq!(gs.repo_url, "https://github.com/user/repo.git");
+        assert_eq!(gs.subdir.as_deref(), Some("configs/base"));
+        assert_eq!(gs.tag, None);
+    }
+
+    #[test]
+    fn parse_https_with_subdir_and_tag() {
+        let gs = parse_git_source("https://github.com/user/repo.git//configs/base@v2.1.0").unwrap();
+        assert_eq!(gs.repo_url, "https://github.com/user/repo.git");
+        assert_eq!(gs.subdir.as_deref(), Some("configs/base"));
+        assert_eq!(gs.tag.as_deref(), Some("v2.1.0"));
+    }
+
+    #[test]
+    fn parse_ssh_with_tag() {
+        let gs = parse_git_source("git@github.com:user/repo.git@v1.0.0").unwrap();
+        assert_eq!(gs.repo_url, "git@github.com:user/repo.git");
+        assert_eq!(gs.tag.as_deref(), Some("v1.0.0"));
+    }
+
+    #[test]
+    fn parse_ssh_plain() {
+        let gs = parse_git_source("git@github.com:user/repo.git").unwrap();
+        assert_eq!(gs.repo_url, "git@github.com:user/repo.git");
+        assert_eq!(gs.tag, None);
+        assert_eq!(gs.git_ref, None);
+    }
+
+    #[test]
+    fn parse_ref_with_subdir() {
+        let gs = parse_git_source("https://github.com/user/repo.git?ref=dev//subdir").unwrap();
+        assert_eq!(gs.repo_url, "https://github.com/user/repo.git");
+        assert_eq!(gs.git_ref.as_deref(), Some("dev"));
+        assert_eq!(gs.subdir.as_deref(), Some("subdir"));
+    }
+
+    #[test]
+    fn parse_no_dot_git_with_tag() {
+        let gs = parse_git_source("https://github.com/user/repo@v3.0").unwrap();
+        assert_eq!(gs.repo_url, "https://github.com/user/repo");
+        assert_eq!(gs.tag.as_deref(), Some("v3.0"));
+    }
+
+    #[test]
+    fn parse_rejects_non_git_url() {
+        let err = parse_git_source("/local/path").expect_err("local path rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("not a git URL"), "got: {msg}");
+    }
+
+    // --- git_cache_dir ---
+
+    #[test]
+    fn git_cache_dir_is_deterministic() {
+        let base = Path::new("/tmp/cache");
+        let d1 = git_cache_dir(base, "https://github.com/user/repo.git");
+        let d2 = git_cache_dir(base, "https://github.com/user/repo.git");
+        assert_eq!(d1, d2);
+    }
+
+    #[test]
+    fn git_cache_dir_differs_for_different_urls() {
+        let base = Path::new("/tmp/cache");
+        let d1 = git_cache_dir(base, "https://github.com/user/repo-a.git");
+        let d2 = git_cache_dir(base, "https://github.com/user/repo-b.git");
+        assert_ne!(d1, d2);
+    }
+
+    #[test]
+    fn git_cache_dir_uses_first_32_hex_chars() {
+        let base = Path::new("/cache");
+        let d = git_cache_dir(base, "https://example.com/repo");
+        let dir_name = d.file_name().unwrap().to_str().unwrap();
+        assert_eq!(dir_name.len(), 32);
+        assert!(dir_name.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    // --- resolve_subdir ---
+
+    #[test]
+    fn resolve_subdir_none_returns_base() {
+        let base = PathBuf::from("/cache/abc123");
+        let result = resolve_subdir(base.clone(), &None, "mod", "url").unwrap();
+        assert_eq!(result, base);
+    }
+
+    #[test]
+    fn resolve_subdir_appends_path() {
+        let base = PathBuf::from("/cache/abc123");
+        let result =
+            resolve_subdir(base.clone(), &Some("configs/base".into()), "mod", "url").unwrap();
+        assert_eq!(result, base.join("configs/base"));
+    }
+
+    #[test]
+    fn resolve_subdir_rejects_traversal() {
+        let base = PathBuf::from("/cache/abc123");
+        let err = resolve_subdir(base, &Some("../escape".into()), "mod", "url")
+            .expect_err("traversal rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("traversal"),
+            "error must mention traversal, got: {msg}"
+        );
+    }
+
+    // --- check_tag_signature (with tempdir git repo) ---
+
+    #[test]
+    fn check_tag_signature_returns_tag_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        git2::Repository::init(dir.path()).unwrap();
+        let result = check_tag_signature(dir.path(), "nonexistent", "test-mod").unwrap();
+        assert_eq!(result, TagSignatureStatus::TagNotFound);
+    }
+
+    #[test]
+    fn check_tag_signature_lightweight_tag() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let commit_oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+
+        let obj = repo.find_object(commit_oid, None).unwrap();
+        repo.tag_lightweight("v1.0.0", &obj, false).unwrap();
+
+        let result = check_tag_signature(dir.path(), "v1.0.0", "test-mod").unwrap();
+        assert_eq!(result, TagSignatureStatus::LightweightTag);
+    }
+
+    #[test]
+    fn check_tag_signature_annotated_unsigned() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let commit_oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+
+        let obj = repo.find_object(commit_oid, None).unwrap();
+        repo.tag("v2.0.0", &obj, &sig, "release v2.0.0", false)
+            .unwrap();
+
+        let result = check_tag_signature(dir.path(), "v2.0.0", "test-mod").unwrap();
+        assert_eq!(result, TagSignatureStatus::Unsigned);
+    }
+
+    // --- get_head_commit_sha ---
+
+    #[test]
+    fn get_head_commit_sha_returns_hex_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let commit_oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+
+        let sha = get_head_commit_sha(dir.path()).unwrap();
+        assert_eq!(sha, commit_oid.to_string());
+        assert_eq!(sha.len(), 40);
+        assert!(sha.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn get_head_commit_sha_errors_on_non_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = get_head_commit_sha(dir.path()).expect_err("non-repo must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cannot open repo"),
+            "error must mention repo open failure, got: {msg}"
+        );
+    }
+
+    // --- default_module_cache_dir ---
+
+    #[test]
+    fn default_module_cache_dir_with_test_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::with_test_home_guard(dir.path());
+        let cache = default_module_cache_dir().unwrap();
+        assert!(
+            cache.starts_with(dir.path()),
+            "cache dir must be under test home, got: {}",
+            cache.display()
+        );
+        assert!(
+            cache.ends_with("cfgd/modules"),
+            "must end with cfgd/modules, got: {}",
+            cache.display()
+        );
+    }
+}

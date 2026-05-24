@@ -478,4 +478,333 @@ mod tests {
         let v = d.data_or_self_json();
         assert_eq!(v["x"], 7);
     }
+
+    #[test]
+    fn data_or_self_json_falls_back_to_doc_tree_without_data() {
+        let d = Doc::new().heading("Hi").kv("a", "b");
+        let v = d.data_or_self_json();
+        assert_eq!(v["heading"], "Hi");
+        assert!(v["children"].as_array().unwrap().len() > 0);
+    }
+
+    #[test]
+    fn doc_default_is_empty() {
+        let d = Doc::default();
+        assert!(d.heading.is_none());
+        assert!(d.children.is_empty());
+        assert!(d.data.is_none());
+    }
+
+    #[test]
+    fn doc_status_adds_status_component() {
+        let d = Doc::new().status(Role::Ok, "applied");
+        assert_eq!(d.children.len(), 1);
+        if let Component::Status {
+            role,
+            subject,
+            detail,
+            duration_ms,
+            target,
+            label,
+        } = &d.children[0]
+        {
+            assert!(matches!(role, Role::Ok));
+            assert_eq!(subject, "applied");
+            assert!(detail.is_none());
+            assert!(duration_ms.is_none());
+            assert!(target.is_none());
+            assert!(label.is_none());
+        } else {
+            panic!("expected Status");
+        }
+    }
+
+    #[test]
+    fn doc_status_with_populates_all_fields() {
+        let d = Doc::new().status_with(Role::Warn, "drift detected", |f| {
+            f.detail("3 files changed")
+                .duration(Duration::from_millis(42))
+                .target("/etc/config")
+                .label(Role::Secondary, "source-a")
+        });
+        if let Component::Status {
+            role,
+            subject,
+            detail,
+            duration_ms,
+            target,
+            label,
+        } = &d.children[0]
+        {
+            assert!(matches!(role, Role::Warn));
+            assert_eq!(subject, "drift detected");
+            assert_eq!(detail.as_deref(), Some("3 files changed"));
+            assert_eq!(*duration_ms, Some(42));
+            assert_eq!(target.as_deref(), Some("/etc/config"));
+            let l = label.as_ref().unwrap();
+            assert!(matches!(l.role, Role::Secondary));
+            assert_eq!(l.text, "source-a");
+        } else {
+            panic!("expected Status");
+        }
+    }
+
+    #[test]
+    fn status_fields_detail_opt_sets_none_for_none() {
+        let f = StatusFields::default().detail_opt(None);
+        assert!(f.detail.is_none());
+    }
+
+    #[test]
+    fn status_fields_detail_opt_sets_some() {
+        let f = StatusFields::default().detail_opt(Some("x"));
+        assert_eq!(f.detail.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn doc_hint_adds_hint_component() {
+        let d = Doc::new().hint("run cfgd apply");
+        if let Component::Hint { text } = &d.children[0] {
+            assert_eq!(text, "run cfgd apply");
+        } else {
+            panic!("expected Hint");
+        }
+    }
+
+    #[test]
+    fn doc_note_adds_note_component() {
+        let d = Doc::new().note("see docs");
+        if let Component::Note { text } = &d.children[0] {
+            assert_eq!(text, "see docs");
+        } else {
+            panic!("expected Note");
+        }
+    }
+
+    #[test]
+    fn doc_table_adds_table_component() {
+        let t = Table {
+            headers: vec!["Name".into(), "Version".into()],
+            rows: vec![vec!["foo".into(), "1.0".into()]],
+            row_roles: vec![],
+        };
+        let d = Doc::new().table(t);
+        if let Component::Table {
+            headers,
+            rows,
+            row_roles,
+        } = &d.children[0]
+        {
+            assert_eq!(headers.len(), 2);
+            assert_eq!(rows.len(), 1);
+            assert!(row_roles.is_empty());
+        } else {
+            panic!("expected Table");
+        }
+    }
+
+    #[test]
+    fn doc_section_builds_section_component() {
+        let d = Doc::new().section("Packages", |s| s.bullet("foo").bullet("bar"));
+        if let Component::Section {
+            name,
+            keep_when_empty,
+            children,
+            ..
+        } = &d.children[0]
+        {
+            assert_eq!(name, "Packages");
+            assert!(keep_when_empty);
+            assert_eq!(children.len(), 2);
+        } else {
+            panic!("expected Section");
+        }
+    }
+
+    #[test]
+    fn doc_section_or_collapse_sets_keep_when_empty_false() {
+        let d = Doc::new().section_or_collapse("Empty", |s| s);
+        if let Component::Section {
+            keep_when_empty, ..
+        } = &d.children[0]
+        {
+            assert!(!keep_when_empty);
+        } else {
+            panic!("expected Section");
+        }
+    }
+
+    #[test]
+    fn doc_kv_block_stays_separate_from_prior_kv() {
+        let d = Doc::new()
+            .kv("standalone", "1")
+            .kv_block([("a", "2"), ("b", "3")]);
+        assert_eq!(d.children.len(), 2);
+        if let Component::KvBlock { pairs } = &d.children[1] {
+            assert_eq!(pairs.len(), 2);
+            assert_eq!(pairs[0].key, "a");
+        } else {
+            panic!("expected KvBlock");
+        }
+    }
+
+    #[test]
+    fn doc_kv_block_empty_is_noop() {
+        let d = Doc::new().kv_block::<Vec<(&str, &str)>, _, _>(vec![]);
+        assert!(d.children.is_empty());
+    }
+
+    #[test]
+    fn section_builder_status_adds_status() {
+        let s = SectionBuilder::new("X", true).status(Role::Info, "checking");
+        let c = s.into_component();
+        if let Component::Section { children, .. } = c {
+            assert_eq!(children.len(), 1);
+            assert!(
+                matches!(&children[0], Component::Status { role: Role::Info, subject, .. } if subject == "checking")
+            );
+        } else {
+            panic!("expected Section");
+        }
+    }
+
+    #[test]
+    fn section_builder_status_with_populates_fields() {
+        let s =
+            SectionBuilder::new("X", true).status_with(Role::Fail, "error", |f| f.detail("oops"));
+        let c = s.into_component();
+        if let Component::Section { children, .. } = c {
+            if let Component::Status { detail, .. } = &children[0] {
+                assert_eq!(detail.as_deref(), Some("oops"));
+            } else {
+                panic!("expected Status");
+            }
+        } else {
+            panic!("expected Section");
+        }
+    }
+
+    #[test]
+    fn section_builder_hint_and_note() {
+        let s = SectionBuilder::new("X", true)
+            .hint("try this")
+            .note("see also");
+        let c = s.into_component();
+        if let Component::Section { children, .. } = c {
+            assert_eq!(children.len(), 2);
+            assert!(matches!(&children[0], Component::Hint { text } if text == "try this"));
+            assert!(matches!(&children[1], Component::Note { text } if text == "see also"));
+        } else {
+            panic!("expected Section");
+        }
+    }
+
+    #[test]
+    fn section_builder_table() {
+        let t = Table {
+            headers: vec!["H".into()],
+            rows: vec![vec!["R".into()]],
+            row_roles: vec![],
+        };
+        let s = SectionBuilder::new("X", true).table(t);
+        let c = s.into_component();
+        if let Component::Section { children, .. } = c {
+            assert!(matches!(&children[0], Component::Table { .. }));
+        } else {
+            panic!("expected Section");
+        }
+    }
+
+    #[test]
+    fn section_builder_empty_state() {
+        let s = SectionBuilder::new("X", true).empty_state("nothing here");
+        let c = s.into_component();
+        if let Component::Section { empty_state, .. } = c {
+            assert_eq!(empty_state.as_deref(), Some("nothing here"));
+        } else {
+            panic!("expected Section");
+        }
+    }
+
+    #[test]
+    fn section_builder_subsection() {
+        let s = SectionBuilder::new("Parent", true).subsection("Child", |sub| sub.bullet("inner"));
+        let c = s.into_component();
+        if let Component::Section { children, .. } = c {
+            assert_eq!(children.len(), 1);
+            if let Component::Section { name, children, .. } = &children[0] {
+                assert_eq!(name, "Child");
+                assert_eq!(children.len(), 1);
+            } else {
+                panic!("expected nested Section");
+            }
+        } else {
+            panic!("expected Section");
+        }
+    }
+
+    #[test]
+    fn section_builder_subsection_if_nonempty_skips_empty() {
+        let s = SectionBuilder::new("P", true).subsection_if_nonempty::<i32, _>(
+            "Empty",
+            &[],
+            |sub, _| sub,
+        );
+        let c = s.into_component();
+        if let Component::Section { children, .. } = c {
+            assert!(children.is_empty());
+        } else {
+            panic!("expected Section");
+        }
+    }
+
+    #[test]
+    fn section_builder_subsection_if_nonempty_emits_when_present() {
+        let s = SectionBuilder::new("P", true).subsection_if_nonempty(
+            "Items",
+            &["a", "b"],
+            |sub, items| sub.extend(items.iter(), |sb, item| sb.bullet(*item)),
+        );
+        let c = s.into_component();
+        if let Component::Section { children, .. } = c {
+            assert_eq!(children.len(), 1);
+            if let Component::Section {
+                name,
+                children: inner,
+                ..
+            } = &children[0]
+            {
+                assert_eq!(name, "Items");
+                assert_eq!(inner.len(), 2);
+            } else {
+                panic!("expected nested Section");
+            }
+        } else {
+            panic!("expected Section");
+        }
+    }
+
+    #[test]
+    fn section_builder_kv_block_separate() {
+        let s = SectionBuilder::new("X", true)
+            .kv("a", "1")
+            .kv_block([("b", "2")]);
+        let c = s.into_component();
+        if let Component::Section { children, .. } = c {
+            assert_eq!(children.len(), 2);
+        } else {
+            panic!("expected Section");
+        }
+    }
+
+    #[test]
+    fn section_builder_kv_block_empty_noop() {
+        let s = SectionBuilder::new("X", true).kv_block::<Vec<(&str, &str)>, _, _>(vec![]);
+        let c = s.into_component();
+        if let Component::Section { children, .. } = c {
+            assert!(children.is_empty());
+        } else {
+            panic!("expected Section");
+        }
+    }
 }
