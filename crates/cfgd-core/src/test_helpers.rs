@@ -1166,6 +1166,296 @@ impl CosignTestShimBuilder {
     }
 }
 
+// ---------------------------------------------------------------------------
+// MockPackageManager — reusable mock for reconciler and module tests.
+// Consolidates the per-file `FakePkgMgr` definitions into one shared mock
+// with configurable installed set and install-call recording.
+// ---------------------------------------------------------------------------
+
+/// A mock `PackageManager` that tracks install/uninstall calls and reports
+/// a configurable set of installed packages.
+pub struct MockPackageManager {
+    pub mgr_name: String,
+    pub available: bool,
+    pub bootstrap_capable: bool,
+    pub installed: std::collections::HashSet<String>,
+    pub install_calls: Mutex<Vec<Vec<String>>>,
+    pub uninstall_calls: Mutex<Vec<Vec<String>>>,
+}
+
+impl MockPackageManager {
+    pub fn new(name: &str) -> Self {
+        Self {
+            mgr_name: name.to_string(),
+            available: true,
+            bootstrap_capable: false,
+            installed: std::collections::HashSet::new(),
+            install_calls: Mutex::new(Vec::new()),
+            uninstall_calls: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn with_installed(mut self, pkgs: &[&str]) -> Self {
+        for p in pkgs {
+            self.installed.insert((*p).to_string());
+        }
+        self
+    }
+
+    pub fn unavailable(mut self) -> Self {
+        self.available = false;
+        self
+    }
+
+    pub fn bootstrappable(mut self) -> Self {
+        self.bootstrap_capable = true;
+        self
+    }
+}
+
+impl crate::providers::PackageManager for MockPackageManager {
+    fn name(&self) -> &str {
+        &self.mgr_name
+    }
+
+    fn is_available(&self) -> bool {
+        self.available
+    }
+
+    fn can_bootstrap(&self) -> bool {
+        self.bootstrap_capable
+    }
+
+    fn bootstrap(&self, _printer: &Printer) -> crate::errors::Result<()> {
+        Ok(())
+    }
+
+    fn installed_packages(&self) -> crate::errors::Result<std::collections::HashSet<String>> {
+        Ok(self.installed.clone())
+    }
+
+    fn install(&self, packages: &[String], _printer: &Printer) -> crate::errors::Result<()> {
+        self.install_calls.lock().unwrap().push(packages.to_vec());
+        Ok(())
+    }
+
+    fn uninstall(&self, packages: &[String], _printer: &Printer) -> crate::errors::Result<()> {
+        self.uninstall_calls.lock().unwrap().push(packages.to_vec());
+        Ok(())
+    }
+
+    fn update(&self, _printer: &Printer) -> crate::errors::Result<()> {
+        Ok(())
+    }
+
+    fn available_version(&self, _package: &str) -> crate::errors::Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ReconcilerTestHarness — builder that wires the full reconciler stack in ~5
+// lines per test, replacing ~40 lines of manual ProviderRegistry construction.
+// ---------------------------------------------------------------------------
+
+/// Builder for [`ReconcilerTestHarness`].
+pub struct ReconcilerTestHarnessBuilder {
+    profile_yaml: Option<String>,
+    package_managers: Vec<MockPackageManager>,
+    system_configurators: Vec<MockSystemConfigurator>,
+    secret_providers: Vec<MockSecretProvider>,
+    file_manager: Option<MockFileManager>,
+}
+
+impl ReconcilerTestHarnessBuilder {
+    /// Set the profile YAML that will be parsed into a `ResolvedProfile`.
+    /// If not called, `make_empty_resolved()` is used.
+    pub fn profile_yaml(mut self, yaml: &str) -> Self {
+        self.profile_yaml = Some(yaml.to_string());
+        self
+    }
+
+    /// Add a mock package manager with the given name and set of installed packages.
+    pub fn package_manager(mut self, name: &str, installed: &[&str]) -> Self {
+        self.package_managers
+            .push(MockPackageManager::new(name).with_installed(installed));
+        self
+    }
+
+    /// Add a mock system configurator with no drift.
+    pub fn system_configurator(mut self, name: &str, _drift: &[SystemDrift]) -> Self {
+        self.system_configurators
+            .push(MockSystemConfigurator::new(name));
+        self
+    }
+
+    /// Add a mock system configurator with pre-configured drift entries.
+    pub fn system_configurator_with_drift(mut self, name: &str, drift: Vec<SystemDrift>) -> Self {
+        self.system_configurators
+            .push(MockSystemConfigurator::new(name).with_drift(drift));
+        self
+    }
+
+    /// Add a mock secret provider that resolves to the given value.
+    pub fn secret_provider(mut self, name: &str, resolved_value: &str) -> Self {
+        self.secret_providers
+            .push(MockSecretProvider::new(name).with_resolve_result(resolved_value));
+        self
+    }
+
+    /// Set a custom mock file manager. If not called, a default `MockFileManager` is used.
+    pub fn file_manager(mut self, fm: MockFileManager) -> Self {
+        self.file_manager = Some(fm);
+        self
+    }
+
+    /// Build the harness, wiring all mocks into a `ProviderRegistry` and `StateStore`.
+    pub fn build(self) -> ReconcilerTestHarness {
+        let state = test_state();
+
+        let resolved = if let Some(yaml) = &self.profile_yaml {
+            parse_profile_yaml_to_resolved(yaml)
+        } else {
+            make_empty_resolved()
+        };
+
+        let mut registry = crate::providers::ProviderRegistry::new();
+
+        for pm in self.package_managers {
+            registry.package_managers.push(Box::new(pm));
+        }
+        for sc in self.system_configurators {
+            registry.system_configurators.push(Box::new(sc));
+        }
+        for sp in self.secret_providers {
+            registry.secret_providers.push(Box::new(sp));
+        }
+
+        let fm = self.file_manager.unwrap_or_default();
+        registry.file_manager = Some(Box::new(fm));
+
+        ReconcilerTestHarness {
+            registry,
+            state,
+            resolved,
+        }
+    }
+}
+
+/// A fully-wired reconciler test stack. Owns the `ProviderRegistry`,
+/// `StateStore`, and `ResolvedProfile` so tests can call `plan()` and
+/// `apply()` with minimal ceremony.
+pub struct ReconcilerTestHarness {
+    pub registry: crate::providers::ProviderRegistry,
+    pub state: crate::state::StateStore,
+    pub resolved: crate::config::ResolvedProfile,
+}
+
+impl ReconcilerTestHarness {
+    /// Entry point: returns a builder.
+    pub fn builder() -> ReconcilerTestHarnessBuilder {
+        ReconcilerTestHarnessBuilder {
+            profile_yaml: None,
+            package_managers: Vec::new(),
+            system_configurators: Vec::new(),
+            secret_providers: Vec::new(),
+            file_manager: None,
+        }
+    }
+
+    /// Generate a reconciliation plan with default (empty) actions and Apply context.
+    pub fn plan(&self) -> crate::errors::Result<crate::reconciler::Plan> {
+        let reconciler = crate::reconciler::Reconciler::new(&self.registry, &self.state);
+        reconciler.plan(
+            &self.resolved,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            crate::reconciler::ReconcileContext::Apply,
+        )
+    }
+
+    /// Generate a plan with explicit package and file actions.
+    pub fn plan_with_actions(
+        &self,
+        file_actions: Vec<crate::providers::FileAction>,
+        pkg_actions: Vec<crate::providers::PackageAction>,
+        module_actions: Vec<crate::modules::ResolvedModule>,
+    ) -> crate::errors::Result<crate::reconciler::Plan> {
+        let reconciler = crate::reconciler::Reconciler::new(&self.registry, &self.state);
+        reconciler.plan(
+            &self.resolved,
+            file_actions,
+            pkg_actions,
+            module_actions,
+            crate::reconciler::ReconcileContext::Apply,
+        )
+    }
+
+    /// Apply a plan using the harness's registry and state. Uses a quiet printer.
+    pub fn apply(
+        &self,
+        plan: &crate::reconciler::Plan,
+        printer: &Printer,
+    ) -> crate::errors::Result<crate::reconciler::ApplyResult> {
+        let reconciler = crate::reconciler::Reconciler::new(&self.registry, &self.state);
+        reconciler.apply(
+            plan,
+            &self.resolved,
+            std::path::Path::new("."),
+            printer,
+            None,
+            &[],
+            crate::reconciler::ReconcileContext::Apply,
+            false,
+        )
+    }
+
+    /// Borrow the `StateStore`.
+    pub fn state_store(&self) -> &crate::state::StateStore {
+        &self.state
+    }
+
+    /// Borrow the `ResolvedProfile`.
+    pub fn resolved_profile(&self) -> &crate::config::ResolvedProfile {
+        &self.resolved
+    }
+}
+
+/// Parse a profile YAML string into a `ResolvedProfile` with a single local layer.
+/// Accepts either a full `ProfileDocument` (with apiVersion/kind/metadata/spec) or
+/// a bare `ProfileSpec`. Tries document form first, falls back to bare spec.
+fn parse_profile_yaml_to_resolved(yaml: &str) -> crate::config::ResolvedProfile {
+    let spec = if let Ok(doc) = serde_yaml::from_str::<crate::config::ProfileDocument>(yaml) {
+        doc.spec
+    } else {
+        serde_yaml::from_str::<crate::config::ProfileSpec>(yaml)
+            .expect("failed to parse profile YAML in test harness")
+    };
+
+    let merged = crate::config::MergedProfile {
+        modules: spec.modules.clone(),
+        env: spec.env.clone(),
+        aliases: spec.aliases.clone(),
+        packages: spec.packages.clone().unwrap_or_default(),
+        files: spec.files.clone().unwrap_or_default(),
+        system: spec.system.clone(),
+        secrets: spec.secrets.clone(),
+        scripts: spec.scripts.clone().unwrap_or_default(),
+    };
+
+    crate::config::ResolvedProfile {
+        layers: vec![crate::config::ProfileLayer {
+            source: "local".to_string(),
+            profile_name: "harness-test".to_string(),
+            priority: 1000,
+            policy: crate::config::LayerPolicy::Local,
+            spec,
+        }],
+        merged,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1674,6 +1964,182 @@ mod tests {
                 stderr.contains("can't connect — 'rekor' down"),
                 "single-quote-laden stderr must round-trip: {stderr}"
             );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // ReconcilerTestHarness
+    // -----------------------------------------------------------------------
+
+    mod reconciler_test_harness {
+        use super::super::*;
+        use crate::providers::PackageAction;
+        use crate::state::ApplyStatus;
+        use secrecy::ExposeSecret;
+
+        #[test]
+        fn harness_plan_empty_profile_produces_eight_phases() {
+            let h = ReconcilerTestHarness::builder()
+                .package_manager("brew", &["curl", "git"])
+                .system_configurator("shell", &[])
+                .build();
+
+            let plan = h.plan().unwrap();
+            assert_eq!(plan.phases.len(), 8);
+            assert!(plan.is_empty());
+        }
+
+        #[test]
+        fn harness_apply_empty_plan_succeeds() {
+            let h = ReconcilerTestHarness::builder()
+                .package_manager("brew", &["curl", "git"])
+                .build();
+
+            let plan = h.plan().unwrap();
+            let printer = test_printer();
+            let result = h.apply(&plan, &printer).unwrap();
+
+            assert_eq!(result.status, ApplyStatus::Success);
+            assert_eq!(result.action_results.len(), 0);
+        }
+
+        #[test]
+        fn harness_plan_with_package_actions() {
+            let h = ReconcilerTestHarness::builder()
+                .package_manager("brew", &["curl"])
+                .build();
+
+            let pkg_actions = vec![PackageAction::Install {
+                manager: "brew".to_string(),
+                packages: vec!["ripgrep".to_string()],
+                origin: "local".to_string(),
+            }];
+
+            let plan = h
+                .plan_with_actions(Vec::new(), pkg_actions, Vec::new())
+                .unwrap();
+
+            assert!(!plan.is_empty());
+            assert_eq!(plan.total_actions(), 1);
+        }
+
+        #[test]
+        fn harness_with_secret_provider() {
+            let h = ReconcilerTestHarness::builder()
+                .secret_provider("1password", "s3cr3t-value")
+                .build();
+
+            // The secret provider is wired into the registry
+            assert_eq!(h.registry.secret_providers.len(), 1);
+
+            let plan = h.plan().unwrap();
+            assert!(plan.is_empty());
+
+            // The provider resolves correctly (verifies wiring)
+            let secret = h.registry.secret_providers[0]
+                .resolve("op://vault/item/field")
+                .unwrap();
+            assert_eq!(secret.expose_secret(), "s3cr3t-value");
+        }
+
+        #[test]
+        fn harness_with_profile_yaml() {
+            let yaml = r#"
+modules:
+  - nvim
+env:
+  - name: EDITOR
+    value: nvim
+"#;
+            let h = ReconcilerTestHarness::builder()
+                .profile_yaml(yaml)
+                .package_manager("brew", &[])
+                .build();
+
+            assert_eq!(h.resolved_profile().merged.modules, vec!["nvim"]);
+            assert_eq!(h.resolved_profile().merged.env.len(), 1);
+            assert_eq!(h.resolved_profile().merged.env[0].name, "EDITOR");
+        }
+
+        #[test]
+        fn harness_apply_records_in_state_store() {
+            let h = ReconcilerTestHarness::builder().build();
+
+            let plan = h.plan().unwrap();
+            let printer = test_printer();
+            let result = h.apply(&plan, &printer).unwrap();
+
+            assert_eq!(result.status, ApplyStatus::Success);
+
+            // State store should have recorded the apply
+            let history = h.state_store().history(10).unwrap();
+            assert_eq!(history.len(), 1);
+        }
+
+        #[test]
+        fn harness_plan_with_system_configurator_drift() {
+            use crate::providers::SystemDrift;
+
+            let drift = SystemDrift {
+                key: "net.ipv4.ip_forward".into(),
+                expected: "1".into(),
+                actual: "0".into(),
+            };
+
+            let h = ReconcilerTestHarness::builder()
+                .system_configurator_with_drift("sysctl", vec![drift])
+                .build();
+
+            // The configurator is wired in
+            assert_eq!(h.registry.system_configurators.len(), 1);
+
+            // Plan still works (system drift doesn't automatically generate actions
+            // without matching profile system config)
+            let plan = h.plan().unwrap();
+            assert_eq!(plan.phases.len(), 8);
+        }
+
+        #[test]
+        fn mock_package_manager_records_install_calls() {
+            use crate::providers::PackageManager;
+
+            let pm = super::super::MockPackageManager::new("brew").with_installed(&["curl", "git"]);
+
+            assert!(pm.is_available());
+            assert_eq!(pm.name(), "brew");
+
+            let installed = pm.installed_packages().unwrap();
+            assert!(installed.contains("curl"));
+            assert!(installed.contains("git"));
+            assert!(!installed.contains("ripgrep"));
+
+            let printer = test_printer();
+            pm.install(&["ripgrep".to_string(), "fd".to_string()], &printer)
+                .unwrap();
+
+            let calls = pm.install_calls.lock().unwrap();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0], vec!["ripgrep".to_string(), "fd".to_string()]);
+        }
+
+        #[test]
+        fn harness_apply_with_context() {
+            let h = ReconcilerTestHarness::builder()
+                .package_manager("apt", &["vim"])
+                .system_configurator("shell", &[])
+                .secret_provider("vault", "token-123")
+                .build();
+
+            let plan = h.plan().unwrap();
+            let printer = test_printer();
+            let result = h.apply(&plan, &printer).unwrap();
+            assert_eq!(result.status, ApplyStatus::Success);
+
+            // Verify full wiring: all providers present
+            assert_eq!(h.registry.package_managers.len(), 1);
+            assert_eq!(h.registry.system_configurators.len(), 1);
+            assert_eq!(h.registry.secret_providers.len(), 1);
+            assert!(h.registry.file_manager.is_some());
         }
     }
 }
