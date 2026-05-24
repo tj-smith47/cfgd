@@ -2982,3 +2982,104 @@ fn composition_error_variant_template_sandbox_violation() {
         crate::errors::CompositionError::TemplateSandboxViolation { .. }
     ));
 }
+
+#[test]
+fn record_policy_conflicts_env_vars() {
+    let items = PolicyItems {
+        env: vec![
+            EnvVar {
+                name: "EDITOR".into(),
+                value: "vim".into(),
+            },
+            EnvVar {
+                name: "PAGER".into(),
+                value: "less".into(),
+            },
+        ],
+        ..Default::default()
+    };
+    let mut conflicts = Vec::new();
+    record_policy_conflicts("corp", &items, ResolutionType::Locked, &mut conflicts);
+    assert_eq!(conflicts.len(), 2);
+    assert!(conflicts.iter().any(|c| c.resource_id == "env:EDITOR"));
+    assert!(conflicts.iter().any(|c| c.resource_id == "env:PAGER"));
+    assert!(conflicts.iter().all(|c| c.winning_source == "corp"));
+    assert!(
+        conflicts
+            .iter()
+            .all(|c| c.resolution_type == ResolutionType::Locked)
+    );
+}
+
+#[test]
+fn record_policy_conflicts_modules() {
+    let items = PolicyItems {
+        modules: vec!["kubernetes".into(), "docker".into()],
+        ..Default::default()
+    };
+    let mut conflicts = Vec::new();
+    record_policy_conflicts("corp", &items, ResolutionType::Required, &mut conflicts);
+    assert_eq!(conflicts.len(), 2);
+    assert!(
+        conflicts
+            .iter()
+            .any(|c| c.resource_id == "module:kubernetes")
+    );
+    assert!(conflicts.iter().any(|c| c.resource_id == "module:docker"));
+}
+
+#[test]
+fn record_policy_conflicts_files() {
+    let file: crate::config::ManagedFileSpec =
+        serde_yaml::from_str("source: hosts.tmpl\ntarget: /etc/hosts").unwrap();
+    let items = PolicyItems {
+        files: vec![file],
+        ..Default::default()
+    };
+    let mut conflicts = Vec::new();
+    record_policy_conflicts("corp", &items, ResolutionType::Override, &mut conflicts);
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0].resource_id, "/etc/hosts");
+    assert_eq!(conflicts[0].resolution_type, ResolutionType::Override);
+}
+
+#[test]
+fn record_rejections_packages_flat_list() {
+    let recommended = PolicyItems::default();
+    let reject: serde_yaml::Value =
+        serde_yaml::from_str("packages:\n  brew:\n    - unwanted-pkg\n    - bad-tool").unwrap();
+    let mut conflicts = Vec::new();
+    record_rejections("corp", &recommended, &reject, &mut conflicts);
+    assert_eq!(conflicts.len(), 2);
+    assert!(
+        conflicts
+            .iter()
+            .all(|c| c.resolution_type == ResolutionType::Rejected)
+    );
+    assert!(conflicts.iter().any(|c| c.resource_id == "unwanted-pkg"));
+    assert!(conflicts.iter().any(|c| c.resource_id == "bad-tool"));
+}
+
+#[test]
+fn record_rejections_packages_nested_mapping() {
+    let recommended = PolicyItems::default();
+    let reject: serde_yaml::Value = serde_yaml::from_str(
+        "packages:\n  brew:\n    formulae:\n      - ripgrep\n    casks:\n      - slack",
+    )
+    .unwrap();
+    let mut conflicts = Vec::new();
+    record_rejections("corp", &recommended, &reject, &mut conflicts);
+    assert_eq!(conflicts.len(), 2);
+    assert!(conflicts.iter().any(|c| c.resource_id == "ripgrep"));
+    assert!(conflicts.iter().any(|c| c.resource_id == "slack"));
+    assert!(conflicts.iter().all(|c| c.winning_source == "local"));
+}
+
+#[test]
+fn resolution_type_label_all_variants() {
+    assert_eq!(ResolutionType::Locked.label(), "LOCKED");
+    assert_eq!(ResolutionType::Required.label(), "REQUIRED");
+    assert_eq!(ResolutionType::Override.label(), "OVERRIDE");
+    assert_eq!(ResolutionType::Rejected.label(), "REJECTED");
+    assert_eq!(ResolutionType::Default.label(), "DEFAULT");
+}

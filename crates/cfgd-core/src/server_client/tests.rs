@@ -568,6 +568,56 @@ fn checkin_no_api_key_omits_auth_header() {
     mock.assert();
 }
 
+#[test]
+fn is_loopback_host_ipv6_bracketed() {
+    assert!(is_loopback_host("[::1]:8080/api"));
+    assert!(is_loopback_host("[::1]/path"));
+    assert!(!is_loopback_host("[fe80::1]:8080"));
+}
+
+#[test]
+fn is_loopback_host_127_subnet() {
+    assert!(is_loopback_host("127.0.0.1:3000"));
+    assert!(is_loopback_host("127.99.0.1:3000"));
+    assert!(!is_loopback_host("128.0.0.1:3000"));
+}
+
+#[test]
+fn plaintext_http_non_loopback_does_not_panic() {
+    let _client = ServerClient::new("http://remote.example.com:8080", Some("key"), "dev-1");
+}
+
+#[test]
+fn save_credential_writes_file_with_restricted_perms() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("device-credential.json");
+
+    let cred = DeviceCredential {
+        server_url: "https://example.com".into(),
+        device_id: "d1".into(),
+        api_key: "secret-key".into(),
+        username: "user".into(),
+        team: None,
+        enrolled_at: "2026-01-01T00:00:00Z".into(),
+    };
+
+    let json = serde_json::to_string_pretty(&cred).unwrap();
+    std::fs::create_dir_all(dir.path()).unwrap();
+    crate::atomic_write_str(&path, &json).unwrap();
+    crate::set_file_permissions(&path, 0o600).unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(&path).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+    }
+
+    let loaded: DeviceCredential =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(loaded.api_key, "secret-key");
+}
+
 // ===========================================================================
 // Streaming → buffered Doc bridge snapshots for server_client
 // ===========================================================================

@@ -167,3 +167,109 @@ pub fn capture_file_resolved_state(
         oversized: false,
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs as unix_fs;
+
+    #[test]
+    fn atomic_write_creates_file_and_returns_hash() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let target = tmp.path().join("out.txt");
+        let hash = atomic_write(&target, b"hello").unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "hello");
+        assert!(!hash.is_empty());
+        assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn atomic_write_creates_parent_dirs() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let target = tmp.path().join("a/b/c/file.txt");
+        atomic_write(&target, b"nested").unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "nested");
+    }
+
+    #[test]
+    fn atomic_write_str_works() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let target = tmp.path().join("str.txt");
+        let hash = atomic_write_str(&target, "string content").unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "string content");
+        assert_eq!(hash.len(), 64);
+    }
+
+    #[test]
+    fn atomic_write_preserves_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().unwrap();
+        let target = tmp.path().join("perms.txt");
+        fs::write(&target, "old").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+        atomic_write(&target, b"new").unwrap();
+        let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755);
+    }
+
+    #[test]
+    fn capture_file_state_regular_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("file.txt");
+        fs::write(&path, "test content").unwrap();
+        let state = capture_file_state(&path).unwrap().unwrap();
+        assert_eq!(state.content, b"test content");
+        assert!(!state.content_hash.is_empty());
+        assert!(!state.is_symlink);
+        assert!(state.symlink_target.is_none());
+        assert!(!state.oversized);
+    }
+
+    #[test]
+    fn capture_file_state_nonexistent_returns_none() {
+        let path = std::path::Path::new("/no/such/file/abc123");
+        assert!(capture_file_state(path).unwrap().is_none());
+    }
+
+    #[test]
+    fn capture_file_state_symlink() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let target = tmp.path().join("target.txt");
+        let link = tmp.path().join("link.txt");
+        fs::write(&target, "target content").unwrap();
+        unix_fs::symlink(&target, &link).unwrap();
+        let state = capture_file_state(&link).unwrap().unwrap();
+        assert!(state.is_symlink);
+        assert_eq!(state.symlink_target.as_deref(), Some(target.as_path()));
+        assert!(state.content.is_empty());
+    }
+
+    #[test]
+    fn capture_file_resolved_state_follows_symlink() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let target = tmp.path().join("real.txt");
+        let link = tmp.path().join("sym.txt");
+        fs::write(&target, "resolved").unwrap();
+        unix_fs::symlink(&target, &link).unwrap();
+        let state = capture_file_resolved_state(&link).unwrap().unwrap();
+        assert!(state.is_symlink);
+        assert_eq!(state.symlink_target.as_deref(), Some(target.as_path()));
+        assert_eq!(state.content, b"resolved");
+        assert!(!state.oversized);
+    }
+
+    #[test]
+    fn capture_file_resolved_state_dangling_symlink_returns_none() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let link = tmp.path().join("dangling.txt");
+        unix_fs::symlink("/no/such/target", &link).unwrap();
+        assert!(capture_file_resolved_state(&link).unwrap().is_none());
+    }
+
+    #[test]
+    fn capture_file_resolved_state_nonexistent_returns_none() {
+        let path = std::path::Path::new("/no/such/file/xyz");
+        assert!(capture_file_resolved_state(path).unwrap().is_none());
+    }
+}

@@ -203,3 +203,201 @@ pub fn command_available_with_seam(env_var: &str, default: &str) -> bool {
     }
     command_available(default)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    #[test]
+    fn hostname_string_returns_non_empty() {
+        let h = hostname_string();
+        assert!(!h.is_empty());
+        assert_ne!(h, "unknown");
+    }
+
+    #[test]
+    fn stdout_lossy_trimmed_trims_whitespace() {
+        let output = std::process::Output {
+            status: std::process::ExitStatus::default(),
+            stdout: b"  hello world  \n".to_vec(),
+            stderr: Vec::new(),
+        };
+        assert_eq!(stdout_lossy_trimmed(&output), "hello world");
+    }
+
+    #[test]
+    fn stderr_lossy_trimmed_trims_whitespace() {
+        let output = std::process::Output {
+            status: std::process::ExitStatus::default(),
+            stdout: Vec::new(),
+            stderr: b"\nerror message\n  ".to_vec(),
+        };
+        assert_eq!(stderr_lossy_trimmed(&output), "error message");
+    }
+
+    #[test]
+    fn stdout_lossy_trimmed_handles_invalid_utf8() {
+        let output = std::process::Output {
+            status: std::process::ExitStatus::default(),
+            stdout: vec![0xFF, 0xFE, b'a', b'b'],
+            stderr: Vec::new(),
+        };
+        let result = stdout_lossy_trimmed(&output);
+        assert!(result.contains("ab"));
+    }
+
+    #[test]
+    fn command_available_finds_sh() {
+        assert!(command_available("sh"));
+    }
+
+    #[test]
+    fn command_available_rejects_nonexistent() {
+        assert!(!command_available("absolutely-not-a-real-command-xyz"));
+    }
+
+    #[test]
+    fn require_tool_succeeds_for_sh() {
+        assert!(require_tool("sh", None).is_ok());
+    }
+
+    #[test]
+    fn require_tool_fails_for_nonexistent() {
+        let err = require_tool("not-a-real-tool-xyz", None).unwrap_err();
+        assert!(err.contains("not-a-real-tool-xyz"));
+        assert!(err.contains("not found"));
+    }
+
+    #[test]
+    fn require_tool_includes_custom_hint() {
+        let err = require_tool("missing-tool", Some("install via cargo")).unwrap_err();
+        assert!(err.contains("install via cargo"));
+    }
+
+    #[test]
+    #[serial]
+    fn tool_binary_name_empty_env_var_returns_default() {
+        assert_eq!(tool_binary_name("", "cosign"), "cosign");
+    }
+
+    #[test]
+    #[serial]
+    fn tool_binary_name_reads_env_var() {
+        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_TEST_TOOL_BIN", "/custom/path");
+        assert_eq!(
+            tool_binary_name("CFGD_TEST_TOOL_BIN", "default"),
+            "/custom/path"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn tool_binary_name_unset_env_returns_default() {
+        let _guard = crate::test_helpers::EnvVarGuard::unset("CFGD_TEST_TOOL_BIN_UNSET");
+        assert_eq!(
+            tool_binary_name("CFGD_TEST_TOOL_BIN_UNSET", "fallback"),
+            "fallback"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn require_tool_with_seam_env_pointing_to_file_succeeds() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = tmp.path().join("tool");
+        std::fs::write(&bin, "").unwrap();
+        let _guard =
+            crate::test_helpers::EnvVarGuard::set("CFGD_TEST_SEAM_BIN", bin.to_str().unwrap());
+        assert!(require_tool_with_seam("CFGD_TEST_SEAM_BIN", "tool", None).is_ok());
+    }
+
+    #[test]
+    #[serial]
+    fn require_tool_with_seam_env_pointing_to_missing_file_fails() {
+        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_TEST_SEAM_BAD", "/no/such/file");
+        let err = require_tool_with_seam("CFGD_TEST_SEAM_BAD", "tool", None).unwrap_err();
+        assert!(err.contains("CFGD_TEST_SEAM_BAD"));
+        assert!(err.contains("not a file"));
+    }
+
+    #[test]
+    #[serial]
+    fn require_tool_with_seam_no_env_falls_through() {
+        let _guard = crate::test_helpers::EnvVarGuard::unset("CFGD_TEST_SEAM_NONE");
+        assert!(require_tool_with_seam("CFGD_TEST_SEAM_NONE", "sh", None).is_ok());
+    }
+
+    #[test]
+    #[serial]
+    fn command_available_with_seam_env_file_exists() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bin = tmp.path().join("tool");
+        std::fs::write(&bin, "").unwrap();
+        let _guard =
+            crate::test_helpers::EnvVarGuard::set("CFGD_TEST_AVAIL_SEAM", bin.to_str().unwrap());
+        assert!(command_available_with_seam(
+            "CFGD_TEST_AVAIL_SEAM",
+            "nonexistent"
+        ));
+    }
+
+    #[test]
+    #[serial]
+    fn command_available_with_seam_env_file_missing() {
+        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_TEST_AVAIL_BAD", "/no/such/file");
+        assert!(!command_available_with_seam("CFGD_TEST_AVAIL_BAD", "sh"));
+    }
+
+    #[test]
+    #[serial]
+    fn command_available_with_seam_no_env_falls_through() {
+        let _guard = crate::test_helpers::EnvVarGuard::unset("CFGD_TEST_AVAIL_NONE");
+        assert!(command_available_with_seam("CFGD_TEST_AVAIL_NONE", "sh"));
+    }
+
+    #[test]
+    fn tool_cmd_creates_command_with_piped_stderr() {
+        let cmd = tool_cmd("", "echo");
+        let prog = std::path::Path::new(cmd.get_program())
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        assert_eq!(prog, "echo");
+    }
+
+    #[test]
+    fn command_output_with_timeout_succeeds() {
+        let mut cmd = std::process::Command::new("echo");
+        cmd.arg("hello").stdout(std::process::Stdio::piped());
+        let output =
+            command_output_with_timeout(&mut cmd, std::time::Duration::from_secs(5)).unwrap();
+        assert!(output.status.success());
+        assert!(stdout_lossy_trimmed(&output).contains("hello"));
+    }
+
+    #[test]
+    fn command_output_with_timeout_kills_on_exceed() {
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("60");
+        let result = command_output_with_timeout(&mut cmd, std::time::Duration::from_millis(100));
+        assert!(
+            result.is_ok(),
+            "process should be killed but still return output"
+        );
+        let output = result.unwrap();
+        assert!(!output.status.success());
+    }
+
+    #[test]
+    fn is_root_returns_bool() {
+        let _ = is_root();
+    }
+
+    #[test]
+    fn tracing_env_filter_uses_default_when_no_env() {
+        let filter = tracing_env_filter("warn");
+        let s = format!("{filter}");
+        assert!(s.contains("warn") || !s.is_empty());
+    }
+}

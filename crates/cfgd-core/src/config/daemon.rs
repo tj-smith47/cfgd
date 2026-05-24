@@ -119,3 +119,86 @@ fn default_policy_ignore() -> PolicyAction {
 fn default_reconcile_interval() -> String {
     "5m".to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_apply_policy_default_values() {
+        let policy = AutoApplyPolicyConfig::default();
+        assert!(matches!(policy.new_recommended, PolicyAction::Notify));
+        assert!(matches!(policy.new_optional, PolicyAction::Ignore));
+        assert!(matches!(policy.locked_conflict, PolicyAction::Notify));
+    }
+
+    #[test]
+    fn drift_policy_default_is_notify_only() {
+        let dp = DriftPolicy::default();
+        assert_eq!(dp, DriftPolicy::NotifyOnly);
+    }
+
+    #[test]
+    fn reconcile_config_deserializes_with_defaults() {
+        let yaml = "onChange: true";
+        let config: ReconcileConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.on_change);
+        assert!(!config.auto_apply);
+        assert_eq!(config.interval, "5m");
+        assert_eq!(config.drift_policy, DriftPolicy::NotifyOnly);
+        assert!(config.patches.is_empty());
+    }
+
+    #[test]
+    fn auto_apply_policy_deserializes_with_serde_defaults() {
+        let yaml = "newRecommended: Accept";
+        let config: AutoApplyPolicyConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(config.new_recommended, PolicyAction::Accept));
+        assert!(matches!(config.new_optional, PolicyAction::Ignore));
+        assert!(matches!(config.locked_conflict, PolicyAction::Notify));
+    }
+
+    #[test]
+    fn daemon_config_deserializes_minimal() {
+        let yaml = "enabled: true";
+        let config: DaemonConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.enabled);
+        assert!(config.reconcile.is_none());
+        assert!(config.sync.is_none());
+        assert!(config.notify.is_none());
+        assert!(!config.windows_event_log);
+    }
+
+    #[test]
+    fn reconcile_patch_deserializes() {
+        let yaml = "kind: Module\nname: docker\ninterval: 10m\nautoApply: true\ndriftPolicy: Auto";
+        let patch: ReconcilePatch = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(patch.kind, ReconcilePatchKind::Module);
+        assert_eq!(patch.name.as_deref(), Some("docker"));
+        assert_eq!(patch.interval.as_deref(), Some("10m"));
+        assert_eq!(patch.auto_apply, Some(true));
+        assert_eq!(patch.drift_policy, Some(DriftPolicy::Auto));
+    }
+
+    #[test]
+    fn drift_policy_all_variants_deserialize() {
+        let auto: DriftPolicy = serde_yaml::from_str("Auto").unwrap();
+        let notify: DriftPolicy = serde_yaml::from_str("NotifyOnly").unwrap();
+        let prompt: DriftPolicy = serde_yaml::from_str("Prompt").unwrap();
+        assert_eq!(auto, DriftPolicy::Auto);
+        assert_eq!(notify, DriftPolicy::NotifyOnly);
+        assert_eq!(prompt, DriftPolicy::Prompt);
+    }
+
+    #[test]
+    fn policy_action_all_variants_deserialize() {
+        let notify: PolicyAction = serde_yaml::from_str("Notify").unwrap();
+        let accept: PolicyAction = serde_yaml::from_str("Accept").unwrap();
+        let reject: PolicyAction = serde_yaml::from_str("Reject").unwrap();
+        let ignore: PolicyAction = serde_yaml::from_str("Ignore").unwrap();
+        assert_eq!(notify, PolicyAction::Notify);
+        assert_eq!(accept, PolicyAction::Accept);
+        assert_eq!(reject, PolicyAction::Reject);
+        assert_eq!(ignore, PolicyAction::Ignore);
+    }
+}

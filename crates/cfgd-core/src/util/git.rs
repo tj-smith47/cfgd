@@ -279,4 +279,52 @@ mod tests {
             "error must call out env-var + missing-file: {err}"
         );
     }
+
+    #[test]
+    fn detect_default_branch_on_current_repo() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let result = detect_default_branch(repo_root);
+        assert!(
+            result.is_some(),
+            "should detect default branch in the cfgd repo"
+        );
+        let branch = result.unwrap();
+        assert!(!branch.is_empty(), "detected branch name must not be empty");
+    }
+
+    #[test]
+    fn detect_default_branch_returns_none_for_non_repo() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let result = detect_default_branch(tmp.path());
+        assert!(result.is_none(), "non-git directory must return None");
+    }
+
+    #[test]
+    fn detect_default_branch_on_fresh_init_repo() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let repo = git2::Repository::init(tmp.path()).unwrap();
+        let sig = git2::Signature::now("test", "test@test.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        let result = detect_default_branch(tmp.path());
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn try_git_cmd_succeeds_on_version() {
+        let ok = try_git_cmd(None, &["--version"], "version-check", None);
+        assert!(ok, "git --version should succeed");
+    }
+
+    #[test]
+    fn try_git_cmd_fails_on_invalid_subcommand() {
+        let ok = try_git_cmd(None, &["not-a-real-subcommand-xyz"], "invalid-cmd", None);
+        assert!(!ok, "invalid git subcommand should return false");
+    }
 }

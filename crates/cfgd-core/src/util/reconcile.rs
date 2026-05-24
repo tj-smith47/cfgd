@@ -79,3 +79,119 @@ fn overlay_reconcile_patch(base: &mut EffectiveReconcile, patch: &config::Reconc
         base.drift_policy = dp.clone();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_reconcile_config(patches: Vec<config::ReconcilePatch>) -> config::ReconcileConfig {
+        config::ReconcileConfig {
+            interval: "5m".into(),
+            on_change: false,
+            auto_apply: false,
+            policy: None,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            patches,
+        }
+    }
+
+    #[test]
+    fn no_patches_returns_global_defaults() {
+        let rc = make_reconcile_config(vec![]);
+        let eff = resolve_effective_reconcile("docker", &["base"], &rc);
+        assert_eq!(eff.interval, "5m");
+        assert!(!eff.auto_apply);
+        assert_eq!(eff.drift_policy, config::DriftPolicy::NotifyOnly);
+    }
+
+    #[test]
+    fn named_module_patch_overrides_global() {
+        let rc = make_reconcile_config(vec![config::ReconcilePatch {
+            kind: config::ReconcilePatchKind::Module,
+            name: Some("docker".into()),
+            interval: Some("1m".into()),
+            auto_apply: Some(true),
+            drift_policy: Some(config::DriftPolicy::Auto),
+        }]);
+        let eff = resolve_effective_reconcile("docker", &["base"], &rc);
+        assert_eq!(eff.interval, "1m");
+        assert!(eff.auto_apply);
+        assert_eq!(eff.drift_policy, config::DriftPolicy::Auto);
+    }
+
+    #[test]
+    fn named_module_patch_does_not_affect_other_modules() {
+        let rc = make_reconcile_config(vec![config::ReconcilePatch {
+            kind: config::ReconcilePatchKind::Module,
+            name: Some("docker".into()),
+            interval: Some("1m".into()),
+            auto_apply: None,
+            drift_policy: None,
+        }]);
+        let eff = resolve_effective_reconcile("kubernetes", &["base"], &rc);
+        assert_eq!(eff.interval, "5m");
+    }
+
+    #[test]
+    fn kind_wide_module_patch_applies_to_all() {
+        let rc = make_reconcile_config(vec![config::ReconcilePatch {
+            kind: config::ReconcilePatchKind::Module,
+            name: None,
+            interval: Some("2m".into()),
+            auto_apply: None,
+            drift_policy: None,
+        }]);
+        let eff = resolve_effective_reconcile("anything", &["base"], &rc);
+        assert_eq!(eff.interval, "2m");
+    }
+
+    #[test]
+    fn named_profile_patch_applies_when_in_chain() {
+        let rc = make_reconcile_config(vec![config::ReconcilePatch {
+            kind: config::ReconcilePatchKind::Profile,
+            name: Some("work".into()),
+            interval: Some("10m".into()),
+            auto_apply: Some(true),
+            drift_policy: None,
+        }]);
+        let eff = resolve_effective_reconcile("docker", &["base", "work"], &rc);
+        assert_eq!(eff.interval, "10m");
+        assert!(eff.auto_apply);
+    }
+
+    #[test]
+    fn named_module_beats_named_profile() {
+        let rc = make_reconcile_config(vec![
+            config::ReconcilePatch {
+                kind: config::ReconcilePatchKind::Profile,
+                name: Some("work".into()),
+                interval: Some("10m".into()),
+                auto_apply: None,
+                drift_policy: None,
+            },
+            config::ReconcilePatch {
+                kind: config::ReconcilePatchKind::Module,
+                name: Some("docker".into()),
+                interval: Some("30s".into()),
+                auto_apply: None,
+                drift_policy: None,
+            },
+        ]);
+        let eff = resolve_effective_reconcile("docker", &["base", "work"], &rc);
+        assert_eq!(eff.interval, "30s");
+    }
+
+    #[test]
+    fn kind_wide_profile_patch_applies() {
+        let rc = make_reconcile_config(vec![config::ReconcilePatch {
+            kind: config::ReconcilePatchKind::Profile,
+            name: None,
+            interval: None,
+            auto_apply: Some(true),
+            drift_policy: Some(config::DriftPolicy::Auto),
+        }]);
+        let eff = resolve_effective_reconcile("docker", &["base"], &rc);
+        assert!(eff.auto_apply);
+        assert_eq!(eff.drift_policy, config::DriftPolicy::Auto);
+    }
+}
