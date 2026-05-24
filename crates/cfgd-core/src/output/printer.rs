@@ -731,6 +731,128 @@ mod tests {
         assert!(json["heading"].as_str() == Some("S"));
     }
 
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn render_doc_with_hint_renders_content() {
+        use super::super::doc::Doc;
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        let doc = Doc::new()
+            .heading("Setup")
+            .hint("Run cfgd init to get started");
+        p.render(doc);
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Setup"), "got: {out:?}");
+        assert!(out.contains("cfgd init"), "got: {out:?}");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn render_doc_with_note_renders_at_verbose() {
+        use super::super::doc::Doc;
+        let (p, buf) = Printer::for_test_at(Verbosity::Verbose);
+        let doc = Doc::new().heading("Info").note("This is supplementary");
+        p.render(doc);
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Info"), "got: {out:?}");
+        assert!(out.contains("supplementary"), "got: {out:?}");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn render_doc_with_status_duration_and_target() {
+        use super::super::doc::Doc;
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        let doc = Doc::new()
+            .heading("Apply")
+            .status_with(Role::Ok, "brew install curl", |f| {
+                f.detail("already installed")
+                    .duration(std::time::Duration::from_millis(1500))
+                    .target("/usr/local/bin/curl")
+            });
+        p.render(doc);
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("brew install curl"), "got: {out:?}");
+        assert!(out.contains("already installed"), "got: {out:?}");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn render_doc_section_with_empty_state() {
+        use super::super::doc::Doc;
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        let doc = Doc::new()
+            .heading("Modules")
+            .section("Installed", |s| s.empty_state("no modules found"));
+        p.render(doc);
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Modules"), "got: {out:?}");
+        assert!(out.contains("Installed"), "got: {out:?}");
+        assert!(out.contains("no modules found"), "got: {out:?}");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn render_doc_with_kv_block() {
+        use super::super::doc::Doc;
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        let doc = Doc::new()
+            .heading("Config")
+            .kv_block([("Profile", "dev"), ("Source", "local")]);
+        p.render(doc);
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Config"), "got: {out:?}");
+        assert!(out.contains("Profile"), "got: {out:?}");
+        assert!(out.contains("dev"), "got: {out:?}");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn status_builder_detail_opt_none() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        p.status(Role::Ok, "package check").detail_opt(None);
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("package check"), "got: {out:?}");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn status_builder_detail_opt_some() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        p.status(Role::Ok, "installed").detail_opt(Some("v1.2.3"));
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("installed"), "got: {out:?}");
+        assert!(out.contains("v1.2.3"), "got: {out:?}");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn status_builder_with_target_path() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        p.status(Role::Ok, "file deployed")
+            .target(std::path::Path::new("/home/user/.zshrc"));
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("file deployed"), "got: {out:?}");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn status_builder_with_duration() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        p.status(Role::Ok, "brew install curl")
+            .duration(std::time::Duration::from_secs(3));
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("brew install curl"), "got: {out:?}");
+    }
+
     /// In debug builds, a top-level emit reached while a section is open
     /// trips `debug_assert!` in `Renderer::enforce_top_level_emit`. We catch
     /// the panic to verify the assert fires.

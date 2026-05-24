@@ -484,7 +484,7 @@ mod tests {
         let d = Doc::new().heading("Hi").kv("a", "b");
         let v = d.data_or_self_json();
         assert_eq!(v["heading"], "Hi");
-        assert!(v["children"].as_array().unwrap().len() > 0);
+        assert!(!v["children"].as_array().unwrap().is_empty());
     }
 
     #[test]
