@@ -8,3 +8,6 @@ pub mod leader;
 pub mod metrics;
 pub mod runtime;
 pub mod webhook;
+
+#[cfg(test)]
+mod test_helpers;
