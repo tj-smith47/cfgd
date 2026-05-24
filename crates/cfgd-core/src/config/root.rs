@@ -150,3 +150,90 @@ impl ConfigSpec {
         self.origin.first()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimal_config_has_correct_shape() {
+        let c = minimal_config();
+        assert_eq!(c.api_version, crate::API_VERSION);
+        assert_eq!(c.kind, "Config");
+        assert_eq!(c.metadata.name, "default");
+        assert!(c.spec.profile.is_none());
+        assert!(c.spec.origin.is_empty());
+    }
+
+    #[test]
+    fn active_profile_returns_error_when_none() {
+        let c = minimal_config();
+        assert!(c.active_profile().is_err());
+    }
+
+    #[test]
+    fn active_profile_returns_error_when_empty_string() {
+        let mut c = minimal_config();
+        c.spec.profile = Some(String::new());
+        assert!(c.active_profile().is_err());
+    }
+
+    #[test]
+    fn active_profile_returns_name_when_set() {
+        let mut c = minimal_config();
+        c.spec.profile = Some("work".to_string());
+        assert_eq!(c.active_profile().unwrap(), "work");
+    }
+
+    #[test]
+    fn primary_origin_none_when_empty() {
+        let spec = ConfigSpec::default();
+        assert!(spec.primary_origin().is_none());
+    }
+
+    #[test]
+    fn primary_origin_returns_first() {
+        let mut spec = ConfigSpec::default();
+        spec.origin.push(OriginSpec {
+            origin_type: crate::config::OriginType::Git,
+            url: "https://example.com/dotfiles.git".to_string(),
+            branch: "main".to_string(),
+            auth: None,
+            ssh_strict_host_key_checking: Default::default(),
+        });
+        assert_eq!(
+            spec.primary_origin().unwrap().url,
+            "https://example.com/dotfiles.git"
+        );
+    }
+
+    #[test]
+    fn is_yaml_ext_accepts_yaml_and_yml() {
+        assert!(is_yaml_ext(Path::new("foo.yaml")));
+        assert!(is_yaml_ext(Path::new("bar.yml")));
+        assert!(!is_yaml_ext(Path::new("baz.toml")));
+        assert!(!is_yaml_ext(Path::new("noext")));
+    }
+
+    #[test]
+    fn for_each_yaml_file_nonexistent_dir_is_ok() {
+        let r = for_each_yaml_file(Path::new("/nonexistent/path/xyz"), |_| Ok(()));
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn for_each_yaml_file_visits_yaml_files() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.yaml"), "").unwrap();
+        std::fs::write(dir.path().join("b.yml"), "").unwrap();
+        std::fs::write(dir.path().join("c.toml"), "").unwrap();
+        let mut visited = Vec::new();
+        for_each_yaml_file(dir.path(), |p| {
+            visited.push(p.file_name().unwrap().to_string_lossy().to_string());
+            Ok(())
+        })
+        .unwrap();
+        visited.sort();
+        assert_eq!(visited, vec!["a.yaml", "b.yml"]);
+    }
+}

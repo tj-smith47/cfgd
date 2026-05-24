@@ -118,3 +118,65 @@ impl ThemeOverrides {
             && self.icon_arrow.is_none()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_theme_config_uses_default_name() {
+        let tc = ThemeConfig::default();
+        assert_eq!(tc.name, "default");
+        assert!(tc.overrides.is_empty());
+    }
+
+    #[test]
+    fn deserialize_string_shorthand() {
+        let tc: ThemeConfig = serde_yaml::from_str("\"dracula\"").unwrap();
+        assert_eq!(tc.name, "dracula");
+        assert!(tc.overrides.is_empty());
+    }
+
+    #[test]
+    fn deserialize_map_with_name_only() {
+        let tc: ThemeConfig = serde_yaml::from_str("name: monokai").unwrap();
+        assert_eq!(tc.name, "monokai");
+        assert!(tc.overrides.is_empty());
+    }
+
+    #[test]
+    fn deserialize_map_with_overrides() {
+        let yaml = r##"
+name: custom
+overrides:
+  header: "#ff0000"
+  iconOk: "Y"
+"##;
+        let tc: ThemeConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(tc.name, "custom");
+        assert_eq!(tc.overrides.header.as_deref(), Some("#ff0000"));
+        assert_eq!(tc.overrides.icon_ok.as_deref(), Some("Y"));
+        assert!(!tc.overrides.is_empty());
+    }
+
+    #[test]
+    fn deserialize_map_defaults_name_when_omitted() {
+        let tc: ThemeConfig = serde_yaml::from_str("overrides: {}").unwrap();
+        assert_eq!(tc.name, "default");
+    }
+
+    #[test]
+    fn overrides_is_empty_when_default() {
+        let o = ThemeOverrides::default();
+        assert!(o.is_empty());
+    }
+
+    #[test]
+    fn overrides_not_empty_when_any_field_set() {
+        let o = ThemeOverrides {
+            error: Some("#f00".to_string()),
+            ..ThemeOverrides::default()
+        };
+        assert!(!o.is_empty());
+    }
+}
