@@ -1310,6 +1310,62 @@ fn download_to_file_drives_spinner_branch_when_printer_present_without_content_l
     assert_eq!(std::fs::read(&dest).unwrap(), body);
 }
 
+// --- fetch_latest_release_from: with printer drives spinner branch ---
+
+#[test]
+fn fetch_latest_release_from_with_printer_drives_spinner_branch() {
+    // Exercises the (Some(printer), spinner) path inside fetch_latest_release_from
+    // (lines 87, 103-104 of mod.rs). The spinner is created and finished.
+    let mut server = mockito::Server::new();
+    let mock = server
+        .mock("GET", "/repos/test/repo/releases/latest")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{
+                "tag_name": "v7.0.0",
+                "assets": [
+                    {
+                        "name": "cfgd-7.0.0-linux-x86_64.tar.gz",
+                        "browser_download_url": "https://example.com/download",
+                        "size": 1024
+                    }
+                ]
+            }"#,
+        )
+        .create();
+
+    let printer = crate::test_helpers::test_printer();
+    let result = fetch_latest_release_from(&server.url(), "test/repo", Some(&printer));
+    mock.assert();
+
+    let release = result.expect("should parse with printer present");
+    assert_eq!(release.version, Version::new(7, 0, 0));
+    assert_eq!(release.assets.len(), 1);
+}
+
+#[test]
+fn fetch_latest_release_from_with_printer_on_error_still_returns_err() {
+    // Printer present when the API returns an error status — spinner is created
+    // but never finished (the early return happens before finish_ok). This
+    // exercises the error path with printer != None.
+    let mut server = mockito::Server::new();
+    let mock = server
+        .mock("GET", "/repos/test/repo/releases/latest")
+        .with_status(502)
+        .with_body("Bad Gateway")
+        .create();
+
+    let printer = crate::test_helpers::test_printer();
+    let result = fetch_latest_release_from(&server.url(), "test/repo", Some(&printer));
+    mock.assert();
+
+    assert!(
+        result.is_err(),
+        "502 with printer must still surface as Err"
+    );
+}
+
 // --- parse_release_json: comprehensive edge cases ---
 
 #[test]
@@ -1517,6 +1573,125 @@ fn extract_tarball_preserves_binary_content() {
         extracted, binary_data,
         "binary data should be preserved exactly"
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn extract_tarball_skips_hardlink_entries_without_failing() {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+
+    let dir = tempfile::tempdir().unwrap();
+    let archive_path = dir.path().join("with-hardlink.tar.gz");
+    let dest = dir.path().join("out");
+    std::fs::create_dir_all(&dest).unwrap();
+
+    {
+        let file = std::fs::File::create(&archive_path).unwrap();
+        let enc = GzEncoder::new(file, Compression::default());
+        let mut tar_builder = tar::Builder::new(enc);
+
+        // Regular file
+        let body = b"real file content";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar_builder
+            .append_data(&mut header, "real.txt", &body[..])
+            .unwrap();
+
+        // Hardlink entry — extract_tarball must skip it (the is_hard_link()
+        // branch) without failing the entire extraction.
+        let mut hl_header = tar::Header::new_gnu();
+        hl_header.set_size(0);
+        hl_header.set_mode(0o644);
+        hl_header.set_entry_type(tar::EntryType::Link);
+        hl_header.set_link_name("real.txt").unwrap();
+        hl_header.set_cksum();
+        tar_builder
+            .append_data(&mut hl_header, "hardlink.txt", &[][..])
+            .unwrap();
+
+        tar_builder.finish().unwrap();
+    }
+
+    extract_tarball(&archive_path, &dest).expect("hardlink in tarball must not fail extraction");
+
+    assert!(
+        dest.join("real.txt").exists(),
+        "regular file must still be unpacked"
+    );
+    assert!(
+        !dest.join("hardlink.txt").exists(),
+        "hardlink entry must be skipped — guards against escape via crafted link target"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn extract_tarball_skips_mixed_symlink_and_hardlink_entries() {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+
+    let dir = tempfile::tempdir().unwrap();
+    let archive_path = dir.path().join("mixed-links.tar.gz");
+    let dest = dir.path().join("out");
+    std::fs::create_dir_all(&dest).unwrap();
+
+    {
+        let file = std::fs::File::create(&archive_path).unwrap();
+        let enc = GzEncoder::new(file, Compression::default());
+        let mut tar_builder = tar::Builder::new(enc);
+
+        // Regular file that should be extracted
+        let body = b"cfgd binary content";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(body.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        tar_builder
+            .append_data(&mut header, "cfgd", &body[..])
+            .unwrap();
+
+        // Symlink entry
+        let mut sym_header = tar::Header::new_gnu();
+        sym_header.set_size(0);
+        sym_header.set_mode(0o777);
+        sym_header.set_entry_type(tar::EntryType::Symlink);
+        sym_header.set_link_name("/etc/passwd").unwrap();
+        sym_header.set_cksum();
+        tar_builder
+            .append_data(&mut sym_header, "evil_symlink", &[][..])
+            .unwrap();
+
+        // Hardlink entry
+        let mut hl_header = tar::Header::new_gnu();
+        hl_header.set_size(0);
+        hl_header.set_mode(0o644);
+        hl_header.set_entry_type(tar::EntryType::Link);
+        hl_header.set_link_name("cfgd").unwrap();
+        hl_header.set_cksum();
+        tar_builder
+            .append_data(&mut hl_header, "evil_hardlink", &[][..])
+            .unwrap();
+
+        tar_builder.finish().unwrap();
+    }
+
+    extract_tarball(&archive_path, &dest).expect("mixed link types must not fail extraction");
+
+    assert!(dest.join("cfgd").exists(), "binary must be extracted");
+    assert!(
+        !dest.join("evil_symlink").exists() && !dest.join("evil_symlink").is_symlink(),
+        "symlink entry must be skipped"
+    );
+    assert!(
+        !dest.join("evil_hardlink").exists(),
+        "hardlink entry must be skipped"
+    );
+    let content = std::fs::read(dest.join("cfgd")).unwrap();
+    assert_eq!(content, b"cfgd binary content");
 }
 
 // --- atomic_replace: edge cases ---
@@ -2720,6 +2895,108 @@ mod download_and_install_to {
             "warning must point operators at the install hint: {captured}"
         );
     }
+
+    #[test]
+    #[serial]
+    fn happy_path_with_printer_and_content_length_drives_progress_bar() {
+        // Exercises the (Some(printer), Some(content_length)) progress-bar
+        // branch inside download_to_file (lines 332-353 of mod.rs) when called
+        // from the full install chain. The server sets Content-Length so the
+        // chunked-read loop with position tracking fires.
+        let _shim = CosignTestShim::builder().with_argv_logging(false).install();
+
+        let binary_content = b"#!/bin/sh\necho progress-bar cfgd\n";
+        let tarball = build_tarball(binary_content);
+        let sha = crate::sha256_hex(&tarball);
+        let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
+        let checksums = checksums_line(&sha, asset_name);
+
+        let mut server = mockito::Server::new();
+        let _m_archive = server
+            .mock("GET", "/download/cfgd.tar.gz")
+            .with_status(200)
+            .with_header("content-length", &tarball.len().to_string())
+            .with_body(&tarball)
+            .create();
+        let _m_checksums = server
+            .mock("GET", "/download/checksums.txt")
+            .with_status(200)
+            .with_header("content-length", &checksums.len().to_string())
+            .with_body(&checksums)
+            .create();
+        let _m_bundle = server
+            .mock("GET", "/download/cosign.bundle")
+            .with_status(200)
+            .with_header("content-length", "2")
+            .with_body("{}")
+            .create();
+        let _m_pubkey = server
+            .mock("GET", "/download/cosign.pub")
+            .with_status(200)
+            .with_header("content-length", "9")
+            .with_body("dummy-key")
+            .create();
+
+        let release = release_with_full_signature_chain(&server.url());
+        let asset = release.assets[0].clone();
+        let target_dir = tempfile::tempdir().unwrap();
+        let target = target_dir.path().join("cfgd");
+        std::fs::write(&target, b"old binary").unwrap();
+
+        let printer = crate::test_helpers::test_printer();
+        let installed = download_and_install_to(&release, &asset, &target, Some(&printer))
+            .expect("progress-bar path with content-length must succeed");
+        assert_eq!(installed, target);
+        assert_eq!(std::fs::read(&target).unwrap(), binary_content);
+    }
+
+    #[test]
+    #[serial]
+    fn checksum_mismatch_with_printer_surfaces_finish_fail_branch() {
+        // Exercises the verify-checksum spinner's finish_fail path (lines
+        // 495-501 of mod.rs) — SHA differs and printer is present.
+        let _shim = CosignTestShim::builder().with_argv_logging(false).install();
+        let tarball = build_tarball(b"binary");
+        let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
+        let bogus_sha = "f".repeat(64);
+        let checksums = checksums_line(&bogus_sha, asset_name);
+
+        let mut server = mockito::Server::new();
+        let _m_archive = server
+            .mock("GET", "/download/cfgd.tar.gz")
+            .with_status(200)
+            .with_body(&tarball)
+            .create();
+        let _m_checksums = server
+            .mock("GET", "/download/checksums.txt")
+            .with_status(200)
+            .with_body(&checksums)
+            .create();
+        let _m_bundle = server
+            .mock("GET", "/download/cosign.bundle")
+            .with_status(200)
+            .with_body("{}")
+            .create();
+        let _m_pubkey = server
+            .mock("GET", "/download/cosign.pub")
+            .with_status(200)
+            .with_body("dummy-key")
+            .create();
+
+        let release = release_with_full_signature_chain(&server.url());
+        let asset = release.assets[0].clone();
+        let target_dir = tempfile::tempdir().unwrap();
+        let target = target_dir.path().join("cfgd");
+
+        let printer = crate::test_helpers::test_printer();
+        let err = download_and_install_to(&release, &asset, &target, Some(&printer))
+            .expect_err("checksum mismatch with printer → Err");
+        let msg = err.to_string();
+        assert!(
+            msg.to_ascii_lowercase().contains("checksum"),
+            "error mentions checksum: {msg}"
+        );
+    }
 }
 
 // --- UpgradeError::ApiError pinning ---
@@ -2774,6 +3051,180 @@ fn fetch_latest_release_api_error_on_invalid_json_body() {
         }
         other => panic!("expected ApiError, got: {other:?}"),
     }
+}
+
+// --- write_version_cache and cache_dir coverage ---
+
+#[test]
+fn write_version_cache_creates_dir_and_writes_file() {
+    let home = tempfile::tempdir().unwrap();
+    let _guard = crate::with_test_home_guard(home.path());
+
+    let cache = VersionCache {
+        checked_at_secs: 1234567890,
+        latest_tag: "v5.0.0".into(),
+        latest_version: "5.0.0".into(),
+        current_version: "4.0.0".into(),
+    };
+
+    write_version_cache(&cache).expect("write_version_cache should create dir and file");
+
+    let cache_path = home.path().join(".cache").join("cfgd").join(CACHE_FILENAME);
+    assert!(cache_path.exists(), "cache file must exist after write");
+
+    let content = fs::read_to_string(&cache_path).unwrap();
+    let restored: VersionCache = serde_json::from_str(&content).unwrap();
+    assert_eq!(restored.checked_at_secs, 1234567890);
+    assert_eq!(restored.latest_version, "5.0.0");
+}
+
+#[test]
+fn write_version_cache_overwrites_existing_file() {
+    let home = tempfile::tempdir().unwrap();
+    let _guard = crate::with_test_home_guard(home.path());
+
+    let first = VersionCache {
+        checked_at_secs: 100,
+        latest_tag: "v1.0.0".into(),
+        latest_version: "1.0.0".into(),
+        current_version: "0.9.0".into(),
+    };
+    write_version_cache(&first).unwrap();
+
+    let second = VersionCache {
+        checked_at_secs: 200,
+        latest_tag: "v2.0.0".into(),
+        latest_version: "2.0.0".into(),
+        current_version: "1.0.0".into(),
+    };
+    write_version_cache(&second).unwrap();
+
+    let read = read_version_cache().expect("should read back second write");
+    assert_eq!(read.checked_at_secs, 200);
+    assert_eq!(read.latest_version, "2.0.0");
+}
+
+#[test]
+fn read_version_cache_returns_none_for_empty_file() {
+    let home = tempfile::tempdir().unwrap();
+    let _guard = crate::with_test_home_guard(home.path());
+
+    let dir = home.path().join(".cache").join("cfgd");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(CACHE_FILENAME), "").unwrap();
+
+    assert!(
+        read_version_cache().is_none(),
+        "empty file should fail JSON parse and return None"
+    );
+}
+
+#[test]
+fn read_version_cache_returns_none_for_invalid_json() {
+    let home = tempfile::tempdir().unwrap();
+    let _guard = crate::with_test_home_guard(home.path());
+
+    let dir = home.path().join(".cache").join("cfgd");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(CACHE_FILENAME), "not valid json {{{").unwrap();
+
+    assert!(
+        read_version_cache().is_none(),
+        "invalid JSON should return None gracefully"
+    );
+}
+
+#[test]
+fn cache_dir_returns_test_home_scoped_path() {
+    let home = tempfile::tempdir().unwrap();
+    let _guard = crate::with_test_home_guard(home.path());
+
+    let dir = cache_dir().expect("cache_dir with test_home must return Some");
+    assert!(
+        dir.starts_with(home.path()),
+        "cache dir must be under test home: {dir:?}"
+    );
+    assert!(
+        dir.ends_with("cfgd"),
+        "cache dir must end with 'cfgd': {dir:?}"
+    );
+}
+
+// --- download_to_file: large file branch ---
+
+#[test]
+fn download_to_file_large_content_streams_correctly() {
+    let mut server = mockito::Server::new();
+    let large_body: Vec<u8> = vec![0xAB; 32 * 1024];
+    let mock = server
+        .mock("GET", "/download/large")
+        .with_status(200)
+        .with_header("content-length", &large_body.len().to_string())
+        .with_body(&large_body)
+        .create();
+
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("large.bin");
+    let url = format!("{}/download/large", server.url());
+
+    download_to_file(&url, &dest, None).unwrap();
+    mock.assert();
+
+    let content = std::fs::read(&dest).unwrap();
+    assert_eq!(content.len(), large_body.len());
+    assert_eq!(content, large_body);
+}
+
+#[test]
+fn download_to_file_with_printer_and_content_length_drives_progress_bar() {
+    // Exercises (Some(printer), Some(content_length)) path directly through
+    // download_to_file — the progress-bar chunked-read loop.
+    let mut server = mockito::Server::new();
+    let body: Vec<u8> = vec![0xCD; 16 * 1024];
+    let mock = server
+        .mock("GET", "/download/progress")
+        .with_status(200)
+        .with_header("content-length", &body.len().to_string())
+        .with_body(&body)
+        .create();
+
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("progress.bin");
+    let url = format!("{}/download/progress", server.url());
+    let printer = crate::test_helpers::test_printer();
+
+    download_to_file(&url, &dest, Some(&printer)).unwrap();
+    mock.assert();
+
+    assert_eq!(std::fs::read(&dest).unwrap(), body);
+}
+
+// --- parse_release_json: version parse error shapes ---
+
+#[test]
+fn parse_release_json_version_parse_error_includes_tag_in_message() {
+    let json = r#"{"tag_name": "vnot-a-version", "assets": []}"#;
+    let err = parse_release_json(json).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("vnot-a-version"),
+        "error must include the problematic tag for triage: {msg}"
+    );
+    assert!(
+        msg.contains("cannot parse release version"),
+        "error must include context prefix: {msg}"
+    );
+}
+
+#[test]
+fn parse_release_json_empty_tag_name_fails_version_parse() {
+    let json = r#"{"tag_name": "", "assets": []}"#;
+    let err = parse_release_json(json).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("cannot parse"),
+        "empty tag must fail version parse: {msg}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2862,5 +3313,120 @@ mod api_base_env_shim {
         let cache = read_version_cache().expect("written cache must parse back");
         assert_eq!(cache.latest_version, "999.0.0");
         assert_eq!(cache.latest_tag, "v999.0.0");
+    }
+
+    #[test]
+    #[serial]
+    fn check_with_cache_expired_entry_falls_through_to_api_and_refreshes() {
+        // Pre-write an EXPIRED cache entry (25 hours ago), set up mockito for
+        // the API, call check_with_cache, assert mock was hit and cache was
+        // updated with fresh data.
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = crate::with_test_home_guard(home.path());
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let expired = VersionCache {
+            checked_at_secs: now.saturating_sub(CACHE_TTL_SECS + 3600),
+            latest_tag: "v0.0.1".into(),
+            latest_version: "0.0.1".into(),
+            current_version: env!("CARGO_PKG_VERSION").into(),
+        };
+        write_version_cache(&expired).expect("seed stale cache");
+
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/repos/test/repo/releases/latest")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{
+                    "tag_name": "v888.0.0",
+                    "assets": []
+                }"#,
+            )
+            .create();
+        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+
+        let result = check_with_cache(Some("test/repo"), None)
+            .expect("expired cache + API success should succeed");
+        mock.assert();
+        assert_eq!(
+            result.latest,
+            Version::new(888, 0, 0),
+            "must return fresh API data, not stale cache"
+        );
+
+        let refreshed = read_version_cache().expect("cache must be refreshed after API");
+        assert_eq!(refreshed.latest_version, "888.0.0");
+        assert_eq!(refreshed.latest_tag, "v888.0.0");
+        assert!(
+            refreshed.checked_at_secs >= now,
+            "cache timestamp must be updated to ~now"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn check_latest_with_none_repo_uses_default() {
+        // check_latest(None, ...) should use DEFAULT_REPO ("tj-smith47/cfgd").
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"tag_name": "v777.0.0", "assets": []}"#)
+            .create();
+        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+
+        let result =
+            check_latest(None, None).expect("None repo should use default and hit mockito");
+        mock.assert();
+        assert_eq!(result.latest, Version::new(777, 0, 0));
+    }
+
+    #[test]
+    #[serial]
+    fn check_with_cache_none_repo_uses_default() {
+        // check_with_cache(None, ...) should use DEFAULT_REPO.
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = crate::with_test_home_guard(home.path());
+
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"tag_name": "v666.0.0", "assets": []}"#)
+            .create();
+        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+
+        let result =
+            check_with_cache(None, None).expect("None repo should use default and hit mockito");
+        mock.assert();
+        assert_eq!(result.latest, Version::new(666, 0, 0));
+    }
+
+    #[test]
+    #[serial]
+    fn fetch_latest_release_uses_env_shim() {
+        // The public `fetch_latest_release` function reads CFGD_GITHUB_API_BASE
+        // internally (line 22 of mod.rs). This test exercises that env-var read
+        // path through the public API.
+        let mut server = mockito::Server::new();
+        let mock = server
+            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"tag_name": "v555.0.0", "assets": []}"#)
+            .create();
+        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+
+        let result = fetch_latest_release("tj-smith47/cfgd", None)
+            .expect("env shim should redirect to mockito");
+        mock.assert();
+        assert_eq!(result.version, Version::new(555, 0, 0));
     }
 }
