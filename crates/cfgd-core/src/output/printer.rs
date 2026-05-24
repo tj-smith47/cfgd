@@ -489,6 +489,174 @@ mod tests {
 
     #[cfg(feature = "test-helpers")]
     #[test]
+    fn section_kv_renders_key_value() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("Details");
+            s.kv("Name", "cfgd");
+            s.kv("Version", "0.3.5");
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Details\n"), "got: {out:?}");
+        assert!(out.contains("Name"), "got: {out:?}");
+        assert!(out.contains("cfgd"), "got: {out:?}");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn section_kv_block_renders_pairs() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("Config");
+            s.kv_block([("Profile", "default"), ("Source", "local")]);
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Config\n"), "got: {out:?}");
+        assert!(out.contains("Profile"), "got: {out:?}");
+        assert!(out.contains("default"), "got: {out:?}");
+        assert!(out.contains("Source"), "got: {out:?}");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn section_hint_renders() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("Setup");
+            s.hint("Run cfgd init first");
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Setup\n"), "got: {out:?}");
+        assert!(out.contains("cfgd init"), "got: {out:?}");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn section_note_renders_at_verbose() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Verbose);
+        {
+            let s = p.section("Status");
+            s.note("All modules up to date");
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Status\n"), "got: {out:?}");
+        assert!(out.contains("up to date"), "got: {out:?}");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn section_table_renders() {
+        use super::super::renderer::Table;
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("Packages");
+            let table = Table::new(["Name", "Version"]).row(["curl", "8.0"]);
+            s.table(table);
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Packages\n"), "got: {out:?}");
+        assert!(out.contains("curl"), "got: {out:?}");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn section_status_simple_renders() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("Apply");
+            s.status_simple(Role::Ok, "package installed");
+            s.status_simple(Role::Fail, "file copy failed");
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Apply\n"), "got: {out:?}");
+        assert!(out.contains("package installed"), "got: {out:?}");
+        assert!(out.contains("file copy failed"), "got: {out:?}");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn section_status_builder_with_detail() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("Apply");
+            s.status(Role::Ok, "brew install curl")
+                .detail("already installed");
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("brew install curl"), "got: {out:?}");
+        assert!(out.contains("already installed"), "got: {out:?}");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn section_empty_state_overrides_default() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("Modules");
+            s.empty_state("no modules configured");
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Modules\n"), "got: {out:?}");
+        assert!(out.contains("no modules configured"), "got: {out:?}");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn section_or_collapse_with_child_renders() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section_or_collapse("Optional");
+            s.bullet("present");
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Optional\n"), "got: {out:?}");
+        assert!(out.contains("present"), "got: {out:?}");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn section_close_is_idempotent_via_explicit_close() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("Closing");
+            s.bullet("item");
+            s.close();
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Closing\n"), "got: {out:?}");
+        assert!(out.contains("item"), "got: {out:?}");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn nested_section_or_collapse_renders_child_content() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let outer = p.section("Outer");
+            {
+                let inner = outer.section_or_collapse("Inner");
+                inner.status_simple(Role::Ok, "done");
+            }
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Outer\n"), "got: {out:?}");
+        assert!(out.contains("Inner\n"), "got: {out:?}");
+        assert!(out.contains("done"), "got: {out:?}");
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
     fn render_doc_with_section_indents_correctly() {
         use super::super::doc::Doc;
         let (p, buf) = Printer::for_test_at(Verbosity::Normal);

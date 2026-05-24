@@ -7801,3 +7801,396 @@ mod bridge {
         assert_snapshot("clean_apply_cycle.txt", &captured);
     }
 }
+
+// ---------------------------------------------------------------------------
+// format_plan_items — uncovered branches
+// ---------------------------------------------------------------------------
+
+#[test]
+fn format_plan_items_file_skip() {
+    let phase = Phase {
+        name: PhaseName::Files,
+        actions: vec![Action::File(FileAction::Skip {
+            target: PathBuf::from("/home/user/.config/skipped"),
+            reason: "unchanged".into(),
+            origin: "corp".into(),
+        })],
+    };
+    let items = format_plan_items(&phase);
+    assert_eq!(items.len(), 1);
+    assert!(items[0].contains("skip"), "got: {}", items[0]);
+    assert!(items[0].contains("unchanged"), "got: {}", items[0]);
+    assert!(items[0].contains("<- corp"), "got: {}", items[0]);
+}
+
+#[test]
+fn format_plan_items_file_set_permissions() {
+    let phase = Phase {
+        name: PhaseName::Files,
+        actions: vec![Action::File(FileAction::SetPermissions {
+            target: PathBuf::from("/home/user/.ssh/id_rsa"),
+            mode: 0o600,
+            origin: "local".into(),
+        })],
+    };
+    let items = format_plan_items(&phase);
+    assert_eq!(items.len(), 1);
+    assert!(items[0].contains("chmod"), "got: {}", items[0]);
+    assert!(items[0].contains("0o600"), "got: {}", items[0]);
+    assert!(items[0].contains("id_rsa"), "got: {}", items[0]);
+}
+
+#[test]
+fn format_plan_items_package_bootstrap() {
+    let phase = Phase {
+        name: PhaseName::Packages,
+        actions: vec![Action::Package(PackageAction::Bootstrap {
+            manager: "brew".into(),
+            method: "curl | bash".into(),
+            origin: "corp".into(),
+        })],
+    };
+    let items = format_plan_items(&phase);
+    assert_eq!(items.len(), 1);
+    assert!(items[0].contains("bootstrap brew"), "got: {}", items[0]);
+    assert!(items[0].contains("curl | bash"), "got: {}", items[0]);
+    assert!(items[0].contains("<- corp"), "got: {}", items[0]);
+}
+
+#[test]
+fn format_plan_items_package_uninstall() {
+    let phase = Phase {
+        name: PhaseName::Packages,
+        actions: vec![Action::Package(PackageAction::Uninstall {
+            manager: "apt".into(),
+            packages: vec!["vim".into(), "nano".into()],
+            origin: "local".into(),
+        })],
+    };
+    let items = format_plan_items(&phase);
+    assert_eq!(items.len(), 1);
+    assert!(items[0].contains("uninstall"), "got: {}", items[0]);
+    assert!(items[0].contains("vim"), "got: {}", items[0]);
+    assert!(items[0].contains("nano"), "got: {}", items[0]);
+}
+
+#[test]
+fn format_module_action_item_run_script() {
+    let phase = Phase {
+        name: PhaseName::Modules,
+        actions: vec![Action::Module(ModuleAction {
+            module_name: "nvim".into(),
+            kind: ModuleActionKind::RunScript {
+                script: ScriptEntry::Simple("make install".into()),
+                phase: ScriptPhase::PostApply,
+            },
+        })],
+    };
+    let items = format_plan_items(&phase);
+    assert_eq!(items.len(), 1);
+    assert!(items[0].contains("[nvim]"), "got: {}", items[0]);
+    assert!(items[0].contains("postApply"), "got: {}", items[0]);
+    assert!(items[0].contains("make install"), "got: {}", items[0]);
+}
+
+#[test]
+fn format_module_action_item_deploy_many_files_truncates() {
+    let files: Vec<ResolvedFile> = (0..5)
+        .map(|i| ResolvedFile {
+            source: PathBuf::from(format!("/cache/mod/f{i}")),
+            target: PathBuf::from(format!("/home/user/.f{i}")),
+            is_git_source: false,
+            strategy: None,
+            encryption: None,
+        })
+        .collect();
+    let phase = Phase {
+        name: PhaseName::Modules,
+        actions: vec![Action::Module(ModuleAction {
+            module_name: "big".into(),
+            kind: ModuleActionKind::DeployFiles { files },
+        })],
+    };
+    let items = format_plan_items(&phase);
+    assert_eq!(items.len(), 1);
+    assert!(items[0].contains("5 files"), "got: {}", items[0]);
+}
+
+#[test]
+fn format_action_description_module_alias_canonical_mismatch() {
+    let action = Action::Module(ModuleAction {
+        module_name: "tools".into(),
+        kind: ModuleActionKind::InstallPackages {
+            resolved: vec![ResolvedPackage {
+                canonical_name: "fd".into(),
+                resolved_name: "fd-find".into(),
+                manager: "apt".into(),
+                version: None,
+                script: None,
+            }],
+        },
+    });
+    let desc = format_action_description(&action);
+    assert!(
+        desc.contains("module:tools:packages:fd-find"),
+        "got: {desc}"
+    );
+}
+
+#[test]
+fn format_action_description_file_skip_action() {
+    let action = Action::File(FileAction::Skip {
+        target: PathBuf::from("/home/user/.old"),
+        reason: "unchanged".into(),
+        origin: "local".into(),
+    });
+    let desc = format_action_description(&action);
+    assert!(desc.starts_with("file:skip:"), "got: {desc}");
+}
+
+// ---------------------------------------------------------------------------
+// FileAction::clone_action
+// ---------------------------------------------------------------------------
+
+#[test]
+fn clone_action_create_preserves_all_fields() {
+    let action = FileAction::Create {
+        source: PathBuf::from("/src/file"),
+        target: PathBuf::from("/dst/file"),
+        origin: "remote".into(),
+        strategy: crate::config::FileStrategy::Symlink,
+        source_hash: Some("abc123".into()),
+    };
+    let cloned = action.clone_action();
+    match cloned {
+        FileAction::Create {
+            source,
+            target,
+            origin,
+            strategy,
+            source_hash,
+        } => {
+            assert_eq!(source, PathBuf::from("/src/file"));
+            assert_eq!(target, PathBuf::from("/dst/file"));
+            assert_eq!(origin, "remote");
+            assert_eq!(strategy, crate::config::FileStrategy::Symlink);
+            assert_eq!(source_hash.as_deref(), Some("abc123"));
+        }
+        other => panic!("expected Create, got: {other:?}"),
+    }
+}
+
+#[test]
+fn clone_action_update_preserves_all_fields() {
+    let action = FileAction::Update {
+        source: PathBuf::from("/src/updated"),
+        target: PathBuf::from("/dst/updated"),
+        diff: "- old\n+ new".into(),
+        origin: "corp".into(),
+        strategy: crate::config::FileStrategy::Copy,
+        source_hash: None,
+    };
+    let cloned = action.clone_action();
+    match cloned {
+        FileAction::Update {
+            source,
+            target,
+            diff,
+            origin,
+            strategy,
+            source_hash,
+        } => {
+            assert_eq!(source, PathBuf::from("/src/updated"));
+            assert_eq!(target, PathBuf::from("/dst/updated"));
+            assert_eq!(diff, "- old\n+ new");
+            assert_eq!(origin, "corp");
+            assert_eq!(strategy, crate::config::FileStrategy::Copy);
+            assert!(source_hash.is_none());
+        }
+        other => panic!("expected Update, got: {other:?}"),
+    }
+}
+
+#[test]
+fn clone_action_delete_preserves_all_fields() {
+    let action = FileAction::Delete {
+        target: PathBuf::from("/home/user/.old"),
+        origin: "local".into(),
+    };
+    let cloned = action.clone_action();
+    match cloned {
+        FileAction::Delete { target, origin } => {
+            assert_eq!(target, PathBuf::from("/home/user/.old"));
+            assert_eq!(origin, "local");
+        }
+        other => panic!("expected Delete, got: {other:?}"),
+    }
+}
+
+#[test]
+fn clone_action_set_permissions_preserves_all_fields() {
+    let action = FileAction::SetPermissions {
+        target: PathBuf::from("/home/user/.ssh/key"),
+        mode: 0o600,
+        origin: "local".into(),
+    };
+    let cloned = action.clone_action();
+    match cloned {
+        FileAction::SetPermissions {
+            target,
+            mode,
+            origin,
+        } => {
+            assert_eq!(target, PathBuf::from("/home/user/.ssh/key"));
+            assert_eq!(mode, 0o600);
+            assert_eq!(origin, "local");
+        }
+        other => panic!("expected SetPermissions, got: {other:?}"),
+    }
+}
+
+#[test]
+fn clone_action_skip_preserves_all_fields() {
+    let action = FileAction::Skip {
+        target: PathBuf::from("/home/user/.config/skipped"),
+        reason: "unchanged".into(),
+        origin: "corp".into(),
+    };
+    let cloned = action.clone_action();
+    match cloned {
+        FileAction::Skip {
+            target,
+            reason,
+            origin,
+        } => {
+            assert_eq!(target, PathBuf::from("/home/user/.config/skipped"));
+            assert_eq!(reason, "unchanged");
+            assert_eq!(origin, "corp");
+        }
+        other => panic!("expected Skip, got: {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// apply_file_action_direct — filesystem operations with tempdir
+// ---------------------------------------------------------------------------
+
+#[test]
+fn apply_file_action_direct_creates_file_with_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("source.txt");
+    std::fs::write(&src, "hello").unwrap();
+    let dst = dir.path().join("sub/target.txt");
+
+    let action = FileAction::Create {
+        source: src,
+        target: dst.clone(),
+        origin: "local".into(),
+        strategy: crate::config::FileStrategy::Copy,
+        source_hash: None,
+    };
+    let profile = make_empty_resolved();
+    super::file_action::apply_file_action_direct(&action, dir.path(), &profile.merged).unwrap();
+    assert_eq!(std::fs::read_to_string(&dst).unwrap(), "hello");
+}
+
+#[test]
+fn apply_file_action_direct_creates_symlink() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("source.txt");
+    std::fs::write(&src, "link-target").unwrap();
+    let dst = dir.path().join("link.txt");
+
+    let action = FileAction::Create {
+        source: src,
+        target: dst.clone(),
+        origin: "local".into(),
+        strategy: crate::config::FileStrategy::Symlink,
+        source_hash: None,
+    };
+    let profile = make_empty_resolved();
+    super::file_action::apply_file_action_direct(&action, dir.path(), &profile.merged).unwrap();
+    assert!(dst.is_symlink());
+    assert_eq!(std::fs::read_to_string(&dst).unwrap(), "link-target");
+}
+
+#[test]
+fn apply_file_action_direct_creates_hardlink() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("source.txt");
+    std::fs::write(&src, "hard-data").unwrap();
+    let dst = dir.path().join("hard.txt");
+
+    let action = FileAction::Create {
+        source: src,
+        target: dst.clone(),
+        origin: "local".into(),
+        strategy: crate::config::FileStrategy::Hardlink,
+        source_hash: None,
+    };
+    let profile = make_empty_resolved();
+    super::file_action::apply_file_action_direct(&action, dir.path(), &profile.merged).unwrap();
+    assert_eq!(std::fs::read_to_string(&dst).unwrap(), "hard-data");
+}
+
+#[test]
+fn apply_file_action_direct_deletes_existing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("doomed.txt");
+    std::fs::write(&target, "bye").unwrap();
+    assert!(target.exists());
+
+    let action = FileAction::Delete {
+        target: target.clone(),
+        origin: "local".into(),
+    };
+    let profile = make_empty_resolved();
+    super::file_action::apply_file_action_direct(&action, dir.path(), &profile.merged).unwrap();
+    assert!(!target.exists());
+}
+
+#[test]
+fn apply_file_action_direct_delete_nonexistent_is_ok() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("nonexistent.txt");
+
+    let action = FileAction::Delete {
+        target,
+        origin: "local".into(),
+    };
+    let profile = make_empty_resolved();
+    super::file_action::apply_file_action_direct(&action, dir.path(), &profile.merged).unwrap();
+}
+
+#[test]
+fn apply_file_action_direct_skip_is_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    let action = FileAction::Skip {
+        target: dir.path().join("whatever.txt"),
+        reason: "unchanged".into(),
+        origin: "local".into(),
+    };
+    let profile = make_empty_resolved();
+    super::file_action::apply_file_action_direct(&action, dir.path(), &profile.merged).unwrap();
+}
+
+#[test]
+fn apply_file_action_direct_update_replaces_existing() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("new-version.txt");
+    std::fs::write(&src, "v2").unwrap();
+    let dst = dir.path().join("target.txt");
+    std::fs::write(&dst, "v1").unwrap();
+
+    let action = FileAction::Update {
+        source: src,
+        target: dst.clone(),
+        diff: String::new(),
+        origin: "local".into(),
+        strategy: crate::config::FileStrategy::Copy,
+        source_hash: None,
+    };
+    let profile = make_empty_resolved();
+    super::file_action::apply_file_action_direct(&action, dir.path(), &profile.merged).unwrap();
+    assert_eq!(std::fs::read_to_string(&dst).unwrap(), "v2");
+}
