@@ -255,3 +255,38 @@ impl ApplyResult {
         self.action_results.iter().filter(|r| !r.success).count()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phase_name_from_str_round_trips() {
+        assert_eq!("env".parse::<PhaseName>().unwrap(), PhaseName::Env);
+        assert_eq!("files".parse::<PhaseName>().unwrap(), PhaseName::Files);
+        assert_eq!(
+            "packages".parse::<PhaseName>().unwrap(),
+            PhaseName::Packages
+        );
+        assert_eq!("system".parse::<PhaseName>().unwrap(), PhaseName::System);
+        assert_eq!("secrets".parse::<PhaseName>().unwrap(), PhaseName::Secrets);
+        assert_eq!(
+            "pre-scripts".parse::<PhaseName>().unwrap(),
+            PhaseName::PreScripts
+        );
+        assert_eq!(
+            "post-scripts".parse::<PhaseName>().unwrap(),
+            PhaseName::PostScripts
+        );
+        assert_eq!("modules".parse::<PhaseName>().unwrap(), PhaseName::Modules);
+        assert!("bogus".parse::<PhaseName>().is_err());
+    }
+
+    #[test]
+    fn script_phase_display_names() {
+        assert_eq!(ScriptPhase::PreApply.display_name(), "preApply");
+        assert_eq!(ScriptPhase::PostApply.display_name(), "postApply");
+        assert_eq!(ScriptPhase::OnDrift.display_name(), "onDrift");
+        assert_eq!(ScriptPhase::OnChange.display_name(), "onChange");
+    }
+}
