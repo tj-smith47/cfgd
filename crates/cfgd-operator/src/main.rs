@@ -56,6 +56,7 @@ async fn main() -> Result<()> {
     let cert_dir = env::env_or("WEBHOOK_CERT_DIR", "/tmp/k8s-webhook-server/serving-certs");
     let webhook_port = env::parse_port_env("WEBHOOK_PORT", 9443);
 
+    let mut webhook_handle: Option<tokio::task::JoinHandle<()>> = None;
     if runtime::webhook_certs_present(Path::new(&cert_dir)) {
         tracing::info!(cert_dir = %cert_dir, port = webhook_port, "starting webhook server");
         let webhook_addr: std::net::SocketAddr = ([0, 0, 0, 0], webhook_port).into();
@@ -68,7 +69,7 @@ async fn main() -> Result<()> {
         };
         let webhook_metrics = metrics.clone();
         let webhook_client = client.clone();
-        tokio::spawn(async move {
+        webhook_handle = Some(tokio::spawn(async move {
             if let Err(e) = webhook::run_webhook_server(
                 &cert_dir,
                 webhook_listener,
@@ -79,7 +80,7 @@ async fn main() -> Result<()> {
             {
                 tracing::error!(error = %e, "webhook server failed");
             }
-        });
+        }));
     } else {
         tracing::info!(
             cert_dir = %cert_dir,
@@ -119,6 +120,31 @@ async fn main() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     };
 
+    let webhook_exit_future = async {
+        match webhook_handle.as_mut() {
+            Some(h) => match h.await {
+                Ok(()) => {
+                    tracing::error!(
+                        "webhook server exited unexpectedly (returned Ok) — \
+                         admission control is no longer being enforced; failing operator \
+                         so Kubernetes can restart it"
+                    );
+                    anyhow::bail!("webhook server exited unexpectedly")
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "webhook server task panicked — admission control offline; \
+                         failing operator so Kubernetes can restart it"
+                    );
+                    anyhow::bail!("webhook server task panicked: {e}")
+                }
+            },
+            None => std::future::pending::<Result<()>>().await,
+        }
+    };
+
+    let mut webhook_exit_err: Option<anyhow::Error> = None;
     tokio::select! {
         result = operator_future => {
             if let Err(e) = result {
@@ -134,6 +160,11 @@ async fn main() -> Result<()> {
         result = &mut metrics_handle => {
             if let Err(e) = result {
                 tracing::error!(error = %e, "metrics server task panicked");
+            }
+        },
+        result = webhook_exit_future => {
+            if let Err(e) = result {
+                webhook_exit_err = Some(e);
             }
         },
         _ = shutdown_signal() => {
@@ -158,9 +189,15 @@ async fn main() -> Result<()> {
         },
     }
 
-    // Abort remaining spawned tasks on exit
     health_handle.abort();
     metrics_handle.abort();
+    if let Some(h) = webhook_handle {
+        h.abort();
+    }
+
+    if let Some(e) = webhook_exit_err {
+        return Err(e);
+    }
 
     Ok(())
 }
