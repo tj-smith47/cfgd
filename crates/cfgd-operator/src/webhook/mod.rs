@@ -29,7 +29,7 @@ struct WebhookState {
 
 pub async fn run_webhook_server(
     cert_dir: &str,
-    port: u16,
+    listener: TcpListener,
     metrics: Metrics,
     client: Client,
 ) -> Result<(), OperatorError> {
@@ -62,12 +62,11 @@ pub async fn run_webhook_server(
 
     let app = build_webhook_router(WebhookState { metrics, client });
 
-    let addr: std::net::SocketAddr = ([0, 0, 0, 0], port).into();
-    let listener = TcpListener::bind(addr)
-        .await
-        .map_err(|e| OperatorError::Webhook(format!("failed to bind {addr}: {e}")))?;
+    let local_addr = listener
+        .local_addr()
+        .map_err(|e| OperatorError::Webhook(format!("failed to read listener address: {e}")))?;
 
-    info!(addr = %addr, "webhook server listening");
+    info!(addr = %local_addr, "webhook server listening");
 
     loop {
         let (stream, peer_addr) = match listener.accept().await {
@@ -825,3 +824,5 @@ mod tests;
 mod tests_kube_router;
 #[cfg(test)]
 mod tests_router;
+#[cfg(test)]
+mod tests_server;

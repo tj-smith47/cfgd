@@ -58,12 +58,20 @@ async fn main() -> Result<()> {
 
     if runtime::webhook_certs_present(Path::new(&cert_dir)) {
         tracing::info!(cert_dir = %cert_dir, port = webhook_port, "starting webhook server");
+        let webhook_addr: std::net::SocketAddr = ([0, 0, 0, 0], webhook_port).into();
+        let webhook_listener = match tokio::net::TcpListener::bind(webhook_addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::error!(error = %e, addr = %webhook_addr, "failed to bind webhook listener");
+                return Err(anyhow::anyhow!("failed to bind webhook listener: {e}"));
+            }
+        };
         let webhook_metrics = metrics.clone();
         let webhook_client = client.clone();
         tokio::spawn(async move {
             if let Err(e) = webhook::run_webhook_server(
                 &cert_dir,
-                webhook_port,
+                webhook_listener,
                 webhook_metrics,
                 webhook_client,
             )
