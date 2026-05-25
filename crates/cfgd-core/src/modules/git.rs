@@ -920,4 +920,100 @@ mod tests {
             "error must mention HEAD or repo: {msg}"
         );
     }
+
+    // --- BareGitRepo-driven end-to-end tests ---
+    //
+    // These cover the clone + fetch + checkout + signature-detect pipeline by
+    // standing up a bare upstream and a working clone, without ever touching
+    // the network. They exercise multiple code paths per test for high
+    // coverage leverage.
+
+    #[test]
+    #[serial_test::serial]
+    fn fetch_git_source_with_bare_repo_branch_checks_out_branch() {
+        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let bare = crate::test_helpers::BareGitRepo::builder()
+            .commit("init", &[("README.md", "hello")])
+            .branch("feature", &[("feature.txt", "feature-data")])
+            .build();
+
+        let cache_base = tempfile::tempdir().expect("cache tempdir");
+        let printer = crate::test_helpers::test_printer();
+
+        // Use ?ref=feature so the checkout_ref branch lookup hits the
+        // `refs/remotes/origin/<branch>` arm after the tag-lookup misses.
+        let url_with_ref = format!("{}?ref=feature", bare.url());
+        let git_src = parse_git_source(&url_with_ref).expect("parse ref url");
+        assert_eq!(git_src.git_ref.as_deref(), Some("feature"));
+
+        let path = fetch_git_source(&git_src, cache_base.path(), "branchy", &printer)
+            .expect("fetch with branch checkout must succeed");
+
+        assert!(path.join("feature.txt").exists(), "branch file must exist");
+        assert_eq!(
+            std::fs::read_to_string(path.join("feature.txt")).unwrap(),
+            "feature-data"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn fetch_git_source_with_bare_repo_tag_checks_out_tag() {
+        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let bare = crate::test_helpers::BareGitRepo::builder()
+            .commit("first", &[("a.txt", "first content")])
+            .tag("v1.0.0")
+            .build();
+
+        let cache_base = tempfile::tempdir().expect("cache tempdir");
+        let printer = crate::test_helpers::test_printer();
+
+        let url_with_tag = format!("{}@v1.0.0", bare.url());
+        let git_src = parse_git_source(&url_with_tag).expect("parse tag url");
+        assert_eq!(git_src.tag.as_deref(), Some("v1.0.0"));
+
+        let path = fetch_git_source(&git_src, cache_base.path(), "tagged", &printer)
+            .expect("fetch with tag checkout must succeed");
+        assert!(path.join("a.txt").exists());
+
+        // Subsequent call hits the fetch_existing_repo branch.
+        let path2 = fetch_git_source(&git_src, cache_base.path(), "tagged", &printer)
+            .expect("second fetch (fetch_existing_repo path) must succeed");
+        assert_eq!(path, path2);
+    }
+
+    #[test]
+    fn check_tag_signature_returns_unsigned_when_tag_has_no_message() {
+        // Build an annotated tag with an empty message. git2 lets us craft
+        // a tag with no message bytes, which exercises the `tag.message()` ->
+        // None branch (returns `Unsigned`).
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let commit_oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        let obj = repo.find_object(commit_oid, None).unwrap();
+        // Annotate with a single space — git2 requires a non-empty msg but our
+        // detector treats it as unsigned (no PGP / SSH header).
+        repo.tag("vNoSig", &obj, &sig, " ", false).unwrap();
+
+        let result = check_tag_signature(dir.path(), "vNoSig", "mod").unwrap();
+        assert_eq!(result, TagSignatureStatus::Unsigned);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn default_module_cache_dir_test_home_uses_home_join() {
+        // Confirms the test-home branch composes the path correctly.
+        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::with_test_home_guard(dir.path());
+        let cache = default_module_cache_dir().expect("default_module_cache_dir under test-home");
+        assert_eq!(
+            cache,
+            dir.path().join(".cache").join("cfgd").join("modules")
+        );
+    }
 }

@@ -8864,3 +8864,88 @@ fn apply_module_on_change_skip_scripts_flag_bypasses_module_on_change() {
         "skip_scripts=true must suppress module on_change execution"
     );
 }
+
+// ---------------------------------------------------------------------------
+// secret_env_collector: ResolveEnv action with a registered provider drives
+// the secret-env injection branch of apply.rs (lines L256-292). After every
+// per-action loop pass with a non-empty collector, `Self::plan_env` re-runs
+// to produce env actions that include the resolved secret values.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn apply_resolve_env_action_collects_secret_into_env_actions() {
+    use crate::providers::SecretAction;
+    use crate::test_helpers::MockSecretProvider;
+    use std::path::PathBuf;
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.secret_providers.push(Box::new(
+        MockSecretProvider::new("vault").with_resolve_result("super-secret-value"),
+    ));
+
+    let mut resolved = make_empty_resolved();
+    // Plan-side adds an env file action so plan_env has env work to do after
+    // the secret_env_collector flushes the collected values.
+    resolved.merged.env.push(crate::config::EnvVar {
+        name: "API_TOKEN".to_string(),
+        value: String::new(),
+    });
+
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+
+    // Construct a plan containing a Secret::ResolveEnv that delivers the
+    // resolved provider value into the API_TOKEN env var.
+    let secret_action = Action::Secret(SecretAction::ResolveEnv {
+        provider: "vault".to_string(),
+        reference: "kv/data/token".to_string(),
+        envs: vec!["API_TOKEN".to_string()],
+        origin: "local".to_string(),
+    });
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Secrets,
+            actions: vec![secret_action],
+        }],
+        warnings: Vec::new(),
+    };
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            true, // skip_scripts to keep the test deterministic
+        )
+        .expect("apply must succeed");
+
+    // The first action result is the secret resolve itself; the secret-env
+    // injection branch then appends one or more env action results to push
+    // the secret into the env file.
+    assert!(
+        result.action_results.len() >= 2,
+        "expected secret + env-injection actions, got: {:?}",
+        result.action_results
+    );
+    let descriptions: Vec<&str> = result
+        .action_results
+        .iter()
+        .map(|r| r.description.as_str())
+        .collect();
+    assert!(
+        descriptions
+            .iter()
+            .any(|d| d.contains("secret:resolve-env")),
+        "expected secret:resolve-env action result, got: {descriptions:?}"
+    );
+    // PathBuf usage to anchor the import even when run on platforms where
+    // home expansion differs.
+    let _: PathBuf = tmp.path().to_path_buf();
+}

@@ -2586,3 +2586,132 @@ fn build_source_spec_with_named_profile_records_profile() {
     // OriginType defaults to Git
     assert!(matches!(spec.origin.origin_type, OriginType::Git));
 }
+
+// ---------------------------------------------------------------------------
+// BareGitRepo-driven load_source coverage — exercise fetch_source after clone,
+// and the verify_commit_signature path when require_signed_commits is true.
+// ---------------------------------------------------------------------------
+
+mod bare_repo_load {
+    use super::*;
+    use crate::config::{
+        OriginSpec, OriginType, SourceConstraints, SourceSyncSpec, SshHostKeyPolicy,
+        SubscriptionSpec,
+    };
+    use crate::test_helpers::{BareGitRepo, with_test_env_var};
+
+    fn build_spec(name: &str, url: &str, branch: &str) -> crate::config::SourceSpec {
+        crate::config::SourceSpec {
+            name: name.to_string(),
+            origin: OriginSpec {
+                origin_type: OriginType::Git,
+                url: url.to_string(),
+                branch: branch.to_string(),
+                auth: None,
+                ssh_strict_host_key_checking: SshHostKeyPolicy::No,
+            },
+            subscription: SubscriptionSpec::default(),
+            sync: SourceSyncSpec::default(),
+        }
+    }
+
+    /// Write a cfgd-source.yaml manifest as the only file in the BareGitRepo
+    /// initial commit so load_source's parse_manifest call finds it.
+    fn make_bare_with_manifest(name: &str, version: Option<&str>) -> BareGitRepo {
+        let mut manifest = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: {}\n",
+            name
+        );
+        if let Some(v) = version {
+            manifest.push_str(&format!("  version: {}\n", v));
+        }
+        manifest.push_str("spec:\n  provides:\n    profiles:\n      - default\n");
+        BareGitRepo::builder()
+            .commit("init", &[("cfgd-source.yaml", &manifest)])
+            .build()
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_clone_then_fetch_via_bare_repo() {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let bare = make_bare_with_manifest("bare1", None);
+            let branch = bare.head_branch().to_string();
+            let url = bare.url();
+            let cache_base = tempfile::tempdir().unwrap();
+            let mut mgr = SourceManager::new(cache_base.path());
+            let spec = build_spec("bare1", &url, &branch);
+            let printer = test_printer();
+            mgr.load_source(&spec, &printer).expect("first clone");
+            assert!(mgr.get("bare1").is_some());
+            // Second call exercises fetch_source (cache dir already exists).
+            mgr.load_source(&spec, &printer).expect("second fetch");
+            let cached = mgr.get("bare1").unwrap();
+            assert!(cached.last_commit.is_some());
+            assert!(cached.last_fetched.is_some());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn verify_commit_signature_unsigned_repo_fails_when_constraint_set() {
+        // BareGitRepo commits are unsigned. With constraints.require_signed_commits=true
+        // and allow_unsigned=false, verify_commit_signature delegates to
+        // verify_head_signature -> git log %G? -> "N" -> error.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let bare = make_bare_with_manifest("signed1", None);
+            let branch = bare.head_branch().to_string();
+            let url = bare.url();
+            let cache_base = tempfile::tempdir().unwrap();
+            let mut mgr = SourceManager::new(cache_base.path());
+            let spec = build_spec("signed1", &url, &branch);
+            let printer = test_printer();
+            mgr.load_source(&spec, &printer).expect("clone first");
+
+            // Direct call — repo is now cloned under cache_base/signed1.
+            let source_dir = cache_base.path().join("signed1");
+            let constraints = SourceConstraints {
+                require_signed_commits: true,
+                ..Default::default()
+            };
+            let err = mgr
+                .verify_commit_signature("signed1", &source_dir, &constraints)
+                .expect_err("unsigned commit must fail verification");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("not signed") || msg.contains("signature") || msg.contains("signed1"),
+                "expected signature error mentioning signed1, got: {msg}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_with_bare_repo_clones_into_cache_dir() {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let bare = make_bare_with_manifest("freshclone", None);
+            let branch = bare.head_branch().to_string();
+            let url = bare.url();
+            let cache_base = tempfile::tempdir().unwrap();
+            let mut mgr = SourceManager::new(cache_base.path());
+            let spec = build_spec("freshclone", &url, &branch);
+            let printer = test_printer();
+            mgr.load_source(&spec, &printer).expect("clone");
+
+            let dir = cache_base.path().join("freshclone");
+            assert!(dir.exists(), "cache dir must be created");
+            assert!(
+                dir.join("cfgd-source.yaml").exists(),
+                "manifest must be cloned"
+            );
+            assert!(
+                dir.join(".git").exists() || dir.join("HEAD").exists(),
+                "must be a git repo: {:?}",
+                std::fs::read_dir(&dir).map(|d| d
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.file_name())
+                    .collect::<Vec<_>>())
+            );
+        });
+    }
+}
