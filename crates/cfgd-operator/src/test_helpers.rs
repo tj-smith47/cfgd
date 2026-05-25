@@ -10,7 +10,7 @@ use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-use crate::gateway::api::{AppState, SharedState};
+use crate::gateway::api::SharedState;
 use crate::gateway::db::ServerDb;
 use crate::gateway::test_state::test_state;
 
@@ -79,6 +79,7 @@ impl GatewayTestApp {
     }
 
     /// Send a POST request with a JSON body and Bearer token.
+    #[allow(dead_code)]
     pub async fn post_with_bearer(
         &self,
         uri: &str,

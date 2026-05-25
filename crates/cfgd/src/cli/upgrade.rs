@@ -1,6 +1,10 @@
 use cfgd_core::output::{Doc, Printer, Role};
 
-pub fn cmd_upgrade(printer: &Printer, check_only: bool) -> anyhow::Result<()> {
+pub fn cmd_upgrade(
+    printer: &Printer,
+    check_only: bool,
+    require_cosign: bool,
+) -> anyhow::Result<()> {
     use cfgd_core::upgrade;
 
     if check_only {
@@ -73,6 +77,10 @@ pub fn cmd_upgrade(printer: &Printer, check_only: bool) -> anyhow::Result<()> {
                     "installed": false,
                     "verified": false,
                     "updateAvailable": false,
+                    // No install was performed → no verification ran. Surface
+                    // null so structured consumers can distinguish "skipped"
+                    // from a real "sha256-only" or "cosign" run.
+                    "verificationMode": serde_json::Value::Null,
                 })),
         );
         return Ok(());
@@ -115,15 +123,29 @@ pub fn cmd_upgrade(printer: &Printer, check_only: bool) -> anyhow::Result<()> {
         }
     }
 
-    let installed_path =
-        upgrade::download_and_install(release, asset, Some(printer)).map_err(|e| {
+    let report = upgrade::download_and_install(release, asset, require_cosign, Some(printer))
+        .map_err(|e| {
+            // Strict-cosign failures get a distinct error kind so structured
+            // consumers can route them differently from generic install
+            // failures (network, disk, archive corruption).
+            let kind = if matches!(
+                &e,
+                cfgd_core::errors::CfgdError::Upgrade(
+                    cfgd_core::errors::UpgradeError::CosignRequired { .. }
+                )
+            ) {
+                "cosign_required"
+            } else {
+                "install_failed"
+            };
             printer.emit(cfgd_core::output::error_doc(
                 &check.latest.to_string(),
-                "install_failed",
+                kind,
                 format!("download/install failed: {e}"),
                 serde_json::json!({
                     "currentVersion": check.current.to_string(),
                     "latestVersion": check.latest.to_string(),
+                    "requireCosign": require_cosign,
                 }),
             ));
             e
@@ -138,7 +160,7 @@ pub fn cmd_upgrade(printer: &Printer, check_only: bool) -> anyhow::Result<()> {
     printer.emit(
         Doc::new()
             .status(Role::Ok, format!("cfgd upgraded to {}", check.latest))
-            .kv("Installed to", installed_path.display().to_string())
+            .kv("Installed to", report.installed_path.display().to_string())
             .with_data(serde_json::json!({
                 "currentVersion": check.current.to_string(),
                 "targetVersion": check.latest.to_string(),
@@ -146,7 +168,8 @@ pub fn cmd_upgrade(printer: &Printer, check_only: bool) -> anyhow::Result<()> {
                 "installed": true,
                 "verified": true,
                 "daemonRestarted": daemon_restarted,
-                "installedPath": installed_path.display().to_string(),
+                "installedPath": report.installed_path.display().to_string(),
+                "verificationMode": report.verification_mode.as_wire_str(),
             })),
     );
 
@@ -252,7 +275,7 @@ mod tests {
         let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(&printer, true);
+        let result = cmd_upgrade(&printer, true, false);
 
         assert!(result.is_err(), "API 500 must return Err");
         let json = cap
@@ -282,7 +305,7 @@ mod tests {
         let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(&printer, true);
+        let result = cmd_upgrade(&printer, true, false);
 
         assert!(result.is_err(), "API 404 must return Err");
         let json = cap.json().expect("error_doc must be emitted");
@@ -307,7 +330,7 @@ mod tests {
         let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(&printer, true);
+        let result = cmd_upgrade(&printer, true, false);
 
         assert!(
             result.is_ok(),
@@ -384,7 +407,7 @@ mod tests {
         let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, _cap) = Printer::for_test_doc();
-        let _ = cmd_upgrade(&printer, true);
+        let _ = cmd_upgrade(&printer, true, false);
     }
 
     /// GitHub returns 500 during the full upgrade flow → returns Err and emits
@@ -400,7 +423,7 @@ mod tests {
         let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(&printer, false);
+        let result = cmd_upgrade(&printer, false, false);
 
         assert!(
             result.is_err(),
@@ -428,7 +451,7 @@ mod tests {
         let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(&printer, false);
+        let result = cmd_upgrade(&printer, false, false);
 
         assert!(
             result.is_ok(),
@@ -481,7 +504,7 @@ mod tests {
         let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(&printer, false);
+        let result = cmd_upgrade(&printer, false, false);
 
         assert!(
             result.is_err(),
@@ -545,7 +568,7 @@ mod tests {
         let _home_guard = cfgd_core::with_test_home_guard(home.path());
 
         let (printer, cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(&printer, false);
+        let result = cmd_upgrade(&printer, false, false);
 
         assert!(
             result.is_err(),
@@ -563,6 +586,96 @@ mod tests {
             json["currentVersion"].as_str(),
             Some(current_version_str()),
             "currentVersion must be present in error payload: {json}"
+        );
+    }
+
+    /// Strict cosign mode (`--require-cosign` / `CFGD_REQUIRE_COSIGN=1`):
+    /// release ships archive + checksums.txt but no cosign bundle. The CLI
+    /// must surface the failure with kind `cosign_required` (distinct from
+    /// `install_failed`) and carry `requireCosign: true` in the error payload
+    /// so alerting can route strict-mode failures separately from generic
+    /// install errors. Pins end-to-end thread-through of the flag from the
+    /// clap surface into the error_doc.
+    ///
+    /// The archive bytes are arbitrary — strict cosign fires inside
+    /// `download_and_install_to` BEFORE checksum/extract, so we only need
+    /// the archive URL to resolve. Avoids pulling in `flate2` + `tar` as
+    /// dev-dependencies of the binary crate just to assemble a real tarball.
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn cmd_upgrade_strict_cosign_fails_when_release_has_no_bundle() {
+        use cfgd_core::test_helpers::CosignTestShim;
+
+        let version = "9.9.9";
+        let asset_name = platform_asset_name(version);
+        let checksums_name = format!("cfgd-{}-checksums.txt", version);
+        let archive_body: &[u8] = b"placeholder archive bytes";
+        let checksums_body = format!("deadbeef  {asset_name}\n");
+
+        let _shim = CosignTestShim::builder().with_argv_logging(false).install();
+
+        let mut server = mockito::Server::new();
+        let release_body = format!(
+            r#"{{
+                "tag_name": "v{version}",
+                "assets": [
+                    {{
+                        "name": "{asset_name}",
+                        "browser_download_url": "{url}/{asset_name}",
+                        "size": {archive_size}
+                    }},
+                    {{
+                        "name": "{checksums_name}",
+                        "browser_download_url": "{url}/{checksums_name}",
+                        "size": {checksums_size}
+                    }}
+                ]
+            }}"#,
+            url = server.url(),
+            archive_size = archive_body.len(),
+            checksums_size = checksums_body.len()
+        );
+        let _release_mock = server
+            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(release_body)
+            .create();
+        let _archive_mock = server
+            .mock("GET", format!("/{asset_name}").as_str())
+            .with_status(200)
+            .with_body(archive_body)
+            .create();
+        let _checksums_mock = server
+            .mock("GET", format!("/{checksums_name}").as_str())
+            .with_status(200)
+            .with_body(&checksums_body)
+            .create();
+
+        let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+        let home = tempfile::tempdir().unwrap();
+        let _home_guard = cfgd_core::with_test_home_guard(home.path());
+
+        let (printer, cap) = Printer::for_test_doc();
+        let result = cmd_upgrade(&printer, false, true);
+
+        assert!(
+            result.is_err(),
+            "strict cosign + missing bundle must return Err: {result:?}"
+        );
+        let json = cap
+            .json()
+            .expect("error_doc must be emitted for strict cosign failure");
+        assert_eq!(
+            json["error"].as_str(),
+            Some("cosign_required"),
+            "error kind must be distinct from install_failed so alerting can route strict-mode failures: {json}"
+        );
+        assert_eq!(
+            json["requireCosign"].as_bool(),
+            Some(true),
+            "error payload must carry requireCosign=true for downstream consumers: {json}"
         );
     }
 }

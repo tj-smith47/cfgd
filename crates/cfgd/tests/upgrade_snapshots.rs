@@ -89,7 +89,10 @@ fn upgrade_check_up_to_date_human() {
 
     let (printer, cap) = Printer::for_test_doc();
 
-    upgrade::cmd_upgrade(&printer, /*check_only=*/ true).unwrap();
+    upgrade::cmd_upgrade(
+        &printer, /*check_only=*/ true, /*require_cosign=*/ false,
+    )
+    .unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -110,7 +113,10 @@ fn upgrade_check_up_to_date_json() {
 
     let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
 
-    upgrade::cmd_upgrade(&printer, /*check_only=*/ true).unwrap();
+    upgrade::cmd_upgrade(
+        &printer, /*check_only=*/ true, /*require_cosign=*/ false,
+    )
+    .unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");

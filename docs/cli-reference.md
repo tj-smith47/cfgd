@@ -173,9 +173,44 @@ Pull remote changes (git pull only, no apply).
 Check for and install cfgd updates from GitHub releases.
 
 ```sh
-cfgd upgrade           # download and install latest
-cfgd upgrade --check   # check only (exit 0 = current, exit 1 = update available)
+cfgd upgrade                   # download and install latest
+cfgd upgrade --check           # check only (exit 0 = current, exit 1 = update available)
+cfgd upgrade --require-cosign  # fail if cosign signature cannot be verified
+CFGD_REQUIRE_COSIGN=1 cfgd upgrade
 ```
+
+#### Signature verification
+
+The release's `checksums.txt` is verified by cosign when the release ships a
+`*-checksums.txt.cosign.bundle` and a `cosign.pub`, AND the `cosign` CLI is
+installed locally. The actual archive is then matched against the SHA256 entry
+inside that signed checksums file.
+
+By default, missing cosign artifacts (no bundle, no public key, or no local
+`cosign` CLI) trigger a `WARN` and silent fallback to **SHA256-only**
+verification — your trust root reduces to GitHub Releases asset hosting. An
+attacker who can MITM both the binary and `checksums.txt` downloads (compromised
+GHCR mirror, network attacker against `objects.githubusercontent.com`) gets a
+fully-trusted upgrade on a host that doesn't have cosign installed.
+
+`--require-cosign` (or `CFGD_REQUIRE_COSIGN=1`) flips the policy from
+"warn and proceed" to "block the upgrade." Any of the three skip conditions
+fails the upgrade with exit 1 and emits an error_doc with
+`error: "cosign_required"` plus `requireCosign: true` in the payload so
+alerting can route strict-mode failures separately from generic install
+errors. Recommended for unattended / CI updaters where a silent SHA256-only
+fallback should never happen.
+
+The structured-output payload on a successful upgrade carries
+`verificationMode` so downstream consumers can detect a fallback even when
+strict mode is not requested:
+
+| `verificationMode`       | Meaning                                              |
+|--------------------------|------------------------------------------------------|
+| `cosign`                 | full cosign signature verified (default policy)      |
+| `sha256-only`            | cosign artifacts unavailable → SHA256-only fallback  |
+| `strict-cosign-required` | strict mode was requested and honored                |
+| `null`                   | no install performed (already at latest)             |
 
 ### `cfgd explain`
 

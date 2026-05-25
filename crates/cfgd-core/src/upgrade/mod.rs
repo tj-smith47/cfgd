@@ -55,6 +55,58 @@ struct VersionCache {
     current_version: String,
 }
 
+/// How the upgrade checksum file was verified. Surfaced in the structured
+/// `UpgradeOutput` payload so consumers (CI, alerting) can detect when an
+/// upgrade silently fell back to SHA256-only and react.
+///
+/// * `Cosign` — full cosign signature verified against the release's bundle +
+///   public key. Strongest guarantee: a publisher-compromise attacker without
+///   the cosign private key cannot forge a passing release.
+/// * `Sha256Only` — cosign bundle, public key, or the `cosign` CLI was
+///   unavailable; verification fell through to `checksums.txt` SHA256
+///   comparison only. Trusts the GitHub Releases publisher chain.
+/// * `StrictCosignRequired` — strict cosign mode was requested by the caller
+///   (`--require-cosign` / `CFGD_REQUIRE_COSIGN=1`) and verification
+///   succeeded under that policy. Distinct from `Cosign` so audit consumers
+///   can tell apart "strict was demanded" from "strict happened by accident."
+///
+/// JSON wire values are hyphenated (`cosign`, `sha256-only`,
+/// `strict-cosign-required`) — chosen for legibility in structured payloads.
+/// Variants spell the rename out per-variant rather than via a blanket
+/// `rename_all` because the workspace audit gate forbids the blanket form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum VerificationMode {
+    #[serde(rename = "cosign")]
+    Cosign,
+    #[serde(rename = "sha256-only")]
+    Sha256Only,
+    #[serde(rename = "strict-cosign-required")]
+    StrictCosignRequired,
+}
+
+impl VerificationMode {
+    /// The wire/JSON form of the mode, matching the per-variant serde renames.
+    /// Used by callers that emit ad-hoc JSON payloads (e.g. the upgrade CLI)
+    /// without round-tripping through `serde_json::to_value`.
+    pub fn as_wire_str(self) -> &'static str {
+        match self {
+            VerificationMode::Cosign => "cosign",
+            VerificationMode::Sha256Only => "sha256-only",
+            VerificationMode::StrictCosignRequired => "strict-cosign-required",
+        }
+    }
+}
+
+/// Outcome of [`download_and_install`] — the installed path plus the
+/// verification mode that was actually exercised. The latter lets the CLI
+/// surface a `verificationMode` field in its structured-output payload so
+/// downstream consumers can alert on silent SHA256-only fallback.
+#[derive(Debug, Clone)]
+pub struct InstallReport {
+    pub installed_path: PathBuf,
+    pub verification_mode: VerificationMode,
+}
+
 /// Result of a version check.
 #[derive(Debug, Clone)]
 pub struct UpdateCheck {
@@ -206,35 +258,66 @@ fn find_cosign_public_key_asset(release: &ReleaseInfo) -> Option<&ReleaseAsset> 
 }
 
 /// Verify `checksums_path` against the release's cosign bundle + public key if
-/// all pieces are present and the `cosign` CLI is installed. Returns:
-/// - `Ok(true)` when cosign verify succeeded,
-/// - `Ok(false)` when verification was skipped (no bundle, no pub key, or cosign
-///   not installed) — the caller falls back to SHA256-only with a warning,
-/// - `Err` when all pieces are present but verify explicitly failed —
-///   never proceed in that case.
+/// all pieces are present and the `cosign` CLI is installed.
+///
+/// Behavior depends on `require_cosign`:
+///
+/// * **`require_cosign = false`** (default): graceful degradation. Missing
+///   bundle, missing public key, or missing cosign CLI all return
+///   `Ok(VerificationMode::Sha256Only)` after surfacing a `Role::Warn` so the
+///   caller falls back to SHA256-only verification. A successful cosign
+///   verify returns `Ok(VerificationMode::Cosign)`. An *explicit* cosign
+///   verify failure (binary present, pieces present, bad signature) returns
+///   `Err` — never proceed in that case.
+///
+/// * **`require_cosign = true`** (caller opted into strict mode via
+///   `--require-cosign` / `CFGD_REQUIRE_COSIGN`): any of the three skip
+///   conditions returns `Err(UpgradeError::CosignRequired { .. })` naming the
+///   specific missing piece, blocking the upgrade. A successful verify
+///   returns `Ok(VerificationMode::StrictCosignRequired)` so the structured
+///   payload records that strict mode was honored.
 fn verify_cosign_bundle(
     checksums_path: &Path,
     release: &ReleaseInfo,
     tmp_dir: &Path,
+    require_cosign: bool,
     printer: Option<&Printer>,
-) -> std::result::Result<bool, UpgradeError> {
+) -> std::result::Result<VerificationMode, UpgradeError> {
     let Some(bundle_asset) = find_cosign_bundle_asset(release) else {
+        let reason = "no cosign bundle attached to release";
+        if require_cosign {
+            return Err(UpgradeError::CosignRequired {
+                reason: reason.to_string(),
+            });
+        }
         if let Some(p) = printer {
             p.status_simple(Role::Warn, "no cosign bundle attached to release — falling back to SHA256-only checksum verification. Downgrades publisher-compromise resistance to GitHub Releases trust.");
         }
-        return Ok(false);
+        return Ok(VerificationMode::Sha256Only);
     };
     let Some(pub_key_asset) = find_cosign_public_key_asset(release) else {
+        let reason = "cosign bundle found but no cosign.pub attached to release";
+        if require_cosign {
+            return Err(UpgradeError::CosignRequired {
+                reason: reason.to_string(),
+            });
+        }
         if let Some(p) = printer {
             p.status_simple(Role::Warn, "cosign bundle found but no public key attached to release — cannot verify without cosign.pub. Falling back to SHA256-only.");
         }
-        return Ok(false);
+        return Ok(VerificationMode::Sha256Only);
     };
     if crate::require_cosign().is_err() {
+        let reason = "cosign CLI is not installed on this host";
+        if require_cosign {
+            return Err(UpgradeError::CosignRequired {
+                reason: reason.to_string(),
+            });
+        }
         if let Some(p) = printer {
             p.status_simple(Role::Warn, "cosign bundle found but the cosign CLI is not installed — install cosign (https://docs.sigstore.dev/cosign/system_config/installation/) to enable signature verification. Falling back to SHA256-only.");
         }
-        return Ok(false);
+        return Ok(VerificationMode::Sha256Only);
     }
 
     let bundle_path = tmp_dir.join(&bundle_asset.name);
@@ -260,7 +343,11 @@ fn verify_cosign_bundle(
     }
     outcome.map(|()| {
         tracing::info!(asset = %bundle_asset.name, "cosign signature verified");
-        true
+        if require_cosign {
+            VerificationMode::StrictCosignRequired
+        } else {
+            VerificationMode::Cosign
+        }
     })
 }
 
@@ -435,16 +522,21 @@ fn verify_archive_checksum(
 /// Download, verify checksum, extract, and atomically install the new binary
 /// over the running executable.
 ///
-/// Returns the path to the newly installed binary.
+/// `require_cosign` switches the cosign verifier into strict mode: when set,
+/// any missing cosign artifact (bundle, public key, or local CLI) blocks the
+/// upgrade with [`UpgradeError::CosignRequired`] instead of silently falling
+/// back to SHA256-only. The returned [`InstallReport`] records which mode was
+/// actually exercised so structured-output consumers can detect fallbacks.
 pub fn download_and_install(
     release: &ReleaseInfo,
     asset: &ReleaseAsset,
+    require_cosign: bool,
     printer: Option<&Printer>,
-) -> Result<PathBuf> {
+) -> Result<InstallReport> {
     let current_exe = std::env::current_exe().map_err(|e| UpgradeError::InstallFailed {
         message: format!("cannot determine current binary path: {}", e),
     })?;
-    download_and_install_to(release, asset, &current_exe, printer)
+    download_and_install_to(release, asset, &current_exe, require_cosign, printer)
 }
 
 /// Same as [`download_and_install`], but installs over `target` instead of
@@ -455,8 +547,9 @@ pub(crate) fn download_and_install_to(
     release: &ReleaseInfo,
     asset: &ReleaseAsset,
     target: &Path,
+    require_cosign: bool,
     printer: Option<&Printer>,
-) -> Result<PathBuf> {
+) -> Result<InstallReport> {
     // Create temp directory for download
     let tmp_dir = tempfile::tempdir().map_err(|e| UpgradeError::DownloadFailed {
         message: format!("create temp dir: {}", e),
@@ -468,16 +561,23 @@ pub(crate) fn download_and_install_to(
     download_to_file(&asset.download_url, &archive_path, printer)?;
 
     // Download and verify checksum if available
-    if let Some(checksums_asset) = find_checksums_asset(release) {
+    let verification_mode = if let Some(checksums_asset) = find_checksums_asset(release) {
         let checksums_path = tmp_dir.path().join(&checksums_asset.name);
         download_to_file(&checksums_asset.download_url, &checksums_path, printer)?;
 
         // Best-effort cosign verification of the checksums file. Bounds
         // publisher-compromise risk: a malicious release uploader cannot
         // forge a valid cosign signature over a tampered checksums.txt
-        // without the private key.
-        let _cosign_verified =
-            verify_cosign_bundle(&checksums_path, release, tmp_dir.path(), printer)?;
+        // without the private key. When `require_cosign` is true, any of
+        // the three skip conditions surfaces as Err here instead of a
+        // silent fallback to SHA256-only.
+        let mode = verify_cosign_bundle(
+            &checksums_path,
+            release,
+            tmp_dir.path(),
+            require_cosign,
+            printer,
+        )?;
 
         let checksums_content =
             fs::read_to_string(&checksums_path).map_err(|e| UpgradeError::DownloadFailed {
@@ -502,12 +602,13 @@ pub(crate) fn download_and_install_to(
         }
         verify_result?;
         tracing::debug!("checksum verified for {}", asset.name);
+        mode
     } else {
         return Err(UpgradeError::ChecksumMissing {
             file: asset.name.clone(),
         }
         .into());
-    }
+    };
 
     // Extract the archive
     let extract_dir = tmp_dir.path().join("extracted");
@@ -549,7 +650,10 @@ pub(crate) fn download_and_install_to(
     // Unix: atomic rename via tempfile. Windows: rename-dance (can't overwrite running exe).
     atomic_replace(&new_binary, target)?;
 
-    Ok(target.to_path_buf())
+    Ok(InstallReport {
+        installed_path: target.to_path_buf(),
+        verification_mode,
+    })
 }
 
 /// Atomically replace `target` with `source`.

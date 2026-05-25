@@ -348,6 +348,11 @@ pub enum UpgradeError {
 
     #[error("version parse error: {message}")]
     VersionParse { message: String },
+
+    #[error(
+        "strict cosign verification required but unavailable: {reason} — re-run without --require-cosign / unset CFGD_REQUIRE_COSIGN to allow SHA256-only fallback"
+    )]
+    CosignRequired { reason: String },
 }
 
 #[derive(Debug, thiserror::Error)]

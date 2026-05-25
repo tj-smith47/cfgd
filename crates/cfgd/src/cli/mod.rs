@@ -547,12 +547,18 @@ pub enum Command {
 
     /// Check for and install updates
     #[command(
-        long_about = "Check for, download, and install a newer cfgd release.\n\nWith --check, exit codes are:\n  0  already at latest version\n  1  network / IO error\n  2  update available (action needed, not an error)\n\nExamples:\n  cfgd upgrade\n  cfgd upgrade --check"
+        long_about = "Check for, download, and install a newer cfgd release.\n\nWith --check, exit codes are:\n  0  already at latest version\n  1  network / IO error\n  2  update available (action needed, not an error)\n\nThe checksums.txt file is verified by cosign signature when the release\nships a `*.cosign.bundle` + `cosign.pub` pair and the `cosign` CLI is\ninstalled locally; otherwise verification silently falls back to SHA256-\nonly (the human warning surfaces it, but a structured-output consumer might\nmiss it). Pass --require-cosign (or set CFGD_REQUIRE_COSIGN=1) to fail the\nupgrade instead of falling back — recommended for unattended / CI updates\nwhere a MITM against GitHub asset hosting would otherwise pass.\n\nExamples:\n  cfgd upgrade\n  cfgd upgrade --check\n  cfgd upgrade --require-cosign\n  CFGD_REQUIRE_COSIGN=1 cfgd upgrade"
     )]
     Upgrade {
         /// Only check if an update is available (exit 0 = current, exit 2 = update available, exit 1 = error)
         #[arg(long)]
         check: bool,
+
+        /// Fail the upgrade if cosign signature verification cannot be performed
+        /// (missing bundle, missing public key, or cosign CLI not installed)
+        /// instead of falling back to SHA256-only.
+        #[arg(long, env = "CFGD_REQUIRE_COSIGN")]
+        require_cosign: bool,
     },
 
     /// Accept or reject pending source decisions
@@ -1676,7 +1682,10 @@ pub fn execute(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resul
             resource,
             recursive,
         } => explain::cmd_explain(printer, resource.as_deref(), *recursive),
-        Command::Upgrade { check } => upgrade::cmd_upgrade(printer, *check),
+        Command::Upgrade {
+            check,
+            require_cosign,
+        } => upgrade::cmd_upgrade(printer, *check, *require_cosign),
         Command::Decide {
             action,
             resource,

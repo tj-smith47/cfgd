@@ -2398,9 +2398,17 @@ mod download_and_install_to {
         // Pre-create the target so atomic_replace's same-FS rename succeeds.
         std::fs::write(&target, b"old binary").unwrap();
 
-        let installed =
-            download_and_install_to(&release, &asset, &target, None).expect("happy path → Ok");
-        assert_eq!(installed, target, "returned path matches install target");
+        let installed = download_and_install_to(&release, &asset, &target, false, None)
+            .expect("happy path → Ok");
+        assert_eq!(
+            installed.installed_path, target,
+            "returned path matches install target"
+        );
+        assert_eq!(
+            installed.verification_mode,
+            VerificationMode::Cosign,
+            "happy path with bundle + key + shim → full cosign verification"
+        );
 
         let installed_bytes = std::fs::read(&target).unwrap();
         assert_eq!(
@@ -2457,9 +2465,9 @@ mod download_and_install_to {
         std::fs::write(&target, b"old binary").unwrap();
 
         let printer = crate::test_helpers::test_printer();
-        let installed = download_and_install_to(&release, &asset, &target, Some(&printer))
+        let installed = download_and_install_to(&release, &asset, &target, false, Some(&printer))
             .expect("happy path with printer → Ok");
-        assert_eq!(installed, target);
+        assert_eq!(installed.installed_path, target);
         assert_eq!(std::fs::read(&target).unwrap(), binary_content);
     }
 
@@ -2478,7 +2486,7 @@ mod download_and_install_to {
         let target_dir = tempfile::tempdir().unwrap();
         let target = target_dir.path().join("cfgd");
 
-        let err = download_and_install_to(&release, &asset, &target, None)
+        let err = download_and_install_to(&release, &asset, &target, false, None)
             .expect_err("5xx on archive → Err");
         let msg = err.to_string();
         assert!(
@@ -2512,7 +2520,7 @@ mod download_and_install_to {
         let target_dir = tempfile::tempdir().unwrap();
         let target = target_dir.path().join("cfgd");
 
-        let err = download_and_install_to(&release, &asset, &target, None)
+        let err = download_and_install_to(&release, &asset, &target, false, None)
             .expect_err("404 on checksums → Err");
         let msg = err.to_string();
         assert!(
@@ -2561,7 +2569,7 @@ mod download_and_install_to {
         let target_dir = tempfile::tempdir().unwrap();
         let target = target_dir.path().join("cfgd");
 
-        let err = download_and_install_to(&release, &asset, &target, None)
+        let err = download_and_install_to(&release, &asset, &target, false, None)
             .expect_err("cosign exit 1 → Err");
         let msg = err.to_string();
         assert!(
@@ -2608,7 +2616,7 @@ mod download_and_install_to {
         let target_dir = tempfile::tempdir().unwrap();
         let target = target_dir.path().join("cfgd");
 
-        let err = download_and_install_to(&release, &asset, &target, None)
+        let err = download_and_install_to(&release, &asset, &target, false, None)
             .expect_err("checksum mismatch → Err");
         let msg = err.to_string();
         assert!(
@@ -2645,7 +2653,7 @@ mod download_and_install_to {
         let target_dir = tempfile::tempdir().unwrap();
         let target = target_dir.path().join("cfgd");
 
-        let err = download_and_install_to(&release, &asset, &target, None)
+        let err = download_and_install_to(&release, &asset, &target, false, None)
             .expect_err("no checksums asset → Err");
         let msg = err.to_string();
         assert!(
@@ -2690,7 +2698,7 @@ mod download_and_install_to {
         let target_dir = tempfile::tempdir().unwrap();
         let target = target_dir.path().join("cfgd");
 
-        let err = download_and_install_to(&release, &asset, &target, None)
+        let err = download_and_install_to(&release, &asset, &target, false, None)
             .expect_err("missing cfgd in tar → Err");
         let msg = err.to_string();
         assert!(
@@ -2736,7 +2744,7 @@ mod download_and_install_to {
         let target_dir = tempfile::tempdir().unwrap();
         let target = target_dir.path().join("cfgd");
 
-        let err = download_and_install_to(&release, &asset, &target, None)
+        let err = download_and_install_to(&release, &asset, &target, false, None)
             .expect_err("asset name not in checksums → Err");
         let msg = err.to_string();
         assert!(
@@ -2794,9 +2802,14 @@ mod download_and_install_to {
         let target_dir = tempfile::tempdir().unwrap();
         let target = target_dir.path().join("cfgd");
 
-        let installed = download_and_install_to(&release, &asset, &target, None)
+        let installed = download_and_install_to(&release, &asset, &target, false, None)
             .expect("no cosign bundle → SHA-only install should succeed");
-        assert_eq!(installed, target);
+        assert_eq!(installed.installed_path, target);
+        assert_eq!(
+            installed.verification_mode,
+            VerificationMode::Sha256Only,
+            "no bundle + non-strict → SHA256-only mode recorded in report"
+        );
         assert_eq!(std::fs::read(&target).unwrap(), binary_content);
     }
 
@@ -2814,11 +2827,13 @@ mod download_and_install_to {
         std::fs::write(&checksums_path, "").unwrap();
 
         let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
-        let outcome = verify_cosign_bundle(&checksums_path, &release, tmp.path(), Some(&printer))
-            .expect("missing bundle is graceful-degrade, not Err");
-        assert!(
-            !outcome,
-            "no bundle → Ok(false) so caller falls back to SHA256-only"
+        let outcome =
+            verify_cosign_bundle(&checksums_path, &release, tmp.path(), false, Some(&printer))
+                .expect("missing bundle is graceful-degrade, not Err");
+        assert_eq!(
+            outcome,
+            VerificationMode::Sha256Only,
+            "no bundle → Sha256Only so caller falls back to SHA256-only"
         );
         let captured = buf.lock().unwrap().clone();
         assert!(
@@ -2842,9 +2857,10 @@ mod download_and_install_to {
         std::fs::write(&checksums_path, "").unwrap();
 
         let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
-        let outcome = verify_cosign_bundle(&checksums_path, &release, tmp.path(), Some(&printer))
-            .expect("missing pubkey is graceful-degrade, not Err");
-        assert!(!outcome);
+        let outcome =
+            verify_cosign_bundle(&checksums_path, &release, tmp.path(), false, Some(&printer))
+                .expect("missing pubkey is graceful-degrade, not Err");
+        assert_eq!(outcome, VerificationMode::Sha256Only);
         let captured = buf.lock().unwrap().clone();
         assert!(
             captured.contains("no public key attached") && captured.contains("cosign.pub"),
@@ -2886,13 +2902,327 @@ mod download_and_install_to {
         std::fs::write(&checksums_path, "").unwrap();
 
         let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
-        let outcome = verify_cosign_bundle(&checksums_path, &release, tmp.path(), Some(&printer))
-            .expect("missing cosign CLI is graceful-degrade, not Err");
-        assert!(!outcome);
+        let outcome =
+            verify_cosign_bundle(&checksums_path, &release, tmp.path(), false, Some(&printer))
+                .expect("missing cosign CLI is graceful-degrade, not Err");
+        assert_eq!(outcome, VerificationMode::Sha256Only);
         let captured = buf.lock().unwrap().clone();
         assert!(
             captured.contains("cosign CLI is not installed"),
             "warning must point operators at the install hint: {captured}"
+        );
+    }
+
+    // ---- strict mode (--require-cosign / CFGD_REQUIRE_COSIGN=1) -------------
+    //
+    // Threat model: a network attacker who can swap both the cfgd archive AND
+    // the checksums.txt download (compromised mirror, MITM against
+    // objects.githubusercontent.com) gets a fully-trusted upgrade on any host
+    // that doesn't have cosign installed locally. Strict mode shifts the
+    // policy from "warn and proceed" to "block the upgrade" so unattended
+    // updaters (CI, daemons, fleet rollouts) fail loudly instead of silently
+    // accepting an unauthenticated binary.
+
+    /// Strict mode + missing bundle on the release → `Err(CosignRequired)`
+    /// naming the missing bundle.
+    #[test]
+    #[serial]
+    fn verify_cosign_bundle_strict_fails_when_no_bundle_in_release() {
+        let _shim = CosignTestShim::builder().with_argv_logging(false).install();
+        let release = release_with_assets(&["cfgd-9.9.9-linux-x86_64.tar.gz"]);
+        let tmp = tempfile::tempdir().unwrap();
+        let checksums_path = tmp.path().join("checksums.txt");
+        std::fs::write(&checksums_path, "").unwrap();
+
+        let err = verify_cosign_bundle(&checksums_path, &release, tmp.path(), true, None)
+            .expect_err("strict mode + missing bundle must Err, not graceful-degrade");
+        assert!(
+            matches!(err, crate::errors::UpgradeError::CosignRequired { .. }),
+            "expected CosignRequired variant, got: {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no cosign bundle"),
+            "error message must name the specific missing piece (bundle): {msg}"
+        );
+    }
+
+    /// Strict mode + bundle present but no public key → `Err(CosignRequired)`
+    /// naming the missing `cosign.pub`.
+    #[test]
+    #[serial]
+    fn verify_cosign_bundle_strict_fails_when_no_pubkey_attached() {
+        let _shim = CosignTestShim::builder().with_argv_logging(false).install();
+        let release = release_with_assets(&[
+            "cfgd-9.9.9-linux-x86_64.tar.gz",
+            "cfgd-9.9.9-checksums.txt.cosign.bundle",
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let checksums_path = tmp.path().join("checksums.txt");
+        std::fs::write(&checksums_path, "").unwrap();
+
+        let err = verify_cosign_bundle(&checksums_path, &release, tmp.path(), true, None)
+            .expect_err("strict mode + missing pubkey must Err");
+        assert!(
+            matches!(err, crate::errors::UpgradeError::CosignRequired { .. }),
+            "expected CosignRequired variant, got: {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cosign.pub"),
+            "error message must name the missing cosign.pub: {msg}"
+        );
+    }
+
+    /// Strict mode + cosign CLI missing on host → `Err(CosignRequired)`.
+    /// Points `CFGD_COSIGN_BIN` at a nonexistent path so `require_cosign()`
+    /// fails the same way it would on a fresh host without cosign installed.
+    #[test]
+    #[serial]
+    fn verify_cosign_bundle_strict_fails_when_cosign_missing() {
+        struct MissingCosignGuard;
+        impl Drop for MissingCosignGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    std::env::remove_var("CFGD_COSIGN_BIN");
+                }
+            }
+        }
+        unsafe {
+            std::env::set_var(
+                "CFGD_COSIGN_BIN",
+                "/nonexistent/cfgd-test-strict-cosign-shim-does-not-exist",
+            );
+        }
+        let _guard = MissingCosignGuard;
+
+        let release = release_with_assets(&[
+            "cfgd-9.9.9-linux-x86_64.tar.gz",
+            "cfgd-9.9.9-checksums.txt.cosign.bundle",
+            "cosign.pub",
+        ]);
+        let tmp = tempfile::tempdir().unwrap();
+        let checksums_path = tmp.path().join("checksums.txt");
+        std::fs::write(&checksums_path, "").unwrap();
+
+        let err = verify_cosign_bundle(&checksums_path, &release, tmp.path(), true, None)
+            .expect_err("strict mode + missing cosign CLI must Err");
+        assert!(
+            matches!(err, crate::errors::UpgradeError::CosignRequired { .. }),
+            "expected CosignRequired variant, got: {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cosign CLI is not installed"),
+            "error message must name the missing CLI: {msg}"
+        );
+    }
+
+    /// Regression: non-strict mode with no bundle returns `Sha256Only` (not
+    /// Err) so the existing graceful-degradation contract continues to hold
+    /// for callers that did not opt in. Mirror of the three "_emits_warning_"
+    /// tests above but expressed against the non-strict default to pin the
+    /// behavioral contract from the strict-mode side.
+    #[test]
+    #[serial]
+    fn verify_cosign_bundle_non_strict_falls_back_silently() {
+        let _shim = CosignTestShim::builder().with_argv_logging(false).install();
+        let release = release_with_assets(&["cfgd-9.9.9-linux-x86_64.tar.gz"]);
+        let tmp = tempfile::tempdir().unwrap();
+        let checksums_path = tmp.path().join("checksums.txt");
+        std::fs::write(&checksums_path, "").unwrap();
+
+        let outcome = verify_cosign_bundle(&checksums_path, &release, tmp.path(), false, None)
+            .expect("non-strict mode + missing bundle must return Sha256Only, not Err");
+        assert_eq!(
+            outcome,
+            VerificationMode::Sha256Only,
+            "non-strict default contract: missing bundle → SHA256-only fallback"
+        );
+    }
+
+    /// Happy path under strict mode: bundle + key + cosign shim all present,
+    /// signature verifies → returns `StrictCosignRequired` (distinct from the
+    /// non-strict `Cosign` mode so audit consumers can tell apart "strict was
+    /// demanded and honored" from "strict happened by default").
+    #[test]
+    #[serial]
+    fn verify_cosign_bundle_strict_records_strict_cosign_required_on_success() {
+        let _shim = CosignTestShim::builder()
+            .with_argv_logging(false)
+            .with_exit(0)
+            .install();
+
+        // The bundle + pubkey assets need real URLs that resolve — point them
+        // at a mockito server so download_to_file inside verify_cosign_bundle
+        // can fetch them.
+        let mut server = mockito::Server::new();
+        let _m_bundle = server
+            .mock("GET", "/strict/bundle")
+            .with_status(200)
+            .with_body("{}")
+            .create();
+        let _m_pubkey = server
+            .mock("GET", "/strict/pubkey")
+            .with_status(200)
+            .with_body("dummy-key")
+            .create();
+
+        let release = ReleaseInfo {
+            tag: "v9.9.9".into(),
+            version: Version::new(9, 9, 9),
+            assets: vec![
+                ReleaseAsset {
+                    name: "cfgd-9.9.9-linux-x86_64.tar.gz".into(),
+                    download_url: "https://example.com/binary".into(),
+                    size: 0,
+                },
+                ReleaseAsset {
+                    name: "cfgd-9.9.9-checksums.txt.cosign.bundle".into(),
+                    download_url: format!("{}/strict/bundle", server.url()),
+                    size: 0,
+                },
+                ReleaseAsset {
+                    name: "cosign.pub".into(),
+                    download_url: format!("{}/strict/pubkey", server.url()),
+                    size: 0,
+                },
+            ],
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let checksums_path = tmp.path().join("checksums.txt");
+        std::fs::write(&checksums_path, "deadbeef  some.tar.gz\n").unwrap();
+
+        let outcome = verify_cosign_bundle(&checksums_path, &release, tmp.path(), true, None)
+            .expect("strict + all pieces present + cosign exit 0 → Ok");
+        assert_eq!(
+            outcome,
+            VerificationMode::StrictCosignRequired,
+            "successful strict-mode verification records StrictCosignRequired"
+        );
+    }
+
+    /// End-to-end strict-mode failure through `download_and_install_to`: the
+    /// release has no cosign bundle and the caller requests strict mode →
+    /// install bails out with `CosignRequired` before any file is written to
+    /// `target`. Pins that the new flag short-circuits the full install chain,
+    /// not just the verifier helper in isolation.
+    #[test]
+    #[serial]
+    fn download_and_install_strict_mode_blocks_when_bundle_missing() {
+        let _shim = CosignTestShim::builder()
+            .with_argv_logging(false)
+            .with_exit(99)
+            .install();
+
+        let binary_content = b"#!/bin/sh\necho strict\n";
+        let tarball = build_tarball(binary_content);
+        let sha = crate::sha256_hex(&tarball);
+        let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
+        let checksums = checksums_line(&sha, asset_name);
+
+        let mut server = mockito::Server::new();
+        let _m_archive = server
+            .mock("GET", "/download/cfgd.tar.gz")
+            .with_status(200)
+            .with_body(&tarball)
+            .create();
+        let _m_checksums = server
+            .mock("GET", "/download/checksums.txt")
+            .with_status(200)
+            .with_body(checksums)
+            .create();
+
+        // Release is missing both the cosign bundle AND cosign.pub — strict
+        // mode must reject this regardless of which piece is named first.
+        let release = ReleaseInfo {
+            tag: "v9.9.9".into(),
+            version: Version::new(9, 9, 9),
+            assets: vec![
+                ReleaseAsset {
+                    name: asset_name.into(),
+                    download_url: format!("{}/download/cfgd.tar.gz", server.url()),
+                    size: 0,
+                },
+                ReleaseAsset {
+                    name: "cfgd-9.9.9-checksums.txt".into(),
+                    download_url: format!("{}/download/checksums.txt", server.url()),
+                    size: 0,
+                },
+            ],
+        };
+        let asset = release.assets[0].clone();
+        let target_dir = tempfile::tempdir().unwrap();
+        let target = target_dir.path().join("cfgd");
+
+        let err = download_and_install_to(&release, &asset, &target, true, None)
+            .expect_err("strict + missing bundle must Err out of the install chain");
+        assert!(
+            matches!(
+                err,
+                crate::errors::CfgdError::Upgrade(
+                    crate::errors::UpgradeError::CosignRequired { .. }
+                )
+            ),
+            "expected CosignRequired surfaced through the CfgdError boundary, got: {err:?}"
+        );
+        assert!(
+            !target.exists(),
+            "target must NOT be written when strict cosign verification fails"
+        );
+    }
+
+    /// Happy-path full install under non-strict mode with the full signature
+    /// chain → `InstallReport.verification_mode == Cosign`. Pins the wiring
+    /// that surfaces `verificationMode: "cosign"` in the structured payload.
+    #[test]
+    #[serial]
+    fn download_and_install_records_cosign_mode_on_full_chain_happy_path() {
+        let _shim = CosignTestShim::builder()
+            .with_argv_logging(false)
+            .with_exit(0)
+            .install();
+
+        let binary_content = b"#!/bin/sh\necho mode\n";
+        let tarball = build_tarball(binary_content);
+        let sha = crate::sha256_hex(&tarball);
+        let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
+        let checksums = checksums_line(&sha, asset_name);
+
+        let mut server = mockito::Server::new();
+        let _m_archive = server
+            .mock("GET", "/download/cfgd.tar.gz")
+            .with_status(200)
+            .with_body(&tarball)
+            .create();
+        let _m_checksums = server
+            .mock("GET", "/download/checksums.txt")
+            .with_status(200)
+            .with_body(&checksums)
+            .create();
+        let _m_bundle = server
+            .mock("GET", "/download/cosign.bundle")
+            .with_status(200)
+            .with_body("{}")
+            .create();
+        let _m_pubkey = server
+            .mock("GET", "/download/cosign.pub")
+            .with_status(200)
+            .with_body("dummy-key")
+            .create();
+
+        let release = release_with_full_signature_chain(&server.url());
+        let asset = release.assets[0].clone();
+        let target_dir = tempfile::tempdir().unwrap();
+        let target = target_dir.path().join("cfgd");
+        std::fs::write(&target, b"old binary").unwrap();
+
+        let report = download_and_install_to(&release, &asset, &target, false, None)
+            .expect("full signature chain + non-strict → Ok");
+        assert_eq!(
+            report.verification_mode,
+            VerificationMode::Cosign,
+            "structured payload records full cosign verification"
         );
     }
 
@@ -2944,9 +3274,9 @@ mod download_and_install_to {
         std::fs::write(&target, b"old binary").unwrap();
 
         let printer = crate::test_helpers::test_printer();
-        let installed = download_and_install_to(&release, &asset, &target, Some(&printer))
+        let installed = download_and_install_to(&release, &asset, &target, false, Some(&printer))
             .expect("progress-bar path with content-length must succeed");
-        assert_eq!(installed, target);
+        assert_eq!(installed.installed_path, target);
         assert_eq!(std::fs::read(&target).unwrap(), binary_content);
     }
 
@@ -2989,7 +3319,7 @@ mod download_and_install_to {
         let target = target_dir.path().join("cfgd");
 
         let printer = crate::test_helpers::test_printer();
-        let err = download_and_install_to(&release, &asset, &target, Some(&printer))
+        let err = download_and_install_to(&release, &asset, &target, false, Some(&printer))
             .expect_err("checksum mismatch with printer → Err");
         let msg = err.to_string();
         assert!(
