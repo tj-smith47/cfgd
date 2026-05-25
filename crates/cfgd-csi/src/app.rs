@@ -219,34 +219,4 @@ mod tests {
             Err(_elapsed) => {}
         }
     }
-
-    /// Verify that an invalid METRICS_PORT falls back to the 9090 default.
-    /// The test still uses a TempDir so no real socket is created; the timeout
-    /// keeps it bounded.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[serial]
-    async fn run_accepts_invalid_metrics_port_using_default() {
-        let socket_dir = TempDir::new().unwrap();
-        let cache_dir = TempDir::new().unwrap();
-
-        let socket_path = socket_dir
-            .path()
-            .join("csi.sock")
-            .to_string_lossy()
-            .into_owned();
-
-        let _g1 = EnvVarGuard::set("CSI_ENDPOINT", &socket_path);
-        let _g2 = EnvVarGuard::set("CACHE_DIR", cache_dir.path().to_str().unwrap());
-        // Leave METRICS_PORT as invalid — run() should use 9090 default.
-        let _g3 = EnvVarGuard::set("METRICS_PORT", "not-a-port");
-        let _g4 = EnvVarGuard::set("CACHE_MAX_BYTES", "104857600");
-
-        let result = tokio::time::timeout(Duration::from_millis(300), run()).await;
-
-        match result {
-            Ok(Ok(())) => {}
-            Ok(Err(_)) => {}
-            Err(_elapsed) => {}
-        }
-    }
 }

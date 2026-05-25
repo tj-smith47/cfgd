@@ -11,6 +11,12 @@ pub enum CsiError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// Metrics HTTP server setup or serve failure. Emitted by
+    /// `metrics::serve_metrics` on bind / serve errors. In current production
+    /// flow this surfaces only through tests because `serve_metrics` is
+    /// invoked via fire-and-forget `tokio::spawn` from `app::run`, with errors
+    /// logged via `tracing`. The typed variant preserves a clean error
+    /// contract should propagation tighten later.
     #[error("metrics server error: {0}")]
     Metrics(String),
 }
