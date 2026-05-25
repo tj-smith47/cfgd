@@ -434,7 +434,6 @@ pub(crate) fn handle_reconcile(
                     &script_env,
                     default_timeout,
                     printer,
-                    &[], // profile-level onDrift scripts have no module aliases
                 ) {
                     Ok((desc, _, _)) => {
                         tracing::info!(script = %desc, "onDrift script completed");

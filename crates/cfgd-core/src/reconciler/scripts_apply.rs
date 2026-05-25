@@ -31,7 +31,6 @@ impl<'a> super::Reconciler<'a> {
                     &env_vars,
                     crate::PROFILE_SCRIPT_TIMEOUT,
                     printer,
-                    &[], // profile-level scripts have no module aliases
                 )?;
 
                 let phase_name = phase.display_name();

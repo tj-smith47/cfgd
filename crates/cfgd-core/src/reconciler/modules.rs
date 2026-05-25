@@ -19,11 +19,10 @@ impl<'a> super::Reconciler<'a> {
         resolved: &ResolvedProfile,
         module_actions: &[ResolvedModule],
     ) -> Result<String> {
-        // Find the resolved module to obtain its dir, declared env vars, and aliases.
+        // Find the resolved module to obtain its dir and declared env vars.
         let resolved_mod = module_actions.iter().find(|m| m.name == action.module_name);
         let module_dir = resolved_mod.map(|m| m.dir.clone());
         let module_env = resolved_mod.map(|m| m.env.as_slice()).unwrap_or(&[]);
-        let module_aliases = resolved_mod.map(|m| m.aliases.as_slice()).unwrap_or(&[]);
 
         match &action.kind {
             ModuleActionKind::InstallPackages { resolved: pkgs } => {
@@ -58,7 +57,6 @@ impl<'a> super::Reconciler<'a> {
                                     &env_vars,
                                     MODULE_SCRIPT_TIMEOUT,
                                     printer,
-                                    module_aliases,
                                 )
                                 .map_err(|_| {
                                     crate::errors::CfgdError::Config(ConfigError::Invalid {
@@ -248,14 +246,7 @@ impl<'a> super::Reconciler<'a> {
                 );
 
                 let working = module_dir.as_deref().unwrap_or(config_dir);
-                execute_script(
-                    script,
-                    working,
-                    &env_vars,
-                    MODULE_SCRIPT_TIMEOUT,
-                    printer,
-                    module_aliases,
-                )?;
+                execute_script(script, working, &env_vars, MODULE_SCRIPT_TIMEOUT, printer)?;
 
                 Ok(format!("module:{}:script", action.module_name))
             }

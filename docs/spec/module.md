@@ -234,11 +234,6 @@ aliases:
     command: nvim
 ```
 
-Aliases declared at the module level are also exported to inline lifecycle scripts
-(`run: 'vim somefile'`). File-shebang scripts (`run: ./scripts/post.sh`) cannot
-receive aliases because the shebang selects the interpreter, replacing the shell
-context where aliases would be defined.
-
 ---
 
 ### spec.system

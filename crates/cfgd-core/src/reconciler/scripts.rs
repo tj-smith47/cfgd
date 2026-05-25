@@ -1,4 +1,4 @@
-use crate::config::{ScriptEntry, ShellAlias};
+use crate::config::ScriptEntry;
 use crate::errors::{ConfigError, Result};
 use crate::output::Printer;
 
@@ -80,40 +80,15 @@ pub(crate) fn build_module_script_env(
     env
 }
 
-/// Build a bash alias preamble from a module's `spec.aliases` list.
-///
-/// Enables alias expansion and emits one `alias name='escaped-cmd'` line per entry.
-/// Alias names are already validated by `validate_alias_name` at parse time
-/// (matches `[A-Za-z0-9_.-]+`), so they require no additional escaping here.
-/// Command bodies are escaped via `shell_escape_value` (single-quote strategy).
-fn build_alias_prefix(aliases: &[ShellAlias]) -> String {
-    let mut out = String::from("shopt -s expand_aliases\n");
-    for alias in aliases {
-        out.push_str(&format!(
-            "alias {}={}\n",
-            alias.name,
-            crate::shell_escape_value(&alias.command)
-        ));
-    }
-    out
-}
-
 /// Unified script executor for all hook types at both profile and module level.
 ///
 /// Returns (description, changed, captured_output). All scripts set changed=true.
-///
-/// `module_aliases` is non-empty only for module-scoped call sites. When present
-/// and the script is an inline command (not a file path), the shell switches to
-/// bash with `shopt -s expand_aliases` so the aliases are active at expansion time.
-/// File-shebang scripts cannot receive aliases: the shebang replaces the shell
-/// context, making alias injection structurally impossible.
 pub(crate) fn execute_script(
     entry: &ScriptEntry,
     working_dir: &std::path::Path,
     env_vars: &[(String, String)],
     default_timeout: std::time::Duration,
     printer: &Printer,
-    module_aliases: &[ShellAlias],
 ) -> Result<(String, bool, Option<String>)> {
     let run_str = entry.run_str();
     let effective_timeout = match entry {
@@ -165,40 +140,19 @@ pub(crate) fn execute_script(
         }
         c
     } else {
-        // Inline command — pass through sh -c on Unix, cmd.exe /C on Windows.
-        // When module aliases are present we need bash: sh/dash does not honour
-        // `shopt -s expand_aliases` in non-interactive -c mode. If bash is not
-        // on PATH we fall back to sh and log a warning so script execution
-        // continues — aliases just won't expand.
+        // Inline command — pass through sh -c on Unix, cmd.exe /C on Windows
         #[cfg(unix)]
         let c = {
             use std::os::unix::process::CommandExt;
-
-            let (shell, script_body) = if !module_aliases.is_empty() {
-                if crate::command_available("bash") {
-                    let prefix = build_alias_prefix(module_aliases);
-                    ("bash", format!("{prefix}{run_str}"))
-                } else {
-                    tracing::warn!(
-                        "bash not found on PATH; module aliases will not be expanded \
-                         for inline scripts (falling back to sh)"
-                    );
-                    ("sh", run_str.to_string())
-                }
-            } else {
-                ("sh", run_str.to_string())
-            };
-
-            let mut c = std::process::Command::new(shell);
+            let mut c = std::process::Command::new("sh");
             c.arg("-c")
-                .arg(script_body)
+                .arg(run_str)
                 .current_dir(working_dir)
                 .process_group(0); // New process group so we can kill all children
             c
         };
         #[cfg(windows)]
         let c = {
-            // Aliases are a Unix shell construct; Windows cmd.exe has no equivalent.
             let mut c = std::process::Command::new("cmd.exe");
             c.arg("/C").arg(run_str).current_dir(working_dir);
             c
@@ -466,7 +420,7 @@ pub(super) fn combine_script_output(stdout: &str, stderr: &str) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{EnvVar, ShellAlias};
+    use crate::config::EnvVar;
 
     fn fake_env_var(name: &str, value: &str) -> EnvVar {
         EnvVar {
@@ -555,159 +509,5 @@ mod tests {
             &[],
         );
         assert_eq!(base, with_empty);
-    }
-
-    fn fake_alias(name: &str, command: &str) -> ShellAlias {
-        ShellAlias {
-            name: name.to_string(),
-            command: command.to_string(),
-        }
-    }
-
-    fn test_printer() -> crate::output::Printer {
-        crate::output::Printer::new(crate::output::Verbosity::Quiet)
-    }
-
-    // build_alias_prefix: preamble enables expand_aliases and emits one line per alias.
-    #[test]
-    fn alias_prefix_structure() {
-        let aliases = vec![
-            fake_alias("greet", "echo hello"),
-            fake_alias("bye", "echo goodbye"),
-        ];
-        let prefix = build_alias_prefix(&aliases);
-        assert!(prefix.starts_with("shopt -s expand_aliases\n"));
-        assert!(prefix.contains("alias greet="));
-        assert!(prefix.contains("alias bye="));
-    }
-
-    // build_alias_prefix: single-quote values containing shell metacharacters are escaped.
-    #[test]
-    fn alias_command_with_single_quotes_escapes_correctly() {
-        let aliases = vec![fake_alias("greet", "echo 'hi there'")];
-        let prefix = build_alias_prefix(&aliases);
-        // shell_escape_value wraps the value in single quotes with '\'' for embedded quotes.
-        assert!(prefix.contains("alias greet="));
-        // The command body must not be raw 'echo 'hi there'' — the embedded quotes must
-        // be escaped so the alias line is valid shell.
-        assert!(!prefix.contains("alias greet='echo 'hi there''"));
-    }
-
-    // execute_script with module aliases uses bash and the alias expands correctly.
-    #[cfg(target_family = "unix")]
-    #[test]
-    fn inline_script_with_module_aliases_uses_bash_and_expands() {
-        // Skip if bash is not available in the test environment.
-        if !crate::command_available("bash") {
-            return;
-        }
-        let dir = tempfile::tempdir().expect("tempdir");
-        let aliases = vec![fake_alias("myalias", "echo hello")];
-        let entry = ScriptEntry::Simple("myalias".to_string());
-        let (_desc, changed, captured) = execute_script(
-            &entry,
-            dir.path(),
-            &[],
-            std::time::Duration::from_secs(10),
-            &test_printer(),
-            &aliases,
-        )
-        .expect("execute_script failed");
-        assert!(changed);
-        let output = captured.unwrap_or_default();
-        assert!(
-            output.contains("hello"),
-            "expected 'hello' in output, got: {output:?}"
-        );
-    }
-
-    // execute_script without aliases still works under sh (no regression).
-    #[cfg(target_family = "unix")]
-    #[test]
-    fn inline_script_without_aliases_still_works() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let entry = ScriptEntry::Simple("echo no-aliases".to_string());
-        let (_desc, changed, captured) = execute_script(
-            &entry,
-            dir.path(),
-            &[],
-            std::time::Duration::from_secs(10),
-            &test_printer(),
-            &[],
-        )
-        .expect("execute_script failed");
-        assert!(changed);
-        let output = captured.unwrap_or_default();
-        assert!(output.contains("no-aliases"));
-    }
-
-    // execute_script with multiple aliases: all expand correctly in one script.
-    #[cfg(target_family = "unix")]
-    #[test]
-    fn multiple_aliases_all_expand() {
-        if !crate::command_available("bash") {
-            return;
-        }
-        let dir = tempfile::tempdir().expect("tempdir");
-        let aliases = vec![
-            fake_alias("say_a", "echo alpha"),
-            fake_alias("say_b", "echo beta"),
-            fake_alias("say_c", "echo gamma"),
-        ];
-        let entry = ScriptEntry::Simple("say_a && say_b && say_c".to_string());
-        let (_desc, _changed, captured) = execute_script(
-            &entry,
-            dir.path(),
-            &[],
-            std::time::Duration::from_secs(10),
-            &test_printer(),
-            &aliases,
-        )
-        .expect("execute_script failed");
-        let output = captured.unwrap_or_default();
-        assert!(output.contains("alpha"), "missing 'alpha' in: {output:?}");
-        assert!(output.contains("beta"), "missing 'beta' in: {output:?}");
-        assert!(output.contains("gamma"), "missing 'gamma' in: {output:?}");
-    }
-
-    // File-shebang scripts run even when aliases are passed — the aliases don't propagate
-    // (the shebang controls the interpreter) and the script executes in its own process.
-    #[cfg(target_family = "unix")]
-    #[test]
-    fn file_script_with_module_aliases_does_not_propagate_them() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = tempfile::tempdir().expect("tempdir");
-        let script_path = dir.path().join("test.sh");
-        // The script references "myalias" which is only defined in the module's alias list.
-        // Because the file is exec'd via its shebang, alias injection does not occur and
-        // the script will fail with "command not found".
-        std::fs::write(&script_path, b"#!/bin/sh\necho file-script-ran\n").expect("write script");
-        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod");
-
-        let aliases = vec![fake_alias("myalias", "echo should-not-expand")];
-        let entry = ScriptEntry::Simple(script_path.to_string_lossy().into_owned());
-        // The file script runs normally; aliases are silently not available.
-        let result = execute_script(
-            &entry,
-            dir.path(),
-            &[],
-            std::time::Duration::from_secs(10),
-            &test_printer(),
-            &aliases,
-        );
-        // The script itself succeeds (it only echoes "file-script-ran"), confirming
-        // execution proceeds without alias expansion errors.
-        assert!(result.is_ok(), "file script should run: {result:?}");
-        let (_desc, _changed, captured) = result.unwrap();
-        let output = captured.unwrap_or_default();
-        assert!(
-            output.contains("file-script-ran"),
-            "expected file-script-ran in: {output:?}"
-        );
-        assert!(
-            !output.contains("should-not-expand"),
-            "alias must not have expanded: {output:?}"
-        );
     }
 }
