@@ -44,6 +44,38 @@ pub(crate) fn build_script_env(
     env
 }
 
+/// Build environment variables for a module lifecycle script.
+///
+/// Extends `build_script_env` with the module's declared `spec.env` vars.
+/// CFGD_* names in `spec.env` are silently dropped: runtime-injected metadata
+/// must not be shadowed by user-supplied values.
+pub(crate) fn build_module_script_env(
+    config_dir: &std::path::Path,
+    profile_name: &str,
+    context: ReconcileContext,
+    phase: &ScriptPhase,
+    module_name: Option<&str>,
+    module_dir: Option<&std::path::Path>,
+    module_env: &[crate::config::EnvVar],
+) -> Vec<(String, String)> {
+    let mut env = build_script_env(
+        config_dir,
+        profile_name,
+        context,
+        phase,
+        module_name,
+        module_dir,
+    );
+    for ev in module_env {
+        // CFGD_* names are reserved for runtime metadata; user values are ignored.
+        if ev.name.starts_with("CFGD_") {
+            continue;
+        }
+        env.push((ev.name.clone(), ev.value.clone()));
+    }
+    env
+}
+
 /// Unified script executor for all hook types at both profile and module level.
 ///
 /// Returns (description, changed, captured_output). All scripts set changed=true.
@@ -379,4 +411,99 @@ pub(super) fn combine_script_output(stdout: &str, stderr: &str) -> Option<String
         out.push_str(stderr);
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::EnvVar;
+
+    fn fake_env_var(name: &str, value: &str) -> EnvVar {
+        EnvVar {
+            name: name.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    fn fake_config_dir() -> std::path::PathBuf {
+        std::path::PathBuf::from("/config")
+    }
+
+    // build_module_script_env: module spec.env vars appear in the output.
+    #[test]
+    fn module_env_vars_propagated_to_script_env() {
+        let module_env = vec![
+            fake_env_var("PATH", "/custom/bin"),
+            fake_env_var("GOPATH", "/foo"),
+        ];
+        let env = build_module_script_env(
+            &fake_config_dir(),
+            "workstation",
+            ReconcileContext::Apply,
+            &ScriptPhase::PostApply,
+            Some("nvim"),
+            None,
+            &module_env,
+        );
+
+        let lookup = |key: &str| -> Option<&str> {
+            env.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+        };
+
+        assert_eq!(lookup("PATH"), Some("/custom/bin"));
+        assert_eq!(lookup("GOPATH"), Some("/foo"));
+        // Runtime metadata is still present.
+        assert_eq!(lookup("CFGD_MODULE_NAME"), Some("nvim"));
+        assert_eq!(lookup("CFGD_PROFILE"), Some("workstation"));
+        assert_eq!(lookup("CFGD_PHASE"), Some("postApply"));
+    }
+
+    // build_module_script_env: a module declaring a CFGD_* name must not override
+    // the runtime-injected value.
+    #[test]
+    fn cfgd_name_in_module_env_does_not_override_runtime() {
+        let module_env = vec![fake_env_var("CFGD_MODULE_NAME", "spoofed")];
+        let env = build_module_script_env(
+            &fake_config_dir(),
+            "workstation",
+            ReconcileContext::Apply,
+            &ScriptPhase::PostApply,
+            Some("real-module"),
+            None,
+            &module_env,
+        );
+
+        // Collect all CFGD_MODULE_NAME occurrences — there must be exactly one and it
+        // must be the runtime value, not the user-supplied one.
+        let values: Vec<&str> = env
+            .iter()
+            .filter(|(k, _)| k == "CFGD_MODULE_NAME")
+            .map(|(_, v)| v.as_str())
+            .collect();
+        assert_eq!(values, vec!["real-module"]);
+    }
+
+    // build_module_script_env: empty module env produces the same output as
+    // build_script_env (no regressions for modules without spec.env).
+    #[test]
+    fn empty_module_env_matches_base_build_script_env() {
+        let base = build_script_env(
+            &fake_config_dir(),
+            "workstation",
+            ReconcileContext::Apply,
+            &ScriptPhase::PreApply,
+            Some("mymod"),
+            None,
+        );
+        let with_empty = build_module_script_env(
+            &fake_config_dir(),
+            "workstation",
+            ReconcileContext::Apply,
+            &ScriptPhase::PreApply,
+            Some("mymod"),
+            None,
+            &[],
+        );
+        assert_eq!(base, with_empty);
+    }
 }

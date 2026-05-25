@@ -7,7 +7,8 @@ use crate::state::ApplyStatus;
 use super::format::{format_action_description, parse_resource_from_description};
 use super::restore::action_target_path;
 use super::scripts::{
-    MODULE_SCRIPT_TIMEOUT, build_script_env, effective_continue_on_error, execute_script,
+    MODULE_SCRIPT_TIMEOUT, build_module_script_env, build_script_env, effective_continue_on_error,
+    execute_script,
 };
 use super::types::{
     Action, ActionResult, ApplyResult, ModuleAction, ModuleActionKind, PhaseName, Plan,
@@ -360,13 +361,14 @@ impl<'a> super::Reconciler<'a> {
                 if !module_changed {
                     continue;
                 }
-                let env_vars = build_script_env(
+                let env_vars = build_module_script_env(
                     config_dir,
                     profile_name,
                     context,
                     &ScriptPhase::OnChange,
                     Some(&module.name),
                     Some(&module.dir),
+                    &module.env,
                 );
                 let working = &module.dir;
                 for entry in &module.on_change_scripts {

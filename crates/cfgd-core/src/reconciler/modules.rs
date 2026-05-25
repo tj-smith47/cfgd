@@ -4,7 +4,7 @@ use crate::expand_tilde;
 use crate::modules::ResolvedModule;
 use crate::output::{Printer, Role};
 
-use super::scripts::{MODULE_SCRIPT_TIMEOUT, build_script_env, execute_script};
+use super::scripts::{MODULE_SCRIPT_TIMEOUT, build_module_script_env, execute_script};
 use super::types::{ModuleAction, ModuleActionKind, ReconcileContext, ScriptPhase};
 
 impl<'a> super::Reconciler<'a> {
@@ -19,11 +19,11 @@ impl<'a> super::Reconciler<'a> {
         resolved: &ResolvedProfile,
         module_actions: &[ResolvedModule],
     ) -> Result<String> {
-        // Find the module dir from the resolved modules list
-        let module_dir = module_actions
-            .iter()
-            .find(|m| m.name == action.module_name)
-            .map(|m| m.dir.clone());
+        // Find the resolved module to obtain its dir and declared env vars.
+        let resolved_mod = module_actions.iter().find(|m| m.name == action.module_name);
+        let module_dir = resolved_mod.map(|m| m.dir.clone());
+        let module_env: &[crate::config::EnvVar] =
+            resolved_mod.map(|m| m.env.as_slice()).unwrap_or(&[]);
 
         match &action.kind {
             ModuleActionKind::InstallPackages { resolved: pkgs } => {
@@ -41,13 +41,14 @@ impl<'a> super::Reconciler<'a> {
                                     .last()
                                     .map(|l| l.profile_name.as_str())
                                     .unwrap_or("unknown");
-                                let env_vars = build_script_env(
+                                let env_vars = build_module_script_env(
                                     config_dir,
                                     profile_name,
                                     context,
                                     &ScriptPhase::PostApply,
                                     Some(&action.module_name),
                                     module_dir.as_deref(),
+                                    module_env,
                                 );
                                 let script_entry = ScriptEntry::Simple(script_content.clone());
                                 let working = module_dir.as_deref().unwrap_or(config_dir);
@@ -235,13 +236,14 @@ impl<'a> super::Reconciler<'a> {
                     .last()
                     .map(|l| l.profile_name.as_str())
                     .unwrap_or("unknown");
-                let env_vars = build_script_env(
+                let env_vars = build_module_script_env(
                     config_dir,
                     profile_name,
                     context,
                     script_phase,
                     Some(&action.module_name),
                     module_dir.as_deref(),
+                    module_env,
                 );
 
                 let working = module_dir.as_deref().unwrap_or(config_dir);
