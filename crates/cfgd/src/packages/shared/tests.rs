@@ -1356,3 +1356,29 @@ fn run_pkg_cmd_live_spawn_error_maps_to_command_failed() {
         err
     );
 }
+
+// bootstrap_via_shell_script: thin wrapper around `bash -c <script>` with
+// BootstrapFailed mapping. Exit-0 returns Ok; non-zero surfaces error with
+// `<manager> install script failed` so consumers see the right context.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn bootstrap_via_shell_script_returns_ok_when_exit_zero() {
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    bootstrap_via_shell_script(&printer, "test-mgr", "Installing test", "exit 0")
+        .expect("exit 0 → Ok");
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn bootstrap_via_shell_script_returns_err_when_exit_nonzero() {
+    let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let err = bootstrap_via_shell_script(&printer, "test-mgr", "Installing test", "exit 7")
+        .expect_err("non-zero exit must surface BootstrapFailed");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("test-mgr"),
+        "error must surface manager name: {msg}"
+    );
+}

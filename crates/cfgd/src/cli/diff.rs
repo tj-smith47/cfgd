@@ -341,11 +341,13 @@ mod tests {
 
     #[test]
     fn build_diff_doc_with_no_drift_emits_ok_no_drift() {
-        let mut payload = DiffOutput::default();
-        payload.summary = DiffSummary {
-            has_file_drift: false,
-            has_pkg_drift: false,
-            has_system_drift: false,
+        let payload = DiffOutput {
+            summary: DiffSummary {
+                has_file_drift: false,
+                has_pkg_drift: false,
+                has_system_drift: false,
+            },
+            ..Default::default()
         };
         let (printer, cap) = Printer::for_test_doc();
         printer.emit(build_diff_doc(&payload));
@@ -359,11 +361,13 @@ mod tests {
 
     #[test]
     fn build_diff_doc_with_any_drift_emits_warn_drift_detected() {
-        let mut payload = DiffOutput::default();
-        payload.summary = DiffSummary {
-            has_file_drift: true,
-            has_pkg_drift: false,
-            has_system_drift: false,
+        let payload = DiffOutput {
+            summary: DiffSummary {
+                has_file_drift: true,
+                has_pkg_drift: false,
+                has_system_drift: false,
+            },
+            ..Default::default()
         };
         let (printer, cap) = Printer::for_test_doc();
         printer.emit(build_diff_doc(&payload));

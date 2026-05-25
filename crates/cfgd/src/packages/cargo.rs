@@ -10,7 +10,8 @@ use cfgd_core::output::Printer;
 use cfgd_core::providers::PackageManager;
 
 use super::shared::{
-    resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live, tool_cmd_with_resolver,
+    bootstrap_via_shell_script, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live,
+    tool_cmd_with_resolver,
 };
 
 pub struct CargoManager;
@@ -48,25 +49,12 @@ impl PackageManager for CargoManager {
     }
 
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
-        let result = printer
-            .run(
-                Command::new("bash")
-                    .arg("-c")
-                    .arg("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"),
-                "Installing Rust via rustup",
-            )
-            .map_err(|e| PackageError::BootstrapFailed {
-                manager: "cargo".into(),
-                message: format!("rustup install failed: {}", e),
-            })?;
-        if !result.status.success() {
-            return Err(PackageError::BootstrapFailed {
-                manager: "cargo".into(),
-                message: "rustup install script failed".into(),
-            }
-            .into());
-        }
-        Ok(())
+        bootstrap_via_shell_script(
+            printer,
+            "cargo",
+            "Installing Rust via rustup",
+            "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
+        )
     }
 
     fn installed_packages(&self) -> Result<HashSet<String>> {

@@ -486,6 +486,31 @@ pub(super) fn bootstrap_via_brew_then_system(
     Ok(false)
 }
 
+/// Run a `bash -c <script>` install pipeline and surface non-zero exits as
+/// `PackageError::BootstrapFailed`. Used by managers that bootstrap via a
+/// vendor-supplied shell-pipe installer (rustup, nix, nvm, get-pip, etc.).
+pub(super) fn bootstrap_via_shell_script(
+    printer: &Printer,
+    manager_name: &str,
+    label: impl Into<String>,
+    script: &str,
+) -> Result<()> {
+    let result = printer
+        .run(Command::new("bash").arg("-c").arg(script), label)
+        .map_err(|e| PackageError::BootstrapFailed {
+            manager: manager_name.into(),
+            message: format!("{manager_name} install failed: {e}"),
+        })?;
+    if !result.status.success() {
+        return Err(PackageError::BootstrapFailed {
+            manager: manager_name.into(),
+            message: format!("{manager_name} install script failed"),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 /// Strip trailing "-VERSION" from package names where version starts with a digit.
 /// Used by apk, pkg, and nix-env which output "name-version" format.
 pub(super) fn strip_version_suffix(name: &str) -> String {

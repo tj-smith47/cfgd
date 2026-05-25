@@ -10,8 +10,8 @@ use cfgd_core::output::Printer;
 use cfgd_core::providers::PackageManager;
 
 use super::shared::{
-    resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live, strip_version_suffix,
-    tool_cmd_with_resolver,
+    bootstrap_via_shell_script, resolve_tool_with_fallbacks, run_pkg_cmd, run_pkg_cmd_live,
+    strip_version_suffix, tool_cmd_with_resolver,
 };
 
 pub struct NixManager;
@@ -54,25 +54,12 @@ impl PackageManager for NixManager {
     }
 
     fn bootstrap(&self, printer: &Printer) -> Result<()> {
-        let result = printer
-            .run(
-                Command::new("bash")
-                    .arg("-c")
-                    .arg("curl -L https://nixos.org/nix/install | sh -s -- --daemon"),
-                "Installing Nix",
-            )
-            .map_err(|e| PackageError::BootstrapFailed {
-                manager: "nix".into(),
-                message: format!("nix install failed: {}", e),
-            })?;
-        if !result.status.success() {
-            return Err(PackageError::BootstrapFailed {
-                manager: "nix".into(),
-                message: "nix install script failed".into(),
-            }
-            .into());
-        }
-        Ok(())
+        bootstrap_via_shell_script(
+            printer,
+            "nix",
+            "Installing Nix",
+            "curl -L https://nixos.org/nix/install | sh -s -- --daemon",
+        )
     }
 
     fn installed_packages(&self) -> Result<HashSet<String>> {
