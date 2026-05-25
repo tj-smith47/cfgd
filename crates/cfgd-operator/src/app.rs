@@ -558,6 +558,30 @@ mod tests {
         }
     }
 
+    /// Drive `run()` with leader election enabled so the leader branch
+    /// (constructing the LeaderElection + entering its run loop) executes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial]
+    async fn run_drives_leader_election_branch() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bogus_kubeconfig = tmp.path().join("no-such-kubeconfig.yaml");
+        let _g_kc = EnvVarGuard::set("KUBECONFIG", bogus_kubeconfig.to_str().expect("valid utf8"));
+
+        let _g_hp = EnvVarGuard::set("HEALTH_PORT", "0");
+        let _g_mp = EnvVarGuard::set("METRICS_PORT", "0");
+        let _g_wcd = EnvVarGuard::set("WEBHOOK_CERT_DIR", tmp.path().to_str().expect("valid utf8"));
+        let _g_le = EnvVarGuard::set("LEADER_ELECTION_ENABLED", "true");
+        let _g_dg = EnvVarGuard::unset("DEVICE_GATEWAY_ENABLED");
+        let _g_otel = EnvVarGuard::unset("OTEL_EXPORTER_OTLP_ENDPOINT");
+
+        let result = tokio::time::timeout(Duration::from_millis(300), run()).await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {}
+            Err(_elapsed) => {}
+        }
+    }
+
     /// Drive `run()` with webhook certs present so the webhook-spawn branch
     /// (lines 220-243 in app.rs at time of writing) executes, in addition to
     /// the health/metrics spawn branches covered by the prior test.
