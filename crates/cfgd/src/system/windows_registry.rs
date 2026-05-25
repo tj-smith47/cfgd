@@ -396,6 +396,117 @@ mod tests {
     }
 
     #[test]
+    fn registry_diff_iterates_mapping_and_reports_drift_via_helper() {
+        // Drives the diff path that reads each value via `read_reg_value`;
+        // on non-Windows the lookup returns "" so every desired entry counts
+        // as drift (actual != expected).
+        let wrc = WindowsRegistryConfigurator;
+        let mut inner = serde_yaml::Mapping::new();
+        inner.insert(
+            serde_yaml::Value::String("HideFileExt".into()),
+            serde_yaml::Value::Number(0.into()),
+        );
+        inner.insert(
+            serde_yaml::Value::String("Theme".into()),
+            serde_yaml::Value::String("dark".into()),
+        );
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String(
+                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer".into(),
+            ),
+            serde_yaml::Value::Mapping(inner),
+        );
+        let desired = serde_yaml::Value::Mapping(outer);
+        let drifts = wrc.diff(&desired).unwrap();
+        // Expect drift entries for both child values (actual is empty on non-Windows).
+        assert_eq!(drifts.len(), 2);
+        assert!(drifts.iter().all(|d| d.actual.is_empty()));
+    }
+
+    #[test]
+    fn registry_diff_multiple_keypaths_iterate_all_branches() {
+        let wrc = WindowsRegistryConfigurator;
+        let mut inner_a = serde_yaml::Mapping::new();
+        inner_a.insert(
+            serde_yaml::Value::String("A".into()),
+            serde_yaml::Value::Number(1.into()),
+        );
+        let mut inner_b = serde_yaml::Mapping::new();
+        inner_b.insert(
+            serde_yaml::Value::String("B".into()),
+            serde_yaml::Value::String("v".into()),
+        );
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String(r"HKCU\PathA".into()),
+            serde_yaml::Value::Mapping(inner_a),
+        );
+        outer.insert(
+            serde_yaml::Value::String(r"HKCU\PathB".into()),
+            serde_yaml::Value::Mapping(inner_b),
+        );
+        let drifts = wrc.diff(&serde_yaml::Value::Mapping(outer)).unwrap();
+        assert_eq!(drifts.len(), 2);
+    }
+
+    #[test]
+    fn registry_apply_no_mapping_value_is_noop() {
+        let wrc = WindowsRegistryConfigurator;
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+        let result = wrc.apply(&serde_yaml::Value::String("not a mapping".into()), &printer);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn registry_apply_iterates_mapping_writes_each_value() {
+        let wrc = WindowsRegistryConfigurator;
+        let (printer, _buf) = cfgd_core::output::Printer::for_test();
+        let mut inner = serde_yaml::Mapping::new();
+        inner.insert(
+            serde_yaml::Value::String("Alpha".into()),
+            serde_yaml::Value::Number(1.into()),
+        );
+        inner.insert(
+            serde_yaml::Value::String("Beta".into()),
+            serde_yaml::Value::String("text".into()),
+        );
+        // Non-string subkey is skipped — exercises the inner-name None branch.
+        inner.insert(
+            serde_yaml::Value::Number(42.into()),
+            serde_yaml::Value::String("skipped".into()),
+        );
+        let mut outer = serde_yaml::Mapping::new();
+        outer.insert(
+            serde_yaml::Value::String(r"HKCU\Software\Test".into()),
+            serde_yaml::Value::Mapping(inner),
+        );
+        // Non-mapping inner value is skipped — exercises that None arm.
+        outer.insert(
+            serde_yaml::Value::String(r"HKCU\Bad".into()),
+            serde_yaml::Value::String("not a map".into()),
+        );
+        // Non-string outer key is skipped.
+        let mut inner_skip = serde_yaml::Mapping::new();
+        inner_skip.insert(
+            serde_yaml::Value::String("X".into()),
+            serde_yaml::Value::String("y".into()),
+        );
+        outer.insert(
+            serde_yaml::Value::Number(7.into()),
+            serde_yaml::Value::Mapping(inner_skip),
+        );
+        let result = wrc.apply(&serde_yaml::Value::Mapping(outer), &printer);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn registry_name_returns_windows_registry() {
+        let wrc = WindowsRegistryConfigurator;
+        assert_eq!(wrc.name(), "windowsRegistry");
+    }
+
+    #[test]
     fn parse_reg_value_output_sz_with_spaces() {
         let output = "    Description    REG_SZ    A long description with spaces\n";
         assert_eq!(

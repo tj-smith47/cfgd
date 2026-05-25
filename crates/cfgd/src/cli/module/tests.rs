@@ -4014,6 +4014,57 @@ mod keys_with_fake_cosign {
 
     #[test]
     #[serial]
+    fn cmd_module_keys_rotate_restore_failure_surfaces_restorefailed_payload() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let work = tempfile::tempdir().expect("workdir");
+        let key_dir = work.path();
+        std::fs::write(key_dir.join("cosign.key"), b"old-priv").expect("write old key");
+        std::fs::write(key_dir.join("cosign.pub"), b"old-pub").expect("write old pub");
+
+        // Custom shim (not CosignTestShim, which doesn't expose script
+        // composition): exits non-zero AND replaces the to-be-restored
+        // paths with non-empty directories. `std::fs::rename(backup, dest)`
+        // then fails (ENOTEMPTY on Linux), driving the restore-failures
+        // accumulation branch + the JSON "restoreFailed": true payload.
+        let shim_tmp = tempfile::TempDir::new().expect("shim tempdir");
+        let shim_path = shim_tmp.path().join("fake-cosign");
+        let script = format!(
+            "#!/bin/sh\n\
+             mkdir -p '{0}/cosign.key/blocker'\n\
+             mkdir -p '{0}/cosign.pub/blocker'\n\
+             exit 2\n",
+            key_dir.display()
+        );
+        std::fs::write(&shim_path, &script).expect("write shim");
+        let mut perms = std::fs::metadata(&shim_path)
+            .expect("stat shim")
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&shim_path, perms).expect("chmod shim");
+
+        let _g = cfgd_core::test_helpers::EnvVarGuard::set(
+            "CFGD_COSIGN_BIN",
+            shim_path.to_str().expect("shim path utf8"),
+        );
+
+        let printer = make_printer();
+        let err = cmd_module_keys_rotate(&printer, Some(key_dir.to_str().expect("dir utf8")), &[])
+            .expect_err("rotate must fail when cosign exits non-zero and restore fails");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("key restore FAILED"),
+            "expected restore-failed message in error: {msg}"
+        );
+        assert!(
+            msg.contains("manually restore"),
+            "user must be told to restore manually: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn cmd_module_keys_rotate_backs_up_old_keys_and_generates_new() {
         let _shim = CosignTestShim::builder()
             .with_argv_logging(false)
