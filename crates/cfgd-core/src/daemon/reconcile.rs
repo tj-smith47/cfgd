@@ -109,6 +109,19 @@ pub(crate) struct ReconcileCtx<'a> {
     pub hooks: &'a dyn DaemonHooks,
     pub state_dir_override: Option<&'a Path>,
     pub printer: &'a crate::output::Printer,
+    /// When set, restrict reconcile to actions targeting this module name.
+    /// Used by per-module reconcile ticks fired from `ReconcilePatch` entries;
+    /// the plan is filtered to retain only `Action::Module` entries whose
+    /// `module_name` matches, plus `auto_apply_override` and
+    /// `drift_policy_override` take effect when present so the per-module patch
+    /// fields (`autoApply`, `driftPolicy`) actually drive behavior.
+    pub module_filter: Option<&'a str>,
+    /// Override for `cfg.spec.daemon.reconcile.auto_apply`. Only consulted when
+    /// `module_filter` is set; otherwise the global config wins.
+    pub auto_apply_override: Option<bool>,
+    /// Override for `cfg.spec.daemon.reconcile.drift_policy`. Only consulted
+    /// when `module_filter` is set; otherwise the global config wins.
+    pub drift_policy_override: Option<config::DriftPolicy>,
 }
 
 pub(crate) fn handle_reconcile(
@@ -123,8 +136,15 @@ pub(crate) fn handle_reconcile(
         hooks,
         state_dir_override,
         printer,
+        module_filter,
+        auto_apply_override,
+        drift_policy_override,
     } = ctx;
-    tracing::info!("running reconciliation check");
+    if let Some(name) = module_filter {
+        tracing::info!(module = %name, "running per-module reconciliation check");
+    } else {
+        tracing::info!("running reconciliation check");
+    }
 
     // Try to acquire the apply lock (non-blocking). If a CLI apply is in
     // progress, skip this reconciliation tick.
@@ -205,57 +225,63 @@ pub(crate) fn handle_reconcile(
     };
 
     // Process auto-apply decisions for source items
-    let auto_apply = cfg
-        .spec
-        .daemon
-        .as_ref()
-        .and_then(|d| d.reconcile.as_ref())
-        .map(|r| r.auto_apply)
-        .unwrap_or(false);
-
-    let pending_exclusions = if auto_apply && !cfg.spec.sources.is_empty() {
-        let default_policy = AutoApplyPolicyConfig::default();
-        let policy = cfg
-            .spec
+    let auto_apply = auto_apply_override.unwrap_or_else(|| {
+        cfg.spec
             .daemon
             .as_ref()
             .and_then(|d| d.reconcile.as_ref())
-            .and_then(|r| r.policy.as_ref())
-            .unwrap_or(&default_policy);
+            .map(|r| r.auto_apply)
+            .unwrap_or(false)
+    });
 
-        let mut all_excluded = HashSet::new();
-        for source_spec in &cfg.spec.sources {
-            let excluded = process_source_decisions(
-                &store,
-                &source_spec.name,
-                &resolved.merged,
-                policy,
-                notifier,
-            );
-            all_excluded.extend(excluded);
-        }
+    // Source-decision processing is profile-wide; skip it when we're scoped to
+    // a single module so a per-module tick doesn't accidentally
+    // accept/reject items from sources unrelated to the patched module.
+    let pending_exclusions =
+        if module_filter.is_none() && auto_apply && !cfg.spec.sources.is_empty() {
+            let default_policy = AutoApplyPolicyConfig::default();
+            let policy = cfg
+                .spec
+                .daemon
+                .as_ref()
+                .and_then(|d| d.reconcile.as_ref())
+                .and_then(|r| r.policy.as_ref())
+                .unwrap_or(&default_policy);
 
-        // Auto-resolve pending decisions for removed sources
-        let source_names: HashSet<&str> =
-            cfg.spec.sources.iter().map(|s| s.name.as_str()).collect();
-        if let Ok(all_pending) = store.pending_decisions() {
-            for decision in &all_pending {
-                if !source_names.contains(decision.source.as_str())
-                    && let Err(e) = store.resolve_decisions_for_source(&decision.source, "rejected")
-                {
-                    tracing::warn!(
-                        source = %decision.source,
-                        error = %e,
-                        "failed to auto-reject decisions for removed source"
-                    );
+            let mut all_excluded = HashSet::new();
+            for source_spec in &cfg.spec.sources {
+                let excluded = process_source_decisions(
+                    &store,
+                    &source_spec.name,
+                    &resolved.merged,
+                    policy,
+                    notifier,
+                );
+                all_excluded.extend(excluded);
+            }
+
+            // Auto-resolve pending decisions for removed sources
+            let source_names: HashSet<&str> =
+                cfg.spec.sources.iter().map(|s| s.name.as_str()).collect();
+            if let Ok(all_pending) = store.pending_decisions() {
+                for decision in &all_pending {
+                    if !source_names.contains(decision.source.as_str())
+                        && let Err(e) =
+                            store.resolve_decisions_for_source(&decision.source, "rejected")
+                    {
+                        tracing::warn!(
+                            source = %decision.source,
+                            error = %e,
+                            "failed to auto-reject decisions for removed source"
+                        );
+                    }
                 }
             }
-        }
 
-        all_excluded
-    } else {
-        HashSet::new()
-    };
+            all_excluded
+        } else {
+            HashSet::new()
+        };
 
     let reconciler = crate::reconciler::Reconciler::new(&registry, &store);
 
@@ -304,7 +330,7 @@ pub(crate) fn handle_reconcile(
         Vec::new()
     };
     let resolved_modules_ref = resolved_modules.clone();
-    let plan = match reconciler.plan(
+    let mut plan = match reconciler.plan(
         &resolved,
         file_actions,
         pkg_actions,
@@ -317,6 +343,19 @@ pub(crate) fn handle_reconcile(
             return;
         }
     };
+
+    // Per-module reconcile: prune every action that is not a Module action
+    // targeting the filter name. This keeps the apply call below focused on
+    // just that one module's packages/files/scripts and avoids reaching into
+    // unrelated profile state.
+    if let Some(name) = module_filter {
+        for phase in &mut plan.phases {
+            phase.actions.retain(|a| match a {
+                crate::reconciler::Action::Module(ma) => ma.module_name == name,
+                _ => false,
+            });
+        }
+    }
 
     // Filter out pending decision items from the plan when auto-applying
     let effective_total = if pending_exclusions.is_empty() {
@@ -336,13 +375,19 @@ pub(crate) fn handle_reconcile(
 
     let timestamp = crate::utc_now_iso8601();
 
-    // Update daemon state
+    // Update daemon state. For a per-module tick we only touch
+    // `module_last_reconcile` so the profile-wide "last reconcile" timestamp
+    // continues to reflect the default reconcile cadence.
     let rt = tokio::runtime::Handle::current();
     rt.block_on(async {
         let mut st = state.lock().await;
-        st.last_reconcile = Some(timestamp.clone());
-        if let Some(source) = st.sources.first_mut() {
-            source.last_reconcile = Some(timestamp);
+        if let Some(name) = module_filter {
+            st.module_last_reconcile.insert(name.to_string(), timestamp);
+        } else {
+            st.last_reconcile = Some(timestamp.clone());
+            if let Some(source) = st.sources.first_mut() {
+                source.last_reconcile = Some(timestamp);
+            }
         }
     });
 
@@ -367,8 +412,10 @@ pub(crate) fn handle_reconcile(
             }
         }
 
-        // Execute onDrift scripts from resolved profile
-        if !resolved.merged.scripts.on_drift.is_empty() {
+        // Execute onDrift scripts from resolved profile. Profile-level scripts
+        // are skipped for per-module ticks — those fire only when a default
+        // (whole-profile) reconcile detects drift.
+        if module_filter.is_none() && !resolved.merged.scripts.on_drift.is_empty() {
             let scripts = &resolved.merged.scripts;
             tracing::info!(count = scripts.on_drift.len(), "running onDrift script(s)");
             let script_env = crate::reconciler::build_script_env(
@@ -407,14 +454,16 @@ pub(crate) fn handle_reconcile(
             }
         });
 
-        // Check drift policy to decide whether to auto-apply or just notify
-        let drift_policy = cfg
-            .spec
-            .daemon
-            .as_ref()
-            .and_then(|d| d.reconcile.as_ref())
-            .map(|r| r.drift_policy.clone())
-            .unwrap_or_default();
+        // Check drift policy to decide whether to auto-apply or just notify.
+        // Per-module ticks may override the global value via their patch entry.
+        let drift_policy = drift_policy_override.clone().unwrap_or_else(|| {
+            cfg.spec
+                .daemon
+                .as_ref()
+                .and_then(|d| d.reconcile.as_ref())
+                .map(|r| r.drift_policy.clone())
+                .unwrap_or_default()
+        });
 
         match drift_policy {
             config::DriftPolicy::Auto => {
@@ -479,6 +528,13 @@ pub(crate) fn handle_reconcile(
                 }
             }
         }
+    }
+
+    // Server check-in + pending-config consumption are profile-wide
+    // operations; skip them for per-module ticks so a fast per-module cadence
+    // doesn't hammer the gateway or race the default reconcile.
+    if module_filter.is_some() {
+        return;
     }
 
     // Server check-in after reconciliation

@@ -69,23 +69,33 @@ pub(super) async fn run_daemon_loop(
     loop {
         tokio::select! {
             Some(path) = triggers.file_rx.recv() => {
-                handle_file_change_tick(&ctx, &mut last_change, debounce, path).await?;
+                if let Err(e) = handle_file_change_tick(&ctx, &mut last_change, debounce, path).await {
+                    tracing::error!(error = %e, tick = "file_change", "daemon tick failed; loop continues");
+                }
             }
 
             Some(()) = triggers.reconcile_rx.recv() => {
-                handle_reconcile_tick(&ctx, &mut reconcile_tasks).await?;
+                if let Err(e) = handle_reconcile_tick(&ctx, &mut reconcile_tasks).await {
+                    tracing::error!(error = %e, tick = "reconcile", "daemon tick failed; loop continues");
+                }
             }
 
             Some(()) = triggers.sync_rx.recv() => {
-                handle_sync_tick(&ctx, &mut sync_tasks).await?;
+                if let Err(e) = handle_sync_tick(&ctx, &mut sync_tasks).await {
+                    tracing::error!(error = %e, tick = "sync", "daemon tick failed; loop continues");
+                }
             }
 
             Some(()) = triggers.version_check_rx.recv() => {
-                handle_version_check_tick(&ctx).await?;
+                if let Err(e) = handle_version_check_tick(&ctx).await {
+                    tracing::error!(error = %e, tick = "version_check", "daemon tick failed; loop continues");
+                }
             }
 
             Some(()) = triggers.compliance_rx.recv() => {
-                handle_compliance_tick(&ctx).await?;
+                if let Err(e) = handle_compliance_tick(&ctx).await {
+                    tracing::error!(error = %e, tick = "compliance", "daemon tick failed; loop continues");
+                }
             }
 
             Some(()) = triggers.sighup_rx.recv() => {
@@ -162,6 +172,9 @@ pub(super) async fn handle_file_change_tick(
                     hooks: &*hk,
                     state_dir_override: state_dir.as_deref(),
                     printer: &printer,
+                    module_filter: None,
+                    auto_apply_override: None,
+                    drift_policy_override: None,
                 },
             );
         })
@@ -211,6 +224,9 @@ pub(super) async fn handle_reconcile_tick(
                         hooks: &*hk,
                         state_dir_override: state_dir.as_deref(),
                         printer: &printer,
+                        module_filter: None,
+                        auto_apply_override: None,
+                        drift_policy_override: None,
                     },
                 );
             })
@@ -220,17 +236,45 @@ pub(super) async fn handle_reconcile_tick(
             })?;
         } else {
             let entity_name = task.entity.clone();
+            let task_auto_apply = task.auto_apply;
+            let task_drift_policy = task.drift_policy.clone();
             tracing::info!(
                 module = %entity_name,
                 interval = %task.interval.as_secs(),
-                auto_apply = task.auto_apply,
-                drift_policy = ?task.drift_policy,
+                auto_apply = task_auto_apply,
+                drift_policy = ?task_drift_policy,
                 "per-module reconcile tick"
             );
+            let cp = ctx.config_path.clone();
+            let po = ctx.profile_override.clone();
             let st = Arc::clone(&ctx.state);
-            let ts = crate::utc_now_iso8601();
-            let mut st = st.lock().await;
-            st.module_last_reconcile.insert(entity_name, ts);
+            let nt = Arc::clone(&ctx.notifier);
+            let notify_drift = ctx.notify_on_drift;
+            let hk = Arc::clone(&ctx.hooks);
+            let state_dir = ctx.state_dir_override.clone();
+            let printer = Arc::clone(&ctx.printer);
+            let module_name = entity_name.clone();
+            tokio::task::spawn_blocking(move || {
+                handle_reconcile(
+                    &cp,
+                    po.as_deref(),
+                    ReconcileCtx {
+                        state: &st,
+                        notifier: &nt,
+                        notify_on_drift: notify_drift,
+                        hooks: &*hk,
+                        state_dir_override: state_dir.as_deref(),
+                        printer: &printer,
+                        module_filter: Some(&module_name),
+                        auto_apply_override: Some(task_auto_apply),
+                        drift_policy_override: Some(task_drift_policy),
+                    },
+                );
+            })
+            .await
+            .map_err(|e| DaemonError::WatchError {
+                message: format!("per-module reconcile task failed: {}", e),
+            })?;
         }
     }
 

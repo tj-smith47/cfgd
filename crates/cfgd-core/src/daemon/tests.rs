@@ -16,6 +16,9 @@ fn quiet_reconcile_ctx<'a>(
         hooks,
         state_dir_override: Some(state_dir),
         printer,
+        module_filter: None,
+        auto_apply_override: None,
+        drift_policy_override: None,
     }
 }
 
@@ -7223,7 +7226,11 @@ mod harness {
     async fn reconcile_tick_updates_module_timestamp_for_non_default_entity() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
-        let (ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        // Per-module reconcile now invokes the reconciler — point at a real
+        // config so `handle_reconcile` reaches the state-update step.
+        let config_path = write_happy_path_config(&tmp);
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = config_path;
         let mut tasks = vec![ReconcileTask {
             entity: "my-module".to_string(),
             interval: StdDuration::from_secs(60),
@@ -7447,10 +7454,567 @@ mod harness {
     // record_file_drift, so we exercise the branch by calling the helper
     // directly rather than through run_daemon_loop's select!.)
 
+    // ----- Per-tick failure isolation -----
+    //
+    // The select! loop must log and continue when a tick handler panics or
+    // returns Err — a single failing tick must not tear the daemon down.
+    // These tests panic inside the spawn_blocking that backs each tick (via
+    // `DaemonHooks` whose plan_files / build_registry implementation panics)
+    // and then assert that the loop still services subsequent ticks and
+    // exits cleanly on shutdown.
+
+    /// `DaemonHooks` that panics in `plan_files`. Used to drive
+    /// `handle_reconcile_tick` into a `JoinError` so the loop's recovery
+    /// behavior is observable.
+    struct PanickingPlanFilesHooks;
+
+    impl DaemonHooks for PanickingPlanFilesHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            ProviderRegistry::new()
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            panic!("intentional panic in plan_files (test fixture)")
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            Ok(vec![])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    /// `DaemonHooks` that panics in `build_registry`. Used to drive
+    /// `handle_compliance_tick` (and, secondarily, any tick that builds a
+    /// registry) into a `JoinError`.
+    struct PanickingRegistryHooks;
+
+    impl DaemonHooks for PanickingRegistryHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            panic!("intentional panic in build_registry (test fixture)")
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            Ok(vec![])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    /// Build a `DaemonLoopContext` whose `hooks` panic inside `plan_files`.
+    fn make_panicking_plan_files_ctx(
+        tmp: &tempfile::TempDir,
+    ) -> (DaemonLoopContext, Arc<Mutex<DaemonState>>) {
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+        let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+        let printer = Arc::new(printer);
+        let ctx = DaemonLoopContext {
+            state: Arc::clone(&state),
+            hooks: Arc::new(PanickingPlanFilesHooks),
+            notifier,
+            config_path: write_happy_path_config(tmp),
+            profile_override: None,
+            on_change_reconcile: false,
+            notify_on_drift: false,
+            compliance_config: None,
+            printer,
+            state_dir_override: Some(tmp.path().to_path_buf()),
+        };
+        (ctx, state)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn select_loop_continues_after_reconcile_tick_panic() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, _state) = make_panicking_plan_files_ctx(&tmp);
+        let (triggers, senders) = make_triggers();
+        let reconcile_secs = Arc::new(AtomicU64::new(300));
+        let sync_secs = Arc::new(AtomicU64::new(300));
+        let tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(0),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        let handle = tokio::spawn(runner::run_daemon_loop(
+            ctx,
+            triggers,
+            tasks,
+            Vec::new(),
+            reconcile_secs,
+            sync_secs,
+        ));
+        // Reconcile tick triggers the panicking plan_files inside
+        // spawn_blocking; the loop should log and continue.
+        senders.reconcile_tx.send(()).await.unwrap();
+        tokio::time::sleep(StdDuration::from_millis(150)).await;
+        // Fire a no-op sync tick to prove the loop is still alive and
+        // processing further dispatches.
+        senders.sync_tx.send(()).await.unwrap();
+        tokio::time::sleep(StdDuration::from_millis(50)).await;
+        senders.shutdown_tx.send(()).unwrap();
+        tokio::time::timeout(StdDuration::from_secs(3), handle)
+            .await
+            .expect("loop did not exit within 3s")
+            .expect("join error")
+            .expect("loop returned Err — should have logged and continued");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn select_loop_continues_after_compliance_panic() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = write_happy_path_config(&tmp);
+        let compliance_cfg = config::ComplianceConfig {
+            enabled: true,
+            interval: "1h".into(),
+            retention: "7d".into(),
+            scope: config::ComplianceScope::default(),
+            export: config::ComplianceExport::default(),
+        };
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+        let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+        let printer = Arc::new(printer);
+        let ctx = DaemonLoopContext {
+            state: Arc::clone(&state),
+            hooks: Arc::new(PanickingRegistryHooks),
+            notifier,
+            config_path,
+            profile_override: None,
+            on_change_reconcile: false,
+            notify_on_drift: false,
+            compliance_config: Some(compliance_cfg),
+            printer,
+            state_dir_override: Some(tmp.path().to_path_buf()),
+        };
+        let (triggers, senders) = make_triggers();
+        let reconcile_secs = Arc::new(AtomicU64::new(300));
+        let sync_secs = Arc::new(AtomicU64::new(300));
+        let handle = tokio::spawn(runner::run_daemon_loop(
+            ctx,
+            triggers,
+            Vec::new(),
+            Vec::new(),
+            reconcile_secs,
+            sync_secs,
+        ));
+        senders.compliance_tx.send(()).await.unwrap();
+        tokio::time::sleep(StdDuration::from_millis(150)).await;
+        senders.shutdown_tx.send(()).unwrap();
+        tokio::time::timeout(StdDuration::from_secs(3), handle)
+            .await
+            .expect("loop did not exit within 3s")
+            .expect("join error")
+            .expect("loop returned Err — should have logged and continued");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn select_loop_continues_after_sync_tick_error() {
+        // A sync tick whose repo_path does not exist exercises the sync
+        // handler's error path (git2 returns Err from `Repository::open`).
+        // After the failing tick we fire a reconcile tick that panics, then
+        // a no-op sync tick, then shutdown — proving the loop keeps
+        // servicing both error and panic flavors of failure.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, _state) = make_panicking_plan_files_ctx(&tmp);
+        let (triggers, senders) = make_triggers();
+        let reconcile_secs = Arc::new(AtomicU64::new(300));
+        let sync_secs = Arc::new(AtomicU64::new(300));
+        let sync_tasks = vec![SyncTask {
+            source_name: "broken".to_string(),
+            repo_path: tmp.path().join("does-not-exist"),
+            auto_pull: true,
+            auto_push: false,
+            auto_apply: false,
+            interval: StdDuration::from_secs(0),
+            last_synced: None,
+            require_signed_commits: false,
+            allow_unsigned: false,
+        }];
+        let reconcile_tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(0),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        let handle = tokio::spawn(runner::run_daemon_loop(
+            ctx,
+            triggers,
+            reconcile_tasks,
+            sync_tasks,
+            reconcile_secs,
+            sync_secs,
+        ));
+        senders.sync_tx.send(()).await.unwrap();
+        tokio::time::sleep(StdDuration::from_millis(50)).await;
+        senders.reconcile_tx.send(()).await.unwrap();
+        tokio::time::sleep(StdDuration::from_millis(150)).await;
+        senders.shutdown_tx.send(()).unwrap();
+        tokio::time::timeout(StdDuration::from_secs(3), handle)
+            .await
+            .expect("loop did not exit within 3s")
+            .expect("join error")
+            .expect("loop returned Err — should have logged and continued");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn select_loop_continues_after_version_check_tick() {
+        // Version check runs via spawn_blocking on `handle_version_check`,
+        // which reads/writes a small JSON cache under HOME (guarded to the
+        // tempdir). With no network reachable the upgrade module errors
+        // gracefully and the tick must not abort the loop. After the tick
+        // we fire a panicking reconcile to confirm the loop's
+        // continue-on-error behavior is engaged, then shutdown.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, _state) = make_panicking_plan_files_ctx(&tmp);
+        let (triggers, senders) = make_triggers();
+        let reconcile_secs = Arc::new(AtomicU64::new(300));
+        let sync_secs = Arc::new(AtomicU64::new(300));
+        let reconcile_tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(0),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        let handle = tokio::spawn(runner::run_daemon_loop(
+            ctx,
+            triggers,
+            reconcile_tasks,
+            Vec::new(),
+            reconcile_secs,
+            sync_secs,
+        ));
+        senders.version_check_tx.send(()).await.unwrap();
+        tokio::time::sleep(StdDuration::from_millis(100)).await;
+        senders.reconcile_tx.send(()).await.unwrap();
+        tokio::time::sleep(StdDuration::from_millis(150)).await;
+        senders.shutdown_tx.send(()).unwrap();
+        tokio::time::timeout(StdDuration::from_secs(3), handle)
+            .await
+            .expect("loop did not exit within 3s")
+            .expect("join error")
+            .expect("loop returned Err — should have logged and continued");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn select_loop_exits_on_shutdown_after_panicking_tick() {
+        // Regression guard: shutdown must still drain cleanly after a tick
+        // handler has panicked. Without the per-tick continue-on-error
+        // contract the loop would have already returned Err before shutdown
+        // arrives, and this test would observe that as a JoinError.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (ctx, _state) = make_panicking_plan_files_ctx(&tmp);
+        let (triggers, senders) = make_triggers();
+        let reconcile_secs = Arc::new(AtomicU64::new(300));
+        let sync_secs = Arc::new(AtomicU64::new(300));
+        let tasks = vec![ReconcileTask {
+            entity: "__default__".to_string(),
+            interval: StdDuration::from_secs(0),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        let handle = tokio::spawn(runner::run_daemon_loop(
+            ctx,
+            triggers,
+            tasks,
+            Vec::new(),
+            reconcile_secs,
+            sync_secs,
+        ));
+        senders.reconcile_tx.send(()).await.unwrap();
+        tokio::time::sleep(StdDuration::from_millis(100)).await;
+        senders.reconcile_tx.send(()).await.unwrap();
+        tokio::time::sleep(StdDuration::from_millis(100)).await;
+        senders.shutdown_tx.send(()).unwrap();
+        let result = tokio::time::timeout(StdDuration::from_secs(3), handle)
+            .await
+            .expect("loop did not exit within 3s")
+            .expect("join error");
+        assert!(
+            result.is_ok(),
+            "loop should exit Ok after panicking ticks + shutdown, got {:?}",
+            result
+        );
+    }
+
+    // ----- BLOCKER #2 — per-module reconcile actually invokes the reconciler -----
+    //
+    // The per-module branch of `handle_reconcile_tick` used to log and write
+    // `module_last_reconcile` without calling the reconciler. These tests
+    // drive the branch with a `ReconcilePatch`-bearing config and a hooks
+    // impl that records calls, asserting the reconciler is invoked with the
+    // expected module filter and that the patch's auto_apply / drift_policy
+    // are respected.
+
+    /// `DaemonHooks` whose `plan_files` records how many times it has been
+    /// called and what `config_dir` it was invoked with. Returns the empty
+    /// vec so `handle_reconcile` proceeds without producing real actions.
+    struct RecordingHooks {
+        plan_files_calls: Arc<std::sync::atomic::AtomicUsize>,
+        build_registry_calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl DaemonHooks for RecordingHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            self.build_registry_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            ProviderRegistry::new()
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            self.plan_files_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            Ok(vec![])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn per_module_reconcile_invokes_reconciler_with_filter() {
+        // Two ReconcileTasks (one default, one per-module). Firing a tick
+        // when both are due should call into `handle_reconcile` for the
+        // default task and ALSO for the per-module task. Previously the
+        // per-module branch was a no-op, so the hook would only fire once.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = write_happy_path_config(&tmp);
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+        let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+        let printer = Arc::new(printer);
+        let plan_files_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let build_registry_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hooks = Arc::new(RecordingHooks {
+            plan_files_calls: Arc::clone(&plan_files_calls),
+            build_registry_calls: Arc::clone(&build_registry_calls),
+        });
+        let ctx = DaemonLoopContext {
+            state: Arc::clone(&state),
+            hooks,
+            notifier,
+            config_path,
+            profile_override: None,
+            on_change_reconcile: false,
+            notify_on_drift: false,
+            compliance_config: None,
+            printer,
+            state_dir_override: Some(tmp.path().to_path_buf()),
+        };
+        let mut tasks = vec![
+            ReconcileTask {
+                entity: "__default__".to_string(),
+                interval: StdDuration::from_secs(0),
+                auto_apply: false,
+                drift_policy: config::DriftPolicy::NotifyOnly,
+                last_reconciled: None,
+            },
+            ReconcileTask {
+                entity: "docker".to_string(),
+                interval: StdDuration::from_secs(0),
+                auto_apply: false,
+                drift_policy: config::DriftPolicy::NotifyOnly,
+                last_reconciled: None,
+            },
+        ];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+        // Both tasks invoked the reconciler — plan_files called twice, once
+        // per branch (default + filtered module).
+        assert_eq!(
+            plan_files_calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "expected plan_files to fire for both the default and the per-module ticks"
+        );
+        // Per-module branch must populate module_last_reconcile for the
+        // patched module name.
+        let st = state.lock().await;
+        assert!(
+            st.module_last_reconcile.contains_key("docker"),
+            "per-module branch should have recorded module_last_reconcile for 'docker' — got keys: {:?}",
+            st.module_last_reconcile.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            st.last_reconcile.is_some(),
+            "default branch should have updated profile-wide last_reconcile"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn per_module_reconcile_respects_drift_policy_notify_only() {
+        // Per-module patch with drift_policy=NotifyOnly + a tick that
+        // doesn't produce drift (empty profile). The reconciler is invoked
+        // but apply is NOT (the NotifyOnly branch). We assert the per-module
+        // entry shows up in state and that profile-wide drift_count is 0.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = write_happy_path_config(&tmp);
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+        let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+        let printer = Arc::new(printer);
+        let plan_files_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let build_registry_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hooks = Arc::new(RecordingHooks {
+            plan_files_calls: Arc::clone(&plan_files_calls),
+            build_registry_calls: Arc::clone(&build_registry_calls),
+        });
+        let ctx = DaemonLoopContext {
+            state: Arc::clone(&state),
+            hooks,
+            notifier,
+            config_path,
+            profile_override: None,
+            on_change_reconcile: false,
+            notify_on_drift: false,
+            compliance_config: None,
+            printer,
+            state_dir_override: Some(tmp.path().to_path_buf()),
+        };
+        let mut tasks = vec![ReconcileTask {
+            entity: "monitoring".to_string(),
+            interval: StdDuration::from_secs(0),
+            auto_apply: false,
+            drift_policy: config::DriftPolicy::NotifyOnly,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+        // The reconciler was driven for the module — plan_files fired once.
+        assert_eq!(
+            plan_files_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        let st = state.lock().await;
+        assert!(st.module_last_reconcile.contains_key("monitoring"));
+        // No drift detected against empty profile + NotifyOnly policy.
+        assert_eq!(st.drift_count, 0);
+        // Per-module tick must not bump profile-wide last_reconcile.
+        assert!(
+            st.last_reconcile.is_none(),
+            "per-module tick should not touch profile-wide last_reconcile"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn per_module_reconcile_with_auto_apply_invokes_reconciler() {
+        // Per-module patch with auto_apply=true, drift_policy=Auto. With an
+        // empty profile the apply branch is unreachable (no drift) but the
+        // reconciler is still driven and the state is updated.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = write_happy_path_config(&tmp);
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+        let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+        let printer = Arc::new(printer);
+        let plan_files_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let build_registry_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hooks = Arc::new(RecordingHooks {
+            plan_files_calls: Arc::clone(&plan_files_calls),
+            build_registry_calls: Arc::clone(&build_registry_calls),
+        });
+        let ctx = DaemonLoopContext {
+            state: Arc::clone(&state),
+            hooks,
+            notifier,
+            config_path,
+            profile_override: None,
+            on_change_reconcile: false,
+            notify_on_drift: false,
+            compliance_config: None,
+            printer,
+            state_dir_override: Some(tmp.path().to_path_buf()),
+        };
+        let mut tasks = vec![ReconcileTask {
+            entity: "vault".to_string(),
+            interval: StdDuration::from_secs(0),
+            auto_apply: true,
+            drift_policy: config::DriftPolicy::Auto,
+            last_reconciled: None,
+        }];
+        runner::handle_reconcile_tick(&ctx, &mut tasks)
+            .await
+            .unwrap();
+        assert_eq!(
+            plan_files_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "reconciler must be invoked for the per-module branch when auto_apply=true"
+        );
+        assert_eq!(
+            build_registry_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        let st = state.lock().await;
+        assert!(st.module_last_reconcile.contains_key("vault"));
+    }
+
     // ----- run_daemon_loop never returns Err for the channel-trigger branches
-    // (we don't have a way to trigger DaemonError::WatchError without spawn_blocking
-    // panics, which would tear down the runtime). The loop branches return Ok in
-    // all observable test conditions, so the assertion is on graceful shutdown. -----
+    // — tick errors are logged and the loop continues (see above). -----
 
     // ----- spawn_interval_pump smoke test -----
 
