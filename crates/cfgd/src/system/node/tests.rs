@@ -4,6 +4,7 @@ use super::format::*;
 use super::*;
 use crate::system::{yaml_value_to_string, yaml_value_with_numeric_bools};
 use cfgd_core::providers::SystemConfigurator;
+use cfgd_core::test_helpers::test_printer;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -2159,7 +2160,7 @@ fn persist_modules_overwrites_existing() {
 fn seccomp_apply_writes_profiles() {
     let dir = tempdir().unwrap();
     let profiles_dir = dir.path().join("seccomp");
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let sc = SeccompConfigurator;
 
     let mut profile = serde_yaml::Mapping::new();
@@ -2195,7 +2196,7 @@ fn seccomp_apply_writes_profiles() {
 
 #[test]
 fn seccomp_apply_no_profiles_key_is_noop() {
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let sc = SeccompConfigurator;
     let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
     // Should not error even with no profiles key
@@ -2206,7 +2207,7 @@ fn seccomp_apply_no_profiles_key_is_noop() {
 fn seccomp_apply_skips_missing_fields() {
     let dir = tempdir().unwrap();
     let profiles_dir = dir.path().join("seccomp");
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let sc = SeccompConfigurator;
 
     // Profile with no "file" key
@@ -2273,7 +2274,7 @@ fn seccomp_apply_skips_missing_fields() {
 fn seccomp_apply_path_traversal_skipped() {
     let dir = tempdir().unwrap();
     let profiles_dir = dir.path().join("seccomp");
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let sc = SeccompConfigurator;
 
     let mut profile = serde_yaml::Mapping::new();
@@ -2312,7 +2313,7 @@ fn seccomp_apply_path_traversal_skipped() {
 fn seccomp_apply_multiple_profiles() {
     let dir = tempdir().unwrap();
     let profiles_dir = dir.path().join("seccomp");
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let sc = SeccompConfigurator;
 
     let mut p1 = serde_yaml::Mapping::new();
@@ -2375,7 +2376,7 @@ fn seccomp_apply_multiple_profiles() {
 fn certificate_apply_creates_ca_cert_dir() {
     let dir = tempdir().unwrap();
     let ca_dir = dir.path().join("pki");
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let cc = CertificateConfigurator;
 
     let mut m = serde_yaml::Mapping::new();
@@ -2391,7 +2392,7 @@ fn certificate_apply_creates_ca_cert_dir() {
 
 #[test]
 fn certificate_apply_no_certificates_is_noop() {
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let cc = CertificateConfigurator;
     let desired = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
     // Should not error with no caCertDir or certificates
@@ -2414,7 +2415,7 @@ fn certificate_apply_sets_permissions_on_existing_files() {
         fs::set_permissions(&key_path, fs::Permissions::from_mode(0o644)).unwrap();
     }
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let cc = CertificateConfigurator;
 
     let mut cert = serde_yaml::Mapping::new();
@@ -2461,7 +2462,7 @@ fn certificate_apply_sets_permissions_on_existing_files() {
 #[test]
 fn certificate_apply_warns_for_missing_files() {
     let dir = tempdir().unwrap();
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let cc = CertificateConfigurator;
 
     let mut cert = serde_yaml::Mapping::new();
@@ -2496,7 +2497,7 @@ fn certificate_apply_warns_for_missing_files() {
 #[test]
 fn certificate_apply_skips_cert_without_name() {
     let dir = tempdir().unwrap();
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let cc = CertificateConfigurator;
 
     let mut cert = serde_yaml::Mapping::new();
@@ -2532,7 +2533,7 @@ fn certificate_apply_correct_permissions_no_change() {
         fs::set_permissions(&cert_path, fs::Permissions::from_mode(0o600)).unwrap();
     }
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let cc = CertificateConfigurator;
 
     let mut cert = serde_yaml::Mapping::new();
@@ -2575,7 +2576,7 @@ fn certificate_apply_correct_permissions_no_change() {
 
 #[test]
 fn seccomp_apply_uses_default_profiles_dir_when_unset() {
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let sc = SeccompConfigurator;
 
     // profiles key with empty sequence — should try to create /etc/cfgd/seccomp

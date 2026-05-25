@@ -16,6 +16,7 @@ use cfgd_core::expand_tilde;
 use cfgd_core::providers::{
     FileAction, FileDiff, FileDiffKind, FileEntry, FileLayer, FileManager as _, FileTree,
 };
+use cfgd_core::test_helpers::test_printer;
 
 fn make_resolved_profile(env: Vec<EnvVar>, files: FilesSpec) -> ResolvedProfile {
     ResolvedProfile {
@@ -275,7 +276,7 @@ fn apply_creates_files() {
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
     let actions = fm.plan(&resolved.merged).unwrap();
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     fm.apply(&actions, &printer).unwrap();
 
     assert!(target.exists());
@@ -310,7 +311,7 @@ fn apply_is_idempotent() {
         },
     );
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
 
     // First apply
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
@@ -355,7 +356,7 @@ fn template_custom_functions() {
         },
     );
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
 
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
     let actions = fm.plan(&resolved.merged).unwrap();
@@ -397,7 +398,7 @@ fn permissions_set_correctly() {
         },
     );
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
 
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
     let actions = fm.plan(&resolved.merged).unwrap();
@@ -768,7 +769,7 @@ fn symlink_strategy_creates_symlink() {
         }
     ));
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     fm.apply(&actions, &printer).unwrap();
 
     assert!(target.is_symlink());
@@ -804,7 +805,7 @@ fn symlink_strategy_is_idempotent() {
         },
     );
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
 
     // First apply
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
@@ -853,7 +854,7 @@ fn hardlink_strategy_creates_hardlink() {
     let actions = fm.plan(&resolved.merged).unwrap();
     assert_eq!(actions.len(), 1);
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     fm.apply(&actions, &printer).unwrap();
 
     assert!(target.exists());
@@ -909,7 +910,7 @@ fn template_auto_upgrades_to_copy() {
         }
     ));
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     fm.apply(&actions, &printer).unwrap();
 
     // Should be a regular file, not a symlink
@@ -1410,7 +1411,7 @@ fn apply_update_overwrites_target() {
         },
     );
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
     let actions = fm.plan(&resolved.merged).unwrap();
     assert_eq!(actions.len(), 1);
@@ -2880,7 +2881,7 @@ fn apply_delete_removes_existing_file() {
         target: target.clone(),
         origin: "local".to_string(),
     }];
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
 
     assert!(!target.exists());
@@ -2897,7 +2898,7 @@ fn apply_delete_when_target_missing_is_noop() {
         target: target.clone(),
         origin: "local".to_string(),
     }];
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
 
     assert!(!target.exists());
@@ -2923,7 +2924,7 @@ fn apply_delete_removes_dangling_symlink() {
         target: link.clone(),
         origin: "local".to_string(),
     }];
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
 
     assert!(
@@ -2948,7 +2949,7 @@ fn apply_set_permissions_changes_mode() {
         mode: 0o600,
         origin: "local".to_string(),
     }];
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
 
     let mode = fs::metadata(&target).unwrap().permissions().mode() & 0o777;
@@ -2968,7 +2969,7 @@ fn apply_skip_action_is_noop() {
         reason: "private file: source missing".to_string(),
         origin: "local".to_string(),
     }];
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
 
     assert!(!target.exists());
@@ -2993,7 +2994,7 @@ fn apply_create_with_stale_source_hash_returns_source_changed() {
         source_hash: Some(cfgd_core::sha256_hex(b"different content from plan time")),
     }];
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let err =
         <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
             .expect_err("expected SourceChanged error");
@@ -3024,7 +3025,7 @@ fn apply_create_with_matching_source_hash_writes_target() {
         source_hash: Some(cfgd_core::sha256_hex(body.as_bytes())),
     }];
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
 
     assert_eq!(fs::read_to_string(&target).unwrap(), body);
@@ -3095,7 +3096,7 @@ fn apply_create_with_symlink_strategy_creates_symbolic_link() {
         source_hash: None,
     }];
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
 
     let meta = target.symlink_metadata().expect("target should exist");
@@ -3127,7 +3128,7 @@ fn apply_create_with_hardlink_strategy_creates_hard_link() {
         source_hash: None,
     }];
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
 
     let src_meta = fs::metadata(&source).unwrap();
@@ -3168,7 +3169,7 @@ fn apply_create_with_symlink_strategy_replaces_existing_file() {
         source_hash: None,
     }];
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer).unwrap();
 
     let meta = target.symlink_metadata().unwrap();
@@ -3224,7 +3225,7 @@ fn apply_create_non_local_origin_writes_file() {
         source_hash: None,
     }];
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
         .expect("apply with non-local origin must succeed");
 
@@ -3255,7 +3256,7 @@ fn apply_update_non_local_origin_writes_file() {
         diff: String::new(),
     }];
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
         .expect("apply Update with non-local origin must succeed");
 
@@ -3286,7 +3287,7 @@ fn apply_create_copy_with_source_directory_returns_io_error() {
         source_hash: None,
     }];
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let err =
         <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
             .expect_err("applying Create with a directory as source must fail");
@@ -3319,7 +3320,7 @@ fn apply_update_copy_with_source_directory_returns_io_error() {
         diff: String::new(),
     }];
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let err =
         <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
             .expect_err("applying Update with a directory as source must fail");
@@ -3376,7 +3377,7 @@ fn apply_create_with_secret_ref_resolved_by_provider() {
         source_hash: None,
     }];
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
         .expect("apply with secret ref must succeed");
 
@@ -3432,7 +3433,7 @@ fn apply_create_with_update_action_source_hash_present() {
         diff: String::new(),
     }];
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
         .expect("apply Update with matching source_hash must succeed");
 
@@ -3466,7 +3467,7 @@ fn apply_update_with_stale_source_hash_returns_source_changed() {
         diff: String::new(),
     }];
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let err =
         <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
             .expect_err("stale source_hash in Update must return SourceChanged");
@@ -3608,7 +3609,7 @@ fn apply_create_when_target_is_directory_returns_io_error() {
         source_hash: None,
     }];
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let err =
         <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
             .expect_err("Create with a directory at the target path must fail");
@@ -3635,7 +3636,7 @@ fn apply_delete_when_target_is_directory_returns_io_error() {
         origin: "local".to_string(),
     }];
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let err =
         <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
             .expect_err("Delete with a directory at the target path must fail");
@@ -3671,7 +3672,7 @@ fn apply_create_symlink_with_too_long_filename_returns_io_error() {
         source_hash: None,
     }];
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let err =
         <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
             .expect_err("symlink creation with name > NAME_MAX must fail");
@@ -3706,7 +3707,7 @@ fn apply_create_hardlink_with_too_long_filename_returns_io_error() {
         source_hash: None,
     }];
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let err =
         <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
             .expect_err("hard_link with name > NAME_MAX must fail");
@@ -3743,7 +3744,7 @@ fn apply_create_copy_with_too_long_target_filename_returns_io_error() {
         source_hash: None,
     }];
 
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let err =
         <CfgdFileManager as cfgd_core::providers::FileManager>::apply(&fm, &actions, &printer)
             .expect_err("atomic_write with name > NAME_MAX must fail");

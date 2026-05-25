@@ -1,11 +1,6 @@
 use super::*;
 use cfgd_core::output::{Printer, Verbosity};
-
-/// Returns a `Printer` in `Verbosity::Quiet` mode for tests that only need
-/// to satisfy the signature without asserting on captured output.
-fn quiet_printer() -> Printer {
-    Printer::new(Verbosity::Quiet)
-}
+use cfgd_core::test_helpers::test_printer as quiet_printer;
 
 // ─────────────────────────────────────────────────────
 // ensure_config_file — used by profile switch and tests

@@ -548,7 +548,7 @@ fn profile_show_inherited_profile_resolves_layers() {
 fn profile_show_nonexistent_profile_fails() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = make_printer();
 
     let err = cmd_profile_show(&cli, &printer, Some("nonexistent")).unwrap_err();
     assert!(
@@ -561,7 +561,7 @@ fn profile_show_nonexistent_profile_fails() {
 fn profile_show_no_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let cli = test_cli(dir.path());
-    let printer = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = make_printer();
 
     // No cfgd.yaml — showing active profile should fail
     let err = cmd_profile_show(&cli, &printer, None).unwrap_err();

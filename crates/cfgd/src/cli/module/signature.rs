@@ -137,7 +137,7 @@ pub(crate) fn enforce_signature_policy(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cfgd_core::output::Printer;
+    use cfgd_core::test_helpers::test_printer;
 
     fn make_cli_with_config(config_path: &Path) -> Cli {
         Cli {
@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn enforce_no_tag_returns_ok_when_require_signatures_off() {
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = test_printer();
         let tmp = tempfile::tempdir().unwrap();
         let cli = make_cli_with_config(&tmp.path().join("noexist.yaml"));
         let cache = tempfile::tempdir().unwrap();
@@ -200,7 +200,7 @@ mod tests {
             "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  modules:\n    security:\n      requireSignatures: true\n",
         )
         .unwrap();
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = test_printer();
         let cli = make_cli_with_config(&cfg_path);
         let cache = tempfile::tempdir().unwrap();
         let err = enforce_signature_policy(&cli, &printer, None, "mod", false, cache.path(), "url")
@@ -220,7 +220,7 @@ mod tests {
             "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  modules:\n    security:\n      requireSignatures: true\n",
         )
         .unwrap();
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = test_printer();
         let cli = make_cli_with_config(&cfg_path);
         let cache = tempfile::tempdir().unwrap();
         enforce_signature_policy(&cli, &printer, None, "mod", true, cache.path(), "url")
@@ -237,7 +237,7 @@ mod tests {
         )
         .unwrap();
         let cache = make_cache_with_tag("url-lw", "v0.1.0", false);
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = test_printer();
         let cli = make_cli_with_config(&cfg_path);
         let err = enforce_signature_policy(
             &cli,
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn enforce_lightweight_tag_without_require_signatures_returns_ok() {
         let cache = make_cache_with_tag("url-lw-ok", "v0.1.0", false);
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = test_printer();
         let tmp = tempfile::tempdir().unwrap();
         let cli = make_cli_with_config(&tmp.path().join("noexist.yaml"));
         enforce_signature_policy(
@@ -287,7 +287,7 @@ mod tests {
         repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
             .unwrap();
 
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = test_printer();
         let tmp = tempfile::tempdir().unwrap();
         let cli = make_cli_with_config(&tmp.path().join("noexist.yaml"));
         enforce_signature_policy(
@@ -309,7 +309,7 @@ mod tests {
         // no GPG public key in the test env so it returns Err → Warn arm
         // fires and the fn returns Ok(()).
         let cache = make_cache_with_tag("url-signed", "v1.0.0", true);
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = test_printer();
         let tmp = tempfile::tempdir().unwrap();
         let cli = make_cli_with_config(&tmp.path().join("noexist.yaml"));
         let result = enforce_signature_policy(
@@ -330,7 +330,7 @@ mod tests {
         // matched by the `Err(e)` arm and a Warn status is emitted; the fn
         // returns Ok(()) (best-effort).
         let cache = tempfile::tempdir().unwrap();
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = test_printer();
         let tmp = tempfile::tempdir().unwrap();
         let cli = make_cli_with_config(&tmp.path().join("noexist.yaml"));
         enforce_signature_policy(
