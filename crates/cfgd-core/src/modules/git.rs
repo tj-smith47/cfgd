@@ -737,4 +737,187 @@ mod tests {
             cache.display()
         );
     }
+
+    // --- parse_git_source: SSH @tag with no `.git` suffix ---
+
+    #[test]
+    fn parse_ssh_without_dot_git_with_tag() {
+        // git@host:user/repo@v9.9.9 — no `.git`, so the @tag handling
+        // falls through to the rfind('@') branch with skip_to past the
+        // first `@` of the SSH prefix.
+        let gs = parse_git_source("git@gitlab.example.com:user/repo@v9.9.9").unwrap();
+        assert_eq!(gs.repo_url, "git@gitlab.example.com:user/repo");
+        assert_eq!(gs.tag.as_deref(), Some("v9.9.9"));
+    }
+
+    #[test]
+    fn parse_https_no_dot_git_skips_to_scheme_for_at_lookup() {
+        // https with no `.git` and `@v3.0` — exercises the `://` skip path
+        // inside the no-`.git` branch.
+        let gs = parse_git_source("https://internal.host/proj@v3.0").unwrap();
+        assert_eq!(gs.repo_url, "https://internal.host/proj");
+        assert_eq!(gs.tag.as_deref(), Some("v3.0"));
+    }
+
+    #[test]
+    fn parse_url_with_no_at_in_path_returns_no_tag() {
+        // No `.git`, no `@` after the scheme — must produce repo_url=full URL,
+        // tag=None (the rfind('@') yields the scheme '@' but skip_to filters it).
+        let gs = parse_git_source("https://example.com/path/to/repo").unwrap();
+        assert_eq!(gs.repo_url, "https://example.com/path/to/repo");
+        assert_eq!(gs.tag, None);
+    }
+
+    // --- fetch_git_source: local file:// + tag checkout ---
+
+    fn build_local_fixture_repo() -> (tempfile::TempDir, String) {
+        let src = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(src.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let _commit_oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        // Tag the initial commit so checkout-by-tag tests have a target.
+        let head = repo.head().unwrap().target().unwrap();
+        let obj = repo.find_object(head, None).unwrap();
+        repo.tag_lightweight("v0.1.0", &obj, false).unwrap();
+        let url = format!("file://{}", src.path().display());
+        (src, url)
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn fetch_git_source_clones_then_reuses_existing_cache_on_second_call() {
+        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let (_src, url) = build_local_fixture_repo();
+
+        let cache_base = tempfile::tempdir().unwrap();
+        let printer = crate::test_helpers::test_printer();
+
+        let git_src = parse_git_source(&url).unwrap();
+
+        // First call: clone branch.
+        let path1 = fetch_git_source(&git_src, cache_base.path(), "fixture", &printer)
+            .expect("first fetch must clone successfully");
+        assert!(path1.join("HEAD").exists() || path1.join(".git").exists());
+
+        // Second call: fetch-existing branch (the cached dir already has .git/HEAD).
+        let path2 = fetch_git_source(&git_src, cache_base.path(), "fixture", &printer)
+            .expect("second fetch must reuse cache and succeed");
+        assert_eq!(path1, path2, "cached path must be stable across calls");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn fetch_git_source_with_tag_checks_out_tag() {
+        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let (_src, url) = build_local_fixture_repo();
+
+        let cache_base = tempfile::tempdir().unwrap();
+        let printer = crate::test_helpers::test_printer();
+
+        let url_with_tag = format!("{}@v0.1.0", url);
+        let git_src = parse_git_source(&url_with_tag).unwrap();
+        assert_eq!(git_src.tag.as_deref(), Some("v0.1.0"));
+
+        let result = fetch_git_source(&git_src, cache_base.path(), "fixture", &printer);
+        assert!(
+            result.is_ok(),
+            "checkout-by-tag against local fixture must succeed: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn fetch_git_source_with_missing_tag_returns_err() {
+        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let (_src, url) = build_local_fixture_repo();
+
+        let cache_base = tempfile::tempdir().unwrap();
+        let printer = crate::test_helpers::test_printer();
+
+        let url_with_tag = format!("{}@no-such-tag", url);
+        let git_src = parse_git_source(&url_with_tag).unwrap();
+
+        let err = fetch_git_source(&git_src, cache_base.path(), "fixture", &printer)
+            .expect_err("missing tag must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cannot find ref") || msg.contains("no-such-tag"),
+            "error must mention missing ref, got: {msg}"
+        );
+    }
+
+    // --- open_repo: non-repo path error message ---
+
+    #[test]
+    fn open_repo_errors_on_non_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = open_repo(dir.path(), "mod", "url");
+        let err = match result {
+            Ok(_) => panic!("non-repo must error"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("cannot open repo"),
+            "error must mention cannot open repo: {err}"
+        );
+    }
+
+    // --- check_tag_signature: signed-tag and no-message branches ---
+
+    #[test]
+    fn check_tag_signature_signature_present_pgp() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let commit_oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        let obj = repo.find_object(commit_oid, None).unwrap();
+        // Embed a fake PGP signature footer inside the tag message — the
+        // detector is a substring match, no crypto verification.
+        let msg =
+            "release v3.0.0\n-----BEGIN PGP SIGNATURE-----\nfake\n-----END PGP SIGNATURE-----\n";
+        repo.tag("v3.0.0", &obj, &sig, msg, false).unwrap();
+        let result = check_tag_signature(dir.path(), "v3.0.0", "mod").unwrap();
+        assert_eq!(result, TagSignatureStatus::SignaturePresent);
+    }
+
+    #[test]
+    fn check_tag_signature_signature_present_ssh() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let commit_oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        let obj = repo.find_object(commit_oid, None).unwrap();
+        let msg = "release v4\n-----BEGIN SSH SIGNATURE-----\nfake\n-----END SSH SIGNATURE-----\n";
+        repo.tag("v4.0.0", &obj, &sig, msg, false).unwrap();
+        let result = check_tag_signature(dir.path(), "v4.0.0", "mod").unwrap();
+        assert_eq!(result, TagSignatureStatus::SignaturePresent);
+    }
+
+    // --- get_head_commit_sha: empty repo (no HEAD) ---
+
+    #[test]
+    fn get_head_commit_sha_returns_err_when_repo_has_no_head() {
+        let dir = tempfile::tempdir().unwrap();
+        // `git init` without any commits — there's no HEAD yet, so .head() errs.
+        git2::Repository::init(dir.path()).unwrap();
+        let err = get_head_commit_sha(dir.path()).expect_err("no HEAD must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cannot read HEAD") || msg.contains("cannot open repo"),
+            "error must mention HEAD or repo: {msg}"
+        );
+    }
 }

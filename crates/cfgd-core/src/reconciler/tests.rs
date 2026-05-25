@@ -8194,3 +8194,673 @@ fn apply_file_action_direct_update_replaces_existing() {
     super::file_action::apply_file_action_direct(&action, dir.path(), &profile.merged).unwrap();
     assert_eq!(std::fs::read_to_string(&dst).unwrap(), "v2");
 }
+
+// -----------------------------------------------------------------------
+// apply_module_action: additional uncovered branches
+// (script-based package install, bootstrap-needs-PATH-write, manager-missing,
+// DeployFiles with no parent, RunScript with no module dir)
+// -----------------------------------------------------------------------
+
+/// A package manager that reports unavailable, can_bootstrap=true,
+/// and emits path_dirs after bootstrap so the .cfgd.env write branch fires.
+struct BootstrappingPackageManager {
+    name: String,
+    available: std::sync::Mutex<bool>,
+    bootstrap_called: std::sync::Mutex<bool>,
+    install_calls: std::sync::Mutex<Vec<Vec<String>>>,
+    path_dirs_after: Vec<String>,
+}
+
+impl BootstrappingPackageManager {
+    fn new(name: &str, path_dirs: &[&str]) -> Self {
+        Self {
+            name: name.to_string(),
+            available: std::sync::Mutex::new(false),
+            bootstrap_called: std::sync::Mutex::new(false),
+            install_calls: std::sync::Mutex::new(Vec::new()),
+            path_dirs_after: path_dirs.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+}
+
+impl PackageManager for BootstrappingPackageManager {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn is_available(&self) -> bool {
+        *self.available.lock().unwrap()
+    }
+    fn can_bootstrap(&self) -> bool {
+        true
+    }
+    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+        *self.bootstrap_called.lock().unwrap() = true;
+        *self.available.lock().unwrap() = true;
+        Ok(())
+    }
+    fn installed_packages(&self) -> Result<HashSet<String>> {
+        Ok(HashSet::new())
+    }
+    fn install(&self, packages: &[String], _printer: &Printer) -> Result<()> {
+        self.install_calls.lock().unwrap().push(packages.to_vec());
+        Ok(())
+    }
+    fn uninstall(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
+        Ok(())
+    }
+    fn update(&self, _printer: &Printer) -> Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, _package: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+    fn path_dirs(&self) -> Vec<String> {
+        self.path_dirs_after.clone()
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn apply_module_install_packages_bootstraps_unavailable_manager_and_writes_env() {
+    use crate::with_test_home_guard;
+
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = with_test_home_guard(tmp_home.path());
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(BootstrappingPackageManager::new(
+            "brew",
+            &["/opt/homebrew/bin", "/opt/homebrew/sbin"],
+        )));
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let modules = vec![ResolvedModule {
+        name: "tools".to_string(),
+        packages: vec![ResolvedPackage {
+            canonical_name: "ripgrep".to_string(),
+            resolved_name: "ripgrep".to_string(),
+            manager: "brew".to_string(),
+            version: None,
+            script: None,
+        }],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        system: HashMap::new(),
+        depends: vec![],
+        dir: PathBuf::from("."),
+    }];
+
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Modules,
+            actions: vec![Action::Module(ModuleAction {
+                module_name: "tools".to_string(),
+                kind: ModuleActionKind::InstallPackages {
+                    resolved: vec![ResolvedPackage {
+                        canonical_name: "ripgrep".to_string(),
+                        resolved_name: "ripgrep".to_string(),
+                        manager: "brew".to_string(),
+                        version: None,
+                        script: None,
+                    }],
+                },
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            Some(&PhaseName::Modules),
+            &modules,
+            ReconcileContext::Apply,
+            false,
+        )
+        .unwrap();
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(result.action_results[0].success);
+
+    // Bootstrap must have been called and .cfgd.env populated with the new path dirs.
+    let env_path = tmp_home.path().join(".cfgd.env");
+    assert!(
+        env_path.exists(),
+        ".cfgd.env must be created after bootstrap with path_dirs"
+    );
+    let contents = std::fs::read_to_string(&env_path).unwrap();
+    assert!(
+        contents.contains("/opt/homebrew/bin"),
+        "bootstrap path must be in .cfgd.env: {contents}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn apply_module_install_packages_with_existing_env_appends_new_dirs() {
+    use crate::with_test_home_guard;
+
+    let tmp_home = tempfile::tempdir().unwrap();
+    // Pre-create .cfgd.env with one path entry already present.
+    std::fs::write(
+        tmp_home.path().join(".cfgd.env"),
+        "export PATH=\"/usr/local/bin:$PATH\"\n",
+    )
+    .unwrap();
+    let _home = with_test_home_guard(tmp_home.path());
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(BootstrappingPackageManager::new(
+            "brew",
+            // One dir already exists in env; one is new.
+            &["/usr/local/bin", "/opt/homebrew/bin"],
+        )));
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let modules = vec![ResolvedModule {
+        name: "tools".to_string(),
+        packages: vec![ResolvedPackage {
+            canonical_name: "ripgrep".to_string(),
+            resolved_name: "ripgrep".to_string(),
+            manager: "brew".to_string(),
+            version: None,
+            script: None,
+        }],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        system: HashMap::new(),
+        depends: vec![],
+        dir: PathBuf::from("."),
+    }];
+
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Modules,
+            actions: vec![Action::Module(ModuleAction {
+                module_name: "tools".to_string(),
+                kind: ModuleActionKind::InstallPackages {
+                    resolved: vec![ResolvedPackage {
+                        canonical_name: "ripgrep".to_string(),
+                        resolved_name: "ripgrep".to_string(),
+                        manager: "brew".to_string(),
+                        version: None,
+                        script: None,
+                    }],
+                },
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            Some(&PhaseName::Modules),
+            &modules,
+            ReconcileContext::Apply,
+            false,
+        )
+        .unwrap();
+
+    assert_eq!(result.status, ApplyStatus::Success);
+
+    let contents = std::fs::read_to_string(tmp_home.path().join(".cfgd.env")).unwrap();
+    // Existing dir must remain; new dir must be appended; no duplicate.
+    assert!(
+        contents.contains("/usr/local/bin"),
+        "pre-existing line preserved"
+    );
+    assert!(
+        contents.contains("/opt/homebrew/bin"),
+        "new dir appended: {contents}"
+    );
+    assert_eq!(
+        contents.matches("/usr/local/bin").count(),
+        1,
+        "no dup of existing dir: {contents}"
+    );
+}
+
+#[test]
+fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let modules = vec![ResolvedModule {
+        name: "ghost".to_string(),
+        packages: vec![ResolvedPackage {
+            canonical_name: "anything".to_string(),
+            resolved_name: "anything".to_string(),
+            manager: "no-such-manager".to_string(),
+            version: None,
+            script: None,
+        }],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        system: HashMap::new(),
+        depends: vec![],
+        dir: PathBuf::from("."),
+    }];
+
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Modules,
+            actions: vec![Action::Module(ModuleAction {
+                module_name: "ghost".to_string(),
+                kind: ModuleActionKind::InstallPackages {
+                    resolved: vec![ResolvedPackage {
+                        canonical_name: "anything".to_string(),
+                        resolved_name: "anything".to_string(),
+                        manager: "no-such-manager".to_string(),
+                        version: None,
+                        script: None,
+                    }],
+                },
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            Some(&PhaseName::Modules),
+            &modules,
+            ReconcileContext::Apply,
+            false,
+        )
+        .unwrap();
+
+    // Missing manager — no error (silent skip after the if-let-None branch).
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(
+        result.action_results[0]
+            .description
+            .contains("module:ghost:packages"),
+        "desc: {}",
+        result.action_results[0].description
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn apply_module_install_packages_script_manager_runs_per_package_script() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker_a = dir.path().join("script-a-ran");
+    let marker_b = dir.path().join("script-b-ran");
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let modules = vec![ResolvedModule {
+        name: "scripted".to_string(),
+        packages: vec![],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        system: HashMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+    }];
+
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Modules,
+            actions: vec![Action::Module(ModuleAction {
+                module_name: "scripted".to_string(),
+                kind: ModuleActionKind::InstallPackages {
+                    resolved: vec![
+                        ResolvedPackage {
+                            canonical_name: "pkg-a".to_string(),
+                            resolved_name: "pkg-a".to_string(),
+                            manager: "script".to_string(),
+                            version: None,
+                            script: Some(format!("touch {}", marker_a.display())),
+                        },
+                        ResolvedPackage {
+                            canonical_name: "pkg-b".to_string(),
+                            resolved_name: "pkg-b".to_string(),
+                            manager: "script".to_string(),
+                            version: None,
+                            script: Some(format!("touch {}", marker_b.display())),
+                        },
+                    ],
+                },
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseName::Modules),
+            &modules,
+            ReconcileContext::Apply,
+            false,
+        )
+        .unwrap();
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(marker_a.exists(), "script for pkg-a must have run");
+    assert!(marker_b.exists(), "script for pkg-b must have run");
+}
+
+#[test]
+#[cfg(unix)]
+fn apply_module_install_packages_script_manager_failure_returns_err() {
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let dir = tempfile::tempdir().unwrap();
+    let modules = vec![ResolvedModule {
+        name: "bad-script".to_string(),
+        packages: vec![],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        system: HashMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+    }];
+
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Modules,
+            actions: vec![Action::Module(ModuleAction {
+                module_name: "bad-script".to_string(),
+                kind: ModuleActionKind::InstallPackages {
+                    resolved: vec![ResolvedPackage {
+                        canonical_name: "broken".to_string(),
+                        resolved_name: "broken".to_string(),
+                        manager: "script".to_string(),
+                        version: None,
+                        script: Some("exit 3".to_string()),
+                    }],
+                },
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseName::Modules),
+            &modules,
+            ReconcileContext::Apply,
+            false,
+        )
+        .unwrap();
+
+    // Apply records the failure inside action_results[0].success=false.
+    assert!(
+        !result.action_results[0].success,
+        "script failure must surface as action failure"
+    );
+}
+
+// -----------------------------------------------------------------------
+// apply: module-level onChange scripts (L384-400 in apply.rs)
+// -----------------------------------------------------------------------
+
+#[test]
+#[cfg(unix)]
+fn apply_module_on_change_script_runs_when_module_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("mod-onchange-ran");
+    let source = dir.path().join("source.txt");
+    let target = dir.path().join("target.txt");
+    std::fs::write(&source, "v1").unwrap();
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Copy;
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let module_actions = vec![ResolvedModule {
+        name: "mymod".to_string(),
+        packages: vec![],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: vec![ScriptEntry::Simple(format!("touch {}", marker.display()))],
+        system: HashMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+    }];
+
+    // Plan includes a file action that affects this module → records a
+    // `module:mymod:files:1` change entry → the module-level on_change runs.
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Modules,
+            actions: vec![Action::Module(ModuleAction {
+                module_name: "mymod".to_string(),
+                kind: ModuleActionKind::DeployFiles {
+                    files: vec![crate::modules::ResolvedFile {
+                        source: source.clone(),
+                        target: target.clone(),
+                        is_git_source: false,
+                        strategy: Some(crate::config::FileStrategy::Copy),
+                        encryption: None,
+                    }],
+                },
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseName::Modules),
+            &module_actions,
+            ReconcileContext::Apply,
+            false,
+        )
+        .unwrap();
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(
+        marker.exists(),
+        "module-level on_change script should have run after the file deploy"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn apply_module_on_change_script_does_not_run_when_module_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("mod-onchange-noop");
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let module_actions = vec![ResolvedModule {
+        name: "mymod".to_string(),
+        packages: vec![],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: vec![ScriptEntry::Simple(format!("touch {}", marker.display()))],
+        system: HashMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+    }];
+
+    // Empty plan: no changes, on_change must NOT fire.
+    let plan = Plan {
+        phases: vec![],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let _result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseName::Modules),
+            &module_actions,
+            ReconcileContext::Apply,
+            false,
+        )
+        .unwrap();
+
+    assert!(
+        !marker.exists(),
+        "module-level on_change script must NOT run when nothing changed"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn apply_module_on_change_skip_scripts_flag_bypasses_module_on_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("mod-onchange-skipped");
+    let source = dir.path().join("source.txt");
+    let target = dir.path().join("target.txt");
+    std::fs::write(&source, "v1").unwrap();
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Copy;
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let module_actions = vec![ResolvedModule {
+        name: "skipmod".to_string(),
+        packages: vec![],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: vec![ScriptEntry::Simple(format!("touch {}", marker.display()))],
+        system: HashMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+    }];
+
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Modules,
+            actions: vec![Action::Module(ModuleAction {
+                module_name: "skipmod".to_string(),
+                kind: ModuleActionKind::DeployFiles {
+                    files: vec![crate::modules::ResolvedFile {
+                        source: source.clone(),
+                        target: target.clone(),
+                        is_git_source: false,
+                        strategy: Some(crate::config::FileStrategy::Copy),
+                        encryption: None,
+                    }],
+                },
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    // skip_scripts=true → module on_change must NOT run.
+    let _result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseName::Modules),
+            &module_actions,
+            ReconcileContext::Apply,
+            true,
+        )
+        .unwrap();
+
+    assert!(
+        !marker.exists(),
+        "skip_scripts=true must suppress module on_change execution"
+    );
+}

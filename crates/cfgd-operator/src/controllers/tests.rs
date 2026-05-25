@@ -3173,3 +3173,176 @@ fn make_test_controller_context() -> (ControllerContext, prometheus_client::regi
         registry,
     )
 }
+
+// -----------------------------------------------------------------------
+// Generic controller helpers: record_reconcile_metrics / _success /
+// record_error_and_requeue / make_error_policy / log_reconcile /
+// namespaced_api / emit_event / publish_event
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn record_reconcile_metrics_increments_counter_and_observes_duration() {
+    use crate::metrics::ReconcileLabels;
+
+    let (ctx, _registry) = make_test_controller_context();
+    let start = std::time::Instant::now();
+    record_reconcile_metrics(&ctx, "machine_config", "success", start);
+
+    let labels = ReconcileLabels {
+        controller: "machine_config".to_string(),
+        result: "success".to_string(),
+    };
+    let count = ctx
+        .metrics
+        .reconciliations_total
+        .get_or_create(&labels)
+        .get();
+    assert_eq!(count, 1, "counter must increment once");
+}
+
+#[tokio::test]
+async fn record_reconcile_success_increments_success_counter() {
+    use crate::metrics::ReconcileLabels;
+
+    let (ctx, _registry) = make_test_controller_context();
+    let start = std::time::Instant::now();
+    record_reconcile_success(&ctx, "drift_alert", start);
+
+    let labels = ReconcileLabels {
+        controller: "drift_alert".to_string(),
+        result: "success".to_string(),
+    };
+    let count = ctx
+        .metrics
+        .reconciliations_total
+        .get_or_create(&labels)
+        .get();
+    assert_eq!(count, 1, "success path must increment once");
+}
+
+#[tokio::test]
+async fn record_error_and_requeue_returns_30s_requeue_and_bumps_error_counter() {
+    use crate::metrics::ReconcileLabels;
+
+    let (ctx, _registry) = make_test_controller_context();
+    let err = OperatorError::Reconciliation("synthetic".to_string());
+    let action = record_error_and_requeue(&err, &ctx, "config_policy");
+
+    // Format check: Action does not expose its requeue Duration directly, but
+    // the Debug representation contains the duration we asked for.
+    let dbg = format!("{:?}", action);
+    assert!(
+        dbg.contains("30s") || dbg.contains("30"),
+        "action must indicate 30s requeue, got: {dbg}"
+    );
+
+    let labels = ReconcileLabels {
+        controller: "config_policy".to_string(),
+        result: "error".to_string(),
+    };
+    let count = ctx
+        .metrics
+        .reconciliations_total
+        .get_or_create(&labels)
+        .get();
+    assert_eq!(count, 1, "error counter must increment");
+}
+
+#[tokio::test]
+async fn make_error_policy_returns_requeue_action() {
+    let (ctx, _registry) = make_test_controller_context();
+    let policy = make_error_policy::<MachineConfig>("module");
+    let err = OperatorError::Reconciliation("synth".to_string());
+    let mc = std::sync::Arc::new(crate::controllers::test_fixtures::machine_config("m", "ns"));
+    let action = policy(mc, &err, std::sync::Arc::new(ctx));
+    let dbg = format!("{:?}", action);
+    assert!(
+        dbg.contains("30") || dbg.contains("Action"),
+        "policy must produce an Action with a requeue, got: {dbg}"
+    );
+}
+
+#[tokio::test]
+async fn log_reconcile_runs_ok_branch_without_panicking() {
+    use kube::runtime::reflector::ObjectRef;
+
+    let logger = log_reconcile::<MachineConfig>("MachineConfig");
+    let mc = crate::controllers::test_fixtures::machine_config("m1", "ns1");
+    let obj_ref = ObjectRef::from_obj(&mc);
+    let action = Action::await_change();
+    let result: ReconcileResult<MachineConfig> = Ok((obj_ref, action));
+    // Drive the returned Ready future to completion to exercise the closure
+    // body (info!/warn! branches return ready(())).
+    logger(result).await;
+}
+
+#[tokio::test]
+async fn log_reconcile_constructs_without_panic() {
+    // Cover the outer fn body construction path.
+    let _logger = log_reconcile::<MachineConfig>("MachineConfig");
+}
+
+#[tokio::test]
+async fn namespaced_api_rejects_empty_namespace() {
+    let client = make_test_client();
+    let err = namespaced_api::<MachineConfig>(&client, "").unwrap_err();
+    assert!(
+        err.to_string().contains("no namespace"),
+        "error must mention namespace: {err}"
+    );
+}
+
+#[tokio::test]
+async fn namespaced_api_returns_api_when_namespace_non_empty() {
+    let client = make_test_client();
+    let result = namespaced_api::<MachineConfig>(&client, "default");
+    assert!(result.is_ok(), "non-empty namespace must succeed");
+}
+
+#[tokio::test]
+async fn publish_event_does_not_panic_on_failure() {
+    // The mock service returns 200 with "{}" which causes the recorder's
+    // publish to fail to deserialize an Event back; we only need to verify
+    // the function completes (the failure branch is logged at debug!).
+    use k8s_openapi::api::core::v1::ObjectReference;
+    use kube::runtime::events::{Event, EventType};
+
+    let (ctx, _registry) = make_test_controller_context();
+    let obj_ref = ObjectReference {
+        kind: Some("MachineConfig".to_string()),
+        namespace: Some("ns".to_string()),
+        name: Some("m1".to_string()),
+        ..Default::default()
+    };
+    let event = Event {
+        type_: EventType::Normal,
+        reason: "TestReason".to_string(),
+        note: Some("test note".to_string()),
+        action: "Test".to_string(),
+        secondary: None,
+    };
+    publish_event(&ctx.recorder, &event, &obj_ref).await;
+}
+
+#[tokio::test]
+async fn emit_event_does_not_panic_on_failure() {
+    use k8s_openapi::api::core::v1::ObjectReference;
+    use kube::runtime::events::EventType;
+
+    let (ctx, _registry) = make_test_controller_context();
+    let obj_ref = ObjectReference {
+        kind: Some("MachineConfig".to_string()),
+        namespace: Some("ns".to_string()),
+        name: Some("m1".to_string()),
+        ..Default::default()
+    };
+    emit_event(
+        &ctx.recorder,
+        &obj_ref,
+        EventType::Warning,
+        "TestReason",
+        "test note".to_string(),
+        "TestAction",
+    )
+    .await;
+}

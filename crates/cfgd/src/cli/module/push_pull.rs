@@ -616,6 +616,161 @@ mod tests {
             assert_eq!(doc["step"], "signature", "step must be 'signature': {doc}");
         }
 
+        // Helper: stand up a mock OCI registry that accepts blob uploads and
+        // returns 201 on manifest PUT, so a happy-path push can complete.
+        fn mock_push_registry() -> (mockito::ServerGuard, String) {
+            let mut server = mockito::Server::new();
+            let registry = server.url().trim_start_matches("http://").to_string();
+            let upload_location = format!("{}/v2/test/mod/blobs/uploads/up-id", server.url());
+
+            server
+                .mock(
+                    "HEAD",
+                    mockito::Matcher::Regex(r"/v2/test/mod/blobs/sha256:.*".to_string()),
+                )
+                .with_status(404)
+                .expect_at_least(2)
+                .create();
+            server
+                .mock("POST", "/v2/test/mod/blobs/uploads/")
+                .with_status(202)
+                .with_header("Location", &upload_location)
+                .expect_at_least(2)
+                .create();
+            server
+                .mock(
+                    "PUT",
+                    mockito::Matcher::Regex(
+                        r"/v2/test/mod/blobs/uploads/up-id\?digest=sha256:.*".to_string(),
+                    ),
+                )
+                .with_status(201)
+                .expect_at_least(2)
+                .create();
+            server
+                .mock("PUT", "/v2/test/mod/manifests/v1")
+                .with_status(201)
+                .create();
+
+            (server, registry)
+        }
+
+        #[test]
+        #[serial]
+        fn push_with_platform_kv_includes_platform_in_output() {
+            // Mock a successful push (no sign / attest) so we reach the
+            // happy-path doc emit and the platform kv entry is added.
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_module_yaml(dir.path());
+            let (_server, registry) = mock_push_registry();
+            let artifact = format!("{}/test/mod:v1", registry);
+
+            let (printer, cap) =
+                cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+            cmd_module_push(
+                &printer,
+                dir.path().to_str().unwrap(),
+                &artifact,
+                PushOptions {
+                    platform: Some("linux/amd64"),
+                    apply: false,
+                    sign: false,
+                    key: None,
+                    attest: false,
+                },
+            )
+            .expect("push must succeed");
+            drop(printer);
+
+            let output = cap.lock().unwrap();
+            assert!(
+                output.contains("Platform"),
+                "platform kv label must appear in human output: {output}"
+            );
+            assert!(
+                output.contains("linux/amd64"),
+                "platform value must appear in human output: {output}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn push_with_sign_success_emits_signed_true_doc() {
+            // Cosign shim succeeds (exit 0); push happy path; verify the
+            // emitted JSON doc records signed=true.
+            let _shim = CosignTestShim::builder()
+                .with_argv_logging(false)
+                .with_exit(0)
+                .install();
+
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_module_yaml(dir.path());
+            let (_server, registry) = mock_push_registry();
+            let artifact = format!("{}/test/mod:v1", registry);
+
+            let (printer, cap) = Printer::for_test_doc();
+            cmd_module_push(
+                &printer,
+                dir.path().to_str().unwrap(),
+                &artifact,
+                PushOptions {
+                    platform: None,
+                    apply: false,
+                    sign: true,
+                    key: Some("cosign.key"),
+                    attest: false,
+                },
+            )
+            .expect("push + sign must succeed");
+            drop(printer);
+
+            let doc = cap.json().expect("success doc must be emitted");
+            assert_eq!(doc["signed"], true, "signed must be true: {doc}");
+            assert_eq!(
+                doc["attestation"], false,
+                "attestation must be false: {doc}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn pull_with_signature_verify_success_emits_signature_verified_true() {
+            // Cosign shim succeeds for `verify`; the rest of the pull fails
+            // (no valid OCI server) but the signature-verification branch
+            // exits success first — verify the emitted error_doc shows the
+            // failure originated downstream of the signature step.
+            let _shim = CosignTestShim::builder()
+                .with_argv_logging(false)
+                .with_exit(0)
+                .install();
+
+            let dir = tempfile::tempdir().expect("tempdir");
+            let artifact = unreachable_ref("test/verify-success");
+
+            let (printer, cap) = Printer::for_test_doc();
+            let _ = cmd_module_pull(
+                &printer,
+                &artifact,
+                dir.path().to_str().unwrap(),
+                true,
+                false,
+                cfgd_core::oci::VerifyOptions {
+                    key: Some("cosign.pub"),
+                    identity: None,
+                    issuer: None,
+                },
+            );
+            drop(printer);
+
+            let doc = cap.json().expect("doc must be emitted");
+            // The signature verify succeeded; the subsequent pull failed,
+            // so the doc must carry pull_failed, not verify_failed.
+            assert_eq!(
+                doc["error"], "pull_failed",
+                "downstream failure must surface as pull_failed: {doc}"
+            );
+        }
+
         #[test]
         #[serial]
         fn pull_verify_attestation_emits_verify_failed_when_cosign_exits_nonzero() {

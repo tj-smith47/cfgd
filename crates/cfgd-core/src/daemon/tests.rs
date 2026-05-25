@@ -10664,3 +10664,173 @@ mod ipc_socket_security {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// query_daemon_status & connect_daemon_ipc — additional coverage paths
+// ---------------------------------------------------------------------------
+
+mod query_daemon_status_paths {
+    use super::*;
+    use crate::test_helpers::EnvVarGuard;
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn query_daemon_status_returns_none_when_socket_path_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nonexistent = tmp.path().join("nope.sock");
+        let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", nonexistent.to_str().unwrap());
+        let result = query_daemon_status().expect("missing socket must not error");
+        assert!(
+            result.is_none(),
+            "missing socket path returns Ok(None), got: {result:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn query_daemon_status_parses_valid_response_body() {
+        use std::io::{Read as IoRead, Write as IoWrite};
+        use std::os::unix::net::UnixListener as StdUnixListener;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sock_path = tmp.path().join("status.sock");
+        let listener = StdUnixListener::bind(&sock_path).unwrap();
+
+        let server = std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                let body = serde_json::to_string(&DaemonStatusResponse {
+                    running: true,
+                    pid: 42,
+                    uptime_secs: 99,
+                    last_reconcile: None,
+                    last_sync: None,
+                    drift_count: 0,
+                    sources: vec![],
+                    update_available: None,
+                    module_reconcile: vec![],
+                })
+                .unwrap();
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = s.flush();
+                // Half-shutdown the write side then drain reads so the client
+                // sees EOF (not ECONNRESET) on its read pass.
+                let _ = s.shutdown(std::net::Shutdown::Write);
+                let mut sink = [0u8; 1024];
+                while let Ok(n) = s.read(&mut sink) {
+                    if n == 0 {
+                        break;
+                    }
+                }
+            }
+        });
+
+        let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock_path.to_str().unwrap());
+        let result = tokio::task::spawn_blocking(query_daemon_status)
+            .await
+            .unwrap();
+        let _ = server.join();
+
+        let status = result
+            .expect("status must parse")
+            .expect("status must be Some");
+        assert_eq!(status.pid, 42);
+        assert_eq!(status.uptime_secs, 99);
+        assert!(status.running);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn query_daemon_status_returns_none_on_empty_body() {
+        use std::io::{Read as IoRead, Write as IoWrite};
+        use std::os::unix::net::UnixListener as StdUnixListener;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sock_path = tmp.path().join("empty.sock");
+        let listener = StdUnixListener::bind(&sock_path).unwrap();
+
+        let server = std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n"
+                );
+                let _ = s.flush();
+                let _ = s.shutdown(std::net::Shutdown::Write);
+                let mut sink = [0u8; 1024];
+                while let Ok(n) = s.read(&mut sink) {
+                    if n == 0 {
+                        break;
+                    }
+                }
+            }
+        });
+
+        let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock_path.to_str().unwrap());
+        let result = tokio::task::spawn_blocking(query_daemon_status)
+            .await
+            .unwrap();
+        let _ = server.join();
+
+        // Empty body → Ok(None).
+        assert!(
+            matches!(result, Ok(None)),
+            "empty body should give Ok(None), got: {result:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn query_daemon_status_returns_err_on_malformed_json() {
+        use std::io::{Read as IoRead, Write as IoWrite};
+        use std::os::unix::net::UnixListener as StdUnixListener;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sock_path = tmp.path().join("bad.sock");
+        let listener = StdUnixListener::bind(&sock_path).unwrap();
+
+        let server = std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                let body = "{not even json";
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = s.flush();
+                // Half-shutdown the write side then drain reads so the client
+                // sees EOF (not ECONNRESET) on its read pass.
+                let _ = s.shutdown(std::net::Shutdown::Write);
+                let mut sink = [0u8; 1024];
+                while let Ok(n) = s.read(&mut sink) {
+                    if n == 0 {
+                        break;
+                    }
+                }
+            }
+        });
+
+        let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock_path.to_str().unwrap());
+        let result = tokio::task::spawn_blocking(query_daemon_status)
+            .await
+            .unwrap();
+        let _ = server.join();
+
+        match result {
+            Err(e) => assert!(
+                e.to_string().contains("parse response"),
+                "error must mention parse, got: {e}"
+            ),
+            Ok(other) => panic!("expected parse err, got: {other:?}"),
+        }
+    }
+}

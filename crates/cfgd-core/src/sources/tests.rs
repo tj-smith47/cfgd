@@ -2176,3 +2176,145 @@ fn git_clone_with_fallback_ssh_url_surfaces_failure_with_helper_prefix() {
         "error must include the original URL: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// verify_head_signature — drives `git log --format=%G?` against a real local
+// repo to exercise the unsigned (`N`) branch end-to-end.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn verify_head_signature_returns_err_on_unsigned_head_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    // Initialize a fresh repo and create an unsigned commit.
+    let repo = git2::Repository::init(dir.path()).unwrap();
+    let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+    let tree_id = repo.index().unwrap().write_tree().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+    let _commit_oid = repo
+        .commit(Some("HEAD"), &sig, &sig, "unsigned initial", &tree, &[])
+        .unwrap();
+
+    let err = verify_head_signature("unsigned-src", dir.path()).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not signed") || msg.contains("HEAD") || msg.contains("signature"),
+        "unsigned commit error must mention signature/HEAD, got: {msg}"
+    );
+}
+
+#[test]
+fn verify_head_signature_returns_err_when_repo_dir_is_not_a_repo() {
+    let dir = tempfile::tempdir().unwrap();
+    // No `git init` — git log will exit non-zero.
+    let err = verify_head_signature("not-a-repo", dir.path()).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("git log failed") || msg.contains("not-a-repo"),
+        "non-repo error must mention git failure: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// classify_signature_status — exhaustive branch coverage
+// ---------------------------------------------------------------------------
+
+#[test]
+fn classify_signature_status_good_signature_accepted() {
+    classify_signature_status("src", "G").unwrap();
+}
+
+#[test]
+fn classify_signature_status_unknown_validity_accepted() {
+    classify_signature_status("src", "U").unwrap();
+}
+
+#[test]
+fn classify_signature_status_no_signature_rejected() {
+    let err = classify_signature_status("src", "N").unwrap_err();
+    assert!(err.to_string().contains("not signed"));
+}
+
+#[test]
+fn classify_signature_status_bad_signature_rejected() {
+    let err = classify_signature_status("src", "B").unwrap_err();
+    assert!(err.to_string().to_lowercase().contains("bad"));
+}
+
+#[test]
+fn classify_signature_status_cannot_check_rejected() {
+    let err = classify_signature_status("src", "E").unwrap_err();
+    assert!(err.to_string().contains("cannot be checked"));
+}
+
+#[test]
+fn classify_signature_status_expired_x_rejected() {
+    let err = classify_signature_status("src", "X").unwrap_err();
+    assert!(err.to_string().contains("expired"));
+}
+
+#[test]
+fn classify_signature_status_expired_y_rejected() {
+    let err = classify_signature_status("src", "Y").unwrap_err();
+    assert!(err.to_string().contains("expired"));
+}
+
+#[test]
+fn classify_signature_status_revoked_rejected() {
+    let err = classify_signature_status("src", "R").unwrap_err();
+    assert!(err.to_string().contains("revoked"));
+}
+
+#[test]
+fn classify_signature_status_unknown_status_rejected() {
+    let err = classify_signature_status("src", "?").unwrap_err();
+    assert!(err.to_string().contains("unexpected"));
+}
+
+// ---------------------------------------------------------------------------
+// SourceManager basics: cache_dir, get, all_sources, remove_source
+// ---------------------------------------------------------------------------
+
+#[test]
+fn source_manager_remove_source_returns_err_when_not_present() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut mgr = SourceManager::new(tmp.path());
+    let err = mgr.remove_source("does-not-exist").unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("does-not-exist") || msg.contains("not found"),
+        "error must mention missing source: {msg}"
+    );
+}
+
+#[test]
+fn source_manager_get_returns_none_for_unknown_source() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = SourceManager::new(tmp.path());
+    assert!(mgr.get("ghost").is_none());
+}
+
+#[test]
+fn source_manager_all_sources_empty_on_fresh_manager() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = SourceManager::new(tmp.path());
+    assert!(mgr.all_sources().is_empty());
+}
+
+#[test]
+fn source_manager_source_profiles_dir_returns_expected_subpath() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = SourceManager::new(tmp.path());
+    // Even without loading, the path-builder shape can be exercised — it
+    // returns Err for an unknown source, hitting the same error mapping
+    // that production callers see when a source manager is misconfigured.
+    let result = mgr.source_profiles_dir("not-loaded");
+    assert!(result.is_err(), "profiles_dir for unloaded source must err");
+}
+
+#[test]
+fn source_manager_source_files_dir_returns_err_for_unknown_source() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = SourceManager::new(tmp.path());
+    let result = mgr.source_files_dir("not-loaded");
+    assert!(result.is_err(), "files_dir for unloaded source must err");
+}

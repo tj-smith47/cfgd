@@ -763,3 +763,123 @@ fn decode_docker_auth_with_token_password() {
     assert_eq!(auth.username, "user");
     assert_eq!(auth.password, "ghp_abc123xyz");
 }
+
+// --- RegistryAuth::resolve: file-based path coverage ---
+
+#[test]
+#[serial]
+fn registry_auth_resolve_reads_docker_config_file() {
+    use crate::test_helpers::EnvVarGuard;
+    // Unset env vars so the file-based path is the only one that can match.
+    let _user = EnvVarGuard::unset("REGISTRY_USERNAME");
+    let _pass = EnvVarGuard::unset("REGISTRY_PASSWORD");
+    // Point DOCKER_CONFIG at a fresh temp dir with a config.json.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("config.json"),
+        r#"{"auths":{"my.reg.example":{"auth":"dXNlcjpwYXNz"}}}"#,
+    )
+    .unwrap();
+    let _dc = EnvVarGuard::set("DOCKER_CONFIG", tmp.path().to_str().unwrap());
+
+    let auth = RegistryAuth::resolve("my.reg.example").expect("file-based resolve must succeed");
+    assert_eq!(auth.username, "user");
+    assert_eq!(auth.password, "pass");
+}
+
+#[test]
+#[serial]
+fn registry_auth_resolve_returns_none_when_no_match_in_config() {
+    use crate::test_helpers::EnvVarGuard;
+    let _user = EnvVarGuard::unset("REGISTRY_USERNAME");
+    let _pass = EnvVarGuard::unset("REGISTRY_PASSWORD");
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("config.json"),
+        r#"{"auths":{"other.example":{"auth":"dXNlcjpwYXNz"}}}"#,
+    )
+    .unwrap();
+    let _dc = EnvVarGuard::set("DOCKER_CONFIG", tmp.path().to_str().unwrap());
+
+    let result = RegistryAuth::resolve("missing.example");
+    assert!(
+        result.is_none(),
+        "no matching entry must return None, got: {:?}",
+        result.map(|a| a.username)
+    );
+}
+
+#[test]
+#[serial]
+fn registry_auth_resolve_returns_none_when_env_vars_empty() {
+    use crate::test_helpers::EnvVarGuard;
+    // Both vars present but empty must not satisfy the resolution.
+    let _user = EnvVarGuard::set("REGISTRY_USERNAME", "");
+    let _pass = EnvVarGuard::set("REGISTRY_PASSWORD", "");
+    // Also point DOCKER_CONFIG at an empty dir so the file path doesn't fire.
+    let tmp = tempfile::tempdir().unwrap();
+    let _dc = EnvVarGuard::set("DOCKER_CONFIG", tmp.path().to_str().unwrap());
+
+    let result = RegistryAuth::resolve("any.example");
+    assert!(
+        result.is_none(),
+        "empty env vars + no config must return None"
+    );
+}
+
+#[test]
+#[serial]
+fn registry_auth_resolve_credential_helper_branch_invokes_helper() {
+    use crate::test_helpers::EnvVarGuard;
+    let _user = EnvVarGuard::unset("REGISTRY_USERNAME");
+    let _pass = EnvVarGuard::unset("REGISTRY_PASSWORD");
+    // Set up DOCKER_CONFIG with a credHelpers entry that points to a non-existent
+    // binary. The helper-spawn fails, .ok() returns None inside the closure, and
+    // the resolve falls through to None.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("config.json"),
+        r#"{"auths":{},"credHelpers":{"helper.example":"cfgd-test-no-such-helper-binary"}}"#,
+    )
+    .unwrap();
+    let _dc = EnvVarGuard::set("DOCKER_CONFIG", tmp.path().to_str().unwrap());
+
+    let result = RegistryAuth::resolve("helper.example");
+    // Helper binary doesn't exist → spawn fails → None.
+    assert!(result.is_none());
+}
+
+#[test]
+fn get_bearer_token_response_with_no_token_returns_auth_failed() {
+    let mut server = mockito::Server::new();
+    let www_auth = format!(r#"Bearer realm="{}/token",service="svc""#, server.url());
+
+    // Valid JSON but neither `token` nor `access_token` populated.
+    server
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(r"/token\?service=.*".to_string()),
+        )
+        .with_status(200)
+        .with_body(r#"{"other":"field"}"#)
+        .create();
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(10))
+        .build();
+    let result = get_bearer_token(&agent, &www_auth, None);
+    assert!(matches!(result, Err(OciError::AuthFailed { .. })));
+    let msg = format!("{:?}", result.err().unwrap());
+    assert!(msg.contains("no token"), "must mention no token: {msg}");
+}
+
+#[test]
+fn get_bearer_token_handles_failed_http_call() {
+    // The realm URL points to a non-listening port so the call fails outright.
+    let www_auth = r#"Bearer realm="http://127.0.0.1:1/token",service="svc""#;
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_millis(500))
+        .build();
+    let result = get_bearer_token(&agent, www_auth, None);
+    assert!(matches!(result, Err(OciError::AuthFailed { .. })));
+}
