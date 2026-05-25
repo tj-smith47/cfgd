@@ -9195,6 +9195,89 @@ fn apply_resolve_env_action_collects_secret_into_env_actions() {
 }
 
 // ---------------------------------------------------------------------------
+// plan_modules: manager-priority sort exercises the can_bootstrap arm
+// (plan.rs L416-417) when a manager is registered but not currently available.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
+    // brew = bootstrappable (not available now, but can_bootstrap=true) → 1
+    // unknown-mgr (not in registry) → 2
+    // apt = available → 0
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(MockPackageManager::new("apt")));
+    registry
+        .package_managers
+        .push(Box::new(BootstrappingPackageManager::new("brew", &[])));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let module = ResolvedModule {
+        name: "multimgr".to_string(),
+        packages: vec![
+            crate::modules::ResolvedPackage {
+                canonical_name: "p1".to_string(),
+                resolved_name: "p1".to_string(),
+                manager: "unknown-mgr".to_string(),
+                version: None,
+                script: None,
+            },
+            crate::modules::ResolvedPackage {
+                canonical_name: "p2".to_string(),
+                resolved_name: "p2".to_string(),
+                manager: "brew".to_string(),
+                version: None,
+                script: None,
+            },
+            crate::modules::ResolvedPackage {
+                canonical_name: "p3".to_string(),
+                resolved_name: "p3".to_string(),
+                manager: "apt".to_string(),
+                version: None,
+                script: None,
+            },
+        ],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        system: HashMap::new(),
+        depends: vec![],
+        dir: PathBuf::from("."),
+    };
+
+    let actions = reconciler.plan_modules(&[module], ReconcileContext::Apply);
+    // Order in actions reflects the sorted manager order: apt (0), brew (1), unknown (2).
+    let install_managers: Vec<String> = actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::Module(ma) => match &ma.kind {
+                ModuleActionKind::InstallPackages { resolved } => {
+                    resolved.first().map(|p| p.manager.clone())
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        install_managers,
+        vec![
+            "apt".to_string(),
+            "brew".to_string(),
+            "unknown-mgr".to_string()
+        ],
+        "available manager comes first; bootstrappable second; unknown last"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // update_module_state: covers apply.rs L62-78 (git_sources_json branch) by
 // applying a plan that includes a module with `is_git_source=true` files.
 // ---------------------------------------------------------------------------

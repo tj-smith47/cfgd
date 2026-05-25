@@ -564,6 +564,50 @@ mod tests {
             assert!(pkgs.contains("ruff"));
         }
 
+        // available_version shells out to `curl` rather than the pipx shim,
+        // so we put a fake curl on PATH for these two tests. Covers pipx.rs
+        // L146-158 success + L154 non-zero exit.
+        fn install_curl_shim(
+            exit_code: u8,
+            stdout: &str,
+            stderr: &str,
+        ) -> (tempfile::TempDir, cfgd_core::test_helpers::EnvVarGuard) {
+            use std::os::unix::fs::PermissionsExt;
+            let bin_dir = tempfile::tempdir().unwrap();
+            let script = format!(
+                "#!/bin/sh\nprintf '%s' \"{}\"\nprintf '%s' \"{}\" >&2\nexit {}\n",
+                stdout.replace('"', "\\\""),
+                stderr.replace('"', "\\\""),
+                exit_code
+            );
+            let path = bin_dir.path().join("curl");
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let old_path = std::env::var("PATH").unwrap_or_default();
+            let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
+            let path_guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
+            (bin_dir, path_guard)
+        }
+
+        #[test]
+        #[serial]
+        fn pipx_available_version_parses_pypi_json_on_success() {
+            let body = r#"{"info":{"version":"24.1.1","name":"black"}}"#;
+            let (_bin, _path) = install_curl_shim(0, body, "");
+            let v = PipxManager.available_version("black").expect("Ok");
+            assert_eq!(v.as_deref(), Some("24.1.1"));
+        }
+
+        #[test]
+        #[serial]
+        fn pipx_available_version_returns_none_on_curl_nonzero_exit() {
+            let (_bin, _path) = install_curl_shim(22, "", "404 not found");
+            let v = PipxManager
+                .available_version("nonexistent-pkg")
+                .expect("non-zero curl → Ok(None)");
+            assert_eq!(v, None);
+        }
+
         #[test]
         #[serial]
         fn pipx_installed_packages_with_versions_extracts_versions() {
