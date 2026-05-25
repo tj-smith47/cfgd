@@ -76,6 +76,63 @@ pub fn default_config_dir() -> std::path::PathBuf {
     }
 }
 
+/// Per-user runtime directory for short-lived sockets and pid files.
+///
+/// Resolution order:
+/// - Linux: `$XDG_RUNTIME_DIR/cfgd` if set, else `$HOME/.cache/cfgd`. The base
+///   `$XDG_RUNTIME_DIR` is owner-private by spec; the cache fallback is
+///   under the user's home where Linux-default permissions already protect it.
+/// - macOS: `$HOME/Library/Application Support/cfgd`. There is no
+///   per-user `tmpfs` on macOS, and `$TMPDIR` is per-user but still
+///   world-traversable when the umask leaks; Application Support is the
+///   conventional per-user location for app state.
+/// - Windows: `%LOCALAPPDATA%\cfgd` via `directories::BaseDirs`. (Daemons on
+///   Windows use named pipes, which are kernel objects — this path is
+///   provided for parity and is unused by the daemon socket flow.)
+///
+/// Honors the [`TestHomeGuard`] thread-local override on every platform so
+/// tests can redirect the runtime dir without mutating process-global env
+/// state. Returns `None` only when no home directory can be resolved at all.
+pub fn default_runtime_dir() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        // XDG_RUNTIME_DIR is a per-user tmpfs (typically 0700) on systemd
+        // systems — prefer it. Test override of HOME does not shadow it
+        // because tests that need a deterministic socket path point
+        // XDG_RUNTIME_DIR at a tempdir directly.
+        if let Some(xdg) = std::env::var_os("XDG_RUNTIME_DIR") {
+            let xdg = std::path::PathBuf::from(xdg);
+            if !xdg.as_os_str().is_empty() {
+                return Some(xdg.join("cfgd"));
+            }
+        }
+        let home = home_dir_var()?;
+        Some(std::path::PathBuf::from(home).join(".cache").join("cfgd"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = home_dir_var()?;
+        Some(
+            std::path::PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("cfgd"),
+        )
+    }
+    #[cfg(windows)]
+    {
+        if let Some(home) = test_home_override() {
+            return Some(home.join("AppData").join("Local").join("cfgd"));
+        }
+        directories::BaseDirs::new().map(|b| b.data_local_dir().join("cfgd"))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        let home = home_dir_var()?;
+        Some(std::path::PathBuf::from(home).join(".cache").join("cfgd"))
+    }
+}
+
 /// Expand `~` and `~/...` paths to the user's home directory.
 pub fn expand_tilde(path: &std::path::Path) -> std::path::PathBuf {
     let path_str = path.display().to_string();

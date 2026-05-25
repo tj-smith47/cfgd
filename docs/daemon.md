@@ -158,7 +158,19 @@ When drift is detected, the daemon notifies via:
 
 ## Health API
 
-The daemon exposes a health endpoint on a Unix socket at `/tmp/cfgd.sock`. Query it with `cfgd daemon status` to get:
+The daemon exposes a health endpoint on a per-user Unix socket. The socket is
+placed in the first writable runtime directory:
+
+- **Linux** — `$XDG_RUNTIME_DIR/cfgd/cfgd.sock` (typically `/run/user/<uid>/cfgd/cfgd.sock`),
+  falling back to `~/.cache/cfgd/cfgd.sock` if `$XDG_RUNTIME_DIR` is unset.
+- **macOS** — `~/Library/Application Support/cfgd/cfgd.sock`.
+- **Windows** — named pipe `\\.\pipe\cfgd` (per-session in the kernel namespace).
+
+The parent directory is created with mode `0700` and the bound socket is
+chmodded to `0600` before the first connection is accepted, so the IPC surface
+is reachable only by the daemon's own user. Set `CFGD_DAEMON_IPC_PATH` to
+override the path for advanced setups (test harnesses, multi-instance
+isolation). Query with `cfgd daemon status` to get:
 
 - Whether the daemon is running
 - Last reconcile time

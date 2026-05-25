@@ -62,20 +62,47 @@ pub trait DaemonHooks: Send + Sync {
 }
 
 const DEBOUNCE_MS: u64 = 500;
+
+/// Per-user fallback socket name placed under the resolved runtime directory.
 #[cfg(unix)]
-const DEFAULT_IPC_PATH: &str = "/tmp/cfgd.sock";
+const IPC_SOCKET_FILE: &str = "cfgd.sock";
+
+/// Windows IPC endpoint. Named pipes are kernel objects in the
+/// `\\.\pipe\` namespace — per-session, not file-system objects — so the
+/// per-user-directory dance Unix needs does not apply here.
 #[cfg(windows)]
-const DEFAULT_IPC_PATH: &str = r"\\.\pipe\cfgd";
+const WINDOWS_PIPE_PATH: &str = r"\\.\pipe\cfgd";
 
 /// Resolve the daemon IPC endpoint when no explicit override is supplied.
-/// Honors `CFGD_DAEMON_IPC_PATH` so test harnesses and operators can isolate
-/// the socket from `DEFAULT_IPC_PATH`. Used by both the server-side bind
-/// (`run_daemon_with`) and the client-side connect (`connect_daemon_ipc`)
-/// so the two stay in sync.
+///
+/// Honors `CFGD_DAEMON_IPC_PATH` first so test harnesses and operators can
+/// isolate the socket. Otherwise:
+/// - Unix: places `cfgd.sock` under [`crate::default_runtime_dir`], which is
+///   `$XDG_RUNTIME_DIR/cfgd` on Linux when available (per-user tmpfs),
+///   `$HOME/.cache/cfgd` as the Linux fallback, and
+///   `$HOME/Library/Application Support/cfgd` on macOS. World-writable
+///   `/tmp` is deliberately avoided — see the v0.4.0 hijack-vector audit.
+///   A last-ditch fallback to `/tmp/cfgd.sock` only fires when home
+///   resolution fails entirely (no `$HOME`, no override); the bind path
+///   later refuses to listen if the parent dir is not owner-only.
+/// - Windows: returns the named-pipe path verbatim.
+///
+/// Used by both the server-side bind (`run_daemon_with`) and the client-side
+/// connect (`connect_daemon_ipc`) so the two stay in sync.
 pub(crate) fn resolve_default_ipc_path() -> PathBuf {
-    std::env::var_os("CFGD_DAEMON_IPC_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_IPC_PATH))
+    if let Some(override_path) = std::env::var_os("CFGD_DAEMON_IPC_PATH") {
+        return PathBuf::from(override_path);
+    }
+    #[cfg(unix)]
+    {
+        crate::default_runtime_dir()
+            .map(|dir| dir.join(IPC_SOCKET_FILE))
+            .unwrap_or_else(|| PathBuf::from("/tmp/cfgd.sock"))
+    }
+    #[cfg(windows)]
+    {
+        PathBuf::from(WINDOWS_PIPE_PATH)
+    }
 }
 const DEFAULT_RECONCILE_SECS: u64 = 300; // 5m
 const DEFAULT_SYNC_SECS: u64 = 300; // 5m
@@ -477,7 +504,8 @@ pub async fn run_daemon(
 /// bypass real-world side effects:
 ///
 /// * `ipc_path` — point the health socket / already-running check at a
-///   tempdir so concurrent tests don't fight over `/tmp/cfgd.sock`.
+///   tempdir so concurrent tests don't fight over the per-user runtime
+///   socket resolved by [`resolve_default_ipc_path`].
 /// * `state_dir_override` — redirect both the `DaemonState` store path and
 ///   the per-tick `handle_reconcile` / `handle_compliance_snapshot` state
 ///   dir to a tempdir so the real `~/.local/share/cfgd/` is never touched.
