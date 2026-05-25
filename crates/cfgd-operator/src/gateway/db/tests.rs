@@ -983,3 +983,115 @@ async fn migration_replay_idempotent_after_rewind() {
         .await
         .expect("registration must work post-replay");
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn readers_handle_returns_clone_of_pool() {
+    let (db, _tmp) = test_db();
+    let h1 = db.readers_handle();
+    let h2 = db.readers_handle();
+    assert_eq!(Arc::strong_count(&h1) >= 3, true);
+    let _conn = h2.get().expect("get reader connection from cloned handle");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn with_metrics_attaches_metrics_field() {
+    use prometheus_client::registry::Registry;
+    let mut reg = Registry::default();
+    let metrics = crate::metrics::Metrics::new(&mut reg);
+    let (db, _tmp) = test_db();
+    let db = db.with_metrics(Some(metrics));
+    assert!(db.metrics.is_some());
+    db.register_device("dm", "h", "linux", "x86_64", "x", None)
+        .await
+        .expect("register with metrics");
+    let device = db.get_device("dm").await.expect("get with metrics");
+    assert_eq!(device.id, "dm");
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn reader_pool_size_from_env_parses_valid_value() {
+    let _g = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_GATEWAY_DB_READ_POOL_SIZE", "4");
+    assert_eq!(super::reader_pool_size_from_env(), 4);
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn reader_pool_size_from_env_rejects_zero_falls_back_to_default() {
+    let _g = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_GATEWAY_DB_READ_POOL_SIZE", "0");
+    assert_eq!(super::reader_pool_size_from_env(), DEFAULT_READER_POOL_SIZE);
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn reader_pool_size_from_env_rejects_non_numeric_falls_back_to_default() {
+    let _g = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_GATEWAY_DB_READ_POOL_SIZE", "abc");
+    assert_eq!(super::reader_pool_size_from_env(), DEFAULT_READER_POOL_SIZE);
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn reader_pool_size_from_env_uses_default_when_unset() {
+    let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_GATEWAY_DB_READ_POOL_SIZE");
+    assert_eq!(super::reader_pool_size_from_env(), DEFAULT_READER_POOL_SIZE);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn schema_version_inner_returns_zero_when_table_missing() {
+    let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+    let conn = Connection::open(tmp.path()).expect("open");
+    let v = super::schema_version_inner(&conn).expect("ok on missing table");
+    assert_eq!(v, 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn schema_version_inner_returns_zero_when_no_rows() {
+    let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+    let conn = Connection::open(tmp.path()).expect("open");
+    conn.execute_batch("CREATE TABLE schema_version (version INTEGER NOT NULL);")
+        .expect("create empty version table");
+    let v = super::schema_version_inner(&conn).expect("ok on no rows");
+    assert_eq!(v, 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn schema_version_blocking_matches_migrations_len_for_fresh_db() {
+    let (db, _tmp) = test_db();
+    assert_eq!(db.schema_version_blocking(), MIGRATIONS.len());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn server_db_open_with_config_explicit_sizes_succeeds() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("explicit.db");
+    let db = ServerDb::open_with_config(
+        path.to_str().expect("utf8"),
+        2,
+        std::time::Duration::from_millis(500),
+    )
+    .expect("open with explicit config");
+    db.register_device("dx", "h", "linux", "x86_64", "x", None)
+        .await
+        .expect("register");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn server_db_open_with_config_pool_size_one_no_min_idle() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("one.db");
+    let db = ServerDb::open_with_config(
+        path.to_str().expect("utf8"),
+        1,
+        std::time::Duration::from_millis(500),
+    )
+    .expect("open with pool size 1");
+    db.register_device("d1p1", "h", "linux", "x86_64", "x", None)
+        .await
+        .expect("register pool=1");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn server_db_open_fails_for_invalid_path() {
+    let res = ServerDb::open("/this/path/does/not/exist/db.sqlite");
+    assert!(res.is_err(), "expected open to fail for invalid path");
+}
