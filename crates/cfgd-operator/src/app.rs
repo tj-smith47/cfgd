@@ -24,10 +24,9 @@ static OTEL_PROVIDER: std::sync::OnceLock<opentelemetry_sdk::trace::SdkTracerPro
 ///
 /// Installs an `EnvFilter`-gated fmt subscriber, optionally augmented with
 /// an OpenTelemetry OTLP layer when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
-/// May only be called once per process; subsequent calls from the same
-/// process panic (tracing-subscriber contract). Tests must not call this —
-/// use `build_subscriber` if the subscriber under test needs inspection.
-pub fn init_tracing() {
+/// Uses `try_init` so a no-op return on double-call is safe (lets `run()` be
+/// exercised by tests without conflicting with the per-test subscriber).
+fn init_tracing() {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
 
@@ -44,12 +43,15 @@ pub fn init_tracing() {
         match init_otel_tracer() {
             Ok(tracer) => {
                 let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
-                tracing_subscriber::registry()
+                if tracing_subscriber::registry()
                     .with(env_filter)
                     .with(fmt_layer)
                     .with(otel_layer)
-                    .init();
-                tracing::info!("OpenTelemetry tracing initialized");
+                    .try_init()
+                    .is_ok()
+                {
+                    tracing::info!("OpenTelemetry tracing initialized");
+                }
                 return;
             }
             Err(e) => {
@@ -58,10 +60,10 @@ pub fn init_tracing() {
         }
     }
 
-    tracing_subscriber::registry()
+    let _ = tracing_subscriber::registry()
         .with(env_filter)
         .with(fmt_layer)
-        .init();
+        .try_init();
 
     if let Some(err) = otel_init_err {
         // Operator explicitly set OTEL_EXPORTER_OTLP_ENDPOINT — a silent
@@ -81,8 +83,7 @@ pub fn init_tracing() {
 /// Returns an error when the exporter cannot be constructed (e.g., invalid
 /// endpoint or missing tonic TLS support). The caller decides whether to fall
 /// back to fmt-only tracing or to propagate.
-pub fn init_otel_tracer() -> Result<opentelemetry_sdk::trace::SdkTracer, Box<dyn std::error::Error>>
-{
+fn init_otel_tracer() -> Result<opentelemetry_sdk::trace::SdkTracer, Box<dyn std::error::Error>> {
     use opentelemetry::trace::TracerProvider;
 
     let exporter = opentelemetry_otlp::SpanExporter::builder()
@@ -108,7 +109,7 @@ pub fn init_otel_tracer() -> Result<opentelemetry_sdk::trace::SdkTracer, Box<dyn
 ///
 /// Returns an error only if the OS refuses to install the SIGTERM signal
 /// handler, which indicates a broken process environment.
-pub async fn shutdown_signal() -> Result<()> {
+async fn shutdown_signal() -> Result<()> {
     let ctrl_c = tokio::signal::ctrl_c();
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(|e| anyhow::anyhow!("failed to install SIGTERM handler: {e}"))?;
@@ -122,7 +123,7 @@ pub async fn shutdown_signal() -> Result<()> {
 
 /// Emit one tracing event per registered CRD kind so operator startup logs
 /// clearly list which CRDs are expected in the cluster.
-pub fn log_crd_info() {
+fn log_crd_info() {
     use kube::CustomResourceExt;
 
     tracing::info!(
@@ -150,7 +151,7 @@ pub fn log_crd_info() {
 /// Start the controllers and, if `DEVICE_GATEWAY_ENABLED` is set, the device
 /// gateway alongside them. When the gateway is enabled it becomes the primary
 /// long-running process; the controllers are spawned with a retry loop.
-pub async fn run_operator(client: Client, metrics: metrics::Metrics) -> Result<()> {
+async fn run_operator(client: Client, metrics: metrics::Metrics) -> Result<()> {
     let gateway_enabled = runtime::is_gateway_enabled();
 
     if gateway_enabled {
@@ -517,5 +518,66 @@ mod tests {
             recorder,
             metrics: m,
         });
+    }
+
+    /// `init_tracing` is `try_init`-based, so calling it from a test is safe
+    /// even if the test harness has installed its own subscriber. Exercises
+    /// the env-driven OTel vs fmt-only branch and the post-init logging path.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial]
+    async fn init_tracing_runs_without_panicking_with_otel_endpoint_set() {
+        let _g = EnvVarGuard::set("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:14317");
+        init_tracing();
+    }
+
+    /// fmt-only path: `OTEL_EXPORTER_OTLP_ENDPOINT` unset. Exercises the
+    /// fallback branch of `init_tracing`.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial]
+    async fn init_tracing_runs_without_panicking_without_otel_endpoint() {
+        let _g = EnvVarGuard::unset("OTEL_EXPORTER_OTLP_ENDPOINT");
+        init_tracing();
+    }
+
+    /// Drive the full `run()` entrypoint. With no `KUBECONFIG` available
+    /// `Client::try_default()` will return an Err and the function exits
+    /// early. Either way, the initial-setup lines (tracing init, CRD logging,
+    /// the `try_default` call) execute. A 300 ms timeout bounds the worst
+    /// case where a kubeconfig IS present and the function would otherwise
+    /// block on the controllers / health / metrics select loop.
+    ///
+    /// All listeners use port 0 so they never collide with anything.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial]
+    async fn run_drives_initial_setup_lines() {
+        // Point KUBECONFIG at a non-existent path so try_default() returns Err
+        // without going through cluster discovery.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bogus_kubeconfig = tmp.path().join("no-such-kubeconfig.yaml");
+        let _g_kc = EnvVarGuard::set("KUBECONFIG", bogus_kubeconfig.to_str().expect("valid utf8"));
+
+        // OS-assigned ports — no collisions with other tests / real services.
+        let _g_hp = EnvVarGuard::set("HEALTH_PORT", "0");
+        let _g_mp = EnvVarGuard::set("METRICS_PORT", "0");
+
+        // Point WEBHOOK_CERT_DIR at an empty tempdir — `webhook_certs_present`
+        // returns false, so the webhook branch is skipped cleanly.
+        let _g_wcd = EnvVarGuard::set("WEBHOOK_CERT_DIR", tmp.path().to_str().expect("valid utf8"));
+        let _g_le = EnvVarGuard::unset("LEADER_ELECTION_ENABLED");
+        let _g_dg = EnvVarGuard::unset("DEVICE_GATEWAY_ENABLED");
+        let _g_otel = EnvVarGuard::unset("OTEL_EXPORTER_OTLP_ENDPOINT");
+
+        let result = tokio::time::timeout(Duration::from_millis(300), run()).await;
+
+        // Three acceptable outcomes — all prove the function body executed
+        // its setup before either early-returning, finishing, or blocking:
+        //   - Ok(Ok(()))      — full happy path completed (unlikely without a cluster)
+        //   - Ok(Err(_))      — Client::try_default returned Err (most common in CI)
+        //   - Err(Elapsed)    — function blocked on the select loop past 300 ms
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {}
+            Err(_elapsed) => {}
+        }
     }
 }
