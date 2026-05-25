@@ -1154,6 +1154,39 @@ impl Drop for ToolShim {
     }
 }
 
+/// Install a tempdir-scoped shim script named `binary` (`bash`, `curl`,
+/// `powershell`, etc.) at the FRONT of `PATH`. Returns a tuple whose first
+/// element pins the tempdir alive for the test's lifetime and whose second
+/// restores the prior PATH on drop. Use for production code that invokes a
+/// bare-name binary via `Command::new("<binary>")` (no env-var seam).
+///
+/// `exit_code` is the shim's exit; `stdout`/`stderr` are written verbatim
+/// (with embedded `"` shell-escaped). Caller is responsible for the
+/// `#[serial]` gate — PATH mutation is process-global.
+#[cfg(unix)]
+pub fn install_named_path_shim(
+    binary: &str,
+    exit_code: u8,
+    stdout: &str,
+    stderr: &str,
+) -> (tempfile::TempDir, EnvVarGuard) {
+    use std::os::unix::fs::PermissionsExt;
+    let bin_dir = tempfile::tempdir().expect("tempdir");
+    let script = format!(
+        "#!/bin/sh\nprintf '%s' \"{}\"\nprintf '%s' \"{}\" >&2\nexit {}\n",
+        stdout.replace('"', "\\\""),
+        stderr.replace('"', "\\\""),
+        exit_code
+    );
+    let path = bin_dir.path().join(binary);
+    std::fs::write(&path, script).expect("write shim");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let old_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
+    let path_guard = EnvVarGuard::set("PATH", &new_path);
+    (bin_dir, path_guard)
+}
+
 // ---------------------------------------------------------------------------
 // Env-var test guards — replace per-file `struct EnvVarGuard` / `fn with_env`
 // duplicates. Pair with `serial_test::serial` because env-var mutation is

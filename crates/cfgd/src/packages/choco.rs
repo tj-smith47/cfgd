@@ -401,7 +401,7 @@ Tags: git vcs dvcs
     #[cfg(unix)]
     mod choco_shim {
         use super::*;
-        use cfgd_core::test_helpers::test_printer;
+        use cfgd_core::test_helpers::{install_named_path_shim, test_printer};
         use serial_test::serial;
 
         fn install_choco_shim(
@@ -409,44 +409,7 @@ Tags: git vcs dvcs
             stdout: &str,
             stderr: &str,
         ) -> (tempfile::TempDir, cfgd_core::test_helpers::EnvVarGuard) {
-            use std::os::unix::fs::PermissionsExt;
-            let bin_dir = tempfile::tempdir().unwrap();
-            let script = format!(
-                "#!/bin/sh\nprintf '%s' \"{}\"\nprintf '%s' \"{}\" >&2\nexit {}\n",
-                stdout.replace('"', "\\\""),
-                stderr.replace('"', "\\\""),
-                exit_code
-            );
-            let path = bin_dir.path().join("choco");
-            std::fs::write(&path, script).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let old_path = std::env::var("PATH").unwrap_or_default();
-            let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
-            let path_guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
-            (bin_dir, path_guard)
-        }
-
-        fn install_named_shim(
-            name: &str,
-            exit_code: u8,
-            stdout: &str,
-            stderr: &str,
-        ) -> (tempfile::TempDir, cfgd_core::test_helpers::EnvVarGuard) {
-            use std::os::unix::fs::PermissionsExt;
-            let bin_dir = tempfile::tempdir().unwrap();
-            let script = format!(
-                "#!/bin/sh\nprintf '%s' \"{}\"\nprintf '%s' \"{}\" >&2\nexit {}\n",
-                stdout.replace('"', "\\\""),
-                stderr.replace('"', "\\\""),
-                exit_code
-            );
-            let path = bin_dir.path().join(name);
-            std::fs::write(&path, script).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let old_path = std::env::var("PATH").unwrap_or_default();
-            let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
-            let path_guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
-            (bin_dir, path_guard)
+            install_named_path_shim("choco", exit_code, stdout, stderr)
         }
 
         #[test]
@@ -455,7 +418,7 @@ Tags: git vcs dvcs
             // Choco bootstrap shells out to powershell with an iex pipeline.
             // A PATH-shimmed powershell stub returning 0 proves the bootstrap
             // path is executed without needing real Windows.
-            let (_bin, _path) = install_named_shim("powershell", 0, "", "");
+            let (_bin, _path) = install_named_path_shim("powershell", 0, "", "");
             let p = test_printer();
             ChocolateyManager
                 .bootstrap(&p)
@@ -465,7 +428,7 @@ Tags: git vcs dvcs
         #[test]
         #[serial]
         fn bootstrap_propagates_powershell_failure() {
-            let (_bin, _path) = install_named_shim("powershell", 1, "", "install failed");
+            let (_bin, _path) = install_named_path_shim("powershell", 1, "", "install failed");
             let p = test_printer();
             let err = ChocolateyManager
                 .bootstrap(&p)

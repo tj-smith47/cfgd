@@ -551,36 +551,12 @@ mod tests {
             );
         }
 
-        // bash-shim: bootstrap shells out to `bash -c "curl … | sh"` (the
-        // Determinate Nix installer). A PATH-shimmed `bash` exercises the
-        // bootstrap branch without touching the network.
-        fn install_named_shim(
-            name: &str,
-            exit_code: u8,
-            stdout: &str,
-            stderr: &str,
-        ) -> (tempfile::TempDir, cfgd_core::test_helpers::EnvVarGuard) {
-            use std::os::unix::fs::PermissionsExt;
-            let bin_dir = tempfile::tempdir().unwrap();
-            let script = format!(
-                "#!/bin/sh\nprintf '%s' \"{}\"\nprintf '%s' \"{}\" >&2\nexit {}\n",
-                stdout.replace('"', "\\\""),
-                stderr.replace('"', "\\\""),
-                exit_code
-            );
-            let path = bin_dir.path().join(name);
-            std::fs::write(&path, script).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let old_path = std::env::var("PATH").unwrap_or_default();
-            let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
-            let path_guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
-            (bin_dir, path_guard)
-        }
+        use cfgd_core::test_helpers::install_named_path_shim;
 
         #[test]
         #[serial]
         fn nix_bootstrap_runs_bash_install_pipeline_ok() {
-            let (_bin, _path) = install_named_shim("bash", 0, "", "");
+            let (_bin, _path) = install_named_path_shim("bash", 0, "", "");
             let p = test_printer();
             NixManager.bootstrap(&p).expect("bootstrap Ok via shim");
         }
@@ -588,7 +564,7 @@ mod tests {
         #[test]
         #[serial]
         fn nix_bootstrap_propagates_nonzero_exit_as_bootstrap_failed() {
-            let (_bin, _path) = install_named_shim("bash", 1, "", "nix install failed");
+            let (_bin, _path) = install_named_path_shim("bash", 1, "", "nix install failed");
             let p = test_printer();
             let err = NixManager
                 .bootstrap(&p)

@@ -506,36 +506,12 @@ tokei v12.1.2:
             assert_eq!(v, None);
         }
 
-        // bash-shim: the bootstrap helper shells out to `bash -c "curl … | sh"`.
-        // A PATH-shimmed `bash` swallowing the args and exiting 0 / non-zero
-        // proves the bootstrap path is exercised without contacting rustup.
-        fn install_named_shim(
-            name: &str,
-            exit_code: u8,
-            stdout: &str,
-            stderr: &str,
-        ) -> (tempfile::TempDir, cfgd_core::test_helpers::EnvVarGuard) {
-            use std::os::unix::fs::PermissionsExt;
-            let bin_dir = tempfile::tempdir().unwrap();
-            let script = format!(
-                "#!/bin/sh\nprintf '%s' \"{}\"\nprintf '%s' \"{}\" >&2\nexit {}\n",
-                stdout.replace('"', "\\\""),
-                stderr.replace('"', "\\\""),
-                exit_code
-            );
-            let path = bin_dir.path().join(name);
-            std::fs::write(&path, script).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let old_path = std::env::var("PATH").unwrap_or_default();
-            let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
-            let path_guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
-            (bin_dir, path_guard)
-        }
+        use cfgd_core::test_helpers::install_named_path_shim;
 
         #[test]
         #[serial]
         fn cargo_bootstrap_runs_bash_rustup_pipeline_ok() {
-            let (_bin, _path) = install_named_shim("bash", 0, "", "");
+            let (_bin, _path) = install_named_path_shim("bash", 0, "", "");
             let p = test_printer();
             CargoManager.bootstrap(&p).expect("bootstrap Ok via shim");
         }
@@ -543,7 +519,7 @@ tokei v12.1.2:
         #[test]
         #[serial]
         fn cargo_bootstrap_propagates_nonzero_exit_as_bootstrap_failed() {
-            let (_bin, _path) = install_named_shim("bash", 1, "", "rustup unreachable");
+            let (_bin, _path) = install_named_path_shim("bash", 1, "", "rustup unreachable");
             let p = test_printer();
             let err = CargoManager
                 .bootstrap(&p)

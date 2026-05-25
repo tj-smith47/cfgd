@@ -276,62 +276,18 @@ nodejs  20.11.1  main     2024-02-01\n";
     #[cfg(unix)]
     mod scoop_shim {
         use super::*;
-        use cfgd_core::test_helpers::{ToolShim, test_printer};
+        use cfgd_core::test_helpers::{install_named_path_shim, test_printer};
         use serial_test::serial;
 
-        // ToolShim's first arg is the env-var that resolves the binary path.
-        // scoop doesn't use a resolver; the binary is found via PATH. So we
-        // hand-roll a shim that writes a script named `scoop` under a tempdir
-        // and prepends it to PATH for the duration of the test.
+        // Local wrapper: scoop is invoked by name via PATH, no env-var seam.
+        // Delegates to the shared helper so the shim-script body stays in
+        // one place across the package crate.
         fn install_scoop_shim(
             exit_code: u8,
             stdout: &str,
             stderr: &str,
         ) -> (tempfile::TempDir, cfgd_core::test_helpers::EnvVarGuard) {
-            use std::os::unix::fs::PermissionsExt;
-            let bin_dir = tempfile::tempdir().unwrap();
-            let script = format!(
-                "#!/bin/sh\nprintf '%s' \"{}\"\nprintf '%s' \"{}\" >&2\nexit {}\n",
-                stdout.replace('"', "\\\""),
-                stderr.replace('"', "\\\""),
-                exit_code
-            );
-            let path = bin_dir.path().join("scoop");
-            std::fs::write(&path, script).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let old_path = std::env::var("PATH").unwrap_or_default();
-            let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
-            let path_guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
-            (bin_dir, path_guard)
-        }
-
-        // Discourage tree-shake of the ToolShim import; we still use the
-        // underlying serial gate to keep PATH mutations from racing.
-        const _: fn() = || {
-            let _ = ToolShim::install;
-        };
-
-        fn install_named_shim(
-            name: &str,
-            exit_code: u8,
-            stdout: &str,
-            stderr: &str,
-        ) -> (tempfile::TempDir, cfgd_core::test_helpers::EnvVarGuard) {
-            use std::os::unix::fs::PermissionsExt;
-            let bin_dir = tempfile::tempdir().unwrap();
-            let script = format!(
-                "#!/bin/sh\nprintf '%s' \"{}\"\nprintf '%s' \"{}\" >&2\nexit {}\n",
-                stdout.replace('"', "\\\""),
-                stderr.replace('"', "\\\""),
-                exit_code
-            );
-            let path = bin_dir.path().join(name);
-            std::fs::write(&path, script).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let old_path = std::env::var("PATH").unwrap_or_default();
-            let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
-            let path_guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
-            (bin_dir, path_guard)
+            install_named_path_shim("scoop", exit_code, stdout, stderr)
         }
 
         #[test]
@@ -341,7 +297,7 @@ nodejs  20.11.1  main     2024-02-01\n";
             // pipeline. A PATH-shimmed `powershell` swallowing the args and
             // exiting 0 proves the bootstrap path is exercised without
             // requiring real Windows infrastructure.
-            let (_bin, _path) = install_named_shim("powershell", 0, "", "");
+            let (_bin, _path) = install_named_path_shim("powershell", 0, "", "");
             let p = test_printer();
             ScoopManager.bootstrap(&p).expect("bootstrap Ok via shim");
         }
@@ -349,7 +305,8 @@ nodejs  20.11.1  main     2024-02-01\n";
         #[test]
         #[serial]
         fn scoop_bootstrap_propagates_powershell_failure() {
-            let (_bin, _path) = install_named_shim("powershell", 1, "", "scoop install failed");
+            let (_bin, _path) =
+                install_named_path_shim("powershell", 1, "", "scoop install failed");
             let p = test_printer();
             let err = ScoopManager
                 .bootstrap(&p)
