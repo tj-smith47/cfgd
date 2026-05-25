@@ -474,6 +474,75 @@ fn report_drift_connection_refused() {
 }
 
 #[test]
+fn enroll_connection_refused() {
+    let client = ServerClient::new("http://127.0.0.1:1", None, "dev-1");
+    let printer = test_printer();
+    let result = client.enroll("bootstrap-token", &printer);
+    assert!(result.is_err());
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("enrollment failed"),
+        "unexpected error: {err_msg}"
+    );
+}
+
+#[test]
+fn request_challenge_connection_refused() {
+    let client = ServerClient::new("http://127.0.0.1:1", None, "dev-1");
+    let printer = test_printer();
+    let result = client.request_challenge("alice", &printer);
+    assert!(result.is_err());
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("challenge request failed"),
+        "unexpected error: {err_msg}"
+    );
+}
+
+#[test]
+fn checkin_connection_refused() {
+    let client = ServerClient::new("http://127.0.0.1:1", Some("key"), "dev-1");
+    let printer = test_printer();
+    let result = client.checkin("hash", None, &printer);
+    assert!(result.is_err());
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("checkin failed"),
+        "unexpected error: {err_msg}"
+    );
+}
+
+#[test]
+fn enroll_returns_err_on_500_response() {
+    let mut server = mockito::Server::new();
+    let _mock = server
+        .mock("POST", "/api/v1/enroll")
+        .with_status(500)
+        .with_body(r#"{"error":"server-error"}"#)
+        .expect_at_least(1)
+        .create();
+    let client = ServerClient::new(&server.url(), None, "dev-1");
+    let printer = test_printer();
+    let result = client.enroll("token", &printer);
+    assert!(result.is_err());
+}
+
+#[test]
+fn request_challenge_returns_err_on_500_response() {
+    let mut server = mockito::Server::new();
+    let _mock = server
+        .mock("POST", "/api/v1/enroll/challenge")
+        .with_status(500)
+        .with_body("internal-error")
+        .expect_at_least(1)
+        .create();
+    let client = ServerClient::new(&server.url(), None, "dev-1");
+    let printer = test_printer();
+    let result = client.request_challenge("alice", &printer);
+    assert!(result.is_err());
+}
+
+#[test]
 fn checkin_with_desired_config_in_response() {
     let mut server = mockito::Server::new();
     let mock = server
