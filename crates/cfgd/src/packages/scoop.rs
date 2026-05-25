@@ -311,6 +311,52 @@ nodejs  20.11.1  main     2024-02-01\n";
             let _ = ToolShim::install;
         };
 
+        fn install_named_shim(
+            name: &str,
+            exit_code: u8,
+            stdout: &str,
+            stderr: &str,
+        ) -> (tempfile::TempDir, cfgd_core::test_helpers::EnvVarGuard) {
+            use std::os::unix::fs::PermissionsExt;
+            let bin_dir = tempfile::tempdir().unwrap();
+            let script = format!(
+                "#!/bin/sh\nprintf '%s' \"{}\"\nprintf '%s' \"{}\" >&2\nexit {}\n",
+                stdout.replace('"', "\\\""),
+                stderr.replace('"', "\\\""),
+                exit_code
+            );
+            let path = bin_dir.path().join(name);
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let old_path = std::env::var("PATH").unwrap_or_default();
+            let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
+            let path_guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
+            (bin_dir, path_guard)
+        }
+
+        #[test]
+        #[serial]
+        fn scoop_bootstrap_runs_powershell_install_script() {
+            // Scoop bootstrap shells out to `powershell` with the irm | iex
+            // pipeline. A PATH-shimmed `powershell` swallowing the args and
+            // exiting 0 proves the bootstrap path is exercised without
+            // requiring real Windows infrastructure.
+            let (_bin, _path) = install_named_shim("powershell", 0, "", "");
+            let p = test_printer();
+            ScoopManager.bootstrap(&p).expect("bootstrap Ok via shim");
+        }
+
+        #[test]
+        #[serial]
+        fn scoop_bootstrap_propagates_powershell_failure() {
+            let (_bin, _path) = install_named_shim("powershell", 1, "", "scoop install failed");
+            let p = test_printer();
+            let err = ScoopManager
+                .bootstrap(&p)
+                .expect_err("non-zero powershell must error");
+            let _ = err.to_string();
+        }
+
         #[test]
         #[serial]
         fn scoop_install_invokes_per_package() {

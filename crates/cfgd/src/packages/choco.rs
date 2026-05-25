@@ -426,6 +426,53 @@ Tags: git vcs dvcs
             (bin_dir, path_guard)
         }
 
+        fn install_named_shim(
+            name: &str,
+            exit_code: u8,
+            stdout: &str,
+            stderr: &str,
+        ) -> (tempfile::TempDir, cfgd_core::test_helpers::EnvVarGuard) {
+            use std::os::unix::fs::PermissionsExt;
+            let bin_dir = tempfile::tempdir().unwrap();
+            let script = format!(
+                "#!/bin/sh\nprintf '%s' \"{}\"\nprintf '%s' \"{}\" >&2\nexit {}\n",
+                stdout.replace('"', "\\\""),
+                stderr.replace('"', "\\\""),
+                exit_code
+            );
+            let path = bin_dir.path().join(name);
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let old_path = std::env::var("PATH").unwrap_or_default();
+            let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
+            let path_guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
+            (bin_dir, path_guard)
+        }
+
+        #[test]
+        #[serial]
+        fn bootstrap_runs_powershell_install_script() {
+            // Choco bootstrap shells out to powershell with an iex pipeline.
+            // A PATH-shimmed powershell stub returning 0 proves the bootstrap
+            // path is executed without needing real Windows.
+            let (_bin, _path) = install_named_shim("powershell", 0, "", "");
+            let p = test_printer();
+            ChocolateyManager
+                .bootstrap(&p)
+                .expect("bootstrap Ok via shim");
+        }
+
+        #[test]
+        #[serial]
+        fn bootstrap_propagates_powershell_failure() {
+            let (_bin, _path) = install_named_shim("powershell", 1, "", "install failed");
+            let p = test_printer();
+            let err = ChocolateyManager
+                .bootstrap(&p)
+                .expect_err("nonzero powershell must error");
+            let _ = err.to_string();
+        }
+
         #[test]
         #[serial]
         fn install_succeeds_when_choco_exits_zero() {
