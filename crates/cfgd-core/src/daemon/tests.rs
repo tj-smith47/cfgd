@@ -11279,3 +11279,49 @@ mod discover_managed_paths_extra {
         );
     }
 }
+
+mod tests_run_daemon_wrapper {
+    use crate::config::CfgdConfig;
+    use crate::config::PackagesSpec;
+    use crate::daemon::DaemonHooks;
+    use crate::daemon::run_daemon;
+    use crate::daemon::{MergedProfile, ResolvedProfile};
+    use crate::errors::Result as CfgdResult;
+    use crate::output::{Printer, Verbosity};
+    use crate::providers::{FileAction, PackageAction, PackageManager, ProviderRegistry};
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    struct StubHooks2;
+    impl DaemonHooks for StubHooks2 {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            ProviderRegistry::new()
+        }
+        fn plan_files(&self, _: &Path, _: &ResolvedProfile) -> CfgdResult<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+        ) -> CfgdResult<Vec<PackageAction>> {
+            Ok(vec![])
+        }
+        fn extend_registry_custom_managers(&self, _: &mut ProviderRegistry, _: &PackagesSpec) {}
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_daemon_with_invalid_config_returns_err_early() {
+        let printer = Arc::new(Printer::new(Verbosity::Quiet));
+        let hooks: Arc<dyn DaemonHooks> = Arc::new(StubHooks2);
+        let bogus_path = PathBuf::from("/nonexistent-cfgd-cfg-7f9a/does-not-exist.yaml");
+        let result = run_daemon(bogus_path, None, printer, hooks).await;
+        assert!(
+            result.is_err(),
+            "missing config must propagate as Err, got Ok"
+        );
+    }
+}
