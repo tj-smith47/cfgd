@@ -8888,6 +8888,304 @@ mod harness {
         );
     }
 
+    // ----- additional pump / signal / banner coverage -----
+
+    #[test]
+    fn format_interval_lines_includes_sync_when_only_auto_push_enabled() {
+        // The auto_pull-only and reconcile-only branches are already covered;
+        // this hits the auto_push=true / auto_pull=false leg of the
+        // `auto_pull || auto_push` guard so both halves of the boolean OR
+        // execute under coverage instrumentation.
+        let parsed = ParsedDaemonConfig {
+            reconcile_interval: StdDuration::from_secs(60),
+            sync_interval: StdDuration::from_secs(180),
+            auto_pull: false,
+            auto_push: true,
+            auto_apply: false,
+            on_change_reconcile: false,
+            notify_method: NotifyMethod::Stdout,
+            notify_on_drift: false,
+            webhook_url: None,
+        };
+        let lines = super::super::format_interval_lines(&parsed, None);
+        assert_eq!(
+            lines,
+            vec![
+                "reconcile=60s".to_string(),
+                "sync=180s (pull=false, push=true)".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn format_interval_lines_reconcile_sync_compliance_combined() {
+        let parsed = ParsedDaemonConfig {
+            reconcile_interval: StdDuration::from_secs(45),
+            sync_interval: StdDuration::from_secs(90),
+            auto_pull: true,
+            auto_push: true,
+            auto_apply: false,
+            on_change_reconcile: false,
+            notify_method: NotifyMethod::Stdout,
+            notify_on_drift: false,
+            webhook_url: None,
+        };
+        let lines = super::super::format_interval_lines(&parsed, Some(StdDuration::from_secs(600)));
+        assert_eq!(
+            lines,
+            vec![
+                "reconcile=45s".to_string(),
+                "sync=90s (pull=true, push=true)".to_string(),
+                "compliance=600s".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interval_pump_delivers_tick_within_interval() {
+        // Cadence=1s. The pump should push a single () through within the
+        // 3-second receive window.
+        let secs = Arc::new(AtomicU64::new(1));
+        let (tx, mut rx) = mpsc::channel::<()>(8);
+        let handle = super::super::spawn_interval_pump(secs, tx);
+        let tick = tokio::time::timeout(StdDuration::from_secs(3), rx.recv()).await;
+        handle.abort();
+        assert!(tick.is_ok(), "expected a tick within 3s, got {:?}", tick);
+        assert!(
+            tick.unwrap().is_some(),
+            "tick should be Some(()) — pump must not close prematurely"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interval_pump_exits_when_receiver_dropped() {
+        // After the rx is dropped, the first `tx.send().await` returns Err and
+        // the loop breaks. The JoinHandle must transition to finished without
+        // requiring abort().
+        let secs = Arc::new(AtomicU64::new(1));
+        let (tx, rx) = mpsc::channel::<()>(1);
+        let handle = super::super::spawn_interval_pump(secs, tx);
+        drop(rx);
+        // Wait long enough for one cadence tick + send failure to land.
+        let joined = tokio::time::timeout(StdDuration::from_secs(3), handle).await;
+        assert!(
+            joined.is_ok(),
+            "pump must exit on send failure, got timeout"
+        );
+        // The task either finished normally (Ok) — abort wasn't needed.
+        let join_result = joined.unwrap();
+        assert!(
+            join_result.is_ok(),
+            "pump task should exit cleanly when rx closes, got {:?}",
+            join_result
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn sighup_pump_forwards_signal_into_channel() {
+        // Spawn the pump, raise SIGHUP at our own PID, and expect a () on the
+        // receiver. Serial because signal handling is process-global and a
+        // concurrent test could observe / consume the signal.
+        let (tx, mut rx) = mpsc::channel::<()>(8);
+        let handle = super::super::spawn_sighup_pump(tx).expect("sighup pump registers");
+        // Give tokio the SIGHUP signal subscription a chance to wire up before
+        // we raise the signal. Without this the kill arrives before the
+        // listener exists and is dropped.
+        tokio::time::sleep(StdDuration::from_millis(50)).await;
+        // SAFETY: libc::kill against own PID is well-defined.
+        unsafe {
+            libc::kill(libc::getpid(), libc::SIGHUP);
+        }
+        let tick = tokio::time::timeout(StdDuration::from_secs(3), rx.recv()).await;
+        handle.abort();
+        assert!(tick.is_ok(), "expected a SIGHUP tick within 3s");
+        assert!(tick.unwrap().is_some(), "tick should be Some(())");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn wait_for_shutdown_returns_on_sigterm() {
+        // Driving wait_for_shutdown directly: spawn it on its own task, raise
+        // SIGTERM at our own PID, and verify the function returns AND the
+        // printer captured the SIGTERM message.
+        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+        let printer = Arc::new(printer);
+        let handle = tokio::spawn(super::super::wait_for_shutdown(Arc::clone(&printer)));
+        // Allow the SIGTERM signal listener to register.
+        tokio::time::sleep(StdDuration::from_millis(50)).await;
+        // SAFETY: libc::kill against own PID is well-defined.
+        unsafe {
+            libc::kill(libc::getpid(), libc::SIGTERM);
+        }
+        let joined = tokio::time::timeout(StdDuration::from_secs(3), handle).await;
+        assert!(
+            joined.is_ok(),
+            "wait_for_shutdown must return after SIGTERM"
+        );
+        joined.unwrap().expect("task join");
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("Received SIGTERM"),
+            "shutdown printer should announce SIGTERM, got: {}",
+            out
+        );
+    }
+
+    // ----- DaemonState direct unit coverage -----
+
+    #[test]
+    fn daemon_state_with_store_path_round_trips_through_test_accessor() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("state.db");
+        let state = super::super::DaemonState::new().with_store_path(path.clone());
+        let store = state
+            .store_path_for_test()
+            .expect("store_path set after with_store_path");
+        assert_eq!(store, path.as_path());
+    }
+
+    #[test]
+    fn daemon_state_to_response_reflects_internal_counters_and_sources() {
+        // Construct a state, mutate the fields that to_response copies out,
+        // and assert each field carried through. Catches reordering / typo
+        // regressions in the field-by-field clone in to_response.
+        let mut state = super::super::DaemonState::new();
+        state.last_reconcile = Some("2026-05-25T00:00:00Z".to_string());
+        state.last_sync = Some("2026-05-25T00:05:00Z".to_string());
+        state.drift_count = 7;
+        state.update_available = Some("0.5.0".to_string());
+        state.sources.push(super::super::SourceStatus {
+            name: "remote".to_string(),
+            last_sync: None,
+            last_reconcile: None,
+            drift_count: 2,
+            status: "active".to_string(),
+        });
+        let resp = state.to_response();
+        assert!(resp.running);
+        assert_eq!(resp.pid, std::process::id());
+        assert_eq!(resp.last_reconcile.as_deref(), Some("2026-05-25T00:00:00Z"));
+        assert_eq!(resp.last_sync.as_deref(), Some("2026-05-25T00:05:00Z"));
+        assert_eq!(resp.drift_count, 7);
+        assert_eq!(resp.update_available.as_deref(), Some("0.5.0"));
+        // Default ctor adds a "local" source; we pushed one more.
+        assert_eq!(resp.sources.len(), 2);
+        assert_eq!(resp.sources[0].name, "local");
+        assert_eq!(resp.sources[1].name, "remote");
+        // module_reconcile is always built empty in to_response (a
+        // forward-looking field populated elsewhere).
+        assert!(resp.module_reconcile.is_empty());
+    }
+
+    // ----- Notifier::notify_webhook with a real (mock) HTTP endpoint -----
+    //
+    // notify_webhook spawns a tokio::task::spawn_blocking, so this test
+    // sleeps briefly after .notify() to let the POST land. We assert via the
+    // mockito expectation count rather than inspecting tracing output.
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn notifier_webhook_posts_payload_to_configured_url() {
+        let server = tokio::task::spawn_blocking(mockito::Server::new)
+            .await
+            .expect("spawn mockito server");
+        let mut server = server;
+        let mock = server
+            .mock("POST", "/notify")
+            .with_status(200)
+            .with_body("ok")
+            .expect_at_least(1)
+            .create();
+        let url = format!("{}/notify", server.url());
+
+        let notifier = super::super::Notifier::new(NotifyMethod::Webhook, Some(url));
+        notifier.notify("test-event", "test-body");
+
+        // The webhook POST is queued via spawn_blocking. Poll up to ~2s for the
+        // mockito expectation to be satisfied.
+        let mut satisfied = false;
+        for _ in 0..40 {
+            if mock.matched() {
+                satisfied = true;
+                break;
+            }
+            tokio::time::sleep(StdDuration::from_millis(50)).await;
+        }
+        assert!(
+            satisfied,
+            "expected the webhook POST to land at the mock server within 2s"
+        );
+    }
+
+    // ----- run_daemon_with: production-trigger path -----
+    //
+    // The other run_daemon_with tests in this module install
+    // `external_triggers: Some(...)`. This one leaves it None so the function
+    // takes the `else` branch and spawns real interval pumps, the SIGHUP pump
+    // (Unix), and the shutdown listener. We bound the test with an outer
+    // tokio::time::timeout so it terminates deterministically even though no
+    // shutdown signal is sent — the assertion is that the function progressed
+    // past the trigger-setup block and ran the loop until forcibly aborted.
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn run_daemon_with_production_triggers_progresses_past_setup_then_shutsdown_on_sigterm() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = write_happy_path_config(&tmp);
+        let ipc_path = tmp.path().join("prod-triggers.sock");
+        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+        let printer = Arc::new(printer);
+        let hooks: Arc<dyn DaemonHooks> = Arc::new(NoopHooks);
+
+        let overrides = super::super::DaemonRunOverrides {
+            ipc_path: Some(ipc_path.clone()),
+            state_dir_override: Some(tmp.path().to_path_buf()),
+            skip_health_server: true,
+            skip_startup_checkin: true,
+            external_triggers: None,
+        };
+
+        let daemon = tokio::spawn(super::super::run_daemon_with(
+            config_path,
+            None,
+            Arc::clone(&printer),
+            hooks,
+            overrides,
+        ));
+
+        // Give the daemon time to bind everything, spawn pumps, and emit the
+        // startup banner — proves the production trigger-setup block ran.
+        tokio::time::sleep(StdDuration::from_millis(150)).await;
+        assert!(
+            buf.lock().unwrap().contains("Daemon running"),
+            "production-trigger path must emit the startup banner before shutdown"
+        );
+
+        // SIGTERM drives the production wait_for_shutdown task which sends on
+        // the shutdown oneshot, exiting the loop cleanly.
+        // SAFETY: libc::kill against own PID is well-defined.
+        unsafe {
+            libc::kill(libc::getpid(), libc::SIGTERM);
+        }
+
+        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+            .await
+            .expect("daemon should shut down on SIGTERM")
+            .expect("daemon join");
+        assert!(result.is_ok(), "daemon should exit Ok, got {:?}", result);
+
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("Daemon stopped"),
+            "cleanup path must run, got: {}",
+            out
+        );
+    }
+
     // ----- handle_health_connection unit tests -----
     //
     // Drives the four-way path dispatch in health_ipc::handle_health_connection
