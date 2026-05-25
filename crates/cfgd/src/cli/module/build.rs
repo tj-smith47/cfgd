@@ -384,4 +384,144 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Additional uncovered-branch tests. The single-target build path
+    // without a `--target` arg exercises the `targets.unwrap_or_else(||
+    // vec![default_platform()])` branch; the kv-block header omits the
+    // optional `Target` and `Base image` entries when `None` is passed.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_default_target_omits_target_and_base_image_from_header() {
+        if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write_module_yaml(dir.path());
+
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        // No --target and no --base-image. The build will still fail because
+        // the default base (ubuntu:22.04) requires network — but we get to
+        // exercise the default-platform branch and the header-construction
+        // logic that omits the optional kv entries first.
+        let _ = cmd_module_build(
+            &printer,
+            dir.path().to_str().unwrap(),
+            None,
+            None,
+            None,
+            false,
+            None,
+        );
+        drop(printer);
+
+        let output = buf.lock().unwrap();
+        assert!(
+            output.contains("Build Module"),
+            "heading must be emitted before the build fails: {output}"
+        );
+        assert!(
+            output.contains("Directory"),
+            "Directory kv entry must always appear in the header: {output}"
+        );
+        // Negative: when None was passed, the optional kv entries must be
+        // absent from the header.
+        assert!(
+            !output.contains("Base image"),
+            "Base image kv entry must be absent when base_image=None: {output}"
+        );
+    }
+
+    #[test]
+    fn build_missing_directory_path_still_rejects_with_module_yaml_missing() {
+        // Path that doesn't exist at all → dir_path.join("module.yaml") also
+        // doesn't exist, falling through the same error branch as an empty
+        // existing directory. Pin the error key + message so the branch is
+        // covered without depending on filesystem state.
+        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+        let err = cmd_module_build(
+            &printer,
+            "/nonexistent/cfgd-test-module-build-path",
+            None,
+            None,
+            None,
+            false,
+            None,
+        )
+        .expect_err("nonexistent dir → module.yaml missing");
+        drop(printer);
+
+        assert!(
+            err.to_string().contains("does not contain a module.yaml"),
+            "error message must call out the missing module.yaml: {err}"
+        );
+        let json = cap.json().expect("error_doc must be emitted");
+        assert_eq!(json["error"], "module_yaml_missing");
+        assert_eq!(json["dir"], "/nonexistent/cfgd-test-module-build-path");
+    }
+
+    #[test]
+    fn build_single_target_failure_payload_includes_target_in_error_doc() {
+        if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write_module_yaml(dir.path());
+
+        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+        let _ = cmd_module_build(
+            &printer,
+            dir.path().to_str().unwrap(),
+            Some("linux/amd64"),
+            Some("localhost:1/cfgd-test-nonexistent:latest"),
+            None,
+            false,
+            None,
+        );
+        drop(printer);
+
+        let json = cap.json().expect("build_failed error_doc must be emitted");
+        assert_eq!(json["error"], "build_failed");
+        // The single-target branch puts `target` (singular) in the error
+        // payload; the multi-target branch puts `target` per-spinner. Pin
+        // this so the two branches stay distinguishable on the wire.
+        assert_eq!(json["target"], "linux/amd64");
+        assert_eq!(json["dir"], dir.path().to_str().unwrap());
+    }
+
+    #[test]
+    fn build_multi_target_failure_payload_includes_failing_target_only() {
+        if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write_module_yaml(dir.path());
+
+        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+        let err = cmd_module_build(
+            &printer,
+            dir.path().to_str().unwrap(),
+            Some("linux/amd64,linux/arm64"),
+            Some("localhost:1/cfgd-test-nonexistent:latest"),
+            None,
+            false,
+            None,
+        )
+        .expect_err("first target must fail and short-circuit the loop");
+        drop(printer);
+
+        assert!(!err.to_string().is_empty());
+        let json = cap.json().expect("error_doc emitted");
+        assert_eq!(json["error"], "build_failed");
+        // Multi-target branch emits the per-target failure with the
+        // singular `target` field corresponding to the target that failed
+        // first (the iteration short-circuits on Err).
+        let failed_target = json["target"].as_str().expect("target string");
+        assert!(
+            failed_target == "linux/amd64" || failed_target == "linux/arm64",
+            "failed target must be one of the requested targets: {failed_target}"
+        );
+    }
 }

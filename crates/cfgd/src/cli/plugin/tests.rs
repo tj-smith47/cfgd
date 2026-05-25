@@ -929,3 +929,155 @@ mod mock_kube {
         );
     }
 }
+
+// ============================================================================
+// PATH-shimmed `kubectl` tests — drive `cmd_inject` and `cmd_exec` through a
+// fake kubectl on PATH so their post-`run_inherit` / `run_argv_inherit` code
+// (success doc emit, kubectl-failure error_doc emit) executes without
+// requiring a real cluster. Mirrors the `CFGD_COSIGN_BIN` shim pattern but
+// driven via PATH because `kubectl.rs::run_inherit` calls
+// `Command::new("kubectl")` literally.
+// ============================================================================
+
+#[cfg(unix)]
+mod kubectl_shim {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// RAII shim that writes a `kubectl` script returning `exit_code` to a
+    /// tempdir and prepends that tempdir to PATH for the lifetime of the
+    /// guard. Restores prior PATH on drop. Pair with `#[serial]` because
+    /// PATH mutation is process-global.
+    struct KubectlPathShim {
+        _tmp: tempfile::TempDir,
+        prior_path: Option<std::ffi::OsString>,
+    }
+
+    impl KubectlPathShim {
+        fn new(exit_code: i32) -> Self {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let script_path = tmp.path().join("kubectl");
+            let script = format!("#!/bin/sh\nexit {exit_code}\n");
+            std::fs::write(&script_path, script).expect("write kubectl shim");
+            let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script_path, perms).expect("chmod kubectl shim");
+
+            let prior_path = std::env::var_os("PATH");
+            // Prepend the tempdir so our shim wins over a real kubectl.
+            // SAFETY: serial_test::serial gates concurrent access.
+            unsafe {
+                std::env::set_var("PATH", tmp.path());
+            }
+            Self {
+                _tmp: tmp,
+                prior_path,
+            }
+        }
+    }
+
+    impl Drop for KubectlPathShim {
+        fn drop(&mut self) {
+            // SAFETY: serial_test::serial gates concurrent access.
+            unsafe {
+                match &self.prior_path {
+                    Some(p) => std::env::set_var("PATH", p),
+                    None => std::env::remove_var("PATH"),
+                }
+            }
+        }
+    }
+
+    // --- cmd_inject: success doc on kubectl exit 0 ---
+
+    #[test]
+    #[serial]
+    fn cmd_inject_emits_success_doc_when_kubectl_exits_zero() {
+        let _shim = KubectlPathShim::new(0);
+        let (printer, cap) = Printer::for_test_doc();
+        let modules = vec!["nettools:1.0.0".to_string()];
+
+        let result = cmd_inject(&printer, "deployment/myapp", &modules, "prod");
+        drop(printer);
+
+        result.expect("cmd_inject must succeed when kubectl exits 0");
+        let json = cap.json().expect("success doc must carry data payload");
+        assert_eq!(json["namespace"], "prod");
+        assert_eq!(json["resource"], "deployment/myapp");
+        assert_eq!(json["kind"], "deployment");
+        assert_eq!(json["name"], "myapp");
+        assert_eq!(json["modules"][0], "nettools:1.0.0");
+        let patched = json["patched"].as_array().expect("patched is array");
+        assert_eq!(patched.len(), 1);
+        assert_eq!(patched[0], "myapp");
+    }
+
+    // --- cmd_inject: error doc on kubectl exit non-zero ---
+
+    #[test]
+    #[serial]
+    fn cmd_inject_emits_error_doc_when_kubectl_exits_nonzero() {
+        let _shim = KubectlPathShim::new(1);
+        let (printer, cap) = Printer::for_test_doc();
+        let modules = vec!["nettools:1.0.0".to_string()];
+
+        let err = cmd_inject(&printer, "statefulset/db", &modules, "staging")
+            .expect_err("cmd_inject must fail when kubectl exits non-zero");
+        drop(printer);
+
+        assert!(
+            err.to_string().contains("kubectl patch failed"),
+            "error must mention kubectl patch failure, got: {err}"
+        );
+        let json = cap.json().expect("error_doc must carry data payload");
+        assert_eq!(json["error"], "inject_failed");
+        assert_eq!(json["namespace"], "staging");
+        assert_eq!(json["resource"], "statefulset/db");
+        assert_eq!(json["kind"], "statefulset");
+        assert_eq!(json["name"], "db");
+        assert_eq!(json["exitCode"], 1);
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_inject_multi_module_success_joins_annotation_csv() {
+        let _shim = KubectlPathShim::new(0);
+        let (printer, cap) = Printer::for_test_doc();
+        let modules = vec![
+            "nettools:1.0.0".to_string(),
+            "debug-utils:2.1.0".to_string(),
+        ];
+
+        cmd_inject(&printer, "deployment/myapp", &modules, "default")
+            .expect("happy path must succeed");
+        drop(printer);
+
+        let json = cap.json().expect("success doc must carry data payload");
+        let mods = json["modules"].as_array().expect("modules array");
+        assert_eq!(mods.len(), 2);
+        assert_eq!(mods[0], "nettools:1.0.0");
+        assert_eq!(mods[1], "debug-utils:2.1.0");
+    }
+
+    // --- cmd_exec: success path (kubectl exec exit 0) ---
+
+    #[test]
+    #[serial]
+    fn cmd_exec_succeeds_when_kubectl_exits_zero() {
+        let _shim = KubectlPathShim::new(0);
+        let (printer, cap) = Printer::for_test_doc();
+        let modules = vec!["nettools:1.0.0".to_string()];
+        let command = vec!["echo".to_string(), "hello".to_string()];
+
+        cmd_exec(&printer, "mypod", &modules, "prod", &command).expect("cmd_exec must succeed");
+        drop(printer);
+
+        let json = cap.json().expect("info doc must carry data payload");
+        assert_eq!(json["pod"], "mypod");
+        assert_eq!(json["namespace"], "prod");
+        assert_eq!(json["modules"][0], "nettools:1.0.0");
+        let cmd_arr = json["command"].as_array().expect("command array");
+        assert_eq!(cmd_arr[0], "echo");
+        assert_eq!(cmd_arr[1], "hello");
+    }
+}

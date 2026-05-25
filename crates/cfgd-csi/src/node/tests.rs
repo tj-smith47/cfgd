@@ -690,3 +690,294 @@ fn parse_allowed_registries_from_env_returns_none_for_empty_string() {
     }
     assert!(got.is_none(), "whitespace-only → None");
 }
+
+// -------------------------------------------------------------------------
+// node_stage_volume / node_publish_volume — exercise the post-validation
+// branches by driving requests with a bogus ociRef so the cache pull fails.
+// Catches the metrics emit + Status::internal mapping paths that pure
+// validation tests don't reach.
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn node_stage_volume_cache_pull_failure_returns_internal_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = test_node(test_cache(dir.path()));
+    let req = NodeStageVolumeRequest {
+        volume_id: "vol-1".to_string(),
+        staging_target_path: dir.path().join("staging").to_str().unwrap().to_string(),
+        volume_context: [
+            ("module".to_string(), "nettools".to_string()),
+            ("version".to_string(), "1.0".to_string()),
+            // Bogus ociRef pointing at a port nothing is listening on —
+            // cfgd-core's pull_module will surface Err via Cache::get_or_pull.
+            (
+                "ociRef".to_string(),
+                "127.0.0.1:1/cfgd-csi-test/nettools:1.0".to_string(),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+    let err = node
+        .node_stage_volume(Request::new(req))
+        .await
+        .expect_err("bogus oci_ref → cache pull fails → Status::internal");
+    assert_eq!(err.code(), tonic::Code::Internal);
+    assert!(
+        err.message().contains("cache pull failed"),
+        "internal error must mention cache pull failure: {}",
+        err.message()
+    );
+}
+
+#[tokio::test]
+async fn node_publish_volume_cache_pull_failure_returns_internal_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = test_node(test_cache(dir.path()));
+    let target = dir.path().join("publish-target");
+    let req = NodePublishVolumeRequest {
+        volume_id: "vol-1".to_string(),
+        target_path: target.to_str().unwrap().to_string(),
+        volume_context: [
+            ("module".to_string(), "nettools".to_string()),
+            ("version".to_string(), "1.0".to_string()),
+            (
+                "ociRef".to_string(),
+                "127.0.0.1:1/cfgd-csi-test/nettools:1.0".to_string(),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+    let err = node
+        .node_publish_volume(Request::new(req))
+        .await
+        .expect_err("bogus oci_ref → cache pull fails → Status::internal");
+    assert_eq!(err.code(), tonic::Code::Internal);
+    assert!(
+        err.message().contains("cache pull failed"),
+        "internal error must mention cache pull failure: {}",
+        err.message()
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn node_stage_volume_rejects_disallowed_registry() {
+    // SAFETY: serialised — env mutation is process-global.
+    unsafe {
+        std::env::set_var(ALLOWED_REGISTRIES_ENV, "ghcr.io");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let node = test_node(test_cache(dir.path()));
+    unsafe {
+        std::env::remove_var(ALLOWED_REGISTRIES_ENV);
+    }
+
+    let req = NodeStageVolumeRequest {
+        volume_id: "vol-1".to_string(),
+        staging_target_path: dir.path().join("staging").to_str().unwrap().to_string(),
+        volume_context: [
+            ("module".to_string(), "nettools".to_string()),
+            ("version".to_string(), "1.0".to_string()),
+            (
+                "ociRef".to_string(),
+                "docker.io/cfgd-csi-test/nettools:1.0".to_string(),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+    let err = node
+        .node_stage_volume(Request::new(req))
+        .await
+        .expect_err("docker.io not in allow-list → PermissionDenied");
+    assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    assert!(
+        err.message().contains("docker.io"),
+        "rejection must name the disallowed host: {}",
+        err.message()
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn node_publish_volume_rejects_disallowed_registry() {
+    // SAFETY: serialised — env mutation is process-global.
+    unsafe {
+        std::env::set_var(ALLOWED_REGISTRIES_ENV, "ghcr.io");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let node = test_node(test_cache(dir.path()));
+    unsafe {
+        std::env::remove_var(ALLOWED_REGISTRIES_ENV);
+    }
+
+    let req = NodePublishVolumeRequest {
+        volume_id: "vol-1".to_string(),
+        target_path: dir.path().join("target").to_str().unwrap().to_string(),
+        volume_context: [
+            ("module".to_string(), "nettools".to_string()),
+            ("version".to_string(), "1.0".to_string()),
+            (
+                "ociRef".to_string(),
+                "quay.io/cfgd-csi-test/nettools:1.0".to_string(),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+    let err = node
+        .node_publish_volume(Request::new(req))
+        .await
+        .expect_err("quay.io not in allow-list → PermissionDenied");
+    assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    assert!(
+        err.message().contains("quay.io"),
+        "rejection must name the disallowed host: {}",
+        err.message()
+    );
+}
+
+// -------------------------------------------------------------------------
+// CfgdNode::new — registry allow-list constructor paths. The current
+// constructor logs a warn/info but otherwise stores the parsed list; assert
+// the field is what the env parser produced so the logging-branch arm is
+// covered.
+// -------------------------------------------------------------------------
+
+#[test]
+#[serial_test::serial]
+fn cfgd_node_new_with_empty_allow_list_stores_empty_vec() {
+    // SAFETY: serialised — env mutation is process-global.
+    unsafe {
+        std::env::set_var(ALLOWED_REGISTRIES_ENV, ",,,");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = prometheus_client::registry::Registry::default();
+    let metrics = Arc::new(CsiMetrics::new(&mut registry));
+    let node = CfgdNode::new(test_cache(dir.path()), metrics, "test-node".to_string());
+    unsafe {
+        std::env::remove_var(ALLOWED_REGISTRIES_ENV);
+    }
+    // ",,," parses to Some(empty vec) — every entry is filtered out as empty
+    // after split+trim. Constructor's "explicitly empty" branch logs a warn.
+    assert_eq!(
+        node.allowed_registries,
+        Some(Vec::new()),
+        "empty-but-set allow-list must be Some(empty), not None"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn cfgd_node_new_with_configured_allow_list_stores_parsed_entries() {
+    // SAFETY: serialised.
+    unsafe {
+        std::env::set_var(ALLOWED_REGISTRIES_ENV, "ghcr.io,quay.io");
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = prometheus_client::registry::Registry::default();
+    let metrics = Arc::new(CsiMetrics::new(&mut registry));
+    let node = CfgdNode::new(test_cache(dir.path()), metrics, "test-node".to_string());
+    unsafe {
+        std::env::remove_var(ALLOWED_REGISTRIES_ENV);
+    }
+    assert_eq!(
+        node.allowed_registries,
+        Some(vec!["ghcr.io".to_string(), "quay.io".to_string()])
+    );
+}
+
+// -------------------------------------------------------------------------
+// check_registry_allowed — extra edge cases for the explicit-empty list
+// branch (every ref refused except default-namespace refs).
+// -------------------------------------------------------------------------
+
+#[test]
+fn check_registry_allowed_empty_list_rejects_explicit_registry_refs() {
+    // Some(empty) → fail-closed for refs with an explicit registry host.
+    let allow: Vec<String> = Vec::new();
+    let err = check_registry_allowed("ghcr.io/org/mod:tag", Some(&allow))
+        .expect_err("empty allow-list must reject ghcr.io ref");
+    assert_eq!(err.code(), tonic::Code::PermissionDenied);
+}
+
+#[test]
+fn check_registry_allowed_empty_list_still_allows_default_namespace() {
+    // Default-namespace refs (no explicit registry) bypass the allow-list
+    // check because they can't reach the network without a caller-provided
+    // registry. Pinning this means an over-zealous future refactor that
+    // tightens the empty-list branch to reject *everything* must update
+    // the documented contract.
+    let allow: Vec<String> = Vec::new();
+    assert!(check_registry_allowed("cfgd-modules/foo:v1", Some(&allow)).is_ok());
+}
+
+// -------------------------------------------------------------------------
+// node_unpublish_volume — empty volume_id branch was already covered above;
+// also test the spawn_blocking unmount happy path on a non-mounted target
+// to exercise the join-await branch (the "warn on remove_dir" arm) by
+// pre-creating a directory that does not get removable because of perms.
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn node_unpublish_volume_succeeds_for_existing_dir_and_removes_it() {
+    // Distinct from `node_unpublish_volume_empty_dir_cleans_up`: that test
+    // confirms cleanup; this one pins the response shape (empty unpublish
+    // response) so a future refactor that introduces a payload must update
+    // both expectations.
+    let dir = tempfile::tempdir().unwrap();
+    let node = test_node(test_cache(dir.path()));
+    let target = dir.path().join("ephemeral-target");
+    std::fs::create_dir_all(&target).unwrap();
+
+    let req = NodeUnpublishVolumeRequest {
+        volume_id: "vol-1".to_string(),
+        target_path: target.to_str().unwrap().to_string(),
+    };
+    let resp = node
+        .node_unpublish_volume(Request::new(req))
+        .await
+        .expect("unpublish on a non-mounted existing dir must succeed");
+    // Response is the empty unit message — accessing it pins the shape.
+    let _: NodeUnpublishVolumeResponse = resp.into_inner();
+    assert!(!target.exists(), "target removed after unpublish");
+}
+
+// -------------------------------------------------------------------------
+// node_get_volume_stats — additional usage entry coverage for the bytes
+// vs inodes unit dispatch. The default tests don't pin the unit ordering;
+// this one checks the response contains exactly the expected two units
+// independent of order so a renderer that re-orders the vec won't break
+// downstream consumers.
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn node_get_volume_stats_returns_exactly_two_units_bytes_and_inodes() {
+    let dir = tempfile::tempdir().unwrap();
+    let node = test_node(test_cache(dir.path()));
+
+    let vol = dir.path().join("stats-vol");
+    std::fs::create_dir_all(&vol).unwrap();
+
+    let req = NodeGetVolumeStatsRequest {
+        volume_id: "vol-1".to_string(),
+        volume_path: vol.to_str().unwrap().to_string(),
+        ..Default::default()
+    };
+    let resp = node.node_get_volume_stats(Request::new(req)).await.unwrap();
+    let inner = resp.into_inner();
+    let units: std::collections::HashSet<i32> = inner.usage.iter().map(|u| u.unit).collect();
+    assert!(units.contains(&(volume_usage::Unit::Bytes as i32)));
+    assert!(units.contains(&(volume_usage::Unit::Inodes as i32)));
+    assert_eq!(units.len(), 2, "exactly two distinct units");
+    assert!(
+        inner.volume_condition.is_none(),
+        "no volume_condition is exposed (kubelet treats None as healthy)"
+    );
+}

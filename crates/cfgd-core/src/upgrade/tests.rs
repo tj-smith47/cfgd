@@ -3760,3 +3760,190 @@ mod api_base_env_shim {
         assert_eq!(result.version, Version::new(555, 0, 0));
     }
 }
+
+// ---------------------------------------------------------------------------
+// VerificationMode — wire-string + serde round-trip coverage. The wire-string
+// helper is what the upgrade CLI emits in its structured-output payload, so
+// regression here would surface as silent breakage in downstream alerting.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn verification_mode_as_wire_str_cosign() {
+    assert_eq!(VerificationMode::Cosign.as_wire_str(), "cosign");
+}
+
+#[test]
+fn verification_mode_as_wire_str_sha256_only() {
+    assert_eq!(VerificationMode::Sha256Only.as_wire_str(), "sha256-only");
+}
+
+#[test]
+fn verification_mode_as_wire_str_strict_cosign_required() {
+    assert_eq!(
+        VerificationMode::StrictCosignRequired.as_wire_str(),
+        "strict-cosign-required"
+    );
+}
+
+#[test]
+fn verification_mode_serializes_to_kebab_case_wire_values() {
+    // serde JSON serialisation must match the as_wire_str() output exactly.
+    // The two paths are independent (one is a const lookup, the other goes
+    // through serde) and a future refactor that changes one without the
+    // other would break downstream consumers parsing either form.
+    assert_eq!(
+        serde_json::to_value(VerificationMode::Cosign).unwrap(),
+        serde_json::Value::String("cosign".into())
+    );
+    assert_eq!(
+        serde_json::to_value(VerificationMode::Sha256Only).unwrap(),
+        serde_json::Value::String("sha256-only".into())
+    );
+    assert_eq!(
+        serde_json::to_value(VerificationMode::StrictCosignRequired).unwrap(),
+        serde_json::Value::String("strict-cosign-required".into())
+    );
+}
+
+#[test]
+fn verification_mode_deserializes_from_kebab_case_wire_values() {
+    // Round-trip: JSON wire form → enum. Pins the deserialize half so a
+    // consumer that persists the enum can round-trip through cfgd's own
+    // structured output.
+    let cosign: VerificationMode = serde_json::from_str(r#""cosign""#).unwrap();
+    assert_eq!(cosign, VerificationMode::Cosign);
+    let sha: VerificationMode = serde_json::from_str(r#""sha256-only""#).unwrap();
+    assert_eq!(sha, VerificationMode::Sha256Only);
+    let strict: VerificationMode = serde_json::from_str(r#""strict-cosign-required""#).unwrap();
+    assert_eq!(strict, VerificationMode::StrictCosignRequired);
+}
+
+#[test]
+fn verification_mode_round_trip_via_serde() {
+    // Belt-and-suspenders: every variant survives a serialize → deserialize
+    // round trip without drift.
+    for mode in [
+        VerificationMode::Cosign,
+        VerificationMode::Sha256Only,
+        VerificationMode::StrictCosignRequired,
+    ] {
+        let json = serde_json::to_string(&mode).unwrap();
+        let back: VerificationMode = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, mode, "round trip drift for {mode:?}");
+    }
+}
+
+#[test]
+fn verification_mode_rejects_unknown_wire_value() {
+    // Deserializing an unknown variant must Err — guards against silent
+    // expansion if a future release ships with a new value but consumers
+    // haven't updated yet.
+    let err = serde_json::from_str::<VerificationMode>(r#""unknown-mode""#)
+        .expect_err("unknown variant must not silently coerce");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("variant") || msg.contains("unknown"),
+        "error should mention the unknown variant: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// InstallReport — struct shape pinning. The struct fields are public and
+// consumed by the upgrade CLI; a regression that changes either field name
+// or type would break the structured-output payload.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn install_report_carries_path_and_verification_mode() {
+    let target = std::path::PathBuf::from("/tmp/some-cfgd-binary");
+    let report = InstallReport {
+        installed_path: target.clone(),
+        verification_mode: VerificationMode::StrictCosignRequired,
+    };
+    assert_eq!(report.installed_path, target);
+    assert_eq!(
+        report.verification_mode,
+        VerificationMode::StrictCosignRequired
+    );
+}
+
+// ---------------------------------------------------------------------------
+// github_api_base — confirm the unset branch falls through to the production
+// constant. Lives separately because most env-shim tests set the var.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[serial_test::serial]
+fn github_api_base_falls_back_to_production_constant_when_unset() {
+    use crate::test_helpers::EnvVarGuard;
+    // Explicitly unset and confirm the production fallback. Pin the URL so
+    // an inadvertent edit to GITHUB_API_BASE constant surfaces here.
+    let _guard = EnvVarGuard::unset(GITHUB_API_BASE_ENV);
+    assert_eq!(github_api_base(), "https://api.github.com");
+}
+
+#[test]
+#[serial_test::serial]
+fn github_api_base_honors_env_override() {
+    use crate::test_helpers::EnvVarGuard;
+    let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, "https://custom-api.example.com");
+    assert_eq!(github_api_base(), "https://custom-api.example.com");
+}
+
+// ---------------------------------------------------------------------------
+// strip_tag_prefix — additional edge cases not yet covered.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn strip_tag_prefix_uppercase_v_is_preserved() {
+    // strip_prefix is case-sensitive — "V1.0.0" must keep the leading "V".
+    // Pin this so a future "case-insensitive" refactor surfaces here.
+    assert_eq!(strip_tag_prefix("V1.0.0"), "V1.0.0");
+}
+
+#[test]
+fn strip_tag_prefix_with_whitespace_around_v_is_not_stripped() {
+    // Whitespace before/after the v means strip_prefix doesn't match —
+    // matters because release tags sometimes have stray whitespace from
+    // git-tag descriptions.
+    assert_eq!(strip_tag_prefix(" v1.0.0"), " v1.0.0");
+    assert_eq!(strip_tag_prefix("v 1.0.0"), " 1.0.0");
+}
+
+// ---------------------------------------------------------------------------
+// download_to_file with no parent dir falls back to "."
+// ---------------------------------------------------------------------------
+
+#[test]
+#[serial_test::serial]
+fn download_to_file_falls_back_to_cwd_when_dest_has_no_parent() {
+    // A dest like "outfile" has no parent → fall back to "." for the
+    // tempfile. Exercise via mockito + a relative dest. We restore CWD on
+    // drop so subsequent tests aren't affected.
+    let work = tempfile::tempdir().unwrap();
+    let prior = std::env::current_dir().unwrap();
+    std::env::set_current_dir(work.path()).unwrap();
+
+    struct CwdGuard(std::path::PathBuf);
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
+    let _g = CwdGuard(prior);
+
+    let mut server = mockito::Server::new();
+    let body = b"contents";
+    let _m = server
+        .mock("GET", "/payload")
+        .with_status(200)
+        .with_body(&body[..])
+        .create();
+    let url = format!("{}/payload", server.url());
+
+    let dest = std::path::PathBuf::from("relative-dest.bin");
+    download_to_file(&url, &dest, None).expect("download with no-parent dest must succeed");
+    let written = std::fs::read(&dest).expect("file must exist at relative dest");
+    assert_eq!(written, body);
+    let _ = std::fs::remove_file(&dest);
+}
