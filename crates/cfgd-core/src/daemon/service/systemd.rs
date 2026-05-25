@@ -81,7 +81,32 @@ pub(crate) fn uninstall_systemd_service() -> Result<()> {
 #[cfg(unix)]
 mod tests {
     use super::*;
+    use crate::test_helpers::EnvVarGuard;
     use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    #[test]
+    #[serial_test::serial]
+    fn install_then_uninstall_systemd_service_writes_and_removes_unit() {
+        let home_dir = TempDir::new().expect("tempdir");
+        let _home_g = EnvVarGuard::set("HOME", home_dir.path().to_str().expect("utf8"));
+
+        let config = home_dir.path().join("cfgd.yaml");
+        std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\n").expect("write config");
+
+        install_systemd_service(&PathBuf::from("/usr/local/bin/cfgd"), &config, Some("ws"))
+            .expect("install");
+
+        let unit_path = home_dir.path().join(SYSTEMD_USER_DIR).join("cfgd.service");
+        let unit = std::fs::read_to_string(&unit_path).expect("read unit");
+        assert!(unit.contains("ExecStart=/usr/local/bin/cfgd"));
+        assert!(unit.contains("--profile ws"));
+
+        uninstall_systemd_service().expect("uninstall");
+        assert!(!unit_path.exists());
+
+        uninstall_systemd_service().expect("idempotent uninstall");
+    }
 
     #[test]
     fn generate_systemd_unit_includes_binary_config_and_quiet_daemon_flags() {

@@ -97,7 +97,37 @@ pub(crate) fn uninstall_launchd_service() -> Result<()> {
 #[cfg(unix)]
 mod tests {
     use super::*;
+    use crate::test_helpers::EnvVarGuard;
     use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    #[test]
+    #[serial_test::serial]
+    fn install_then_uninstall_launchd_service_writes_and_removes_plist() {
+        let home_dir = TempDir::new().expect("tempdir");
+        let _home_g = EnvVarGuard::set("HOME", home_dir.path().to_str().expect("utf8"));
+
+        let config = home_dir.path().join("cfgd.yaml");
+        std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\n").expect("write config");
+
+        install_launchd_service(&PathBuf::from("/usr/local/bin/cfgd"), &config, Some("ws"))
+            .expect("install");
+
+        let plist_path = home_dir
+            .path()
+            .join(LAUNCHD_AGENTS_DIR)
+            .join(format!("{}.plist", LAUNCHD_LABEL));
+        let plist = std::fs::read_to_string(&plist_path).expect("read plist");
+        assert!(plist.contains("<string>/usr/local/bin/cfgd</string>"));
+        assert!(plist.contains("<string>--profile</string>"));
+        assert!(plist.contains("<string>ws</string>"));
+
+        uninstall_launchd_service().expect("uninstall");
+        assert!(!plist_path.exists());
+
+        // Second uninstall is a no-op (file absent).
+        uninstall_launchd_service().expect("idempotent uninstall");
+    }
 
     #[test]
     fn generate_launchd_plist_includes_binary_and_config_paths() {
