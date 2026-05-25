@@ -20,12 +20,8 @@ use crate::{controllers, env, errors, gateway, health, leader, metrics, runtime,
 static OTEL_PROVIDER: std::sync::OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> =
     std::sync::OnceLock::new();
 
-/// Initialize the global tracing subscriber.
-///
-/// Installs an `EnvFilter`-gated fmt subscriber, optionally augmented with
-/// an OpenTelemetry OTLP layer when `OTEL_EXPORTER_OTLP_ENDPOINT` is set.
-/// Uses `try_init` so a no-op return on double-call is safe (lets `run()` be
-/// exercised by tests without conflicting with the per-test subscriber).
+// try_init: if a subscriber is already registered (test harness), skip — the
+// existing fmt subscriber installed by tests is the intended state in that case.
 fn init_tracing() {
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
@@ -77,12 +73,6 @@ fn init_tracing() {
     }
 }
 
-/// Build and register the OTLP tracer, storing the provider in `OTEL_PROVIDER`
-/// for clean shutdown.
-///
-/// Returns an error when the exporter cannot be constructed (e.g., invalid
-/// endpoint or missing tonic TLS support). The caller decides whether to fall
-/// back to fmt-only tracing or to propagate.
 fn init_otel_tracer() -> Result<opentelemetry_sdk::trace::SdkTracer, Box<dyn std::error::Error>> {
     use opentelemetry::trace::TracerProvider;
 
@@ -104,11 +94,6 @@ fn init_otel_tracer() -> Result<opentelemetry_sdk::trace::SdkTracer, Box<dyn std
     Ok(tracer)
 }
 
-/// Wait for SIGINT or SIGTERM and return. Used as one arm of the top-level
-/// `tokio::select!` to trigger graceful shutdown.
-///
-/// Returns an error only if the OS refuses to install the SIGTERM signal
-/// handler, which indicates a broken process environment.
 async fn shutdown_signal() -> Result<()> {
     let ctrl_c = tokio::signal::ctrl_c();
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -121,8 +106,6 @@ async fn shutdown_signal() -> Result<()> {
     Ok(())
 }
 
-/// Emit one tracing event per registered CRD kind so operator startup logs
-/// clearly list which CRDs are expected in the cluster.
 fn log_crd_info() {
     use kube::CustomResourceExt;
 
@@ -148,9 +131,6 @@ fn log_crd_info() {
     );
 }
 
-/// Start the controllers and, if `DEVICE_GATEWAY_ENABLED` is set, the device
-/// gateway alongside them. When the gateway is enabled it becomes the primary
-/// long-running process; the controllers are spawned with a retry loop.
 async fn run_operator(client: Client, metrics: metrics::Metrics) -> Result<()> {
     let gateway_enabled = runtime::is_gateway_enabled();
 
@@ -179,6 +159,17 @@ async fn run_operator(client: Client, metrics: metrics::Metrics) -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn shutdown_drain() {
+    tracing::info!("draining in-flight reconciliations (2s grace)...");
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    if let Some(provider) = OTEL_PROVIDER.get()
+        && let Err(e) = provider.shutdown()
+    {
+        tracing::warn!(error = %e, "OpenTelemetry tracer provider shutdown failed");
+    }
+    tracing::info!("shutdown complete");
 }
 
 /// Full operator lifecycle: connect to the cluster, start ancillary servers
@@ -340,24 +331,10 @@ pub async fn run() -> Result<()> {
             if let Err(e) = result {
                 tracing::warn!(error = %e, "signal handler setup failed; proceeding with shutdown");
             }
-            tracing::info!("draining in-flight reconciliations (2s grace)...");
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            if let Some(provider) = OTEL_PROVIDER.get()
-                && let Err(e) = provider.shutdown()
-            {
-                tracing::warn!(error = %e, "OpenTelemetry tracer provider shutdown failed");
-            }
-            tracing::info!("shutdown complete");
+            shutdown_drain().await;
         },
         _ = shutdown.cancelled() => {
-            tracing::info!("draining in-flight reconciliations (2s grace)...");
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            if let Some(provider) = OTEL_PROVIDER.get()
-                && let Err(e) = provider.shutdown()
-            {
-                tracing::warn!(error = %e, "OpenTelemetry tracer provider shutdown failed");
-            }
-            tracing::info!("shutdown complete");
+            shutdown_drain().await;
         },
     }
 
