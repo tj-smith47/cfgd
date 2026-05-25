@@ -364,3 +364,50 @@ pub fn query_daemon_status() -> Result<Option<DaemonStatusResponse>> {
 
     Ok(Some(status))
 }
+
+#[cfg(test)]
+#[cfg(unix)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn ensure_owner_private_dir_creates_with_mode_700() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("ipc");
+        ensure_owner_private_dir(&dir).expect("should create dir owner-private");
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "must enforce 0700 on the IPC parent");
+    }
+
+    #[test]
+    fn ensure_owner_private_dir_idempotent_when_already_compliant() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("ipc2");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        ensure_owner_private_dir(&dir).expect("idempotent on already-compliant dir");
+    }
+
+    #[test]
+    fn ensure_owner_private_dir_refuses_world_traversable_after_chmod_recovery() {
+        // ensure_owner_private_dir attempts to chmod the dir to 0700. If the
+        // chmod fails (we make the path immutable-style via a symlink to a
+        // file), the function errors out. Cheaper alternative: feed it a path
+        // that points at a regular file — create_dir_all errors, surfacing
+        // the HealthSocketError.
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("not-a-dir");
+        std::fs::write(&file_path, "hello").unwrap();
+        let err = ensure_owner_private_dir(&file_path)
+            .expect_err("create_dir_all on a file path must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("create parent")
+                || msg.contains("chmod parent")
+                || msg.contains("stat parent")
+                || msg.contains("refusing to bind"),
+            "error must reference the IPC parent setup, got: {msg}"
+        );
+    }
+}
