@@ -360,6 +360,77 @@ mod tests {
         assert!(buf.contains("3"), "expected counter value 3 in: {buf}");
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn metrics_handler_returns_text_body_with_registered_metrics() {
+        use axum::extract::State;
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let mut registry = Registry::default();
+        let metrics = Metrics::new(&mut registry);
+        metrics
+            .reconciliations_total
+            .get_or_create(&ReconcileLabels {
+                controller: "metrics_handler_test".to_string(),
+                result: "success".to_string(),
+            })
+            .inc();
+
+        let shared = Arc::new(Mutex::new(registry));
+        let (status, headers, body) = metrics_handler(State(shared)).await;
+
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(headers[0].0, axum::http::header::CONTENT_TYPE);
+        assert!(headers[0].1.contains("openmetrics-text"));
+        assert!(body.contains("cfgd_operator_reconciliations_total"));
+        assert!(body.contains("metrics_handler_test"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_metrics_server_setup_runs_until_serve_loop_blocks() {
+        use std::sync::Arc;
+        use std::time::Duration;
+        use tokio::sync::Mutex;
+
+        let registry = Arc::new(Mutex::new(Registry::default()));
+        let result =
+            tokio::time::timeout(Duration::from_millis(250), run_metrics_server(0, registry)).await;
+        // axum::serve blocks on accept forever — timeout fires, future dropped
+        assert!(
+            result.is_err(),
+            "run_metrics_server should block in serve loop, got {result:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_metrics_server_bind_failure_returns_metrics_error() {
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let registry = Arc::new(Mutex::new(Registry::default()));
+        // Port 1 is privileged; binding without root yields PermissionDenied.
+        // Even when running as root locally, two simultaneous binds to the
+        // same explicit port collide. We bind it first, then call
+        // run_metrics_server on the same port to force the error arm.
+        let blocker = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind blocker");
+        let port = blocker.local_addr().expect("local_addr").port();
+
+        // Hold the port; the next bind should fail with AddrInUse.
+        // We re-bind to the same port via 0.0.0.0 which collides with 127.0.0.1.
+        // (Linux AddrInUse fires when reusing both addr+port on most setups.)
+        let result = run_metrics_server(port, registry).await;
+        drop(blocker);
+
+        match result {
+            Err(OperatorError::Metrics(msg)) => {
+                assert!(msg.contains("bind"), "expected bind error, got {msg}");
+            }
+            other => panic!("expected OperatorError::Metrics, got {other:?}"),
+        }
+    }
+
     #[test]
     fn multiple_label_combinations() {
         let mut registry = Registry::default();
