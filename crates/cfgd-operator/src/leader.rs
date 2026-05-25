@@ -718,9 +718,9 @@ mod tests {
     // rather than the hard-coded defaults.
     // -----------------------------------------------------------------------
 
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn leader_election_new_reads_lease_duration_from_env() {
+    async fn leader_election_new_reads_lease_duration_from_env() {
         unsafe { set_env("LEADER_LEASE_DURATION", "45s") };
         let (ctx, _reg, _harness) = MockKubeHarness::new(vec![]);
         let le = LeaderElection::new(ctx.client.clone(), "ns".into(), "id".into());
@@ -728,9 +728,9 @@ mod tests {
         assert_eq!(le.lease_duration_secs, 45);
     }
 
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn leader_election_new_reads_renew_deadline_from_env() {
+    async fn leader_election_new_reads_renew_deadline_from_env() {
         unsafe { set_env("LEADER_RENEW_DEADLINE", "20s") };
         let (ctx, _reg, _harness) = MockKubeHarness::new(vec![]);
         let le = LeaderElection::new(ctx.client.clone(), "ns".into(), "id".into());
@@ -738,9 +738,9 @@ mod tests {
         assert_eq!(le.renew_deadline_secs, 20);
     }
 
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn leader_election_new_reads_retry_period_from_env() {
+    async fn leader_election_new_reads_retry_period_from_env() {
         unsafe { set_env("LEADER_RETRY_PERIOD", "5s") };
         let (ctx, _reg, _harness) = MockKubeHarness::new(vec![]);
         let le = LeaderElection::new(ctx.client.clone(), "ns".into(), "id".into());
@@ -748,9 +748,9 @@ mod tests {
         assert_eq!(le.retry_period_secs, 5);
     }
 
-    #[test]
+    #[tokio::test]
     #[serial]
-    fn leader_election_new_defaults_when_env_vars_unset() {
+    async fn leader_election_new_defaults_when_env_vars_unset() {
         unsafe {
             remove_env("LEADER_LEASE_DURATION");
             remove_env("LEADER_RENEW_DEADLINE");
