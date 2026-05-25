@@ -1,7 +1,20 @@
 use super::fs_perms::is_executable;
 
-/// Run a [`Command`] with a timeout, killing the process if it exceeds the limit.
-/// Returns `Err` if spawn fails or the process is killed due to timeout.
+/// Grace period between SIGTERM and SIGKILL when a watchdog kills a child.
+/// A SIGTERM-trapping child gets a chance to clean up; if it's still alive
+/// past this window the watchdog escalates to SIGKILL so the daemon can
+/// reclaim the slot regardless of what the child does.
+pub const KILL_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Run a [`Command`] with a timeout. On timeout the watchdog sends SIGTERM,
+/// waits [`KILL_GRACE_PERIOD`] for the child to exit cleanly, then escalates
+/// to SIGKILL (Unix) / `TerminateProcess` retry (Windows).
+///
+/// **Caveat**: if the child forks descendants that inherit its stdout/stderr
+/// pipes (e.g. a shell wrapper spawning a long-running grandchild), SIGKILL
+/// on the immediate child will not close those pipes — `wait_with_output`
+/// will block on them until the grandchild also dies. Production callers
+/// should invoke the target binary directly rather than via a shell wrapper.
 pub fn command_output_with_timeout(
     cmd: &mut std::process::Command,
     timeout: std::time::Duration,
@@ -12,21 +25,23 @@ pub fn command_output_with_timeout(
     let id = child.id();
     let (tx, rx) = mpsc::channel();
 
-    // Spawn a watchdog thread that kills the child after timeout
     std::thread::spawn(move || {
         if rx.recv_timeout(timeout).is_err() {
-            // Timeout expired — kill the process
             terminate_process(id);
+            // SIGTERM-trapping children can hang the wait_with_output below
+            // indefinitely. Give them a grace window to flush, then escalate.
+            if rx.recv_timeout(KILL_GRACE_PERIOD).is_err() {
+                force_kill_process(id);
+            }
         }
     });
 
     let result = child.wait_with_output();
-    // Signal the watchdog to stop (if the process finished before timeout)
     let _ = tx.send(());
     result
 }
 
-/// Send a termination signal to a process by PID.
+/// Send a graceful termination signal to a process by PID.
 /// Unix: sends SIGTERM. Windows: calls TerminateProcess.
 #[cfg(unix)]
 pub fn terminate_process(pid: u32) {
@@ -51,6 +66,21 @@ pub fn terminate_process(pid: u32) {
             CloseHandle(handle);
         }
     }
+}
+
+/// Send an uncatchable kill signal to a process by PID after the graceful
+/// terminate window has elapsed. Unix: SIGKILL. Windows: a second
+/// TerminateProcess call (idempotent — Windows kills are already uncatchable).
+#[cfg(unix)]
+pub fn force_kill_process(pid: u32) {
+    use nix::sys::signal::{Signal, kill};
+    use nix::unistd::Pid;
+    let _ = kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
+}
+
+#[cfg(windows)]
+pub fn force_kill_process(pid: u32) {
+    terminate_process(pid);
 }
 
 /// Check if the current process is running with elevated privileges.
@@ -387,6 +417,31 @@ mod tests {
         );
         let output = result.unwrap();
         assert!(!output.status.success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn force_kill_process_signals_sigkill() {
+        // Spawn a SIGTERM-trapping child, force_kill_process it, assert it exits
+        // with SIGKILL (signal 9).
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("trap '' TERM; sleep 30")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+
+        force_kill_process(pid);
+
+        let status = child.wait().unwrap();
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(
+            status.signal(),
+            Some(9),
+            "expected SIGKILL (9), got status: {status:?}"
+        );
     }
 
     #[test]
