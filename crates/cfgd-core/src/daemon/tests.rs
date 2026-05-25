@@ -7055,6 +7055,32 @@ mod harness {
     }
 
     #[test]
+    fn apply_sighup_reload_states_scope_is_timer_only_to_avoid_silent_surprise() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 90s\n",
+        )
+        .unwrap();
+        let reconcile_secs = AtomicU64::new(300);
+        let sync_secs = AtomicU64::new(300);
+        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+        runner::apply_sighup_reload(&config_path, &reconcile_secs, &sync_secs, &printer);
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("timer intervals only"),
+            "SIGHUP start message must state scope: {}",
+            captured
+        );
+        assert!(
+            captured.contains("other field changes require restart"),
+            "SIGHUP completion line must mention restart for other fields: {}",
+            captured
+        );
+    }
+
+    #[test]
     fn apply_sighup_reload_reports_no_changes_for_silent_config() {
         let tmp = tempfile::TempDir::new().unwrap();
         let config_path = tmp.path().join("cfgd.yaml");

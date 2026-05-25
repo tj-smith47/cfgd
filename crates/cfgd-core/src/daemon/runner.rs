@@ -364,9 +364,20 @@ pub(super) async fn handle_compliance_tick(ctx: &DaemonLoopContext) -> Result<()
     Ok(())
 }
 
-/// Apply a SIGHUP-driven config reload: parse the file at `config_path`, push
-/// any new reconcile/sync intervals into the shared atomics so pump tasks pick
-/// them up on the next tick. Returns nothing; status is reported via `printer`.
+/// Apply a SIGHUP-driven config reload.
+///
+/// **Scope (intentional)**: SIGHUP refreshes ONLY the reconcile and sync timer
+/// intervals. All other daemon-config fields (profile, sources list,
+/// `drift_policy`, `notify_on_drift`, `on_change_reconcile`, compliance config,
+/// packages, files) require a daemon **restart** to take effect, because they
+/// are baked into [`DaemonLoopContext`] / per-source watchers at startup and
+/// changing them in-flight would require tearing down + rebuilding the file
+/// watcher set, the notifier, and the source-status state machine — work that
+/// is not implemented and would be racy with in-flight reconciles.
+///
+/// This scope is intentional; a user editing those fields and sending SIGHUP
+/// must restart the daemon. The startup banner and the reload-completion line
+/// both surface this explicitly so it isn't a silent surprise.
 ///
 /// Split out from the select! branch so the parsing + atomic-update logic is
 /// directly testable without spawning signal handlers.
@@ -376,7 +387,10 @@ pub(super) fn apply_sighup_reload(
     sync_secs: &AtomicU64,
     printer: &Printer,
 ) {
-    printer.status_simple(Role::Info, "Reloading configuration (SIGHUP)...");
+    printer.status_simple(
+        Role::Info,
+        "Reloading configuration (SIGHUP) — timer intervals only; other fields require restart",
+    );
     match config::load_config(config_path) {
         Ok(new_cfg) => {
             let (new_reconcile, new_sync) = compute_sighup_intervals(&new_cfg);
@@ -390,11 +404,17 @@ pub(super) fn apply_sighup_reload(
                 changed.push(format!("sync={:?}", d));
             }
             if changed.is_empty() {
-                printer.status_simple(Role::Info, "Config validated; no timer changes detected");
+                printer.status_simple(
+                    Role::Info,
+                    "Config validated; no timer changes detected (other field changes require restart)",
+                );
             } else {
                 printer.status_simple(
                     Role::Ok,
-                    format!("Timer intervals reloaded: {}", changed.join(", ")),
+                    format!(
+                        "Timer intervals reloaded: {} (other field changes require restart)",
+                        changed.join(", ")
+                    ),
                 );
             }
         }

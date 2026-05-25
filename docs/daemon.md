@@ -187,6 +187,43 @@ cfgd daemon status         # check running state, last reconcile, drift count
 cfgd daemon uninstall      # remove the service
 ```
 
+## Live config reload (SIGHUP)
+
+Sending `SIGHUP` to the running daemon reloads the **reconcile and sync timer
+intervals only**. The reload is intentionally narrow:
+
+```sh
+kill -HUP "$(cfgd daemon status --output json | jq .pid)"
+# → status: "Reloading configuration (SIGHUP) — timer intervals only;
+#            other fields require restart"
+# → status: "Timer intervals reloaded: reconcile=300s, sync=600s
+#            (other field changes require restart)"
+```
+
+Fields that **do** reload on SIGHUP:
+- `daemon.reconcile.interval`
+- `daemon.sync.interval`
+
+Fields that **require a daemon restart** to take effect:
+- `profile` (active-profile change)
+- `sources` list (add / remove / re-prioritize)
+- `daemon.drift_policy`, `daemon.notify_on_drift`, `daemon.on_change_reconcile`
+- `daemon.compliance` block
+- `packages`, `files`, `system` (managed-path set is wired into the file
+  watcher at startup)
+
+Restart with `cfgd daemon` (foreground) or the service-manager equivalent
+(`systemctl --user restart cfgd`, `launchctl kickstart -k gui/$UID/com.cfgd.daemon`,
+`sc.exe stop cfgd && sc.exe start cfgd`).
+
+> Why so narrow? Reconcile / sync intervals are read from atomics each tick, so
+> they can change in-flight without races. The other fields are baked into
+> the watcher set, the `DaemonLoopContext`, and the source-status state
+> machine at startup; changing them in-flight would require tearing down and
+> rebuilding those structures, which is not implemented and would race
+> against in-flight reconciles. Rather than partially-reload and risk subtle
+> inconsistency, SIGHUP refuses to touch them and tells the user to restart.
+
 ## Service Management
 
 `cfgd daemon install` creates a native service definition:
