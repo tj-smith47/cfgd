@@ -1627,6 +1627,24 @@ fn load_source_profile_no_profiles_directory() {
 // ============================================================================
 
 #[test]
+#[serial]
+fn verify_head_signature_with_no_git_on_path_returns_clear_error() {
+    use crate::test_helpers::EnvVarGuard;
+    // Empty PATH → command_available("git") returns false → verify_head_signature
+    // short-circuits with the L565-570 "git CLI is required" error. Marked
+    // #[serial] to avoid racing with parallel tests that shell out to git.
+    let _path = EnvVarGuard::set("PATH", "");
+    let dir = tempfile::tempdir().unwrap();
+    let err = super::verify_head_signature("nogit", dir.path())
+        .expect_err("no git on PATH must surface a require-git error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("git CLI is required") || msg.contains("not available"),
+        "no-git error must call out git: {msg}"
+    );
+}
+
+#[test]
 fn classify_signature_status_good_is_ok() {
     super::classify_signature_status("src", "G").unwrap();
 }
