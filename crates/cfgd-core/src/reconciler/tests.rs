@@ -1013,6 +1013,72 @@ fn conflict_detection_different_content() {
 }
 
 #[test]
+fn conflict_detection_two_profile_actions_same_target_different_content_errs() {
+    // Covers plan.rs L122-129: two profile FileActions hitting the same
+    // target with different content must surface as Conflict.
+    let dir = tempfile::tempdir().unwrap();
+    let file_a = dir.path().join("a.txt");
+    let file_b = dir.path().join("b.txt");
+    std::fs::write(&file_a, "content A").unwrap();
+    std::fs::write(&file_b, "DIFFERENT content B").unwrap();
+
+    let target = PathBuf::from("/home/user/.config/app");
+    let file_actions = vec![
+        FileAction::Create {
+            source: file_a,
+            target: target.clone(),
+            origin: "local".to_string(),
+            strategy: crate::config::FileStrategy::Copy,
+            source_hash: None,
+        },
+        FileAction::Update {
+            source: file_b,
+            target,
+            diff: String::new(),
+            origin: "local".to_string(),
+            strategy: crate::config::FileStrategy::Copy,
+            source_hash: None,
+        },
+    ];
+
+    let err = Reconciler::detect_file_conflicts(&file_actions, &[])
+        .expect_err("profile-vs-profile conflict must error");
+    assert!(err.to_string().contains("conflict"));
+}
+
+#[test]
+fn conflict_detection_two_profile_actions_same_target_identical_content_ok() {
+    // The dedup branch of L121: same target, same content hash → no error.
+    let dir = tempfile::tempdir().unwrap();
+    let file_a = dir.path().join("a.txt");
+    let file_b = dir.path().join("b.txt");
+    std::fs::write(&file_a, "identical").unwrap();
+    std::fs::write(&file_b, "identical").unwrap();
+
+    let target = PathBuf::from("/home/user/.config/app2");
+    let file_actions = vec![
+        FileAction::Create {
+            source: file_a,
+            target: target.clone(),
+            origin: "local".to_string(),
+            strategy: crate::config::FileStrategy::Copy,
+            source_hash: None,
+        },
+        FileAction::Update {
+            source: file_b,
+            target,
+            diff: String::new(),
+            origin: "local".to_string(),
+            strategy: crate::config::FileStrategy::Copy,
+            source_hash: None,
+        },
+    ];
+
+    Reconciler::detect_file_conflicts(&file_actions, &[])
+        .expect("identical-content profile actions must NOT conflict");
+}
+
+#[test]
 fn conflict_detection_identical_content_ok() {
     let dir = tempfile::tempdir().unwrap();
     let file_a = dir.path().join("a.txt");
@@ -5168,6 +5234,59 @@ fn apply_system_skip_logs_warning() {
 }
 
 #[test]
+fn plan_system_emits_set_value_actions_per_drift() {
+    // Covers plan.rs L180-189: when a configurator returns drift entries,
+    // each one becomes a SystemAction::SetValue with the drift fields.
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .system_configurators
+        .push(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
+            vec![
+                crate::providers::SystemDrift {
+                    key: "net.ipv4.ip_forward".to_string(),
+                    expected: "1".to_string(),
+                    actual: "0".to_string(),
+                },
+                crate::providers::SystemDrift {
+                    key: "vm.swappiness".to_string(),
+                    expected: "10".to_string(),
+                    actual: "60".to_string(),
+                },
+            ],
+        )));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let mut profile = MergedProfile::default();
+    profile.system.insert(
+        "sysctl".to_string(),
+        serde_yaml::from_str("{net.ipv4.ip_forward: 1, vm.swappiness: 10}").unwrap(),
+    );
+
+    let actions = reconciler.plan_system(&profile, &[]).unwrap();
+    let set_values: Vec<&SystemAction> = actions
+        .iter()
+        .filter_map(|a| {
+            if let Action::System(sa @ SystemAction::SetValue { .. }) = a {
+                Some(sa)
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(set_values.len(), 2, "one SetValue per drift entry");
+    for sa in &set_values {
+        if let SystemAction::SetValue {
+            configurator, key, ..
+        } = sa
+        {
+            assert_eq!(configurator, "sysctl");
+            assert!(["net.ipv4.ip_forward", "vm.swappiness"].contains(&key.as_str()));
+        }
+    }
+}
+
+#[test]
 fn plan_system_generates_skip_for_unregistered_configurator() {
     let state = test_state();
     let registry = ProviderRegistry::new(); // no configurators
@@ -5720,6 +5839,131 @@ fn plan_modules_encryption_always_with_copy_proceeds() {
         },
         other => panic!("Expected Module action, got {:?}", other),
     }
+}
+
+#[test]
+fn plan_modules_encryption_check_err_skips_with_error_reason() {
+    // is_file_encrypted returns Err for unknown backends (gpg, pgp, etc.) —
+    // the planner records a Skip with the wrapped error reason rather than
+    // crashing. Covers plan.rs L474-486.
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("data.bin");
+    std::fs::write(&source, "anything").unwrap();
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Copy;
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let modules = vec![ResolvedModule {
+        name: "gpg-mod".to_string(),
+        packages: vec![],
+        files: vec![ResolvedFile {
+            source: source.clone(),
+            target: PathBuf::from("/home/user/.gpg-secret"),
+            is_git_source: false,
+            strategy: Some(crate::config::FileStrategy::Copy),
+            encryption: Some(crate::config::EncryptionSpec {
+                backend: "gpg".to_string(),
+                mode: crate::config::EncryptionMode::Always,
+            }),
+        }],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        system: HashMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+    }];
+
+    let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
+    assert_eq!(actions.len(), 1);
+    match &actions[0] {
+        Action::Module(ma) => match &ma.kind {
+            ModuleActionKind::Skip { reason } => {
+                assert!(reason.contains("encryption check failed"), "got: {reason}");
+            }
+            other => panic!("Expected Skip, got {:?}", other),
+        },
+        other => panic!("Expected Module action, got {:?}", other),
+    }
+}
+
+#[test]
+fn plan_modules_encryption_check_err_breaks_after_first_file() {
+    // When the first encrypted file's backend check errors, planner records
+    // a single Skip and short-circuits the rest of the module's files.
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.bin");
+    let b = dir.path().join("b.bin");
+    std::fs::write(&a, "anything").unwrap();
+    std::fs::write(&b, "anything").unwrap();
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Copy;
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let modules = vec![ResolvedModule {
+        name: "multi".to_string(),
+        packages: vec![],
+        files: vec![
+            ResolvedFile {
+                source: a.clone(),
+                target: PathBuf::from("/home/user/.a"),
+                is_git_source: false,
+                strategy: Some(crate::config::FileStrategy::Copy),
+                encryption: Some(crate::config::EncryptionSpec {
+                    backend: "unsupported".to_string(),
+                    mode: crate::config::EncryptionMode::Always,
+                }),
+            },
+            ResolvedFile {
+                source: b.clone(),
+                target: PathBuf::from("/home/user/.b"),
+                is_git_source: false,
+                strategy: Some(crate::config::FileStrategy::Copy),
+                encryption: None,
+            },
+        ],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        system: HashMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+    }];
+
+    let actions = reconciler.plan_modules(&modules, ReconcileContext::Apply);
+    // After the failing encryption check, planner does NOT emit DeployFiles —
+    // single Skip is the only module action emitted.
+    let kinds: Vec<&ModuleActionKind> = actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::Module(ma) => Some(&ma.kind),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        kinds
+            .iter()
+            .any(|k| matches!(k, ModuleActionKind::Skip { reason } if reason.contains("encryption check failed"))),
+        "must emit Skip with check-failed reason"
+    );
+    assert!(
+        !kinds
+            .iter()
+            .any(|k| matches!(k, ModuleActionKind::DeployFiles { .. })),
+        "must NOT emit DeployFiles when encryption check errored"
+    );
 }
 
 #[test]
@@ -8948,4 +9192,265 @@ fn apply_resolve_env_action_collects_secret_into_env_actions() {
     // PathBuf usage to anchor the import even when run on platforms where
     // home expansion differs.
     let _: PathBuf = tmp.path().to_path_buf();
+}
+
+// ---------------------------------------------------------------------------
+// Module on_change error handling (apply.rs L384-400): script failure with
+// default continueOnError=true records an error result but lets apply succeed.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[cfg(unix)]
+fn apply_module_on_change_failure_continues_with_default_continue_on_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("src.txt");
+    let target = dir.path().join("tgt.txt");
+    std::fs::write(&source, "v1").unwrap();
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Copy;
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    // ScriptEntry::Simple defaults continueOnError=true for OnChange phase
+    let module_actions = vec![ResolvedModule {
+        name: "failmod".to_string(),
+        packages: vec![],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: vec![ScriptEntry::Simple("exit 7".to_string())],
+        system: HashMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+    }];
+
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Modules,
+            actions: vec![Action::Module(ModuleAction {
+                module_name: "failmod".to_string(),
+                kind: ModuleActionKind::DeployFiles {
+                    files: vec![crate::modules::ResolvedFile {
+                        source: source.clone(),
+                        target: target.clone(),
+                        is_git_source: false,
+                        strategy: Some(crate::config::FileStrategy::Copy),
+                        encryption: None,
+                    }],
+                },
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseName::Modules),
+            &module_actions,
+            ReconcileContext::Apply,
+            false,
+        )
+        .expect("apply must succeed when continueOnError defaults true");
+
+    let err_result = result
+        .action_results
+        .iter()
+        .find(|r| !r.success && r.description.starts_with("module:failmod:onChange"))
+        .expect("module onChange failure result must be recorded");
+    assert!(err_result.error.is_some());
+}
+
+#[test]
+#[cfg(unix)]
+fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("src.txt");
+    let target = dir.path().join("tgt.txt");
+    std::fs::write(&source, "v1").unwrap();
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Copy;
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let module_actions = vec![ResolvedModule {
+        name: "abortmod".to_string(),
+        packages: vec![],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: vec![ScriptEntry::Full {
+            run: "exit 5".to_string(),
+            timeout: None,
+            idle_timeout: None,
+            continue_on_error: Some(false),
+        }],
+        system: HashMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+    }];
+
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Modules,
+            actions: vec![Action::Module(ModuleAction {
+                module_name: "abortmod".to_string(),
+                kind: ModuleActionKind::DeployFiles {
+                    files: vec![crate::modules::ResolvedFile {
+                        source: source.clone(),
+                        target: target.clone(),
+                        is_git_source: false,
+                        strategy: Some(crate::config::FileStrategy::Copy),
+                        encryption: None,
+                    }],
+                },
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let err = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseName::Modules),
+            &module_actions,
+            ReconcileContext::Apply,
+            false,
+        )
+        .expect_err("explicit continueOnError=false must return Err");
+    let _ = err.to_string();
+}
+
+// ---------------------------------------------------------------------------
+// Profile on_change error handling (apply.rs L327-339): identical pattern but
+// driven from resolved.merged.scripts.on_change instead of module scripts.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[cfg(unix)]
+fn apply_profile_on_change_failure_continues_with_default_continue_on_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("p_src.txt");
+    let target = dir.path().join("p_tgt.txt");
+    std::fs::write(&source, "v1").unwrap();
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Copy;
+    let reconciler = Reconciler::new(&registry, &state);
+    let mut resolved = make_empty_resolved();
+    resolved.merged.scripts.on_change = vec![ScriptEntry::Simple("exit 9".to_string())];
+
+    let file_actions = vec![FileAction::Create {
+        source: source.clone(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: crate::config::FileStrategy::Copy,
+        source_hash: None,
+    }];
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            file_actions,
+            Vec::new(),
+            Vec::new(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+        )
+        .expect("apply must succeed when default continueOnError is true");
+
+    let err_result = result
+        .action_results
+        .iter()
+        .find(|r| !r.success && r.description.starts_with("onChange"))
+        .expect("profile onChange failure must surface in results");
+    assert!(err_result.error.is_some());
+}
+
+#[test]
+#[cfg(unix)]
+fn apply_profile_on_change_failure_aborts_when_continue_on_error_false() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("ap_src.txt");
+    let target = dir.path().join("ap_tgt.txt");
+    std::fs::write(&source, "v1").unwrap();
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Copy;
+    let reconciler = Reconciler::new(&registry, &state);
+    let mut resolved = make_empty_resolved();
+    resolved.merged.scripts.on_change = vec![ScriptEntry::Full {
+        run: "exit 11".to_string(),
+        timeout: None,
+        idle_timeout: None,
+        continue_on_error: Some(false),
+    }];
+
+    let file_actions = vec![FileAction::Create {
+        source: source.clone(),
+        target: target.clone(),
+        origin: "local".to_string(),
+        strategy: crate::config::FileStrategy::Copy,
+        source_hash: None,
+    }];
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            file_actions,
+            Vec::new(),
+            Vec::new(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let printer = test_printer();
+    let err = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+        )
+        .expect_err("profile onChange continueOnError=false must propagate err");
+    let _ = err.to_string();
 }
