@@ -21,6 +21,7 @@ use std::path::Path;
 
 use cfgd::cli::module;
 use cfgd_core::output::{Printer, PromptAnswer};
+use cfgd_core::test_helpers::test_printer;
 use serial_test::serial;
 
 use common::{cli_for, make_bare_module_repo};
@@ -179,7 +180,7 @@ fn module_upgrade_no_change_human_json() {
     let url = format!("file://{}@v1.0.0", bare.display());
 
     let cli = cli_for(config_dir.path(), config_dir.path());
-    let v2a = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2a = test_printer();
     // Pre-load the lockfile via add_remote.
     module::cmd_module_add_remote(&cli, &v2a, &url, None, true, true).unwrap();
 
@@ -216,7 +217,7 @@ fn module_upgrade_cancelled_human() {
     let url = format!("file://{}@v1.0.0", bare.display());
 
     let cli = cli_for(config_dir.path(), config_dir.path());
-    let v2a = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2a = test_printer();
     module::cmd_module_add_remote(&cli, &v2a, &url, None, true, true).unwrap();
 
     // Push a second tag (v1.1.0) onto the bare repo with a fresh commit.
@@ -254,7 +255,7 @@ fn module_upgrade_happy_human_json() {
     let url = format!("file://{}@v1.0.0", bare.display());
 
     let cli = cli_for(config_dir.path(), config_dir.path());
-    let v2a = cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let v2a = test_printer();
     module::cmd_module_add_remote(&cli, &v2a, &url, None, true, true).unwrap();
 
     push_second_tag(bare_root.path(), "upmod", &bare, "v1.1.0");

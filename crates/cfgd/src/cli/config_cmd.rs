@@ -467,6 +467,7 @@ fn classify_mutate_error(e: &anyhow::Error) -> &'static str {
 mod tests {
     use super::*;
     use cfgd_core::output::OutputFormat;
+    use cfgd_core::test_helpers::test_printer;
 
     fn test_cli_for(config_path: std::path::PathBuf) -> Cli {
         Cli {
@@ -604,7 +605,7 @@ spec:
     fn cmd_config_show_missing_file_bails_with_no_config_msg() {
         let dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(dir.path().join("does-not-exist.yaml"));
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         let err = cmd_config_show(&cli, &printer).unwrap_err();
         assert_eq!(err.to_string(), MSG_NO_CONFIG);
@@ -653,7 +654,7 @@ spec:
     fn cmd_config_get_missing_file_bails_with_no_config_msg() {
         let dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(dir.path().join("does-not-exist.yaml"));
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         let err = cmd_config_get(&cli, &printer, "profile").unwrap_err();
         assert_eq!(err.to_string(), MSG_NO_CONFIG);
@@ -693,7 +694,7 @@ spec:
     fn cmd_config_get_unknown_key_errs() {
         let dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(write_sample_config(dir.path()));
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         let err = cmd_config_get(&cli, &printer, "missing").unwrap_err();
         assert!(
@@ -708,7 +709,7 @@ spec:
         let path = dir.path().join("nospec.yaml");
         std::fs::write(&path, "apiVersion: cfgd.io/v1alpha1\nkind: Config\n").unwrap();
         let cli = test_cli_for(path);
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         let err = cmd_config_get(&cli, &printer, "profile").unwrap_err();
         assert!(
@@ -737,7 +738,7 @@ spec:
     fn cmd_config_set_missing_file_bails_with_no_config_msg() {
         let dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(dir.path().join("does-not-exist.yaml"));
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         let err = cmd_config_set(&cli, &printer, "profile", "dev").unwrap_err();
         assert_eq!(err.to_string(), MSG_NO_CONFIG);
@@ -748,7 +749,7 @@ spec:
         let dir = tempfile::tempdir().unwrap();
         let path = write_sample_config(dir.path());
         let cli = test_cli_for(path.clone());
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         cmd_config_set(&cli, &printer, "profile", "dev").unwrap();
 
@@ -766,7 +767,7 @@ spec:
         let dir = tempfile::tempdir().unwrap();
         let path = write_sample_config(dir.path());
         let cli = test_cli_for(path.clone());
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = test_printer();
         let weird = "value with: colon, # hash, and 'quote'";
 
         cmd_config_set(&cli, &printer, "profile", weird).unwrap();
@@ -784,7 +785,7 @@ spec:
         let dir = tempfile::tempdir().unwrap();
         let path = write_sample_config(dir.path());
         let cli = test_cli_for(path.clone());
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         cmd_config_set(&cli, &printer, "profile", "").unwrap();
 
@@ -801,7 +802,7 @@ spec:
         let dir = tempfile::tempdir().unwrap();
         let path = write_sample_config(dir.path());
         let cli = test_cli_for(path);
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         let err = cmd_config_set(&cli, &printer, "a..b", "x").unwrap_err();
         assert!(
@@ -816,7 +817,7 @@ spec:
     fn cmd_config_unset_missing_file_bails_with_no_config_msg() {
         let dir = tempfile::tempdir().unwrap();
         let cli = test_cli_for(dir.path().join("does-not-exist.yaml"));
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         let err = cmd_config_unset(&cli, &printer, "profile").unwrap_err();
         assert_eq!(err.to_string(), MSG_NO_CONFIG);
@@ -827,7 +828,7 @@ spec:
         let dir = tempfile::tempdir().unwrap();
         let path = write_sample_config(dir.path());
         let cli = test_cli_for(path.clone());
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         cmd_config_unset(&cli, &printer, "profile").unwrap();
 
@@ -844,7 +845,7 @@ spec:
         let dir = tempfile::tempdir().unwrap();
         let path = write_sample_config(dir.path());
         let cli = test_cli_for(path);
-        let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+        let printer = test_printer();
 
         let err = cmd_config_unset(&cli, &printer, "missingKey").unwrap_err();
         assert!(

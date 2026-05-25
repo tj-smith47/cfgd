@@ -1,5 +1,5 @@
 use cfgd_core::output::{OutputFormat, Printer};
-use cfgd_core::test_helpers::EnvVarGuard;
+use cfgd_core::test_helpers::{EnvVarGuard, test_printer};
 use serial_test::serial;
 
 use super::*;
@@ -264,7 +264,7 @@ fn plugin_cli_no_subcommand_fails() {
 
 #[test]
 fn cmd_debug_no_modules_fails() {
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let result = cmd_debug(&printer, "pod", &[], "default", "ubuntu:22.04");
     assert!(result.is_err());
     assert!(
@@ -275,7 +275,7 @@ fn cmd_debug_no_modules_fails() {
 
 #[test]
 fn cmd_debug_invalid_module_format_fails() {
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let modules = vec!["bad-format".to_string()];
     let result = cmd_debug(&printer, "pod", &modules, "default", "ubuntu:22.04");
     assert!(result.is_err());
@@ -290,7 +290,7 @@ fn cmd_debug_invalid_module_format_fails() {
 
 #[test]
 fn cmd_exec_no_modules_fails() {
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let result = cmd_exec(&printer, "pod", &[], "default", &["ls".to_string()]);
     assert!(result.is_err());
     assert!(
@@ -301,7 +301,7 @@ fn cmd_exec_no_modules_fails() {
 
 #[test]
 fn cmd_exec_no_command_fails() {
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let modules = vec!["tool:1.0".to_string()];
     let result = cmd_exec(&printer, "pod", &modules, "default", &[]);
     assert!(result.is_err());
@@ -313,7 +313,7 @@ fn cmd_exec_no_command_fails() {
 
 #[test]
 fn cmd_exec_invalid_module_format_fails() {
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let modules = vec!["noversion".to_string()];
     let result = cmd_exec(&printer, "pod", &modules, "default", &["ls".to_string()]);
     assert!(result.is_err());
@@ -328,7 +328,7 @@ fn cmd_exec_invalid_module_format_fails() {
 
 #[test]
 fn cmd_inject_no_modules_fails() {
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let result = cmd_inject(&printer, "deployment/myapp", &[], "default");
     assert!(result.is_err());
     assert!(
@@ -339,7 +339,7 @@ fn cmd_inject_no_modules_fails() {
 
 #[test]
 fn cmd_inject_invalid_resource_format_fails() {
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let modules = vec!["tool:1.0".to_string()];
     let result = cmd_inject(&printer, "bad-resource-format", &modules, "default");
     assert!(result.is_err());
@@ -352,7 +352,7 @@ fn cmd_inject_invalid_resource_format_fails() {
 
 #[test]
 fn cmd_inject_invalid_module_format_fails() {
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let printer = test_printer();
     let modules = vec!["noversion".to_string()];
     let result = cmd_inject(&printer, "deployment/myapp", &modules, "default");
     assert!(result.is_err());

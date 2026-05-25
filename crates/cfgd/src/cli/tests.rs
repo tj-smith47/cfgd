@@ -1131,9 +1131,7 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
     }
 }
 
-fn test_printer() -> cfgd_core::output::Printer {
-    cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet)
-}
+use cfgd_core::test_helpers::test_printer;
 
 /// Capturing Printer at `Normal` verbosity for tests that need to inspect
 /// headings, sections, or other output that requires non-quiet verbosity.

@@ -154,7 +154,6 @@ pub(super) fn content_hash_if_exists(path: &std::path::Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::output::Printer;
     use crate::state::FileBackupRecord;
 
     fn record(path: &std::path::Path, content: &[u8], perms: Option<u32>) -> FileBackupRecord {
@@ -172,9 +171,7 @@ mod tests {
         }
     }
 
-    fn quiet_printer() -> Printer {
-        Printer::new(crate::output::Verbosity::Quiet)
-    }
+    use crate::test_helpers::test_printer as quiet_printer;
 
     #[test]
     fn restore_writes_content_and_marks_restored() {

@@ -92,9 +92,7 @@ fn parse_secret_spec_empty_target() {
 
 // --- update_script_list ---
 
-fn make_printer() -> cfgd_core::output::Printer {
-    cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet)
-}
+use cfgd_core::test_helpers::test_printer as make_printer;
 
 #[test]
 fn update_script_list_add_to_empty() {

@@ -1,5 +1,5 @@
 use super::*;
-use crate::test_helpers::test_state;
+use crate::test_helpers::{test_printer, test_state};
 
 fn quiet_reconcile_ctx<'a>(
     state: &'a Arc<Mutex<DaemonState>>,
@@ -4802,7 +4802,7 @@ fn handle_reconcile_with_no_config_file() {
 
     let tmp = tempfile::tempdir().unwrap();
     let state_dir = tmp.path().to_path_buf();
-    let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+    let printer = test_printer();
 
     // Passing a nonexistent config path should return gracefully (no panic)
     handle_reconcile(
@@ -4869,7 +4869,7 @@ fn handle_reconcile_with_no_profile() {
     )
     .unwrap();
 
-    let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+    let printer = test_printer();
     // No profile override and no profile in config — should return gracefully
     handle_reconcile(
         &config_path,
@@ -5306,7 +5306,7 @@ async fn handle_reconcile_with_valid_config_records_drift_events() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         handle_reconcile(
             &cp,
             None,
@@ -5408,7 +5408,7 @@ async fn handle_reconcile_notify_only_drift_policy_does_not_apply() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         handle_reconcile(
             &cp,
             None,
@@ -5492,7 +5492,7 @@ async fn handle_reconcile_no_drift_when_no_actions() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         handle_reconcile(
             &cp,
             None,
@@ -5578,7 +5578,7 @@ async fn handle_reconcile_with_profile_override() {
     let cp = config_path.clone();
     // Override profile to "default" which exists
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         handle_reconcile(
             &cp,
             Some("default"),
@@ -5674,7 +5674,7 @@ async fn handle_reconcile_multiple_actions_records_all_drift() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         handle_reconcile(
             &cp,
             None,
@@ -5790,7 +5790,7 @@ async fn handle_reconcile_auto_policy_with_drift_invokes_apply_success() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         handle_reconcile(
             &cp,
             None,
@@ -5852,7 +5852,7 @@ async fn handle_reconcile_auto_policy_apply_failure_notifies() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         handle_reconcile(
             &cp,
             None,
@@ -5945,7 +5945,7 @@ async fn handle_reconcile_runs_on_drift_scripts() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         handle_reconcile(
             &cp,
             None,
@@ -6028,7 +6028,7 @@ async fn handle_reconcile_notify_only_with_notify_on_drift_sends_notification() 
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         // notify_on_drift = true → notifier.notify() reached
         handle_reconcile(
             &cp,
@@ -10388,7 +10388,7 @@ async fn handle_reconcile_warns_when_module_resolution_fails_and_continues() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         handle_reconcile(
             &cp,
             None,
@@ -10434,7 +10434,7 @@ async fn handle_reconcile_resolves_non_empty_modules_when_module_dir_exists() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         handle_reconcile(
             &cp,
             None,
@@ -10501,7 +10501,7 @@ async fn handle_reconcile_auto_apply_with_sources_processes_decisions_and_resolv
     let sd = state_dir.clone();
     let cp = config_path.clone();
     tokio::task::spawn_blocking(move || {
-        let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+        let printer = test_printer();
         handle_reconcile(
             &cp,
             None,
@@ -11160,7 +11160,7 @@ mod handle_reconcile_extra_branches {
         let sd = state_dir.clone();
         let cp = config_path.clone();
         tokio::task::spawn_blocking(move || {
-            let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+            let printer = test_printer();
             handle_reconcile(
                 &cp,
                 None,
@@ -11227,7 +11227,7 @@ mod handle_reconcile_extra_branches {
         let cp = config_path.clone();
 
         tokio::task::spawn_blocking(move || {
-            let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+            let printer = test_printer();
             handle_reconcile(
                 &cp,
                 None,
@@ -11261,7 +11261,7 @@ mod handle_reconcile_extra_branches {
         let sd = state_dir.clone();
         let cp = config_path.clone();
         tokio::task::spawn_blocking(move || {
-            let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+            let printer = test_printer();
             handle_reconcile(
                 &cp,
                 None,
@@ -11380,8 +11380,8 @@ mod tests_run_daemon_wrapper {
     use crate::daemon::run_daemon;
     use crate::daemon::{MergedProfile, ResolvedProfile};
     use crate::errors::Result as CfgdResult;
-    use crate::output::{Printer, Verbosity};
     use crate::providers::{FileAction, PackageAction, PackageManager, ProviderRegistry};
+    use crate::test_helpers::test_printer;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
@@ -11408,7 +11408,7 @@ mod tests_run_daemon_wrapper {
 
     #[tokio::test(flavor = "current_thread")]
     async fn run_daemon_with_invalid_config_returns_err_early() {
-        let printer = Arc::new(Printer::new(Verbosity::Quiet));
+        let printer = Arc::new(test_printer());
         let hooks: Arc<dyn DaemonHooks> = Arc::new(StubHooks2);
         let bogus_path = PathBuf::from("/nonexistent-cfgd-cfg-7f9a/does-not-exist.yaml");
         let result = run_daemon(bogus_path, None, printer, hooks).await;

@@ -328,11 +328,7 @@ pub(super) fn cmd_daemon_service() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cfgd_core::output::Verbosity;
-
-    fn make_printer() -> Printer {
-        Printer::new(Verbosity::Quiet)
-    }
+    use cfgd_core::test_helpers::test_printer as make_printer;
 
     fn make_status(running: bool) -> cfgd_core::daemon::DaemonStatusResponse {
         cfgd_core::daemon::DaemonStatusResponse {

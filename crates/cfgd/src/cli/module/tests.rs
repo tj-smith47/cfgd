@@ -22,9 +22,7 @@ fn make_pkg(name: &str) -> config::ModulePackageEntry {
     }
 }
 
-fn make_printer() -> cfgd_core::output::Printer {
-    cfgd_core::output::Printer::new(cfgd_core::output::Verbosity::Quiet)
-}
+use cfgd_core::test_helpers::test_printer as make_printer;
 
 // --- apply_module_sets ---
 
