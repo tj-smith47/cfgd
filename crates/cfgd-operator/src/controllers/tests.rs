@@ -3346,3 +3346,121 @@ async fn emit_event_does_not_panic_on_failure() {
     )
     .await;
 }
+
+mod tests_run {
+    //! Exercises the top-level `run()` controller orchestrator. The function
+    //! `tokio::join!`s five `Controller::run().for_each(...)` futures that
+    //! block on watcher streams forever, so the test wraps it in
+    //! `tokio::time::timeout` to cover the setup + builder code (lines 151–246)
+    //! without waiting for the joined futures to complete.
+    use super::super::run;
+    use crate::controllers::test_kube_harness::MockKubeHarness;
+    use std::time::Duration;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_setup_and_join_block_executed() {
+        let (ctx, _registry, harness) = MockKubeHarness::new(vec![]);
+        let client = ctx.client.clone();
+        let metrics = ctx.metrics.clone();
+        drop(harness);
+
+        let outcome = tokio::time::timeout(Duration::from_millis(250), run(client, metrics)).await;
+
+        assert!(
+            outcome.is_err(),
+            "controllers::run() should block indefinitely on tokio::join!, got {outcome:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_with_pod_name_env_uses_it_for_reporter_instance() {
+        let _g = cfgd_core::test_helpers::EnvVarGuard::set("POD_NAME", "operator-pod-77");
+        let (ctx, _registry, harness) = MockKubeHarness::new(vec![]);
+        let client = ctx.client.clone();
+        let metrics = ctx.metrics.clone();
+        drop(harness);
+
+        let outcome = tokio::time::timeout(Duration::from_millis(250), run(client, metrics)).await;
+        assert!(outcome.is_err());
+    }
+}
+
+mod tests_namespaced_api {
+    use super::super::namespaced_api;
+    use crate::controllers::test_kube_harness::MockKubeHarness;
+    use crate::crds::MachineConfig;
+    use crate::errors::OperatorError;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn namespaced_api_empty_namespace_returns_reconciliation_error() {
+        let (ctx, _registry, harness) = MockKubeHarness::new(vec![]);
+        let err = namespaced_api::<MachineConfig>(&ctx.client, "").unwrap_err();
+        match err {
+            OperatorError::Reconciliation(msg) => {
+                assert!(msg.contains("no namespace"), "unexpected msg: {msg}");
+            }
+            other => panic!("expected Reconciliation, got {other:?}"),
+        }
+        drop(harness);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn namespaced_api_non_empty_namespace_returns_api() {
+        let (ctx, _registry, harness) = MockKubeHarness::new(vec![]);
+        let api = namespaced_api::<MachineConfig>(&ctx.client, "my-ns");
+        assert!(api.is_ok(), "expected Ok(Api), got {api:?}");
+        drop(harness);
+    }
+}
+
+mod tests_record_reconcile_success {
+    use super::super::record_reconcile_success;
+    use crate::controllers::test_kube_harness::MockKubeHarness;
+    use crate::metrics::ReconcileLabels;
+    use std::time::Instant;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn record_reconcile_success_increments_and_observes() {
+        let (ctx, _registry, harness) = MockKubeHarness::new(vec![]);
+        let start = Instant::now();
+        record_reconcile_success(&ctx, "tested_controller", start);
+
+        let labels = ReconcileLabels {
+            controller: "tested_controller".to_string(),
+            result: "success".to_string(),
+        };
+        let counter = ctx.metrics.reconciliations_total.get_or_create(&labels);
+        assert_eq!(counter.get(), 1);
+        drop(harness);
+    }
+}
+
+mod tests_log_reconcile {
+    use super::super::log_reconcile;
+    use crate::controllers::test_fixtures::machine_config;
+    use crate::crds::MachineConfig;
+    use kube::runtime::controller::Action;
+    use kube::runtime::reflector::ObjectRef;
+
+    #[test]
+    fn log_reconcile_ok_branch_returns_ready() {
+        let f = log_reconcile::<MachineConfig>("MachineConfig");
+        let obj = machine_config("m1", "default");
+        let obj_ref = ObjectRef::from_obj(&obj);
+        let ready = f(Ok((obj_ref, Action::await_change())));
+        let _: () = futures::executor::block_on(ready);
+    }
+
+    #[test]
+    fn log_reconcile_err_branch_returns_ready() {
+        use crate::errors::OperatorError;
+        let f = log_reconcile::<MachineConfig>("MachineConfig");
+        let obj = machine_config("err-obj", "default");
+        let err = kube::runtime::controller::Error::ReconcilerFailed(
+            OperatorError::Reconciliation("synthetic".to_string()),
+            ObjectRef::from_obj(&obj).erase(),
+        );
+        let ready = f(Err(err));
+        let _: () = futures::executor::block_on(ready);
+    }
+}

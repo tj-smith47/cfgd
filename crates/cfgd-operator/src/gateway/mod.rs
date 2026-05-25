@@ -332,3 +332,91 @@ mod tests {
         assert!(allow_origin_header_for(TEST_ORIGIN).await.is_none());
     }
 }
+
+#[cfg(test)]
+mod tests_start_gateway {
+    //! Covers the `start_gateway()` setup path. The function never returns
+    //! naturally — `axum::serve` blocks on its accept loop — so each test
+    //! wraps the call in `tokio::time::timeout`. The setup code
+    //! (db open, cleanup, channel, AppState, router build, listener bind)
+    //! is executed before the timeout fires; the future is then dropped,
+    //! tearing down the spawned background tasks with it.
+    use super::{GatewayConfig, start_gateway};
+    use cfgd_core::test_helpers::EnvVarGuard;
+    use prometheus_client::registry::Registry;
+    use serial_test::serial;
+    use std::time::Duration;
+
+    fn temp_db_path(tmp: &tempfile::TempDir) -> String {
+        tmp.path().join("gateway.db").to_string_lossy().into_owned()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial]
+    async fn start_gateway_with_invalid_db_path_returns_err() {
+        let _g_origins = EnvVarGuard::unset(super::GATEWAY_ALLOWED_ORIGINS_ENV);
+        let _g_api = EnvVarGuard::unset("CFGD_API_KEY");
+        let _g_method = EnvVarGuard::unset("CFGD_ENROLLMENT_METHOD");
+
+        let config = GatewayConfig {
+            port: 0,
+            db_path: "/proc/cfgd-this-path-cannot-exist/gateway.db".to_string(),
+            kube_client: None,
+            retention_days: 1,
+            metrics: None,
+        };
+
+        let result = tokio::time::timeout(Duration::from_secs(2), start_gateway(config)).await;
+        let inner = result.expect("start_gateway returned before timeout");
+        assert!(inner.is_err(), "expected ServerDb::open to fail");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial]
+    async fn start_gateway_setup_runs_without_metrics_until_serve_loop_blocks() {
+        let _g_origins = EnvVarGuard::unset(super::GATEWAY_ALLOWED_ORIGINS_ENV);
+        let _g_api = EnvVarGuard::unset("CFGD_API_KEY");
+        let _g_method = EnvVarGuard::unset("CFGD_ENROLLMENT_METHOD");
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = GatewayConfig {
+            port: 0,
+            db_path: temp_db_path(&tmp),
+            kube_client: None,
+            retention_days: 1,
+            metrics: None,
+        };
+
+        let result = tokio::time::timeout(Duration::from_millis(300), start_gateway(config)).await;
+        assert!(
+            result.is_err(),
+            "start_gateway should block in serve loop, got {result:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial]
+    async fn start_gateway_setup_runs_with_metrics_and_api_key_branch() {
+        let _g_origins = EnvVarGuard::set(super::GATEWAY_ALLOWED_ORIGINS_ENV, "*");
+        let _g_api = EnvVarGuard::set("CFGD_API_KEY", "test-key");
+        let _g_method = EnvVarGuard::unset("CFGD_ENROLLMENT_METHOD");
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut registry = Registry::default();
+        let metrics = crate::metrics::Metrics::new(&mut registry);
+
+        let config = GatewayConfig {
+            port: 0,
+            db_path: temp_db_path(&tmp),
+            kube_client: None,
+            retention_days: 7,
+            metrics: Some(metrics),
+        };
+
+        let result = tokio::time::timeout(Duration::from_millis(300), start_gateway(config)).await;
+        assert!(
+            result.is_err(),
+            "start_gateway should block in serve loop, got {result:?}"
+        );
+    }
+}

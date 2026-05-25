@@ -436,4 +436,149 @@ mod tests {
         let aliases = mock.package_aliases("fd").unwrap();
         assert!(aliases.is_empty());
     }
+
+    #[test]
+    fn parse_secret_reference_1password() {
+        let (provider, rest) = parse_secret_reference("1password://Vault/Item/Field").unwrap();
+        assert_eq!(provider, "1password");
+        assert_eq!(rest, "Vault/Item/Field");
+    }
+
+    #[test]
+    fn parse_secret_reference_bitwarden() {
+        let (provider, rest) = parse_secret_reference("bitwarden://folder/item").unwrap();
+        assert_eq!(provider, "bitwarden");
+        assert_eq!(rest, "folder/item");
+    }
+
+    #[test]
+    fn parse_secret_reference_lastpass() {
+        let (provider, rest) = parse_secret_reference("lastpass://folder/item/field").unwrap();
+        assert_eq!(provider, "lastpass");
+        assert_eq!(rest, "folder/item/field");
+    }
+
+    #[test]
+    fn parse_secret_reference_vault() {
+        let (provider, rest) = parse_secret_reference("vault://secret/path#field").unwrap();
+        assert_eq!(provider, "vault");
+        assert_eq!(rest, "secret/path#field");
+    }
+
+    #[test]
+    fn parse_secret_reference_unknown_returns_none() {
+        assert!(parse_secret_reference("plaintext").is_none());
+        assert!(parse_secret_reference("file:///etc/passwd").is_none());
+        assert!(parse_secret_reference("").is_none());
+    }
+
+    #[test]
+    fn provider_registry_default_matches_new() {
+        let reg = ProviderRegistry::default();
+        assert!(reg.package_managers.is_empty());
+        assert!(reg.system_configurators.is_empty());
+        assert!(reg.file_manager.is_none());
+        assert!(reg.secret_backend.is_none());
+        assert!(reg.secret_providers.is_empty());
+    }
+
+    struct StubConfigurator {
+        name: String,
+        available: bool,
+    }
+
+    impl SystemConfigurator for StubConfigurator {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn is_available(&self) -> bool {
+            self.available
+        }
+        fn current_state(&self) -> Result<serde_yaml::Value> {
+            Ok(serde_yaml::Value::Null)
+        }
+        fn diff(&self, _desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>> {
+            Ok(Vec::new())
+        }
+        fn apply(&self, _desired: &serde_yaml::Value, _printer: &Printer) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn available_system_configurators_filters_unavailable() {
+        let mut reg = ProviderRegistry::new();
+        reg.system_configurators.push(Box::new(StubConfigurator {
+            name: "shell".to_string(),
+            available: true,
+        }));
+        reg.system_configurators.push(Box::new(StubConfigurator {
+            name: "systemd".to_string(),
+            available: false,
+        }));
+
+        let available = reg.available_system_configurators();
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0].name(), "shell");
+    }
+
+    #[test]
+    fn stub_builder_chain_full() {
+        let stub = StubPackageManager::new("brew")
+            .bootstrappable()
+            .with_installed(&["jq", "ripgrep"])
+            .with_package("jq", "1.7.1");
+        assert!(stub.is_available());
+        assert!(stub.can_bootstrap());
+        assert_eq!(stub.installed_packages().unwrap().len(), 2);
+        assert_eq!(
+            stub.available_version("jq").unwrap(),
+            Some("1.7.1".to_string())
+        );
+        assert!(stub.available_version("missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn stub_with_installed_error_returns_err() {
+        let stub =
+            StubPackageManager::new("brew").with_installed_error("simulated brew list failure");
+        let err = stub.installed_packages().unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("simulated brew list failure"),
+            "unexpected error message: {msg}"
+        );
+    }
+
+    #[test]
+    fn stub_default_installed_packages_with_versions_with_content() {
+        let stub = StubPackageManager::new("brew").with_installed(&["fd", "jq"]);
+        let mut pkgs = stub.installed_packages_with_versions().unwrap();
+        pkgs.sort_by(|a, b| a.name.cmp(&b.name));
+        assert_eq!(pkgs.len(), 2);
+        assert_eq!(pkgs[0].name, "fd");
+        assert_eq!(pkgs[0].version, "unknown");
+        assert_eq!(pkgs[1].name, "jq");
+        assert_eq!(pkgs[1].version, "unknown");
+    }
+
+    #[test]
+    fn stub_default_path_dirs_empty() {
+        let stub = StubPackageManager::new("apt");
+        assert!(stub.path_dirs().is_empty());
+    }
+
+    #[test]
+    fn package_info_serde_round_trips() {
+        let info = PackageInfo {
+            name: "jq".to_string(),
+            version: "1.7.1".to_string(),
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        assert!(json.contains("\"name\":\"jq\""));
+        assert!(json.contains("\"version\":\"1.7.1\""));
+        let parsed: PackageInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.name, info.name);
+        assert_eq!(parsed.version, info.version);
+    }
 }
