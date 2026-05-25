@@ -69,6 +69,10 @@ pub(crate) fn build_module_script_env(
     for ev in module_env {
         // CFGD_* names are reserved for runtime metadata; user values are ignored.
         if ev.name.starts_with("CFGD_") {
+            tracing::debug!(
+                name = %ev.name,
+                "spec.env entry dropped: CFGD_* names are reserved for runtime metadata"
+            );
             continue;
         }
         env.push((ev.name.clone(), ev.value.clone()));
