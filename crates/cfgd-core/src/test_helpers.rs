@@ -866,6 +866,48 @@ pub fn test_printer() -> crate::output::Printer {
 }
 
 // ---------------------------------------------------------------------------
+// NoopDaemonHooks
+// ---------------------------------------------------------------------------
+
+/// Empty `DaemonHooks` implementation that returns an empty `ProviderRegistry`
+/// and zero file/package actions. Use in daemon tests that exercise pure
+/// scheduling/state-machine logic and don't care about plan output.
+pub struct NoopDaemonHooks;
+
+impl crate::daemon::DaemonHooks for NoopDaemonHooks {
+    fn build_registry(&self, _: &crate::config::CfgdConfig) -> crate::providers::ProviderRegistry {
+        crate::providers::ProviderRegistry::new()
+    }
+
+    fn plan_files(
+        &self,
+        _: &std::path::Path,
+        _: &crate::config::ResolvedProfile,
+    ) -> crate::errors::Result<Vec<crate::providers::FileAction>> {
+        Ok(vec![])
+    }
+
+    fn plan_packages(
+        &self,
+        _: &crate::config::MergedProfile,
+        _: &[&dyn crate::providers::PackageManager],
+    ) -> crate::errors::Result<Vec<crate::providers::PackageAction>> {
+        Ok(vec![])
+    }
+
+    fn extend_registry_custom_managers(
+        &self,
+        _: &mut crate::providers::ProviderRegistry,
+        _: &crate::config::PackagesSpec,
+    ) {
+    }
+
+    fn expand_tilde(&self, path: &std::path::Path) -> PathBuf {
+        crate::expand_tilde(path)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // FileStrategy re-export for convenience
 // ---------------------------------------------------------------------------
 
@@ -1181,6 +1223,28 @@ pub fn install_named_path_shim(
     let path = bin_dir.path().join(binary);
     std::fs::write(&path, script).expect("write shim");
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    let old_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
+    let path_guard = EnvVarGuard::set("PATH", &new_path);
+    (bin_dir, path_guard)
+}
+
+/// Install several `#!/bin/sh` shims into a single tempdir prepended to PATH.
+/// Each `(name, exit_code)` becomes a 0o755 script that exits with the given
+/// code (no stdout/stderr). Returns `(TempDir, EnvVarGuard)` whose drops
+/// release the temp directory and restore the prior PATH. Use for tests whose
+/// production code-path invokes multiple bare-name binaries (`useradd`, `sudo`,
+/// `bash` etc.) where a single-binary shim is insufficient. Caller is
+/// responsible for the `#[serial]` gate — PATH mutation is process-global.
+#[cfg(unix)]
+pub fn install_named_path_shims(shims: &[(&str, i32)]) -> (tempfile::TempDir, EnvVarGuard) {
+    use std::os::unix::fs::PermissionsExt;
+    let bin_dir = tempfile::tempdir().expect("tempdir");
+    for (name, exit_code) in shims {
+        let path = bin_dir.path().join(name);
+        std::fs::write(&path, format!("#!/bin/sh\nexit {exit_code}\n")).expect("write shim");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    }
     let old_path = std::env::var("PATH").unwrap_or_default();
     let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
     let path_guard = EnvVarGuard::set("PATH", &new_path);

@@ -4594,39 +4594,12 @@ fn record_file_drift_to_records_correct_type() {
 fn discover_managed_paths_with_no_config_returns_empty() {
     use std::path::Path;
 
-    struct TestHooks;
-    impl DaemonHooks for TestHooks {
-        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
-            ProviderRegistry::new()
-        }
-        fn plan_files(
-            &self,
-            _: &Path,
-            _: &ResolvedProfile,
-        ) -> crate::errors::Result<Vec<FileAction>> {
-            Ok(vec![])
-        }
-        fn plan_packages(
-            &self,
-            _: &MergedProfile,
-            _: &[&dyn PackageManager],
-        ) -> crate::errors::Result<Vec<PackageAction>> {
-            Ok(vec![])
-        }
-        fn extend_registry_custom_managers(
-            &self,
-            _: &mut ProviderRegistry,
-            _: &config::PackagesSpec,
-        ) {
-        }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
-    }
-
-    let hooks = TestHooks;
     // Non-existent config file should return empty paths
-    let paths = discover_managed_paths(Path::new("/nonexistent/config.yaml"), None, &hooks);
+    let paths = discover_managed_paths(
+        Path::new("/nonexistent/config.yaml"),
+        None,
+        &crate::test_helpers::NoopDaemonHooks,
+    );
     assert!(
         paths.is_empty(),
         "non-existent config should return no managed paths"
@@ -4770,36 +4743,6 @@ fn handle_reconcile_with_no_config_file() {
     let state = Arc::new(Mutex::new(DaemonState::new()));
     let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
 
-    struct NoopHooks;
-    impl DaemonHooks for NoopHooks {
-        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
-            ProviderRegistry::new()
-        }
-        fn plan_files(
-            &self,
-            _: &Path,
-            _: &ResolvedProfile,
-        ) -> crate::errors::Result<Vec<FileAction>> {
-            Ok(vec![])
-        }
-        fn plan_packages(
-            &self,
-            _: &MergedProfile,
-            _: &[&dyn PackageManager],
-        ) -> crate::errors::Result<Vec<PackageAction>> {
-            Ok(vec![])
-        }
-        fn extend_registry_custom_managers(
-            &self,
-            _: &mut ProviderRegistry,
-            _: &config::PackagesSpec,
-        ) {
-        }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
-    }
-
     let tmp = tempfile::tempdir().unwrap();
     let state_dir = tmp.path().to_path_buf();
     let printer = test_printer();
@@ -4808,7 +4751,14 @@ fn handle_reconcile_with_no_config_file() {
     handle_reconcile(
         Path::new("/nonexistent/path/config.yaml"),
         None,
-        quiet_reconcile_ctx(&state, &notifier, false, &NoopHooks, &state_dir, &printer),
+        quiet_reconcile_ctx(
+            &state,
+            &notifier,
+            false,
+            &crate::test_helpers::NoopDaemonHooks,
+            &state_dir,
+            &printer,
+        ),
     );
     // If we got here without panic, the function handled the missing config gracefully.
     // Verify the state wasn't updated (no reconciliation occurred).
@@ -4828,36 +4778,6 @@ fn handle_reconcile_with_no_profile() {
     let state = Arc::new(Mutex::new(DaemonState::new()));
     let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
 
-    struct NoopHooks;
-    impl DaemonHooks for NoopHooks {
-        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
-            ProviderRegistry::new()
-        }
-        fn plan_files(
-            &self,
-            _: &Path,
-            _: &ResolvedProfile,
-        ) -> crate::errors::Result<Vec<FileAction>> {
-            Ok(vec![])
-        }
-        fn plan_packages(
-            &self,
-            _: &MergedProfile,
-            _: &[&dyn PackageManager],
-        ) -> crate::errors::Result<Vec<PackageAction>> {
-            Ok(vec![])
-        }
-        fn extend_registry_custom_managers(
-            &self,
-            _: &mut ProviderRegistry,
-            _: &config::PackagesSpec,
-        ) {
-        }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
-    }
-
     let tmp = tempfile::tempdir().unwrap();
     let state_dir = tmp.path().to_path_buf();
 
@@ -4874,7 +4794,14 @@ fn handle_reconcile_with_no_profile() {
     handle_reconcile(
         &config_path,
         None,
-        quiet_reconcile_ctx(&state, &notifier, false, &NoopHooks, &state_dir, &printer),
+        quiet_reconcile_ctx(
+            &state,
+            &notifier,
+            false,
+            &crate::test_helpers::NoopDaemonHooks,
+            &state_dir,
+            &printer,
+        ),
     );
     // Should not have updated state since no profile was available
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -5539,36 +5466,6 @@ async fn handle_reconcile_with_profile_override() {
     )
     .unwrap();
 
-    struct EmptyHooks;
-    impl DaemonHooks for EmptyHooks {
-        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
-            ProviderRegistry::new()
-        }
-        fn plan_files(
-            &self,
-            _: &Path,
-            _: &ResolvedProfile,
-        ) -> crate::errors::Result<Vec<FileAction>> {
-            Ok(vec![])
-        }
-        fn plan_packages(
-            &self,
-            _: &MergedProfile,
-            _: &[&dyn PackageManager],
-        ) -> crate::errors::Result<Vec<PackageAction>> {
-            Ok(vec![])
-        }
-        fn extend_registry_custom_managers(
-            &self,
-            _: &mut ProviderRegistry,
-            _: &config::PackagesSpec,
-        ) {
-        }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
-    }
-
     let state = Arc::new(Mutex::new(DaemonState::new()));
     let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
 
@@ -5582,7 +5479,14 @@ async fn handle_reconcile_with_profile_override() {
         handle_reconcile(
             &cp,
             Some("default"),
-            quiet_reconcile_ctx(&st, &not, false, &EmptyHooks, &sd, &printer),
+            quiet_reconcile_ctx(
+                &st,
+                &not,
+                false,
+                &crate::test_helpers::NoopDaemonHooks,
+                &sd,
+                &printer,
+            ),
         );
     })
     .await
@@ -6070,37 +5974,7 @@ fn discover_managed_paths_returns_targets_from_profile() {
         )
         .unwrap();
 
-    struct TestHooks;
-    impl DaemonHooks for TestHooks {
-        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
-            ProviderRegistry::new()
-        }
-        fn plan_files(
-            &self,
-            _: &Path,
-            _: &ResolvedProfile,
-        ) -> crate::errors::Result<Vec<FileAction>> {
-            Ok(vec![])
-        }
-        fn plan_packages(
-            &self,
-            _: &MergedProfile,
-            _: &[&dyn PackageManager],
-        ) -> crate::errors::Result<Vec<PackageAction>> {
-            Ok(vec![])
-        }
-        fn extend_registry_custom_managers(
-            &self,
-            _: &mut ProviderRegistry,
-            _: &config::PackagesSpec,
-        ) {
-        }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            path.to_path_buf()
-        }
-    }
-
-    let paths = discover_managed_paths(&config_path, None, &TestHooks);
+    let paths = discover_managed_paths(&config_path, None, &crate::test_helpers::NoopDaemonHooks);
     assert_eq!(paths.len(), 2);
     assert!(paths.contains(&PathBuf::from("/home/user/.zshrc")));
     assert!(paths.contains(&PathBuf::from("/home/user/.vimrc")));
@@ -6108,37 +5982,11 @@ fn discover_managed_paths_returns_targets_from_profile() {
 
 #[test]
 fn discover_managed_paths_returns_empty_for_missing_config() {
-    struct TestHooks;
-    impl DaemonHooks for TestHooks {
-        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
-            ProviderRegistry::new()
-        }
-        fn plan_files(
-            &self,
-            _: &Path,
-            _: &ResolvedProfile,
-        ) -> crate::errors::Result<Vec<FileAction>> {
-            Ok(vec![])
-        }
-        fn plan_packages(
-            &self,
-            _: &MergedProfile,
-            _: &[&dyn PackageManager],
-        ) -> crate::errors::Result<Vec<PackageAction>> {
-            Ok(vec![])
-        }
-        fn extend_registry_custom_managers(
-            &self,
-            _: &mut ProviderRegistry,
-            _: &config::PackagesSpec,
-        ) {
-        }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            path.to_path_buf()
-        }
-    }
-
-    let paths = discover_managed_paths(Path::new("/nonexistent/config.yaml"), None, &TestHooks);
+    let paths = discover_managed_paths(
+        Path::new("/nonexistent/config.yaml"),
+        None,
+        &crate::test_helpers::NoopDaemonHooks,
+    );
     assert!(paths.is_empty());
 }
 
@@ -6161,37 +6009,11 @@ fn discover_managed_paths_with_profile_override() {
         )
         .unwrap();
 
-    struct TestHooks;
-    impl DaemonHooks for TestHooks {
-        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
-            ProviderRegistry::new()
-        }
-        fn plan_files(
-            &self,
-            _: &Path,
-            _: &ResolvedProfile,
-        ) -> crate::errors::Result<Vec<FileAction>> {
-            Ok(vec![])
-        }
-        fn plan_packages(
-            &self,
-            _: &MergedProfile,
-            _: &[&dyn PackageManager],
-        ) -> crate::errors::Result<Vec<PackageAction>> {
-            Ok(vec![])
-        }
-        fn extend_registry_custom_managers(
-            &self,
-            _: &mut ProviderRegistry,
-            _: &config::PackagesSpec,
-        ) {
-        }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            path.to_path_buf()
-        }
-    }
-
-    let paths = discover_managed_paths(&config_path, Some("custom"), &TestHooks);
+    let paths = discover_managed_paths(
+        &config_path,
+        Some("custom"),
+        &crate::test_helpers::NoopDaemonHooks,
+    );
     assert_eq!(paths.len(), 1);
     assert_eq!(paths[0], PathBuf::from("/home/user/.bashrc"));
 }
@@ -6927,36 +6749,7 @@ mod harness {
 
     /// Minimal DaemonHooks impl that returns empty/identity values. Suitable
     /// for any test that doesn't need package or file planning to do real work.
-    pub(super) struct NoopHooks;
-
-    impl DaemonHooks for NoopHooks {
-        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
-            ProviderRegistry::new()
-        }
-        fn plan_files(
-            &self,
-            _: &Path,
-            _: &ResolvedProfile,
-        ) -> crate::errors::Result<Vec<FileAction>> {
-            Ok(vec![])
-        }
-        fn plan_packages(
-            &self,
-            _: &MergedProfile,
-            _: &[&dyn PackageManager],
-        ) -> crate::errors::Result<Vec<PackageAction>> {
-            Ok(vec![])
-        }
-        fn extend_registry_custom_managers(
-            &self,
-            _: &mut ProviderRegistry,
-            _: &config::PackagesSpec,
-        ) {
-        }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
-    }
+    pub(super) use crate::test_helpers::NoopDaemonHooks as NoopHooks;
 
     /// Build a `DaemonLoopContext` wired for tests. `config_path` is set to a
     /// nonexistent file under `tmp` so any handler that tries to load config
@@ -11114,35 +10907,7 @@ mod handle_reconcile_extra_branches {
         (tmp, config_path, state_dir)
     }
 
-    struct NoopHooks;
-    impl DaemonHooks for NoopHooks {
-        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
-            ProviderRegistry::new()
-        }
-        fn plan_files(
-            &self,
-            _: &Path,
-            _: &ResolvedProfile,
-        ) -> crate::errors::Result<Vec<FileAction>> {
-            Ok(vec![])
-        }
-        fn plan_packages(
-            &self,
-            _: &MergedProfile,
-            _: &[&dyn PackageManager],
-        ) -> crate::errors::Result<Vec<PackageAction>> {
-            Ok(vec![])
-        }
-        fn extend_registry_custom_managers(
-            &self,
-            _: &mut ProviderRegistry,
-            _: &config::PackagesSpec,
-        ) {
-        }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
-    }
+    use crate::test_helpers::NoopDaemonHooks as NoopHooks;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn handle_reconcile_per_module_filter_updates_module_last_reconcile() {

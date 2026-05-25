@@ -733,24 +733,14 @@ mod brew_shim {
         );
     }
 
-    fn write_shim(dir: &std::path::Path, name: &str, exit_code: i32) {
-        use std::os::unix::fs::PermissionsExt;
-        let path = dir.join(name);
-        std::fs::write(&path, format!("#!/bin/sh\nexit {}\n", exit_code)).expect("write shim");
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod shim");
-    }
-
     #[test]
     #[serial]
     fn brew_manager_bootstrap_linux_root_path_success() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        write_shim(tmp.path(), "useradd", 0);
-        write_shim(tmp.path(), "sudo", 0);
-        write_shim(tmp.path(), "bash", 0);
-        let orig_path = std::env::var("PATH").unwrap_or_default();
-        let new_path = format!("{}:{}", tmp.path().display(), orig_path);
-        let _guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
+        let (_tmp, _guard) = cfgd_core::test_helpers::install_named_path_shims(&[
+            ("useradd", 0),
+            ("sudo", 0),
+            ("bash", 0),
+        ]);
         let p = test_printer();
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
             BrewManager.bootstrap(&p).expect("bootstrap ok with shim");
@@ -760,13 +750,11 @@ mod brew_shim {
     #[test]
     #[serial]
     fn brew_manager_bootstrap_linux_root_useradd_failure_returns_err() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        write_shim(tmp.path(), "useradd", 1);
-        write_shim(tmp.path(), "sudo", 0);
-        write_shim(tmp.path(), "bash", 0);
-        let orig_path = std::env::var("PATH").unwrap_or_default();
-        let new_path = format!("{}:{}", tmp.path().display(), orig_path);
-        let _guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
+        let (_tmp, _guard) = cfgd_core::test_helpers::install_named_path_shims(&[
+            ("useradd", 1),
+            ("sudo", 0),
+            ("bash", 0),
+        ]);
         let p = test_printer();
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
             let err = BrewManager
@@ -783,13 +771,11 @@ mod brew_shim {
     #[test]
     #[serial]
     fn brew_manager_bootstrap_linux_root_install_script_failure_returns_err() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        write_shim(tmp.path(), "useradd", 0);
-        write_shim(tmp.path(), "sudo", 1);
-        write_shim(tmp.path(), "bash", 1);
-        let orig_path = std::env::var("PATH").unwrap_or_default();
-        let new_path = format!("{}:{}", tmp.path().display(), orig_path);
-        let _guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
+        let (_tmp, _guard) = cfgd_core::test_helpers::install_named_path_shims(&[
+            ("useradd", 0),
+            ("sudo", 1),
+            ("bash", 1),
+        ]);
         let p = test_printer();
         if cfg!(target_os = "linux") && cfgd_core::is_root() {
             let err = BrewManager
