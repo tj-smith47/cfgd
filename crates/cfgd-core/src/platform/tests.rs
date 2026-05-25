@@ -438,3 +438,44 @@ fn distro_display_all_variants() {
         assert_eq!(format!("{}", distro), *expected);
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn read_command_output_returns_trimmed_stdout_on_success() {
+    let s = super::read_command_output("printf", &["hello world"]).expect("Ok");
+    assert_eq!(s, "hello world");
+}
+
+#[cfg(unix)]
+#[test]
+fn read_command_output_errors_on_nonzero_with_stderr_payload() {
+    // `sh -c 'echo boom >&2; exit 3'` — nonzero exit + stderr text. Error
+    // must include the stderr in the message rather than the exit code.
+    let err = super::read_command_output("sh", &["-c", "echo boom >&2; exit 3"])
+        .expect_err("nonzero must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("boom") && msg.contains("sh"),
+        "error must include stderr + command name: {msg}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn read_command_output_errors_on_nonzero_without_stderr_falls_back_to_exit_code() {
+    // `sh -c 'exit 7'` — nonzero exit, empty stderr. Error must mention
+    // exit code in lieu of stderr.
+    let err = super::read_command_output("sh", &["-c", "exit 7"]).expect_err("nonzero must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("exit code") && msg.contains("7"),
+        "empty-stderr error must surface exit code: {msg}"
+    );
+}
+
+#[test]
+fn read_command_output_errors_on_missing_binary() {
+    let err = super::read_command_output("definitely-not-a-real-command-xyzzy", &[])
+        .expect_err("missing binary must error");
+    let _ = err.to_string();
+}

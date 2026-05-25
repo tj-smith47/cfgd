@@ -7608,6 +7608,47 @@ spec:
 }
 
 #[test]
+fn module_registry_remove_with_registries_but_missing_name_emits_not_found_doc() {
+    // Drives RegistryRemoveOutcome::NotFound (L849-858 in registry.rs): a
+    // config that DOES have registries but none match the requested name
+    // must emit the not_found Doc rather than NoRegistries.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("cfgd.yaml"),
+        r#"apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: t
+spec:
+  profile: default
+  modules:
+    registries:
+      - name: community
+        url: https://github.com/cfgd-community/modules.git
+"#,
+    )
+    .unwrap();
+
+    let cli = test_cli(dir.path());
+    let (printer, buf) = test_printer_capture();
+
+    module::cmd_module_registry_remove(&cli, &printer, "nonexistent").unwrap();
+    drop(printer);
+
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("not found") || output.contains("nonexistent"),
+        "registry removal with missing name must emit not-found doc, got: {output}"
+    );
+
+    // Config must remain unchanged — the matching registry is still there.
+    let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
+    let registries = cfg.spec.modules.unwrap().registries;
+    assert_eq!(registries.len(), 1, "no entry was removed");
+    assert_eq!(registries[0].name, "community");
+}
+
+#[test]
 fn module_registry_remove_not_found() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
