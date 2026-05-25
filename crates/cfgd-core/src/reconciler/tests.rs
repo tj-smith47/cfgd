@@ -9195,6 +9195,93 @@ fn apply_resolve_env_action_collects_secret_into_env_actions() {
 }
 
 // ---------------------------------------------------------------------------
+// update_module_state: covers apply.rs L62-78 (git_sources_json branch) by
+// applying a plan that includes a module with `is_git_source=true` files.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn apply_module_with_git_source_file_serializes_into_module_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("from-git.txt");
+    let target = dir.path().join("target.txt");
+    std::fs::write(&source, "git content").unwrap();
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Copy;
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let module_actions = vec![ResolvedModule {
+        name: "gitmod".to_string(),
+        packages: vec![],
+        files: vec![crate::modules::ResolvedFile {
+            source: source.clone(),
+            target: target.clone(),
+            is_git_source: true,
+            strategy: Some(crate::config::FileStrategy::Copy),
+            encryption: None,
+        }],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        system: HashMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+    }];
+
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Modules,
+            actions: vec![Action::Module(ModuleAction {
+                module_name: "gitmod".to_string(),
+                kind: ModuleActionKind::DeployFiles {
+                    files: vec![crate::modules::ResolvedFile {
+                        source: source.clone(),
+                        target: target.clone(),
+                        is_git_source: true,
+                        strategy: Some(crate::config::FileStrategy::Copy),
+                        encryption: None,
+                    }],
+                },
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseName::Modules),
+            &module_actions,
+            ReconcileContext::Apply,
+            true,
+        )
+        .expect("apply must succeed");
+
+    let row = state
+        .module_state_by_name("gitmod")
+        .expect("module_state_by_name must succeed")
+        .expect("gitmod row must exist");
+    let js = row
+        .git_sources
+        .as_ref()
+        .expect("git_sources must be Some when is_git_source=true");
+    assert!(
+        js.contains("from-git.txt") && js.contains("target.txt"),
+        "git_sources_json must include source/target paths: {js}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Module on_change error handling (apply.rs L384-400): script failure with
 // default continueOnError=true records an error result but lets apply succeed.
 // ---------------------------------------------------------------------------

@@ -340,6 +340,76 @@ mod tests {
     }
 
     #[test]
+    fn build_diff_doc_with_no_drift_emits_ok_no_drift() {
+        let mut payload = DiffOutput::default();
+        payload.summary = DiffSummary {
+            has_file_drift: false,
+            has_pkg_drift: false,
+            has_system_drift: false,
+        };
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_diff_doc(&payload));
+        drop(printer);
+        let out = strip_ansi(&cap.human());
+        assert!(
+            out.contains("No drift detected"),
+            "no-drift doc must say so: {out}"
+        );
+    }
+
+    #[test]
+    fn build_diff_doc_with_any_drift_emits_warn_drift_detected() {
+        let mut payload = DiffOutput::default();
+        payload.summary = DiffSummary {
+            has_file_drift: true,
+            has_pkg_drift: false,
+            has_system_drift: false,
+        };
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_diff_doc(&payload));
+        drop(printer);
+        let out = strip_ansi(&cap.human());
+        assert!(
+            out.contains("Drift detected"),
+            "drift doc must surface warning: {out}"
+        );
+    }
+
+    #[test]
+    fn print_package_drift_skip_only_is_ignored_when_mixed_with_other_actions() {
+        // Covers PackageAction::Skip arm at L276 — a Skip mixed in with real
+        // drift actions must not produce a payload entry of its own.
+        let (printer, _cap) = Printer::for_test_doc();
+        let mut payload = DiffOutput::default();
+        let actions = vec![
+            PackageAction::Skip {
+                manager: "brew".into(),
+                reason: "up to date".into(),
+                origin: "profile".into(),
+            },
+            PackageAction::Install {
+                manager: "cargo".into(),
+                packages: vec!["ripgrep".into()],
+                origin: "profile".into(),
+            },
+            PackageAction::Skip {
+                manager: "npm".into(),
+                reason: "managed externally".into(),
+                origin: "profile".into(),
+            },
+        ];
+        {
+            let section = printer.section("Packages");
+            let has_drift = print_package_drift(&actions, &section, &mut payload);
+            assert!(has_drift, "non-Skip actions count as drift");
+        }
+        drop(printer);
+        // Two Skips + one Install — only the Install lands in payload.packages.
+        assert_eq!(payload.packages.len(), 1);
+        assert_eq!(payload.packages[0].manager, "cargo");
+    }
+
+    #[test]
     fn print_package_drift_missing_packages() {
         let (printer, cap) = Printer::for_test_doc();
         let mut payload = DiffOutput::default();
