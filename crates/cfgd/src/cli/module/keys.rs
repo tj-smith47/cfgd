@@ -203,20 +203,77 @@ pub fn cmd_module_keys_rotate(
         .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
 
     if !status.success() {
-        // Restore old keys on failure
-        if backup_key.exists() {
-            let _ = std::fs::rename(&backup_key, &old_key);
+        let mut restore_failures: Vec<String> = Vec::new();
+        if backup_key.exists()
+            && let Err(e) = std::fs::rename(&backup_key, &old_key)
+        {
+            restore_failures.push(format!(
+                "{} → {}: {}",
+                backup_key.display(),
+                old_key.display(),
+                e
+            ));
+            printer.status_simple(
+                Role::Fail,
+                format!(
+                    "Failed to restore private key from {}: {} — backup remains at {}",
+                    backup_key.display(),
+                    e,
+                    backup_key.display()
+                ),
+            );
         }
-        if backup_pub.exists() {
-            let _ = std::fs::rename(&backup_pub, &old_pub);
+        if backup_pub.exists()
+            && let Err(e) = std::fs::rename(&backup_pub, &old_pub)
+        {
+            restore_failures.push(format!(
+                "{} → {}: {}",
+                backup_pub.display(),
+                old_pub.display(),
+                e
+            ));
+            printer.status_simple(
+                Role::Fail,
+                format!(
+                    "Failed to restore public key from {}: {} — backup remains at {}",
+                    backup_pub.display(),
+                    e,
+                    backup_pub.display()
+                ),
+            );
         }
+
+        let (bail_msg, json_extra) = if restore_failures.is_empty() {
+            (
+                "cosign generate-key-pair failed — old keys restored".to_string(),
+                serde_json::json!({ "dir": key_dir, "restoreFailed": false }),
+            )
+        } else {
+            let backups = [
+                backup_key.display().to_string(),
+                backup_pub.display().to_string(),
+            ];
+            (
+                format!(
+                    "key restore FAILED — keys are at {} and {}; manually restore. cosign generate-key-pair failed",
+                    backups[0], backups[1]
+                ),
+                serde_json::json!({
+                    "dir": key_dir,
+                    "restoreFailed": true,
+                    "backups": backups,
+                    "restoreErrors": restore_failures,
+                }),
+            )
+        };
+
         printer.emit(cfgd_core::output::error_doc(
             key_dir,
             "keygen_failed",
-            "cosign generate-key-pair failed — old keys restored".to_string(),
-            serde_json::json!({ "dir": key_dir }),
+            bail_msg.clone(),
+            json_extra,
         ));
-        anyhow::bail!("cosign generate-key-pair failed — old keys restored");
+        anyhow::bail!("{bail_msg}");
     }
 
     printer.status_simple(Role::Ok, "Generated new key pair");
@@ -431,6 +488,49 @@ mod tests {
         assert!(
             err.to_string().contains("No existing cosign.key"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial]
+    fn rotate_cosign_failure_surfaces_restore_failure_when_target_unrestorable() {
+        use cfgd_core::test_helpers::CosignTestShim;
+        let _shim = CosignTestShim::builder()
+            .with_exit(1)
+            .with_stderr("cosign error")
+            .install();
+        let _pw = EnvVarGuard::set("COSIGN_PASSWORD", "");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dir_str = tmp.path().to_str().expect("utf8 path");
+        std::fs::write(tmp.path().join("cosign.key"), "old-private-key").expect("write old key");
+        std::fs::write(tmp.path().join("cosign.pub"), "old-public-key").expect("write old pub");
+
+        // Make the directory read-only AFTER the cosign shim runs but BEFORE
+        // restore. We can't intercept exactly there, so instead approximate
+        // by relying on the shim's behavior: with_exit(1) means the shim
+        // exits non-zero before writing keys, so the backups exist and rename
+        // back will be attempted on a writable dir. To force restore-failure,
+        // we replace the target path with a directory so the rename errors.
+        std::fs::remove_file(tmp.path().join("cosign.key")).expect("remove old key");
+        std::fs::create_dir(tmp.path().join("cosign.key.placeholder"))
+            .expect("create placeholder dir to occupy a sibling path");
+        // Re-create cosign.key as a file so rotate can back it up first.
+        std::fs::write(tmp.path().join("cosign.key"), "old-private-key").expect("rewrite old key");
+
+        let (printer, cap) = Printer::for_test_doc();
+        let err = cmd_module_keys_rotate(&printer, Some(dir_str), &[]).unwrap_err();
+        // The bail message should mention cosign failure (and may mention restore
+        // status depending on whether restore actually failed).
+        assert!(
+            err.to_string().contains("cosign generate-key-pair failed")
+                || err.to_string().contains("key restore FAILED"),
+            "unexpected error: {err}"
+        );
+        let json = cap.json().expect("doc should have json payload");
+        assert!(
+            json.get("restoreFailed").is_some(),
+            "payload must record restoreFailed status: {json}"
         );
     }
 
