@@ -315,6 +315,7 @@ impl<'a> super::Reconciler<'a> {
                     &env_vars,
                     crate::PROFILE_SCRIPT_TIMEOUT,
                     printer,
+                    &[], // profile-level scripts have no module aliases
                 ) {
                     Ok((desc, changed, _)) => {
                         results.push(ActionResult {
@@ -372,8 +373,14 @@ impl<'a> super::Reconciler<'a> {
                 );
                 let working = &module.dir;
                 for entry in &module.on_change_scripts {
-                    match execute_script(entry, working, &env_vars, MODULE_SCRIPT_TIMEOUT, printer)
-                    {
+                    match execute_script(
+                        entry,
+                        working,
+                        &env_vars,
+                        MODULE_SCRIPT_TIMEOUT,
+                        printer,
+                        &module.aliases,
+                    ) {
                         Ok((desc, changed, _)) => {
                             results.push(ActionResult {
                                 phase: "modules".to_string(),
