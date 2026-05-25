@@ -2633,6 +2633,33 @@ mod bare_repo_load {
 
     #[test]
     #[serial]
+    fn load_source_fetch_errors_when_remote_disappears() {
+        // After a successful clone, drop the bare repo on disk and call
+        // load_source again — fetch_source's CLI + libgit2 fallback both
+        // fail, surfacing the FetchFailed error path (sources/mod.rs
+        // L195-205 spinner + return Err arm).
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let bare = make_bare_with_manifest("missing1", None);
+            let branch = bare.head_branch().to_string();
+            let url = bare.url();
+            let cache_base = tempfile::tempdir().unwrap();
+            let mut mgr = SourceManager::new(cache_base.path());
+            let spec = build_spec("missing1", &url, &branch);
+            let printer = test_printer();
+            mgr.load_source(&spec, &printer).expect("first clone");
+            // Now drop the bare repo — subsequent fetch must fail because
+            // the remote no longer exists.
+            drop(bare);
+            let err = mgr
+                .load_source(&spec, &printer)
+                .expect_err("fetch with missing remote must error");
+            let msg = err.to_string();
+            assert!(!msg.is_empty(), "FetchFailed/GitError must carry a message");
+        });
+    }
+
+    #[test]
+    #[serial]
     fn load_source_clone_then_fetch_via_bare_repo() {
         with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let bare = make_bare_with_manifest("bare1", None);
