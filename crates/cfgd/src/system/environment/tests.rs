@@ -1230,30 +1230,13 @@ fn macos_write_env_sh_overwrites_existing_content() {
     );
 }
 
-fn write_fake_binary(bin_dir: &std::path::Path, name: &str, exit_code: u8, stderr: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    let script = format!(
-        "#!/bin/sh\necho '{}' >&2\nexit {}\n",
-        stderr.replace('\'', "'\\''"),
-        exit_code
-    );
-    let path = bin_dir.join(name);
-    std::fs::write(&path, script).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
-
 #[test]
 #[serial_test::serial]
 fn macos_launchctl_setenv_ok_success_path_with_fake_binary() {
     use cfgd_core::output::Verbosity;
-    use cfgd_core::test_helpers::EnvVarGuard;
 
-    let bin_dir = tempfile::tempdir().unwrap();
-    write_fake_binary(bin_dir.path(), "launchctl", 0, "");
-
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
-    let _path_guard = EnvVarGuard::set("PATH", &new_path);
+    let (_bin_dir, _path_guard) =
+        cfgd_core::test_helpers::install_named_path_shim("launchctl", 0, "", "");
 
     let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
     let mut managed = BTreeMap::new();
@@ -1272,14 +1255,13 @@ fn macos_launchctl_setenv_ok_success_path_with_fake_binary() {
 #[serial_test::serial]
 fn macos_launchctl_setenv_ok_failure_path_with_fake_binary() {
     use cfgd_core::output::Verbosity;
-    use cfgd_core::test_helpers::EnvVarGuard;
 
-    let bin_dir = tempfile::tempdir().unwrap();
-    write_fake_binary(bin_dir.path(), "launchctl", 1, "operation not permitted");
-
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
-    let _path_guard = EnvVarGuard::set("PATH", &new_path);
+    let (_bin_dir, _path_guard) = cfgd_core::test_helpers::install_named_path_shim(
+        "launchctl",
+        1,
+        "",
+        "operation not permitted",
+    );
 
     let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
     let mut managed = BTreeMap::new();
@@ -1298,14 +1280,9 @@ fn macos_launchctl_setenv_ok_failure_path_with_fake_binary() {
 #[serial_test::serial]
 fn windows_set_var_ok_success_path_with_fake_binary() {
     use cfgd_core::output::Verbosity;
-    use cfgd_core::test_helpers::EnvVarGuard;
 
-    let bin_dir = tempfile::tempdir().unwrap();
-    write_fake_binary(bin_dir.path(), "setx", 0, "");
-
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
-    let _path_guard = EnvVarGuard::set("PATH", &new_path);
+    let (_bin_dir, _path_guard) =
+        cfgd_core::test_helpers::install_named_path_shim("setx", 0, "", "");
 
     let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
 
@@ -1322,14 +1299,9 @@ fn windows_set_var_ok_success_path_with_fake_binary() {
 #[serial_test::serial]
 fn windows_set_var_ok_failure_path_with_fake_binary() {
     use cfgd_core::output::Verbosity;
-    use cfgd_core::test_helpers::EnvVarGuard;
 
-    let bin_dir = tempfile::tempdir().unwrap();
-    write_fake_binary(bin_dir.path(), "setx", 1, "ERROR: Invalid syntax");
-
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
-    let _path_guard = EnvVarGuard::set("PATH", &new_path);
+    let (_bin_dir, _path_guard) =
+        cfgd_core::test_helpers::install_named_path_shim("setx", 1, "", "ERROR: Invalid syntax");
 
     let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
 

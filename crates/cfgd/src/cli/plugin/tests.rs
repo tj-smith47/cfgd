@@ -942,48 +942,26 @@ mod mock_kube {
 #[cfg(unix)]
 mod kubectl_shim {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
-
     /// RAII shim that writes a `kubectl` script returning `exit_code` to a
     /// tempdir and prepends that tempdir to PATH for the lifetime of the
     /// guard. Restores prior PATH on drop. Pair with `#[serial]` because
     /// PATH mutation is process-global.
     struct KubectlPathShim {
         _tmp: tempfile::TempDir,
-        prior_path: Option<std::ffi::OsString>,
+        _path_guard: cfgd_core::test_helpers::EnvVarGuard,
     }
 
     impl KubectlPathShim {
         fn new(exit_code: i32) -> Self {
-            let tmp = tempfile::tempdir().expect("tempdir");
-            let script_path = tmp.path().join("kubectl");
-            let script = format!("#!/bin/sh\nexit {exit_code}\n");
-            std::fs::write(&script_path, script).expect("write kubectl shim");
-            let mut perms = std::fs::metadata(&script_path).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&script_path, perms).expect("chmod kubectl shim");
-
-            let prior_path = std::env::var_os("PATH");
-            // Prepend the tempdir so our shim wins over a real kubectl.
-            // SAFETY: serial_test::serial gates concurrent access.
-            unsafe {
-                std::env::set_var("PATH", tmp.path());
-            }
+            let (tmp, path_guard) = cfgd_core::test_helpers::install_named_path_shim(
+                "kubectl",
+                exit_code as u8,
+                "",
+                "",
+            );
             Self {
                 _tmp: tmp,
-                prior_path,
-            }
-        }
-    }
-
-    impl Drop for KubectlPathShim {
-        fn drop(&mut self) {
-            // SAFETY: serial_test::serial gates concurrent access.
-            unsafe {
-                match &self.prior_path {
-                    Some(p) => std::env::set_var("PATH", p),
-                    None => std::env::remove_var("PATH"),
-                }
+                _path_guard: path_guard,
             }
         }
     }
