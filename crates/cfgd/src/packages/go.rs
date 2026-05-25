@@ -563,5 +563,23 @@ mod tests {
             let pkgs = GoInstallManager.installed_packages().expect("Ok");
             assert!(pkgs.is_empty());
         }
+
+        // Bootstrap covers two cascades: brew first, then system manager.
+        // CFGD_BREW_BIN ToolShim makes brew_available() true and routes
+        // `brew install go` through the shim, proving the brew branch.
+        #[test]
+        #[serial]
+        fn go_bootstrap_via_brew_runs_brew_install_go() {
+            let s = ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+            let p = test_printer();
+            GoInstallManager
+                .bootstrap(&p)
+                .expect("bootstrap Ok via brew shim");
+            assert!(
+                s.argv_log().contains("install go"),
+                "brew argv must include `install go`: {}",
+                s.argv_log()
+            );
+        }
     }
 }

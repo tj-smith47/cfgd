@@ -763,4 +763,76 @@ mod tests {
         assert_eq!(le.renew_deadline_secs, 10);
         assert_eq!(le.retry_period_secs, 2);
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_wins_acquisition_then_calls_on_started_callback() {
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_404(LEASE_NAME),
+            ExpectedCall::post(collection_path()).returning_json(&lease_json(TEST_ID, 15, 0)),
+        ]);
+
+        let le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let started_for_cb = started.clone();
+        let cancel_for_cb = cancel.clone();
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            le.run(cancel.clone(), move || {
+                let started = started_for_cb;
+                let cancel = cancel_for_cb;
+                async move {
+                    started.store(true, std::sync::atomic::Ordering::SeqCst);
+                    cancel.cancel();
+                    Ok(())
+                }
+            }),
+        )
+        .await
+        .expect("run did not complete in time");
+
+        assert!(result.is_ok(), "run returned Err: {result:?}");
+        assert!(
+            started.load(std::sync::atomic::Ordering::SeqCst),
+            "on_started callback must fire after acquisition"
+        );
+
+        let report = harness.finish().await;
+        assert!(
+            report.captured.len() >= 2,
+            "expected GET + POST to be captured, got {}",
+            report.captured.len()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_retries_when_acquisition_returns_false_then_succeeds() {
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_json(&lease_json("other-holder", 15, 0)),
+            ExpectedCall::get(lease_path()).returning_404(LEASE_NAME),
+            ExpectedCall::post(collection_path()).returning_json(&lease_json(TEST_ID, 15, 0)),
+        ]);
+
+        let mut le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
+        le.retry_period_secs = 1;
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let cancel_for_cb = cancel.clone();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            le.run(cancel.clone(), move || {
+                let cancel = cancel_for_cb;
+                async move {
+                    cancel.cancel();
+                    Ok(())
+                }
+            }),
+        )
+        .await
+        .expect("run did not complete in time");
+
+        assert!(result.is_ok(), "run returned Err: {result:?}");
+        let _ = harness.finish().await;
+    }
 }
