@@ -92,3 +92,55 @@ pub(crate) fn uninstall_launchd_service() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+#[cfg(unix)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn generate_launchd_plist_includes_binary_and_config_paths() {
+        let plist = generate_launchd_plist(
+            &PathBuf::from("/usr/local/bin/cfgd"),
+            &PathBuf::from("/etc/cfgd/config.yaml"),
+            None,
+            &PathBuf::from("/Users/tj"),
+        );
+        assert!(plist.contains("<string>/usr/local/bin/cfgd</string>"));
+        assert!(plist.contains("<string>/etc/cfgd/config.yaml</string>"));
+        assert!(plist.contains("<string>--quiet</string>"));
+        assert!(plist.contains("<string>daemon</string>"));
+        assert!(plist.contains("/Users/tj/Library/Logs/cfgd.log"));
+        assert!(plist.contains("/Users/tj/Library/Logs/cfgd.err"));
+        assert!(!plist.contains("--profile"));
+    }
+
+    #[test]
+    fn generate_launchd_plist_emits_profile_args_when_set() {
+        let plist = generate_launchd_plist(
+            &PathBuf::from("/usr/local/bin/cfgd"),
+            &PathBuf::from("/etc/cfgd/config.yaml"),
+            Some("workstation"),
+            &PathBuf::from("/Users/tj"),
+        );
+        assert!(plist.contains("<string>--profile</string>"));
+        assert!(plist.contains("<string>workstation</string>"));
+    }
+
+    #[test]
+    fn generate_launchd_plist_emits_required_launchd_keys() {
+        let plist = generate_launchd_plist(
+            &PathBuf::from("/cfgd"),
+            &PathBuf::from("/c.yaml"),
+            None,
+            &PathBuf::from("/h"),
+        );
+        assert!(plist.contains("<key>Label</key>"));
+        assert!(plist.contains("<key>ProgramArguments</key>"));
+        assert!(plist.contains("<key>RunAtLoad</key>"));
+        assert!(plist.contains("<key>KeepAlive</key>"));
+        assert!(plist.contains("<key>StandardOutPath</key>"));
+        assert!(plist.contains("<key>StandardErrorPath</key>"));
+    }
+}
