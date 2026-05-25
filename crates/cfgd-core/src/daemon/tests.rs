@@ -9117,6 +9117,7 @@ mod harness {
             satisfied,
             "expected the webhook POST to land at the mock server within 2s"
         );
+        mock.assert();
     }
 
     // ----- run_daemon_with: production-trigger path -----
