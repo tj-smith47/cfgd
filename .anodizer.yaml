@@ -69,6 +69,7 @@ defaults:
     - aarch64-pc-windows-msvc
   cross: auto
   builds:
+    reproducible: true
     flags:
       - --release
   archives:
@@ -188,7 +189,7 @@ workspaces:
           mode: keep-existing
           target_commitish: "{{ .Commit }}"
           discussion_category_name: "Announcements"
-          replace_existing_draft: false
+          replace_existing_draft: true
           replace_existing_artifacts: true
           name_template: "{{ ProjectName }} {{ Tag }}"
           header: |
@@ -270,6 +271,7 @@ workspaces:
               - gitops
               - reconciliation
               - rust
+            republish_in_moderation: true
           winget:
             repository:
               owner: tj-smith47
@@ -302,6 +304,7 @@ workspaces:
             commit_author:
               name: "TJ Smith"
               email: "tj@jarvispro.io"
+            update_existing_pr: true
           nix:
             name: cfgd
             repository:
@@ -312,6 +315,7 @@ workspaces:
             license: mit
             skip_upload: false
             formatter: alejandra
+            main_program: cfgd
             extra_install: |
               installManPage share/man/man1/cfgd.1
             post_install: |
@@ -340,6 +344,7 @@ workspaces:
             commit_author:
               name: "TJ Smith"
               email: "tj@jarvispro.io"
+            update_existing_pr: true
         # Docker V2 image for the cfgd agent (CLI + daemon image).
         docker_v2:
           - id: cfgd-agent
@@ -505,7 +510,7 @@ workspaces:
           make_latest: false
           mode: keep-existing
           target_commitish: "{{ .Commit }}"
-          replace_existing_draft: false
+          replace_existing_draft: true
           replace_existing_artifacts: true
           name_template: "{{ ProjectName }} {{ Tag }}"
           header: |
@@ -573,7 +578,7 @@ workspaces:
           make_latest: false
           mode: keep-existing
           target_commitish: "{{ .Commit }}"
-          replace_existing_draft: false
+          replace_existing_draft: true
           replace_existing_artifacts: true
           name_template: "{{ ProjectName }} {{ Tag }}"
           header: |
@@ -758,6 +763,7 @@ cloudsmiths:
       deb: any-distro/any-version
       rpm: any-distro/any-version
       alpine: alpine/any-version
+    republish: true
 
 # Curl-pipe install script — rendered with the version baked in and uploaded
 # as a release asset.

@@ -44,92 +44,90 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
-  build:
-    name: Build (${{ matrix.os }})
+  determinism-check:
+    name: Determinism (${{ matrix.shard }})
     needs: resolve
     if: needs.resolve.outputs.has-builds == 'true'
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
-            anodizer_artifact: anodizer-linux
-          - os: macos-latest
-            targets: x86_64-apple-darwin,aarch64-apple-darwin
-            anodizer_artifact: anodizer-macos
-          - os: windows-latest
-            targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
-            anodizer_artifact: anodizer-windows
+          - { os: ubuntu-latest,  shard: linux,            targets: '' }
+          - { os: macos-latest,   shard: macos,            targets: '' }
+          - { os: windows-latest, shard: windows-x86_64,   targets: 'x86_64-pc-windows-msvc' }
+          - { os: windows-latest, shard: windows-aarch64,  targets: 'aarch64-pc-windows-msvc' }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.targets }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release-${{ matrix.os }}
-
       - uses: arduino/setup-protoc@v3
         with:
           version: "25.x"
           repo-token: ${{ github.token }}
 
-      - name: Run anodizer release --split
-        uses: tj-smith47/anodizer-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         with:
-          from-artifact: ${{ matrix.anodizer_artifact }}
+          from-artifact: anodizer-${{ matrix.os == 'ubuntu-latest' && 'linux' || matrix.os == 'macos-latest' && 'macos' || 'windows' }}
           artifact-run-id: auto
           artifact-workflow: ci.yml
-          install: zig,cargo-zigbuild,upx
-          upload-dist: 'true'
-          args: release --verbose --debug --strict --split --clean --crate ${{ needs.resolve.outputs.workspace }}
+          install-rust: 'true'
+          auto-install: 'true'
+          determinism: 'true'
+          determinism-targets: ${{ matrix.targets }}
+          preserve-dist: 'true'
+          shard-label: ${{ matrix.shard }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
+      - name: Upload dist artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.shard }}
+          path: preserved-dist/
+          if-no-files-found: error
+
+      - name: Upload determinism report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: determinism-${{ matrix.shard }}
+          path: |
+            dist/run-*/determinism.json
+            dist/run-*/drift-bins/**
+
   release:
     name: Publish Release
-    needs: [resolve, build]
-    # Run even when build was skipped (library-only crate).
-    if: ${{ !cancelled() && needs.resolve.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    needs: [resolve, determinism-check]
+    # Run even when determinism-check was skipped (library-only crate).
+    if: ${{ !cancelled() && needs.resolve.result == 'success' && (needs.determinism-check.result == 'success' || needs.determinism-check.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release-publish
       - uses: arduino/setup-protoc@v3
         with:
           version: "25.x"
           repo-token: ${{ github.token }}
 
-      # --merge is only valid when split build artifacts exist (binary crates).
-      # Library-only crates run the full pipeline in one shot.
       - name: Run anodizer release
         uses: tj-smith47/anodizer-action@v1
         with:
           from-artifact: anodizer-linux
           artifact-run-id: auto
           artifact-workflow: ci.yml
-          install: ${{ needs.resolve.outputs.has-builds == 'true' && 'nfpm,makeself,snapcraft,rpmbuild,cosign' || '' }}
+          auto-install: 'true'
           download-dist: ${{ needs.resolve.outputs.has-builds }}
           docker-registry: ${{ needs.resolve.outputs.has-builds == 'true' && 'ghcr.io' || '' }}
           docker-password: ${{ secrets.GITHUB_TOKEN }}
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
           args: >-
-            release --verbose --debug --strict
-            ${{ needs.resolve.outputs.has-builds == 'true' && '--merge' || '' }}
-            --crate ${{ needs.resolve.outputs.workspace }}
+            release --verbose --debug --strict --publish-only --crate ${{ needs.resolve.outputs.workspace }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
