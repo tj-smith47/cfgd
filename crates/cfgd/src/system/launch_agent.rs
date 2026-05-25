@@ -642,20 +642,7 @@ mod tests {
         exit_code: u8,
         stderr: &str,
     ) -> (tempfile::TempDir, cfgd_core::test_helpers::EnvVarGuard) {
-        use std::os::unix::fs::PermissionsExt;
-        let bin_dir = tempfile::tempdir().unwrap();
-        let script = format!(
-            "#!/bin/sh\necho '{}' >&2\nexit {}\n",
-            stderr.replace('\'', "'\\''"),
-            exit_code
-        );
-        let path = bin_dir.path().join("launchctl");
-        std::fs::write(&path, script).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let old_path = std::env::var("PATH").unwrap_or_default();
-        let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
-        let path_guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
-        (bin_dir, path_guard)
+        cfgd_core::test_helpers::install_named_path_shim("launchctl", exit_code, "", stderr)
     }
 
     #[test]

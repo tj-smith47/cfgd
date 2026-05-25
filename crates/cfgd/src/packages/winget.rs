@@ -375,7 +375,7 @@ SomeApp               Some.App                  1.0.0\n";
     #[cfg(unix)]
     mod winget_shim {
         use super::*;
-        use cfgd_core::test_helpers::test_printer;
+        use cfgd_core::test_helpers::{install_named_path_shim, test_printer};
         use serial_test::serial;
 
         fn install_winget_shim(
@@ -383,21 +383,7 @@ SomeApp               Some.App                  1.0.0\n";
             stdout: &str,
             stderr: &str,
         ) -> (tempfile::TempDir, cfgd_core::test_helpers::EnvVarGuard) {
-            use std::os::unix::fs::PermissionsExt;
-            let bin_dir = tempfile::tempdir().unwrap();
-            let script = format!(
-                "#!/bin/sh\nprintf '%s' \"{}\"\nprintf '%s' \"{}\" >&2\nexit {}\n",
-                stdout.replace('"', "\\\""),
-                stderr.replace('"', "\\\""),
-                exit_code
-            );
-            let path = bin_dir.path().join("winget");
-            std::fs::write(&path, script).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let old_path = std::env::var("PATH").unwrap_or_default();
-            let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
-            let path_guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
-            (bin_dir, path_guard)
+            install_named_path_shim("winget", exit_code, stdout, stderr)
         }
 
         #[test]

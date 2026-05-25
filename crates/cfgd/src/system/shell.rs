@@ -273,16 +273,8 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn apply_runs_chsh_on_happy_path() {
-        let bin_dir = tempfile::tempdir().expect("tempdir");
-        let chsh_path = bin_dir.path().join("chsh");
-        std::fs::write(&chsh_path, "#!/bin/sh\nexit 0\n").expect("write fake chsh");
-        let mut perms = std::fs::metadata(&chsh_path).expect("stat").permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&chsh_path, perms).expect("chmod");
-
-        let old_path = std::env::var("PATH").unwrap_or_default();
-        let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
-        let _path_guard = EnvVarGuard::set("PATH", &new_path);
+        let (_bin_dir, _path_guard) =
+            cfgd_core::test_helpers::install_named_path_shim("chsh", 0, "", "");
 
         let (printer, buf) = cfgd_core::output::Printer::for_test_at(Verbosity::Normal);
         let sc = ShellConfigurator;

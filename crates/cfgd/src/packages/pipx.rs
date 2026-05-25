@@ -515,7 +515,7 @@ mod tests {
     mod pipx_shim {
         use super::*;
         use cfgd_core::providers::PackageManager;
-        use cfgd_core::test_helpers::{ToolShim, test_printer};
+        use cfgd_core::test_helpers::{ToolShim, install_named_path_shim, test_printer};
         use serial_test::serial;
 
         const SHIM_ENV: &str = "CFGD_PIPX_BIN";
@@ -564,29 +564,13 @@ mod tests {
             assert!(pkgs.contains("ruff"));
         }
 
-        // available_version shells out to `curl` rather than the pipx shim,
-        // so we put a fake curl on PATH for these two tests. Covers pipx.rs
-        // L146-158 success + L154 non-zero exit.
+        // available_version shells out to `curl` rather than the pipx shim.
         fn install_curl_shim(
             exit_code: u8,
             stdout: &str,
             stderr: &str,
         ) -> (tempfile::TempDir, cfgd_core::test_helpers::EnvVarGuard) {
-            use std::os::unix::fs::PermissionsExt;
-            let bin_dir = tempfile::tempdir().unwrap();
-            let script = format!(
-                "#!/bin/sh\nprintf '%s' \"{}\"\nprintf '%s' \"{}\" >&2\nexit {}\n",
-                stdout.replace('"', "\\\""),
-                stderr.replace('"', "\\\""),
-                exit_code
-            );
-            let path = bin_dir.path().join("curl");
-            std::fs::write(&path, script).unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let old_path = std::env::var("PATH").unwrap_or_default();
-            let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
-            let path_guard = cfgd_core::test_helpers::EnvVarGuard::set("PATH", &new_path);
-            (bin_dir, path_guard)
+            install_named_path_shim("curl", exit_code, stdout, stderr)
         }
 
         #[test]
