@@ -27,6 +27,9 @@ pub enum GatewayError {
 
     #[error("forbidden: {0}")]
     Forbidden(String),
+
+    #[error("rate limited: retry after {0}s")]
+    RateLimited(u64),
 }
 
 impl IntoResponse for GatewayError {
@@ -64,6 +67,17 @@ impl IntoResponse for GatewayError {
             }
             GatewayError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
             GatewayError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
+            GatewayError::RateLimited(retry_after_secs) => {
+                let body = json!({
+                    "error": "too many requests; slow down",
+                    "retry_after_secs": retry_after_secs,
+                });
+                let mut resp = (StatusCode::TOO_MANY_REQUESTS, axum::Json(body)).into_response();
+                if let Ok(hv) = axum::http::HeaderValue::from_str(&retry_after_secs.to_string()) {
+                    resp.headers_mut().insert("retry-after", hv);
+                }
+                return resp;
+            }
         };
 
         let body = json!({ "error": message });

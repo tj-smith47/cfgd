@@ -3,7 +3,12 @@ use super::*;
 // --- Sync Handler ---
 
 /// Returns true if changes were detected during sync.
-pub(crate) fn handle_sync(
+///
+/// Async because state mutation goes through `tokio::sync::Mutex`. The
+/// blocking git operations (pull/push) are dispatched via `spawn_blocking`
+/// internally so callers may invoke `handle_sync` from any async context
+/// without deadlock risk.
+pub(crate) async fn handle_sync(
     repo_path: &Path,
     auto_pull: bool,
     auto_push: bool,
@@ -16,103 +21,135 @@ pub(crate) fn handle_sync(
     let mut changes = false;
 
     if auto_pull {
-        match git_pull(repo_path) {
-            Ok(true) => {
+        let repo = repo_path.to_path_buf();
+        let pull_result = tokio::task::spawn_blocking(move || git_pull(&repo)).await;
+        match pull_result {
+            Ok(Ok(true)) => {
                 // Verify signature on new HEAD after pull if required
-                if require_signed_commits
-                    && !allow_unsigned
-                    && let Err(e) = crate::sources::verify_head_signature(source_name, repo_path)
-                {
-                    tracing::error!(
-                        source = %source_name,
-                        error = %e,
-                        "sync: signature verification failed after pull"
-                    );
-                    // Don't treat this as "changes" — the content is untrusted
-                    return false;
+                if require_signed_commits && !allow_unsigned {
+                    let src = source_name.to_string();
+                    let repo = repo_path.to_path_buf();
+                    let verify_result = tokio::task::spawn_blocking(move || {
+                        crate::sources::verify_head_signature(&src, &repo)
+                    })
+                    .await;
+                    match verify_result {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            tracing::error!(
+                                source = %source_name,
+                                error = %e,
+                                "sync: signature verification failed after pull"
+                            );
+                            // Don't treat this as "changes" — the content is untrusted
+                            return false;
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                source = %source_name,
+                                error = %e,
+                                "sync: signature verification task panicked"
+                            );
+                            return false;
+                        }
+                    }
                 }
                 tracing::info!("sync: pulled new changes from remote");
                 changes = true;
             }
-            Ok(false) => tracing::debug!("sync: already up to date"),
-            Err(e) => tracing::warn!(error = %e, "sync: pull failed"),
+            Ok(Ok(false)) => tracing::debug!("sync: already up to date"),
+            Ok(Err(e)) => tracing::warn!(error = %e, "sync: pull failed"),
+            Err(e) => tracing::error!(error = %e, "sync: pull task panicked"),
         }
     }
 
     if auto_push {
-        match git_auto_commit_push(repo_path) {
-            Ok(true) => tracing::info!("sync: pushed local changes to remote"),
-            Ok(false) => tracing::debug!("sync: nothing to push"),
-            Err(e) => tracing::warn!(error = %e, "sync: push failed"),
+        let repo = repo_path.to_path_buf();
+        let push_result = tokio::task::spawn_blocking(move || git_auto_commit_push(&repo)).await;
+        match push_result {
+            Ok(Ok(true)) => tracing::info!("sync: pushed local changes to remote"),
+            Ok(Ok(false)) => tracing::debug!("sync: nothing to push"),
+            Ok(Err(e)) => tracing::warn!(error = %e, "sync: push failed"),
+            Err(e) => tracing::error!(error = %e, "sync: push task panicked"),
         }
     }
 
-    let rt = tokio::runtime::Handle::current();
-    let source = source_name.to_string();
-    let ts = timestamp.clone();
-    rt.block_on(async {
+    {
         let mut st = state.lock().await;
-        st.last_sync = Some(timestamp);
+        st.last_sync = Some(timestamp.clone());
         for s in &mut st.sources {
-            if s.name == source {
-                s.last_sync = Some(ts.clone());
+            if s.name == source_name {
+                s.last_sync = Some(timestamp.clone());
             }
         }
-    });
+    }
 
     changes
 }
 
 // --- Version Check Handler ---
 
-pub(crate) fn handle_version_check(state: &Arc<Mutex<DaemonState>>, notifier: &Arc<Notifier>) {
+/// Async because state mutation goes through `tokio::sync::Mutex` and the
+/// blocking HTTP probe is dispatched via `spawn_blocking` internally.
+pub(crate) async fn handle_version_check(
+    state: &Arc<Mutex<DaemonState>>,
+    notifier: &Arc<Notifier>,
+) {
     tracing::info!("checking for cfgd updates");
 
-    match crate::upgrade::check_with_cache(None, None) {
-        Ok(check) => {
-            if check.update_available {
-                let version_str = check.latest.to_string();
-                tracing::info!(
-                    current = %check.current,
-                    latest = %check.latest,
-                    "update available"
-                );
+    // Propagate the test-home thread-local across the spawn_blocking boundary;
+    // the cache lookup in `check_with_cache` reads it to redirect $HOME away
+    // from real filesystem during tests. No-op in production.
+    let test_home = crate::test_home_override();
+    let check_result = tokio::task::spawn_blocking(move || {
+        let _guard = test_home.as_deref().map(crate::with_test_home_guard);
+        crate::upgrade::check_with_cache(None, None)
+    })
+    .await;
 
-                // Check if we already notified about this version
-                let rt = tokio::runtime::Handle::current();
-                let already_notified = rt.block_on(async {
-                    let st = state.lock().await;
-                    st.update_available.as_deref() == Some(version_str.as_str())
-                });
-
-                // Update state
-                let vs = version_str.clone();
-                let st = Arc::clone(state);
-                rt.block_on(async {
-                    let mut st = st.lock().await;
-                    st.update_available = Some(vs);
-                });
-
-                // Notify once per version
-                if !already_notified {
-                    notifier.notify(
-                        "cfgd: update available",
-                        &format!(
-                            "Version {} is available (current: {}). Run 'cfgd upgrade' to update.",
-                            version_str, check.current
-                        ),
-                    );
-                }
-            } else {
-                tracing::debug!(
-                    version = %check.current,
-                    "cfgd is up to date"
-                );
-            }
+    let check = match check_result {
+        Ok(Ok(c)) => c,
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "version check failed");
+            return;
         }
         Err(e) => {
-            tracing::warn!(error = %e, "version check failed");
+            tracing::error!(error = %e, "version check task panicked");
+            return;
         }
+    };
+
+    if !check.update_available {
+        tracing::debug!(
+            version = %check.current,
+            "cfgd is up to date"
+        );
+        return;
+    }
+
+    let version_str = check.latest.to_string();
+    tracing::info!(
+        current = %check.current,
+        latest = %check.latest,
+        "update available"
+    );
+
+    // Check if we already notified about this version + record it.
+    let already_notified = {
+        let mut st = state.lock().await;
+        let already = st.update_available.as_deref() == Some(version_str.as_str());
+        st.update_available = Some(version_str.clone());
+        already
+    };
+
+    if !already_notified {
+        notifier.notify(
+            "cfgd: update available",
+            &format!(
+                "Version {} is available (current: {}). Run 'cfgd upgrade' to update.",
+                version_str, check.current
+            ),
+        );
     }
 }
 

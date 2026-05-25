@@ -334,14 +334,26 @@ mod tests;
 
 use checkin::*;
 use daemon_config::*;
+// drift::* exposes record_file_drift{,_to} — the wildcard re-exports them
+// for future tick handlers; today only direct `super::record_file_drift`
+// call-sites in reconcile.rs use them, so the parent-scope wildcard
+// appears unused under -D warnings.
 #[allow(unused_imports)]
 use drift::*;
 use git::*;
 use health_ipc::*;
 use reconcile::*;
 use runner::*;
+// service::* contains cfg-gated launchd/systemd/windows wrappers — the parent
+// wildcard appears unused on the platform that DOESN'T match its arm. Keep
+// the import live across all platforms so the cross-platform call sites
+// (install_service/uninstall_service/run_as_windows_service) compile uniformly.
 #[allow(unused_imports)]
 use service::*;
+// sync::* exposes handle_sync / handle_version_check / handle_compliance_snapshot;
+// the public re-exports point at them through `pub use`, but the wildcard at
+// this scope keeps direct super::handle_* call sites in runner.rs compiling
+// even when no other submodule path imports them.
 #[allow(unused_imports)]
 use sync::*;
 
@@ -554,7 +566,11 @@ pub(super) async fn run_daemon_with(
 
     let setup = build_pre_loop_setup(&config_path, profile_override.as_deref(), &*hooks)?;
 
-    let daemon_state = init_daemon_state(overrides.state_dir_override.as_deref());
+    let (daemon_state, state_dir_warning) =
+        init_daemon_state_with_warning(overrides.state_dir_override.as_deref());
+    if let Some(msg) = state_dir_warning {
+        printer.status_simple(Role::Warn, msg);
+    }
     let state = Arc::new(Mutex::new(daemon_state));
 
     // Initialize per-source status entries
@@ -750,6 +766,8 @@ pub(super) async fn run_daemon_with(
     // Shutdown health server (only present when not skipped).
     if let Some(h) = health_handle {
         h.abort();
+        // Drain the cancellation; the JoinError is always Cancelled here
+        // (we just sent abort), nothing actionable to surface.
         let _ = h.await;
     }
     cleanup_ipc_socket(&ipc_path);
@@ -763,15 +781,33 @@ pub(super) async fn run_daemon_with(
 /// returned state has no store path (the `/drift` IPC endpoint will return
 /// empty events rather than crash). The `override_dir` parameter exists for
 /// tests: passing `Some(dir)` skips the platform lookup entirely.
+///
+/// Test-only convenience that drops the warning string —
+/// `init_daemon_state_with_warning` is the one used by `run_daemon_with`.
+#[cfg(test)]
 pub(super) fn init_daemon_state(override_dir: Option<&Path>) -> DaemonState {
+    init_daemon_state_with_warning(override_dir).0
+}
+
+/// Like [`init_daemon_state`] but also returns a printer-facing warning
+/// message when the platform default state dir resolution fails — callers
+/// can surface it in the startup banner so operators aren't dependent on
+/// catching the `tracing::warn!` line.
+pub(super) fn init_daemon_state_with_warning(
+    override_dir: Option<&Path>,
+) -> (DaemonState, Option<String>) {
     let dir_result = override_dir
         .map(|d| Ok(d.to_path_buf()))
         .unwrap_or_else(crate::state::default_state_dir);
     match dir_result {
-        Ok(dir) => DaemonState::new().with_store_path(dir.join("state.db")),
+        Ok(dir) => (
+            DaemonState::new().with_store_path(dir.join("state.db")),
+            None,
+        ),
         Err(e) => {
             tracing::warn!(error = %e, "cannot resolve default state dir; /drift endpoint disabled");
-            DaemonState::new()
+            let banner = format!("Drift endpoint disabled: cannot resolve default state dir ({e})");
+            (DaemonState::new(), Some(banner))
         }
     }
 }

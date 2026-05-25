@@ -2,6 +2,7 @@ pub mod api;
 pub mod db;
 pub mod errors;
 pub mod fleet;
+pub mod rate_limit;
 pub mod web;
 
 #[cfg(test)]
@@ -147,7 +148,7 @@ pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::err
     });
 
     // 1-Hz sampler: publish reader pool in-use gauge while the gateway is running.
-    if let Some(metrics) = state.metrics.clone() {
+    let sampler_handle = state.metrics.clone().map(|metrics| {
         let pool = state.db.readers_handle();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
@@ -162,8 +163,8 @@ pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::err
                     })
                     .set(in_use as i64);
             }
-        });
-    }
+        })
+    });
 
     let app = api::router(state.clone())
         .merge(web::router(state.clone()))
@@ -176,10 +177,21 @@ pub async fn start_gateway(config: GatewayConfig) -> Result<(), Box<dyn std::err
     tracing::info!(%addr, db_path = %config.db_path, "device gateway starting");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    let result = axum::serve(listener, app).await;
+    // `into_make_service_with_connect_info` populates `ConnectInfo<SocketAddr>`
+    // on every request — required by the per-IP rate limiter on
+    // `/api/v1/enroll/*`. Without this, the limiter middleware would fall
+    // open (no peer IP to key on) in production.
+    let result = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await;
 
-    // Abort background task on server exit
+    // Abort background tasks on server exit
     cleanup_handle.abort();
+    if let Some(h) = sampler_handle {
+        h.abort();
+    }
 
     result?;
     Ok(())

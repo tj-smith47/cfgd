@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use std::time::{Duration, Instant};
 
 use axum::extract::{Path, Query, State};
@@ -303,17 +303,34 @@ pub fn router(state: SharedState) -> Router<SharedState> {
         .route("/api/v1/admin/reset", post(admin_reset))
         .route_layer(middleware::from_fn(admin_auth_middleware));
 
-    // Enrollment endpoints — no pre-auth, validated in handlers
+    // Enrollment endpoints — no pre-auth, validated in handlers. These do
+    // real work per request (gpg/ssh-keygen subprocess + tempdir + fs::write),
+    // so an in-process IP-keyed token bucket caps unauthenticated bursts.
+    // Defaults: 5 attempts up-front, 5/min refill — see `RateLimiter::per_minute`.
+    let enroll_limiter = super::rate_limit::RateLimiter::per_minute(
+        ENROLL_RATE_LIMIT_BURST,
+        ENROLL_RATE_LIMIT_PER_MIN,
+    );
     let enrollment_routes = Router::new()
         .route("/api/v1/enroll", post(enroll))
         .route("/api/v1/enroll/info", get(enroll_info))
         .route("/api/v1/enroll/challenge", post(request_challenge))
-        .route("/api/v1/enroll/verify", post(verify_enrollment));
+        .route("/api/v1/enroll/verify", post(verify_enrollment))
+        .route_layer(middleware::from_fn_with_state(
+            enroll_limiter,
+            super::rate_limit::rate_limit_middleware,
+        ));
 
     authenticated_routes
         .merge(admin_routes)
         .merge(enrollment_routes)
 }
+
+/// Per-IP rate-limit budget for unauthenticated `/enroll/*` endpoints.
+/// Tuned for legitimate operator flow (a handful of attempts during
+/// enrollment) while making brute-force/oracle probes infeasible.
+pub(crate) const ENROLL_RATE_LIMIT_BURST: u32 = 5;
+pub(crate) const ENROLL_RATE_LIMIT_PER_MIN: u32 = 5;
 // Length bounds for device-supplied identifiers. These are enforced on
 // every enrollment / checkin entry point — they defend against log
 // injection (unbounded strings in structured logs), URL traversal (when a
@@ -441,8 +458,14 @@ async fn auth_middleware(
             return Ok(next.run(request).await);
         }
     } else {
-        // CFGD_API_KEY not set — reject admin operations (require explicit key)
-        tracing::debug!("CFGD_API_KEY not set — admin API access is disabled");
+        // CFGD_API_KEY not set — reject admin operations (require explicit key).
+        // Log-once at debug so device-mode deployments don't spam logs at
+        // RUST_LOG=debug; operators who want a single signal still get it on
+        // the first request after startup.
+        static ADMIN_KEY_MISSING_LOGGED: Once = Once::new();
+        ADMIN_KEY_MISSING_LOGGED.call_once(|| {
+            tracing::debug!("CFGD_API_KEY not set — admin API access is disabled");
+        });
     }
 
     // Check per-device API key — scope the lock tightly so it's released before

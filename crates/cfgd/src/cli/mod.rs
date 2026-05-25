@@ -769,7 +769,7 @@ pub struct SourceAddArgs {
     #[arg(long)]
     pub auto_apply: bool,
     /// Pin to a semver version range (e.g., "~1.0", ">=2.0")
-    #[arg(long = "version-pin", alias = "pin-version")]
+    #[arg(long = "version-pin")]
     pub version_pin: Option<String>,
     /// Skip confirmation prompt
     #[arg(long, short, env = "CFGD_YES")]
@@ -1454,7 +1454,12 @@ pub fn execute(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resul
     // with no arguments and treat any non-zero exit code as failure.
     let Some(command) = &cli.command else {
         use clap::CommandFactory;
-        let _ = Cli::command().print_help();
+        // print_help failures are non-fatal (typically a closed pipe — e.g.
+        // `cfgd | head -1`), but log at debug for parity with the
+        // structured-output discipline elsewhere in the CLI.
+        if let Err(e) = Cli::command().print_help() {
+            tracing::debug!(error = %e, "failed to print help");
+        }
         return Ok(());
     };
     match command {

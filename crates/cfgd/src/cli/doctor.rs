@@ -95,7 +95,19 @@ fn collect_doctor_output(
         if let Some(pn) = profile_name
             && let Ok(mut resolved) = config::resolve_profile(pn, &profiles_dir)
         {
-            let _ = packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir);
+            if let Err(e) =
+                packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)
+            {
+                // Manifest resolution failed (missing referenced file, unreadable
+                // dir, parse error). Surface so the user knows the package report
+                // below is computed from a partial set.
+                printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "doctor: manifest resolution failed: {e} — package report may be incomplete"
+                    ),
+                );
+            }
             Some(resolved.merged.packages)
         } else {
             None

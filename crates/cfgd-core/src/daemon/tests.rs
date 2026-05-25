@@ -2872,8 +2872,6 @@ fn git_auto_commit_push_non_repo_returns_error() {
 }
 
 // --- handle_sync: updates daemon state timestamps ---
-// Note: handle_sync uses tokio::runtime::Handle::current().block_on() internally,
-// so it must be called from a blocking context (spawn_blocking) within a tokio test.
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handle_sync_updates_state_timestamps() {
@@ -2885,13 +2883,7 @@ async fn handle_sync_updates_state_timestamps() {
 
     let state = Arc::new(Mutex::new(DaemonState::new()));
 
-    let st = Arc::clone(&state);
-    let rd = repo_dir.clone();
-    let changed = tokio::task::spawn_blocking(move || {
-        handle_sync(&rd, false, false, "local", &st, false, false)
-    })
-    .await
-    .unwrap();
+    let changed = handle_sync(&repo_dir, false, false, "local", &state, false, false).await;
 
     assert!(!changed);
 
@@ -2911,13 +2903,7 @@ async fn handle_sync_pull_without_remote_logs_warning() {
 
     let state = Arc::new(Mutex::new(DaemonState::new()));
 
-    let st = Arc::clone(&state);
-    let rd = repo_dir.clone();
-    let changed = tokio::task::spawn_blocking(move || {
-        handle_sync(&rd, true, false, "local", &st, false, false)
-    })
-    .await
-    .unwrap();
+    let changed = handle_sync(&repo_dir, true, false, "local", &state, false, false).await;
 
     // Should not crash; pull fails gracefully
     assert!(!changed);
@@ -2946,11 +2932,7 @@ async fn handle_sync_updates_per_source_status() {
         });
     }
 
-    let st = Arc::clone(&state);
-    let rd = repo_dir.clone();
-    tokio::task::spawn_blocking(move || handle_sync(&rd, false, false, "acme", &st, false, false))
-        .await
-        .unwrap();
+    handle_sync(&repo_dir, false, false, "acme", &state, false, false).await;
 
     let st = state.lock().await;
     // The "acme" source should have its last_sync updated
@@ -3032,13 +3014,7 @@ async fn handle_sync_auto_pull_with_remote_changes() {
     }
 
     let state = Arc::new(Mutex::new(DaemonState::new()));
-    let st = Arc::clone(&state);
-    let wd = work_dir.clone();
-    let changed = tokio::task::spawn_blocking(move || {
-        handle_sync(&wd, true, false, "local", &st, false, false)
-    })
-    .await
-    .unwrap();
+    let changed = handle_sync(&work_dir, true, false, "local", &state, false, false).await;
 
     assert!(changed, "handle_sync should detect remote changes");
     assert!(
@@ -3086,14 +3062,8 @@ async fn handle_sync_auto_push_with_local_changes() {
     std::fs::write(work_dir.join("local_change.txt"), "new content\n").unwrap();
 
     let state = Arc::new(Mutex::new(DaemonState::new()));
-    let st = Arc::clone(&state);
-    let wd = work_dir.clone();
     // pull=false, push=true
-    let changed = tokio::task::spawn_blocking(move || {
-        handle_sync(&wd, false, true, "local", &st, false, false)
-    })
-    .await
-    .unwrap();
+    let changed = handle_sync(&work_dir, false, true, "local", &state, false, false).await;
 
     // No remote changes to pull, but push should succeed
     assert!(!changed, "no pull changes expected");
@@ -4062,14 +4032,8 @@ async fn handle_sync_no_pull_no_push_updates_timestamp() {
     init_test_git_repo(&repo_dir);
 
     let state = Arc::new(Mutex::new(DaemonState::new()));
-    let st = Arc::clone(&state);
-    let rd = repo_dir.clone();
 
-    let changed = tokio::task::spawn_blocking(move || {
-        handle_sync(&rd, false, false, "local", &st, false, false)
-    })
-    .await
-    .unwrap();
+    let changed = handle_sync(&repo_dir, false, false, "local", &state, false, false).await;
 
     assert!(!changed, "no pull/push means no changes");
 
@@ -8794,24 +8758,21 @@ mod harness {
         std::fs::write(dir.join("version-check.json"), body).unwrap();
     }
 
-    // `handle_version_check` uses Handle::current().block_on(...) so it must
-    // be called from a thread that is NOT a tokio runtime driver — i.e.
-    // inside `spawn_blocking`. The test_home thread-local is installed
-    // inside the closure so the cache lookup sees the tempdir.
+    // The test_home thread-local is installed on the calling thread; the
+    // version-check helper propagates that override into its spawn_blocking
+    // closure so the cache lookup sees the tempdir.
     async fn drive_version_check(home: std::path::PathBuf) -> Arc<Mutex<DaemonState>> {
         let state = Arc::new(Mutex::new(DaemonState::new()));
-        let state_for_blocking = Arc::clone(&state);
         let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
-        tokio::task::spawn_blocking(move || {
-            let _g = crate::with_test_home_guard(&home);
-            super::super::sync::handle_version_check(&state_for_blocking, &notifier);
-        })
-        .await
-        .expect("spawn_blocking joined");
+        let _g = crate::with_test_home_guard(&home);
+        super::super::sync::handle_version_check(&state, &notifier).await;
         state
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    // current_thread so the test_home thread-local installed in
+    // `drive_version_check` survives across the `.await` — multi_thread can
+    // migrate the future to a different worker thread mid-poll.
+    #[tokio::test(flavor = "current_thread")]
     async fn handle_version_check_records_update_available_from_fresh_cache() {
         let tmp = tempfile::TempDir::new().unwrap();
         // Pre-seed a cache entry advertising a version far ahead of any current.
@@ -8823,7 +8784,7 @@ mod harness {
         assert_eq!(st.update_available.as_deref(), Some("999.0.0"));
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test(flavor = "current_thread")]
     async fn handle_version_check_leaves_state_clean_when_cache_says_up_to_date() {
         let tmp = tempfile::TempDir::new().unwrap();
         // Pre-seed a cache entry whose version is well below current. Since
@@ -8866,6 +8827,35 @@ mod harness {
         let st_with_override = super::super::init_daemon_state(Some(tmp.path()));
         assert!(st_with_override.store_path_for_test().is_some());
         let _ = st; // touch to silence dead_code under cfg
+    }
+
+    #[test]
+    fn init_daemon_state_with_warning_reports_message_on_resolve_failure() {
+        // Regression guard for MEDIUM #10: the daemon used to only emit a
+        // `tracing::warn!` when state-dir resolution failed, leaving the
+        // /drift endpoint silently disabled. The variant exposes a banner
+        // message so the startup banner can surface it.
+        use crate::test_helpers::EnvVarGuard;
+        let _xdg = EnvVarGuard::unset("XDG_DATA_HOME");
+        let _cache_xdg = EnvVarGuard::unset("XDG_RUNTIME_DIR");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bogus = tmp.path().join("does/not/exist");
+        let _g = crate::with_test_home_guard(&bogus);
+
+        let (_st, warning) = super::super::init_daemon_state_with_warning(None);
+        // The platform-default lookup may succeed even with a bogus HOME on
+        // some CI hosts (XDG fallback), so only assert structure WHEN the
+        // warning fires; otherwise this is a no-op probe.
+        if let Some(msg) = warning {
+            assert!(
+                msg.contains("Drift endpoint disabled"),
+                "warning should be operator-facing; got {msg:?}"
+            );
+        }
+
+        // With an override the variant must NEVER emit a warning.
+        let (_st2, w2) = super::super::init_daemon_state_with_warning(Some(tmp.path()));
+        assert!(w2.is_none(), "override path must not warn; got {w2:?}");
     }
 
     // ----- check_already_running tests -----
@@ -10832,5 +10822,460 @@ mod query_daemon_status_paths {
             ),
             Ok(other) => panic!("expected parse err, got: {other:?}"),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// handle_sync — signature verification after pull (require_signed_commits)
+// ---------------------------------------------------------------------------
+
+mod handle_sync_signature_paths {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_sync_pulled_unsigned_commit_with_require_signed_returns_false() {
+        // require_signed_commits=true, allow_unsigned=false: after a successful
+        // pull, verify_head_signature fires; for an unsigned commit it errors,
+        // and handle_sync returns false (the content is untrusted).
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bare_dir = tmp.path().join("bare.git");
+        let work_dir = tmp.path().join("work");
+        let pusher_dir = tmp.path().join("pusher");
+
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        git2::Repository::init_bare(&bare_dir).unwrap();
+
+        // Clone and seed the work repo with an initial commit pushed to origin.
+        let repo = git2::Repository::clone(bare_dir.to_str().unwrap(), &work_dir).unwrap();
+        {
+            let mut config = repo.config().unwrap();
+            config.set_str("user.name", "cfgd-test").unwrap();
+            config.set_str("user.email", "test@cfgd.io").unwrap();
+        }
+        std::fs::write(work_dir.join("README"), "v1\n").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("README")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let sig = repo.signature().unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .unwrap();
+        }
+        {
+            let mut remote = repo.find_remote("origin").unwrap();
+            remote
+                .push(&["refs/heads/master:refs/heads/master"], None)
+                .unwrap();
+        }
+
+        // Push an UNSIGNED change from pusher.
+        let pusher = git2::Repository::clone(bare_dir.to_str().unwrap(), &pusher_dir).unwrap();
+        {
+            let mut config = pusher.config().unwrap();
+            config.set_str("user.name", "cfgd-pusher").unwrap();
+            config.set_str("user.email", "pusher@cfgd.io").unwrap();
+        }
+        std::fs::write(pusher_dir.join("NEWFILE"), "synced\n").unwrap();
+        {
+            let mut index = pusher.index().unwrap();
+            index.add_path(Path::new("NEWFILE")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = pusher.find_tree(tree_id).unwrap();
+            let sig = pusher.signature().unwrap();
+            let parent = pusher.head().unwrap().peel_to_commit().unwrap();
+            pusher
+                .commit(Some("HEAD"), &sig, &sig, "add newfile", &tree, &[&parent])
+                .unwrap();
+        }
+        {
+            let mut remote = pusher.find_remote("origin").unwrap();
+            remote
+                .push(&["refs/heads/master:refs/heads/master"], None)
+                .unwrap();
+        }
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        // require_signed_commits=true, allow_unsigned=false
+        let changed = handle_sync(&work_dir, true, false, "local", &state, true, false).await;
+
+        assert!(
+            !changed,
+            "unsigned-commit pull with require_signed must return false"
+        );
+        // Even though the verification failed, last_sync should NOT be
+        // updated because the early return short-circuits before the
+        // state-mutation block.
+        let st = state.lock().await;
+        assert!(
+            st.last_sync.is_none(),
+            "early-return path must not bump last_sync"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_sync_pulled_unsigned_with_allow_unsigned_returns_true() {
+        // require_signed_commits=true, allow_unsigned=true: signature check
+        // is bypassed by verify_commit_signature; but handle_sync only calls
+        // verify_head_signature unconditionally here. allow_unsigned guards
+        // the call. Verify the pull succeeds and `changed=true` is returned.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let bare_dir = tmp.path().join("bare.git");
+        let work_dir = tmp.path().join("work");
+        let pusher_dir = tmp.path().join("pusher");
+
+        std::fs::create_dir_all(&bare_dir).unwrap();
+        git2::Repository::init_bare(&bare_dir).unwrap();
+
+        let repo = git2::Repository::clone(bare_dir.to_str().unwrap(), &work_dir).unwrap();
+        {
+            let mut config = repo.config().unwrap();
+            config.set_str("user.name", "cfgd-test").unwrap();
+            config.set_str("user.email", "test@cfgd.io").unwrap();
+        }
+        std::fs::write(work_dir.join("README"), "v1\n").unwrap();
+        {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("README")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let sig = repo.signature().unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+                .unwrap();
+        }
+        {
+            let mut remote = repo.find_remote("origin").unwrap();
+            remote
+                .push(&["refs/heads/master:refs/heads/master"], None)
+                .unwrap();
+        }
+
+        let pusher = git2::Repository::clone(bare_dir.to_str().unwrap(), &pusher_dir).unwrap();
+        {
+            let mut config = pusher.config().unwrap();
+            config.set_str("user.name", "cfgd-pusher").unwrap();
+            config.set_str("user.email", "pusher@cfgd.io").unwrap();
+        }
+        std::fs::write(pusher_dir.join("NEWFILE"), "synced\n").unwrap();
+        {
+            let mut index = pusher.index().unwrap();
+            index.add_path(Path::new("NEWFILE")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = pusher.find_tree(tree_id).unwrap();
+            let sig = pusher.signature().unwrap();
+            let parent = pusher.head().unwrap().peel_to_commit().unwrap();
+            pusher
+                .commit(Some("HEAD"), &sig, &sig, "add newfile", &tree, &[&parent])
+                .unwrap();
+        }
+        {
+            let mut remote = pusher.find_remote("origin").unwrap();
+            remote
+                .push(&["refs/heads/master:refs/heads/master"], None)
+                .unwrap();
+        }
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        // require_signed_commits=true, allow_unsigned=true → bypass verify.
+        let changed = handle_sync(&work_dir, true, false, "local", &state, true, true).await;
+
+        assert!(
+            changed,
+            "allow_unsigned must bypass signature verify and return true"
+        );
+        let st = state.lock().await;
+        assert!(
+            st.last_sync.is_some(),
+            "successful sync must bump last_sync"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// handle_reconcile — module_filter (per-module reconcile) and pending-config
+// consumption branches not covered by the wider drift tests.
+// ---------------------------------------------------------------------------
+
+mod handle_reconcile_extra_branches {
+    use super::*;
+
+    /// Build the minimum cfgd.yaml + profiles/default.yaml on disk and return
+    /// the (config_path, state_dir) pair plus the owning TempDir.
+    fn write_min_fixture(content: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let config_path = tmp.path().join("config.yaml");
+        std::fs::write(&config_path, content).unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        (tmp, config_path, state_dir)
+    }
+
+    struct NoopHooks;
+    impl DaemonHooks for NoopHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            ProviderRegistry::new()
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            Ok(vec![])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_reconcile_per_module_filter_updates_module_last_reconcile() {
+        // module_filter=Some(_) path: the per-module branch records only into
+        // `module_last_reconcile` and skips the profile-wide last_reconcile.
+        let (_tmp, config_path, state_dir) = write_min_fixture(
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        );
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+        let st = Arc::clone(&state);
+        let not = Arc::clone(&notifier);
+        let sd = state_dir.clone();
+        let cp = config_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+            handle_reconcile(
+                &cp,
+                None,
+                ReconcileCtx {
+                    state: &st,
+                    notifier: &not,
+                    notify_on_drift: false,
+                    hooks: &NoopHooks,
+                    state_dir_override: Some(&sd),
+                    printer: &printer,
+                    module_filter: Some("dev-tools"),
+                    auto_apply_override: Some(false),
+                    drift_policy_override: Some(config::DriftPolicy::NotifyOnly),
+                },
+            );
+        })
+        .await
+        .unwrap();
+
+        let guard = state.lock().await;
+        assert!(
+            guard.last_reconcile.is_none(),
+            "per-module tick must NOT touch profile-wide last_reconcile"
+        );
+        assert!(
+            guard.module_last_reconcile.contains_key("dev-tools"),
+            "per-module tick must record into module_last_reconcile, got: {:?}",
+            guard.module_last_reconcile
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial_test::serial]
+    async fn handle_reconcile_consumes_pending_server_config_and_clears_file() {
+        // Profile-wide tick (module_filter=None) walks the
+        // `load_pending_server_config()` -> `clear_pending_server_config()`
+        // arm at the bottom of handle_reconcile. Stage a pending JSON file
+        // under a CFGD_STATE_DIR-scoped state dir, run reconcile, and assert
+        // the file is removed.
+        let pending_root = tempfile::tempdir().unwrap();
+        let _g = crate::test_helpers::EnvVarGuard::set(
+            "CFGD_STATE_DIR",
+            pending_root.path().to_str().unwrap(),
+        );
+
+        std::fs::create_dir_all(pending_root.path()).unwrap();
+        let pending_path = pending_root.path().join("pending-server-config.json");
+        std::fs::write(
+            &pending_path,
+            r#"{"spec":{"profile":"default","packages":{}}}"#,
+        )
+        .unwrap();
+        assert!(pending_path.exists(), "pending file must exist pre-test");
+
+        let (_tmp, config_path, state_dir) = write_min_fixture(
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        );
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+        let st = Arc::clone(&state);
+        let not = Arc::clone(&notifier);
+        let sd = state_dir.clone();
+        let cp = config_path.clone();
+
+        tokio::task::spawn_blocking(move || {
+            let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+            handle_reconcile(
+                &cp,
+                None,
+                quiet_reconcile_ctx(&st, &not, false, &NoopHooks, &sd, &printer),
+            );
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            !pending_path.exists(),
+            "pending-server-config.json should have been consumed and cleared"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn handle_reconcile_with_invalid_profile_yaml_logs_and_returns() {
+        // resolve_profile error arm (lines ~196-201): write a syntactically
+        // bogus profile YAML so resolve_profile fails and the function
+        // returns without crashing or recording state.
+        let (_tmp, config_path, state_dir) = write_min_fixture(
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec:\n  profile: bogus\n",
+        );
+        // bogus profile -> resolve_profile returns NotFound; reconcile logs an
+        // error and bails. No state changes expected.
+
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+        let st = Arc::clone(&state);
+        let not = Arc::clone(&notifier);
+        let sd = state_dir.clone();
+        let cp = config_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+            handle_reconcile(
+                &cp,
+                None,
+                quiet_reconcile_ctx(&st, &not, false, &NoopHooks, &sd, &printer),
+            );
+        })
+        .await
+        .unwrap();
+
+        let guard = state.lock().await;
+        assert!(
+            guard.last_reconcile.is_none(),
+            "profile resolution failure must not bump last_reconcile"
+        );
+        assert_eq!(
+            guard.drift_count, 0,
+            "no drift counted when planning failed"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// discover_managed_paths — explicit profile_override branches not covered
+// by the existing test list.
+// ---------------------------------------------------------------------------
+
+mod discover_managed_paths_extra {
+    use super::*;
+
+    struct StubHooks;
+    impl DaemonHooks for StubHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            ProviderRegistry::new()
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            Ok(vec![])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    #[test]
+    fn discover_managed_paths_with_explicit_profile_override_picks_override_targets() {
+        // Hits the `profile_override.or(cfg.spec.profile.as_deref())` arm
+        // for the explicit-Some case (the existing tests only cover the
+        // fallthrough-None path).
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec: {}\n",
+        )
+        .unwrap();
+
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("override.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: override\nspec:\n  files:\n    managed:\n      - source: src/a.txt\n        target: /tmp/cfgd-test-override-target.txt\n",
+        )
+        .unwrap();
+
+        let paths = discover_managed_paths(&config_path, Some("override"), &StubHooks);
+        assert!(
+            paths
+                .iter()
+                .any(|p| p.to_string_lossy().contains("override-target.txt")),
+            "explicit profile_override should return that profile's targets: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn discover_managed_paths_returns_empty_when_profile_resolution_fails() {
+        // Hits the resolve_profile-Err arm (lines ~85-88): cfg names a profile
+        // file that doesn't exist on disk.
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec:\n  profile: missing\n",
+        )
+        .unwrap();
+        // profiles dir exists but the named profile does not
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+
+        let paths = discover_managed_paths(&config_path, None, &StubHooks);
+        assert!(
+            paths.is_empty(),
+            "profile-resolution failure must yield empty paths, got: {paths:?}"
+        );
     }
 }

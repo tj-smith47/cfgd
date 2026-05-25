@@ -314,8 +314,13 @@ pub fn cmd_apply(
         }
     }
 
-    // Prune old backups — keep last 10 applies' worth.
-    let _ = state.prune_old_backups(10);
+    // Prune old backups — keep last 10 applies' worth. Best-effort: failures
+    // here (SQLite locked, disk full, permission denied) are surfaced as a
+    // warn-level log so unbounded backup growth on a stuck filesystem is
+    // observable instead of silent.
+    if let Err(e) = state.prune_old_backups(10) {
+        tracing::warn!(error = %e, "failed to prune old backups");
+    }
 
     let output = ApplyOutput {
         status: apply_status_str(&status).to_string(),

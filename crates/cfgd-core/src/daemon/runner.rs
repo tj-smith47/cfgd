@@ -298,50 +298,29 @@ pub(super) async fn handle_sync_tick(
         }
         task.last_synced = Some(now);
 
-        let st = Arc::clone(&ctx.state);
-        let repo = task.repo_path.clone();
-        let pull = task.auto_pull;
-        let push = task.auto_push;
-        let auto_apply = task.auto_apply;
-        let source_name = task.source_name.clone();
-        let require_signed = task.require_signed_commits;
-        let allow_uns = task.allow_unsigned;
-        tokio::task::spawn_blocking(move || {
-            let changed = handle_sync(
-                &repo,
-                pull,
-                push,
-                &source_name,
-                &st,
-                require_signed,
-                allow_uns,
+        let changed = handle_sync(
+            &task.repo_path,
+            task.auto_pull,
+            task.auto_push,
+            &task.source_name,
+            &ctx.state,
+            task.require_signed_commits,
+            task.allow_unsigned,
+        )
+        .await;
+        if changed && !task.auto_apply {
+            tracing::info!(
+                source = %task.source_name,
+                "changes detected but auto-apply is disabled — run 'cfgd sync' interactively"
             );
-            if changed && !auto_apply {
-                tracing::info!(
-                    source = %source_name,
-                    "changes detected but auto-apply is disabled — run 'cfgd sync' interactively"
-                );
-            }
-        })
-        .await
-        .map_err(|e| DaemonError::WatchError {
-            message: format!("sync task failed: {}", e),
-        })?;
+        }
     }
     Ok(())
 }
 
 pub(super) async fn handle_version_check_tick(ctx: &DaemonLoopContext) -> Result<()> {
     tracing::trace!("version check tick");
-    let st = Arc::clone(&ctx.state);
-    let nt = Arc::clone(&ctx.notifier);
-    tokio::task::spawn_blocking(move || {
-        handle_version_check(&st, &nt);
-    })
-    .await
-    .map_err(|e| DaemonError::WatchError {
-        message: format!("version check task failed: {}", e),
-    })?;
+    handle_version_check(&ctx.state, &ctx.notifier).await;
     Ok(())
 }
 

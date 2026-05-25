@@ -283,7 +283,11 @@ fn init_tracing() {
         .init();
 
     if let Some(err) = otel_init_err {
-        tracing::warn!(
+        // Operator explicitly set OTEL_EXPORTER_OTLP_ENDPOINT — a silent
+        // downgrade to fmt-only is the wrong default. Surface at error so
+        // alerting on `log.level="error"` lights up; the message stays
+        // structured (key=value pairs) for log aggregators.
+        tracing::error!(
             error = %err,
             "Failed to initialize OpenTelemetry; falling back to fmt-only tracing",
         );

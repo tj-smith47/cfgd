@@ -1,2 +1,2 @@
-Client        0.3.5
+Client        0.4.0
 Server (k8s)  not connected

@@ -925,3 +925,61 @@ async fn pool_timeout_surfaces_as_pool_exhausted() {
 
     hold.await.expect("hold join").expect("hold inner");
 }
+
+// ---- migration: duplicate-column swallow is bootstrap-load-bearing ----
+//
+// Regression guard for INVESTIGATE #2: the migration runner swallows
+// "duplicate column name" errors because Migration 0 (the initial CREATE
+// TABLE batch) declares every column that later ALTER TABLE migrations add.
+// Bootstrap therefore always trips the duplicate-column error on Migration
+// 1+ and must continue past it; removing the swallow breaks every fresh
+// install. This test pins that contract so future refactors don't reintroduce
+// the silent-failure bug under a different name.
+
+#[tokio::test]
+async fn migration_bootstrap_swallows_duplicate_column_on_fresh_db() {
+    let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+    let path = tmp.path().to_str().expect("path").to_string();
+
+    // A fresh open against a brand-new tempfile drives Migration 0 (which already
+    // declares `devices.desired_config` and `devices.compliance_summary`),
+    // then Migrations 1 + 2 (which both ALTER TABLE ADD COLUMN against the
+    // already-populated columns). The swallow must let both pass so
+    // schema_version reaches the max and the DB is usable.
+    let db = super::ServerDb::open(&path).expect("clean bootstrap open");
+    db.register_device("d1", "h", "linux", "x86_64", "x", None)
+        .await
+        .expect("registration must work post-bootstrap");
+}
+
+#[tokio::test]
+async fn migration_replay_idempotent_after_rewind() {
+    use rusqlite::Connection;
+
+    let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+    let path = tmp.path().to_str().expect("path").to_string();
+
+    // 1. Bootstrap cleanly.
+    let _db = super::ServerDb::open(&path).expect("clean open");
+    drop(_db);
+
+    // 2. Force schema_version + on-disk schema out of sync by rewinding
+    //    schema_version. This is the scenario the audit was worried about
+    //    (a v0.3.x upgrade path that mutated schema without bumping the
+    //    version row). The runner must still complete via the swallow
+    //    rather than crash — the alternative (loud failure) is functionally
+    //    equivalent to the bootstrap case and would brick affected
+    //    deployments.
+    {
+        let conn = Connection::open(&path).expect("rusqlite open");
+        conn.execute("UPDATE schema_version SET version = 1", [])
+            .expect("rewind version");
+    }
+
+    // 3. Re-open: replays Migrations 1+2, both of which hit duplicate column
+    //    but get swallowed. The DB stays usable.
+    let db2 = super::ServerDb::open(&path).expect("replay open must succeed");
+    db2.register_device("d2", "h2", "linux", "x86_64", "x", None)
+        .await
+        .expect("registration must work post-replay");
+}

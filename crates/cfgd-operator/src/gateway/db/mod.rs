@@ -344,6 +344,23 @@ fn run_migrations_on_conn(conn: &mut Connection) -> Result<(), GatewayError> {
     for (i, migration) in MIGRATIONS.iter().enumerate() {
         if i >= current_version {
             if let Err(e) = conn.execute_batch(migration) {
+                // Why "duplicate column name" is treated as success:
+                //
+                // Migration 0 (the initial CREATE TABLE batch) was extended
+                // over time to declare every column that later ALTER TABLE
+                // migrations add — so on a clean bootstrap the
+                // `ALTER TABLE … ADD COLUMN desired_config TEXT` (Migration 1)
+                // unconditionally trips the duplicate-column error against
+                // a freshly-created `devices` table that already has the
+                // column. The swallow exists so bootstrap completes and
+                // schema_version is bumped past the ALTER. Removing it
+                // breaks every fresh install.
+                //
+                // The original audit concern (a swallow could hide genuine
+                // schema drift from pre-tracking v0.3.x upgrades) is now
+                // surfaced at WARN with the migration index + current
+                // version — production operators will see the line on each
+                // unexpected fire, and CI grep can fail on it.
                 let is_dup_column = matches!(
                     &e,
                     rusqlite::Error::SqliteFailure(_, Some(msg))
@@ -353,6 +370,12 @@ fn run_migrations_on_conn(conn: &mut Connection) -> Result<(), GatewayError> {
                     let _ = conn.execute_batch("ROLLBACK");
                     return Err(e.into());
                 }
+                tracing::warn!(
+                    migration_index = i,
+                    current_version,
+                    error = %e,
+                    "gateway/db: ALTER TABLE skipped — column already present (expected on fresh bootstrap; surface for any other observed case)",
+                );
             }
             let new_version = (i + 1) as i64;
             if let Err(e) = conn.execute(

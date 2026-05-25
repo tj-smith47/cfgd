@@ -326,7 +326,6 @@ pub(super) fn verify_ssh_signature(
 
     let data_path = tmp_dir.path().join("challenge.txt");
     let sig_path = tmp_dir.path().join("challenge.txt.sig");
-    let signers_path = tmp_dir.path().join("allowed_signers");
 
     if let Err(e) = std::fs::write(&data_path, nonce) {
         tracing::error!(error = %e, "failed to write challenge data for SSH verification");
@@ -337,8 +336,12 @@ pub(super) fn verify_ssh_signature(
         return false;
     }
 
-    // Try each key until one verifies
-    for key in keys {
+    // Try each key until one verifies. Per-iteration `allowed_signers_{idx}`
+    // file mirrors the GPG sibling's per-key homedir pattern: prevents any
+    // cross-key contamination if this code is ever exercised concurrently
+    // (today the loop is sequential, but the asymmetry was an audit finding).
+    for (idx, key) in keys.iter().enumerate() {
+        let signers_path = tmp_dir.path().join(format!("allowed_signers_{idx}"));
         // Write allowed_signers file: "username key_type key_data"
         // The public_key field is the full OpenSSH public key line (e.g. "ssh-ed25519 AAAA... comment")
         let signer_line = format!("{} {}", key.username, key.public_key);

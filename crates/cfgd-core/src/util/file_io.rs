@@ -34,9 +34,18 @@ pub fn atomic_write(
     tmp.write_all(content)?;
     tmp.as_file().sync_all()?;
 
-    // Preserve permissions of existing file if present
-    if let Ok(meta) = std::fs::metadata(target) {
-        let _ = tmp.as_file().set_permissions(meta.permissions());
+    // Preserve permissions of existing file if present. A perm-set failure
+    // here means the new content gets written with default tempfile perms
+    // (0600 on most filesystems, but NFS/FUSE can differ) — surface so callers
+    // editing security-sensitive files (SSH keys, age keys) see drift.
+    if let Ok(meta) = std::fs::metadata(target)
+        && let Err(e) = tmp.as_file().set_permissions(meta.permissions())
+    {
+        tracing::warn!(
+            target = %target.display(),
+            error = %e,
+            "atomic_write: failed to restore permissions on temp file before rename",
+        );
     }
 
     let hash = sha256_hex(content);

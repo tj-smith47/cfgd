@@ -189,11 +189,38 @@ pub fn build_module(
             message: format!("container cp failed: {e}"),
         })?;
 
-    // Cleanup container and image (best effort)
-    let _ = runtime_cmd(runtime)
+    // Cleanup container and image (best effort). Log failures at debug so
+    // accumulated `cfgd-build-*` tags on the local runtime are traceable when
+    // disk pressure surfaces later.
+    match runtime_cmd(runtime)
         .args(["rm", "-f", &container_name])
-        .output();
-    let _ = runtime_cmd(runtime).args(["rmi", "-f", &tag]).output();
+        .output()
+    {
+        Ok(o) if !o.status.success() => tracing::debug!(
+            container = %container_name,
+            stderr = %crate::stderr_lossy_trimmed(&o),
+            "oci/build: container rm cleanup failed",
+        ),
+        Err(e) => tracing::debug!(
+            container = %container_name,
+            error = %e,
+            "oci/build: container rm invocation failed",
+        ),
+        _ => {}
+    }
+    match runtime_cmd(runtime).args(["rmi", "-f", &tag]).output() {
+        Ok(o) if !o.status.success() => tracing::debug!(
+            tag = %tag,
+            stderr = %crate::stderr_lossy_trimmed(&o),
+            "oci/build: image rmi cleanup failed",
+        ),
+        Err(e) => tracing::debug!(
+            tag = %tag,
+            error = %e,
+            "oci/build: image rmi invocation failed",
+        ),
+        _ => {}
+    }
 
     if !cp_output.status.success() {
         return Err(OciError::BuildError {

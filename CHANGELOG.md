@@ -7,7 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-25
+
+### Security
+
+- **daemon**: Move IPC socket to per-user `$XDG_RUNTIME_DIR/cfgd/cfgd.sock` with mode `0600` (was world-accessible at `/tmp/cfgd.sock`)
+- **daemon**: Cap IPC client read at 256 KiB to prevent OOM from malicious peers
+- **oci**: Replace TOFU sentinel with real cosign verification in `pull_module(require_signature=true)`
+- **upgrade**: Add `--require-cosign` / `CFGD_REQUIRE_COSIGN` flag for strict signature verification on self-upgrade
+- **operator**: Webhook task failure now exits the operator instead of silently disabling admission enforcement
+- **process**: Escalate to `SIGKILL` after grace period when child traps `SIGTERM`
+- **keys**: Surface restore failures during cosign key rotation (no more silent "keys restored" lies)
+- **config**: `deny_unknown_fields` on user-facing config shapes to catch typos
+- **gateway**: Rate-limit unauthenticated `/enroll/*` and `/checkin` to ~5/min/IP via in-house token bucket
+- **gateway**: Per-iteration `allowed_signers_{idx}` paths in SSH verify (mirrors GPG isolation pattern)
+
+### Fixed
+
+- **daemon**: Isolate per-tick failures so a single panic no longer kills the daemon loop
+- **daemon**: Wire per-module reconcile tasks (previously logged-and-noop)
+- **daemon**: Make `handle_sync` / `handle_version_check` truly async (remove `rt.block_on` inside `spawn_blocking`)
+- **daemon**: Surface state-dir resolution failure in startup banner (drift endpoint disablement)
+- **reconciler**: Treat permission/dir restore failures as `Failed` during rollback instead of silently reporting `Restored`
+- **apply**: Log `prune_old_backups` failures at `warn` instead of discarding
+- **doctor**: Surface manifest-resolution failures as warnings
+- **file_io**: Log permission-restore failures in `atomic_write`
+- **oci**: Log container rmi/cleanup failures at `debug`
+- **cli**: Log help-print failures at `debug`
+- **operator**: OpenTelemetry init failure now logs at `error` instead of `warn`
+- **gateway**: Hold and abort the 1-Hz reader-pool sampler on gateway exit
+- **gateway**: Log-once for `CFGD_API_KEY not set` (was per-request debug spam)
+- **gateway**: Migration "duplicate column name" arm now errors loudly (no more silent schema drift)
+- **cli**: Drop undocumented `--version-pin` alias `pin-version`
+
+### Documentation
+
+- **daemon**: Scope SIGHUP reload to timer intervals (rest of config requires restart)
+
 ### Added
+
+
 
 - **errors**: Add GenerateError enum for AI-guided generation
 - **config**: Add AiConfig type with provider, model, api-key-env fields
