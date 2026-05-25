@@ -10,6 +10,9 @@ pub enum CsiError {
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("metrics server error: {0}")]
+    Metrics(String),
 }
 
 impl From<cfgd_core::errors::OciError> for CsiError {
