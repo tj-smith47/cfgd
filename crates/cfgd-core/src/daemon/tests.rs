@@ -4452,6 +4452,99 @@ fn generate_systemd_unit_with_profile() {
     );
 }
 
+// install_launchd_service + uninstall_launchd_service: redirect HOME under
+// TestHomeGuard, run install → assert plist landed, run uninstall → assert
+// plist removed. Exercises the dir-create, atomic_write, exists, remove paths.
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn install_then_uninstall_launchd_service_round_trips_plist() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let binary = tmp.path().join("cfgd");
+    std::fs::write(&binary, b"").unwrap();
+    let config = tmp.path().join("config.yaml");
+    std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\n").unwrap();
+
+    install_launchd_service(&binary, &config, Some("work")).expect("install ok");
+
+    let plist = tmp
+        .path()
+        .join("Library/LaunchAgents/com.cfgd.daemon.plist");
+    assert!(plist.exists(), "plist should be installed at expected path");
+    let body = std::fs::read_to_string(&plist).unwrap();
+    assert!(body.contains("com.cfgd.daemon"));
+    assert!(body.contains("--profile"));
+
+    uninstall_launchd_service().expect("uninstall ok");
+    assert!(!plist.exists(), "plist should be removed after uninstall");
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn uninstall_launchd_service_is_noop_when_absent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    // No prior install — uninstall must succeed without error.
+    uninstall_launchd_service().expect("uninstall on clean home is a no-op");
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn install_then_uninstall_systemd_service_round_trips_unit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let binary = tmp.path().join("cfgd");
+    std::fs::write(&binary, b"").unwrap();
+    let config = tmp.path().join("config.yaml");
+    std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\n").unwrap();
+
+    install_systemd_service(&binary, &config, None).expect("install ok");
+
+    let unit_path = tmp.path().join(".config/systemd/user/cfgd.service");
+    assert!(unit_path.exists(), "unit should be installed");
+    let body = std::fs::read_to_string(&unit_path).unwrap();
+    assert!(body.contains("ExecStart="));
+    assert!(body.contains("--quiet daemon"));
+    assert!(!body.contains("--profile"));
+
+    uninstall_systemd_service().expect("uninstall ok");
+    assert!(
+        !unit_path.exists(),
+        "unit should be removed after uninstall"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn uninstall_systemd_service_is_noop_when_absent() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    uninstall_systemd_service().expect("uninstall on clean home is a no-op");
+}
+
+// Cross-platform dispatcher: install_service uses current_exe() + cfg(macos)/else
+// to delegate to launchd/systemd. uninstall_service mirrors that branch.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn install_service_then_uninstall_service_round_trips_via_dispatcher() {
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let config = tmp.path().join("config.yaml");
+    std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\n").unwrap();
+
+    crate::daemon::service::install_service(&config, None).expect("install_service ok");
+    // Whether macOS (plist) or Linux (unit), uninstall must round-trip without
+    // panic. Skip exists() assertions — the dispatcher branch depends on
+    // target_os and we just want both arms exercised.
+    crate::daemon::service::uninstall_service().expect("uninstall_service ok");
+}
+
 // --- record_file_drift_to tests ---
 
 #[test]

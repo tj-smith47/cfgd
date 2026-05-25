@@ -625,5 +625,20 @@ mod tests {
                 .expect("typescript present");
             assert_eq!(ts.version, "5.3.3");
         }
+
+        // bootstrap: brew-first cascade. A successful brew shim exercises the
+        // early-return path through `bootstrap_via_brew_then_system`.
+        #[test]
+        #[serial]
+        fn npm_bootstrap_via_brew_returns_ok() {
+            let s = ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+            let p = test_printer();
+            NpmManager.bootstrap(&p).expect("bootstrap Ok via brew");
+            assert!(
+                s.argv_log().contains("install node"),
+                "brew argv must include `install node`: {}",
+                s.argv_log()
+            );
+        }
     }
 }

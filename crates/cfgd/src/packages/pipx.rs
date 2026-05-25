@@ -620,5 +620,20 @@ mod tests {
                 .expect("black present");
             assert_eq!(black.version, "24.1.0");
         }
+
+        // bootstrap: brew-first cascade. A successful brew shim exercises the
+        // early-return path through `bootstrap_via_brew_then_system`.
+        #[test]
+        #[serial]
+        fn pipx_bootstrap_via_brew_returns_ok() {
+            let s = ToolShim::install("CFGD_BREW_BIN", 0, "", "");
+            let p = test_printer();
+            PipxManager.bootstrap(&p).expect("bootstrap Ok via brew");
+            assert!(
+                s.argv_log().contains("install pipx"),
+                "brew argv must include `install pipx`: {}",
+                s.argv_log()
+            );
+        }
     }
 }

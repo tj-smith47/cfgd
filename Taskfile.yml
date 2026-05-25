@@ -89,16 +89,18 @@ tasks:
       - cargo clippy -- -D warnings
 
   test:
-    desc: Run all tests
+    desc: Run all tests. Pass `-- <args>` to forward to cargo test.
     deps: [_check:tmp-headroom]
     cmds:
-      - cargo test
+      - cargo test {{.CLI_ARGS}}
 
-  test:crate:
-    desc: Run tests for a specific crate
+  test:crate:*:
+    desc: 'Run tests for one crate: `task test:crate:<crate> -- <filter>`'
     deps: [_check:tmp-headroom]
+    vars:
+      CRATE: '{{index .MATCH 0}}'
     cmds:
-      - cargo test -p {{.CLI_ARGS}} --features cfgd-core/test-helpers
+      - cargo test -p {{.CRATE}} --features cfgd-core/test-helpers {{.CLI_ARGS}}
 
   audit:
     desc: Run project-specific code quality audit
