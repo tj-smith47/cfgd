@@ -76,3 +76,39 @@ pub(crate) fn uninstall_systemd_service() -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+#[cfg(unix)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn generate_systemd_unit_includes_binary_config_and_quiet_daemon_flags() {
+        let unit = generate_systemd_unit(
+            &PathBuf::from("/usr/local/bin/cfgd"),
+            &PathBuf::from("/etc/cfgd/config.yaml"),
+            None,
+        );
+        assert!(unit.contains("Description=cfgd configuration daemon"));
+        assert!(unit.contains("After=network.target"));
+        assert!(unit.contains(
+            "ExecStart=/usr/local/bin/cfgd --config /etc/cfgd/config.yaml --quiet daemon"
+        ));
+        assert!(unit.contains("Restart=on-failure"));
+        assert!(unit.contains("WantedBy=default.target"));
+        assert!(!unit.contains("--profile"));
+    }
+
+    #[test]
+    fn generate_systemd_unit_emits_profile_args_when_set() {
+        let unit = generate_systemd_unit(
+            &PathBuf::from("/cfgd"),
+            &PathBuf::from("/c.yaml"),
+            Some("workstation"),
+        );
+        assert!(
+            unit.contains("ExecStart=/cfgd --config /c.yaml --profile workstation --quiet daemon")
+        );
+    }
+}
