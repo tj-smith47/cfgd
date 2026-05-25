@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::module::ModuleRegistryEntry;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SecurityConfig {
     /// Allow unsigned source content even when the source requires signed commits.
     /// Intended for development/testing environments.
@@ -12,7 +12,7 @@ pub struct SecurityConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModulesConfig {
     /// Module registries — git repos containing modules in a prescribed directory structure.
     #[serde(default)]
@@ -24,7 +24,7 @@ pub struct ModulesConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleSecurityConfig {
     /// Require GPG/SSH signatures on all remote module tags.
     /// When true, unsigned modules are rejected unless `--allow-unsigned` is passed.

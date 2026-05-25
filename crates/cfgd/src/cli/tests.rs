@@ -7154,9 +7154,7 @@ fn module_delete_cleans_lockfile() {
     );
 
     // Create a lockfile with an entry for this module
-    let lockfile_content = r#"apiVersion: cfgd.io/v1alpha1
-kind: ModuleLock
-modules:
+    let lockfile_content = r#"modules:
   - name: remote-mod
     url: https://github.com/example/mod.git@v1.0
     pinnedRef: v1.0
@@ -12883,9 +12881,9 @@ metadata:
 spec:
   packages:
     - name: ripgrep
-      manager: cargo
+      prefer: [cargo]
     - name: fd-find
-      manager: cargo
+      prefer: [cargo]
     - name: bat
   env:
     - name: EDITOR

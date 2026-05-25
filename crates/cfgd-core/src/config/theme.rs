@@ -65,9 +65,10 @@ impl<'de> serde::Deserialize<'de> for ThemeConfig {
     }
 }
 
-// Unknown fields (legacy keys like `subheader`, `iconSuccess`, etc.) are silently
-// ignored at the typed-deserialize layer; `parse::warn_on_legacy_theme_keys`
-// surfaces them as `tracing::warn!` so users notice their override did nothing.
+// no deny_unknown_fields — legacy theme keys (`subheader`, `iconSuccess`, etc.)
+// are deliberately ignored at the typed-deserialize layer so old configs keep
+// parsing; `parse::warn_on_legacy_theme_keys` surfaces them as `tracing::warn!`
+// so users see their override did nothing and can migrate cleanly.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThemeOverrides {

@@ -7,7 +7,7 @@ use super::source::default_true;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ComplianceConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -29,7 +29,7 @@ fn default_compliance_retention() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ComplianceScope {
     #[serde(default = "default_true")]
     pub files: bool,
@@ -66,7 +66,7 @@ pub enum ComplianceFormat {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ComplianceExport {
     #[serde(default)]
     pub format: ComplianceFormat,

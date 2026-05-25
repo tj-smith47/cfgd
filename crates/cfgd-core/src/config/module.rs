@@ -11,7 +11,7 @@ use crate::errors::{ConfigError, Result};
 // --- Module ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleDocument {
     pub api_version: String,
     pub kind: String,
@@ -20,7 +20,7 @@ pub struct ModuleDocument {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleMetadata {
     pub name: String,
     #[serde(default)]
@@ -28,7 +28,7 @@ pub struct ModuleMetadata {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleSpec {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends: Vec<String>,
@@ -55,7 +55,7 @@ pub struct ModuleSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModulePackageEntry {
     #[serde(default)]
     pub name: String,
@@ -80,7 +80,7 @@ pub struct ModulePackageEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleFileEntry {
     pub source: String,
     pub target: String,
@@ -143,7 +143,7 @@ impl std::fmt::Display for ScriptEntry {
 /// Lockfile recording pinned remote modules with integrity hashes.
 /// Stored at `<config_dir>/modules.lock`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleLockfile {
     #[serde(default)]
     pub modules: Vec<ModuleLockEntry>,
@@ -151,7 +151,7 @@ pub struct ModuleLockfile {
 
 /// A single locked remote module.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleLockEntry {
     /// Module name (matches metadata.name in the module spec).
     pub name: String,
@@ -172,7 +172,7 @@ pub struct ModuleLockEntry {
 
 /// A module registry — a git repo containing modules in `modules/<name>/module.yaml` structure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleRegistryEntry {
     /// Short name / alias for this source (defaults to GitHub org name).
     pub name: String,
@@ -193,4 +193,35 @@ pub fn parse_module(contents: &str) -> Result<ModuleDocument> {
     }
 
     Ok(doc)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn module_spec_rejects_unknown_field() {
+        let yaml = "depends: []\nbogus: 1\n";
+        let err = serde_yaml::from_str::<ModuleSpec>(yaml)
+            .expect_err("expected deny_unknown_fields to reject bogus");
+        assert!(format!("{}", err).contains("unknown field"));
+    }
+
+    #[test]
+    fn module_document_rejects_unknown_top_level_field() {
+        let yaml = r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+bogusField: nope
+metadata:
+  name: m
+spec: {}
+"#;
+        let err = serde_yaml::from_str::<ModuleDocument>(yaml)
+            .expect_err("expected deny_unknown_fields to reject bogusField");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("unknown field") && msg.contains("bogusField"),
+            "expected unknown-field error mentioning bogusField, got: {msg}"
+        );
+    }
 }

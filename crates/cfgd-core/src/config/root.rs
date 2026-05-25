@@ -17,7 +17,7 @@ use crate::errors::Result;
 // --- Root Config (cfgd.yaml) ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CfgdConfig {
     pub api_version: String,
     pub kind: String,
@@ -41,13 +41,13 @@ impl CfgdConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigMetadata {
     pub name: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSpec {
     #[serde(default)]
     pub profile: Option<String>,
@@ -219,6 +219,32 @@ mod tests {
     fn for_each_yaml_file_nonexistent_dir_is_ok() {
         let r = for_each_yaml_file(Path::new("/nonexistent/path/xyz"), |_| Ok(()));
         assert!(r.is_ok());
+    }
+
+    #[test]
+    fn cfgd_config_rejects_unknown_top_level_fields() {
+        let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nbogusField: nope\nmetadata:\n  name: t\nspec: {}\n";
+        let err = serde_yaml::from_str::<CfgdConfig>(yaml)
+            .expect_err("expected deny_unknown_fields to reject bogusField");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("unknown field"),
+            "expected unknown-field error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn config_spec_rejects_unknown_field_typo() {
+        // Real-world scenario: a typo at the spec level should be caught (e.g.
+        // `securty:` instead of `security:`). Surfaces drift-style typos.
+        let yaml = "profile: default\nsecurty: {}\n";
+        let err = serde_yaml::from_str::<ConfigSpec>(yaml)
+            .expect_err("expected deny_unknown_fields to reject securty typo");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("unknown field") && msg.contains("securty"),
+            "expected unknown-field error mentioning securty, got: {msg}"
+        );
     }
 
     #[test]

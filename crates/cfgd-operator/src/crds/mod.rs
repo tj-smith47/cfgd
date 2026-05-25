@@ -142,7 +142,7 @@ pub struct LabelSelectorRequirement {
     printcolumn = r#"{"name": "Enforced", "type": "string", "jsonPath": ".status.conditions[?(@.type==\"Enforced\")].status"}"#,
     printcolumn = r#"{"name": "Age", "type": "date", "jsonPath": ".metadata.creationTimestamp"}"#
 )]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigPolicySpec {
     #[serde(default)]
     pub required_modules: Vec<ModuleRef>,
@@ -244,7 +244,7 @@ pub enum DriftSeverity {
     printcolumn = r#"{"name": "Enforced", "type": "string", "jsonPath": ".status.conditions[?(@.type==\"Enforced\")].status"}"#,
     printcolumn = r#"{"name": "Age", "type": "date", "jsonPath": ".metadata.creationTimestamp"}"#
 )]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ClusterConfigPolicySpec {
     /// Select which namespaces this cluster policy applies to.
     #[serde(default)]

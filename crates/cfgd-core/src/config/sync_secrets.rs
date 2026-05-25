@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::source::default_sync_interval;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SyncConfig {
     #[serde(default)]
     pub auto_push: bool,
@@ -17,7 +17,7 @@ pub struct SyncConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NotifyConfig {
     #[serde(default)]
     pub drift: bool,
@@ -36,7 +36,7 @@ pub enum NotifyMethod {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SecretsConfig {
     #[serde(default = "default_secrets_backend")]
     pub backend: String,
@@ -51,12 +51,15 @@ fn default_secrets_backend() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SopsConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub age_key: Option<PathBuf>,
 }
 
+// no deny_unknown_fields — incompatible with serde(flatten) on `extra`; the
+// flattened map intentionally captures arbitrary per-backend keys (vault, item,
+// etc.) and `deny_unknown_fields` would short-circuit that routing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SecretIntegration {

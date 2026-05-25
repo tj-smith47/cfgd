@@ -9,7 +9,7 @@ use crate::errors::{ConfigError, Result};
 // --- Profile ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProfileDocument {
     pub api_version: String,
     pub kind: String,
@@ -18,13 +18,13 @@ pub struct ProfileDocument {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProfileMetadata {
     pub name: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProfileSpec {
     #[serde(default)]
     pub inherits: Vec<String>,
@@ -55,7 +55,7 @@ pub struct ProfileSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackagesSpec {
     #[serde(default)]
     pub brew: Option<BrewSpec>,
@@ -167,7 +167,7 @@ impl PackagesSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BrewSpec {
     #[serde(default)]
     pub file: Option<String>,
@@ -180,7 +180,7 @@ pub struct BrewSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AptSpec {
     #[serde(default)]
     pub file: Option<String>,
@@ -189,7 +189,7 @@ pub struct AptSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NpmSpec {
     #[serde(default)]
     pub file: Option<String>,
@@ -215,7 +215,7 @@ impl<'de> Deserialize<'de> for CargoSpec {
         use serde::de;
 
         #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
         struct CargoSpecFull {
             #[serde(default)]
             file: Option<String>,
@@ -264,7 +264,7 @@ impl<'de> Deserialize<'de> for CargoSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SnapSpec {
     #[serde(default)]
     pub packages: Vec<String>,
@@ -273,7 +273,7 @@ pub struct SnapSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FlatpakSpec {
     #[serde(default)]
     pub packages: Vec<String>,
@@ -282,7 +282,7 @@ pub struct FlatpakSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CustomManagerSpec {
     pub name: String,
     pub check: String,
@@ -296,7 +296,7 @@ pub struct CustomManagerSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FilesSpec {
     #[serde(default)]
     pub managed: Vec<ManagedFileSpec>,
@@ -330,7 +330,7 @@ pub enum EncryptionMode {
 
 /// Encryption settings for a managed file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EncryptionSpec {
     /// The encryption backend to use (e.g. "sops", "age").
     pub backend: String,
@@ -341,7 +341,7 @@ pub struct EncryptionSpec {
 
 /// Encryption constraint applied to files from a config source.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EncryptionConstraint {
     /// Glob patterns or explicit paths that must be encrypted.
     #[serde(default)]
@@ -355,7 +355,7 @@ pub struct EncryptionConstraint {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedFileSpec {
     pub source: String,
     pub target: PathBuf,
@@ -379,7 +379,7 @@ pub struct ManagedFileSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SecretSpec {
     pub source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -409,7 +409,7 @@ pub fn validate_secret_specs(specs: &[SecretSpec]) -> Result<()> {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScriptSpec {
     #[serde(default)]
     pub pre_apply: Vec<ScriptEntry>,
@@ -423,4 +423,38 @@ pub struct ScriptSpec {
     pub on_drift: Vec<ScriptEntry>,
     #[serde(default)]
     pub on_change: Vec<ScriptEntry>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_spec_rejects_unknown_field() {
+        let yaml = "modules: []\nbogus: 1\n";
+        let err = serde_yaml::from_str::<ProfileSpec>(yaml)
+            .expect_err("expected deny_unknown_fields to reject bogus");
+        assert!(format!("{}", err).contains("unknown field"));
+    }
+
+    #[test]
+    fn packages_spec_rejects_typo_for_known_manager() {
+        // `brwe:` typo (meant `brew:`) must error loudly, not silently drop.
+        let yaml = "brwe:\n  formulae: [ripgrep]\n";
+        let err = serde_yaml::from_str::<PackagesSpec>(yaml)
+            .expect_err("expected deny_unknown_fields to reject brwe typo");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("unknown field") && msg.contains("brwe"),
+            "expected unknown-field error mentioning brwe, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn managed_file_spec_rejects_unknown_field() {
+        let yaml = "source: a\ntarget: /tmp/b\nbogus: 1\n";
+        let err = serde_yaml::from_str::<ManagedFileSpec>(yaml)
+            .expect_err("expected deny_unknown_fields to reject bogus");
+        assert!(format!("{}", err).contains("unknown field"));
+    }
 }

@@ -179,7 +179,7 @@ pub fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {
 
 // Internal raw types for flexible origin deserialization
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawCfgdConfig {
     api_version: String,
     kind: String,
@@ -188,7 +188,7 @@ struct RawCfgdConfig {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RawConfigSpec {
     #[serde(default)]
     profile: Option<String>,

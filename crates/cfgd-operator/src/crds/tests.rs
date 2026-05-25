@@ -526,3 +526,43 @@ fn pem_key_validation() {
         "-----BEGIN PRIVATE KEY-----\ndata\n-----END PRIVATE KEY-----"
     ));
 }
+
+// ---------------------------------------------------------------------------
+// deny_unknown_fields: user-facing CRD specs reject typos; status types remain
+// forward-compatible (controllers may emit new fields old binaries should not
+// reject).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn config_policy_spec_rejects_unknown_field() {
+    let yaml = "requiredModules: []\nbogusField: nope\n";
+    let err = serde_yaml::from_str::<ConfigPolicySpec>(yaml)
+        .expect_err("ConfigPolicySpec should reject unknown fields");
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("unknown field") && msg.contains("bogusField"),
+        "expected unknown-field error mentioning bogusField, got: {msg}"
+    );
+}
+
+#[test]
+fn cluster_config_policy_spec_rejects_unknown_field() {
+    let yaml = "requiredModules: []\nbogusField: nope\n";
+    let err = serde_yaml::from_str::<ClusterConfigPolicySpec>(yaml)
+        .expect_err("ClusterConfigPolicySpec should reject unknown fields");
+    assert!(format!("{}", err).contains("unknown field"));
+}
+
+#[test]
+fn machine_config_status_accepts_unknown_field_for_forward_compat() {
+    // CRD status subresources must accept unknown fields: a newer controller
+    // may emit fields the old binary does not know yet, and a strict reject
+    // would break the rolling upgrade window. Pin that behavior.
+    let yaml = "lastReconciled: '2026-01-01T00:00:00Z'\nbrandNewField: 42\n";
+    let result: Result<MachineConfigStatus, _> = serde_yaml::from_str(yaml);
+    assert!(
+        result.is_ok(),
+        "MachineConfigStatus must accept unknown fields for forward compat, got: {:?}",
+        result.err()
+    );
+}

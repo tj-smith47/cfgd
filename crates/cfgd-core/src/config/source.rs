@@ -8,7 +8,7 @@ use super::profile_spec::{EncryptionConstraint, ManagedFileSpec, PackagesSpec, S
 // --- Multi-source config management ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceSpec {
     pub name: String,
     pub origin: OriginSpec,
@@ -19,7 +19,7 @@ pub struct SourceSpec {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubscriptionSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
@@ -53,7 +53,7 @@ fn default_source_priority() -> u32 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceSyncSpec {
     #[serde(default = "default_sync_interval")]
     pub interval: String,
@@ -80,7 +80,7 @@ pub(super) fn default_sync_interval() -> String {
 // --- ConfigSource manifest (published by team, lives in source repo as cfgd-source.yaml) ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourceDocument {
     pub api_version: String,
     pub kind: String,
@@ -89,7 +89,7 @@ pub struct ConfigSourceDocument {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourceMetadata {
     pub name: String,
     #[serde(default)]
@@ -99,7 +99,7 @@ pub struct ConfigSourceMetadata {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourceSpec {
     #[serde(default)]
     pub provides: ConfigSourceProvides,
@@ -108,7 +108,7 @@ pub struct ConfigSourceSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourceProvides {
     #[serde(default)]
     pub profiles: Vec<String>,
@@ -123,7 +123,7 @@ pub struct ConfigSourceProvides {
 /// Detailed profile entry in a ConfigSource manifest.
 /// When present, provides richer info than the flat `profiles` list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourceProfileEntry {
     pub name: String,
     #[serde(default)]
@@ -135,7 +135,7 @@ pub struct ConfigSourceProfileEntry {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourcePolicy {
     #[serde(default)]
     pub required: PolicyItems,
@@ -162,7 +162,7 @@ impl<'de> Deserialize<'de> for EnvVar {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
         struct Raw {
             name: String,
             value: String,
@@ -189,7 +189,7 @@ impl<'de> Deserialize<'de> for ShellAlias {
         D: serde::Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
         struct Raw {
             name: String,
             command: String,
@@ -204,7 +204,7 @@ impl<'de> Deserialize<'de> for ShellAlias {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PolicyItems {
     #[serde(default)]
     pub packages: Option<PackagesSpec>,
@@ -225,7 +225,7 @@ pub struct PolicyItems {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceConstraints {
     #[serde(default = "default_true")]
     pub no_scripts: bool,
@@ -259,4 +259,35 @@ impl Default for SourceConstraints {
 
 pub(super) fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_spec_rejects_unknown_field() {
+        // `sourcees:`-style typos at the source level should error loudly.
+        let yaml = r#"name: team
+origin:
+  type: Git
+  url: https://example.com/x.git
+bogusField: 1
+"#;
+        let err = serde_yaml::from_str::<SourceSpec>(yaml)
+            .expect_err("expected deny_unknown_fields to reject bogusField");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("unknown field") && msg.contains("bogusField"),
+            "expected unknown-field error mentioning bogusField, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn subscription_spec_rejects_unknown_field() {
+        let yaml = "priority: 100\nautoApply: true\n";
+        let err = serde_yaml::from_str::<SubscriptionSpec>(yaml)
+            .expect_err("expected deny_unknown_fields to reject autoApply (belongs on sync)");
+        assert!(format!("{}", err).contains("unknown field"));
+    }
 }

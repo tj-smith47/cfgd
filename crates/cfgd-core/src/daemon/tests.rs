@@ -8316,7 +8316,7 @@ mod harness {
         std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
         std::fs::write(
             tmp.path().join("profiles").join("default.yaml"),
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  files:\n    managed:\n      - source: example.txt\n        target: ~/example.txt\n  packages:\n    brew:\n      packages:\n        - ripgrep\n",
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  files:\n    managed:\n      - source: example.txt\n        target: ~/example.txt\n  packages:\n    brew:\n      formulae:\n        - ripgrep\n",
         )
         .unwrap();
         let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);

@@ -2612,34 +2612,50 @@ spec:
 }
 
 #[test]
-fn load_all_modules_with_lockfile_no_cache() {
+fn load_all_modules_with_empty_lockfile_returns_no_remote_modules() {
     let dir = tempfile::tempdir().unwrap();
     let cache_base = dir.path().join("cache");
     std::fs::create_dir_all(&cache_base).unwrap();
 
-    // Create a lockfile referencing a remote module
+    // Empty lockfile — no remote-module entries; load_all_modules must succeed
+    // with an empty result (no local modules either).
+    std::fs::write(dir.path().join("modules.lock"), "modules: []\n").unwrap();
+
+    let printer = test_printer();
+    let modules = load_all_modules(dir.path(), &cache_base, &printer).unwrap();
+    assert!(
+        modules.is_empty(),
+        "empty lockfile with no local modules should produce empty result"
+    );
+}
+
+#[test]
+fn load_all_modules_errors_when_locked_module_cache_missing() {
+    // A lockfile entry with no cache directory must fail with a clear error
+    // ("run cfgd module update") rather than silently skipping — silent skip
+    // would mean the user's pinned remote module never gets applied and they
+    // wouldn't know.
+    let dir = tempfile::tempdir().unwrap();
+    let cache_base = dir.path().join("cache");
+    std::fs::create_dir_all(&cache_base).unwrap();
+
     std::fs::write(
         dir.path().join("modules.lock"),
-        r#"
-apiVersion: cfgd.io/v1alpha1
-kind: ModuleLockfile
-entries:
+        r#"modules:
   - name: remote-mod
-    source: "https://github.com/example/modules.git//remote-mod"
+    url: "https://github.com/example/modules.git"
+    pinnedRef: "v1.0.0"
     commit: "abc123"
-    contentHash: "sha256:deadbeef"
+    integrity: "sha256:deadbeef"
 "#,
     )
     .unwrap();
 
     let printer = test_printer();
-    // load_all_modules should succeed but remote module won't be in result
-    // because its cache directory doesn't exist
-    let modules = load_all_modules(dir.path(), &cache_base, &printer).unwrap();
-    // No local modules, remote module cache doesn't exist — empty result
+    let result = load_all_modules(dir.path(), &cache_base, &printer);
     assert!(
-        modules.is_empty(),
-        "remote module with no cache should not appear in loaded modules"
+        result.is_err(),
+        "expected error when locked remote module has no cache"
     );
 }
 

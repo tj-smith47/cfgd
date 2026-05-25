@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::sync_secrets::{NotifyConfig, SyncConfig};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DaemonConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -23,7 +23,7 @@ pub struct DaemonConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReconcileConfig {
     #[serde(default = "default_reconcile_interval")]
     pub interval: String,
@@ -48,7 +48,7 @@ pub struct ReconcileConfig {
 /// A kustomize-style reconcile patch targeting a specific module or profile.
 /// When `name` is omitted, the patch applies to all entities of the given kind.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReconcilePatch {
     pub kind: ReconcilePatchKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -80,7 +80,7 @@ pub enum DriftPolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutoApplyPolicyConfig {
     #[serde(default = "default_policy_notify")]
     pub new_recommended: PolicyAction,
@@ -188,6 +188,29 @@ mod tests {
         assert_eq!(auto, DriftPolicy::Auto);
         assert_eq!(notify, DriftPolicy::NotifyOnly);
         assert_eq!(prompt, DriftPolicy::Prompt);
+    }
+
+    #[test]
+    fn daemon_config_rejects_unknown_field() {
+        let yaml = "enabled: true\nbogus: 1\n";
+        let err = serde_yaml::from_str::<DaemonConfig>(yaml)
+            .expect_err("expected deny_unknown_fields to reject bogus");
+        assert!(format!("{}", err).contains("unknown field"));
+    }
+
+    #[test]
+    fn reconcile_config_rejects_drift_policy_typo() {
+        // Exactly the example called out in the v0.4 finding: `dirft_policy`
+        // typo silently became a no-op; with deny_unknown_fields it must fail
+        // loudly so the operator notices.
+        let yaml = "interval: 5m\ndirftPolicy: Auto\n";
+        let err = serde_yaml::from_str::<ReconcileConfig>(yaml)
+            .expect_err("expected deny_unknown_fields to reject dirftPolicy");
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("unknown field") && msg.contains("dirftPolicy"),
+            "expected unknown-field error mentioning dirftPolicy, got: {msg}"
+        );
     }
 
     #[test]
