@@ -2318,3 +2318,271 @@ fn source_manager_source_files_dir_returns_err_for_unknown_source() {
     let result = mgr.source_files_dir("not-loaded");
     assert!(result.is_err(), "files_dir for unloaded source must err");
 }
+
+// ---------------------------------------------------------------------------
+// load_source — rejection of file:// origins without the env-bypass + happy
+// path for absolute-path origins under the same bypass. Pins the safety
+// envelope so a refactor that quietly loosens the check trips here.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[serial]
+fn load_source_rejects_file_url_without_allow_env() {
+    use crate::test_helpers::with_test_env_var;
+    with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", None, || {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let mut mgr = SourceManager::new(&cache_dir);
+        let printer = test_printer();
+        let spec = crate::config::SourceSpec {
+            name: "local".into(),
+            origin: crate::config::OriginSpec {
+                origin_type: OriginType::Git,
+                url: "file:///some/local/repo".into(),
+                branch: "main".into(),
+                auth: None,
+                ssh_strict_host_key_checking: Default::default(),
+            },
+            subscription: Default::default(),
+            sync: Default::default(),
+        };
+        let err = mgr.load_source(&spec, &printer).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("file://") || msg.contains("local"),
+            "rejection must mention file:// URLs: {msg}"
+        );
+    });
+}
+
+#[test]
+#[serial]
+fn load_source_rejects_absolute_path_origin_without_allow_env() {
+    use crate::test_helpers::with_test_env_var;
+    with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", None, || {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_dir = tmp.path().join("cache");
+        let mut mgr = SourceManager::new(&cache_dir);
+        let printer = test_printer();
+        let spec = crate::config::SourceSpec {
+            name: "absolute".into(),
+            origin: crate::config::OriginSpec {
+                origin_type: OriginType::Git,
+                url: "/absolute/path/repo.git".into(),
+                branch: "main".into(),
+                auth: None,
+                ssh_strict_host_key_checking: Default::default(),
+            },
+            subscription: Default::default(),
+            sync: Default::default(),
+        };
+        let err = mgr.load_source(&spec, &printer).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("absolute path") || msg.contains("file://"),
+            "rejection must mention absolute paths: {msg}"
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// load_source — single-name traversal coverage. validate_no_traversal accepts
+// `name` containing `/` but rejects names starting with `..`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn load_source_rejects_double_dot_name_with_clear_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_dir = tmp.path().join("cache");
+    let mut mgr = SourceManager::new(&cache_dir);
+    let printer = test_printer();
+    let spec = crate::config::SourceSpec {
+        name: "..".into(),
+        origin: crate::config::OriginSpec {
+            origin_type: OriginType::Git,
+            url: "https://example.com/repo.git".into(),
+            branch: "main".into(),
+            auth: None,
+            ssh_strict_host_key_checking: Default::default(),
+        },
+        subscription: Default::default(),
+        sync: Default::default(),
+    };
+    let err = mgr.load_source(&spec, &printer).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("invalid source name") || msg.contains("traversal"),
+        "double-dot name must be rejected before any clone: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// head_commit — explicit branch coverage. `Repository::open` fails on a
+// directory that exists but is not a repo → head_commit returns None
+// without panicking.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn head_commit_returns_none_for_non_repo_dir() {
+    let tmp = tempfile::tempdir().unwrap();
+    // tempdir is an empty directory — open will fail, returns None.
+    let result = SourceManager::head_commit(tmp.path());
+    assert!(
+        result.is_none(),
+        "head_commit on a non-repo dir must return None"
+    );
+}
+
+#[test]
+fn head_commit_returns_none_when_head_has_no_target() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo_dir = tmp.path().join("repo");
+    // git init creates a repo with no HEAD target yet (no commits)
+    git2::Repository::init(&repo_dir).unwrap();
+    let result = SourceManager::head_commit(&repo_dir);
+    // No commits → repo.head() fails → head_commit returns None.
+    assert!(
+        result.is_none(),
+        "head_commit on an empty repo (no commits) must return None"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// load_sources — partial-failure path. Three specs: one bogus + one valid
+// using a local bare repo + one bogus. load_sources must accept the partial
+// success and only error if every spec fails.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[serial]
+fn load_sources_succeeds_when_at_least_one_source_loads() {
+    use crate::config::{
+        OriginSpec, OriginType, SourceSyncSpec, SshHostKeyPolicy, SubscriptionSpec,
+    };
+    use crate::test_helpers::with_test_env_var;
+
+    with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Create a real bare repo with a valid cfgd-source.yaml.
+        let bare = tmp.path().join("real-bare.git");
+        let _ = git2::Repository::init_bare(&bare).unwrap();
+        let src = tmp.path().join("real-src");
+        let src_repo = git2::Repository::init(&src).unwrap();
+        std::fs::write(
+            src.join("cfgd-source.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: real\nspec:\n  provides:\n    profiles:\n      - default\n",
+        ).unwrap();
+        let mut index = src_repo.index().unwrap();
+        index
+            .add_path(std::path::Path::new("cfgd-source.yaml"))
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        src_repo
+            .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        drop(tree);
+
+        let bare_url = format!("file://{}", bare.display());
+        let mut remote = src_repo.remote("origin", &bare_url).unwrap();
+        let branch = src_repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        remote
+            .push(&[&format!("refs/heads/{branch}:refs/heads/{branch}")], None)
+            .unwrap();
+
+        let cache_dir = tmp.path().join("cache");
+        let mut mgr = SourceManager::new(&cache_dir);
+
+        let bogus_spec = |name: &str, url: &str| -> SourceSpec {
+            SourceSpec {
+                name: name.to_string(),
+                origin: OriginSpec {
+                    origin_type: OriginType::Git,
+                    url: url.to_string(),
+                    branch: "main".to_string(),
+                    auth: None,
+                    ssh_strict_host_key_checking: SshHostKeyPolicy::No,
+                },
+                subscription: SubscriptionSpec::default(),
+                sync: SourceSyncSpec::default(),
+            }
+        };
+        let valid_spec = SourceSpec {
+            name: "real".into(),
+            origin: OriginSpec {
+                origin_type: OriginType::Git,
+                url: bare_url.clone(),
+                branch: branch.clone(),
+                auth: None,
+                ssh_strict_host_key_checking: SshHostKeyPolicy::No,
+            },
+            subscription: SubscriptionSpec::default(),
+            sync: SourceSyncSpec::default(),
+        };
+
+        let specs = vec![
+            bogus_spec("bad1", "file:///nonexistent/repo-a"),
+            valid_spec,
+            bogus_spec("bad2", "file:///nonexistent/repo-b"),
+        ];
+
+        let printer = test_printer();
+        // Despite two failures, one success is enough for load_sources to return Ok.
+        mgr.load_sources(&specs, &printer)
+            .expect("at least one valid source means load_sources succeeds");
+        assert!(mgr.get("real").is_some(), "valid source must be loaded");
+        assert!(
+            mgr.get("bad1").is_none(),
+            "failed source must not be cached"
+        );
+        assert!(
+            mgr.get("bad2").is_none(),
+            "failed source must not be cached"
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// verify_commit_signature — combined: allow_unsigned=false + constraints
+// require_signed_commits=false → returns Ok(()) without touching the repo.
+// Pins the early-return contract.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn verify_commit_signature_returns_ok_when_constraints_disabled_even_with_no_repo() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mgr = SourceManager::new(tmp.path());
+    let constraints = crate::config::SourceConstraints {
+        require_signed_commits: false,
+        ..Default::default()
+    };
+    // Repo path doesn't exist — but require_signed_commits=false means we
+    // return Ok(()) without ever invoking git or git2.
+    let nonexistent = tmp.path().join("does-not-exist");
+    let result = mgr.verify_commit_signature("test", &nonexistent, &constraints);
+    result.expect("constraint disabled → Ok regardless of repo state");
+}
+
+// ---------------------------------------------------------------------------
+// build_source_spec — pin defaults for the no-profile + named-profile arms.
+// Doubles as documentation for downstream consumers building specs by hand.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn build_source_spec_with_named_profile_records_profile() {
+    let spec =
+        SourceManager::build_source_spec("infra", "https://example.com/infra.git", Some("backend"));
+    assert_eq!(spec.subscription.profile.as_deref(), Some("backend"));
+    assert_eq!(spec.origin.url, "https://example.com/infra.git");
+    assert_eq!(spec.origin.branch, "master");
+    // OriginType defaults to Git
+    assert!(matches!(spec.origin.origin_type, OriginType::Git));
+}

@@ -694,4 +694,156 @@ mod tests {
         let result = cmd_daemon(&cli, &printer, Some(&DaemonCommand::Uninstall));
         result.expect("uninstall must succeed when service file is absent");
     }
+
+    // -----------------------------------------------------------------------
+    // build_daemon_status_doc — content coverage for the populated-status arm.
+    // Pins the human output and the data payload field names for downstream
+    // consumers that parse `cfgd daemon status -o json`.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_daemon_status_doc_with_sources_emits_table_rows() {
+        let mut status = make_status(true);
+        status.sources = vec![
+            cfgd_core::daemon::SourceStatus {
+                name: "infra".into(),
+                status: "synced".into(),
+                drift_count: 0,
+                last_sync: Some("2026-05-22T10:00:00Z".into()),
+                last_reconcile: None,
+            },
+            cfgd_core::daemon::SourceStatus {
+                name: "apps".into(),
+                status: "stale".into(),
+                drift_count: 3,
+                last_sync: None,
+                last_reconcile: None,
+            },
+        ];
+        let (printer, cap) = Printer::for_test_doc();
+        let doc = build_daemon_status_doc(Some(&status));
+        printer.emit(doc);
+        let human = cap.human();
+        assert!(human.contains("infra"), "infra source must appear: {human}");
+        assert!(human.contains("apps"), "apps source must appear: {human}");
+        assert!(
+            human.contains("synced") || human.contains("stale"),
+            "source status must appear: {human}"
+        );
+    }
+
+    #[test]
+    fn build_daemon_status_doc_emits_last_reconcile_when_present() {
+        let mut status = make_status(true);
+        status.last_reconcile = Some("2026-05-22T10:00:00Z".into());
+        let (printer, cap) = Printer::for_test_doc();
+        let doc = build_daemon_status_doc(Some(&status));
+        printer.emit(doc);
+        let human = cap.human();
+        assert!(
+            human.contains("2026-05-22T10:00:00Z"),
+            "last reconcile timestamp must appear: {human}"
+        );
+    }
+
+    #[test]
+    fn build_daemon_status_doc_emits_last_sync_when_present() {
+        let mut status = make_status(true);
+        status.last_sync = Some("2026-05-22T11:00:00Z".into());
+        let (printer, cap) = Printer::for_test_doc();
+        let doc = build_daemon_status_doc(Some(&status));
+        printer.emit(doc);
+        let human = cap.human();
+        assert!(
+            human.contains("2026-05-22T11:00:00Z"),
+            "last sync timestamp must appear: {human}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // build_daemon_install_doc — extra branch coverage for windows no-event-log
+    // and arbitrary "unknown" platform falling through to systemd default.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_daemon_install_doc_unknown_platform_falls_to_systemd_arm() {
+        // The `_ =>` arm in build_daemon_install_doc renders systemd hints
+        // regardless of the platform string — pin that fallback so a future
+        // refactor that introduces explicit platform handling doesn't silently
+        // drop the fallback.
+        let payload = DaemonInstallOutput {
+            platform: "bsd-unknown".to_string(),
+            service: "cfgd.service".to_string(),
+            path: "/etc/init.d/cfgd".to_string(),
+            started: false,
+            windows_event_log: None,
+        };
+        let (printer, cap) = Printer::for_test_doc();
+        let doc = build_daemon_install_doc(&payload);
+        printer.emit(doc);
+        let human = cap.human();
+        assert!(
+            human.contains("systemctl"),
+            "unknown platform must fall through to systemd hint: {human}"
+        );
+    }
+
+    #[test]
+    fn build_daemon_install_doc_windows_event_log_none_emits_disabled_hint() {
+        let payload = DaemonInstallOutput {
+            platform: "windows".to_string(),
+            service: "cfgd".to_string(),
+            path: "%LOCALAPPDATA%\\cfgd\\daemon.log".to_string(),
+            started: true,
+            windows_event_log: None,
+        };
+        let (printer, cap) = Printer::for_test_doc();
+        let doc = build_daemon_install_doc(&payload);
+        printer.emit(doc);
+        let human = cap.human();
+        assert!(
+            human.contains("Event Log") || human.contains("windowsEventLog"),
+            "windows with windows_event_log=None must still render event-log hint: {human}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // build_daemon_uninstall_doc — pin platform-specific detail wording so a
+    // future refactor that re-shapes the message doesn't silently change the
+    // operator-visible hint.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_daemon_uninstall_doc_unknown_platform_falls_to_systemd_default() {
+        let payload = DaemonUninstallOutput {
+            platform: "bsd-unknown".to_string(),
+            service: "cfgd.service".to_string(),
+            removed: true,
+        };
+        let (printer, cap) = Printer::for_test_doc();
+        let doc = build_daemon_uninstall_doc(&payload);
+        printer.emit(doc);
+        let human = cap.human();
+        assert!(
+            human.contains("systemctl"),
+            "unknown platform must fall through to systemd disable hint: {human}"
+        );
+    }
+
+    #[test]
+    fn build_daemon_uninstall_doc_includes_ok_status_line() {
+        let payload = DaemonUninstallOutput {
+            platform: "linux".to_string(),
+            service: "cfgd.service".to_string(),
+            removed: true,
+        };
+        let (printer, cap) = Printer::for_test_doc();
+        let doc = build_daemon_uninstall_doc(&payload);
+        printer.emit(doc);
+        let human = cap.human();
+        assert!(
+            human.contains("Daemon service removed"),
+            "uninstall must emit the Ok-status confirmation line: {human}"
+        );
+    }
 }

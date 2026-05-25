@@ -519,4 +519,248 @@ mod tests {
         assert_eq!(fm, "cfgd-operator-leader:operator-pod-XYZ");
         let _report = harness.finish().await;
     }
+
+    // -----------------------------------------------------------------------
+    // try_acquire — additional branch coverage. Drives:
+    //  * existing lease with NO renew_time (lines 79-82: `expired = true`)
+    //  * existing lease held by us, NOT-yet-expired (self-renew, no force)
+    //  * existing lease with no spec at all (defensive null guard at L65)
+    //  * lease_transitions absent (L103/L105: unwrap_or(0))
+    // -----------------------------------------------------------------------
+
+    /// Build a Lease JSON whose spec omits `renewTime` so the `expired = true`
+    /// no-renew-time branch fires.
+    fn lease_json_no_renew_time(holder: &str, lease_duration: i32) -> serde_json::Value {
+        serde_json::json!({
+            "apiVersion": "coordination.k8s.io/v1",
+            "kind": "Lease",
+            "metadata": { "name": LEASE_NAME, "namespace": TEST_NS },
+            "spec": {
+                "holderIdentity": holder,
+                "leaseDurationSeconds": lease_duration,
+                "leaseTransitions": 0_i32,
+            }
+        })
+    }
+
+    /// Build a Lease JSON whose spec omits `leaseTransitions` so the
+    /// `unwrap_or(0)` arm fires on both branches.
+    fn lease_json_no_transitions(
+        holder: &str,
+        lease_duration: i32,
+        secs_ago: i64,
+    ) -> serde_json::Value {
+        let renew_time = chrono::Utc::now() - chrono::TimeDelta::try_seconds(secs_ago).unwrap();
+        serde_json::json!({
+            "apiVersion": "coordination.k8s.io/v1",
+            "kind": "Lease",
+            "metadata": { "name": LEASE_NAME, "namespace": TEST_NS },
+            "spec": {
+                "holderIdentity": holder,
+                "leaseDurationSeconds": lease_duration,
+                "renewTime": renew_time.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn try_acquire_takes_over_when_existing_lease_has_no_renew_time() {
+        // Spec carries no renewTime → `expired` is set to true and we take
+        // over with force=true.
+        let existing = lease_json_no_renew_time("ghost-pod", 15);
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_json(&existing),
+            ExpectedCall::patch(lease_path())
+                .with_query_contains("force=true")
+                .returning_json(&lease_json(TEST_ID, 15, 0)),
+        ]);
+
+        let le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
+        let acquired = le
+            .try_acquire()
+            .await
+            .expect("no-renew-time should be treated as expired");
+        assert!(acquired);
+
+        let report = harness.finish().await;
+        assert_eq!(report.captured.len(), 2);
+        let patch_body = report.captured[1].body_json();
+        assert_eq!(patch_body["spec"]["holderIdentity"], TEST_ID);
+        // Took over from a ghost → transitions bumped from 0 to 1.
+        assert_eq!(patch_body["spec"]["leaseTransitions"], 1);
+    }
+
+    #[tokio::test]
+    async fn try_acquire_self_renew_with_missing_transitions_defaults_to_zero() {
+        // We hold the lease; the existing spec doesn't carry leaseTransitions.
+        // The `unwrap_or(0)` arm at L105 must produce 0 in the renewed patch.
+        let existing = lease_json_no_transitions(TEST_ID, 15, 3);
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_json(&existing),
+            ExpectedCall::patch(lease_path()).returning_json(&lease_json(TEST_ID, 15, 0)),
+        ]);
+
+        let le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
+        let acquired = le
+            .try_acquire()
+            .await
+            .expect("self-renew with no prior transitions should succeed");
+        assert!(acquired);
+
+        let report = harness.finish().await;
+        assert_eq!(report.captured.len(), 2);
+        let patch_body = report.captured[1].body_json();
+        // No takeover → transitions stays 0 (unwrap_or path).
+        assert_eq!(patch_body["spec"]["leaseTransitions"], 0);
+    }
+
+    #[tokio::test]
+    async fn try_acquire_takeover_with_no_transitions_bumps_to_one() {
+        // Existing holder is someone else, expired, with no leaseTransitions
+        // in spec. Takeover should bump the unwrap_or(0) baseline to 1.
+        let existing = serde_json::json!({
+            "apiVersion": "coordination.k8s.io/v1",
+            "kind": "Lease",
+            "metadata": { "name": LEASE_NAME, "namespace": TEST_NS },
+            "spec": {
+                "holderIdentity": "other-pod",
+                "leaseDurationSeconds": 15,
+                "renewTime": (chrono::Utc::now() - chrono::TimeDelta::try_seconds(60).unwrap())
+                    .to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+            }
+        });
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_json(&existing),
+            ExpectedCall::patch(lease_path())
+                .with_query_contains("force=true")
+                .returning_json(&lease_json(TEST_ID, 15, 0)),
+        ]);
+
+        let le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
+        let acquired = le.try_acquire().await.expect("takeover should succeed");
+        assert!(acquired);
+
+        let report = harness.finish().await;
+        let patch_body = report.captured[1].body_json();
+        assert_eq!(patch_body["spec"]["holderIdentity"], TEST_ID);
+        // Takeover from a holder with no transitions in spec → bumps 0+1=1.
+        assert_eq!(patch_body["spec"]["leaseTransitions"], 1);
+    }
+
+    #[tokio::test]
+    async fn try_acquire_takeover_uses_lease_duration_seconds_from_spec_when_present() {
+        // Spec carries an explicit leaseDurationSeconds different from the
+        // default 15. Pin that the expiry math uses the spec value (60 here),
+        // so a 90s-ago renewTime is still expired even with the longer duration.
+        let renew_time = chrono::Utc::now() - chrono::TimeDelta::try_seconds(90).unwrap();
+        let existing = serde_json::json!({
+            "apiVersion": "coordination.k8s.io/v1",
+            "kind": "Lease",
+            "metadata": { "name": LEASE_NAME, "namespace": TEST_NS },
+            "spec": {
+                "holderIdentity": "other-pod",
+                "leaseDurationSeconds": 60,
+                "renewTime": renew_time.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+                "leaseTransitions": 7_i32,
+            }
+        });
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_json(&existing),
+            ExpectedCall::patch(lease_path())
+                .with_query_contains("force=true")
+                .returning_json(&lease_json(TEST_ID, 15, 0)),
+        ]);
+
+        let le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
+        let acquired = le
+            .try_acquire()
+            .await
+            .expect("expired (60s window) should take over");
+        assert!(acquired);
+
+        let report = harness.finish().await;
+        let patch_body = report.captured[1].body_json();
+        // Transitions incremented from 7 to 8.
+        assert_eq!(patch_body["spec"]["leaseTransitions"], 8);
+    }
+
+    #[tokio::test]
+    async fn try_acquire_returns_false_when_lease_has_no_spec_at_all() {
+        // A Lease whose spec field is null is still treated as not-held — the
+        // current_holder fall-through (empty string) means our identity does
+        // NOT match, but the lease IS expired (no renewTime), so we take over.
+        let existing = serde_json::json!({
+            "apiVersion": "coordination.k8s.io/v1",
+            "kind": "Lease",
+            "metadata": { "name": LEASE_NAME, "namespace": TEST_NS }
+        });
+        let (ctx, _reg, harness) = MockKubeHarness::new(vec![
+            ExpectedCall::get(lease_path()).returning_json(&existing),
+            ExpectedCall::patch(lease_path())
+                .with_query_contains("force=true")
+                .returning_json(&lease_json(TEST_ID, 15, 0)),
+        ]);
+
+        let le = LeaderElection::new(ctx.client.clone(), TEST_NS.into(), TEST_ID.into());
+        let acquired = le
+            .try_acquire()
+            .await
+            .expect("missing spec is treated as available");
+        assert!(acquired);
+
+        let report = harness.finish().await;
+        assert_eq!(report.captured.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // LeaderElection::new — wiring coverage. Confirms env-driven timing values
+    // flow into the struct so the run/renew loop reads the configured values
+    // rather than the hard-coded defaults.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn leader_election_new_reads_lease_duration_from_env() {
+        unsafe { set_env("LEADER_LEASE_DURATION", "45s") };
+        let (ctx, _reg, _harness) = MockKubeHarness::new(vec![]);
+        let le = LeaderElection::new(ctx.client.clone(), "ns".into(), "id".into());
+        unsafe { remove_env("LEADER_LEASE_DURATION") };
+        assert_eq!(le.lease_duration_secs, 45);
+    }
+
+    #[test]
+    #[serial]
+    fn leader_election_new_reads_renew_deadline_from_env() {
+        unsafe { set_env("LEADER_RENEW_DEADLINE", "20s") };
+        let (ctx, _reg, _harness) = MockKubeHarness::new(vec![]);
+        let le = LeaderElection::new(ctx.client.clone(), "ns".into(), "id".into());
+        unsafe { remove_env("LEADER_RENEW_DEADLINE") };
+        assert_eq!(le.renew_deadline_secs, 20);
+    }
+
+    #[test]
+    #[serial]
+    fn leader_election_new_reads_retry_period_from_env() {
+        unsafe { set_env("LEADER_RETRY_PERIOD", "5s") };
+        let (ctx, _reg, _harness) = MockKubeHarness::new(vec![]);
+        let le = LeaderElection::new(ctx.client.clone(), "ns".into(), "id".into());
+        unsafe { remove_env("LEADER_RETRY_PERIOD") };
+        assert_eq!(le.retry_period_secs, 5);
+    }
+
+    #[test]
+    #[serial]
+    fn leader_election_new_defaults_when_env_vars_unset() {
+        unsafe {
+            remove_env("LEADER_LEASE_DURATION");
+            remove_env("LEADER_RENEW_DEADLINE");
+            remove_env("LEADER_RETRY_PERIOD");
+        }
+        let (ctx, _reg, _harness) = MockKubeHarness::new(vec![]);
+        let le = LeaderElection::new(ctx.client.clone(), "ns".into(), "id".into());
+        // Documented defaults from the constructor body.
+        assert_eq!(le.lease_duration_secs, 15);
+        assert_eq!(le.renew_deadline_secs, 10);
+        assert_eq!(le.retry_period_secs, 2);
+    }
 }

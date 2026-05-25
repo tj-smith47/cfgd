@@ -981,3 +981,180 @@ async fn node_get_volume_stats_returns_exactly_two_units_bytes_and_inodes() {
         "no volume_condition is exposed (kubelet treats None as healthy)"
     );
 }
+
+// -------------------------------------------------------------------------
+// Edge-case branch coverage for require_volume_id / require_attr / resolve_oci_ref.
+// These are tiny helpers but the cases below pin behaviour that downstream
+// staging/publishing flows depend on.
+// -------------------------------------------------------------------------
+
+#[test]
+fn require_volume_id_error_message_includes_volume_id_token() {
+    let err = require_volume_id("").unwrap_err();
+    // Error message format is fixed contract — kubelet's CSI client logs the
+    // tonic Status message verbatim, so changing it would change operator logs.
+    assert!(
+        err.message().contains("volume_id is required"),
+        "exact wording matters: {}",
+        err.message()
+    );
+}
+
+#[test]
+fn require_attr_present_value_is_returned_verbatim() {
+    let attrs: HashMap<String, String> = [
+        ("module".to_string(), "nettools".to_string()),
+        ("other".to_string(), "value".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    let v = require_attr(&attrs, "module").expect("present key returns value");
+    assert_eq!(v, "nettools");
+}
+
+#[test]
+fn require_attr_missing_message_includes_key_name() {
+    let attrs: HashMap<String, String> = HashMap::new();
+    let err = require_attr(&attrs, "ociRef").unwrap_err();
+    assert!(
+        err.message().contains("ociRef"),
+        "error must name the missing attr: {}",
+        err.message()
+    );
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+}
+
+#[test]
+fn resolve_oci_ref_provided_overrides_default_namespace() {
+    // The provided ociRef wins over the synthetic cfgd-modules/{module}:{version}
+    // even when both the override and module/version are present.
+    let attrs: HashMap<String, String> = [
+        (
+            "ociRef".to_string(),
+            "registry.example/team/mod:tag".to_string(),
+        ),
+        ("module".to_string(), "nettools".to_string()),
+    ]
+    .into_iter()
+    .collect();
+    let r = resolve_oci_ref(&attrs, "nettools", "1.0");
+    assert_eq!(r, "registry.example/team/mod:tag");
+}
+
+#[test]
+fn registry_of_returns_empty_for_localhost_subdir_prefix() {
+    // `localhost-foo` does NOT match the localhost exception (which requires
+    // the literal token "localhost"), so it's treated as a default-namespace
+    // ref with no registry.
+    assert_eq!(registry_of("localhost-foo/mod:tag"), "");
+}
+
+#[test]
+fn registry_of_handles_ref_with_port_only_first_segment() {
+    // First slash splits "host:port" from the rest — the colon rule kicks in.
+    assert_eq!(
+        registry_of("registry.internal:8443/foo/bar"),
+        "registry.internal:8443"
+    );
+}
+
+// -------------------------------------------------------------------------
+// check_registry_allowed — additional explicit-empty + allow-list
+// edge-case coverage. Pins the fail-closed posture of an empty allow-list
+// for ANY explicit-registry ref.
+// -------------------------------------------------------------------------
+
+#[test]
+fn check_registry_allowed_localhost_must_be_in_list_to_pass() {
+    // `localhost` IS treated as a registry by registry_of, so an allow-list
+    // that doesn't include `localhost` must reject it.
+    let allow = vec!["ghcr.io".to_string()];
+    let err = check_registry_allowed("localhost/team/mod:tag", Some(&allow))
+        .expect_err("localhost not in allow-list must be rejected");
+    assert_eq!(err.code(), tonic::Code::PermissionDenied);
+    assert!(
+        err.message().contains("localhost"),
+        "error must name the rejected registry: {}",
+        err.message()
+    );
+}
+
+#[test]
+fn check_registry_allowed_passes_when_localhost_in_list() {
+    let allow = vec!["localhost".to_string()];
+    check_registry_allowed("localhost/team/mod:tag", Some(&allow))
+        .expect("localhost in allow-list must pass");
+}
+
+// -------------------------------------------------------------------------
+// parse_allowed_registries_from_env — extra arms.
+// -------------------------------------------------------------------------
+
+#[test]
+#[serial_test::serial]
+fn parse_allowed_registries_from_env_single_entry_returns_some_with_one_item() {
+    unsafe {
+        std::env::set_var(ALLOWED_REGISTRIES_ENV, "ghcr.io");
+    }
+    let got = parse_allowed_registries_from_env();
+    unsafe {
+        std::env::remove_var(ALLOWED_REGISTRIES_ENV);
+    }
+    assert_eq!(got, Some(vec!["ghcr.io".to_string()]));
+}
+
+#[test]
+#[serial_test::serial]
+fn parse_allowed_registries_from_env_wildcard_with_whitespace_is_still_wildcard() {
+    unsafe {
+        std::env::set_var(ALLOWED_REGISTRIES_ENV, "  *  ");
+    }
+    let got = parse_allowed_registries_from_env();
+    unsafe {
+        std::env::remove_var(ALLOWED_REGISTRIES_ENV);
+    }
+    assert!(
+        got.is_none(),
+        "trimmed `*` must still collapse to wildcard (None)"
+    );
+}
+
+// -------------------------------------------------------------------------
+// walk_volume_stats — symlink-only directory + nested deep paths.
+// -------------------------------------------------------------------------
+
+#[cfg(unix)]
+#[test]
+fn walk_volume_stats_directory_of_symlinks_counts_each_symlink_inode() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("real.txt");
+    std::fs::write(&target, "abc").unwrap();
+
+    let links_dir = dir.path().join("links");
+    std::fs::create_dir_all(&links_dir).unwrap();
+    std::os::unix::fs::symlink(&target, links_dir.join("a")).unwrap();
+    std::os::unix::fs::symlink(&target, links_dir.join("b")).unwrap();
+    std::os::unix::fs::symlink(&target, links_dir.join("c")).unwrap();
+
+    let (_bytes, inodes) = walk_volume_stats(&links_dir);
+    // Root dir + 3 symlinks
+    assert_eq!(inodes, 4);
+}
+
+#[test]
+fn walk_volume_stats_deeply_nested_dirs_counts_all_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    // 5-deep nested dirs each with one file
+    let mut p = dir.path().to_path_buf();
+    for i in 0..5 {
+        p = p.join(format!("d{i}"));
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::write(p.join("f.txt"), format!("content-{i}")).unwrap();
+    }
+    let (bytes, inodes) = walk_volume_stats(dir.path());
+    // Each of the 5 levels has: 1 subdir + 1 file = 2 entries; plus root.
+    // root(1) + (d0 + f.txt)(2) + (d1 + f.txt)(2) + ... = 1 + 5*2 = 11
+    assert_eq!(inodes, 11);
+    // Each file has bytes "content-N" = 9 bytes; 5 files = 45 bytes.
+    assert_eq!(bytes, 45);
+}

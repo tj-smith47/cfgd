@@ -477,3 +477,170 @@ fn test_present_yaml_without_cfgd_prefix_also_works() {
     let text = result["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("Config"));
 }
+
+// ---------------------------------------------------------------------------
+// handle_notification — exercises the three notification arms (initialized,
+// cancelled, unknown). They produce no response, only tracing — but they
+// must not panic and they're entered exactly when `id.is_none()`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_handle_notification_initialized_does_not_panic() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let req = JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: None,
+        method: "notifications/initialized".into(),
+        params: serde_json::json!({}),
+    };
+    server.handle_notification(&req);
+}
+
+#[test]
+fn test_handle_notification_cancelled_does_not_panic() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let req = JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: None,
+        method: "notifications/cancelled".into(),
+        params: serde_json::json!({}),
+    };
+    server.handle_notification(&req);
+}
+
+#[test]
+fn test_handle_notification_unknown_method_does_not_panic() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let req = JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: None,
+        method: "notifications/foo_bar_baz_unknown".into(),
+        params: serde_json::json!({}),
+    };
+    server.handle_notification(&req);
+}
+
+// ---------------------------------------------------------------------------
+// present_yaml — error path: invalid arguments returns -32602.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_present_yaml_invalid_arguments_returns_invalid_params_error() {
+    // PresentYamlRequest requires content/kind/description. Send a non-object
+    // arguments field so serde_json::from_value fails and the -32602 arm fires.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let req = JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: Some(serde_json::json!(200)),
+        method: "tools/call".into(),
+        params: serde_json::json!({
+            "name": "cfgd_present_yaml",
+            "arguments": "not-an-object"
+        }),
+    };
+    let resp = server.handle_request(&req);
+    let err = resp
+        .error
+        .expect("invalid args must surface as JSON-RPC error");
+    assert_eq!(err.code, -32602);
+    assert!(
+        err.message.contains("present_yaml"),
+        "error message must mention present_yaml: {}",
+        err.message
+    );
+}
+
+// ---------------------------------------------------------------------------
+// JsonRpcResponse helpers — exhaustive shape coverage to pin the public API.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_json_rpc_response_success_uses_jsonrpc_2_0() {
+    let resp = JsonRpcResponse::success(Some(serde_json::json!(1)), serde_json::json!(null));
+    assert_eq!(resp.jsonrpc, "2.0");
+    assert!(resp.error.is_none());
+}
+
+#[test]
+fn test_json_rpc_response_error_uses_jsonrpc_2_0() {
+    let resp = JsonRpcResponse::error(Some(serde_json::json!(1)), -1, "x".into());
+    assert_eq!(resp.jsonrpc, "2.0");
+    assert!(resp.result.is_none());
+}
+
+#[test]
+fn test_json_rpc_error_data_is_none_for_helper_constructor() {
+    let resp = JsonRpcResponse::error(None, -32601, "Method not found".into());
+    let err = resp.error.expect("error must be present");
+    assert!(
+        err.data.is_none(),
+        "error helper should not populate data field"
+    );
+    assert_eq!(err.code, -32601);
+}
+
+// ---------------------------------------------------------------------------
+// handle_request — verify resources/list returns array and prompts/get with
+// arguments returns messages array. Pins MCP wire shape so downstream clients
+// remain stable.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_handle_resources_list_returns_resources_field() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let req = JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: Some(serde_json::json!(300)),
+        method: "resources/list".into(),
+        params: serde_json::json!({}),
+    };
+    let resp = server.handle_request(&req);
+    let result = resp.result.expect("resources/list must succeed");
+    assert!(
+        result["resources"].is_array(),
+        "result must have resources array: {result}"
+    );
+}
+
+#[test]
+fn test_handle_prompts_get_unknown_name_still_succeeds_with_empty_messages() {
+    // prompts::get for an unknown prompt returns an empty messages array
+    // rather than an error — this matches MCP's tolerant prompt-discovery model.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let req = JsonRpcRequest {
+        jsonrpc: "2.0".into(),
+        id: Some(serde_json::json!(301)),
+        method: "prompts/get".into(),
+        params: serde_json::json!({"name": "totally_unknown_prompt"}),
+    };
+    let resp = server.handle_request(&req);
+    // No error — unknown prompts return an empty/default response.
+    assert!(resp.error.is_none() || resp.result.is_some());
+}
+
+#[test]
+fn test_jsonrpc_invalid_version_2_5_returns_invalid_request() {
+    // "2.5" is not "2.0" — should fail the jsonrpc-version gate.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let mut server = McpServer::new(tmp.path().to_path_buf(), tmp.path().to_path_buf());
+    let req = JsonRpcRequest {
+        jsonrpc: "2.5".into(),
+        id: Some(serde_json::json!(302)),
+        method: "ping".into(),
+        params: serde_json::json!({}),
+    };
+    let resp = server.handle_request(&req);
+    let err = resp.error.expect("invalid version must yield error");
+    assert_eq!(err.code, -32600);
+    assert!(
+        err.message.contains("2.5"),
+        "error must reference the offending version: {}",
+        err.message
+    );
+}

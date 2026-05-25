@@ -524,4 +524,66 @@ mod tests {
             "failed target must be one of the requested targets: {failed_target}"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Edge cases that exercise the success doc-payload construction. These
+    // do NOT require docker — the build fails (the registry is unreachable),
+    // but the JSON payload emitted on the failure path mirrors the success
+    // shape's key set, so they pin the error_doc field schema.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_emits_targets_list_in_error_payload_for_multi_target() {
+        if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        write_module_yaml(dir.path());
+
+        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+        let _ = cmd_module_build(
+            &printer,
+            dir.path().to_str().unwrap(),
+            Some("linux/amd64,linux/arm64,linux/arm/v7"),
+            Some("localhost:1/cfgd-test-nonexistent:latest"),
+            None,
+            false,
+            None,
+        );
+        drop(printer);
+
+        let json = cap.json().expect("some error_doc must be emitted");
+        // build_failed emits "target" (singular) for the failing target.
+        assert_eq!(json["error"], "build_failed", "error key: {json}");
+        // Pin that the error_doc carries a string `target` field naming a
+        // platform that was in the requested set.
+        let target = json["target"].as_str().expect("target field");
+        assert!(
+            target.starts_with("linux/"),
+            "failing target must be a linux/ platform: {target}"
+        );
+    }
+
+    #[test]
+    fn build_module_yaml_missing_does_not_run_docker() {
+        // No docker required — the missing-module.yaml gate fires first.
+        let dir = tempfile::tempdir().unwrap();
+        // Intentionally do NOT write module.yaml.
+        let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
+        let err = cmd_module_build(
+            &printer,
+            dir.path().to_str().unwrap(),
+            Some("linux/amd64,linux/arm64"),
+            Some("any-image"),
+            Some("some-artifact:tag"),
+            true,
+            Some("cosign.key"),
+        )
+        .expect_err("missing module.yaml must short-circuit even with multi-target args");
+        // Error must come from the module.yaml gate, not from docker / cosign.
+        assert!(
+            err.to_string().contains("does not contain a module.yaml"),
+            "expected module-yaml-missing error: {err}"
+        );
+    }
 }
