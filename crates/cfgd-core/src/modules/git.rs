@@ -493,7 +493,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn is_git_source_rejects_file_url_by_default() {
+        let _guard = crate::test_helpers::EnvVarGuard::unset("CFGD_ALLOW_LOCAL_SOURCES");
         assert!(!is_git_source("file:///tmp/repo"));
     }
 
