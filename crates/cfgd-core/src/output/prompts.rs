@@ -96,4 +96,74 @@ mod tests {
         let r = p.prompt_confirm("really?");
         assert!(r.is_err());
     }
+
+    #[test]
+    fn seeded_select_returns_matching_option() {
+        let (printer, _buf) =
+            Printer::for_test_with_prompt_responses(vec![PromptAnswer::Select("yes".into())]);
+        let options = vec!["yes".to_string(), "no".to_string()];
+        let chosen = printer
+            .prompt_select("pick", &options)
+            .expect("seeded select must resolve to a listed option");
+        assert_eq!(chosen, "yes");
+    }
+
+    #[test]
+    fn seeded_select_with_unknown_response_is_custom_error() {
+        let (printer, _buf) =
+            Printer::for_test_with_prompt_responses(vec![PromptAnswer::Select("missing".into())]);
+        let options = vec!["yes".to_string(), "no".to_string()];
+        let err = printer
+            .prompt_select("pick", &options)
+            .expect_err("response not in options must Err");
+        let msg = format!("{err}");
+        assert!(msg.contains("missing"), "msg must echo unknown: {msg}");
+    }
+
+    #[test]
+    fn structured_select_refuses_when_no_seeded_answer() {
+        let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json);
+        let options = vec!["a".to_string(), "b".to_string()];
+        let err = p
+            .prompt_select("pick", &options)
+            .expect_err("structured mode must refuse");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("non-interactive") || msg.contains("structured"),
+            "expected non-interactive refusal: {msg}"
+        );
+    }
+
+    #[test]
+    fn seeded_text_returns_value() {
+        let (printer, _buf) =
+            Printer::for_test_with_prompt_responses(vec![PromptAnswer::Text("answer".into())]);
+        let text = printer.prompt_text("name", "").expect("seeded text answer");
+        assert_eq!(text, "answer");
+    }
+
+    #[test]
+    fn structured_text_refuses_when_no_seeded_answer() {
+        let p = Printer::with_format(Verbosity::Normal, None, OutputFormat::Json);
+        let err = p.prompt_text("name", "").expect_err("structured refuse");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("non-interactive") || msg.contains("structured"),
+            "expected non-interactive refusal: {msg}"
+        );
+    }
+
+    #[test]
+    fn seeded_confirm_returns_bool() {
+        let (printer, _b1) =
+            Printer::for_test_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
+        assert!(printer.prompt_confirm("really?").expect("seeded confirm"));
+        let (printer2, _b2) =
+            Printer::for_test_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
+        assert!(
+            !printer2
+                .prompt_confirm("really?")
+                .expect("seeded confirm false")
+        );
+    }
 }
