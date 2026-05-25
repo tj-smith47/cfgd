@@ -989,7 +989,7 @@ async fn readers_handle_returns_clone_of_pool() {
     let (db, _tmp) = test_db();
     let h1 = db.readers_handle();
     let h2 = db.readers_handle();
-    assert_eq!(Arc::strong_count(&h1) >= 3, true);
+    assert!(Arc::strong_count(&h1) >= 3);
     let _conn = h2.get().expect("get reader connection from cloned handle");
 }
 
