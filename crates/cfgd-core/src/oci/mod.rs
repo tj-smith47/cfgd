@@ -21,7 +21,7 @@ mod transport;
 pub use archive::{create_tar_gz, extract_tar_gz};
 pub use auth::RegistryAuth;
 pub use build::{build_module, detect_container_runtime};
-pub use pull::pull_module;
+pub use pull::{SignaturePolicy, pull_module};
 pub use push::{
     current_platform, parse_platform_target, push_module, push_module_multiplatform,
     rust_arch_to_oci,

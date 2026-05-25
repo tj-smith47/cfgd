@@ -280,7 +280,13 @@ pub fn cmd_module_pull(
         printer.status_simple(Role::Ok, "SLSA provenance attestation verified");
     }
 
-    cfgd_core::oci::pull_module(artifact_ref, output_path, false, Some(printer)).map_err(|e| {
+    cfgd_core::oci::pull_module(
+        artifact_ref,
+        output_path,
+        cfgd_core::oci::SignaturePolicy::None,
+        Some(printer),
+    )
+    .map_err(|e| {
         printer.emit(cfgd_core::output::error_doc(
             artifact_ref,
             "pull_failed",

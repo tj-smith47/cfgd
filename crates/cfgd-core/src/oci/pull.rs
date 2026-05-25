@@ -1,5 +1,5 @@
 // Pull: download OCI module artifact, verify layer digest, extract to disk.
-// Optional cosign signature presence check (HEAD on `<tag>.sig`).
+// Optional cosign signature verification (real cryptographic check).
 
 use std::io::Read;
 use std::path::Path;
@@ -10,17 +10,53 @@ use crate::sha256_digest;
 
 use super::archive::extract_tar_gz;
 use super::auth::RegistryAuth;
+use super::sign::{VerifyOptions, verify_signature};
 use super::transport::authenticated_request;
-use super::{MEDIA_TYPE_OCI_MANIFEST, OciManifest, OciReference, ReferenceKind};
+use super::{MEDIA_TYPE_OCI_MANIFEST, OciManifest, OciReference};
+
+/// Policy for verifying a module artifact's cosign signature during pull.
+///
+/// - `None` — skip signature verification entirely (default).
+/// - `RequireKey { path }` — fail unless `cosign verify --key <path>` succeeds.
+/// - `RequireKeyless { identity, issuer }` — fail unless keyless verification
+///   matches the supplied certificate identity / OIDC issuer constraints.
+#[derive(Debug, Clone)]
+pub enum SignaturePolicy<'a> {
+    None,
+    RequireKey {
+        path: &'a str,
+    },
+    RequireKeyless {
+        identity: Option<&'a str>,
+        issuer: Option<&'a str>,
+    },
+}
+
+impl SignaturePolicy<'_> {
+    fn requires_signature(&self) -> bool {
+        !matches!(self, SignaturePolicy::None)
+    }
+}
 
 /// Pull a module from an OCI registry and extract it to `output_dir`.
 ///
-/// If `require_signature` is true, checks for a cosign signature tag
-/// (`<tag>.sig` or `sha256-<hash>.sig`) and returns an error if not found.
+/// `signature_policy` controls cryptographic signature verification:
+/// - `SignaturePolicy::None` — no verification (default).
+/// - `SignaturePolicy::RequireKey { path }` — run real `cosign verify --key`,
+///   fail the pull if it does not succeed.
+/// - `SignaturePolicy::RequireKeyless { identity, issuer }` — run real
+///   keyless verification with the supplied constraints, fail the pull if it
+///   does not succeed.
+///
+/// Prior to v0.4.0 this took a `bool` and only checked for the *presence* of
+/// a signature manifest (HEAD on `<tag>.sig`) — a TOFU sentinel an attacker
+/// who could push to the registry could trivially satisfy. The current API
+/// requires callers to supply the verifying key (or identity/issuer) so the
+/// trust decision is explicit and cryptographically enforced.
 pub fn pull_module(
     artifact_ref: &str,
     output_dir: &Path,
-    require_signature: bool,
+    signature_policy: SignaturePolicy<'_>,
     printer: Option<&Printer>,
 ) -> Result<(), OciError> {
     let oci_ref = OciReference::parse(artifact_ref)?;
@@ -29,9 +65,21 @@ pub fn pull_module(
 
     let spinner = printer.map(|p| p.spinner(format!("Pulling module from {artifact_ref}...")));
 
-    // If signature required, check for cosign signature tag
-    if require_signature {
-        check_signature_exists(&agent, &oci_ref, auth.as_ref())?;
+    if signature_policy.requires_signature() {
+        let opts = match &signature_policy {
+            SignaturePolicy::None => unreachable!("guarded by requires_signature()"),
+            SignaturePolicy::RequireKey { path } => VerifyOptions {
+                key: Some(path),
+                identity: None,
+                issuer: None,
+            },
+            SignaturePolicy::RequireKeyless { identity, issuer } => VerifyOptions {
+                key: None,
+                identity: *identity,
+                issuer: *issuer,
+            },
+        };
+        verify_signature(artifact_ref, &opts)?;
     }
 
     // Pull manifest
@@ -134,38 +182,6 @@ pub fn pull_module(
     Ok(())
 }
 
-/// Check if a cosign-style signature exists for the given reference.
-/// Cosign stores signatures at tag `<tag>.sig` or `sha256-<hash>.sig`.
-fn check_signature_exists(
-    agent: &ureq::Agent,
-    oci_ref: &OciReference,
-    auth: Option<&RegistryAuth>,
-) -> Result<(), OciError> {
-    let sig_tag = match &oci_ref.reference {
-        ReferenceKind::Tag(tag) => format!("{tag}.sig"),
-        ReferenceKind::Digest(digest) => {
-            // sha256:abc... → sha256-abc....sig
-            digest.replace(':', "-") + ".sig"
-        }
-    };
-
-    let sig_url = format!(
-        "{}/{}/manifests/{}",
-        oci_ref.api_base(),
-        oci_ref.repository,
-        sig_tag,
-    );
-
-    let result = authenticated_request(agent, "HEAD", &sig_url, auth, None, None, None);
-
-    match result {
-        Ok(_) => Ok(()),
-        Err(_) => Err(OciError::SignatureRequired {
-            reference: oci_ref.to_string(),
-        }),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,7 +241,12 @@ mod tests {
 
         let output_dir = tempfile::tempdir().unwrap();
         let artifact_ref = format!("{}/test/pullmod:v1", registry);
-        let result = pull_module(&artifact_ref, output_dir.path(), false, None);
+        let result = pull_module(
+            &artifact_ref,
+            output_dir.path(),
+            SignaturePolicy::None,
+            None,
+        );
         assert!(result.is_ok(), "pull_module failed: {:?}", result.err());
 
         // Verify extracted files
@@ -274,7 +295,12 @@ mod tests {
 
         let output_dir = tempfile::tempdir().unwrap();
         let artifact_ref = format!("{}/test/badmod:v1", registry);
-        let result = pull_module(&artifact_ref, output_dir.path(), false, None);
+        let result = pull_module(
+            &artifact_ref,
+            output_dir.path(),
+            SignaturePolicy::None,
+            None,
+        );
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
@@ -283,74 +309,95 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
-    fn pull_module_checks_signature_when_required() {
-        let mut server = mockito::Server::new();
+    #[serial_test::serial]
+    fn pull_module_with_require_key_fails_when_cosign_verify_rejects() {
+        use crate::test_helpers::CosignTestShim;
+        let _shim = CosignTestShim::builder()
+            .with_exit(1)
+            .with_stderr("cosign error: signature does not match")
+            .install();
+
+        let server = mockito::Server::new();
         let registry = registry_from_url(&server.url());
-
-        // No signature tag exists
-        server
-            .mock("HEAD", "/v2/test/sigmod/manifests/v1.sig")
-            .with_status(404)
-            .create();
-
         let output_dir = tempfile::tempdir().unwrap();
-        let artifact_ref = format!("{}/test/sigmod:v1", registry);
-        let result = pull_module(&artifact_ref, output_dir.path(), true, None);
+        let artifact_ref = format!("{}/test/sigfail:v1", registry);
+
+        let key_dir = tempfile::tempdir().unwrap();
+        let key_path = key_dir.path().join("cosign.pub");
+        std::fs::write(&key_path, "fake-public-key").unwrap();
+        let key_path_str = key_path.to_str().unwrap();
+
+        let policy = SignaturePolicy::RequireKey { path: key_path_str };
+        let result = pull_module(&artifact_ref, output_dir.path(), policy, None);
         assert!(result.is_err());
         assert!(
-            matches!(result, Err(OciError::SignatureRequired { .. })),
-            "expected SignatureRequired, got: {:?}",
+            matches!(result, Err(OciError::VerificationFailed { .. })),
+            "expected VerificationFailed, got: {:?}",
             result.err()
         );
     }
 
+    #[cfg(unix)]
     #[test]
-    fn check_signature_exists_ok_when_present() {
+    #[serial_test::serial]
+    fn pull_module_with_require_key_proceeds_when_cosign_verify_succeeds() {
+        use crate::test_helpers::CosignTestShim;
+        let _shim = CosignTestShim::builder().with_exit(0).install();
+
         let mut server = mockito::Server::new();
         let registry = registry_from_url(&server.url());
 
-        let oci_ref = OciReference {
-            registry,
-            repository: "test/sigexist".to_string(),
-            reference: ReferenceKind::Tag("v1".to_string()),
-        };
-
+        let src_dir = create_test_module_dir();
+        let layer_data = create_tar_gz(src_dir.path()).unwrap();
+        let layer_digest = sha256_digest(&layer_data);
+        let config_blob =
+            serde_json::to_vec(&serde_json::json!({"moduleYaml": "name: t"})).unwrap();
+        let config_digest = sha256_digest(&config_blob);
+        let manifest = serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+            "config": {"mediaType": MEDIA_TYPE_MODULE_CONFIG, "digest": config_digest, "size": config_blob.len()},
+            "layers": [{"mediaType": MEDIA_TYPE_MODULE_LAYER, "digest": layer_digest, "size": layer_data.len()}],
+        });
         server
-            .mock("HEAD", "/v2/test/sigexist/manifests/v1.sig")
+            .mock("GET", "/v2/test/sigok/manifests/v1")
             .with_status(200)
+            .with_body(serde_json::to_string(&manifest).unwrap())
+            .create();
+        server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"/v2/test/sigok/blobs/sha256:.*".to_string()),
+            )
+            .with_status(200)
+            .with_body(layer_data)
             .create();
 
-        let agent = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(10))
-            .build();
+        let output_dir = tempfile::tempdir().unwrap();
+        let artifact_ref = format!("{}/test/sigok:v1", registry);
+        let key_dir = tempfile::tempdir().unwrap();
+        let key_path = key_dir.path().join("cosign.pub");
+        std::fs::write(&key_path, "fake-public-key").unwrap();
+        let key_path_str = key_path.to_str().unwrap();
 
-        let result = check_signature_exists(&agent, &oci_ref, None);
-        assert_eq!(result.unwrap(), (), "signature check should return Ok(())");
+        let policy = SignaturePolicy::RequireKey { path: key_path_str };
+        let result = pull_module(&artifact_ref, output_dir.path(), policy, None);
+        assert!(result.is_ok(), "pull_module failed: {:?}", result.err());
     }
 
     #[test]
-    fn check_signature_exists_fails_when_missing() {
-        let mut server = mockito::Server::new();
-        let registry = registry_from_url(&server.url());
-
-        let oci_ref = OciReference {
-            registry,
-            repository: "test/nosig".to_string(),
-            reference: ReferenceKind::Tag("v1".to_string()),
-        };
-
-        server
-            .mock("HEAD", "/v2/test/nosig/manifests/v1.sig")
-            .with_status(404)
-            .create();
-
-        let agent = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(10))
-            .build();
-
-        let result = check_signature_exists(&agent, &oci_ref, None);
-        assert!(matches!(result, Err(OciError::SignatureRequired { .. })));
+    fn signature_policy_requires_signature_predicate() {
+        assert!(!SignaturePolicy::None.requires_signature());
+        assert!(SignaturePolicy::RequireKey { path: "k" }.requires_signature());
+        assert!(
+            SignaturePolicy::RequireKeyless {
+                identity: Some("u@example"),
+                issuer: None,
+            }
+            .requires_signature()
+        );
     }
 
     #[test]
@@ -366,7 +413,12 @@ mod tests {
 
         let output_dir = tempfile::tempdir().unwrap();
         let artifact_ref = format!("{}/test/missingmod:v1", registry);
-        let result = pull_module(&artifact_ref, output_dir.path(), false, None);
+        let result = pull_module(
+            &artifact_ref,
+            output_dir.path(),
+            SignaturePolicy::None,
+            None,
+        );
         assert!(matches!(result, Err(OciError::ManifestNotFound { .. })));
     }
 
@@ -409,7 +461,12 @@ mod tests {
 
         let output_dir = tempfile::tempdir().unwrap();
         let artifact_ref = format!("{}/test/noblob:v1", registry);
-        let result = pull_module(&artifact_ref, output_dir.path(), false, None);
+        let result = pull_module(
+            &artifact_ref,
+            output_dir.path(),
+            SignaturePolicy::None,
+            None,
+        );
         assert!(matches!(result, Err(OciError::BlobNotFound { .. })));
     }
 
@@ -427,36 +484,12 @@ mod tests {
 
         let output_dir = tempfile::tempdir().unwrap();
         let artifact_ref = format!("{}/test/badjson:v1", registry);
-        let result = pull_module(&artifact_ref, output_dir.path(), false, None);
-        assert!(matches!(result, Err(OciError::RequestFailed { .. })));
-    }
-
-    #[test]
-    fn check_signature_exists_digest_reference() {
-        let mut server = mockito::Server::new();
-        let registry = registry_from_url(&server.url());
-
-        let oci_ref = OciReference {
-            registry,
-            repository: "test/digsig".to_string(),
-            reference: ReferenceKind::Digest("sha256:abc123".to_string()),
-        };
-
-        // For digest refs, sig tag is "sha256-abc123.sig"
-        server
-            .mock("HEAD", "/v2/test/digsig/manifests/sha256-abc123.sig")
-            .with_status(200)
-            .create();
-
-        let agent = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(10))
-            .build();
-
-        let result = check_signature_exists(&agent, &oci_ref, None);
-        assert_eq!(
-            result.unwrap(),
-            (),
-            "digest-referenced signature check should return Ok(())"
+        let result = pull_module(
+            &artifact_ref,
+            output_dir.path(),
+            SignaturePolicy::None,
+            None,
         );
+        assert!(matches!(result, Err(OciError::RequestFailed { .. })));
     }
 }
