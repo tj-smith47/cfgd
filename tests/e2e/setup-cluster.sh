@@ -79,10 +79,21 @@ if [ "$PREFLIGHT_OK" = "false" ]; then
 fi
 echo "  All pre-flight checks passed"
 
-# --- Step 2: Build cfgd-gen-crds (other binaries built inside Dockerfiles) ---
-echo "Building cfgd-gen-crds..."
-cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" \
-    --bin cfgd-gen-crds 2>&1 | tail -5
+# --- Step 2: Extract cfgd-gen-crds binary from the operator's build stage ---
+# Dockerfile.operator now compiles cfgd-operator AND cfgd-gen-crds in a
+# single `cargo build` pass; the `crds` stage exposes just the gen-crds
+# binary. Buildx extracts it into the local filesystem — populates the
+# layer cache that the subsequent runtime build reuses (no second compile).
+echo "Extracting cfgd-gen-crds from Dockerfile.operator..."
+mkdir -p "$REPO_ROOT/target/release"
+crds_args=(buildx build --target crds
+    --output "type=local,dest=$REPO_ROOT/target/release"
+    -f "$REPO_ROOT/Dockerfile.operator")
+if [ "${SCCACHE_GHA_ENABLED:-}" = "true" ]; then
+    crds_args+=(--cache-from "type=gha,scope=cfgd-operator"
+                --cache-to "type=gha,mode=max,scope=cfgd-operator")
+fi
+docker "${crds_args[@]}" "$REPO_ROOT"
 
 # --- Step 3: Build and push images ---
 # Pre-pull base images so the Dockerfile `FROM`s hit the local cache. If

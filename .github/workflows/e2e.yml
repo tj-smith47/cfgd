@@ -160,11 +160,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: arduino/setup-task@v2
-      - name: Install cosign
-        run: |
-          sudo curl -fsSL -o /usr/local/bin/cosign \
-            https://github.com/sigstore/cosign/releases/download/v2.4.3/cosign-linux-amd64
-          sudo chmod +x /usr/local/bin/cosign
+      # cosign-installer verifies the binary's keyless signature against
+      # sigstore (vs. the prior unverified `curl | install`) and caches.
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: "v2.4.3"
       - name: Run exhaustive tests
         run: task e2e:cli
 
@@ -207,9 +207,14 @@ jobs:
             "${{ needs.crossplane-tests.result }}" \
             "${{ needs.gateway-tests.result }}" \
             "${{ needs.cli-tests.result }}"; do
-            if [ "$result" != "success" ]; then
-              FAILED=true
-            fi
+            # "skipped" is the cascade signal from a failed `needs:` dep
+            # (setup failed → downstream skipped). The root failure surfaces
+            # in its own job's red badge; the summary only escalates real
+            # test failures so the report tells you what actually broke.
+            case "$result" in
+              success|skipped) ;;
+              *) FAILED=true ;;
+            esac
           done
 
           if [ "$FAILED" = "true" ]; then

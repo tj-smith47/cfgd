@@ -1,14 +1,31 @@
-FROM rust:1.94-slim-bookworm AS builder
+FROM rust:1.94-slim-bookworm AS chef
+RUN cargo install cargo-chef --locked --version 0.1.71
+WORKDIR /build
 
+FROM chef AS planner
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config perl make \
     && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /build
+COPY --from=planner /build/recipe.json recipe.json
+# Cook both binaries' deps in one pass — they share the cfgd-operator crate
+# graph, so a single chef cook covers both. Avoids the previous host-side
+# `cargo build --bin cfgd-gen-crds` + this image's `cargo build --bin
+# cfgd-operator` double-compile in tests/e2e/setup-cluster.sh.
+RUN cargo chef cook --release --recipe-path recipe.json --bin cfgd-operator --bin cfgd-gen-crds
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+RUN cargo build --release --bin cfgd-operator --bin cfgd-gen-crds
 
-RUN cargo build --release --bin cfgd-operator
+# Named stage that emits the generated CRD YAML. setup-cluster.sh extracts
+# it via `docker buildx build --target=crds --output=type=local,dest=...`
+# so the e2e setup no longer needs the host-side cargo build of gen-crds.
+FROM scratch AS crds
+COPY --from=builder /build/target/release/cfgd-gen-crds /cfgd-gen-crds
 
 # --- Runtime ---
 

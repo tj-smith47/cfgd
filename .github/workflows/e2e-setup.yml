@@ -26,6 +26,16 @@ jobs:
           key: e2e-setup
 
       - uses: docker/setup-buildx-action@v3
+        with:
+          # buildx's docker-container builder has its own image store
+          # separate from the host docker engine, so docker-daemon-side
+          # pre-pulls aren't visible to it. Configure the buildkit instance
+          # to transparently mirror docker.io via mirror.gcr.io (Google's
+          # rate-limit-free public cache) so `FROM debian:bookworm-slim` in
+          # the Dockerfiles bypasses Docker Hub's anonymous pull cap.
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
 
       - name: Determine image tag
         id: tags
