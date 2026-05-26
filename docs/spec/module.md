@@ -47,15 +47,15 @@ spec:
 
   scripts:
     preApply:
-      - string | { run: string, timeout: string, continueOnError: bool }
+      - string | { run: string, shell: string, timeout: string, continueOnError: bool }
     postApply:
-      - string | { run: string, timeout: string, continueOnError: bool }
+      - string | { run: string, shell: string, timeout: string, continueOnError: bool }
     preReconcile:
-      - string | { run: string, timeout: string, continueOnError: bool }
+      - string | { run: string, shell: string, timeout: string, continueOnError: bool }
     postReconcile:
-      - string | { run: string, timeout: string, continueOnError: bool }
+      - string | { run: string, shell: string, timeout: string, continueOnError: bool }
     onChange:
-      - string | { run: string, timeout: string, continueOnError: bool }
+      - string | { run: string, shell: string, timeout: string, continueOnError: bool }
 ```
 
 ---
@@ -271,13 +271,19 @@ Lifecycle scripts executed at different points during module apply and reconcili
 | `postReconcile` | list | No | `[]` | Run after daemon-initiated reconciliation of this module. |
 | `onChange` | list | No | `[]` | Run after apply/reconcile only if this module's resources changed. |
 
-Each entry can be a simple string or a full object with `run`, `timeout`, and `continueOnError`.
+Each entry can be a simple string or a full object with `run`, `shell`, `timeout`, and `continueOnError`.
+
+The `shell` field selects the interpreter for inline commands: `bash`, `zsh`, `sh`, `pwsh`, `cmd`, or `auto` (default). `auto` uses `sh` on Unix and `cmd.exe` on Windows. `shell` only applies to inline commands; file scripts use their shebang.
+
+When `shell` is `bash` or `zsh`, the script automatically sources `~/.cfgd.env` before execution, making all resolved `spec.env` vars and `spec.aliases` available (with alias expansion enabled). See [Lifecycle Scripts](../lifecycle-scripts.md) for details.
 
 **Example:**
 ```yaml
 scripts:
   postApply:
     - nvim --headless "+Lazy! sync" +qa
+    - run: echo "BASH_VERSION=$BASH_VERSION"
+      shell: bash
     - run: scripts/rebuild-index.sh
       timeout: 60s
       continueOnError: true

@@ -143,17 +143,17 @@ spec:
 
   scripts:
     preApply:
-      - string | { run: string, timeout: string, idleTimeout: string, continueOnError: bool }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool }
     postApply:
-      - string | { run: string, timeout: string, idleTimeout: string, continueOnError: bool }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool }
     preReconcile:
-      - string | { run: string, timeout: string, idleTimeout: string, continueOnError: bool }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool }
     postReconcile:
-      - string | { run: string, timeout: string, idleTimeout: string, continueOnError: bool }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool }
     onDrift:
-      - string | { run: string, timeout: string, idleTimeout: string, continueOnError: bool }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool }
     onChange:
-      - string | { run: string, timeout: string, idleTimeout: string, continueOnError: bool }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool }
 ```
 
 ---
@@ -602,7 +602,7 @@ When `envs` has multiple entries and the source resolves to a single value, all 
 
 ### spec.scripts
 
-Lifecycle scripts run at different points during apply and reconciliation. Scripts are executed in the order listed. Each entry can be a simple string (command or file path) or an object with `run`, `timeout`, `idleTimeout`, and `continueOnError` fields.
+Lifecycle scripts run at different points during apply and reconciliation. Scripts are executed in the order listed. Each entry can be a simple string (command or file path) or an object with `run`, `shell`, `timeout`, `idleTimeout`, and `continueOnError` fields.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -612,6 +612,10 @@ Lifecycle scripts run at different points during apply and reconciliation. Scrip
 | `postReconcile` | list | No | `[]` | Scripts to run after daemon-initiated reconciliation completes. |
 | `onDrift` | list | No | `[]` | Scripts to run when drift is detected, before any remediation. Profile-level only. |
 | `onChange` | list | No | `[]` | Scripts to run after apply/reconcile only if resources actually changed. |
+
+The `shell` field selects the interpreter for inline commands: `bash`, `zsh`, `sh`, `pwsh`, `cmd`, or `auto` (default). `auto` uses `sh` on Unix and `cmd.exe` on Windows. `shell` only applies to inline commands; file scripts use their shebang.
+
+When `shell` is `bash` or `zsh`, the script automatically sources `~/.cfgd.env` before execution, making all resolved `spec.env` vars and `spec.aliases` available (with alias expansion enabled). See [Lifecycle Scripts](../lifecycle-scripts.md) for details.
 
 Each entry can be a string or an object:
 
@@ -624,6 +628,8 @@ scripts:
       timeout: 30s
   postApply:
     - scripts/reload-shell.sh
+    - run: echo "applied at $(date)"
+      shell: bash
   onChange:
     - run: systemctl restart myservice
       timeout: 60s
@@ -631,7 +637,7 @@ scripts:
 
 Default timeouts: 5 minutes for profile scripts, 2 minutes for module scripts. `idleTimeout` kills scripts that produce no stdout/stderr output for the specified duration (e.g. `30s`, `2m`), preventing silent hangs. Default `continueOnError`: `false` for pre-hooks, `true` for post-hooks and event hooks.
 
-Paths are relative to the config root directory. If the path resolves to an existing file, it is executed directly (the OS uses the shebang to select the interpreter). If not, it is passed through `sh -c`.
+Paths are relative to the config root directory. If the path resolves to an existing file, it is executed directly (the OS uses the shebang to select the interpreter). If not, it is passed through the selected shell (`sh -c` by default).
 
 ---
 
