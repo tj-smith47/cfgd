@@ -159,6 +159,11 @@ impl Node for CfgdNode {
         if req.staging_target_path.is_empty() {
             return Err(Status::invalid_argument("staging_target_path is required"));
         }
+        if let Err(e) = cfgd_core::validate_no_traversal(Path::new(&req.staging_target_path)) {
+            return Err(Status::invalid_argument(format!(
+                "staging_target_path traversal rejected: {e}"
+            )));
+        }
 
         let attrs = &req.volume_context;
         let module = require_attr(attrs, "module")?;
@@ -231,6 +236,11 @@ impl Node for CfgdNode {
 
         if target_path.is_empty() {
             return Err(Status::invalid_argument("target_path is required"));
+        }
+        if let Err(e) = cfgd_core::validate_no_traversal(Path::new(target_path)) {
+            return Err(Status::invalid_argument(format!(
+                "target_path traversal rejected: {e}"
+            )));
         }
 
         let target = Path::new(target_path);
@@ -313,7 +323,13 @@ impl Node for CfgdNode {
                             result: "error".to_string(),
                         })
                         .inc();
-                    let _ = std::fs::remove_dir(&target_path_owned);
+                    if let Err(rm_err) = std::fs::remove_dir(&target_path_owned) {
+                        tracing::warn!(
+                            error = %rm_err,
+                            target = %target_path_owned.display(),
+                            "failed to remove mount target after bind_mount failure",
+                        );
+                    }
                     Err(e)
                 }
             }
@@ -334,6 +350,11 @@ impl Node for CfgdNode {
         let target_path = &req.target_path;
         if target_path.is_empty() {
             return Err(Status::invalid_argument("target_path is required"));
+        }
+        if let Err(e) = cfgd_core::validate_no_traversal(std::path::Path::new(target_path)) {
+            return Err(Status::invalid_argument(format!(
+                "target_path traversal rejected: {e}"
+            )));
         }
 
         tracing::info!(
@@ -513,8 +534,13 @@ fn bind_mount_readonly(source: &Path, target: &Path) -> Result<(), Status> {
         MsFlags::MS_REMOUNT | MsFlags::MS_BIND | MsFlags::MS_RDONLY,
         None::<&str>,
     ) {
-        // Clean up the bind mount if remount fails
-        let _ = nix::mount::umount2(target, nix::mount::MntFlags::MNT_DETACH);
+        if let Err(umount_err) = nix::mount::umount2(target, nix::mount::MntFlags::MNT_DETACH) {
+            tracing::debug!(
+                error = %umount_err,
+                target = %target.display(),
+                "best-effort cleanup umount2 failed after read-only remount error",
+            );
+        }
         return Err(Status::internal(format!("read-only remount failed: {e}")));
     }
 

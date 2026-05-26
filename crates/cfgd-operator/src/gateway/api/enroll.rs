@@ -60,9 +60,17 @@ pub(super) async fn enroll(
                 &bootstrap.username,
                 bootstrap.team.as_deref(),
             )?;
-            let desired = crate::gateway::db::get_device_tx(tx, &device_id)
-                .ok()
-                .and_then(|d| d.desired_config);
+            let desired = match crate::gateway::db::get_device_tx(tx, &device_id) {
+                Ok(d) => d.desired_config,
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        device_id = %device_id,
+                        "no prior device record on enroll; desired_config will be None",
+                    );
+                    None
+                }
+            };
             Ok((bootstrap, desired))
         })
         .await?;
@@ -269,9 +277,17 @@ pub(super) async fn verify_enrollment(
                 &username_c,
                 team_c.as_deref(),
             )?;
-            let desired = crate::gateway::db::get_device_tx(tx, &device_id_c)
-                .ok()
-                .and_then(|d| d.desired_config);
+            let desired = match crate::gateway::db::get_device_tx(tx, &device_id_c) {
+                Ok(d) => d.desired_config,
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        device_id = %device_id_c,
+                        "no prior device record on enroll; desired_config will be None",
+                    );
+                    None
+                }
+            };
             Ok(desired)
         })
         .await?;
@@ -437,7 +453,14 @@ pub(super) fn verify_gpg_signature(
             tracing::warn!(error = %e, key_user = %key.username, "gpg verify: failed to create per-key homedir");
             continue;
         }
-        let _ = cfgd_core::set_file_permissions(&gpg_home, 0o700);
+        if let Err(e) = cfgd_core::set_file_permissions(&gpg_home, 0o700) {
+            tracing::warn!(
+                error = %e,
+                key_user = %key.username,
+                path = %gpg_home.display(),
+                "gpg verify: failed to set 0700 on per-key homedir"
+            );
+        }
 
         if let Err(e) = std::fs::write(&key_path, &key.public_key) {
             tracing::warn!(error = %e, key_user = %key.username, "gpg verify: failed to write public key");
