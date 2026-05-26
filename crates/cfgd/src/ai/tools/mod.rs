@@ -20,6 +20,22 @@ const ERR_NAME_REQUIRED: &str = "Error: 'name' parameter is required";
 const ERR_CONTENT_REQUIRED: &str = "Error: 'content' parameter is required";
 const DOC_KIND_DESC: &str = "Document kind: 'Module', 'Profile', or 'Config'";
 
+fn serialize_tool_content<T: serde::Serialize>(value: &T) -> ToolCallResult {
+    match serde_json::to_string(value) {
+        Ok(s) => ToolCallResult {
+            content: s,
+            is_error: false,
+        },
+        Err(e) => {
+            tracing::error!(error = %e, "tool result serialization failed");
+            ToolCallResult {
+                content: format!("Error: tool result serialization failed: {e}"),
+                is_error: true,
+            }
+        }
+    }
+}
+
 /// Execute a tool call by name, returning the result as a JSON string.
 pub fn dispatch_tool_call(
     name: &str,
@@ -329,10 +345,7 @@ fn dispatch_scan_installed_packages(
     let filter_manager = input.get("manager").and_then(|v| v.as_str());
     let refs: Vec<&dyn PackageManager> = managers.iter().map(|m| m.as_ref()).collect();
     match scan::scan_installed_packages(&refs, filter_manager) {
-        Ok(entries) => ToolCallResult {
-            content: serde_json::to_string(&entries).unwrap_or_default(),
-            is_error: false,
-        },
+        Ok(entries) => serialize_tool_content(&entries),
         Err(e) => ToolCallResult {
             content: format!("Error: {}", e),
             is_error: true,
@@ -347,10 +360,7 @@ fn dispatch_scan_dotfiles(input: &Value, home: &Path) -> ToolCallResult {
         .map(PathBuf::from);
     let home_path = home_override.as_deref().unwrap_or(home);
     match scan::scan_dotfiles(home_path) {
-        Ok(entries) => ToolCallResult {
-            content: serde_json::to_string(&entries).unwrap_or_default(),
-            is_error: false,
-        },
+        Ok(entries) => serialize_tool_content(&entries),
         Err(e) => ToolCallResult {
             content: format!("Error: {}", e),
             is_error: true,
@@ -369,10 +379,7 @@ fn dispatch_scan_shell_config(input: &Value, home: &Path) -> ToolCallResult {
         }
     };
     match scan::scan_shell_config(shell, home) {
-        Ok(result) => ToolCallResult {
-            content: serde_json::to_string(&result).unwrap_or_default(),
-            is_error: false,
-        },
+        Ok(result) => serialize_tool_content(&result),
         Err(e) => ToolCallResult {
             content: format!("Error: {}", e),
             is_error: true,
@@ -382,10 +389,7 @@ fn dispatch_scan_shell_config(input: &Value, home: &Path) -> ToolCallResult {
 
 fn dispatch_scan_system_settings() -> ToolCallResult {
     match scan::scan_system_settings() {
-        Ok(result) => ToolCallResult {
-            content: serde_json::to_string(&result).unwrap_or_default(),
-            is_error: false,
-        },
+        Ok(result) => serialize_tool_content(&result),
         Err(e) => ToolCallResult {
             content: format!("Error: {}", e),
             is_error: true,
@@ -401,10 +405,7 @@ fn dispatch_detect_platform() -> ToolCallResult {
         "version": platform.version,
         "arch": format!("{:?}", platform.arch),
     });
-    ToolCallResult {
-        content: serde_json::to_string(&value).unwrap_or_default(),
-        is_error: false,
-    }
+    serialize_tool_content(&value)
 }
 
 fn dispatch_inspect_tool(input: &Value, home: &Path) -> ToolCallResult {
@@ -418,10 +419,7 @@ fn dispatch_inspect_tool(input: &Value, home: &Path) -> ToolCallResult {
         }
     };
     match inspect::inspect_tool(name, home) {
-        Ok(result) => ToolCallResult {
-            content: serde_json::to_string(&result).unwrap_or_default(),
-            is_error: false,
-        },
+        Ok(result) => serialize_tool_content(&result),
         Err(e) => ToolCallResult {
             content: format!("Error: {}", e),
             is_error: true,
@@ -461,10 +459,7 @@ fn dispatch_query_package_manager(
         }
     };
     match inspect::query_package_manager(manager.as_ref(), package) {
-        Ok(result) => ToolCallResult {
-            content: serde_json::to_string(&result).unwrap_or_default(),
-            is_error: false,
-        },
+        Ok(result) => serialize_tool_content(&result),
         Err(e) => ToolCallResult {
             content: format!("Error: {}", e),
             is_error: true,
@@ -483,10 +478,7 @@ fn dispatch_read_file(input: &Value, home: &Path, repo_root: &Path) -> ToolCallR
         }
     };
     match files::read_file(&path, home, repo_root) {
-        Ok(result) => ToolCallResult {
-            content: serde_json::to_string(&result).unwrap_or_default(),
-            is_error: false,
-        },
+        Ok(result) => serialize_tool_content(&result),
         Err(e) => ToolCallResult {
             content: format!("Error: {}", e),
             is_error: true,
@@ -505,10 +497,7 @@ fn dispatch_list_directory(input: &Value, home: &Path, repo_root: &Path) -> Tool
         }
     };
     match files::list_directory(&path, home, repo_root) {
-        Ok(entries) => ToolCallResult {
-            content: serde_json::to_string(&entries).unwrap_or_default(),
-            is_error: false,
-        },
+        Ok(entries) => serialize_tool_content(&entries),
         Err(e) => ToolCallResult {
             content: format!("Error: {}", e),
             is_error: true,
@@ -553,10 +542,7 @@ fn dispatch_adopt_files(input: &Value, repo_root: &Path) -> ToolCallResult {
     match files::adopt_files(&pairs, repo_root) {
         Ok(written) => {
             let paths: Vec<String> = written.iter().map(|p| p.display().to_string()).collect();
-            ToolCallResult {
-                content: serde_json::to_string(&paths).unwrap_or_default(),
-                is_error: false,
-            }
+            serialize_tool_content(&paths)
         }
         Err(e) => ToolCallResult {
             content: format!("Error: {}", e),
@@ -620,10 +606,7 @@ fn dispatch_validate_yaml(input: &Value) -> ToolCallResult {
         }
     };
     let result = cfgd_core::generate::validate::validate_yaml(content, kind);
-    ToolCallResult {
-        content: serde_json::to_string(&result).unwrap_or_default(),
-        is_error: false,
-    }
+    serialize_tool_content(&result)
 }
 
 fn dispatch_write_module_yaml(input: &Value, session: &mut GenerateSession) -> ToolCallResult {
@@ -700,18 +683,12 @@ fn dispatch_list_generated(session: &GenerateSession) -> ToolCallResult {
             })
         })
         .collect();
-    ToolCallResult {
-        content: serde_json::to_string(&entries).unwrap_or_default(),
-        is_error: false,
-    }
+    serialize_tool_content(&entries)
 }
 
 fn dispatch_get_existing_modules(session: &GenerateSession) -> ToolCallResult {
     match session.get_existing_modules() {
-        Ok(names) => ToolCallResult {
-            content: serde_json::to_string(&names).unwrap_or_default(),
-            is_error: false,
-        },
+        Ok(names) => serialize_tool_content(&names),
         Err(e) => ToolCallResult {
             content: format!("Error: {}", e),
             is_error: true,
@@ -721,10 +698,7 @@ fn dispatch_get_existing_modules(session: &GenerateSession) -> ToolCallResult {
 
 fn dispatch_get_existing_profiles(session: &GenerateSession) -> ToolCallResult {
     match session.get_existing_profiles() {
-        Ok(names) => ToolCallResult {
-            content: serde_json::to_string(&names).unwrap_or_default(),
-            is_error: false,
-        },
+        Ok(names) => serialize_tool_content(&names),
         Err(e) => ToolCallResult {
             content: format!("Error: {}", e),
             is_error: true,

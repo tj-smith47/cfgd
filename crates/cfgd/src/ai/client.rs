@@ -105,6 +105,14 @@ impl AnthropicClient {
             tools,
         };
 
+        tracing::debug!(
+            model = %self.model,
+            message_count = messages.len(),
+            tool_count = tools.len(),
+            max_tokens = max_tokens,
+            "sending message to anthropic"
+        );
+
         // Must use a bounded timeout — the previous `ureq::post(...)` had
         // none and could hang the CLI indefinitely on a slow / unreachable
         // api.anthropic.com.
@@ -114,16 +122,44 @@ impl AnthropicClient {
             .set("anthropic-version", "2023-06-01")
             .set("content-type", "application/json")
             .send_json(&request)
-            .map_err(|e| GenerateError::ProviderError {
-                message: format!("API request failed: {e}"),
+            .map_err(|e| {
+                let message = match e {
+                    ureq::Error::Status(code, resp) => {
+                        let status_text = resp.status_text().to_string();
+                        // Consume the response body so the structured error
+                        // payload Anthropic returns is in logs and the surfaced
+                        // error string, not silently dropped with `resp`.
+                        let body = resp.into_string().unwrap_or_default();
+                        tracing::warn!(
+                            status = code,
+                            status_text = %status_text,
+                            body = %body,
+                            "anthropic api returned non-2xx status"
+                        );
+                        format!("API request failed: {code} {status_text}: {body}")
+                    }
+                    ureq::Error::Transport(t) => {
+                        tracing::warn!(error = %t, "anthropic api transport error");
+                        format!("API request failed: {t}")
+                    }
+                };
+                GenerateError::ProviderError { message }
             })?;
 
-        let api_response: ApiResponse =
-            response
-                .into_json()
-                .map_err(|e| GenerateError::ProviderError {
-                    message: format!("Failed to parse API response: {e}"),
-                })?;
+        let api_response: ApiResponse = response.into_json().map_err(|e| {
+            tracing::warn!(error = %e, "failed to parse anthropic api response");
+            GenerateError::ProviderError {
+                message: format!("Failed to parse API response: {e}"),
+            }
+        })?;
+
+        tracing::debug!(
+            input_tokens = api_response.usage.input_tokens,
+            output_tokens = api_response.usage.output_tokens,
+            stop_reason = ?api_response.stop_reason,
+            content_blocks = api_response.content.len(),
+            "received response from anthropic"
+        );
 
         Ok(api_response)
     }
