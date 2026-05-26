@@ -775,6 +775,35 @@ template_files:
     dst: install.sh
     mode: "0755"
 
+# Top-level homebrew_casks block (GR v2.16 supported path).
+# publish.homebrew: is kept below for backward-compat during the deprecation
+# lifecycle; homebrew_casks: is the authoritative config going forward.
+homebrew_casks:
+  - required: true
+    repository:
+      owner: tj-smith47
+      name: homebrew-tap
+    directory: Formula
+    description: "Declarative, GitOps-style machine configuration management"
+    homepage: "https://github.com/tj-smith47/cfgd"
+    license: MIT
+    binaries:
+      - cfgd
+    generate_completions_from_executable:
+      executable: cfgd
+      args:
+        - completion
+      base_name: cfgd
+    caveats: |
+      Run `cfgd init` to scaffold a config in your repo.
+    dependencies:
+      - name: git
+        type: required
+    commit_msg_template: "cfgd {{ .Tag }}"
+    commit_author:
+      name: "TJ Smith"
+      email: "tj@jarvispro.io"
+
 partial:
   by: goos
 
