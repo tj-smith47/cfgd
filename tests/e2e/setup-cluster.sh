@@ -103,6 +103,7 @@ pull_with_fallback() {
 echo "Pre-pulling base images..."
 pull_with_fallback debian:bookworm-slim
 pull_with_fallback rust:1.94-slim-bookworm
+pull_with_fallback golang:1.25
 
 echo "Building Docker images..."
 docker build -f "$REPO_ROOT/Dockerfile" \
