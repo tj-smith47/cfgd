@@ -106,13 +106,25 @@ pull_with_fallback rust:1.94-slim-bookworm
 pull_with_fallback golang:1.25
 
 echo "Building Docker images..."
-docker build -f "$REPO_ROOT/Dockerfile" \
-    -t "${REGISTRY}/cfgd:${IMAGE_TAG}" "$REPO_ROOT"
-docker build -f "$REPO_ROOT/Dockerfile.operator" \
-    -t "${REGISTRY}/cfgd-operator:${IMAGE_TAG}" "$REPO_ROOT"
-docker build -f "$REPO_ROOT/Dockerfile.csi" \
-    -t "${REGISTRY}/cfgd-csi:${IMAGE_TAG}" "$REPO_ROOT"
-docker build -t "${REGISTRY}/function-cfgd:${IMAGE_TAG}" "$REPO_ROOT/function-cfgd"
+# buildx + GHA cache: unchanged layers restore from per-image scope cache
+# instead of recompiling. Gated on SCCACHE_GHA_ENABLED so local invocations
+# without GHA cache fall back to a plain `docker buildx build --load`.
+build_image() {
+    local dockerfile="$1" tag="$2" context="$3" scope="$4"
+    local args=(buildx build --load -f "$dockerfile" -t "$tag" "$context")
+    if [ "${SCCACHE_GHA_ENABLED:-}" = "true" ]; then
+        args+=(--cache-from "type=gha,scope=${scope}" --cache-to "type=gha,mode=max,scope=${scope}")
+    fi
+    docker "${args[@]}"
+}
+build_image "$REPO_ROOT/Dockerfile" \
+    "${REGISTRY}/cfgd:${IMAGE_TAG}" "$REPO_ROOT" cfgd
+build_image "$REPO_ROOT/Dockerfile.operator" \
+    "${REGISTRY}/cfgd-operator:${IMAGE_TAG}" "$REPO_ROOT" cfgd-operator
+build_image "$REPO_ROOT/Dockerfile.csi" \
+    "${REGISTRY}/cfgd-csi:${IMAGE_TAG}" "$REPO_ROOT" cfgd-csi
+build_image "$REPO_ROOT/function-cfgd/Dockerfile" \
+    "${REGISTRY}/function-cfgd:${IMAGE_TAG}" "$REPO_ROOT/function-cfgd" function-cfgd
 
 echo "Tagging and pushing images to $REGISTRY..."
 # Also tag as :latest so ArgoCD-managed deployments pick up the new code

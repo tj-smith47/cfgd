@@ -92,7 +92,18 @@ tasks:
     desc: Run all tests. Pass `-- <args>` to forward to cargo test.
     deps: [_check:tmp-headroom]
     cmds:
-      - cargo test {{.CLI_ARGS}}
+      - cargo nextest run --workspace --no-fail-fast {{.CLI_ARGS}}
+
+  test:ci:
+    desc: CI test entrypoint — scopes Windows to cfgd-core+cfgd (operator/csi covered by E2E).
+    cmds:
+      - cmd: |
+          if [ "${RUNNER_OS:-}" = "Windows" ]; then
+            export OPENSSL_DIR='C:/Program Files/OpenSSL'
+            cargo nextest run --no-fail-fast -p cfgd-core -p cfgd {{.CLI_ARGS}}
+          else
+            cargo nextest run --workspace --no-fail-fast {{.CLI_ARGS}}
+          fi
 
   test:crate:*:
     desc: 'Run tests for one crate: `task test:crate:<crate> -- <filter>`'
@@ -110,13 +121,13 @@ tasks:
   coverage:check:
     desc: Run workspace test coverage and write cobertura.xml. Prints the same percentage the README badge shows. No branch switching, no push.
     cmds:
-      - cargo llvm-cov --cobertura --output-path cobertura.xml
+      - cargo llvm-cov nextest --cobertura --output-path cobertura.xml --no-fail-fast
       - 'echo "Coverage (line, cobertura): $(bash .claude/scripts/coverage-percent.sh cobertura.xml)"'
 
   coverage:publish:
     desc: Run workspace test coverage and publish the badge update to origin/badges. Switches branches via the badge script; release/CI only.
     cmds:
-      - cargo llvm-cov --cobertura --output-path cobertura.xml
+      - cargo llvm-cov nextest --cobertura --output-path cobertura.xml --no-fail-fast
       - bash .claude/scripts/coverage-percent.sh cobertura.xml
       - bash .claude/scripts/publish-coverage.sh cobertura.xml
 

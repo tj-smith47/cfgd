@@ -16,6 +16,12 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+  # Layered atop Swatinem/rust-cache: rust-cache restores `target/` per
+  # (OS, Cargo.lock-hash); sccache catches the cache-miss rebuild path
+  # (Cargo.lock churn) by serving each rustc invocation from per-input-hash
+  # cache. GHA cache backend — no S3 needed.
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: "sccache"
 
 jobs:
   fmt:
@@ -40,9 +46,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
         with:
           key: ci-clippy
+          # Cross-job warm-restore: if the per-key cache misses, fall back
+          # to any sibling job's cache from the same Cargo.lock generation.
+          restore-keys: |
+            ci-test-ubuntu-latest-
+            ci-coverage-
+            ci-package-
       - uses: arduino/setup-protoc@v3
         with:
           version: "25.x"
@@ -62,12 +75,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
         with:
           key: ci-test-${{ matrix.os }}
+          restore-keys: |
+            ci-clippy-
+            ci-coverage-
+            ci-package-
       - uses: arduino/setup-protoc@v3
         with:
           version: "25.x"
@@ -75,16 +91,17 @@ jobs:
       - uses: arduino/setup-task@v2
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
+      # nextest gives per-test process isolation + per-test timeout: a hung
+      # test is killed and named in the failure output instead of stalling
+      # the whole binary for the GHA 6h cutoff (cfgd master hit a 60+min
+      # macos/windows hang with `cargo test` and no log of which test).
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
 
       - name: Tests
         shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            export OPENSSL_DIR='C:/Program Files/OpenSSL'
-            cargo test -p cfgd-core -p cfgd
-          else
-            task test
-          fi
+        run: task test:ci
 
   audit:
     name: Code Audit
@@ -104,16 +121,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
         with:
           key: ci-coverage
+          restore-keys: |
+            ci-test-ubuntu-latest-
+            ci-clippy-
+            ci-package-
       - uses: arduino/setup-protoc@v3
         with:
           version: "25.x"
           repo-token: ${{ github.token }}
       - uses: arduino/setup-task@v2
-      - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
       - name: Run coverage and update badge
         run: task coverage:publish
 
@@ -123,9 +146,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
         with:
           key: ci-package
+          restore-keys: |
+            ci-test-ubuntu-latest-
+            ci-clippy-
+            ci-coverage-
       - uses: arduino/setup-protoc@v3
         with:
           version: "25.x"
