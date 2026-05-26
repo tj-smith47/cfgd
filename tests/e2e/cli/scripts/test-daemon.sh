@@ -158,7 +158,7 @@ else
     sleep 0.5
     SIGHUP_OK=""
     for _ in $(seq 1 25); do
-        if grep -qF "Reloading configuration (SIGHUP)..." "$DAEMON_LOG"; then
+        if grep -qF "Reloading configuration (SIGHUP)" "$DAEMON_LOG"; then
             SIGHUP_OK=1
             break
         fi

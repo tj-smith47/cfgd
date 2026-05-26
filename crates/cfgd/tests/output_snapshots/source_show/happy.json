@@ -17,6 +17,7 @@
     }
   ],
   "name": "team-config",
+  "pinVersion": "v1.2.3",
   "priority": 100,
   "profile": "team",
   "state": {
@@ -26,6 +27,5 @@
     "version": "3.1.0"
   },
   "syncInterval": "1h",
-  "url": "https://github.com/team/config",
-  "versionPin": "v1.2.3"
+  "url": "https://github.com/team/config"
 }

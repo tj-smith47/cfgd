@@ -33,7 +33,7 @@ pub fn cmd_source_replace(
             opt_in: vec![],
             sync_interval: None,
             auto_apply: false,
-            version_pin: None,
+            pin_version: None,
             yes: true,
         },
     )?;

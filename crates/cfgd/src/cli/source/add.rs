@@ -11,7 +11,7 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
     let opt_in = &args.opt_in;
     let sync_interval = args.sync_interval.as_deref();
     let auto_apply = args.auto_apply;
-    let pin_version = args.version_pin.as_deref();
+    let pin_version = args.pin_version.as_deref();
     printer.heading("Add Config Source");
 
     // Infer name from URL if not provided

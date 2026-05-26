@@ -273,7 +273,7 @@ pub struct SourceShowOutput {
     pub profile: Option<String>,
     pub sync_interval: String,
     pub auto_apply: bool,
-    pub version_pin: Option<String>,
+    pub pin_version: Option<String>,
     pub state: Option<SourceStateInfo>,
     pub managed_resources: Vec<SourceResourceEntry>,
 }
@@ -1002,7 +1002,7 @@ mod tests {
             profile: Some("default".to_string()),
             sync_interval: "5m".to_string(),
             auto_apply: false,
-            version_pin: Some("v1.2.3".to_string()),
+            pin_version: Some("v1.2.3".to_string()),
             state: Some(SourceStateInfo {
                 status: "fresh".to_string(),
                 last_fetched: Some("2026-01-01T00:00:00Z".to_string()),
@@ -1023,7 +1023,7 @@ mod tests {
         assert_eq!(json["profile"], json!("default"));
         assert_eq!(json["syncInterval"], json!("5m"));
         assert_eq!(json["autoApply"], json!(false));
-        assert_eq!(json["versionPin"], json!("v1.2.3"));
+        assert_eq!(json["pinVersion"], json!("v1.2.3"));
         assert_eq!(json["state"]["status"], json!("fresh"));
         assert_eq!(json["managedResources"][0]["resourceType"], json!("Module"));
     }

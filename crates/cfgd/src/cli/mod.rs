@@ -770,8 +770,8 @@ pub struct SourceAddArgs {
     #[arg(long)]
     pub auto_apply: bool,
     /// Pin to a semver version range (e.g., "~1.0", ">=2.0")
-    #[arg(long = "version-pin")]
-    pub version_pin: Option<String>,
+    #[arg(long = "pin-version")]
+    pub pin_version: Option<String>,
     /// Skip confirmation prompt
     #[arg(long, short, env = "CFGD_YES")]
     pub yes: bool,

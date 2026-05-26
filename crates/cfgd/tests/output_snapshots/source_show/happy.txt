@@ -6,7 +6,7 @@ Source: team-config
   Profile             team
   Sync Interval       1h
   Auto Apply          false
-  Version Pin         v1.2.3
+  Pin Version         v1.2.3
 
 State
   Status        synced

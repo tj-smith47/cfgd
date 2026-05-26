@@ -11498,7 +11498,7 @@ fn cmd_source_add_duplicate_fails() {
         opt_in: vec![],
         sync_interval: None,
         auto_apply: false,
-        version_pin: None,
+        pin_version: None,
         yes: true,
     };
     let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
@@ -16464,7 +16464,7 @@ mod cmd_source_add_local {
             opt_in: vec![],
             sync_interval: None,
             auto_apply: false,
-            version_pin: None,
+            pin_version: None,
             yes: true,
         }
     }
@@ -16498,7 +16498,7 @@ mod cmd_source_add_local {
 
     #[test]
     #[serial]
-    fn cmd_source_add_version_pin_persists_to_config() {
+    fn cmd_source_add_pin_version_persists_to_config() {
         with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "pinned-src", Some("1.2.3"));
@@ -16506,7 +16506,7 @@ mod cmd_source_add_local {
             let url = format!("file://{}", bare.display());
             let args = SourceAddArgs {
                 name: Some("pinned-src".to_string()),
-                version_pin: Some("~1".to_string()),
+                pin_version: Some("~1".to_string()),
                 ..empty_source_args(url)
             };
             let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);

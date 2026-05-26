@@ -35,7 +35,7 @@ fn happy_output() -> SourceShowOutput {
         profile: Some("team".into()),
         sync_interval: "1h".into(),
         auto_apply: false,
-        version_pin: Some("v1.2.3".into()),
+        pin_version: Some("v1.2.3".into()),
         state: Some(SourceStateInfo {
             status: "synced".into(),
             last_fetched: Some("2026-05-14T10:00:00Z".into()),
@@ -116,7 +116,7 @@ fn empty_output() -> SourceShowOutput {
         profile: None,
         sync_interval: "1h".into(),
         auto_apply: false,
-        version_pin: None,
+        pin_version: None,
         state: None,
         managed_resources: Vec::new(),
     }

@@ -800,7 +800,7 @@ pub fn source_add_args(url: impl Into<String>) -> SourceAddArgs {
         opt_in: vec![],
         sync_interval: None,
         auto_apply: false,
-        version_pin: None,
+        pin_version: None,
         yes: true,
     }
 }

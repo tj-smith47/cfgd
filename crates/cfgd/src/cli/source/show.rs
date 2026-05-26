@@ -37,8 +37,8 @@ pub fn build_source_show_doc(
     doc = doc
         .kv("Sync Interval", &output.sync_interval)
         .kv("Auto Apply", output.auto_apply.to_string());
-    if let Some(ref pin) = output.version_pin {
-        doc = doc.kv("Version Pin", pin);
+    if let Some(ref pin) = output.pin_version {
+        doc = doc.kv("Pin Version", pin);
     }
 
     if let Some(ref state_info) = output.state {
@@ -193,7 +193,7 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
         profile: source_spec.subscription.profile.clone(),
         sync_interval: source_spec.sync.interval.clone(),
         auto_apply: source_spec.sync.auto_apply,
-        version_pin: source_spec.sync.pin_version.clone(),
+        pin_version: source_spec.sync.pin_version.clone(),
         state: state_info.map(|s| SourceStateInfo {
             status: s.status,
             last_fetched: s.last_fetched,
