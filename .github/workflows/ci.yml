@@ -16,10 +16,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
-  # Pin anodizer to a specific commit so the cache key stays stable.
-  # Bump this when you need a newer anodizer. Temporary until anodizer has
-  # tagged GitHub releases and anodizer-action's version: latest works.
-  ANODIZER_REV: 073ee71891327f394c629eb8bf441f394e2add26
 
 jobs:
   fmt:
@@ -62,16 +58,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            anodizer_artifact: anodizer-linux
-            anodizer_bin: anodizer
-          - os: macos-latest
-            anodizer_artifact: anodizer-macos
-            anodizer_bin: anodizer
-          - os: windows-latest
-            anodizer_artifact: anodizer-windows
-            anodizer_bin: anodizer.exe
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -90,50 +77,14 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Tests
-        # Windows tests only the cross-platform crates (cfgd-core + cfgd CLI);
-        # the operator and CSI plugins are Linux-only.
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            # Point openssl-sys to the pre-installed OpenSSL on Windows runners
-            # so git2/libgit2 can link against it without a vendored build.
             export OPENSSL_DIR='C:/Program Files/OpenSSL'
             cargo test -p cfgd-core -p cfgd
           else
             task test
           fi
-
-      # --- Build and upload anodizer for downstream consumers. -------------
-      # Every job that needs anodizer (snapshot, tag, release.yml) downloads
-      # it via actions/download-artifact or anodizer-action's from-artifact
-      # instead of cargo-installing it from scratch. One build per platform
-      # per master push, cached by ANODIZER_REV.
-      - name: Cache anodizer binary
-        if: github.ref == 'refs/heads/master'
-        id: anodizer-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/${{ matrix.anodizer_bin }}
-          key: anodizer-${{ runner.os }}-${{ env.ANODIZER_REV }}
-
-      - name: Install anodizer
-        if: github.ref == 'refs/heads/master' && steps.anodizer-cache.outputs.cache-hit != 'true'
-        shell: bash
-        run: cargo install --git https://github.com/tj-smith47/anodizer --rev "$ANODIZER_REV" --locked anodizer
-
-      - name: Stage anodizer binary for artifact upload
-        if: github.ref == 'refs/heads/master'
-        shell: bash
-        run: |
-          mkdir -p anodizer-bin
-          cp ~/.cargo/bin/${{ matrix.anodizer_bin }} anodizer-bin/${{ matrix.anodizer_bin }}
-
-      - name: Upload anodizer binary
-        if: github.ref == 'refs/heads/master'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.anodizer_artifact }}
-          path: anodizer-bin/${{ matrix.anodizer_bin }}
 
   audit:
     name: Code Audit
@@ -192,11 +143,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      # Reuse the anodizer binary uploaded by the test job — no rebuild.
       - name: Validate release pipeline via anodizer
         uses: tj-smith47/anodizer-action@v1
         with:
-          from-artifact: anodizer-linux
+          version: latest
           args: release --snapshot --single-target --clean --dry-run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -222,22 +172,17 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-      # Download anodizer once, then tag each workspace independently.
-      # Each --crate uses the crate's tag_template prefix for both tag
-      # discovery and creation (cfgd→v*, cfgd-core→core-v*, etc.).
-      # create_and_push_tag pushes each tag immediately, which triggers
-      # one release.yml run per workspace via the concurrency queue.
-      - name: Download anodizer binary
-        uses: actions/download-artifact@v4
+      - name: Install anodizer
+        uses: tj-smith47/anodizer-action@v1
         with:
-          name: anodizer-linux
-          path: /tmp/anodizer-bin
+          version: latest
+          args: --version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
       - name: Auto-tag all workspaces
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          chmod +x /tmp/anodizer-bin/anodizer
-          export PATH="/tmp/anodizer-bin:$PATH"
           for crate in cfgd-core cfgd cfgd-operator cfgd-csi; do
             echo "--- tagging $crate ---"
             if anodizer tag --crate "$crate"; then
@@ -246,7 +191,4 @@ jobs:
               echo "::warning::$crate: tag skipped or failed (exit $?)"
             fi
           done
-          # Push any version_sync commits to master so they're not orphaned.
-          # Without this, tags point to commits that only exist as tag targets
-          # and CI never runs on them, breaking artifact resolution.
           git push origin master || true

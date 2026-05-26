@@ -11,7 +11,6 @@ on:
 permissions:
   contents: write
   packages: write
-  actions: read   # cross-workflow artifact download
   id-token: write # MCP registry publish via github-oidc auth
 
 concurrency:
@@ -36,9 +35,7 @@ jobs:
       - uses: tj-smith47/anodizer-action@v1
         id: anodizer
         with:
-          from-artifact: anodizer-linux
-          artifact-run-id: auto
-          artifact-workflow: ci.yml
+          version: latest
           resolve-workspace: 'true'
           install-only: 'true'
         env:
@@ -69,9 +66,7 @@ jobs:
 
       - uses: tj-smith47/anodizer-action@v1
         with:
-          from-artifact: anodizer-${{ matrix.os == 'ubuntu-latest' && 'linux' || matrix.os == 'macos-latest' && 'macos' || 'windows' }}
-          artifact-run-id: auto
-          artifact-workflow: ci.yml
+          version: latest
           install-rust: 'true'
           auto-install: 'true'
           determinism: 'true'
@@ -117,9 +112,7 @@ jobs:
       - name: Run anodizer release
         uses: tj-smith47/anodizer-action@v1
         with:
-          from-artifact: anodizer-linux
-          artifact-run-id: auto
-          artifact-workflow: ci.yml
+          version: latest
           auto-install: 'true'
           download-dist: ${{ needs.resolve.outputs.has-builds }}
           docker-registry: ${{ needs.resolve.outputs.has-builds == 'true' && 'ghcr.io' || '' }}
