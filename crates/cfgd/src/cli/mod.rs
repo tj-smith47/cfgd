@@ -668,12 +668,13 @@ pub enum Command {
         username: Option<String>,
     },
 
-    /// Generate shell completions
+    /// Generate shell completion script
     #[command(
-        long_about = "Emit shell-completion script for bash/zsh/fish/elvish/powershell on stdout.\n\nExamples:\n  cfgd completions bash > /etc/bash_completion.d/cfgd\n  cfgd completions zsh > ~/.zfunc/_cfgd"
+        alias = "completions",
+        long_about = "Emit shell-completion script for bash/zsh/fish/elvish/powershell on stdout.\n\nExamples:\n  cfgd completion bash > /etc/bash_completion.d/cfgd\n  cfgd completion zsh > ~/.zfunc/_cfgd"
     )]
-    Completions {
-        /// Shell to generate completions for
+    Completion {
+        /// Shell to generate completion for
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
@@ -1759,7 +1760,7 @@ pub fn execute(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resul
             gpg_key.as_deref(),
             username.as_deref(),
         ),
-        Command::Completions { shell } => {
+        Command::Completion { shell } => {
             clap_complete::generate(*shell, &mut Cli::command(), "cfgd", &mut std::io::stdout());
             Ok(())
         }

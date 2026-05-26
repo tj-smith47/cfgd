@@ -4353,7 +4353,7 @@ fn execute_apply_dry_run() {
 fn execute_completions_bash() {
     let dir = tempfile::tempdir().unwrap();
     let cli = Cli {
-        command: Some(Command::Completions {
+        command: Some(Command::Completion {
             shell: clap_complete::Shell::Bash,
         }),
         ..test_cli(dir.path())
@@ -4373,7 +4373,7 @@ fn execute_completions_bash() {
 fn execute_completions_zsh() {
     let dir = tempfile::tempdir().unwrap();
     let cli = Cli {
-        command: Some(Command::Completions {
+        command: Some(Command::Completion {
             shell: clap_complete::Shell::Zsh,
         }),
         ..test_cli(dir.path())
@@ -4387,7 +4387,7 @@ fn execute_completions_zsh() {
 fn execute_completions_fish() {
     let dir = tempfile::tempdir().unwrap();
     let cli = Cli {
-        command: Some(Command::Completions {
+        command: Some(Command::Completion {
             shell: clap_complete::Shell::Fish,
         }),
         ..test_cli(dir.path())
