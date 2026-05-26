@@ -2579,6 +2579,7 @@ fn effective_continue_on_error_uses_explicit_value() {
         timeout: None,
         idle_timeout: None,
         continue_on_error: Some(true),
+        shell: ScriptShell::Auto,
     };
     // Should be true even for pre-apply (which defaults to false)
     assert!(super::effective_continue_on_error(
@@ -2591,6 +2592,7 @@ fn effective_continue_on_error_uses_explicit_value() {
         timeout: None,
         idle_timeout: None,
         continue_on_error: Some(false),
+        shell: ScriptShell::Auto,
     };
     // Should be false even for post-apply (which defaults to true)
     assert!(!super::effective_continue_on_error(
@@ -2616,6 +2618,7 @@ fn effective_continue_on_error_falls_back_to_default() {
         timeout: None,
         idle_timeout: None,
         continue_on_error: None,
+        shell: ScriptShell::Auto,
     };
     assert!(!super::effective_continue_on_error(
         &full_no_override,
@@ -2688,6 +2691,7 @@ fn plan_scripts_carries_full_entry() {
         timeout: Some("10s".to_string()),
         idle_timeout: None,
         continue_on_error: Some(true),
+        shell: ScriptShell::Auto,
     }];
 
     let plan = reconciler
@@ -2809,6 +2813,7 @@ fn execute_script_with_timeout_override() {
         timeout: Some("5s".to_string()),
         idle_timeout: None,
         continue_on_error: None,
+        shell: ScriptShell::Auto,
     };
     let dir = tempfile::tempdir().unwrap();
     let (_, _, output) = super::execute_script(
@@ -2900,6 +2905,7 @@ fn execute_script_idle_timeout_kills_idle_process() {
         timeout: Some("30s".to_string()),
         idle_timeout: Some("1s".to_string()),
         continue_on_error: None,
+        shell: ScriptShell::Auto,
     };
     let dir = tempfile::tempdir().unwrap();
     let result = super::execute_script(
@@ -3224,6 +3230,7 @@ fn apply_continue_on_error_post_script_continues() {
         timeout: Some("5s".to_string()),
         idle_timeout: None,
         continue_on_error: Some(true),
+        shell: ScriptShell::Auto,
     }];
 
     let pkg_actions = vec![PackageAction::Install {
@@ -3284,6 +3291,7 @@ fn apply_continue_on_error_false_pre_script_aborts() {
         timeout: Some("5s".to_string()),
         idle_timeout: None,
         continue_on_error: Some(false),
+        shell: ScriptShell::Auto,
     }];
 
     let plan = reconciler
@@ -7892,6 +7900,7 @@ mod bridge {
             timeout: Some("5s".to_string()),
             idle_timeout: None,
             continue_on_error: Some(true),
+            shell: ScriptShell::Auto,
         }];
 
         let pkg_actions = vec![
@@ -9470,6 +9479,7 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
             timeout: None,
             idle_timeout: None,
             continue_on_error: Some(false),
+            shell: ScriptShell::Auto,
         }],
         system: HashMap::new(),
         depends: vec![],
@@ -9589,6 +9599,7 @@ fn apply_profile_on_change_failure_aborts_when_continue_on_error_false() {
         timeout: None,
         idle_timeout: None,
         continue_on_error: Some(false),
+        shell: ScriptShell::Auto,
     }];
 
     let file_actions = vec![FileAction::Create {

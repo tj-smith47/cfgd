@@ -96,6 +96,20 @@ pub struct ModuleFileEntry {
     pub encryption: Option<EncryptionSpec>,
 }
 
+/// Interpreter for inline lifecycle scripts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum ScriptShell {
+    /// Platform default: `sh` on Unix, `cmd.exe` on Windows.
+    #[default]
+    Auto,
+    Sh,
+    Bash,
+    Zsh,
+    Pwsh,
+    Cmd,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ScriptEntry {
@@ -119,7 +133,14 @@ pub enum ScriptEntry {
             rename = "continueOnError"
         )]
         continue_on_error: Option<bool>,
+        /// Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
+        #[serde(default, skip_serializing_if = "is_shell_auto")]
+        shell: ScriptShell,
     },
+}
+
+fn is_shell_auto(s: &ScriptShell) -> bool {
+    *s == ScriptShell::Auto
 }
 
 impl ScriptEntry {
@@ -222,6 +243,86 @@ spec: {}
         assert!(
             msg.contains("unknown field") && msg.contains("bogusField"),
             "expected unknown-field error mentioning bogusField, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn script_entry_full_deserializes_shell_field() {
+        let yaml = r#"
+run: echo hello
+shell: zsh
+"#;
+        let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
+        match entry {
+            ScriptEntry::Full { shell, run, .. } => {
+                assert_eq!(shell, ScriptShell::Zsh);
+                assert_eq!(run, "echo hello");
+            }
+            other => panic!("expected Full variant, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn script_entry_full_shell_defaults_to_auto() {
+        let yaml = r#"
+run: echo hello
+"#;
+        let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
+        match entry {
+            ScriptEntry::Full { shell, .. } => {
+                assert_eq!(shell, ScriptShell::Auto);
+            }
+            other => panic!("expected Full variant, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn script_entry_unknown_shell_variant_rejected() {
+        let yaml = r#"
+run: echo hello
+shell: ruby
+"#;
+        let err = serde_yaml::from_str::<ScriptEntry>(yaml)
+            .expect_err("unknown shell variant must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("did not match any variant"),
+            "error should indicate parse failure: {msg}"
+        );
+    }
+
+    #[test]
+    fn script_shell_roundtrip_serialization() {
+        let entry = ScriptEntry::Full {
+            run: "make build".into(),
+            timeout: None,
+            idle_timeout: None,
+            continue_on_error: None,
+            shell: ScriptShell::Bash,
+        };
+        let yaml = serde_yaml::to_string(&entry).unwrap();
+        assert!(
+            yaml.contains("shell: bash"),
+            "yaml should contain 'shell: bash': {yaml}"
+        );
+
+        let roundtripped: ScriptEntry = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(entry, roundtripped);
+    }
+
+    #[test]
+    fn script_shell_auto_not_serialized() {
+        let entry = ScriptEntry::Full {
+            run: "echo hi".into(),
+            timeout: None,
+            idle_timeout: None,
+            continue_on_error: None,
+            shell: ScriptShell::Auto,
+        };
+        let yaml = serde_yaml::to_string(&entry).unwrap();
+        assert!(
+            !yaml.contains("shell"),
+            "Auto shell should be skipped in serialization: {yaml}"
         );
     }
 }

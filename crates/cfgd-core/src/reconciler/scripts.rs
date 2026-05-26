@@ -1,4 +1,4 @@
-use crate::config::ScriptEntry;
+use crate::config::{ScriptEntry, ScriptShell};
 use crate::errors::{CfgdError, ConfigError, Result};
 use crate::output::Printer;
 
@@ -147,6 +147,11 @@ pub(crate) fn execute_script(
         _ => None,
     };
 
+    let shell = match entry {
+        ScriptEntry::Full { shell, .. } => *shell,
+        ScriptEntry::Simple(_) => ScriptShell::Auto,
+    };
+
     let resolved = if std::path::Path::new(run_str).is_relative() {
         working_dir.join(run_str)
     } else {
@@ -155,6 +160,14 @@ pub(crate) fn execute_script(
 
     let mut cmd = if resolved.exists() {
         // File path — check executable bit, run directly (OS handles shebang)
+        if shell != ScriptShell::Auto {
+            return Err(CfgdError::Config(ConfigError::Invalid {
+                message: format!(
+                    "shell field cannot be set on file-shebang scripts — set the shebang line inside '{}' itself",
+                    resolved.display(),
+                ),
+            }));
+        }
         let meta = std::fs::metadata(&resolved)?;
         if !crate::is_executable(&resolved, &meta) {
             #[cfg(unix)]
@@ -178,24 +191,8 @@ pub(crate) fn execute_script(
         }
         c
     } else {
-        // Inline command — pass through sh -c on Unix, cmd.exe /C on Windows
-        #[cfg(unix)]
-        let c = {
-            use std::os::unix::process::CommandExt;
-            let mut c = std::process::Command::new("sh");
-            c.arg("-c")
-                .arg(run_str)
-                .current_dir(working_dir)
-                .process_group(0); // New process group so we can kill all children
-            c
-        };
-        #[cfg(windows)]
-        let c = {
-            let mut c = std::process::Command::new("cmd.exe");
-            c.arg("/C").arg(run_str).current_dir(working_dir);
-            c
-        };
-        c
+        // Inline command — interpreter selected by shell field
+        build_inline_command(shell, run_str, working_dir)
     };
 
     // Inject environment variables
@@ -387,6 +384,62 @@ pub(crate) fn execute_script(
             }
         }
     }
+}
+
+/// Build the `Command` for an inline script based on the chosen shell interpreter.
+fn build_inline_command(
+    shell: ScriptShell,
+    run_str: &str,
+    working_dir: &std::path::Path,
+) -> std::process::Command {
+    let mut c = match shell {
+        ScriptShell::Auto => {
+            #[cfg(unix)]
+            {
+                let mut c = std::process::Command::new("sh");
+                c.arg("-c").arg(run_str);
+                c
+            }
+            #[cfg(windows)]
+            {
+                let mut c = std::process::Command::new("cmd.exe");
+                c.arg("/C").arg(run_str);
+                c
+            }
+        }
+        ScriptShell::Sh => {
+            let mut c = std::process::Command::new("sh");
+            c.arg("-c").arg(run_str);
+            c
+        }
+        ScriptShell::Bash => {
+            let mut c = std::process::Command::new("bash");
+            c.arg("-c").arg(run_str);
+            c
+        }
+        ScriptShell::Zsh => {
+            let mut c = std::process::Command::new("zsh");
+            c.arg("-c").arg(run_str);
+            c
+        }
+        ScriptShell::Pwsh => {
+            let mut c = std::process::Command::new("pwsh");
+            c.arg("-NoProfile").arg("-Command").arg(run_str);
+            c
+        }
+        ScriptShell::Cmd => {
+            let mut c = std::process::Command::new("cmd.exe");
+            c.arg("/C").arg(run_str);
+            c
+        }
+    };
+    c.current_dir(working_dir);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        c.process_group(0);
+    }
+    c
 }
 
 /// Kill a script's process group (SIGTERM + grace period + SIGKILL).
@@ -635,5 +688,105 @@ mod tests {
             &[],
         );
         assert_eq!(base, with_empty);
+    }
+
+    #[test]
+    fn shell_bash_runs_inline_with_bash() {
+        let printer = crate::test_helpers::test_printer();
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = ScriptEntry::Full {
+            run: "echo hello".into(),
+            timeout: None,
+            idle_timeout: None,
+            continue_on_error: None,
+            shell: ScriptShell::Bash,
+        };
+
+        let (label, changed, captured) = execute_script(
+            &entry,
+            tmp.path(),
+            &[],
+            std::time::Duration::from_secs(5),
+            &printer,
+        )
+        .expect("bash inline script must succeed");
+
+        assert!(changed);
+        assert!(label.contains("echo hello"));
+        assert_eq!(captured.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn shell_field_rejected_on_file_scripts() {
+        let printer = crate::test_helpers::test_printer();
+        let tmp = tempfile::tempdir().unwrap();
+        let script_path = tmp.path().join("myscript.sh");
+        std::fs::write(&script_path, "#!/bin/sh\necho hi\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let entry = ScriptEntry::Full {
+            run: "myscript.sh".into(),
+            timeout: None,
+            idle_timeout: None,
+            continue_on_error: None,
+            shell: ScriptShell::Bash,
+        };
+
+        let err = execute_script(
+            &entry,
+            tmp.path(),
+            &[],
+            std::time::Duration::from_secs(5),
+            &printer,
+        )
+        .expect_err("shell field on file script must be rejected");
+
+        match err {
+            CfgdError::Config(ConfigError::Invalid { message }) => {
+                assert!(
+                    message.contains("shell field cannot be set on file-shebang scripts"),
+                    "unexpected message: {message}"
+                );
+                assert!(
+                    message.contains("myscript.sh"),
+                    "message should name the script file: {message}"
+                );
+            }
+            other => panic!("expected ConfigError::Invalid, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shell_auto_on_file_scripts_allowed() {
+        let printer = crate::test_helpers::test_printer();
+        let tmp = tempfile::tempdir().unwrap();
+        let script_path = tmp.path().join("ok.sh");
+        std::fs::write(&script_path, "#!/bin/sh\necho ok\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let entry = ScriptEntry::Full {
+            run: "ok.sh".into(),
+            timeout: None,
+            idle_timeout: None,
+            continue_on_error: None,
+            shell: ScriptShell::Auto,
+        };
+
+        let result = execute_script(
+            &entry,
+            tmp.path(),
+            &[],
+            std::time::Duration::from_secs(5),
+            &printer,
+        );
+        assert!(result.is_ok(), "Auto shell on file scripts must be allowed");
     }
 }

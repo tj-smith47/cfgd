@@ -29,7 +29,7 @@ pub use daemon::{
 };
 pub use module::{
     ModuleDocument, ModuleFileEntry, ModuleLockEntry, ModuleLockfile, ModuleMetadata,
-    ModulePackageEntry, ModuleRegistryEntry, ModuleSpec, ScriptEntry, parse_module,
+    ModulePackageEntry, ModuleRegistryEntry, ModuleSpec, ScriptEntry, ScriptShell, parse_module,
 };
 pub use origin::{OriginSpec, OriginType, SshHostKeyPolicy};
 pub use parse::{load_config, load_profile, parse_config, parse_config_source};

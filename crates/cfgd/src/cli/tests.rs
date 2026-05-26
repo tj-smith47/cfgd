@@ -13678,6 +13678,7 @@ fn action_path_script_run_full_entry() {
         timeout: None,
         idle_timeout: None,
         continue_on_error: None,
+        shell: config::ScriptShell::Auto,
     };
     let action = reconciler::Action::Script(reconciler::ScriptAction::Run {
         entry,
