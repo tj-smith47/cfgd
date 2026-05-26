@@ -144,6 +144,11 @@ impl SourceManager {
 
     /// Fetch (pull) updates for an already-cloned source.
     fn fetch_source(&self, spec: &SourceSpec, source_dir: &Path, printer: &Printer) -> Result<()> {
+        let to_git_err = |e: git2::Error| SourceError::GitError {
+            name: spec.name.clone(),
+            message: e.to_string(),
+        };
+
         // Try git CLI first with live progress output.
         let mut cmd = crate::git_cmd_safe(
             Some(&spec.origin.url),
@@ -168,17 +173,9 @@ impl SourceManager {
             // Fall back to libgit2 with spinner
             let spinner = printer.spinner(format!("Fetching source '{}' (libgit2)...", spec.name));
 
-            let repo = Repository::open(source_dir).map_err(|e| SourceError::GitError {
-                name: spec.name.clone(),
-                message: e.to_string(),
-            })?;
+            let repo = Repository::open(source_dir).map_err(to_git_err)?;
 
-            let mut remote = repo
-                .find_remote("origin")
-                .map_err(|e| SourceError::GitError {
-                    name: spec.name.clone(),
-                    message: e.to_string(),
-                })?;
+            let mut remote = repo.find_remote("origin").map_err(to_git_err)?;
 
             let mut fo = FetchOptions::new();
             let mut callbacks = RemoteCallbacks::new();
@@ -206,50 +203,25 @@ impl SourceManager {
         }
 
         // Fast-forward to FETCH_HEAD
-        let repo = Repository::open(source_dir).map_err(|e| SourceError::GitError {
-            name: spec.name.clone(),
-            message: e.to_string(),
-        })?;
+        let repo = Repository::open(source_dir).map_err(to_git_err)?;
 
-        let fetch_head = repo
-            .find_reference("FETCH_HEAD")
-            .map_err(|e| SourceError::GitError {
-                name: spec.name.clone(),
-                message: e.to_string(),
-            })?;
+        let fetch_head = repo.find_reference("FETCH_HEAD").map_err(to_git_err)?;
         let fetch_commit = repo
             .reference_to_annotated_commit(&fetch_head)
-            .map_err(|e| SourceError::GitError {
-                name: spec.name.clone(),
-                message: e.to_string(),
-            })?;
+            .map_err(to_git_err)?;
 
-        let (analysis, _) =
-            repo.merge_analysis(&[&fetch_commit])
-                .map_err(|e| SourceError::GitError {
-                    name: spec.name.clone(),
-                    message: e.to_string(),
-                })?;
+        let (analysis, _) = repo.merge_analysis(&[&fetch_commit]).map_err(to_git_err)?;
 
         if analysis.is_fast_forward() {
             let refname = format!("refs/heads/{}", spec.origin.branch);
             if let Ok(mut reference) = repo.find_reference(&refname) {
                 reference
                     .set_target(fetch_commit.id(), "cfgd source fetch")
-                    .map_err(|e| SourceError::GitError {
-                        name: spec.name.clone(),
-                        message: e.to_string(),
-                    })?;
+                    .map_err(to_git_err)?;
             }
-            repo.set_head(&refname).map_err(|e| SourceError::GitError {
-                name: spec.name.clone(),
-                message: e.to_string(),
-            })?;
+            repo.set_head(&refname).map_err(to_git_err)?;
             repo.checkout_head(Some(git2::build::CheckoutBuilder::default().force()))
-                .map_err(|e| SourceError::GitError {
-                    name: spec.name.clone(),
-                    message: e.to_string(),
-                })?;
+                .map_err(to_git_err)?;
         }
 
         Ok(())

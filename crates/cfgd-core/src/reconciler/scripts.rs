@@ -227,59 +227,18 @@ pub(crate) fn execute_script(
     let stdout_buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let stderr_buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
 
-    let stdout_handle = {
-        let pipe = child.stdout.take();
-        let buf = std::sync::Arc::clone(&stdout_buf);
-        let ts = std::sync::Arc::clone(&last_output);
-        let tx = tx.clone();
-        std::thread::spawn(move || {
-            if let Some(pipe) = pipe {
-                let reader = std::io::BufReader::new(pipe);
-                for line in std::io::BufRead::lines(reader) {
-                    match line {
-                        Ok(l) => {
-                            *ts.lock().unwrap_or_else(|e| e.into_inner()) =
-                                std::time::Instant::now();
-                            let mut b = buf.lock().unwrap_or_else(|e| e.into_inner());
-                            if !b.is_empty() {
-                                b.push('\n');
-                            }
-                            b.push_str(&l);
-                            let _ = tx.send(l);
-                        }
-                        Err(_) => break,
-                    }
-                }
-            }
-        })
-    };
-
-    let stderr_handle = {
-        let pipe = child.stderr.take();
-        let buf = std::sync::Arc::clone(&stderr_buf);
-        let ts = std::sync::Arc::clone(&last_output);
-        let tx = tx.clone();
-        std::thread::spawn(move || {
-            if let Some(pipe) = pipe {
-                let reader = std::io::BufReader::new(pipe);
-                for line in std::io::BufRead::lines(reader) {
-                    match line {
-                        Ok(l) => {
-                            *ts.lock().unwrap_or_else(|e| e.into_inner()) =
-                                std::time::Instant::now();
-                            let mut b = buf.lock().unwrap_or_else(|e| e.into_inner());
-                            if !b.is_empty() {
-                                b.push('\n');
-                            }
-                            b.push_str(&l);
-                            let _ = tx.send(l);
-                        }
-                        Err(_) => break,
-                    }
-                }
-            }
-        })
-    };
+    let stdout_handle = spawn_pipe_reader(
+        child.stdout.take(),
+        std::sync::Arc::clone(&stdout_buf),
+        std::sync::Arc::clone(&last_output),
+        tx.clone(),
+    );
+    let stderr_handle = spawn_pipe_reader(
+        child.stderr.take(),
+        std::sync::Arc::clone(&stderr_buf),
+        std::sync::Arc::clone(&last_output),
+        tx.clone(),
+    );
     drop(tx);
 
     const VISIBLE_LINES: usize = 5;
@@ -531,6 +490,32 @@ pub(super) fn combine_script_output(stdout: &str, stderr: &str) -> Option<String
         out.push_str(stderr);
     }
     Some(out)
+}
+
+fn spawn_pipe_reader<R: std::io::Read + Send + 'static>(
+    pipe: Option<R>,
+    buf: std::sync::Arc<std::sync::Mutex<String>>,
+    ts: std::sync::Arc<std::sync::Mutex<std::time::Instant>>,
+    tx: std::sync::mpsc::Sender<String>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let Some(pipe) = pipe else { return };
+        let reader = std::io::BufReader::new(pipe);
+        for line in std::io::BufRead::lines(reader) {
+            match line {
+                Ok(l) => {
+                    *ts.lock().unwrap_or_else(|e| e.into_inner()) = std::time::Instant::now();
+                    let mut b = buf.lock().unwrap_or_else(|e| e.into_inner());
+                    if !b.is_empty() {
+                        b.push('\n');
+                    }
+                    b.push_str(&l);
+                    let _ = tx.send(l);
+                }
+                Err(_) => break,
+            }
+        }
+    })
 }
 
 #[cfg(test)]

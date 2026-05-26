@@ -15,6 +15,11 @@ use super::types::{
     ReconcileContext, ScriptAction, ScriptPhase,
 };
 
+fn hash_sorted_parts(mut parts: Vec<String>) -> String {
+    parts.sort();
+    crate::sha256_hex(parts.join("|").as_bytes())
+}
+
 /// Whether `action` (residing in `phase_name`) should execute under `filter`.
 ///
 /// `--phase post-scripts` / `--phase pre-scripts` are intentionally inclusive
@@ -88,9 +93,8 @@ impl<'a> super::Reconciler<'a> {
                 .any(|r| r.description.starts_with(&module_prefix) && !r.success);
             let status = if any_failed { "error" } else { "installed" };
 
-            // Hash the resolved packages list
-            let packages_hash = {
-                let mut pkg_parts: Vec<String> = module
+            let packages_hash = hash_sorted_parts(
+                module
                     .packages
                     .iter()
                     .map(|p| {
@@ -101,21 +105,16 @@ impl<'a> super::Reconciler<'a> {
                             p.version.as_deref().unwrap_or("")
                         )
                     })
-                    .collect();
-                pkg_parts.sort();
-                crate::sha256_hex(pkg_parts.join("|").as_bytes())
-            };
+                    .collect(),
+            );
 
-            // Hash the file targets
-            let files_hash = {
-                let mut file_parts: Vec<String> = module
+            let files_hash = hash_sorted_parts(
+                module
                     .files
                     .iter()
                     .map(|f| format!("{}:{}", f.source.display(), f.target.display()))
-                    .collect();
-                file_parts.sort();
-                crate::sha256_hex(file_parts.join("|").as_bytes())
-            };
+                    .collect(),
+            );
 
             // Collect git source info
             let git_sources: Vec<serde_json::Value> = module
