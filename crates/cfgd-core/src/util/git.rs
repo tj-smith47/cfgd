@@ -17,7 +17,26 @@ pub fn git_cmd_safe(
     ssh_policy: Option<config::SshHostKeyPolicy>,
 ) -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
+    // `command_output_with_timeout` kills the immediate `git` child on the
+    // network timeout, but on macOS (git-credential-osxkeychain) and Windows
+    // (git-credential-manager-core) git spawns credential-helper grandchildren
+    // that inherit the stdout/stderr pipes. Those grandchildren outlive the
+    // SIGKILL/TerminateProcess and keep the pipes open, leaving the watchdog
+    // blocked in `child.wait_with_output()` indefinitely (cfgd test runs hung
+    // 60+ min on macOS/Windows but not Linux). Disabling every interactive
+    // helper at spawn time prevents the grandchild from ever launching.
+    // `/dev/null` on unix, `NUL` on windows — git treats either as an empty
+    // config file when assigned to GIT_CONFIG_GLOBAL.
+    #[cfg(unix)]
+    let null_config = "/dev/null";
+    #[cfg(windows)]
+    let null_config = "NUL";
     cmd.env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "true")
+        .env("SSH_ASKPASS", "true")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", null_config)
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
     if url.is_some_and(|u| u.starts_with("git@") || u.starts_with("ssh://")) {
