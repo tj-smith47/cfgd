@@ -12,6 +12,34 @@ use super::LoadedModule;
 // Module loading
 // ---------------------------------------------------------------------------
 
+/// Cap on a single `module.yaml` to prevent memory exhaustion. Applies to both
+/// `load_module` and the inner read in `load_modules`.
+const MAX_MODULE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
+
+/// Read a `module.yaml` after enforcing [`MAX_MODULE_SIZE`].
+fn read_module_yaml_capped(module_yaml: &Path) -> Result<String> {
+    if let Ok(meta) = std::fs::metadata(module_yaml)
+        && meta.len() > MAX_MODULE_SIZE
+    {
+        return Err(ModuleError::InvalidSpec {
+            name: module_yaml.display().to_string(),
+            message: format!(
+                "module file too large ({} bytes, max {})",
+                meta.len(),
+                MAX_MODULE_SIZE
+            ),
+        }
+        .into());
+    }
+
+    std::fs::read_to_string(module_yaml).map_err(|e| {
+        ConfigError::Invalid {
+            message: format!("cannot read module file {}: {e}", module_yaml.display()),
+        }
+        .into()
+    })
+}
+
 /// Load all modules from the `modules/` directory under the given config dir.
 /// Returns a map of module name → LoadedModule.
 pub fn load_modules(config_dir: &Path) -> Result<HashMap<String, LoadedModule>> {
@@ -50,9 +78,7 @@ pub fn load_modules(config_dir: &Path) -> Result<HashMap<String, LoadedModule>> 
             })?
             .to_string();
 
-        let contents = std::fs::read_to_string(&module_yaml).map_err(|e| ConfigError::Invalid {
-            message: format!("cannot read module file {}: {e}", module_yaml.display()),
-        })?;
+        let contents = read_module_yaml_capped(&module_yaml)?;
 
         let doc = parse_module(&contents)?;
 
@@ -95,26 +121,7 @@ pub fn load_module(module_dir: &Path) -> Result<LoadedModule> {
         return Err(ModuleError::NotFound { name }.into());
     }
 
-    // Reject excessively large module files to prevent memory exhaustion
-    const MAX_MODULE_SIZE: u64 = 10 * 1024 * 1024; // 10 MB
-    if let Ok(meta) = std::fs::metadata(&module_yaml)
-        && meta.len() > MAX_MODULE_SIZE
-    {
-        return Err(ModuleError::InvalidSpec {
-            name: module_yaml.display().to_string(),
-            message: format!(
-                "module file too large ({} bytes, max {})",
-                meta.len(),
-                MAX_MODULE_SIZE
-            ),
-        }
-        .into());
-    }
-
-    let contents = std::fs::read_to_string(&module_yaml).map_err(|e| ConfigError::Invalid {
-        message: format!("cannot read module file {}: {e}", module_yaml.display()),
-    })?;
-
+    let contents = read_module_yaml_capped(&module_yaml)?;
     let doc = parse_module(&contents)?;
     let name = doc.metadata.name.clone();
 

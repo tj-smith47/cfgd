@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use semver::Version;
 
@@ -808,10 +808,7 @@ pub fn check_with_cache(repo: Option<&str>, printer: Option<&Printer>) -> Result
 
     // Try reading from cache
     if let Some(cache) = read_version_cache() {
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = crate::unix_secs_now();
 
         if now.saturating_sub(cache.checked_at_secs) < CACHE_TTL_SECS {
             let cached_version =
@@ -832,10 +829,7 @@ pub fn check_with_cache(repo: Option<&str>, printer: Option<&Printer>) -> Result
     let check = check_latest(Some(repo), printer)?;
 
     let _ = write_version_cache(&VersionCache {
-        checked_at_secs: SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
+        checked_at_secs: crate::unix_secs_now(),
         latest_tag: check
             .release
             .as_ref()

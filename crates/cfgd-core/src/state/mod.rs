@@ -242,7 +242,9 @@ impl StateStore {
         for (i, migration) in MIGRATIONS.iter().enumerate() {
             if i >= current_version {
                 self.conn.execute_batch(migration).map_err(|e| {
-                    let _ = self.conn.execute_batch("ROLLBACK");
+                    if let Err(rb) = self.conn.execute_batch("ROLLBACK") {
+                        tracing::error!("rollback after migration {i} failure also failed: {rb}");
+                    }
                     StateError::MigrationFailed {
                         message: format!("migration {}: {}", i, e),
                     }
@@ -255,7 +257,11 @@ impl StateStore {
                         rusqlite::params![new_version],
                     )
                     .map_err(|e| {
-                        let _ = self.conn.execute_batch("ROLLBACK");
+                        if let Err(rb) = self.conn.execute_batch("ROLLBACK") {
+                            tracing::error!(
+                                "rollback after schema_version update failure also failed: {rb}"
+                            );
+                        }
                         StateError::MigrationFailed {
                             message: format!("migration {}: failed to update version: {}", i, e),
                         }

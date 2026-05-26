@@ -1,4 +1,5 @@
 use super::*;
+use std::time::SystemTime;
 
 #[test]
 fn current_version_is_valid_semver() {

@@ -163,7 +163,7 @@ pub fn export_snapshot_to_file(
     let export_dir = crate::expand_tilde(Path::new(&export.path));
     std::fs::create_dir_all(&export_dir)?;
 
-    let timestamp_safe = snapshot.timestamp.replace(':', "-");
+    let timestamp_safe = crate::iso8601_to_filename_safe(&snapshot.timestamp);
     let ext = match export.format {
         ComplianceFormat::Json => "json",
         ComplianceFormat::Yaml => "yaml",
