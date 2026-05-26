@@ -1018,6 +1018,32 @@ fn validate_env_var_user_name_delegates_shell_safety() {
 }
 
 #[test]
+fn validate_env_var_user_name_rejects_bash_env() {
+    let err = validate_env_var_user_name("BASH_ENV").unwrap_err();
+    assert!(
+        err.contains("reserved"),
+        "BASH_ENV should be rejected as reserved: {err}"
+    );
+    assert!(
+        err.contains("alias delivery"),
+        "error should explain the reservation reason: {err}"
+    );
+}
+
+#[test]
+fn validate_env_var_user_name_rejects_zdotdir() {
+    let err = validate_env_var_user_name("ZDOTDIR").unwrap_err();
+    assert!(
+        err.contains("reserved"),
+        "ZDOTDIR should be rejected as reserved: {err}"
+    );
+    assert!(
+        err.contains("alias delivery"),
+        "error should explain the reservation reason: {err}"
+    );
+}
+
+#[test]
 fn parse_env_var_rejects_cfgd_prefix() {
     let err = parse_env_var("CFGD_SECRET=value").unwrap_err();
     assert!(

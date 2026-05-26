@@ -158,6 +158,14 @@ pub(crate) fn execute_script(
         std::path::PathBuf::from(run_str)
     };
 
+    let cfgd_env_path = match shell {
+        ScriptShell::Bash | ScriptShell::Zsh => {
+            let p = crate::expand_tilde(std::path::Path::new("~/.cfgd.env"));
+            if p.exists() { Some(p) } else { None }
+        }
+        _ => None,
+    };
+
     let mut cmd = if resolved.exists() {
         // File path — check executable bit, run directly (OS handles shebang)
         if shell != ScriptShell::Auto {
@@ -192,7 +200,7 @@ pub(crate) fn execute_script(
         c
     } else {
         // Inline command — interpreter selected by shell field
-        build_inline_command(shell, run_str, working_dir)
+        build_inline_command(shell, run_str, working_dir, cfgd_env_path.as_deref())
     };
 
     // Inject environment variables
@@ -387,10 +395,15 @@ pub(crate) fn execute_script(
 }
 
 /// Build the `Command` for an inline script based on the chosen shell interpreter.
+///
+/// When `cfgd_env_path` is `Some`, bash and zsh commands are prepended with a
+/// preamble that sources `~/.cfgd.env` (with alias expansion enabled) so that
+/// profile-level env vars and aliases are available to lifecycle scripts.
 fn build_inline_command(
     shell: ScriptShell,
     run_str: &str,
     working_dir: &std::path::Path,
+    cfgd_env_path: Option<&std::path::Path>,
 ) -> std::process::Command {
     let mut c = match shell {
         ScriptShell::Auto => {
@@ -413,13 +426,29 @@ fn build_inline_command(
             c
         }
         ScriptShell::Bash => {
+            let cmd_str = match cfgd_env_path {
+                Some(p) => format!(
+                    "shopt -s expand_aliases; source \"{}\" 2>/dev/null; {}",
+                    p.display(),
+                    run_str,
+                ),
+                None => run_str.to_string(),
+            };
             let mut c = std::process::Command::new("bash");
-            c.arg("-c").arg(run_str);
+            c.arg("-c").arg(cmd_str);
             c
         }
         ScriptShell::Zsh => {
+            let cmd_str = match cfgd_env_path {
+                Some(p) => format!(
+                    "setopt aliases; source \"{}\" 2>/dev/null; {}",
+                    p.display(),
+                    run_str,
+                ),
+                None => run_str.to_string(),
+            };
             let mut c = std::process::Command::new("zsh");
-            c.arg("-c").arg(run_str);
+            c.arg("-c").arg(cmd_str);
             c
         }
         ScriptShell::Pwsh => {
@@ -758,6 +787,111 @@ mod tests {
             }
             other => panic!("expected ConfigError::Invalid, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn bash_inline_prepends_env_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env_file = tmp.path().join(".cfgd.env");
+        std::fs::write(&env_file, "export TEST_VAR=hello\n").unwrap();
+
+        let cmd = build_inline_command(
+            ScriptShell::Bash,
+            "echo $TEST_VAR",
+            tmp.path(),
+            Some(&env_file),
+        );
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        let combined = args.join(" ");
+        assert!(
+            combined.contains("shopt -s expand_aliases"),
+            "bash preamble should enable alias expansion: {combined}"
+        );
+        assert!(
+            combined.contains("source"),
+            "bash preamble should source the env file: {combined}"
+        );
+        assert!(
+            combined.contains("2>/dev/null"),
+            "source should suppress errors: {combined}"
+        );
+        assert!(
+            combined.contains("echo $TEST_VAR"),
+            "original command must be preserved: {combined}"
+        );
+    }
+
+    #[test]
+    fn zsh_inline_prepends_env_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env_file = tmp.path().join(".cfgd.env");
+        std::fs::write(&env_file, "export TEST_VAR=hello\n").unwrap();
+
+        let cmd = build_inline_command(
+            ScriptShell::Zsh,
+            "echo $TEST_VAR",
+            tmp.path(),
+            Some(&env_file),
+        );
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        let combined = args.join(" ");
+        assert!(
+            combined.contains("setopt aliases"),
+            "zsh preamble should enable alias expansion: {combined}"
+        );
+        assert!(
+            combined.contains("source"),
+            "zsh preamble should source the env file: {combined}"
+        );
+        assert!(
+            combined.contains("2>/dev/null"),
+            "source should suppress errors: {combined}"
+        );
+        assert!(
+            combined.contains("echo $TEST_VAR"),
+            "original command must be preserved: {combined}"
+        );
+    }
+
+    #[test]
+    fn sh_inline_ignores_cfgd_env_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env_file = tmp.path().join(".cfgd.env");
+        std::fs::write(&env_file, "export TEST_VAR=hello\n").unwrap();
+
+        let cmd = build_inline_command(ScriptShell::Sh, "echo hello", tmp.path(), Some(&env_file));
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        let combined = args.join(" ");
+        assert!(
+            !combined.contains("source"),
+            "sh should not source the env file: {combined}"
+        );
+        assert_eq!(
+            args,
+            vec!["-c", "echo hello"],
+            "sh command should be unchanged"
+        );
+    }
+
+    #[test]
+    fn bash_inline_no_env_file_skips_preamble() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let cmd = build_inline_command(ScriptShell::Bash, "echo hello", tmp.path(), None);
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args, vec!["-c", "echo hello"], "no env file → no preamble");
     }
 
     #[test]

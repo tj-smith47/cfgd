@@ -25,6 +25,12 @@ pub fn validate_env_var_user_name(name: &str) -> std::result::Result<(), String>
             name.trim_start_matches("CFGD_"),
         ));
     }
+    if name == "BASH_ENV" || name == "ZDOTDIR" {
+        return Err(format!(
+            "env var name '{name}' is reserved — cfgd uses it for \
+             alias delivery to lifecycle scripts"
+        ));
+    }
     Ok(())
 }
 
