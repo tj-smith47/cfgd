@@ -178,10 +178,18 @@ fn service_current_state_returns_empty_sequence() {
     assert!(state.as_sequence().unwrap().is_empty());
 }
 
+#[cfg(not(target_os = "windows"))]
 #[test]
 fn windows_services_not_available_on_linux() {
     let wsc = WindowsServiceConfigurator;
     assert!(!wsc.is_available());
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_services_is_available_on_windows() {
+    let wsc = WindowsServiceConfigurator;
+    assert!(wsc.is_available());
 }
 
 #[test]

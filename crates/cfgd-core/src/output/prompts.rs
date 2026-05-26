@@ -1,15 +1,20 @@
-//! Prompts — interaction, not output. Two invariants:
+//! Prompts — interaction, not output. Three invariants:
 //!   - Refuse to prompt under structured output (would deadlock pipelines).
+//!   - Refuse to prompt when stdin is not a TTY (CI runners, piped invocations).
+//!     `inquire` self-rejects this on Unix but blocks on Windows.
 //!   - Honor a test-seeded answer queue (set via
 //!     `for_test_with_prompt_responses`) so tests can drive prompt_* past the
 //!     non-interactive guard.
 
+use std::io::IsTerminal;
+
 use super::Printer;
 use super::printer::PromptAnswer;
 
-/// Build an `InquireError::Custom` for the "structured-output asked for an
-/// interactive prompt" case. `-o json|yaml|name|jsonpath|template` implies a
-/// non-interactive consumer; hanging on `inquire` here would deadlock scripts.
+/// Build an `InquireError::Custom` for the "non-interactive context asked for
+/// an interactive prompt" case — structured output, non-TTY stdin, or a piped
+/// CI runner. Hanging on `inquire` here would deadlock scripts and silently
+/// stall CI.
 fn non_interactive_err(prompt: &str) -> inquire::InquireError {
     inquire::InquireError::Custom(
         format!(
@@ -20,6 +25,13 @@ fn non_interactive_err(prompt: &str) -> inquire::InquireError {
     )
 }
 
+/// True when the current process can interact with a human — stdin is a TTY.
+/// Windows' `inquire` doesn't self-reject the non-TTY case, so the explicit
+/// gate goes here.
+fn stdin_is_tty() -> bool {
+    std::io::stdin().is_terminal()
+}
+
 impl Printer {
     pub fn prompt_confirm(&self, message: &str) -> Result<bool, inquire::InquireError> {
         if let Some(answer) = self.pop_prompt_answer()
@@ -27,7 +39,7 @@ impl Printer {
         {
             return Ok(b);
         }
-        if self.is_structured() {
+        if self.is_structured() || !stdin_is_tty() {
             return Err(non_interactive_err(message));
         }
         inquire::Confirm::new(message).with_default(false).prompt()
@@ -47,7 +59,7 @@ impl Printer {
                 )
             });
         }
-        if self.is_structured() {
+        if self.is_structured() || !stdin_is_tty() {
             return Err(non_interactive_err(message));
         }
         if options.is_empty() {
@@ -70,7 +82,7 @@ impl Printer {
         {
             return Ok(s);
         }
-        if self.is_structured() {
+        if self.is_structured() || !stdin_is_tty() {
             return Err(non_interactive_err(message));
         }
         inquire::Text::new(message).with_default(default).prompt()

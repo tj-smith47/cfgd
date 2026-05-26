@@ -408,19 +408,21 @@ mod tests {
         use tokio::sync::Mutex;
 
         let registry = Arc::new(Mutex::new(Registry::default()));
-        // Port 1 is privileged; binding without root yields PermissionDenied.
-        // Even when running as root locally, two simultaneous binds to the
-        // same explicit port collide. We bind it first, then call
-        // run_metrics_server on the same port to force the error arm.
+        // Pre-bind blocks the port; the second bind in run_metrics_server should
+        // fail AddrInUse on Linux. macOS doesn't always honor the conflict —
+        // wrap with a 5s timeout so the second-bind-succeeds case converts
+        // from a hang into a clean test failure.
         let blocker = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("bind blocker");
         let port = blocker.local_addr().expect("local_addr").port();
 
-        // Hold the port; the next bind should fail with AddrInUse.
-        // We re-bind to the same port via 0.0.0.0 which collides with 127.0.0.1.
-        // (Linux AddrInUse fires when reusing both addr+port on most setups.)
-        let result = run_metrics_server(port, registry).await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            run_metrics_server(port, registry),
+        )
+        .await
+        .expect("run_metrics_server must return within 5s — second bind unexpectedly succeeded");
         drop(blocker);
 
         match result {

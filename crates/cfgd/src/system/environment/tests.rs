@@ -828,6 +828,7 @@ fn write_profile_d_idempotent() {
     assert_eq!(content1, content2);
 }
 
+#[cfg(not(target_os = "windows"))]
 #[test]
 fn environment_windows_current_vars_empty_on_non_windows() {
     let vars = EnvironmentConfigurator::windows_current_vars();
@@ -1076,6 +1077,7 @@ fn macos_launchctl_setenv_no_output_when_empty_managed() {
     );
 }
 
+#[cfg(not(target_os = "windows"))]
 #[test]
 #[serial_test::serial]
 fn windows_set_var_warns_through_printer_when_setx_unavailable() {

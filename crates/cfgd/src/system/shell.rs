@@ -233,6 +233,7 @@ mod tests {
         assert!(result.is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn current_state_returns_shell_env_var() {
@@ -242,6 +243,7 @@ mod tests {
         assert_eq!(state.as_str(), Some("/usr/bin/zsh"));
     }
 
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn diff_desired_matches_shell_returns_empty() {
@@ -255,6 +257,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn diff_desired_differs_from_shell_returns_drift() {

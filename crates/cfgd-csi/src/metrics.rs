@@ -201,13 +201,21 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn serve_metrics_bind_failure_returns_metrics_error() {
         // Bind port first, then try to bind again on the same port — AddrInUse.
+        // macOS doesn't always honor the conflict (the second bind can succeed
+        // and serve_metrics enters its serve loop forever); a 5s timeout
+        // converts a missed-error hang into a clean test failure.
         let blocker = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("bind blocker");
         let port = blocker.local_addr().expect("local_addr").port();
         let registry = Arc::new(Registry::default());
 
-        let result = serve_metrics(port, registry).await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            serve_metrics(port, registry),
+        )
+        .await
+        .expect("serve_metrics must return within 5s — second bind unexpectedly succeeded");
         drop(blocker);
 
         match result {

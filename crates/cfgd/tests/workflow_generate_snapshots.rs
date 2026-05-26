@@ -53,7 +53,11 @@ fn assert_snapshot(base: &Path, name: &str, actual: &str) {
 }
 
 fn normalize(raw: &str, config_dir: &Path) -> String {
+    // After replacing the tempdir with <CONFIG_DIR>, fold Windows-style `\`
+    // into `/` so the snapshot is platform-stable. `path.display()` emits
+    // native separators on Windows; the snapshot fixture uses POSIX style.
     raw.replace(&config_dir.display().to_string(), "<CONFIG_DIR>")
+        .replace('\\', "/")
 }
 
 #[test]
@@ -85,11 +89,9 @@ fn workflow_generate_happy_json() {
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["profiles"], serde_json::json!(["default"]));
     assert_eq!(json["modules"], serde_json::json!(["neovim"]));
+    let path_normalized = json["path"].as_str().unwrap().replace('\\', "/");
     assert!(
-        json["path"]
-            .as_str()
-            .unwrap()
-            .ends_with(".github/workflows/cfgd-release.yml"),
+        path_normalized.ends_with(".github/workflows/cfgd-release.yml"),
         "path key should point at the generated workflow file: {}",
         json["path"]
     );

@@ -7,13 +7,29 @@
 
 #![allow(dead_code)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use cfgd::cli::{
     ApplyArgs, Cli, Command, OutputFormatArg, PlanArgs, ProfileCreateArgs, ProfileUpdateArgs,
     SourceAddArgs,
 };
 use cfgd_core::state::{ApplyStatus, StateStore};
+
+/// Build a file:// URL portable across Unix and Windows.
+///
+/// `file_url(&path)` produces `file:///home/foo` on Unix
+/// (path starts with `/`, so the result already has 3 slashes) but produces
+/// `file://C:\Users\foo` on Windows — missing the third slash and using
+/// backslashes — which git2 rejects with "filename, directory name, or
+/// volume label syntax is incorrect".
+fn file_url(path: &Path) -> String {
+    let s = path.display().to_string().replace('\\', "/");
+    if s.starts_with('/') {
+        format!("file://{s}")
+    } else {
+        format!("file:///{s}")
+    }
+}
 
 /// Build a tempdir-backed profile with a single file action that will
 /// succeed on apply.
@@ -243,7 +259,7 @@ fn write_manifest_to_bare(
         .expect("commit");
     drop(tree);
 
-    let url = format!("file://{}", bare.display());
+    let url = file_url(&bare);
     let mut remote = src_repo.remote("origin", &url).expect("add_remote");
     let branch = src_repo
         .head()
@@ -298,8 +314,8 @@ pub fn two_source_setup() -> (
     );
     let branch_a = detect_branch(&bare_a);
     let branch_b = detect_branch(&bare_b);
-    let url_a = format!("file://{}", bare_a.display());
-    let url_b = format!("file://{}", bare_b.display());
+    let url_a = file_url(&bare_a);
+    let url_b = file_url(&bare_b);
 
     let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n";
     let profiles_dir = config_dir.path().join("profiles");
@@ -358,7 +374,7 @@ pub fn permission_change_source_setup() -> (
     let cache_dir = state_dir.path().join("sources");
     std::fs::create_dir_all(&cache_dir).unwrap();
     let cached_dir = cache_dir.join("perm-team");
-    let url = format!("file://{}", bare.display());
+    let url = file_url(&bare);
     let _ = git2::build::RepoBuilder::new()
         .branch(&branch)
         .clone(&url, &cached_dir)
@@ -696,7 +712,7 @@ pub fn make_bare_module_repo(
         .tag(tag, commit_obj.as_object(), &sig, "release", false)
         .expect("tag");
 
-    let bare_url = format!("file://{}", bare.display());
+    let bare_url = file_url(&bare);
     let mut remote = src_repo.remote("origin", &bare_url).expect("add_remote");
     let branch = src_repo
         .head()
@@ -838,7 +854,7 @@ pub fn make_bare_source_repo(
         .expect("commit");
     drop(tree);
 
-    let bare_url = format!("file://{}", bare.display());
+    let bare_url = file_url(&bare);
     let mut remote = src_repo.remote("origin", &bare_url).expect("add_remote");
     let branch = src_repo
         .head()
@@ -869,7 +885,7 @@ pub fn push_replacement_manifest_to_bare(
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    let url = format!("file://{}", bare.display());
+    let url = file_url(&bare);
     let repo = git2::Repository::clone(&url, &clone_dir).unwrap();
     std::fs::write(clone_dir.join("cfgd-source.yaml"), new_manifest_yaml).unwrap();
     let mut index = repo.index().unwrap();

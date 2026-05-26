@@ -223,7 +223,12 @@ pub fn assert_snapshot_at(base: &std::path::Path, name: &str, actual: &str) {
         return;
     }
     let expected = std::fs::read_to_string(&path).unwrap();
-    pretty_assertions::assert_eq!(actual, expected, "snapshot mismatch: {name}");
+    // Windows: captured `actual` from native println/writeln carries `\r\n`;
+    // committed snapshot files use `\n`. Normalize both sides so the byte
+    // comparison succeeds without per-test workarounds.
+    let actual_norm = actual.replace("\r\n", "\n");
+    let expected_norm = expected.replace("\r\n", "\n");
+    pretty_assertions::assert_eq!(actual_norm, expected_norm, "snapshot mismatch: {name}");
 }
 
 /// ANSI-stripping helper used by `assert_*_snapshot` and by external
