@@ -1,9 +1,15 @@
 use super::*;
+use crate::test_helpers::EnvVarGuard;
 
 // --- Signing ---
 
 #[test]
+#[serial_test::serial]
 fn sign_artifact_rejects_when_cosign_missing() {
+    // require_cosign() honors CFGD_COSIGN_BIN before consulting PATH —
+    // a parallel CosignTestShim test that set the seam to a fake cosign
+    // would force ToolNotFound to NOT fire here. Pin the env to bypass.
+    let _g = EnvVarGuard::unset("CFGD_COSIGN_BIN");
     if crate::command_available("cosign") {
         return;
     }
@@ -25,7 +31,9 @@ fn verify_signature_rejects_keyless_without_identity() {
 }
 
 #[test]
+#[serial_test::serial]
 fn verify_signature_rejects_when_cosign_missing() {
+    let _g = EnvVarGuard::unset("CFGD_COSIGN_BIN");
     if crate::command_available("cosign") {
         return;
     }
@@ -43,7 +51,9 @@ fn verify_signature_rejects_when_cosign_missing() {
 // --- Attestations ---
 
 #[test]
+#[serial_test::serial]
 fn attach_attestation_rejects_when_cosign_missing() {
+    let _g = EnvVarGuard::unset("CFGD_COSIGN_BIN");
     if crate::command_available("cosign") {
         return;
     }
@@ -66,7 +76,9 @@ fn verify_attestation_rejects_keyless_without_identity() {
 }
 
 #[test]
+#[serial_test::serial]
 fn verify_attestation_rejects_when_cosign_missing() {
+    let _g = EnvVarGuard::unset("CFGD_COSIGN_BIN");
     if crate::command_available("cosign") {
         return;
     }

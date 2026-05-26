@@ -1338,8 +1338,11 @@ fn cmd_module_search_no_registries_json() {
 // ─── cmd_module_keys_generate — no cosign ───────────────────
 
 #[test]
+#[serial_test::serial]
 fn cmd_module_keys_generate_no_cosign_fails() {
-    // In test environment, cosign is very unlikely to be available
+    // Parallel CosignTestShim tests set CFGD_COSIGN_BIN; force require_cosign
+    // through the PATH-only branch so the missing-tool error fires here.
+    let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
     if cfgd_core::command_available("cosign") {
         return; // skip if cosign is actually installed
     }
@@ -3552,7 +3555,9 @@ fn cmd_module_update_combined_operations() {
 // ─── cmd_module_keys_rotate — no cosign fails ───────────────────
 
 #[test]
+#[serial_test::serial]
 fn cmd_module_keys_rotate_no_cosign_fails() {
+    let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
     if cfgd_core::command_available("cosign") {
         return;
     }
