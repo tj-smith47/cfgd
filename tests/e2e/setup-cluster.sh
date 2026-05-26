@@ -85,6 +85,25 @@ cargo build --release --manifest-path "$REPO_ROOT/Cargo.toml" \
     --bin cfgd-gen-crds 2>&1 | tail -5
 
 # --- Step 3: Build and push images ---
+# Pre-pull base images so the Dockerfile `FROM`s hit the local cache. If
+# docker.io rate-limits us (HTTP 429), fall back to mirror.gcr.io and retag
+# under the bare name so `FROM debian:bookworm-slim` resolves locally.
+pull_with_fallback() {
+    local image="$1"
+    if docker pull "$image"; then
+        return 0
+    fi
+    echo "  Docker Hub pull failed for ${image}; trying mirror.gcr.io..."
+    if docker pull "mirror.gcr.io/library/${image}"; then
+        docker tag "mirror.gcr.io/library/${image}" "$image"
+        return 0
+    fi
+    return 1
+}
+echo "Pre-pulling base images..."
+pull_with_fallback debian:bookworm-slim
+pull_with_fallback rust:1.94-slim-bookworm
+
 echo "Building Docker images..."
 docker build -f "$REPO_ROOT/Dockerfile" \
     -t "${REGISTRY}/cfgd:${IMAGE_TAG}" "$REPO_ROOT"
