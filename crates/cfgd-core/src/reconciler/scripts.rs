@@ -67,14 +67,6 @@ pub(crate) fn build_module_script_env(
         module_dir,
     );
     for ev in module_env {
-        // CFGD_* names are reserved for runtime metadata; user values are ignored.
-        if ev.name.starts_with("CFGD_") {
-            tracing::debug!(
-                name = %ev.name,
-                "spec.env entry dropped: CFGD_* names are reserved for runtime metadata"
-            );
-            continue;
-        }
         env.push((ev.name.clone(), ev.value.clone()));
     }
     env
@@ -504,29 +496,26 @@ mod tests {
         assert_eq!(lookup("CFGD_PHASE"), Some("postApply"));
     }
 
-    // build_module_script_env: a module declaring a CFGD_* name must not override
-    // the runtime-injected value.
+    // CFGD_* env var names are rejected at parse time (EnvVar deserialization),
+    // so they never reach build_module_script_env. This test verifies the
+    // parse-time guard works via the validate_env_var_user_name function.
     #[test]
-    fn cfgd_name_in_module_env_does_not_override_runtime() {
-        let module_env = vec![fake_env_var("CFGD_MODULE_NAME", "spoofed")];
-        let env = build_module_script_env(
-            &fake_config_dir(),
-            "workstation",
-            ReconcileContext::Apply,
-            &ScriptPhase::PostApply,
-            Some("real-module"),
-            None,
-            &module_env,
+    fn cfgd_prefix_rejected_at_parse_time() {
+        let yaml = r#"
+- name: CFGD_MODULE_NAME
+  value: spoofed
+"#;
+        let err = serde_yaml::from_str::<Vec<crate::config::EnvVar>>(yaml)
+            .expect_err("CFGD_* names must be rejected during deserialization");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("reserved"),
+            "error should mention 'reserved': {msg}"
         );
-
-        // Collect all CFGD_MODULE_NAME occurrences — there must be exactly one and it
-        // must be the runtime value, not the user-supplied one.
-        let values: Vec<&str> = env
-            .iter()
-            .filter(|(k, _)| k == "CFGD_MODULE_NAME")
-            .map(|(_, v)| v.as_str())
-            .collect();
-        assert_eq!(values, vec!["real-module"]);
+        assert!(
+            msg.contains("CFGD_"),
+            "error should mention the CFGD_ prefix: {msg}"
+        );
     }
 
     // execute_script: a missing working_dir surfaces a structured error naming

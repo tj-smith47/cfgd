@@ -168,7 +168,7 @@ impl<'de> Deserialize<'de> for EnvVar {
             value: String,
         }
         let raw = Raw::deserialize(deserializer)?;
-        crate::validate_env_var_name(&raw.name).map_err(serde::de::Error::custom)?;
+        crate::validate_env_var_user_name(&raw.name).map_err(serde::de::Error::custom)?;
         Ok(EnvVar {
             name: raw.name,
             value: raw.value,
@@ -289,5 +289,38 @@ bogusField: 1
         let err = serde_yaml::from_str::<SubscriptionSpec>(yaml)
             .expect_err("expected deny_unknown_fields to reject autoApply (belongs on sync)");
         assert!(format!("{}", err).contains("unknown field"));
+    }
+
+    #[test]
+    fn env_var_rejects_cfgd_prefix_at_parse_time() {
+        let yaml = r#"
+- name: CFGD_FOO
+  value: bar
+"#;
+        let err = serde_yaml::from_str::<Vec<EnvVar>>(yaml)
+            .expect_err("CFGD_* env var names must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("reserved"),
+            "error should mention 'reserved': {msg}"
+        );
+        assert!(
+            msg.contains("CFGD_FOO"),
+            "error should name the offending var: {msg}"
+        );
+    }
+
+    #[test]
+    fn env_var_accepts_normal_names() {
+        let yaml = r#"
+- name: MY_APP_KEY
+  value: hello
+- name: PATH
+  value: /usr/bin
+"#;
+        let vars: Vec<EnvVar> = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(vars.len(), 2);
+        assert_eq!(vars[0].name, "MY_APP_KEY");
+        assert_eq!(vars[1].name, "PATH");
     }
 }

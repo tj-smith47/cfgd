@@ -5,11 +5,27 @@ pub fn parse_env_var(input: &str) -> std::result::Result<config::EnvVar, String>
     let (key, value) = input
         .split_once('=')
         .ok_or_else(|| format!("invalid env var '{}' — expected KEY=VALUE", input))?;
-    validate_env_var_name(key)?;
+    validate_env_var_user_name(key)?;
     Ok(config::EnvVar {
         name: key.to_string(),
         value: value.to_string(),
     })
+}
+
+/// Validate that an environment variable name is safe for shell interpolation
+/// and is not in the reserved `CFGD_*` namespace.
+pub fn validate_env_var_user_name(name: &str) -> std::result::Result<(), String> {
+    validate_env_var_name(name)?;
+    if name.starts_with("CFGD_") {
+        return Err(format!(
+            "env var name '{}' is reserved — the CFGD_* prefix is for \
+             cfgd runtime metadata. Rename to e.g. APP_{} or MY_{}.",
+            name,
+            name.trim_start_matches("CFGD_"),
+            name.trim_start_matches("CFGD_"),
+        ));
+    }
+    Ok(())
 }
 
 /// Validate that an environment variable name is safe for shell interpolation.

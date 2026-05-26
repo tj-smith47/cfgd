@@ -57,9 +57,10 @@ External call sites do not change: `cfgd_core::utc_now_iso8601(...)`, `cfgd_core
 
 ## CLI parsing / validation
 
-- `parse_env_var(input)` — parse `KEY=VALUE` into `EnvVar`; validates via `validate_env_var_name`
+- `parse_env_var(input)` — parse `KEY=VALUE` into `EnvVar`; validates via `validate_env_var_user_name`
 - `parse_alias(input)` — parse `name=command` into `ShellAlias`; validates via `validate_alias_name`
-- `validate_env_var_name(name)` — matches `[A-Za-z_][A-Za-z0-9_]*`; prevents shell injection
+- `validate_env_var_user_name(name)` — validates shell-safety + rejects reserved `CFGD_*` prefix; use for all user-supplied env var names
+- `validate_env_var_name(name)` — matches `[A-Za-z_][A-Za-z0-9_]*`; prevents shell injection (low-level; prefer `validate_env_var_user_name` for user input)
 - `validate_alias_name(name)` — matches `[A-Za-z0-9_.-]+`; prevents shell injection
 - `shell_escape_value(value)` — escape a value for shell `export` statements
 - `escape_double_quoted(s)` — escape inside bash/zsh double quotes

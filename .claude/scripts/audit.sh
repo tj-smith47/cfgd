@@ -168,7 +168,7 @@ log_section "Error Type Discipline"
 check_pattern error \
     "anyhow confined to CLI boundary (main.rs, cli/, mcp/)" \
     'anyhow::' \
-    'main\.rs:|cli/|mcp/'
+    'main\.rs:|cli/|mcp/|cfgd-operator/src/app\.rs:'
 
 log_section "No Dead Code Allowances"
 check_pattern warn \

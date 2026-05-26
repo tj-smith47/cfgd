@@ -981,6 +981,52 @@ fn validate_env_var_name_rejects_invalid() {
 }
 
 #[test]
+fn validate_env_var_user_name_accepts_normal() {
+    assert!(validate_env_var_user_name("PATH").is_ok());
+    assert!(validate_env_var_user_name("MY_APP_KEY").is_ok());
+    assert!(validate_env_var_user_name("_PRIVATE").is_ok());
+    assert!(validate_env_var_user_name("APP_FOO").is_ok());
+}
+
+#[test]
+fn validate_env_var_user_name_rejects_cfgd_prefix() {
+    let err = validate_env_var_user_name("CFGD_FOO").unwrap_err();
+    assert!(err.contains("reserved"), "should mention reserved: {err}");
+    assert!(err.contains("CFGD_"), "should mention the prefix: {err}");
+    assert!(err.contains("APP_FOO"), "should suggest a rename: {err}");
+
+    let err = validate_env_var_user_name("CFGD_").unwrap_err();
+    assert!(
+        err.contains("reserved"),
+        "bare CFGD_ should be rejected: {err}"
+    );
+}
+
+#[test]
+fn validate_env_var_user_name_delegates_shell_safety() {
+    let err = validate_env_var_user_name("").unwrap_err();
+    assert!(
+        err.contains("empty"),
+        "empty should fail shell check: {err}"
+    );
+
+    let err = validate_env_var_user_name("1BAD").unwrap_err();
+    assert!(
+        err.contains("must start with"),
+        "digit-leading should fail shell check: {err}"
+    );
+}
+
+#[test]
+fn parse_env_var_rejects_cfgd_prefix() {
+    let err = parse_env_var("CFGD_SECRET=value").unwrap_err();
+    assert!(
+        err.contains("reserved"),
+        "parse_env_var should reject CFGD_*: {err}"
+    );
+}
+
+#[test]
 fn validate_alias_name_accepts_valid() {
     assert!(validate_alias_name("ls").is_ok());
     assert!(validate_alias_name("my-alias").is_ok());
