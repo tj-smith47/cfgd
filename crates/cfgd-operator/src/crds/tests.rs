@@ -527,31 +527,12 @@ fn pem_key_validation() {
     ));
 }
 
-// ---------------------------------------------------------------------------
-// deny_unknown_fields: user-facing CRD specs reject typos; status types remain
-// forward-compatible (controllers may emit new fields old binaries should not
-// reject).
-// ---------------------------------------------------------------------------
-
-#[test]
-fn config_policy_spec_rejects_unknown_field() {
-    let yaml = "requiredModules: []\nbogusField: nope\n";
-    let err = serde_yaml::from_str::<ConfigPolicySpec>(yaml)
-        .expect_err("ConfigPolicySpec should reject unknown fields");
-    let msg = format!("{}", err);
-    assert!(
-        msg.contains("unknown field") && msg.contains("bogusField"),
-        "expected unknown-field error mentioning bogusField, got: {msg}"
-    );
-}
-
-#[test]
-fn cluster_config_policy_spec_rejects_unknown_field() {
-    let yaml = "requiredModules: []\nbogusField: nope\n";
-    let err = serde_yaml::from_str::<ClusterConfigPolicySpec>(yaml)
-        .expect_err("ClusterConfigPolicySpec should reject unknown fields");
-    assert!(format!("{}", err).contains("unknown field"));
-}
+// Spec-side unknown-field rejection is now enforced by k8s structural
+// schema (admission prunes unknown fields with a warning before persistence
+// to etcd) instead of `#[serde(deny_unknown_fields)]`. The serde attribute
+// emits `additionalProperties: false` via schemars 0.8, which k8s rejects
+// alongside `properties:` (mutually exclusive in structural-schema rules).
+// Status types still need forward-compat acceptance — pinned below.
 
 #[test]
 fn machine_config_status_accepts_unknown_field_for_forward_compat() {

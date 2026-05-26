@@ -142,7 +142,12 @@ pub struct LabelSelectorRequirement {
     printcolumn = r#"{"name": "Enforced", "type": "string", "jsonPath": ".status.conditions[?(@.type==\"Enforced\")].status"}"#,
     printcolumn = r#"{"name": "Age", "type": "date", "jsonPath": ".metadata.creationTimestamp"}"#
 )]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+// `deny_unknown_fields` is intentionally OFF: schemars 0.8 maps it to
+// `additionalProperties: false` in the generated JSON schema, which the k8s
+// CRD structural-schema validator rejects when set alongside `properties:`
+// (mutually exclusive). K8s already rejects unknown fields via the `properties`
+// allowlist at admission time, so serde-side strictness is redundant here.
+#[serde(rename_all = "camelCase")]
 pub struct ConfigPolicySpec {
     #[serde(default)]
     pub required_modules: Vec<ModuleRef>,
@@ -244,7 +249,10 @@ pub enum DriftSeverity {
     printcolumn = r#"{"name": "Enforced", "type": "string", "jsonPath": ".status.conditions[?(@.type==\"Enforced\")].status"}"#,
     printcolumn = r#"{"name": "Age", "type": "date", "jsonPath": ".metadata.creationTimestamp"}"#
 )]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+// See note on ConfigPolicySpec: omitting `deny_unknown_fields` so schemars
+// doesn't emit `additionalProperties: false` (k8s rejects it alongside
+// `properties:`). K8s admission already gatekeeps unknown fields.
+#[serde(rename_all = "camelCase")]
 pub struct ClusterConfigPolicySpec {
     /// Select which namespaces this cluster policy applies to.
     #[serde(default)]
