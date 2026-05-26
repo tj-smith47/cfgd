@@ -72,6 +72,7 @@ fn assert_snapshot(base: &Path, name: &str, actual: &str) {
 
 fn normalize_paths(raw: &str, config_dir: &Path) -> String {
     raw.replace(&config_dir.display().to_string(), "<CONFIG_DIR>")
+        .replace('\\', "/")
 }
 
 #[cfg(unix)]

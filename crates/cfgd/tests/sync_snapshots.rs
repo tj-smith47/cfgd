@@ -45,7 +45,7 @@ fn normalize_tempdir_paths(raw: &str, config_dir: &Path) -> String {
         "<CONFIG_DIR>/cfgd.yaml",
     );
     out = out.replace(&config_dir.to_string_lossy().to_string(), "<CONFIG_DIR>");
-    out
+    out.replace('\\', "/")
 }
 
 /// Replace the commit short-hash (12 hex chars) with a stable placeholder so
@@ -71,7 +71,7 @@ fn normalize_commit_hashes(raw: &str) -> String {
         }
     }
     out.push_str(rest);
-    out
+    out.replace('\\', "/")
 }
 
 /// Two-source happy path: local pull + per-source spinners + sources updated status.

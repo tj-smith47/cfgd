@@ -93,6 +93,7 @@ fn registry_test_setup() -> (tempfile::TempDir, tempfile::TempDir) {
 
 fn normalize(raw: &str, config_dir: &Path) -> String {
     raw.replace(&config_dir.display().to_string(), "<CONFIG_DIR>")
+        .replace('\\', "/")
 }
 
 /// Replace any 40-char lowercase-hex run (a git commit SHA) with the literal

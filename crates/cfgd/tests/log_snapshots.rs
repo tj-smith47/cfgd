@@ -210,7 +210,7 @@ fn normalize_timestamps(raw: &str) -> String {
             i += 1;
         }
     }
-    out
+    out.replace('\\', "/")
 }
 
 /// Match `YYYY-MM-DDTHH:MM:SSZ` exactly.

@@ -55,6 +55,7 @@ fn assert_snapshot(base: &Path, name: &str, actual: &str) {
 fn normalize(raw: &str, config_dir: &Path, output_dir: &Path) -> String {
     raw.replace(&config_dir.display().to_string(), "<CONFIG_DIR>")
         .replace(&output_dir.display().to_string(), "<OUTPUT_DIR>")
+        .replace('\\', "/")
 }
 
 fn module_export_setup() -> (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir) {

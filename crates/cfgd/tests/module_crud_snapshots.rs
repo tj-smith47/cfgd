@@ -94,6 +94,7 @@ fn cli_for(config_dir: &Path, state_dir: &Path) -> cfgd::cli::Cli {
 
 fn normalize(raw: &str, config_dir: &Path) -> String {
     raw.replace(&config_dir.display().to_string(), "<CONFIG_DIR>")
+        .replace('\\', "/")
 }
 
 #[test]

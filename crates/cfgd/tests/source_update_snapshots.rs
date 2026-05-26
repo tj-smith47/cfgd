@@ -84,7 +84,7 @@ fn normalize_paths(
     out = out.replace(&bare_root.to_string_lossy().to_string(), "<BARE_ROOT>");
     out = out.replace(&config_dir.to_string_lossy().to_string(), "<CONFIG_DIR>");
     out = out.replace(&state_dir.to_string_lossy().to_string(), "<STATE_DIR>");
-    strip_git_sha_ranges(strip_spinner_duration(out))
+    strip_git_sha_ranges(strip_spinner_duration(out)).replace('\\', "/")
 }
 
 /// Normalize git short-SHA ranges like `56f028c..865147c` to `<SHA>..<SHA>` so

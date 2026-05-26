@@ -73,6 +73,7 @@ fn assert_snapshot(base: &Path, name: &str, actual: &str) {
 fn normalize(raw: &str, home: &Path, config_dir: &Path) -> String {
     raw.replace(&home.display().to_string(), "<HOME>")
         .replace(&config_dir.display().to_string(), "<CONFIG_DIR>")
+        .replace('\\', "/")
 }
 
 fn tool_available(name: &str) -> bool {

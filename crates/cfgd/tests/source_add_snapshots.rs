@@ -78,7 +78,7 @@ fn normalize_paths(
     out = out.replace(&bare_root.to_string_lossy().to_string(), "<BARE_ROOT>");
     out = out.replace(&config_dir.to_string_lossy().to_string(), "<CONFIG_DIR>");
     out = out.replace(&state_dir.to_string_lossy().to_string(), "<STATE_DIR>");
-    strip_spinner_duration(out)
+    strip_spinner_duration(out).replace('\\', "/")
 }
 
 use cfgd_core::output::test_capture::strip_spinner_duration;

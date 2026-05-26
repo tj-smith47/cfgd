@@ -402,16 +402,16 @@ mod tests {
         );
     }
 
+    // Linux-only: tests the privileged-port (port 1) bind-failure path.
+    // macOS GHA runners can bind port 1 as non-root (Apple's port-privilege
+    // semantics differ from POSIX), and windows lacks the privileged-port
+    // concept altogether. Skipped when run as root locally.
+    #[cfg(target_os = "linux")]
     #[tokio::test(flavor = "current_thread")]
     async fn run_metrics_server_bind_failure_returns_metrics_error() {
         use std::sync::Arc;
         use tokio::sync::Mutex;
 
-        // Port 1 is privileged on every POSIX system; binding without root
-        // (CAP_NET_BIND_SERVICE) yields PermissionDenied. CI runners are
-        // non-root, so this fails reliably without the second-bind-collision
-        // dance (which macOS doesn't honor). 5s timeout guards the case
-        // where the test runs as root locally.
         if cfgd_core::is_root() {
             return;
         }

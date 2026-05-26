@@ -81,7 +81,7 @@ fn normalize_duration(raw: &str) -> String {
             i += 1;
         }
     }
-    out
+    out.replace('\\', "/")
 }
 
 /// Detect a ` (N.Ns)` or ` (NN.Ns)` (etc.) suffix and return its length in chars.
