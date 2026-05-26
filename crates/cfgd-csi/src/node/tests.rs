@@ -699,7 +699,14 @@ fn parse_allowed_registries_from_env_returns_none_for_empty_string() {
 // -------------------------------------------------------------------------
 
 #[tokio::test]
+#[serial_test::serial]
 async fn node_stage_volume_cache_pull_failure_returns_internal_status() {
+    // `test_node()` caches CFGD_CSI_ALLOWED_REGISTRIES at construction. A
+    // parallel `*_rejects_disallowed_registry` test that sets it would
+    // pin this Node to its allow-list, making 127.0.0.1 fail with
+    // PermissionDenied instead of the Internal we test for. Force-unset
+    // for the duration of this test.
+    let _g = cfgd_core::test_helpers::EnvVarGuard::unset(ALLOWED_REGISTRIES_ENV);
     let dir = tempfile::tempdir().unwrap();
     let node = test_node(test_cache(dir.path()));
     let req = NodeStageVolumeRequest {
@@ -732,7 +739,10 @@ async fn node_stage_volume_cache_pull_failure_returns_internal_status() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn node_publish_volume_cache_pull_failure_returns_internal_status() {
+    // Same race as the stage-volume counterpart: see comment above.
+    let _g = cfgd_core::test_helpers::EnvVarGuard::unset(ALLOWED_REGISTRIES_ENV);
     let dir = tempfile::tempdir().unwrap();
     let node = test_node(test_cache(dir.path()));
     let target = dir.path().join("publish-target");
