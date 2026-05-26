@@ -1,5 +1,5 @@
 use crate::config::ScriptEntry;
-use crate::errors::{ConfigError, Result};
+use crate::errors::{CfgdError, ConfigError, Result};
 use crate::output::Printer;
 
 use super::types::{ReconcileContext, ScriptPhase};
@@ -100,14 +100,8 @@ pub(crate) fn execute_script(
     match std::fs::metadata(working_dir) {
         Ok(meta) if meta.is_dir() => {}
         Ok(meta) => {
-            let kind = if meta.is_file() {
-                "regular file"
-            } else if meta.file_type().is_symlink() {
-                "symlink"
-            } else {
-                "non-directory"
-            };
-            return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
+            let kind = if meta.is_file() { "file" } else { "other" };
+            return Err(CfgdError::Config(ConfigError::Invalid {
                 message: format!(
                     "script '{}' cannot run: working directory is not a directory ({}): {}",
                     run_str,
@@ -117,7 +111,7 @@ pub(crate) fn execute_script(
             }));
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
+            return Err(CfgdError::Config(ConfigError::Invalid {
                 message: format!(
                     "script '{}' cannot run: working directory does not exist: {}",
                     run_str,
@@ -126,7 +120,7 @@ pub(crate) fn execute_script(
             }));
         }
         Err(e) => {
-            return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
+            return Err(CfgdError::Config(ConfigError::Invalid {
                 message: format!(
                     "script '{}' cannot run: working directory inaccessible ({}): {}",
                     run_str,
@@ -147,19 +141,19 @@ pub(crate) fn execute_script(
         ScriptEntry::Full {
             timeout: Some(t), ..
         } => crate::parse_duration_str(t)
-            .map_err(|e| crate::errors::CfgdError::Config(ConfigError::Invalid { message: e }))?,
+            .map_err(|e| CfgdError::Config(ConfigError::Invalid { message: e }))?,
         _ => default_timeout,
     };
-    let idle_timeout =
-        match entry {
-            ScriptEntry::Full {
-                idle_timeout: Some(t),
-                ..
-            } => Some(crate::parse_duration_str(t).map_err(|e| {
-                crate::errors::CfgdError::Config(ConfigError::Invalid { message: e })
-            })?),
-            _ => None,
-        };
+    let idle_timeout = match entry {
+        ScriptEntry::Full {
+            idle_timeout: Some(t),
+            ..
+        } => Some(
+            crate::parse_duration_str(t)
+                .map_err(|e| CfgdError::Config(ConfigError::Invalid { message: e }))?,
+        ),
+        _ => None,
+    };
 
     let resolved = if std::path::Path::new(run_str).is_relative() {
         working_dir.join(run_str)
@@ -175,7 +169,7 @@ pub(crate) fn execute_script(
             let hint = "chmod +x";
             #[cfg(windows)]
             let hint = "use a .exe, .cmd, .bat, or .ps1 extension";
-            return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
+            return Err(CfgdError::Config(ConfigError::Invalid {
                 message: format!(
                     "script '{}' exists but is not executable ({})",
                     resolved.display(),
@@ -342,9 +336,7 @@ pub(crate) fn execute_script(
                         Some(c) => format!("{base}\n{c}"),
                         None => base,
                     };
-                    return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
-                        message,
-                    }));
+                    return Err(CfgdError::Config(ConfigError::Invalid { message }));
                 }
 
                 let elapsed = start.elapsed();
@@ -397,9 +389,7 @@ pub(crate) fn execute_script(
                         Some(c) => format!("{base}\n{c}"),
                         None => base,
                     };
-                    return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
-                        message,
-                    }));
+                    return Err(CfgdError::Config(ConfigError::Invalid { message }));
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
@@ -558,7 +548,7 @@ mod tests {
         .expect_err("missing working_dir must error");
 
         match err {
-            crate::errors::CfgdError::Config(ConfigError::Invalid { message }) => {
+            CfgdError::Config(ConfigError::Invalid { message }) => {
                 assert!(
                     message.contains("working directory does not exist"),
                     "message should describe the missing-dir failure mode: {message}"
@@ -596,7 +586,7 @@ mod tests {
         .expect_err("non-directory working_dir must error");
 
         match err {
-            crate::errors::CfgdError::Config(ConfigError::Invalid { message }) => {
+            CfgdError::Config(ConfigError::Invalid { message }) => {
                 assert!(
                     message.contains("not a directory"),
                     "message should distinguish the non-dir failure mode: {message}"
