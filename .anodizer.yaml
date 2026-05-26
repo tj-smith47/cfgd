@@ -210,30 +210,7 @@ workspaces:
               allow_empty: true
         publish:
           # `cargo:` inherits `index_timeout: 600` from defaults.publish.cargo.
-          homebrew:
-            required: true
-            repository:
-              owner: tj-smith47
-              name: homebrew-tap
-            directory: Formula
-            description: "Declarative, GitOps-style machine configuration management"
-            homepage: "https://github.com/tj-smith47/cfgd"
-            license: MIT
-            install: |
-              bin.install "cfgd"
-            post_install: |
-              generate_completions_from_executable(bin/"cfgd", "completion")
-            test: |
-              system "#{bin}/cfgd", "--version"
-            caveats: |
-              Run `cfgd init` to scaffold a config in your repo.
-            dependencies:
-              - name: git
-                type: required
-            commit_msg_template: "cfgd {{ .Tag }}"
-            commit_author:
-              name: "TJ Smith"
-              email: "tj@jarvispro.io"
+          # Homebrew is handled exclusively via the top-level `homebrew_casks:` block.
           scoop:
             repository:
               owner: tj-smith47
@@ -775,9 +752,8 @@ template_files:
     dst: install.sh
     mode: "0755"
 
-# Top-level homebrew_casks block (GR v2.16 supported path).
-# publish.homebrew: is kept below for backward-compat during the deprecation
-# lifecycle; homebrew_casks: is the authoritative config going forward.
+# Top-level homebrew_casks block (GR v2.16+ supported path).
+# homebrew_casks: is the sole Homebrew publication path; publish.homebrew: has been removed.
 homebrew_casks:
   - required: true
     repository:
