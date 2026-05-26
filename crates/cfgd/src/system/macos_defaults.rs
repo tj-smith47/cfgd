@@ -146,10 +146,18 @@ mod tests {
         assert_eq!(v, "test");
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn macos_defaults_not_available_on_linux() {
         let md = MacosDefaultsConfigurator;
         assert!(!md.is_available());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_defaults_is_available_on_macos() {
+        let md = MacosDefaultsConfigurator;
+        assert!(md.is_available());
     }
 
     #[test]

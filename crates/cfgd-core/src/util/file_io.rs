@@ -181,6 +181,7 @@ pub fn capture_file_resolved_state(
 mod tests {
     use super::*;
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs as unix_fs;
 
     #[test]
@@ -210,6 +211,7 @@ mod tests {
         assert_eq!(hash.len(), 64);
     }
 
+    #[cfg(unix)]
     #[test]
     fn atomic_write_preserves_permissions() {
         use std::os::unix::fs::PermissionsExt;
@@ -241,6 +243,7 @@ mod tests {
         assert!(capture_file_state(path).unwrap().is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn capture_file_state_symlink() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -254,6 +257,7 @@ mod tests {
         assert!(state.content.is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn capture_file_resolved_state_follows_symlink() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -268,6 +272,7 @@ mod tests {
         assert!(!state.oversized);
     }
 
+    #[cfg(unix)]
     #[test]
     fn capture_file_resolved_state_dangling_symlink_returns_none() {
         let tmp = tempfile::TempDir::new().unwrap();

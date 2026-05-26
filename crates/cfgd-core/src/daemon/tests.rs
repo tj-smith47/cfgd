@@ -10338,6 +10338,7 @@ async fn handle_reconcile_auto_apply_with_sources_processes_decisions_and_resolv
 
 mod ipc_socket_security {
     use super::*;
+    #[cfg(unix)]
     use crate::daemon::health_ipc::MAX_RESPONSE_BYTES;
     use crate::test_helpers::EnvVarGuard;
 
@@ -10545,6 +10546,7 @@ mod ipc_socket_security {
 // query_daemon_status & connect_daemon_ipc — additional coverage paths
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 mod query_daemon_status_paths {
     use super::*;
     use crate::test_helpers::EnvVarGuard;

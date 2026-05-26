@@ -298,7 +298,7 @@ mod tests {
         su.apply(&yaml, &printer).unwrap();
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     mod bridge {
         use super::*;
         use cfgd_core::output::test_capture::{assert_snapshot_at, strip_ansi};

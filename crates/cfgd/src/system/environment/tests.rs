@@ -1042,6 +1042,7 @@ fn macos_write_launchd_plist_creates_parent_dir() {
     );
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 #[serial_test::serial]
 fn macos_launchctl_setenv_warns_through_printer_when_launchctl_unavailable() {

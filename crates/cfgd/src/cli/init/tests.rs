@@ -4278,7 +4278,7 @@ mod cmd_init_apply_orchestration {
     // "Daemon service installed" success line fires. Pins the happy path.
     #[test]
     #[serial]
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn cmd_init_with_install_daemon_writes_user_unit_file() {
         let tmp = tempfile::tempdir().unwrap();
         let home = cfgd_core::with_test_home_guard(tmp.path());
@@ -4318,6 +4318,57 @@ mod cmd_init_apply_orchestration {
             // Some hosts reject XDG-style user-service writes (rare but
             // possible). The warning arm at lines 271-274 must have fired
             // instead. Either way, the install_daemon block was exercised.
+            assert!(
+                captured.contains("Failed to install daemon"),
+                "warning fallback must fire when install fails: {captured}"
+            );
+        }
+        drop(home);
+    }
+
+    // macOS equivalent of cmd_init_with_install_daemon_writes_user_unit_file.
+    // install_launchd_service writes to $HOME/Library/LaunchAgents/com.cfgd.daemon.plist.
+    #[test]
+    #[serial]
+    #[cfg(target_os = "macos")]
+    fn cmd_init_with_install_daemon_writes_user_launchd_plist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = cfgd_core::with_test_home_guard(tmp.path());
+        let target = tmp.path().join("install-daemon-cfg");
+        std::fs::create_dir_all(&target).unwrap();
+
+        let (printer, cap) = Printer::for_test_doc();
+        let args = InitArgs {
+            path: Some(target.to_str().unwrap()),
+            from: None,
+            branch: "master",
+            name: Some("install-daemon-test"),
+            apply: false,
+            dry_run: false,
+            yes: false,
+            install_daemon: true,
+            theme: None,
+            apply_profile: None,
+            apply_modules: &[],
+        };
+        cmd_init(&printer, &args).expect("cmd_init with install_daemon must succeed");
+
+        drop(printer);
+        let captured = cap.human();
+        let plist = tmp
+            .path()
+            .join("Library/LaunchAgents/com.cfgd.daemon.plist");
+        if plist.exists() {
+            assert!(
+                captured.contains("Daemon service installed"),
+                "success line should fire when launchd install succeeds: {captured}"
+            );
+            let content = std::fs::read_to_string(&plist).unwrap();
+            assert!(
+                content.contains("com.cfgd.daemon") && content.contains("ProgramArguments"),
+                "generated plist should be a valid launchd plist: {content}"
+            );
+        } else {
             assert!(
                 captured.contains("Failed to install daemon"),
                 "warning fallback must fire when install fails: {captured}"

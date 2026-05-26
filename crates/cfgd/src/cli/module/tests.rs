@@ -2400,7 +2400,7 @@ fn cmd_module_edit_with_invalid_yaml_and_prompt_declined_breaks_with_warning() {
         cfgd_core::output::PromptAnswer::Confirm(false),
     ]);
 
-    let _editor = cfgd_core::test_helpers::EnvVarGuard::set("EDITOR", "/bin/true");
+    let _editor = cfgd_core::test_helpers::EnvVarGuard::set("EDITOR", "/usr/bin/true");
     cmd_module_edit(&cli, &printer, "edit-broken")
         .expect("edit must return Ok even on Save-with-errors");
     drop(printer);

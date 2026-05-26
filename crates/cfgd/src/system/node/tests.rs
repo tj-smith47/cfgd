@@ -2880,6 +2880,7 @@ fn kubelet_apply_with_empty_settings_is_a_noop() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn kubelet_apply_writes_config_then_returns_err_when_systemctl_fails() {
     // Settings present → apply writes the merged config via atomic_write,

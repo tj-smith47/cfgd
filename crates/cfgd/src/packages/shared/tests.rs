@@ -1119,7 +1119,6 @@ fn bootstrap_via_system_manager_succeeds_with_apt_get_shim() {
 #[test]
 #[serial_test::serial]
 fn bootstrap_via_system_manager_fails_when_all_managers_absent() {
-    use std::os::unix::fs::PermissionsExt;
     // Build a minimal PATH dir that contains `sh` (needed by concurrent non-serial
     // tests that use Command::new("sh")) but none of apt-get / dnf / zypper.
     let dir = tempfile::tempdir().unwrap();
@@ -1136,9 +1135,6 @@ fn bootstrap_via_system_manager_fails_when_all_managers_absent() {
             }
         }
     }
-    let mut perms = std::fs::metadata(&sh_link).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&sh_link, perms).unwrap();
 
     let prev_path = std::env::var_os("PATH");
     // SAFETY: serial; PATH restored below.
@@ -1187,7 +1183,6 @@ fn bootstrap_via_brew_then_system_succeeds_via_brew_shim() {
 #[test]
 #[serial_test::serial]
 fn bootstrap_via_brew_then_system_falls_back_when_brew_fails_and_no_system_manager() {
-    use std::os::unix::fs::PermissionsExt;
     let _shim =
         cfgd_core::test_helpers::ToolShim::install("CFGD_BREW_BIN", 1, "", "brew install failed\n");
 
@@ -1195,9 +1190,6 @@ fn bootstrap_via_brew_then_system_falls_back_when_brew_fails_and_no_system_manag
     let dir = tempfile::tempdir().unwrap();
     let sh_link = dir.path().join("sh");
     std::os::unix::fs::symlink("/bin/sh", &sh_link).unwrap();
-    let mut perms = std::fs::metadata(&sh_link).unwrap().permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&sh_link, perms).unwrap();
 
     let prev_path = std::env::var_os("PATH");
     // SAFETY: serial; PATH restored below.
@@ -1278,6 +1270,8 @@ fn bootstrap_via_system_manager_continues_on_nonzero_exit_then_fails() {
 fn bootstrap_via_brew_then_system_uses_apt_get_fallback_when_brew_absent() {
     use std::os::unix::fs::PermissionsExt;
     // No CFGD_BREW_BIN set; brew not on PATH. apt-get shim succeeds.
+    // CFGD_APT_GET_BIN routes sudo_cmd_with_seam directly at the shim so the
+    // test does not require `sudo` on PATH (the CI runner is non-root).
     let dir = tempfile::tempdir().unwrap();
     let shim = dir.path().join("apt-get");
     std::fs::write(&shim, b"#!/bin/sh\necho 'installed via apt-get'\nexit 0\n").unwrap();
@@ -1291,10 +1285,12 @@ fn bootstrap_via_brew_then_system_uses_apt_get_fallback_when_brew_absent() {
 
     let prev_path = std::env::var_os("PATH");
     let prev_brew = std::env::var_os("CFGD_BREW_BIN");
-    // SAFETY: serial; PATH + CFGD_BREW_BIN restored below.
+    let prev_apt = std::env::var_os("CFGD_APT_GET_BIN");
+    // SAFETY: serial; PATH + CFGD_BREW_BIN + CFGD_APT_GET_BIN restored below.
     unsafe {
         std::env::set_var("PATH", dir.path());
         std::env::remove_var("CFGD_BREW_BIN");
+        std::env::set_var("CFGD_APT_GET_BIN", &shim);
     }
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let result = bootstrap_via_brew_then_system(&printer, "test-mgr", "ripgrep", &["ripgrep"]);
@@ -1307,6 +1303,10 @@ fn bootstrap_via_brew_then_system_uses_apt_get_fallback_when_brew_absent() {
         match prev_brew {
             Some(v) => std::env::set_var("CFGD_BREW_BIN", v),
             None => std::env::remove_var("CFGD_BREW_BIN"),
+        }
+        match prev_apt {
+            Some(v) => std::env::set_var("CFGD_APT_GET_BIN", v),
+            None => std::env::remove_var("CFGD_APT_GET_BIN"),
         }
     }
     assert!(

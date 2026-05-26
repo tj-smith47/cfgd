@@ -422,7 +422,7 @@ pub(super) fn bootstrap_via_system_manager(
         if command_available(cmd_name) {
             let result = printer
                 .run(
-                    sudo_cmd(cmd_name).args(["install", "-y", target_pkg]),
+                    sudo_cmd_with_seam(cmd_name).args(["install", "-y", target_pkg]),
                     format!("Installing {} via {}", target_pkg, cmd_name),
                 )
                 .map_err(|e| PackageError::BootstrapFailed {
@@ -470,7 +470,9 @@ pub(super) fn bootstrap_via_brew_then_system(
         if command_available(cmd_name) {
             let result = printer
                 .run(
-                    sudo_cmd(cmd_name).args(["install", "-y"]).args(system_pkgs),
+                    sudo_cmd_with_seam(cmd_name)
+                        .args(["install", "-y"])
+                        .args(system_pkgs),
                     format!("Installing {} via {}", manager_name, cmd_name),
                 )
                 .map_err(|e| PackageError::BootstrapFailed {

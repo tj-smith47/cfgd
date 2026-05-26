@@ -227,10 +227,18 @@ mod tests {
         assert!(plist.contains("value"));
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn launch_agents_not_available_on_linux() {
         let la = LaunchAgentConfigurator;
         assert!(!la.is_available());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launch_agents_is_available_on_macos() {
+        let la = LaunchAgentConfigurator;
+        assert!(la.is_available());
     }
 
     #[test]

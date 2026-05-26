@@ -1553,7 +1553,7 @@ fn profile_edit_with_invalid_yaml_and_prompt_declined_breaks_with_warning() {
         cfgd_core::output::Verbosity::Normal,
     );
 
-    let _editor = cfgd_core::test_helpers::EnvVarGuard::set("EDITOR", "/bin/true");
+    let _editor = cfgd_core::test_helpers::EnvVarGuard::set("EDITOR", "/usr/bin/true");
     cmd_profile_edit(&cli, &printer, "default").expect("edit must Ok even on Save-with-errors");
     drop(printer);
 

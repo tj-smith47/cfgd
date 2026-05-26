@@ -2015,7 +2015,7 @@ fn source_edit_with_valid_manifest_reports_valid_and_returns_ok() {
     )
     .unwrap();
 
-    let _editor = EditorGuard::set("/bin/true");
+    let _editor = EditorGuard::set("/usr/bin/true");
     source::cmd_source_edit(&cli, &printer).expect("valid manifest + no-op editor → Ok");
 
     drop(printer);
@@ -2045,7 +2045,7 @@ fn source_edit_with_invalid_manifest_and_prompt_declined_breaks_with_warning() {
         cfgd_core::output::PromptAnswer::Confirm(false),
     ]);
 
-    let _editor = EditorGuard::set("/bin/true");
+    let _editor = EditorGuard::set("/usr/bin/true");
     source::cmd_source_edit(&cli, &printer).expect("save-with-errors must return Ok");
 
     drop(printer);
@@ -11564,7 +11564,7 @@ fn cmd_config_edit_with_invalid_config_and_prompt_declined_breaks_with_warning()
         cfgd_core::output::PromptAnswer::Confirm(false),
     ]);
 
-    let _editor = cfgd_core::test_helpers::EditorGuard::set("/bin/true");
+    let _editor = cfgd_core::test_helpers::EditorGuard::set("/usr/bin/true");
     super::config_cmd::cmd_config_edit(&cli, &printer).expect("edit must Ok on save-with-errors");
     drop(printer);
 

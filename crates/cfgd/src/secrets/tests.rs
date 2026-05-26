@@ -1357,7 +1357,7 @@ mod age_shim {
         std::fs::write(&cipher, b"<ciphertext>").expect("write cipher");
 
         let backend = AgeBackend::new(key);
-        with_editor("/bin/true", || {
+        with_editor("/usr/bin/true", || {
             backend
                 .edit_file(&cipher)
                 .expect("edit happy path returns Ok");
