@@ -211,6 +211,7 @@ workspaces:
         publish:
           # `cargo:` inherits `index_timeout: 600` from defaults.publish.cargo.
           homebrew:
+            required: true
             repository:
               owner: tj-smith47
               name: homebrew-tap
@@ -325,6 +326,7 @@ workspaces:
               name: "TJ Smith"
               email: "tj@jarvispro.io"
           krew:
+            required: true
             repository:
               owner: tj-smith47
               name: krew-index

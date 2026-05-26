@@ -146,7 +146,7 @@ jobs:
       - name: Validate release pipeline via anodizer
         uses: tj-smith47/anodizer-action@v1
         with:
-          version: latest
+          from-branch: publisher-required-config
           args: release --snapshot --single-target --clean --dry-run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -175,7 +175,7 @@ jobs:
       - name: Install anodizer
         uses: tj-smith47/anodizer-action@v1
         with:
-          version: latest
+          from-branch: publisher-required-config
           args: --version
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}

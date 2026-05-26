@@ -35,7 +35,7 @@ jobs:
       - uses: tj-smith47/anodizer-action@v1
         id: anodizer
         with:
-          version: latest
+          from-branch: publisher-required-config
           resolve-workspace: 'true'
           install-only: 'true'
         env:
@@ -66,8 +66,7 @@ jobs:
 
       - uses: tj-smith47/anodizer-action@v1
         with:
-          version: latest
-          install-rust: 'true'
+          from-branch: publisher-required-config
           auto-install: 'true'
           determinism: 'true'
           determinism-targets: ${{ matrix.targets }}
@@ -112,7 +111,7 @@ jobs:
       - name: Run anodizer release
         uses: tj-smith47/anodizer-action@v1
         with:
-          version: latest
+          from-branch: publisher-required-config
           auto-install: 'true'
           download-dist: ${{ needs.resolve.outputs.has-builds }}
           docker-registry: ${{ needs.resolve.outputs.has-builds == 'true' && 'ghcr.io' || '' }}
