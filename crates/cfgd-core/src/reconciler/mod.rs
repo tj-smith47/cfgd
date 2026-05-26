@@ -22,6 +22,7 @@ mod verify;
 #[cfg(test)]
 mod tests;
 
+pub use apply::action_matches_phase_filter;
 pub use format::{format_action_description, format_plan_items};
 pub use types::{
     Action, ActionResult, ApplyResult, EnvAction, ModuleAction, ModuleActionKind, Phase, PhaseName,

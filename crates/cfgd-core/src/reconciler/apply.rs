@@ -15,6 +15,63 @@ use super::types::{
     ReconcileContext, ScriptAction, ScriptPhase,
 };
 
+/// Whether `action` (residing in `phase_name`) should execute under `filter`.
+///
+/// `--phase post-scripts` / `--phase pre-scripts` are intentionally inclusive
+/// across plan phases: module-level lifecycle scripts are emitted into
+/// `PhaseName::Modules` as `Action::Module(RunScript { phase: PostApply | ... })`,
+/// not into `PhaseName::PostScripts`. A naive `phase.name == filter` test
+/// therefore drops every per-module post/pre script and makes
+/// `cfgd apply --module nvim --phase post-scripts` a no-op even when failed
+/// module scripts need re-attempting. Other filters keep strict
+/// phase-equality semantics.
+pub fn action_matches_phase_filter(
+    phase_name: &PhaseName,
+    action: &Action,
+    filter: &PhaseName,
+) -> bool {
+    if phase_name == filter {
+        return true;
+    }
+    match filter {
+        PhaseName::PostScripts => is_post_apply_script(action),
+        PhaseName::PreScripts => is_pre_apply_script(action),
+        _ => false,
+    }
+}
+
+fn is_post_apply_script(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Script(ScriptAction::Run {
+            phase: ScriptPhase::PostApply | ScriptPhase::PostReconcile,
+            ..
+        }) | Action::Module(ModuleAction {
+            kind: ModuleActionKind::RunScript {
+                phase: ScriptPhase::PostApply | ScriptPhase::PostReconcile,
+                ..
+            },
+            ..
+        })
+    )
+}
+
+fn is_pre_apply_script(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Script(ScriptAction::Run {
+            phase: ScriptPhase::PreApply | ScriptPhase::PreReconcile,
+            ..
+        }) | Action::Module(ModuleAction {
+            kind: ModuleActionKind::RunScript {
+                phase: ScriptPhase::PreApply | ScriptPhase::PreReconcile,
+                ..
+            },
+            ..
+        })
+    )
+}
+
 impl<'a> super::Reconciler<'a> {
     /// Update module state in state.db after a successful apply.
     fn update_module_state(
@@ -120,18 +177,25 @@ impl<'a> super::Reconciler<'a> {
         let mut secret_env_collector: Vec<(String, String)> = Vec::new();
 
         for phase in &plan.phases {
-            if let Some(filter) = phase_filter
-                && &phase.name != filter
-            {
+            // Pre-filter to the actions in this phase that survive `phase_filter`.
+            // Restricting the indexed loop below to the surviving subset keeps
+            // the `[i/total]` status headers honest about what actually runs.
+            let filtered: Vec<&Action> = if let Some(filter) = phase_filter {
+                phase
+                    .actions
+                    .iter()
+                    .filter(|a| action_matches_phase_filter(&phase.name, a, filter))
+                    .collect()
+            } else {
+                phase.actions.iter().collect()
+            };
+
+            if filtered.is_empty() {
                 continue;
             }
 
-            if phase.actions.is_empty() {
-                continue;
-            }
-
-            let total = phase.actions.len();
-            for (action_idx, action) in phase.actions.iter().enumerate() {
+            let total = filtered.len();
+            for (action_idx, action) in filtered.iter().copied().enumerate() {
                 let desc_for_journal = format_action_description(action);
                 let (action_type, resource_id) = parse_resource_from_description(&desc_for_journal);
 

@@ -222,9 +222,11 @@ pub fn cmd_apply(
 
     // Check if filtered plan has actions
     let has_actions = if let Some(ref pf) = phase_filter {
-        plan.phases
-            .iter()
-            .any(|p| &p.name == pf && !p.actions.is_empty())
+        plan.phases.iter().any(|p| {
+            p.actions
+                .iter()
+                .any(|a| reconciler::action_matches_phase_filter(&p.name, a, pf))
+        })
     } else {
         !plan.is_empty()
     };
@@ -238,21 +240,31 @@ pub fn cmd_apply(
     let start = std::time::Instant::now();
 
     // Show what will change, nested under a section so each phase's items
-    // render at the section's indent.
+    // render at the section's indent. The preview honours the same
+    // action-level filter as the executor so users see exactly what's about
+    // to run.
     {
         let preview = printer.section("Plan preview");
         for phase_item in &plan.phases {
-            if let Some(ref pf) = phase_filter
-                && &phase_item.name != pf
-            {
-                continue;
-            }
             let items = reconciler::format_plan_items(phase_item);
-            if items.is_empty() {
+            let displayed: Vec<&String> = if let Some(ref pf) = phase_filter {
+                phase_item
+                    .actions
+                    .iter()
+                    .zip(items.iter())
+                    .filter_map(|(a, item)| {
+                        reconciler::action_matches_phase_filter(&phase_item.name, a, pf)
+                            .then_some(item)
+                    })
+                    .collect()
+            } else {
+                items.iter().collect()
+            };
+            if displayed.is_empty() {
                 continue;
             }
             let phase_sec = preview.section(phase_item.name.display_name());
-            for item in &items {
+            for item in displayed {
                 phase_sec.bullet(item);
             }
         }

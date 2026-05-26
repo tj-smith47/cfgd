@@ -10810,6 +10810,66 @@ fn cmd_apply_reconcile_context_threads_through() {
     );
 }
 
+#[test]
+fn cmd_apply_phase_post_scripts_catches_module_post_scripts() {
+    // Bug regression guard: --phase post-scripts must also re-attempt
+    // module-level postApply scripts that live in PhaseName::Modules.
+    let (config_dir, state_dir) = setup_test_env();
+    let marker = config_dir.path().join("post_script_marker");
+
+    create_module_in_dir(
+        config_dir.path(),
+        "nvim",
+        &format!(
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+spec:
+  packages: []
+  scripts:
+    postApply:
+      - touch {}
+"#,
+            marker.display()
+        ),
+    );
+
+    let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - nvim\n";
+    std::fs::write(
+        config_dir.path().join("profiles").join("default.yaml"),
+        profile,
+    )
+    .unwrap();
+
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let (printer, buf) = test_printer_capture();
+    let args = ApplyArgs {
+        from: None,
+        dry_run: false,
+        phase: Some(ApplyPhase::PostScripts),
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: Some("nvim".to_string()),
+        skip_scripts: false,
+        context: "apply".to_string(),
+    };
+
+    super::apply::cmd_apply(&cli, &printer, &args).unwrap();
+    printer.flush();
+    let output = buf.lock().unwrap().clone();
+
+    assert!(
+        !output.contains(MSG_NOTHING_TO_DO),
+        "--phase post-scripts on a module with a postApply script must NOT print MSG_NOTHING_TO_DO, got:\n{output}"
+    );
+    assert!(
+        marker.exists(),
+        "module postApply script should have executed under --phase post-scripts; marker missing. output:\n{output}"
+    );
+}
+
 // --- cmd_compliance ---
 
 #[test]

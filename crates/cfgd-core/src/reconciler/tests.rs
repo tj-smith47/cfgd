@@ -9624,3 +9624,477 @@ fn apply_profile_on_change_failure_aborts_when_continue_on_error_false() {
         .expect_err("profile onChange continueOnError=false must propagate err");
     let _ = err.to_string();
 }
+
+// --- action_matches_phase_filter helper + --phase {pre,post}-scripts module-level inclusion ---
+
+#[test]
+fn action_matches_phase_filter_table() {
+    // Helper inputs: (phase_name, action, filter) -> expected
+    let pre_script_action = Action::Script(ScriptAction::Run {
+        entry: ScriptEntry::Simple("echo pre".to_string()),
+        phase: ScriptPhase::PreApply,
+        origin: "local".to_string(),
+    });
+    let post_script_action = Action::Script(ScriptAction::Run {
+        entry: ScriptEntry::Simple("echo post".to_string()),
+        phase: ScriptPhase::PostApply,
+        origin: "local".to_string(),
+    });
+    let module_pre_script = Action::Module(ModuleAction {
+        module_name: "m".to_string(),
+        kind: ModuleActionKind::RunScript {
+            script: ScriptEntry::Simple("echo pre".to_string()),
+            phase: ScriptPhase::PreApply,
+        },
+    });
+    let module_post_script = Action::Module(ModuleAction {
+        module_name: "m".to_string(),
+        kind: ModuleActionKind::RunScript {
+            script: ScriptEntry::Simple("echo post".to_string()),
+            phase: ScriptPhase::PostApply,
+        },
+    });
+    let module_install = Action::Module(ModuleAction {
+        module_name: "m".to_string(),
+        kind: ModuleActionKind::InstallPackages { resolved: vec![] },
+    });
+    let pkg_install = Action::Package(PackageAction::Install {
+        manager: "brew".to_string(),
+        packages: vec!["jq".to_string()],
+        origin: "local".to_string(),
+    });
+
+    // Strict phase-equality cases.
+    assert!(action_matches_phase_filter(
+        &PhaseName::PostScripts,
+        &post_script_action,
+        &PhaseName::PostScripts,
+    ));
+    assert!(action_matches_phase_filter(
+        &PhaseName::PreScripts,
+        &pre_script_action,
+        &PhaseName::PreScripts,
+    ));
+    assert!(action_matches_phase_filter(
+        &PhaseName::Packages,
+        &pkg_install,
+        &PhaseName::Packages,
+    ));
+
+    // Module-level script under PostScripts filter — the bug fix.
+    assert!(action_matches_phase_filter(
+        &PhaseName::Modules,
+        &module_post_script,
+        &PhaseName::PostScripts,
+    ));
+    assert!(action_matches_phase_filter(
+        &PhaseName::Modules,
+        &module_pre_script,
+        &PhaseName::PreScripts,
+    ));
+
+    // Non-script module actions are NOT swept in by script filters.
+    assert!(!action_matches_phase_filter(
+        &PhaseName::Modules,
+        &module_install,
+        &PhaseName::PostScripts,
+    ));
+    assert!(!action_matches_phase_filter(
+        &PhaseName::Modules,
+        &module_install,
+        &PhaseName::PreScripts,
+    ));
+
+    // Cross-phase mismatch (PreApply script under PostScripts filter, etc.).
+    assert!(!action_matches_phase_filter(
+        &PhaseName::Modules,
+        &module_pre_script,
+        &PhaseName::PostScripts,
+    ));
+    assert!(!action_matches_phase_filter(
+        &PhaseName::Modules,
+        &module_post_script,
+        &PhaseName::PreScripts,
+    ));
+
+    // Unrelated filter (Packages) only matches phase-equal actions.
+    assert!(!action_matches_phase_filter(
+        &PhaseName::Modules,
+        &module_post_script,
+        &PhaseName::Packages,
+    ));
+    assert!(!action_matches_phase_filter(
+        &PhaseName::Files,
+        &pkg_install,
+        &PhaseName::Packages,
+    ));
+
+    // Profile-level scripts still match their script-phase filter when they
+    // happen to live in PhaseName::Modules (defensive — never happens in
+    // practice but the helper is action-shape-based, not phase-name-based).
+    assert!(action_matches_phase_filter(
+        &PhaseName::Modules,
+        &post_script_action,
+        &PhaseName::PostScripts,
+    ));
+}
+
+#[test]
+fn apply_post_scripts_filter_runs_module_post_scripts() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("post_marker");
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let module = crate::modules::ResolvedModule {
+        name: "nvim".to_string(),
+        packages: vec![],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        system: HashMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+    };
+
+    let plan = Plan {
+        phases: vec![
+            Phase {
+                name: PhaseName::Modules,
+                actions: vec![
+                    Action::Module(ModuleAction {
+                        module_name: "nvim".to_string(),
+                        kind: ModuleActionKind::InstallPackages { resolved: vec![] },
+                    }),
+                    Action::Module(ModuleAction {
+                        module_name: "nvim".to_string(),
+                        kind: ModuleActionKind::RunScript {
+                            script: ScriptEntry::Simple(format!("touch {}", marker.display())),
+                            phase: ScriptPhase::PostApply,
+                        },
+                    }),
+                ],
+            },
+            Phase {
+                name: PhaseName::PostScripts,
+                actions: vec![],
+            },
+        ],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseName::PostScripts),
+            std::slice::from_ref(&module),
+            ReconcileContext::Apply,
+            false,
+        )
+        .unwrap();
+
+    // The InstallPackages action must NOT have been executed; only the
+    // module post-script should have run.
+    let descriptions: Vec<&str> = result
+        .action_results
+        .iter()
+        .map(|r| r.description.as_str())
+        .collect();
+    assert_eq!(
+        result.action_results.len(),
+        1,
+        "expected exactly one executed action under --phase post-scripts, got {:?}",
+        descriptions,
+    );
+    assert!(
+        result.action_results[0]
+            .description
+            .starts_with("module:nvim:script"),
+        "executed action should be the module post-script, got: {}",
+        result.action_results[0].description,
+    );
+    assert!(
+        marker.exists(),
+        "module postApply script should have run and created marker file"
+    );
+}
+
+#[test]
+fn apply_pre_scripts_filter_runs_module_pre_scripts() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("pre_marker");
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let module = crate::modules::ResolvedModule {
+        name: "nvim".to_string(),
+        packages: vec![],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        system: HashMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+    };
+
+    let plan = Plan {
+        phases: vec![
+            Phase {
+                name: PhaseName::PreScripts,
+                actions: vec![],
+            },
+            Phase {
+                name: PhaseName::Modules,
+                actions: vec![
+                    Action::Module(ModuleAction {
+                        module_name: "nvim".to_string(),
+                        kind: ModuleActionKind::RunScript {
+                            script: ScriptEntry::Simple(format!("touch {}", marker.display())),
+                            phase: ScriptPhase::PreApply,
+                        },
+                    }),
+                    Action::Module(ModuleAction {
+                        module_name: "nvim".to_string(),
+                        kind: ModuleActionKind::InstallPackages { resolved: vec![] },
+                    }),
+                ],
+            },
+        ],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseName::PreScripts),
+            std::slice::from_ref(&module),
+            ReconcileContext::Apply,
+            false,
+        )
+        .unwrap();
+
+    assert_eq!(
+        result.action_results.len(),
+        1,
+        "expected exactly one executed action under --phase pre-scripts, got {:?}",
+        result
+            .action_results
+            .iter()
+            .map(|r| &r.description)
+            .collect::<Vec<_>>(),
+    );
+    assert!(
+        result.action_results[0]
+            .description
+            .starts_with("module:nvim:script"),
+        "executed action should be the module pre-script, got: {}",
+        result.action_results[0].description,
+    );
+    assert!(
+        marker.exists(),
+        "module preApply script should have run and created marker file"
+    );
+}
+
+#[test]
+fn apply_modules_phase_filter_runs_all_module_actions() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("modules_marker");
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let module = crate::modules::ResolvedModule {
+        name: "nvim".to_string(),
+        packages: vec![],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        system: HashMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+    };
+
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Modules,
+            actions: vec![
+                Action::Module(ModuleAction {
+                    module_name: "nvim".to_string(),
+                    kind: ModuleActionKind::RunScript {
+                        script: ScriptEntry::Simple(format!("touch {}", marker.display())),
+                        phase: ScriptPhase::PostApply,
+                    },
+                }),
+                Action::Module(ModuleAction {
+                    module_name: "nvim".to_string(),
+                    kind: ModuleActionKind::InstallPackages { resolved: vec![] },
+                }),
+                Action::Module(ModuleAction {
+                    module_name: "nvim".to_string(),
+                    kind: ModuleActionKind::Skip {
+                        reason: "exercised by test".to_string(),
+                    },
+                }),
+            ],
+        }],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseName::Modules),
+            std::slice::from_ref(&module),
+            ReconcileContext::Apply,
+            false,
+        )
+        .unwrap();
+
+    // All three module actions should have run — Modules filter does NOT
+    // narrow to scripts-only.
+    assert_eq!(result.action_results.len(), 3);
+    let descs: Vec<&str> = result
+        .action_results
+        .iter()
+        .map(|r| r.description.as_str())
+        .collect();
+    assert!(descs.iter().any(|d| d.starts_with("module:nvim:script")));
+    assert!(descs.iter().any(|d| d.starts_with("module:nvim:packages")));
+    assert!(descs.iter().any(|d| d.starts_with("module:nvim:skip")));
+}
+
+#[test]
+fn apply_post_scripts_filter_skips_other_phases() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("post_only_marker");
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let module = crate::modules::ResolvedModule {
+        name: "nvim".to_string(),
+        packages: vec![],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        system: HashMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+    };
+
+    let plan = Plan {
+        phases: vec![
+            Phase {
+                name: PhaseName::Files,
+                actions: vec![Action::File(FileAction::Skip {
+                    target: PathBuf::from("/tmp/should_not_run"),
+                    reason: "blocked".to_string(),
+                    origin: "local".to_string(),
+                })],
+            },
+            Phase {
+                name: PhaseName::System,
+                actions: vec![Action::System(SystemAction::Skip {
+                    configurator: "shell".to_string(),
+                    reason: "blocked".to_string(),
+                    origin: "local".to_string(),
+                })],
+            },
+            Phase {
+                name: PhaseName::Packages,
+                actions: vec![Action::Package(PackageAction::Skip {
+                    manager: "apt".to_string(),
+                    reason: "blocked".to_string(),
+                    origin: "local".to_string(),
+                })],
+            },
+            Phase {
+                name: PhaseName::Modules,
+                actions: vec![Action::Module(ModuleAction {
+                    module_name: "nvim".to_string(),
+                    kind: ModuleActionKind::RunScript {
+                        script: ScriptEntry::Simple(format!("touch {}", marker.display())),
+                        phase: ScriptPhase::PostApply,
+                    },
+                })],
+            },
+        ],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseName::PostScripts),
+            std::slice::from_ref(&module),
+            ReconcileContext::Apply,
+            false,
+        )
+        .unwrap();
+
+    // Only the module post-script should run; Files / System / Packages
+    // actions are filtered out.
+    assert_eq!(
+        result.action_results.len(),
+        1,
+        "expected only the module post-script to run, got {:?}",
+        result
+            .action_results
+            .iter()
+            .map(|r| &r.description)
+            .collect::<Vec<_>>(),
+    );
+    assert!(
+        result.action_results[0]
+            .description
+            .starts_with("module:nvim:script")
+    );
+    assert!(marker.exists());
+}
