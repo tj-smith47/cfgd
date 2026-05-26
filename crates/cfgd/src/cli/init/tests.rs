@@ -2842,9 +2842,12 @@ mod enroll_mockito {
                 std::fs::write(snap_path, &normalized).unwrap();
             } else {
                 let expected = std::fs::read_to_string(snap_path).unwrap();
+                // CRLF→LF: windows captures `\r\n`; committed snapshot is LF.
+                let actual_norm = normalized.replace("\r\n", "\n");
+                let expected_norm = expected.replace("\r\n", "\n");
                 pretty_assertions::assert_eq!(
-                    normalized,
-                    expected,
+                    actual_norm,
+                    expected_norm,
                     "snapshot mismatch: enroll/cmd_token_flow.txt"
                 );
             }
@@ -3508,7 +3511,7 @@ mod cmd_init_from_local_bare {
             .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
             .unwrap();
         drop(tree);
-        let bare_url = format!("file://{}", bare.display());
+        let bare_url = cfgd_core::test_helpers::file_url(&bare);
         let mut remote = src_repo.remote("origin", &bare_url).unwrap();
         let branch = src_repo
             .head()
@@ -3541,7 +3544,7 @@ mod cmd_init_from_local_bare {
             .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
             .unwrap();
         drop(tree);
-        let bare_url = format!("file://{}", bare.display());
+        let bare_url = cfgd_core::test_helpers::file_url(&bare);
         let mut remote = src_repo.remote("origin", &bare_url).unwrap();
         let branch = src_repo
             .head()
@@ -3560,7 +3563,7 @@ mod cmd_init_from_local_bare {
         let tmp = tempfile::tempdir().unwrap();
         let bare = make_bare_config_repo(tmp.path());
         let target = tmp.path().join("dst");
-        let url = format!("file://{}", bare.display());
+        let url = cfgd_core::test_helpers::file_url(&bare);
 
         let printer = quiet_printer();
         let args = InitArgs {
@@ -3602,7 +3605,7 @@ mod cmd_init_from_local_bare {
         let tmp = tempfile::tempdir().unwrap();
         let bare = make_bare_config_repo(tmp.path());
         let target = tmp.path().join("dst");
-        let url = format!("file://{}", bare.display());
+        let url = cfgd_core::test_helpers::file_url(&bare);
 
         let printer = quiet_printer();
         let args = InitArgs {
@@ -3635,7 +3638,7 @@ mod cmd_init_from_local_bare {
         let tmp = tempfile::tempdir().unwrap();
         let bare = make_bare_empty_repo(tmp.path());
         let target = tmp.path().join("empty-dst");
-        let url = format!("file://{}", bare.display());
+        let url = cfgd_core::test_helpers::file_url(&bare);
 
         let printer = quiet_printer();
         let args = InitArgs {
@@ -3837,7 +3840,7 @@ mod cmd_init_apply_orchestration {
             .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
             .unwrap();
         drop(tree);
-        let bare_url = format!("file://{}", bare.display());
+        let bare_url = cfgd_core::test_helpers::file_url(&bare);
         let mut remote = src_repo.remote("origin", &bare_url).unwrap();
         let branch = src_repo
             .head()
@@ -3865,7 +3868,7 @@ mod cmd_init_apply_orchestration {
         let bare = make_bare_config_repo_with_default(tmp.path());
         let target = tmp.path().join("dst");
         let state_dir = tmp.path().join("state");
-        let url = format!("file://{}", bare.display());
+        let url = cfgd_core::test_helpers::file_url(&bare);
 
         let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
@@ -3911,7 +3914,7 @@ mod cmd_init_apply_orchestration {
         let bare = make_bare_config_repo_with_default(tmp.path());
         let target = tmp.path().join("dst");
         let state_dir = tmp.path().join("state");
-        let url = format!("file://{}", bare.display());
+        let url = cfgd_core::test_helpers::file_url(&bare);
 
         let (printer, cap) = Printer::for_test_doc();
         with_state_dir(&state_dir, || {
@@ -3987,7 +3990,7 @@ mod cmd_init_apply_orchestration {
             .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
             .unwrap();
         drop(tree);
-        let url = format!("file://{}", bare.display());
+        let url = cfgd_core::test_helpers::file_url(&bare);
         let mut remote = src_repo.remote("origin", &url).unwrap();
         let branch = src_repo
             .head()
@@ -4072,7 +4075,7 @@ mod cmd_init_apply_orchestration {
             .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
             .unwrap();
         drop(tree);
-        let url = format!("file://{}", bare.display());
+        let url = cfgd_core::test_helpers::file_url(&bare);
         let mut remote = src_repo.remote("origin", &url).unwrap();
         let branch = src_repo
             .head()
@@ -4155,7 +4158,7 @@ mod cmd_init_apply_orchestration {
             .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
             .unwrap();
         drop(tree);
-        let bare_url = format!("file://{}", bare.display());
+        let bare_url = cfgd_core::test_helpers::file_url(&bare);
         let mut remote = src_repo.remote("origin", &bare_url).unwrap();
         let branch = src_repo
             .head()
@@ -4185,7 +4188,7 @@ mod cmd_init_apply_orchestration {
         let bare = make_bare_config_repo_with_default_and_module(tmp.path(), "extra");
         let target = tmp.path().join("dst");
         let state_dir = tmp.path().join("state");
-        let url = format!("file://{}", bare.display());
+        let url = cfgd_core::test_helpers::file_url(&bare);
 
         let (printer, cap) = Printer::for_test_doc();
         let modules = vec!["extra".to_string()];
@@ -4242,7 +4245,7 @@ mod cmd_init_apply_orchestration {
         let bare = make_bare_config_repo_with_default(tmp.path());
         let target = tmp.path().join("dst");
         let state_dir = tmp.path().join("state");
-        let url = format!("file://{}", bare.display());
+        let url = cfgd_core::test_helpers::file_url(&bare);
 
         let printer = quiet_printer();
         let modules = vec!["ghost-extra".to_string()];

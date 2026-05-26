@@ -64,8 +64,11 @@ macro_rules! golden_at {
                 return;
             }
             let expected = std::fs::read_to_string(&path).unwrap();
+            // CRLF→LF: windows captures `\r\n`; committed snapshots use `\n`.
+            let actual_norm = actual.replace("\r\n", "\n");
+            let expected_norm = expected.replace("\r\n", "\n");
             pretty_assertions::assert_eq!(
-                actual, expected, "snapshot mismatch: {}", stringify!($name));
+                actual_norm, expected_norm, "snapshot mismatch: {}", stringify!($name));
         }
     };
 }
@@ -96,8 +99,11 @@ macro_rules! golden_themed {
                 return;
             }
             let expected = std::fs::read_to_string(&path).unwrap();
+            // CRLF→LF: windows captures `\r\n`; committed snapshots use `\n`.
+            let actual_norm = actual.replace("\r\n", "\n");
+            let expected_norm = expected.replace("\r\n", "\n");
             pretty_assertions::assert_eq!(
-                actual, expected, "snapshot mismatch: {}", stringify!($name));
+                actual_norm, expected_norm, "snapshot mismatch: {}", stringify!($name));
         }
     };
 }

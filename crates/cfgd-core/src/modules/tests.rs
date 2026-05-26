@@ -3580,7 +3580,7 @@ mod git_fixture_tests {
     /// Build a `file://` URL for a local repo path. git CLI and libgit2 both
     /// understand this scheme as a local-source clone.
     fn file_url(p: &Path) -> String {
-        format!("file://{}", p.display())
+        crate::test_helpers::file_url(&p)
     }
 
     #[test]
@@ -3913,7 +3913,7 @@ mod git_fixture_tests {
         let cache = tempfile::tempdir().unwrap();
         let (printer, _) = Printer::for_test();
         let git_src = GitSource {
-            repo_url: format!("file://{}", bogus_path.display()),
+            repo_url: crate::test_helpers::file_url(&bogus_path),
             tag: None,
             git_ref: None,
             subdir: None,

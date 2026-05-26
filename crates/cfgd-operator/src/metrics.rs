@@ -407,23 +407,21 @@ mod tests {
         use std::sync::Arc;
         use tokio::sync::Mutex;
 
+        // Port 1 is privileged on every POSIX system; binding without root
+        // (CAP_NET_BIND_SERVICE) yields PermissionDenied. CI runners are
+        // non-root, so this fails reliably without the second-bind-collision
+        // dance (which macOS doesn't honor). 5s timeout guards the case
+        // where the test runs as root locally.
+        if cfgd_core::is_root() {
+            return;
+        }
         let registry = Arc::new(Mutex::new(Registry::default()));
-        // Pre-bind blocks the port; the second bind in run_metrics_server should
-        // fail AddrInUse on Linux. macOS doesn't always honor the conflict —
-        // wrap with a 5s timeout so the second-bind-succeeds case converts
-        // from a hang into a clean test failure.
-        let blocker = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .expect("bind blocker");
-        let port = blocker.local_addr().expect("local_addr").port();
-
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            run_metrics_server(port, registry),
+            run_metrics_server(1, registry),
         )
         .await
-        .expect("run_metrics_server must return within 5s — second bind unexpectedly succeeded");
-        drop(blocker);
+        .expect("run_metrics_server must return within 5s");
 
         match result {
             Err(OperatorError::Metrics(msg)) => {

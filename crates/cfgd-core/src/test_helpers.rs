@@ -503,6 +503,21 @@ impl TestEnv {
 // init_test_git_repo
 // ---------------------------------------------------------------------------
 
+/// Build a `file://` URL portable across unix and windows.
+///
+/// `crate::test_helpers::file_url(&path)` produces `file:///home/foo` on unix
+/// (path starts with `/`) but `file://C:\Users\foo` on windows — missing the
+/// third slash and using backslashes — which git2 rejects with "filename,
+/// directory name, or volume label syntax is incorrect".
+pub fn file_url(path: &Path) -> String {
+    let s = path.display().to_string().replace('\\', "/");
+    if s.starts_with('/') {
+        format!("file://{s}")
+    } else {
+        format!("file:///{s}")
+    }
+}
+
 /// Initialize a minimal git repository at `dir` with an initial commit.
 /// Useful for tests that depend on git operations (sources, modules, etc.).
 pub fn init_test_git_repo(dir: &Path) {
@@ -637,7 +652,7 @@ impl BareGitRepoBuilder {
             .expect("set user.email");
 
         // Add bare as remote
-        let bare_url = format!("file://{}", bare_dir.path().display());
+        let bare_url = file_url(bare_dir.path());
         work_repo
             .remote("origin", &bare_url)
             .expect("add origin remote");
@@ -812,7 +827,7 @@ impl BareGitRepo {
 
     /// The `file://` URL for this bare repo, suitable for clone/fetch.
     pub fn url(&self) -> String {
-        format!("file://{}", self.bare_repo.path().display())
+        file_url(self.bare_repo.path())
     }
 
     /// The path to the bare repo on disk.

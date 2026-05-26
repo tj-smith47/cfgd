@@ -1792,7 +1792,7 @@ mod local_source_fixture {
             .unwrap();
         drop(tree);
 
-        let bare_url = format!("file://{}", bare.display());
+        let bare_url = crate::test_helpers::file_url(&bare);
         let mut remote = src_repo.remote("origin", &bare_url).unwrap();
         let branch = src_repo
             .head()
@@ -1842,7 +1842,7 @@ mod local_source_fixture {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "ts1", None, &[]);
             let branch = detect_branch(&bare);
-            let url = format!("file://{}", bare.display());
+            let url = crate::test_helpers::file_url(&bare);
             let cache_dir = tmp.path().join("cache");
             let mut mgr = SourceManager::new(&cache_dir);
             let spec = build_spec("ts1", &url, &branch);
@@ -1864,7 +1864,7 @@ mod local_source_fixture {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "ts2", None, &[]);
             let branch = detect_branch(&bare);
-            let url = format!("file://{}", bare.display());
+            let url = crate::test_helpers::file_url(&bare);
             let cache_dir = tmp.path().join("cache");
             let mut mgr = SourceManager::new(&cache_dir);
             let spec = build_spec("ts2", &url, &branch);
@@ -1886,7 +1886,7 @@ mod local_source_fixture {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "ts3", Some("2.1.0"), &[]);
             let branch = detect_branch(&bare);
-            let url = format!("file://{}", bare.display());
+            let url = crate::test_helpers::file_url(&bare);
             let cache_dir = tmp.path().join("cache");
             let mut mgr = SourceManager::new(&cache_dir);
             let mut spec = build_spec("ts3", &url, &branch);
@@ -1904,7 +1904,7 @@ mod local_source_fixture {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "ts4", Some("1.0.0"), &[]);
             let branch = detect_branch(&bare);
-            let url = format!("file://{}", bare.display());
+            let url = crate::test_helpers::file_url(&bare);
             let cache_dir = tmp.path().join("cache");
             let mut mgr = SourceManager::new(&cache_dir);
             let mut spec = build_spec("ts4", &url, &branch);
@@ -1926,7 +1926,7 @@ mod local_source_fixture {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "ts5", None, &[]);
             let branch = detect_branch(&bare);
-            let url = format!("file://{}", bare.display());
+            let url = crate::test_helpers::file_url(&bare);
             let cache_dir = tmp.path().join("cache");
             let mut mgr = SourceManager::new(&cache_dir);
             let spec = build_spec("ts5", &url, &branch);
@@ -1968,7 +1968,7 @@ mod local_source_fixture {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "ts6", None, &[]);
             let branch = detect_branch(&bare);
-            let url = format!("file://{}", bare.display());
+            let url = crate::test_helpers::file_url(&bare);
             let cache_dir = tmp.path().join("cache");
             let mut mgr = SourceManager::new(&cache_dir);
             let spec = build_spec("ts6", &url, &branch);
@@ -1993,8 +1993,8 @@ mod local_source_fixture {
             let cache_dir = tmp.path().join("cache");
             let mut mgr = SourceManager::new(&cache_dir);
             let specs = vec![
-                build_spec("alpha", &format!("file://{}", bare_a.display()), &branch),
-                build_spec("beta", &format!("file://{}", bare_b.display()), &branch),
+                build_spec("alpha", &crate::test_helpers::file_url(&bare_a), &branch),
+                build_spec("beta", &crate::test_helpers::file_url(&bare_b), &branch),
             ];
             let printer = test_printer();
             mgr.load_sources(&specs, &printer).unwrap();
@@ -2011,7 +2011,7 @@ mod local_source_fixture {
             let tmp = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&tmp, "ts7", None, &[]);
             let branch = detect_branch(&bare);
-            let url = format!("file://{}", bare.display());
+            let url = crate::test_helpers::file_url(&bare);
             let cache_dir = tmp.path().join("cache");
             let mut mgr = SourceManager::new(&cache_dir);
             let spec = build_spec("ts7", &url, &branch);
@@ -2504,7 +2504,7 @@ fn load_sources_succeeds_when_at_least_one_source_loads() {
             .unwrap();
         drop(tree);
 
-        let bare_url = format!("file://{}", bare.display());
+        let bare_url = crate::test_helpers::file_url(&bare);
         let mut remote = src_repo.remote("origin", &bare_url).unwrap();
         let branch = src_repo
             .head()

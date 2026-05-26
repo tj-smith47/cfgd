@@ -53,7 +53,14 @@ fn assert_snapshot(base: &Path, name: &str, actual: &str) {
         return;
     }
     let expected = std::fs::read_to_string(&path).unwrap();
-    pretty_assertions::assert_eq!(actual, expected, "snapshot mismatch: {name}");
+
+    // Normalize CRLF→LF: windows captured output has \r\n; committed snapshot is LF.
+
+    let actual_norm = actual.replace("\r\n", "\n");
+
+    let expected_norm = expected.replace("\r\n", "\n");
+
+    pretty_assertions::assert_eq!(actual_norm, expected_norm, "snapshot mismatch: {name}");
 }
 
 fn normalize_bare(raw: &str, bares: &[(&std::path::Path, &str)]) -> String {

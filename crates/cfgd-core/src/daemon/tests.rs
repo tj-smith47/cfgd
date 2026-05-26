@@ -8089,7 +8089,7 @@ mod harness {
             .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
             .unwrap();
         drop(tree);
-        let bare_url = format!("file://{}", bare.display());
+        let bare_url = crate::test_helpers::file_url(&bare);
         let mut remote = src_repo.remote("origin", &bare_url).unwrap();
         let branch = src_repo
             .head()

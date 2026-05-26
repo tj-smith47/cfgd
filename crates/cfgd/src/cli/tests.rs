@@ -16446,7 +16446,7 @@ mod cmd_source_add_local {
             .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
             .unwrap();
         drop(tree);
-        let url = format!("file://{}", bare.display());
+        let url = cfgd_core::test_helpers::file_url(&bare);
         let mut remote = src_repo.remote("origin", &url).unwrap();
         let branch = src_repo
             .head()
@@ -16483,7 +16483,7 @@ mod cmd_source_add_local {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "local-team", None);
             let h = CliTestHarness::builder().build();
-            let url = format!("file://{}", bare.display());
+            let url = cfgd_core::test_helpers::file_url(&bare);
             let args = SourceAddArgs {
                 name: Some("local-team".to_string()),
                 ..empty_source_args(url.clone())
@@ -16510,7 +16510,7 @@ mod cmd_source_add_local {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "pinned-src", Some("1.2.3"));
             let h = CliTestHarness::builder().build();
-            let url = format!("file://{}", bare.display());
+            let url = cfgd_core::test_helpers::file_url(&bare);
             let args = SourceAddArgs {
                 name: Some("pinned-src".to_string()),
                 pin_version: Some("~1".to_string()),
@@ -16533,7 +16533,7 @@ mod cmd_source_add_local {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "opt-in-src", None);
             let h = CliTestHarness::builder().build();
-            let url = format!("file://{}", bare.display());
+            let url = cfgd_core::test_helpers::file_url(&bare);
             let args = SourceAddArgs {
                 name: Some("opt-in-src".to_string()),
                 opt_in: vec!["app/featureA".to_string(), "app/featureB".to_string()],
@@ -16571,7 +16571,7 @@ mod cmd_source_add_local {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "dup-name", None);
             let h = CliTestHarness::builder().build();
-            let url = format!("file://{}", bare.display());
+            let url = cfgd_core::test_helpers::file_url(&bare);
             let args = SourceAddArgs {
                 name: Some("dup-name".to_string()),
                 ..empty_source_args(url.clone())
@@ -16646,7 +16646,7 @@ mod cmd_source_add_local {
             .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
             .unwrap();
         drop(tree);
-        let url = format!("file://{}", bare.display());
+        let url = cfgd_core::test_helpers::file_url(&bare);
         let mut remote = src_repo.remote("origin", &url).unwrap();
         let branch = src_repo
             .head()
@@ -16680,7 +16680,7 @@ mod cmd_source_add_local {
                 &[("linux", "linux-default"), ("macos", "macos-default")],
             );
             let h = CliTestHarness::builder().build();
-            let url = format!("file://{}", bare.display());
+            let url = cfgd_core::test_helpers::file_url(&bare);
             let args = SourceAddArgs {
                 name: Some("platform-src".to_string()),
                 profile: None, // <- trigger auto-detect branch
@@ -16726,7 +16726,7 @@ mod cmd_source_add_local {
                 .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
                 .unwrap();
             drop(tree);
-            let url = format!("file://{}", bare.display());
+            let url = cfgd_core::test_helpers::file_url(&bare);
             let mut remote = src_repo.remote("origin", &url).unwrap();
             let branch = src_repo
                 .head()
@@ -16760,7 +16760,7 @@ mod cmd_source_add_local {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "branched", None);
             let h = CliTestHarness::builder().build();
-            let url = format!("file://{}", bare.display());
+            let url = cfgd_core::test_helpers::file_url(&bare);
             // Determine the actual default branch name from the bare repo.
             let actual_branch = {
                 let repo = git2::Repository::open(&bare).unwrap();
@@ -16807,7 +16807,7 @@ mod cmd_source_add_local {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "upd-src", None);
             let h = CliTestHarness::builder().build();
-            let url = format!("file://{}", bare.display());
+            let url = cfgd_core::test_helpers::file_url(&bare);
             let add_args = SourceAddArgs {
                 name: Some("upd-src".to_string()),
                 ..empty_source_args(url)
@@ -16843,8 +16843,8 @@ mod cmd_source_add_local {
             let bare_a = make_bare_with_manifest(&scratch, "src-a", None);
             let bare_b = make_bare_with_manifest(&scratch, "src-b", None);
             let h = CliTestHarness::builder().build();
-            let url_a = format!("file://{}", bare_a.display());
-            let url_b = format!("file://{}", bare_b.display());
+            let url_a = cfgd_core::test_helpers::file_url(&bare_a);
+            let url_b = cfgd_core::test_helpers::file_url(&bare_b);
             super::source::cmd_source_add(
                 &h.cli(),
                 h.printer(),
@@ -16905,7 +16905,7 @@ mod cmd_source_add_local {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
-        let url = format!("file://{}", bare.display());
+        let url = cfgd_core::test_helpers::file_url(&bare);
         let repo = git2::Repository::clone(&url, &clone_dir).unwrap();
         std::fs::write(clone_dir.join("cfgd-source.yaml"), new_manifest_yaml).unwrap();
         let mut index = repo.index().unwrap();
@@ -16947,7 +16947,7 @@ mod cmd_source_add_local {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "shown-src", Some("2.0.0"));
             let h = CliTestHarness::builder().build();
-            let url = format!("file://{}", bare.display());
+            let url = cfgd_core::test_helpers::file_url(&bare);
             super::source::cmd_source_add(
                 &h.cli(),
                 h.printer(),
@@ -17031,7 +17031,7 @@ mod cmd_source_add_local {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "perm-src", None);
             let h = CliTestHarness::builder().build();
-            let url = format!("file://{}", bare.display());
+            let url = cfgd_core::test_helpers::file_url(&bare);
             super::source::cmd_source_add(
                 &h.cli(),
                 h.printer(),
@@ -17089,7 +17089,7 @@ mod cmd_source_add_local {
             let scratch = tempfile::tempdir().unwrap();
             let bare = make_bare_with_manifest(&scratch, "doomed-src", None);
             let h = CliTestHarness::builder().build();
-            let url = format!("file://{}", bare.display());
+            let url = cfgd_core::test_helpers::file_url(&bare);
             super::source::cmd_source_add(
                 &h.cli(),
                 h.printer(),

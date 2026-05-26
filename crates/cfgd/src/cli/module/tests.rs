@@ -3003,16 +3003,15 @@ fn cmd_module_show_renders_platform_filtered_and_resolved_packages() {
     drop(printer);
 
     let output = buf.lock().unwrap();
-    // Ok(Some(_)) — curl resolves cleanly via the default manager.
-    assert!(
-        output.contains("curl -> "),
-        "resolved entry should render '<name> -> <mgr> install ...', got: {output}"
-    );
-    // Ok(None) — notepad has only 'windows' in its platforms filter, so on
-    // a Linux/macOS host the entry is skipped via the platform filter arm.
-    // The platform_str format ('platforms: <slash-joined>') is rendered here.
+    // curl: platforms [linux, macos]. notepad: platforms [windows]. Each
+    // resolves on its own platform and is skipped on the other — assertions
+    // mirror the host filter.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
+        assert!(
+            output.contains("curl -> "),
+            "resolved entry should render '<name> -> <mgr> install ...', got: {output}"
+        );
         assert!(
             output.contains("notepad") && output.contains("skipped (platform filter)"),
             "platforms-filtered entry should report 'skipped (platform filter)', got: {output}"
@@ -3020,6 +3019,17 @@ fn cmd_module_show_renders_platform_filtered_and_resolved_packages() {
         assert!(
             output.contains("platforms: windows"),
             "skipped entry should render platform_str with the host-rejected list, got: {output}"
+        );
+    }
+    #[cfg(target_os = "windows")]
+    {
+        assert!(
+            output.contains("notepad -> "),
+            "resolved entry should render '<name> -> <mgr> install ...', got: {output}"
+        );
+        assert!(
+            output.contains("curl") && output.contains("skipped (platform filter)"),
+            "platforms-filtered entry should report 'skipped (platform filter)', got: {output}"
         );
     }
 }
@@ -4600,7 +4610,7 @@ mod cmd_module_add_remote_local_bare {
             .tag(tag, commit_obj.as_object(), &sig, "release", false)
             .unwrap();
 
-        let bare_url = format!("file://{}", bare.display());
+        let bare_url = cfgd_core::test_helpers::file_url(&bare);
         let mut remote = src_repo.remote("origin", &bare_url).unwrap();
         let branch = src_repo
             .head()
@@ -4641,7 +4651,7 @@ mod cmd_module_add_remote_local_bare {
         src_repo
             .tag(new_tag, commit_obj.as_object(), &sig, "release", false)
             .unwrap();
-        let bare_url = format!("file://{}", bare.display());
+        let bare_url = cfgd_core::test_helpers::file_url(&bare);
         let mut remote = src_repo.remote_anonymous(&bare_url).unwrap();
         let branch = src_repo
             .head()
@@ -5078,7 +5088,7 @@ mod cmd_module_add_from_registry_local {
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
-        let reg_url = format!("file://{}", src.display());
+        let reg_url = cfgd_core::test_helpers::file_url(&src);
         write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
 
         let cli = test_cli(work.path());
@@ -5123,7 +5133,7 @@ mod cmd_module_add_from_registry_local {
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "beta", "1.0.0", "Beta v1");
         add_module_version(&src, "beta", "2.5.0", "Beta v2.5");
-        let reg_url = format!("file://{}", src.display());
+        let reg_url = cfgd_core::test_helpers::file_url(&src);
         write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
 
         let cli = test_cli(work.path());
@@ -5194,7 +5204,7 @@ mod cmd_module_add_from_registry_local {
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha");
-        let reg_url = format!("file://{}", src.display());
+        let reg_url = cfgd_core::test_helpers::file_url(&src);
         write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
 
         let cli = test_cli(work.path());
@@ -5226,7 +5236,7 @@ mod cmd_module_add_from_registry_local {
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
-        let reg_url = format!("file://{}", src.display());
+        let reg_url = cfgd_core::test_helpers::file_url(&src);
         write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
 
         let cli = test_cli(work.path());
@@ -5260,7 +5270,7 @@ mod cmd_module_add_from_registry_local {
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
-        let reg_url = format!("file://{}", src.display());
+        let reg_url = cfgd_core::test_helpers::file_url(&src);
         write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
 
         let cli = test_cli(work.path());
@@ -5289,7 +5299,7 @@ mod cmd_module_add_from_registry_local {
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
-        let reg_url = format!("file://{}", src.display());
+        let reg_url = cfgd_core::test_helpers::file_url(&src);
         write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
 
         let mut cli = test_cli(work.path());
@@ -5324,7 +5334,7 @@ mod cmd_module_add_from_registry_local {
 
         let src_root = tempfile::tempdir().unwrap();
         let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
-        let reg_url = format!("file://{}", src.display());
+        let reg_url = cfgd_core::test_helpers::file_url(&src);
         write_cfgd_yaml_with_registry(work.path(), "myreg", &reg_url);
 
         let cli = test_cli_json(work.path());
@@ -5357,7 +5367,7 @@ mod cmd_module_add_from_registry_local {
         // bail (it should continue to the empty-results print), and the
         // failure should surface as a warning line.
         let ghost = work.path().join("does-not-exist-registry");
-        let ghost_url = format!("file://{}", ghost.display());
+        let ghost_url = cfgd_core::test_helpers::file_url(&ghost);
         write_cfgd_yaml_with_registry(work.path(), "myreg", &ghost_url);
 
         let cli = test_cli(work.path());

@@ -200,23 +200,22 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn serve_metrics_bind_failure_returns_metrics_error() {
-        // Bind port first, then try to bind again on the same port — AddrInUse.
-        // macOS doesn't always honor the conflict (the second bind can succeed
-        // and serve_metrics enters its serve loop forever); a 5s timeout
-        // converts a missed-error hang into a clean test failure.
-        let blocker = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .expect("bind blocker");
-        let port = blocker.local_addr().expect("local_addr").port();
+        // Port 1 is privileged on every POSIX system; binding without root
+        // (CAP_NET_BIND_SERVICE) yields PermissionDenied. CI runners are
+        // non-root, so this fails reliably without the second-bind-collision
+        // dance (which macOS doesn't honor). 5s timeout guards the case
+        // where the test runs as root locally — instead of binding forever,
+        // it fails cleanly.
+        if cfgd_core::is_root() {
+            return; // skip locally: root can bind port 1 successfully
+        }
         let registry = Arc::new(Registry::default());
-
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            serve_metrics(port, registry),
+            serve_metrics(1, registry),
         )
         .await
-        .expect("serve_metrics must return within 5s — second bind unexpectedly succeeded");
-        drop(blocker);
+        .expect("serve_metrics must return within 5s");
 
         match result {
             Err(crate::errors::CsiError::Metrics(msg)) => {

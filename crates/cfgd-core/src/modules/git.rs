@@ -785,7 +785,7 @@ mod tests {
         let head = repo.head().unwrap().target().unwrap();
         let obj = repo.find_object(head, None).unwrap();
         repo.tag_lightweight("v0.1.0", &obj, false).unwrap();
-        let url = format!("file://{}", src.path().display());
+        let url = crate::test_helpers::file_url(src.path());
         (src, url)
     }
 

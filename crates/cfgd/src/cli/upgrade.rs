@@ -208,7 +208,11 @@ mod tests {
         let os = std::env::consts::OS;
         let arch = std::env::consts::ARCH;
         let archive_os = if os == "macos" { "darwin" } else { os };
-        format!("cfgd-{}-{}-{}.tar.gz", version, archive_os, arch)
+        // Production upgrade::asset_for_target looks for .zip on windows,
+        // .tar.gz elsewhere. The mock must match or the resolver returns
+        // no_release before the download arm can fire.
+        let suffix = if cfg!(windows) { "zip" } else { "tar.gz" };
+        format!("cfgd-{}-{}-{}.{}", version, archive_os, arch, suffix)
     }
 
     fn release_json_current_version() -> String {
