@@ -53,7 +53,17 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
         for source_spec in &cfg.spec.sources {
             let source_dir = cache_dir.join(&source_spec.name);
             let old_manifest = if source_dir.exists() {
-                mgr.parse_manifest(&source_spec.name, &source_dir).ok()
+                match mgr.parse_manifest(&source_spec.name, &source_dir) {
+                    Ok(m) => Some(m),
+                    Err(e) => {
+                        tracing::debug!(
+                            source = %source_spec.name,
+                            error = %e,
+                            "could not parse existing source manifest; treating as no prior state"
+                        );
+                        None
+                    }
+                }
             } else {
                 None
             };

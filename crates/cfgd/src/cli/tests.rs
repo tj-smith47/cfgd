@@ -15983,12 +15983,13 @@ fn cmd_checkin_server_unreachable() {
         result.is_err(),
         "checkin should fail with unreachable server"
     );
-    let err_msg = result.unwrap_err().to_string();
+    let err = result.unwrap_err();
+    let chain = format!("{err:#}");
     assert!(
-        err_msg.contains("checkin failed")
-            || err_msg.contains("Connection refused")
-            || err_msg.contains("connection"),
-        "error should mention connection failure, got: {err_msg}"
+        chain.contains("checkin to gateway failed")
+            || chain.contains("Connection refused")
+            || chain.contains("connection"),
+        "error chain should mention connection failure, got: {chain}"
     );
 }
 

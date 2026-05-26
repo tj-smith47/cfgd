@@ -1,5 +1,6 @@
 use super::*;
 
+use anyhow::Context;
 use cfgd_core::output::{Doc, Printer, Role};
 use cfgd_core::server_client::{DeviceCredential, ServerClient};
 
@@ -19,7 +20,7 @@ pub fn cmd_checkin(
     let client = build_checkin_client(server_url, api_key, device_id, stored_cred.as_ref());
 
     let config_yaml = serde_yaml::to_string(&resolved.merged.system)
-        .map_err(|e| anyhow::anyhow!("failed to serialize system config: {}", e))?;
+        .context("failed to serialize system config")?;
     let config_hash = cfgd_core::sha256_hex(config_yaml.as_bytes());
 
     let compliance_summary = if let Some(ref compliance_cfg) = cfg.spec.compliance {
@@ -60,13 +61,13 @@ pub fn cmd_checkin(
         let sp = printer.spinner("Posting to gateway");
         let result = client
             .checkin(&config_hash, compliance_summary, printer)
-            .map_err(|e| anyhow::anyhow!("{}", e));
+            .context("checkin to gateway failed");
         match &result {
             Ok(resp) => {
                 sp.finish_ok(format!("server status: {}", resp.status));
             }
             Err(e) => {
-                sp.finish_fail("Checkin failed").detail(e.to_string());
+                sp.finish_fail("Checkin failed").detail(format!("{e:#}"));
             }
         }
         result?
@@ -110,13 +111,14 @@ pub fn cmd_checkin(
         let sp = printer.spinner("Reporting drift");
         let res = client
             .report_drift(&all_drifts, printer)
-            .map_err(|e| anyhow::anyhow!("{}", e));
+            .context("drift report to gateway failed");
         match &res {
             Ok(()) => {
                 sp.finish_ok(format!("{} drift items reported", all_drifts.len()));
             }
             Err(e) => {
-                sp.finish_fail("Drift report failed").detail(e.to_string());
+                sp.finish_fail("Drift report failed")
+                    .detail(format!("{e:#}"));
             }
         }
         res?;
