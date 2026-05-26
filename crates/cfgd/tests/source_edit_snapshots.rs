@@ -77,7 +77,7 @@ fn source_edit_valid_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let _editor = EditorGuard::set("/bin/true");
+    let _editor = EditorGuard::set("/usr/bin/true");
     cmd_source_edit(&cli, &printer).expect("valid manifest must succeed");
     drop(printer);
 
@@ -149,7 +149,7 @@ fn source_edit_validation_error_decline_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
-    let _editor = EditorGuard::set("/bin/true");
+    let _editor = EditorGuard::set("/usr/bin/true");
 
     cmd_source_edit(&cli, &printer).expect("save-with-errors must return Ok");
     drop(printer);

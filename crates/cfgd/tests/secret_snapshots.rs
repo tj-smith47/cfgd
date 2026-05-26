@@ -369,7 +369,7 @@ fn secret_edit_happy_human() {
 
     // EDITOR=/bin/true round-trips the decrypted file unchanged through
     // sops' edit flow.
-    let _editor = EditorGuard::set("/bin/true");
+    let _editor = EditorGuard::set("/usr/bin/true");
     let (printer, cap) = Printer::for_test_doc();
     secret::cmd_secret_edit(&cli, &printer, &secret_path).expect("edit");
     drop(printer);

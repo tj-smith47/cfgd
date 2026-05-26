@@ -59,22 +59,24 @@ mod tests {
 
     #[test]
     fn run_argv_inherit_with_true_binary_returns_exit_zero() {
-        // `/bin/true` is silent and exits 0 on every POSIX system. If it's
-        // absent we skip rather than fail — this test is about exercising
-        // the success branch, not the platform.
-        if !std::path::Path::new("/bin/true").exists() {
+        // `/usr/bin/true` is silent and exits 0 on every POSIX system —
+        // present on both Linux (coreutils) and macOS (BSD). `/bin/true`
+        // does NOT exist on modern macOS, so prefer the /usr/bin path.
+        // If it's absent we skip rather than fail — this test is about
+        // exercising the success branch, not the platform.
+        if !std::path::Path::new("/usr/bin/true").exists() {
             return;
         }
-        let code = run_argv_inherit(&["/bin/true".to_string()]).expect("spawn");
+        let code = run_argv_inherit(&["/usr/bin/true".to_string()]).expect("spawn");
         assert_eq!(code, 0);
     }
 
     #[test]
     fn run_argv_inherit_with_false_binary_returns_exit_one() {
-        if !std::path::Path::new("/bin/false").exists() {
+        if !std::path::Path::new("/usr/bin/false").exists() {
             return;
         }
-        let code = run_argv_inherit(&["/bin/false".to_string()]).expect("spawn");
+        let code = run_argv_inherit(&["/usr/bin/false".to_string()]).expect("spawn");
         assert_eq!(code, 1);
     }
 

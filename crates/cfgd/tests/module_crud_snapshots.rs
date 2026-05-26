@@ -376,7 +376,7 @@ fn module_edit_valid_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let _editor = EditorGuard::set("/bin/true");
+    let _editor = EditorGuard::set("/usr/bin/true");
     module::cmd_module_edit(&cli, &printer, "edit-mod").unwrap();
     drop(printer);
 

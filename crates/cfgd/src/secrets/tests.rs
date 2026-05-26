@@ -958,7 +958,13 @@ fn sops_encrypt_command_no_config_when_missing() {
 // --- AgeBackend key path resolution tests ---
 
 #[test]
+#[serial_test::serial]
 fn age_backend_available_with_key_file() {
+    // `is_available` uses `command_available_with_seam(CFGD_AGE_BIN, "age")`,
+    // so a stale CFGD_AGE_BIN from a parallel `age_shim` test would force the
+    // available branch even when `age` is not on PATH. Pin the env to the
+    // PATH-only path for the duration of this test.
+    let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_AGE_BIN");
     let dir = tempfile::tempdir().unwrap();
     let key_path = dir.path().join("age-key.txt");
     std::fs::write(&key_path, "# public key: age1test\nAGE-SECRET-KEY-1TEST\n").unwrap();

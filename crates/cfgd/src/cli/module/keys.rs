@@ -444,9 +444,17 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn list_empty_home_emits_no_keys_found() {
+        // cmd_module_keys_list scans BOTH `./cosign.pub` (CWD) and
+        // `~/.cfgd/cosign.pub` (HOME). The HOME redirect alone isn't
+        // enough — a parallel test that drops a `cosign.pub` in CWD
+        // (e.g., `cosign generate-key-pair` runs from CWD by default)
+        // would poison this assertion. Pin CWD to the clean tempdir too,
+        // and serialise to keep the global-CWD swap from racing.
         let tmp = tempfile::tempdir().expect("tempdir");
         let _home = with_test_home_guard(tmp.path());
+        let _cwd = cfgd_core::test_helpers::CwdGuard::set(tmp.path()).expect("cwd guard");
         let (printer, cap) = Printer::for_test_doc();
         cmd_module_keys_list(&printer).expect("list should not error");
         let human = cap.human();

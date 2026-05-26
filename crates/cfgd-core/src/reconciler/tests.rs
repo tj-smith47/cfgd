@@ -7866,6 +7866,7 @@ mod bridge {
     /// Does NOT drive the reconciler — keeps `bridge.txt` distinct from
     /// (and far smaller than) the cycle goldens so a regression in the seam
     /// itself tips a fixture that has nothing else moving.
+    #[cfg(unix)]
     fn run_minimal_bridge() -> String {
         let (printer, cap) = Printer::for_test_doc();
         printer.status_simple(Role::Ok, "[1/1] Wrote /etc/hosts");

@@ -78,7 +78,7 @@ fn profile_edit_valid_human() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
-    let _editor = EnvVarGuard::set("EDITOR", "/bin/true");
+    let _editor = EnvVarGuard::set("EDITOR", "/usr/bin/true");
 
     cmd_profile_edit(&cli, &printer, "default").unwrap();
     drop(printer);
@@ -103,7 +103,7 @@ fn profile_edit_valid_json() {
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
-    let _editor = EnvVarGuard::set("EDITOR", "/bin/true");
+    let _editor = EnvVarGuard::set("EDITOR", "/usr/bin/true");
 
     cmd_profile_edit(&cli, &printer, "default").unwrap();
     drop(printer);
@@ -127,7 +127,7 @@ fn profile_edit_validation_error_decline_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
-    let _editor = EnvVarGuard::set("EDITOR", "/bin/true");
+    let _editor = EnvVarGuard::set("EDITOR", "/usr/bin/true");
 
     cmd_profile_edit(&cli, &printer, "default").expect("edit must Ok even on Save-with-errors");
     drop(printer);
