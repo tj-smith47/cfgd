@@ -15,3 +15,8 @@ license = "MIT"
 repository = "https://github.com/tj-smith47/cfgd"
 homepage = "https://github.com/tj-smith47/cfgd"
 authors = ["TJ Smith"]
+
+# File:line backtraces survive; ~50 integration-test binaries shrink enough
+# to fit ubuntu-latest's ~14 GB free disk. No coverage or test-integrity loss.
+[profile.dev]
+debug = "line-tables-only"
