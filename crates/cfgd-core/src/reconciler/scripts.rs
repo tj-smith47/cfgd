@@ -91,6 +91,58 @@ pub(crate) fn execute_script(
     printer: &Printer,
 ) -> Result<(String, bool, Option<String>)> {
     let run_str = entry.run_str();
+
+    // A stale `working_dir` (e.g. a tempdir from a prior `cfgd init` test that was
+    // cleaned up off tmpfs) would otherwise surface as a cryptic `io error: No such
+    // file or directory (os error 2)` from `cmd.spawn()` — naming neither the path
+    // nor the script. Probe with a single metadata syscall so the failure mode
+    // points at the actual offender.
+    match std::fs::metadata(working_dir) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(meta) => {
+            let kind = if meta.is_file() {
+                "regular file"
+            } else if meta.file_type().is_symlink() {
+                "symlink"
+            } else {
+                "non-directory"
+            };
+            return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
+                message: format!(
+                    "script '{}' cannot run: working directory is not a directory ({}): {}",
+                    run_str,
+                    kind,
+                    working_dir.display()
+                ),
+            }));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
+                message: format!(
+                    "script '{}' cannot run: working directory does not exist: {}",
+                    run_str,
+                    working_dir.display()
+                ),
+            }));
+        }
+        Err(e) => {
+            return Err(crate::errors::CfgdError::Config(ConfigError::Invalid {
+                message: format!(
+                    "script '{}' cannot run: working directory inaccessible ({}): {}",
+                    run_str,
+                    e,
+                    working_dir.display()
+                ),
+            }));
+        }
+    }
+
+    tracing::debug!(
+        run = %run_str,
+        working_dir = %working_dir.display(),
+        "executing script"
+    );
+
     let effective_timeout = match entry {
         ScriptEntry::Full {
             timeout: Some(t), ..
@@ -485,6 +537,101 @@ mod tests {
             .map(|(_, v)| v.as_str())
             .collect();
         assert_eq!(values, vec!["real-module"]);
+    }
+
+    // execute_script: a missing working_dir surfaces a structured error naming
+    // both the script and the path, instead of the cryptic `io error: No such
+    // file or directory (os error 2)` from `cmd.spawn()`.
+    #[test]
+    fn execute_script_rejects_missing_working_dir() {
+        let printer = crate::test_helpers::test_printer();
+        let entry = ScriptEntry::Simple("true".into());
+        let missing = std::path::PathBuf::from("/nonexistent/path/does/not/exist");
+
+        let err = execute_script(
+            &entry,
+            &missing,
+            &[],
+            std::time::Duration::from_secs(5),
+            &printer,
+        )
+        .expect_err("missing working_dir must error");
+
+        match err {
+            crate::errors::CfgdError::Config(ConfigError::Invalid { message }) => {
+                assert!(
+                    message.contains("working directory does not exist"),
+                    "message should describe the missing-dir failure mode: {message}"
+                );
+                assert!(
+                    message.contains("/nonexistent/path/does/not/exist"),
+                    "message should name the offending path: {message}"
+                );
+                assert!(
+                    message.contains("'true'"),
+                    "message should name the script (run_str): {message}"
+                );
+            }
+            other => panic!("expected ConfigError::Invalid, got: {other:?}"),
+        }
+    }
+
+    // execute_script: an existing path that is NOT a directory (a regular file)
+    // surfaces a distinct error mentioning what was found and the path.
+    #[test]
+    fn execute_script_rejects_non_directory_working_dir() {
+        let printer = crate::test_helpers::test_printer();
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("not-a-dir");
+        std::fs::write(&file_path, b"hello").unwrap();
+        let entry = ScriptEntry::Simple("true".into());
+
+        let err = execute_script(
+            &entry,
+            &file_path,
+            &[],
+            std::time::Duration::from_secs(5),
+            &printer,
+        )
+        .expect_err("non-directory working_dir must error");
+
+        match err {
+            crate::errors::CfgdError::Config(ConfigError::Invalid { message }) => {
+                assert!(
+                    message.contains("not a directory"),
+                    "message should distinguish the non-dir failure mode: {message}"
+                );
+                assert!(
+                    message.contains(&file_path.display().to_string()),
+                    "message should name the offending path: {message}"
+                );
+            }
+            other => panic!("expected ConfigError::Invalid, got: {other:?}"),
+        }
+    }
+
+    // execute_script: validation does not regress the happy path — a valid
+    // working_dir with a trivial inline command still succeeds.
+    #[test]
+    fn execute_script_runs_with_valid_working_dir() {
+        let printer = crate::test_helpers::test_printer();
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = ScriptEntry::Simple("true".into());
+
+        let (label, changed, _captured) = execute_script(
+            &entry,
+            tmp.path(),
+            &[],
+            std::time::Duration::from_secs(5),
+            &printer,
+        )
+        .expect("valid working_dir + `true` must succeed");
+
+        assert!(changed, "scripts always report changed=true");
+        assert!(
+            label.contains("true"),
+            "label should reference the script's run_str: {label}"
+        );
     }
 
     // build_module_script_env: empty module env produces the same output as
