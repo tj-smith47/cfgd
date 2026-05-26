@@ -14,10 +14,12 @@
 //!     manifest + `EDITOR=/bin/true`; the prompt receives `Confirm(false)` so
 //!     `cmd_source_edit` emits "Saved with validation errors".
 //!
-//! Unix-only: the editor-driving cases shell out to `/bin/true` /
+//! Unix-only: the editor-driving cases shell out to `/usr/bin/true` /
 //! `/bin/sh -c '...'`. Goldens live under `tests/output_snapshots/source_edit/`.
 //! Regenerate with:
 //!     INSTA_UPDATE=always cargo test -p cfgd --test source_edit_snapshots
+
+#![cfg(unix)]
 
 mod common;
 

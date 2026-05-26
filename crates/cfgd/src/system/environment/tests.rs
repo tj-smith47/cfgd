@@ -1231,6 +1231,7 @@ fn macos_write_env_sh_overwrites_existing_content() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 #[serial_test::serial]
 fn macos_launchctl_setenv_ok_success_path_with_fake_binary() {
@@ -1252,6 +1253,7 @@ fn macos_launchctl_setenv_ok_success_path_with_fake_binary() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 #[serial_test::serial]
 fn macos_launchctl_setenv_ok_failure_path_with_fake_binary() {
@@ -1277,6 +1279,7 @@ fn macos_launchctl_setenv_ok_failure_path_with_fake_binary() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 #[serial_test::serial]
 fn windows_set_var_ok_success_path_with_fake_binary() {
@@ -1296,6 +1299,7 @@ fn windows_set_var_ok_success_path_with_fake_binary() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 #[serial_test::serial]
 fn windows_set_var_ok_failure_path_with_fake_binary() {

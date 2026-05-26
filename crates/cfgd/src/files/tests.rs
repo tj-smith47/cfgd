@@ -1,4 +1,6 @@
-use super::apply::{ensure_target_writable, set_permissions};
+use super::apply::ensure_target_writable;
+#[cfg(unix)]
+use super::apply::set_permissions;
 use super::plan::detect_language;
 use super::template::format_tera_error;
 use super::*;

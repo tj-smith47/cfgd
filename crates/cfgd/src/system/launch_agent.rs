@@ -646,6 +646,8 @@ mod tests {
 
     /// Install a fake launchctl shim that exits with the given code. Returns
     /// (bin_dir tempdir kept alive for the duration of the test, PATH guard).
+    /// Unix-only: `install_named_path_shim` requires `#!/bin/sh` + chmod 0o755.
+    #[cfg(unix)]
     fn install_fake_launchctl(
         exit_code: u8,
         stderr: &str,
@@ -653,6 +655,7 @@ mod tests {
         cfgd_core::test_helpers::install_named_path_shim("launchctl", exit_code, "", stderr)
     }
 
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn apply_writes_plist_for_each_agent_to_test_home() {
@@ -681,6 +684,7 @@ mod tests {
         assert!(content_two.contains("<false />"));
     }
 
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn apply_skips_entries_without_name_but_writes_others() {
@@ -717,6 +721,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn apply_emits_info_status_through_printer_for_each_written_plist() {
@@ -745,6 +750,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn apply_warns_when_launchctl_load_returns_nonzero() {

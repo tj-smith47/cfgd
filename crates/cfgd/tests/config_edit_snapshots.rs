@@ -11,8 +11,10 @@
 //!     config + `EDITOR=/bin/true`; the prompt receives `Confirm(false)` so
 //!     the command emits "Saved with validation errors".
 //!
-//! Unix-only: the editor-driving cases shell out to `/bin/true` /
+//! Unix-only: the editor-driving cases shell out to `/usr/bin/true` /
 //! `/bin/sh -c '...'`. Goldens live under `tests/output_snapshots/config_edit/`.
+
+#![cfg(unix)]
 
 mod common;
 

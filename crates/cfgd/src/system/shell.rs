@@ -212,6 +212,7 @@ impl SystemConfigurator for ShellConfigurator {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use cfgd_core::output::Verbosity;
     use cfgd_core::test_helpers::EnvVarGuard;
 

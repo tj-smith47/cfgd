@@ -1997,6 +1997,7 @@ fn source_create_interactive_mode_prompts_for_name_and_description() {
     );
 }
 
+#[cfg(unix)]
 use cfgd_core::test_helpers::EditorGuard;
 
 #[cfg(unix)]

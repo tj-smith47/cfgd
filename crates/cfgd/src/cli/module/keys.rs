@@ -344,14 +344,15 @@ pub(crate) fn mask_value(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use cfgd_core::output::Printer;
+    #[cfg(unix)]
     use cfgd_core::test_helpers::EnvVarGuard;
     use cfgd_core::with_test_home_guard;
     use serial_test::serial;
 
     use super::mask_value;
-    use crate::cli::module::keys::{
-        cmd_module_keys_generate, cmd_module_keys_list, cmd_module_keys_rotate,
-    };
+    use crate::cli::module::keys::cmd_module_keys_list;
+    #[cfg(unix)]
+    use crate::cli::module::keys::{cmd_module_keys_generate, cmd_module_keys_rotate};
 
     #[test]
     fn mask_value_empty_returns_sentinel() {
