@@ -398,7 +398,13 @@ pub(super) fn apply_sighup_reload(
             }
         }
         Err(e) => {
-            printer.status_simple(Role::Warn, format!("Config reload failed: {}", e));
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "Config reload failed: {}",
+                    crate::output::collapse_to_subject_line(&e),
+                ),
+            );
         }
     }
 }

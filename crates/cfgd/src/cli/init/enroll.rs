@@ -218,7 +218,13 @@ fn finish_enrollment(
             printer.status_simple(Role::Ok, format!("Credential saved to {}", path.display()));
         }
         Err(e) => {
-            printer.status_simple(Role::Fail, format!("Failed to save credential: {}", e));
+            printer.status_simple(
+                Role::Fail,
+                format!(
+                    "Failed to save credential: {}",
+                    cfgd_core::output::collapse_to_subject_line(&e),
+                ),
+            );
             printer.status_simple(
                 Role::Warn,
                 "You will need to manually provide --api-key for future commands",

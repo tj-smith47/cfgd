@@ -64,11 +64,11 @@ fn assert_snapshot(base: &Path, name: &str, actual: &str) {
 }
 
 fn normalize_bare(raw: &str, bares: &[(&std::path::Path, &str)]) -> String {
-    let mut out = raw.to_string();
-    for (path, label) in bares {
-        out = out.replace(&path.to_string_lossy().to_string(), label);
-    }
-    strip_spinner_duration(out).replace('\\', "/")
+    // Posixify text + path keys FIRST, then substitute — otherwise the
+    // captured output (already in `/` form from libgit2 URL emission on
+    // Windows) won't match a Windows `PathBuf`'s `\`-form `to_string_lossy`.
+    let normalized = cfgd_core::normalize_for_snapshot(raw, bares);
+    strip_spinner_duration(normalized)
 }
 
 /// Strip non-deterministic spinner finish durations like ` (0.0s)` so goldens

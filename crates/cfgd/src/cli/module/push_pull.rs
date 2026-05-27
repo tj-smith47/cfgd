@@ -199,7 +199,10 @@ async fn apply_module_crd(
         printer.emit(cfgd_core::output::error_doc(
             name,
             "crd_connect_failed",
-            format!("Failed to connect to cluster: {e}"),
+            format!(
+                "Failed to connect to cluster: {}",
+                cfgd_core::output::collapse_to_subject_line(&e),
+            ),
             serde_json::json!({ "artifact": artifact }),
         ));
         anyhow::anyhow!("Failed to connect to cluster: {e}")
@@ -229,7 +232,10 @@ async fn apply_module_crd(
             printer.emit(cfgd_core::output::error_doc(
                 name,
                 "crd_apply_failed",
-                format!("Failed to apply Module CRD: {e}"),
+                format!(
+                    "Failed to apply Module CRD: {}",
+                    cfgd_core::output::collapse_to_subject_line(&e),
+                ),
                 serde_json::json!({ "artifact": artifact }),
             ));
             anyhow::anyhow!("Failed to apply Module CRD: {e}")

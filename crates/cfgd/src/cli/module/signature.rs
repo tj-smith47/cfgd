@@ -128,7 +128,13 @@ pub(crate) fn enforce_signature_policy(
         Ok(modules::TagSignatureStatus::TagNotFound) => {
             printer.status_simple(Role::Warn, format!("Tag '{}' not found in repo", tag));
         }
-        Err(e) => printer.status_simple(Role::Warn, format!("Signature check: {}", e)),
+        Err(e) => printer.status_simple(
+            Role::Warn,
+            format!(
+                "Signature check: {}",
+                cfgd_core::output::collapse_to_subject_line(e),
+            ),
+        ),
     }
 
     Ok(())

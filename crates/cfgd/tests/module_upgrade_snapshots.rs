@@ -87,13 +87,30 @@ fn mask_commit_sha(s: &str) -> String {
 }
 
 fn mask_integrity(s: &str) -> String {
-    // sha256-<64 base64-or-hex> integrity strings vary every run.
+    // sha256-<64 base64> (cosign) and sha256:<64 hex> (OCI) integrity strings
+    // vary every run. Mask both forms with the same `<INTEGRITY>` placeholder
+    // so the same golden survives bare-repo content drift across Linux and
+    // Windows runners (tarball content-hashing diverges on path-separators
+    // and line endings; without the mask the goldens carry a literal hex
+    // value that's only stable on the host that captured them).
     let mut out = String::new();
     let mut rest = s;
-    while let Some(idx) = rest.find("sha256-") {
+    loop {
+        let found_dash = rest.find("sha256-");
+        let found_colon = rest.find("sha256:");
+        let idx = match (found_dash, found_colon) {
+            (None, None) => break,
+            (Some(d), None) => d,
+            (None, Some(c)) => c,
+            (Some(d), Some(c)) => d.min(c),
+        };
         out.push_str(&rest[..idx]);
-        out.push_str("sha256-<INTEGRITY>");
-        let after = &rest[idx + "sha256-".len()..];
+        let prefix_len = "sha256-".len();
+        let sep = &rest[idx + "sha256".len()..idx + "sha256".len() + 1];
+        out.push_str("sha256");
+        out.push_str(sep);
+        out.push_str("<INTEGRITY>");
+        let after = &rest[idx + prefix_len..];
         // Drop following base64/hex chars until non-base64.
         let end = after
             .find(|c: char| !(c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '='))

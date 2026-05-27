@@ -1137,3 +1137,130 @@ fn parse_alias_command_with_equals() {
     assert_eq!(a.name, "env");
     assert_eq!(a.command, "FOO=bar baz");
 }
+
+#[test]
+fn to_posix_string_folds_backslashes() {
+    assert_eq!(to_posix_string("C:\\Users\\foo"), "C:/Users/foo");
+    assert_eq!(to_posix_string("/home/foo"), "/home/foo");
+    assert_eq!(to_posix_string("relative/path"), "relative/path");
+}
+
+#[test]
+fn posixify_text_borrows_when_no_backslash() {
+    let s = "no backslashes here";
+    let cow = posixify_text(s);
+    assert!(matches!(cow, std::borrow::Cow::Borrowed(_)));
+    assert_eq!(cow, "no backslashes here");
+}
+
+#[test]
+fn posixify_text_owns_when_backslash() {
+    let s = "C:\\Users\\foo";
+    let cow = posixify_text(s);
+    assert!(matches!(cow, std::borrow::Cow::Owned(_)));
+    assert_eq!(cow, "C:/Users/foo");
+}
+
+#[test]
+fn to_file_url_unix_form() {
+    assert_eq!(to_file_url("/home/foo"), "file:///home/foo");
+}
+
+#[test]
+fn to_file_url_windows_form_folds_separators() {
+    assert_eq!(to_file_url("C:\\Users\\foo"), "file:///C:/Users/foo");
+    // Forward-slash already gets the same result — no special-case needed.
+    assert_eq!(to_file_url("C:/Users/foo"), "file:///C:/Users/foo");
+}
+
+#[test]
+fn normalize_line_endings_borrows_when_lf_only() {
+    let s = "line1\nline2\n";
+    let cow = normalize_line_endings(s);
+    assert!(matches!(cow, std::borrow::Cow::Borrowed(_)));
+    assert_eq!(cow, "line1\nline2\n");
+}
+
+#[test]
+fn normalize_line_endings_owns_when_crlf() {
+    let cow = normalize_line_endings("line1\r\nline2\r\n");
+    assert!(matches!(cow, std::borrow::Cow::Owned(_)));
+    assert_eq!(cow, "line1\nline2\n");
+}
+
+#[test]
+fn normalize_for_snapshot_handles_crlf_backslash_and_nested_paths() {
+    let captured = "  From file:///C:\\Users\\foo\\bare\\nested\\repo\r\n  hi\r\n";
+    let bare = std::path::PathBuf::from("C:\\Users\\foo\\bare");
+    let nested = std::path::PathBuf::from("C:\\Users\\foo\\bare\\nested");
+    let out = normalize_for_snapshot(captured, &[(&bare, "<BARE>"), (&nested, "<NESTED>")]);
+    // Longest path wins — nested substitutes first, so the bare/nested/repo
+    // segment becomes <NESTED>/repo, NOT <BARE>/nested/repo.
+    assert_eq!(out, "  From file:///<NESTED>/repo\n  hi\n");
+}
+
+#[test]
+fn normalize_for_snapshot_skips_empty_path_keys() {
+    let captured = "no tempdir touched here\n";
+    let empty = std::path::PathBuf::new();
+    // Empty path keys silently no-op rather than substituting at every char.
+    let out = normalize_for_snapshot(captured, &[(&empty, "<NEVER>")]);
+    assert_eq!(out, "no tempdir touched here\n");
+}
+
+#[test]
+fn posixify_os_error_text_collapses_linux_form() {
+    let s = "file error: io error on /tmp/foo: File exists (os error 17)";
+    assert_eq!(
+        posixify_os_error_text(s),
+        "file error: io error on /tmp/foo: <os error>"
+    );
+}
+
+#[test]
+fn posixify_os_error_text_collapses_windows_form() {
+    let s = "file error: io error on /tmp/foo: Cannot create a file when that file already exists. (os error 183)";
+    assert_eq!(
+        posixify_os_error_text(s),
+        "file error: io error on /tmp/foo: <os error>"
+    );
+}
+
+#[test]
+fn posixify_os_error_text_handles_multiple_occurrences() {
+    let s = "first: foo (os error 1) and second: bar (os error 2)";
+    assert_eq!(
+        posixify_os_error_text(s),
+        "first: <os error> and second: <os error>"
+    );
+}
+
+#[test]
+fn posixify_os_error_text_borrows_when_no_marker() {
+    let s = "no marker here";
+    let cow = posixify_os_error_text(s);
+    assert!(matches!(cow, std::borrow::Cow::Borrowed(_)));
+}
+
+#[test]
+fn posixify_os_error_text_ignores_malformed_marker() {
+    // "(os error )" with no digits — should pass through untouched.
+    let s = "weird (os error ) thing";
+    assert_eq!(posixify_os_error_text(s), s);
+}
+
+#[test]
+fn from_user_input_folds_backslashes() {
+    assert_eq!(
+        from_user_input("C:\\Users\\foo"),
+        std::path::PathBuf::from("C:/Users/foo")
+    );
+}
+
+#[test]
+fn from_user_input_passthrough_for_posix_input() {
+    assert_eq!(
+        from_user_input("/etc/cfgd.yaml"),
+        std::path::PathBuf::from("/etc/cfgd.yaml")
+    );
+}

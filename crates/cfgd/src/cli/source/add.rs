@@ -59,10 +59,11 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
     // consumers see the same {"error": "load_failed", ...} shape as the
     // "Ok-but-no-cache-entry" fallback below.
     if let Err(e) = mgr.load_source(&spec, printer) {
+        let collapsed = cfgd_core::output::collapse_to_subject_line(&e);
         printer.emit(cfgd_core::output::error_doc(
             &source_name,
             "load_failed",
-            format!("Failed to load source '{}': {}", source_name, e),
+            format!("Failed to load source '{}': {}", source_name, collapsed),
             serde_json::json!({ "url": url }),
         ));
         anyhow::bail!("Failed to load source '{}': {}", source_name, e);
@@ -177,8 +178,13 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
                     }
                 }
                 Err(e) => {
-                    printer
-                        .status_simple(Role::Warn, format!("Failed to preview conflicts: {}", e));
+                    printer.status_simple(
+                        Role::Warn,
+                        format!(
+                            "Failed to preview conflicts: {}",
+                            cfgd_core::output::collapse_to_subject_line(&e),
+                        ),
+                    );
                 }
             }
         }

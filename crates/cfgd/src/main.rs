@@ -117,7 +117,10 @@ fn main() -> anyhow::Result<()> {
         // `{0}` which expands the inner error, so `{:#}` would walk source()
         // and duplicate the inner text. See errors/mod.rs::CfgdError for the
         // paired contract.
-        printer.status_simple(cfgd_core::output::Role::Fail, format!("{}", e));
+        printer.status_simple(
+            cfgd_core::output::Role::Fail,
+            cfgd_core::output::collapse_to_subject_line(&e),
+        );
         exit_code_for_anyhow(&e).exit();
     }
 

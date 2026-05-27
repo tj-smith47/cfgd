@@ -7,7 +7,7 @@
 
 #![allow(dead_code)]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use cfgd::cli::{
     ApplyArgs, Cli, Command, OutputFormatArg, PlanArgs, ProfileCreateArgs, ProfileUpdateArgs,
@@ -15,21 +15,7 @@ use cfgd::cli::{
 };
 use cfgd_core::state::{ApplyStatus, StateStore};
 
-/// Build a file:// URL portable across Unix and Windows.
-///
-/// `file_url(&path)` produces `file:///home/foo` on Unix
-/// (path starts with `/`, so the result already has 3 slashes) but produces
-/// `file://C:\Users\foo` on Windows — missing the third slash and using
-/// backslashes — which git2 rejects with "filename, directory name, or
-/// volume label syntax is incorrect".
-fn file_url(path: &Path) -> String {
-    let s = path.display().to_string().replace('\\', "/");
-    if s.starts_with('/') {
-        format!("file://{s}")
-    } else {
-        format!("file:///{s}")
-    }
-}
+use cfgd_core::to_file_url as file_url;
 
 /// Build a tempdir-backed profile with a single file action that will
 /// succeed on apply.
@@ -733,17 +719,18 @@ pub fn make_bare_module_repo(
 }
 
 /// Normalize tempdir-rooted paths in a captured snapshot to stable placeholders
-/// so goldens are host-stable across runs. Folds `\` → `/` so windows-native
-/// path separators in captured output match POSIX fixtures.
+/// so goldens are host-stable across runs. Delegates to
+/// [`cfgd_core::normalize_for_snapshot`] which folds `\` → `/`, normalizes CRLF,
+/// and applies substitutions longest-first.
 pub fn normalize_profile_paths(raw: &str, config_dir: &std::path::Path) -> String {
-    let mut out = raw.to_string();
     let cfg_file = config_dir.join("cfgd.yaml");
-    out = out.replace(
-        &cfg_file.to_string_lossy().to_string(),
-        "<CONFIG_DIR>/cfgd.yaml",
-    );
-    out = out.replace(&config_dir.to_string_lossy().to_string(), "<CONFIG_DIR>");
-    out.replace('\\', "/")
+    cfgd_core::normalize_for_snapshot(
+        raw,
+        &[
+            (&cfg_file, "<CONFIG_DIR>/cfgd.yaml"),
+            (config_dir, "<CONFIG_DIR>"),
+        ],
+    )
 }
 
 // ---------------------------------------------------------------------------

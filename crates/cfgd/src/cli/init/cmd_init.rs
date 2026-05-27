@@ -108,7 +108,13 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     if !target_dir.join(".git").exists() {
         match git2::Repository::init(&target_dir) {
             Ok(_) => printer.status_simple(Role::Ok, "Initialized git repository"),
-            Err(e) => printer.status_simple(Role::Warn, format!("Failed to init git repo: {}", e)),
+            Err(e) => printer.status_simple(
+                Role::Warn,
+                format!(
+                    "Failed to init git repo: {}",
+                    cfgd_core::output::collapse_to_subject_line(&e),
+                ),
+            ),
         }
     }
 
@@ -287,7 +293,13 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                         .status_simple(Role::Info, "The service will start automatically on boot");
                 }
                 Err(e) => {
-                    printer.status_simple(Role::Warn, format!("Failed to install daemon: {}", e));
+                    printer.status_simple(
+                        Role::Warn,
+                        format!(
+                            "Failed to install daemon: {}",
+                            cfgd_core::output::collapse_to_subject_line(&e),
+                        ),
+                    );
                     printer.hint("Install later with: cfgd daemon install");
                 }
             }

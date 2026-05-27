@@ -149,7 +149,11 @@ pub fn cmd_source_update(cli: &Cli, printer: &Printer, name: Option<&str>) -> an
             Err(e) => {
                 printer.status_simple(
                     Role::Fail,
-                    format!("Failed to update source '{}': {}", source.name, e),
+                    format!(
+                        "Failed to update source '{}': {}",
+                        source.name,
+                        cfgd_core::output::collapse_to_subject_line(&e),
+                    ),
                 );
                 state.update_config_source_status(&source.name, "error")?;
                 entries.push(UpdateEntry {

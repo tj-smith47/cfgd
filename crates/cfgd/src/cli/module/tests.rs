@@ -4702,7 +4702,7 @@ mod cmd_module_add_remote_local_bare {
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
-        let url = format!("file://{}@v1.0.0", bare.display());
+        let url = format!("{}@v1.0.0", cfgd_core::to_file_url(&bare));
 
         let cli = test_cli(work.path());
         let printer = make_printer();
@@ -4740,7 +4740,7 @@ mod cmd_module_add_remote_local_bare {
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
-        let url = format!("file://{}@v1.0.0", bare.display());
+        let url = format!("{}@v1.0.0", cfgd_core::to_file_url(&bare));
 
         let cli = test_cli(work.path());
         let printer1 = make_printer();
@@ -4774,7 +4774,7 @@ mod cmd_module_add_remote_local_bare {
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
-        let url = format!("file://{}@v1.0.0", bare.display());
+        let url = format!("{}@v1.0.0", cfgd_core::to_file_url(&bare));
 
         let cli = test_cli(work.path());
         let printer = make_printer();
@@ -4796,7 +4796,7 @@ mod cmd_module_add_remote_local_bare {
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
-        let url_v1 = format!("file://{}@v1.0.0", bare.display());
+        let url_v1 = format!("{}@v1.0.0", cfgd_core::to_file_url(&bare));
 
         let cli = test_cli(work.path());
         let printer = make_printer();
@@ -4860,7 +4860,7 @@ mod cmd_module_add_remote_local_bare {
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
-        let url_v1 = format!("file://{}@v1.0.0", bare.display());
+        let url_v1 = format!("{}@v1.0.0", cfgd_core::to_file_url(&bare));
 
         let cli = test_cli(work.path());
         let printer1 = make_printer();
@@ -4905,7 +4905,7 @@ mod cmd_module_add_remote_local_bare {
 
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
-        let url_v1 = format!("file://{}@v1.0.0", bare.display());
+        let url_v1 = format!("{}@v1.0.0", cfgd_core::to_file_url(&bare));
 
         let cli = test_cli(work.path());
         let printer1 = make_printer();

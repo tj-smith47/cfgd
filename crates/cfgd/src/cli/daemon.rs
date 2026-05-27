@@ -74,7 +74,10 @@ pub fn cmd_daemon_status(printer: &Printer) -> anyhow::Result<()> {
             printer.emit(cfgd_core::output::error_doc(
                 "cfgd",
                 "status_unavailable",
-                format!("Failed to query daemon status: {}", e),
+                format!(
+                    "Failed to query daemon status: {}",
+                    cfgd_core::output::collapse_to_subject_line(&e),
+                ),
                 serde_json::Value::Null,
             ));
             return Err(e.into());
@@ -174,7 +177,10 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
         printer.emit(cfgd_core::output::error_doc(
             "cfgd",
             "install_failed",
-            format!("Failed to install daemon service: {}", e),
+            format!(
+                "Failed to install daemon service: {}",
+                cfgd_core::output::collapse_to_subject_line(&e),
+            ),
             serde_json::json!({ "platform": platform, "service": service }),
         ));
         return Err(e.into());
@@ -284,7 +290,10 @@ pub(super) fn cmd_daemon_uninstall(printer: &Printer) -> anyhow::Result<()> {
         printer.emit(cfgd_core::output::error_doc(
             "cfgd",
             "uninstall_failed",
-            format!("Failed to uninstall daemon service: {}", e),
+            format!(
+                "Failed to uninstall daemon service: {}",
+                cfgd_core::output::collapse_to_subject_line(&e),
+            ),
             serde_json::json!({ "platform": platform, "service": service }),
         ));
         return Err(e.into());

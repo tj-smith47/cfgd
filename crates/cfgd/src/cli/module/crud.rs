@@ -650,7 +650,14 @@ pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
                 break;
             }
             Err(e) => {
-                printer.status_simple(Role::Fail, format!("Module '{}' has errors: {}", name, e));
+                printer.status_simple(
+                    Role::Fail,
+                    format!(
+                        "Module '{}' has errors: {}",
+                        name,
+                        cfgd_core::output::collapse_to_subject_line(&e),
+                    ),
+                );
                 if !printer.prompt_confirm("Re-open in editor?")? {
                     break;
                 }
@@ -798,7 +805,13 @@ pub fn cmd_module_delete(
     if let Ok(state) = open_state_store(cli.state_dir.as_deref())
         && let Err(e) = state.remove_module_state(name)
     {
-        printer.status_simple(Role::Warn, format!("Failed to clean module state: {}", e));
+        printer.status_simple(
+            Role::Warn,
+            format!(
+                "Failed to clean module state: {}",
+                cfgd_core::output::collapse_to_subject_line(&e),
+            ),
+        );
     }
 
     // Clean from lockfile if present

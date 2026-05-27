@@ -128,7 +128,7 @@ fn module_search_bridge_one_blank_line() {
 
     let src_root = tempfile::tempdir().unwrap();
     let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
-    let reg_url = format!("file://{}", src.display());
+    let reg_url = cfgd_core::to_file_url(&src);
     write_registry_config(config_dir.path(), &reg_url);
 
     let cli = cli_for(config_dir.path(), config_dir.path());
@@ -166,7 +166,7 @@ fn search_happy_human() {
 
     let src_root = tempfile::tempdir().unwrap();
     let src = init_registry_source(src_root.path(), "alpha", "1.0.0", "Alpha module");
-    let reg_url = format!("file://{}", src.display());
+    let reg_url = cfgd_core::to_file_url(&src);
     write_registry_config(config_dir.path(), &reg_url);
 
     let cli = cli_for(config_dir.path(), config_dir.path());

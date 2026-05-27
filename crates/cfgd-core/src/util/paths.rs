@@ -243,3 +243,127 @@ pub fn copy_dir_recursive(
     }
     Ok(())
 }
+
+/// Always-fold POSIX form of a path. Use anywhere a path crosses into JSON,
+/// YAML, SQLite, gateway API, OCI annotations, `file://` URLs, or snapshot
+/// goldens. Backslash is treated as a separator; legitimate backslash-in-
+/// filename on POSIX is sacrificed for cross-OS state portability (see the
+/// path-handling consolidation spec for the fold-policy rationale).
+pub fn to_posix_string(path: impl AsRef<std::path::Path>) -> String {
+    path.as_ref().to_string_lossy().replace('\\', "/")
+}
+
+/// Fold `\` → `/` in free-form text that may contain native-separator paths.
+/// `Cow` so the unix path stays borrowed; only Windows captures pay for the
+/// allocation.
+pub fn posixify_text(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.contains('\\') {
+        std::borrow::Cow::Owned(s.replace('\\', "/"))
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
+}
+
+/// Build a `file://` URL that round-trips through `url::Url::parse` on both
+/// unix (`file:///home/foo`) and Windows (`file:///C:/Users/foo`). Replaces
+/// every hand-rolled `format!("file://{}", path.display())` callsite that
+/// silently emits backslashes and a missing third slash on Windows.
+pub fn to_file_url(path: impl AsRef<std::path::Path>) -> String {
+    let s = to_posix_string(path);
+    if s.starts_with('/') {
+        format!("file://{s}")
+    } else {
+        format!("file:///{s}")
+    }
+}
+
+/// CRLF → LF, for paired use with [`posixify_text`] in snapshot normalization.
+/// `Cow` so unix captures stay borrowed.
+pub fn normalize_line_endings(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.contains("\r\n") {
+        std::borrow::Cow::Owned(s.replace("\r\n", "\n"))
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
+}
+
+/// Composite normalizer for snapshot tests: CRLF→LF, fold `\`→`/`, then
+/// substitute each `(path, placeholder)` pair. Substitutions are applied
+/// longest-first to handle nested temp paths correctly (e.g. when
+/// `<BARE>/inner` and `<BARE_ROOT>` both match, longest wins). Each path is
+/// posixified before substitution so the captured text and the substitution
+/// keys share the same separator convention.
+pub fn normalize_for_snapshot(captured: &str, paths: &[(&std::path::Path, &str)]) -> String {
+    let lf = normalize_line_endings(captured);
+    let posix = posixify_text(&lf);
+    let os = posixify_os_error_text(&posix);
+    let mut subs: Vec<(String, &str)> = paths
+        .iter()
+        .map(|(p, label)| (to_posix_string(p), *label))
+        .collect();
+    subs.sort_by_key(|(p, _)| std::cmp::Reverse(p.len()));
+    let mut out = os.into_owned();
+    for (p, label) in subs {
+        if p.is_empty() {
+            continue;
+        }
+        out = out.replace(&p, label);
+    }
+    out
+}
+
+/// Collapse OS-specific `std::io::Error` text in captured snapshot output.
+/// Linux emits `... File exists (os error 17)` for `ErrorKind::AlreadyExists`;
+/// Windows emits `... Cannot create a file when that file already exists.
+/// (os error 183)` for the same kind. Both fold to a stable `<os error>`
+/// placeholder so a single golden file works on both. Use after path
+/// normalization in [`normalize_for_snapshot`]-style pipelines for tests
+/// that touch the filesystem.
+pub fn posixify_os_error_text(s: &str) -> std::borrow::Cow<'_, str> {
+    const MARKER: &str = "(os error ";
+    if !s.contains(MARKER) {
+        return std::borrow::Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    loop {
+        let Some(idx) = rest.find(MARKER) else {
+            out.push_str(rest);
+            break;
+        };
+        let after_open = &rest[idx + MARKER.len()..];
+        let digits_end = after_open
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(after_open.len());
+        let is_well_formed = digits_end > 0 && after_open.as_bytes().get(digits_end) == Some(&b')');
+        if !is_well_formed {
+            // Not a real OS-error marker — emit one byte and continue scanning.
+            let safe_end = idx + 1;
+            out.push_str(&rest[..safe_end]);
+            rest = &rest[safe_end..];
+            continue;
+        }
+        // Walk back from `idx` to the last "<sep>: " — that's the boundary
+        // between the error prefix (e.g. "io error on <PATH>: ") and the
+        // OS-native prose we collapse.
+        let prefix = &rest[..idx];
+        let cut = prefix.rfind(": ").map(|p| p + 2).unwrap_or(idx);
+        out.push_str(&prefix[..cut]);
+        out.push_str("<os error>");
+        rest = &after_open[digits_end + 1..];
+    }
+    std::borrow::Cow::Owned(out)
+}
+
+/// User-input path tolerance: accept `C:\foo`, `C:/foo`, `~/foo`, `./foo`.
+/// Folds `\` → `/` and expands a leading `~` via [`expand_tilde`]. Use when
+/// loading config fields where a Linux author may write `/` and a Windows
+/// author may write `\` for the same logical location.
+pub fn from_user_input(s: &str) -> std::path::PathBuf {
+    let folded = if s.contains('\\') {
+        s.replace('\\', "/")
+    } else {
+        s.to_string()
+    };
+    expand_tilde(std::path::Path::new(&folded))
+}

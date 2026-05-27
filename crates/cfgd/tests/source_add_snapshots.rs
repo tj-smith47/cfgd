@@ -90,7 +90,7 @@ fn source_add_happy_human() {
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), "team-config", None);
-    let url = format!("file://{}", bare.display());
+    let url = cfgd_core::to_file_url(&bare);
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
@@ -117,7 +117,7 @@ fn source_add_happy_json() {
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), "team-config", None);
-    let url = format!("file://{}", bare.display());
+    let url = cfgd_core::to_file_url(&bare);
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
@@ -173,7 +173,7 @@ fn source_add_clone_failure_human() {
     let (config_dir, state_dir) = source_test_config_setup();
     let bogus_root = tempfile::tempdir().unwrap();
     let bogus = bogus_root.path().join("nonexistent-bare.git");
-    let url = format!("file://{}", bogus.display());
+    let url = cfgd_core::to_file_url(&bogus);
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
@@ -214,7 +214,7 @@ fn source_add_bridge_one_blank_line() {
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), "bridge-src", None);
-    let url = format!("file://{}", bare.display());
+    let url = cfgd_core::to_file_url(&bare);
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();

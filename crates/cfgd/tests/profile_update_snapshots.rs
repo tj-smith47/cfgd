@@ -170,7 +170,7 @@ fn profile_update_add_module_remote_hybrid_human() {
 
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_module_repo(bare_root.path(), "mymod", "v1.0.0");
-    let module_url = format!("file://{}@v1.0.0", bare.display());
+    let module_url = format!("{}@v1.0.0", cfgd_core::to_file_url(&bare));
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) =
@@ -181,15 +181,18 @@ fn profile_update_add_module_remote_hybrid_human() {
     cmd_profile_update(&cli, &printer, "default", &args).unwrap();
     drop(printer);
 
-    let mut stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
-    // Strip the bare-repo path so the golden is host-stable.
-    stripped = stripped.replace(&bare.to_string_lossy().to_string(), "<BARE>");
-    stripped = stripped.replace(
-        &bare_root.path().to_string_lossy().to_string(),
-        "<BARE_ROOT>",
+    let cfg_file = config_dir.path().join("cfgd.yaml");
+    let stripped = cfgd_core::normalize_for_snapshot(
+        &strip_ansi(&cap.human()),
+        &[
+            (&bare, "<BARE>"),
+            (bare_root.path(), "<BARE_ROOT>"),
+            (&cfg_file, "<CONFIG_DIR>/cfgd.yaml"),
+            (config_dir.path(), "<CONFIG_DIR>"),
+        ],
     );
     // Mask the 40-char hex commit SHA — git2 generates a new one each test run.
-    stripped = mask_commit_sha(&stripped);
+    let stripped = mask_commit_sha(&stripped);
     assert_snapshot(
         Path::new(SNAPSHOT_ROOT),
         "profile_update/add_module_remote_hybrid.txt",

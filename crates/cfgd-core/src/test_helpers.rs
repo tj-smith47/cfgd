@@ -505,17 +505,10 @@ impl TestEnv {
 
 /// Build a `file://` URL portable across unix and windows.
 ///
-/// `crate::test_helpers::file_url(&path)` produces `file:///home/foo` on unix
-/// (path starts with `/`) but `file://C:\Users\foo` on windows — missing the
-/// third slash and using backslashes — which git2 rejects with "filename,
-/// directory name, or volume label syntax is incorrect".
+/// Thin alias for [`crate::to_file_url`] — kept under `test_helpers` so existing
+/// test callers compile unchanged.
 pub fn file_url(path: &Path) -> String {
-    let s = path.display().to_string().replace('\\', "/");
-    if s.starts_with('/') {
-        format!("file://{s}")
-    } else {
-        format!("file:///{s}")
-    }
+    crate::to_file_url(path)
 }
 
 /// Initialize a minimal git repository at `dir` with an initial commit.
@@ -2081,11 +2074,18 @@ mod tests {
         let clone_dir = tempfile::TempDir::new().unwrap();
         let cloned = git2::Repository::clone(&url, clone_dir.path()).unwrap();
 
-        // Verify files from commits are present
+        // Verify files from commits are present. `read_to_string` returns the
+        // on-disk bytes — on a Windows git checkout with default
+        // `core.autocrlf=true`, that is CRLF even though we committed LF.
+        // Compare after `normalize_line_endings` so the assertion is about
+        // logical content, not the OS-specific eol translation policy.
         let readme = std::fs::read_to_string(clone_dir.path().join("README.md")).unwrap();
-        assert_eq!(readme, "hello");
+        assert_eq!(crate::normalize_line_endings(&readme), "hello");
         let module = std::fs::read_to_string(clone_dir.path().join("module.yaml")).unwrap();
-        assert_eq!(module, "apiVersion: cfgd.io/v1alpha1\n");
+        assert_eq!(
+            crate::normalize_line_endings(&module),
+            "apiVersion: cfgd.io/v1alpha1\n"
+        );
 
         // Verify commit history (2 commits on main)
         let head = cloned.head().unwrap().peel_to_commit().unwrap();

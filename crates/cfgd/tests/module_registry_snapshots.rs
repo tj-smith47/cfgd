@@ -92,8 +92,7 @@ fn registry_test_setup() -> (tempfile::TempDir, tempfile::TempDir) {
 }
 
 fn normalize(raw: &str, config_dir: &Path) -> String {
-    raw.replace(&config_dir.display().to_string(), "<CONFIG_DIR>")
-        .replace('\\', "/")
+    cfgd_core::normalize_for_snapshot(raw, &[(config_dir, "<CONFIG_DIR>")])
 }
 
 /// Replace any 40-char lowercase-hex run (a git commit SHA) with the literal
@@ -334,7 +333,7 @@ fn module_add_bridge_one_blank_line() {
 
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_module_repo(bare_root.path(), "bridgemod", "v1.0.0");
-    let url = format!("file://{}@v1.0.0", bare.display());
+    let url = format!("{}@v1.0.0", cfgd_core::to_file_url(&bare));
 
     let cli = cli_for(config_dir.path(), config_dir.path());
     let (printer, cap) =
@@ -352,13 +351,15 @@ fn module_add_bridge_one_blank_line() {
         "bridge has duplicate blank line: {combined}"
     );
 
-    let mut stripped = normalize(&strip_ansi(&combined), config_dir.path());
-    stripped = stripped.replace(&bare.to_string_lossy().to_string(), "<BARE>");
-    stripped = stripped.replace(
-        &bare_root.path().to_string_lossy().to_string(),
-        "<BARE_ROOT>",
+    let stripped = cfgd_core::normalize_for_snapshot(
+        &strip_ansi(&combined),
+        &[
+            (&bare, "<BARE>"),
+            (bare_root.path(), "<BARE_ROOT>"),
+            (config_dir.path(), "<CONFIG_DIR>"),
+        ],
     );
-    stripped = mask_commit_sha(&stripped);
+    let stripped = mask_commit_sha(&stripped);
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "module_add/bridge.txt", &stripped);
 }
 
@@ -371,7 +372,7 @@ fn module_add_happy_json() {
 
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_module_repo(bare_root.path(), "jsonmod", "v1.0.0");
-    let url = format!("file://{}@v1.0.0", bare.display());
+    let url = format!("{}@v1.0.0", cfgd_core::to_file_url(&bare));
 
     let cli = cli_for(config_dir.path(), config_dir.path());
     let (printer, cap) =
@@ -400,7 +401,7 @@ fn module_add_from_registry_bridge_one_blank_line() {
 
     let src_root = tempfile::tempdir().unwrap();
     let src = init_registry_source_for_test(src_root.path(), "alpha", "1.0.0", "Alpha module");
-    let reg_url = format!("file://{}", src.display());
+    let reg_url = cfgd_core::to_file_url(&src);
 
     // Wire the registry into cfgd.yaml.
     let yaml = format!(
@@ -424,10 +425,15 @@ fn module_add_from_registry_bridge_one_blank_line() {
         "bridge has duplicate blank line: {combined}"
     );
 
-    let mut stripped = normalize(&strip_ansi(&combined), config_dir.path());
-    stripped = stripped.replace(&src.to_string_lossy().to_string(), "<REG_SRC>");
-    stripped = stripped.replace(&src_root.path().to_string_lossy().to_string(), "<REG_ROOT>");
-    stripped = mask_commit_sha(&stripped);
+    let stripped = cfgd_core::normalize_for_snapshot(
+        &strip_ansi(&combined),
+        &[
+            (&src, "<REG_SRC>"),
+            (src_root.path(), "<REG_ROOT>"),
+            (config_dir.path(), "<CONFIG_DIR>"),
+        ],
+    );
+    let stripped = mask_commit_sha(&stripped);
     assert_snapshot(
         Path::new(SNAPSHOT_ROOT),
         "module_add_from_registry/bridge.txt",
@@ -467,7 +473,7 @@ fn module_search_happy_json() {
 
     let src_root = tempfile::tempdir().unwrap();
     let src = init_registry_source_for_test(src_root.path(), "alpha", "1.0.0", "Alpha module");
-    let reg_url = format!("file://{}", src.display());
+    let reg_url = cfgd_core::to_file_url(&src);
 
     let yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  modules:\n    registries:\n      - name: myreg\n        url: {reg_url}\n"

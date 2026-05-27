@@ -123,7 +123,13 @@ pub fn cmd_config_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 break;
             }
             Err(e) => {
-                printer.status_simple(Role::Fail, format!("Invalid configuration: {}", e));
+                printer.status_simple(
+                    Role::Fail,
+                    format!(
+                        "Invalid configuration: {}",
+                        cfgd_core::output::collapse_to_subject_line(&e),
+                    ),
+                );
                 if !printer.prompt_confirm("Re-open in editor to fix?")? {
                     break;
                 }

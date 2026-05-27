@@ -50,20 +50,16 @@ fn happy_output() -> ApplyOutput {
 
 /// Replace tempdir-rooted paths with stable placeholders so goldens are
 /// host-stable. `cmd_apply` embeds the config-file path and target file
-/// paths into its output (kv block + per-action lines).
+/// paths into its output (kv block + per-action lines). Delegates to
+/// [`cfgd_core::normalize_for_snapshot`] which also folds CRLF → LF and
+/// collapses OS-specific `(os error N)` tails.
 fn normalize_tempdir_paths(raw: &str, config_dir: &Path, extra_paths: &[(&Path, &str)]) -> String {
-    let mut out = raw.to_string();
-    // Longest first so substring overlap doesn't swallow the shorter one.
     let cfg_file = config_dir.join("cfgd.yaml");
-    out = out.replace(
-        &cfg_file.to_string_lossy().to_string(),
-        "<CONFIG_DIR>/cfgd.yaml",
-    );
-    for (path, placeholder) in extra_paths {
-        out = out.replace(&path.to_string_lossy().to_string(), placeholder);
-    }
-    out = out.replace(&config_dir.to_string_lossy().to_string(), "<CONFIG_DIR>");
-    out.replace('\\', "/")
+    let mut subs: Vec<(&Path, &str)> = Vec::with_capacity(extra_paths.len() + 2);
+    subs.push((&cfg_file, "<CONFIG_DIR>/cfgd.yaml"));
+    subs.extend(extra_paths.iter().copied());
+    subs.push((config_dir, "<CONFIG_DIR>"));
+    cfgd_core::normalize_for_snapshot(raw, &subs)
 }
 
 /// Replace ` (N.Ns)` duration suffixes (rendered by StatusBuilder.duration())

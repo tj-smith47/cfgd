@@ -135,8 +135,13 @@ pub fn cmd_profile_update(
                     let cache_dir = modules::git_cache_dir(&cache_base, &git_src.repo_url);
                     if cache_dir.exists() {
                         if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
-                            printer
-                                .status_simple(Role::Warn, format!("Failed to clean cache: {}", e));
+                            printer.status_simple(
+                                Role::Warn,
+                                format!(
+                                    "Failed to clean cache: {}",
+                                    cfgd_core::output::collapse_to_subject_line(&e),
+                                ),
+                            );
                         } else {
                             printer.status_simple(Role::Info, "Cleaned cached checkout");
                         }
@@ -246,8 +251,13 @@ pub fn cmd_profile_update(
                 }
 
                 if let Err(e) = state.remove_module_state(m) {
-                    printer
-                        .status_simple(Role::Warn, format!("Failed to clean module state: {}", e));
+                    printer.status_simple(
+                        Role::Warn,
+                        format!(
+                            "Failed to clean module state: {}",
+                            cfgd_core::output::collapse_to_subject_line(&e),
+                        ),
+                    );
                 }
             }
             printer.status_simple(Role::Ok, format!("Removed module: {}", m));

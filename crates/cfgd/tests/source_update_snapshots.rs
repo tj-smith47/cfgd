@@ -172,7 +172,7 @@ fn source_update_happy_human() {
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), "upd-src", None);
-    let url = format!("file://{}", bare.display());
+    let url = cfgd_core::to_file_url(&bare);
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (add_printer, _add_cap) = Printer::for_test_doc();
@@ -206,7 +206,7 @@ fn source_update_happy_json() {
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), "upd-src", None);
-    let url = format!("file://{}", bare.display());
+    let url = cfgd_core::to_file_url(&bare);
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (add_printer, _add_cap) = Printer::for_test_doc();
@@ -239,7 +239,7 @@ fn perm_change_fixture(
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), source_name, None);
-    let url = format!("file://{}", bare.display());
+    let url = cfgd_core::to_file_url(&bare);
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (add_printer, _add_cap) = Printer::for_test_doc();
@@ -339,7 +339,7 @@ fn source_update_bridge_one_blank_line() {
     let (config_dir, state_dir) = source_test_config_setup();
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_source_repo(bare_root.path(), "bridge-upd", None);
-    let url = format!("file://{}", bare.display());
+    let url = cfgd_core::to_file_url(&bare);
 
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (add_printer, _add_cap) = Printer::for_test_doc();

@@ -38,7 +38,13 @@ pub fn cmd_source_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 break;
             }
             Err(e) => {
-                printer.status_simple(Role::Fail, format!("Invalid source manifest: {}", e));
+                printer.status_simple(
+                    Role::Fail,
+                    format!(
+                        "Invalid source manifest: {}",
+                        cfgd_core::output::collapse_to_subject_line(&e),
+                    ),
+                );
                 if !printer.prompt_confirm("Re-open in editor to fix?")? {
                     printer.emit(
                         Doc::new()
