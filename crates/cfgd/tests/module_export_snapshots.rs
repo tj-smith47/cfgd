@@ -36,9 +36,10 @@ fn strip_ansi(s: &str) -> String {
 }
 
 fn normalize(raw: &str, config_dir: &Path, output_dir: &Path) -> String {
-    raw.replace(&config_dir.display().to_string(), "<CONFIG_DIR>")
-        .replace(&output_dir.display().to_string(), "<OUTPUT_DIR>")
-        .replace('\\', "/")
+    cfgd_core::normalize_for_snapshot(
+        raw,
+        &[(config_dir, "<CONFIG_DIR>"), (output_dir, "<OUTPUT_DIR>")],
+    )
 }
 
 fn module_export_setup() -> (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir) {

@@ -1,6 +1,6 @@
 Installing unit file: <TMPDIR>/test.service → /etc/systemd/system/cfgd-snap-warn.service
 
-⚠ Failed to read unit file: No such file or directory (os error 2)
+⚠ Failed to read unit file: <os error>
 
 systemctl enable cfgd-snap-warn.service
 

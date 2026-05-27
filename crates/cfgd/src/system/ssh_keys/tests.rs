@@ -16,8 +16,7 @@ mod bridge {
     }
 
     fn normalize_paths(raw: &str, tmpdir: &std::path::Path) -> String {
-        raw.replace(&tmpdir.to_string_lossy().to_string(), "<TMPDIR>")
-            .replace('\\', "/")
+        cfgd_core::normalize_for_snapshot(raw, &[(tmpdir, "<TMPDIR>")])
     }
 
     #[derive(serde::Serialize)]

@@ -9833,8 +9833,7 @@ mod harness {
     }
 
     fn normalize_ipc(raw: &str, ipc_path: &Path) -> String {
-        raw.replace(&ipc_path.to_string_lossy().to_string(), "<IPC_PATH>")
-            .replace('\\', "/")
+        crate::normalize_for_snapshot(raw, &[(ipc_path, "<IPC_PATH>")])
     }
 
     fn assert_snapshot(name: &str, actual: &str) {

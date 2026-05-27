@@ -43,11 +43,7 @@ fn strip_ansi(s: &str) -> String {
 }
 
 fn normalize(raw: &str, config_dir: &Path) -> String {
-    // After replacing the tempdir with <CONFIG_DIR>, fold Windows-style `\`
-    // into `/` so the snapshot is platform-stable. `path.display()` emits
-    // native separators on Windows; the snapshot fixture uses POSIX style.
-    raw.replace(&config_dir.display().to_string(), "<CONFIG_DIR>")
-        .replace('\\', "/")
+    cfgd_core::normalize_for_snapshot(raw, &[(config_dir, "<CONFIG_DIR>")])
 }
 
 #[test]

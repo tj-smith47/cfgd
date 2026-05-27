@@ -54,8 +54,7 @@ fn strip_ansi(s: &str) -> String {
 }
 
 fn normalize_paths(raw: &str, config_dir: &Path) -> String {
-    raw.replace(&config_dir.display().to_string(), "<CONFIG_DIR>")
-        .replace('\\', "/")
+    cfgd_core::normalize_for_snapshot(raw, &[(config_dir, "<CONFIG_DIR>")])
 }
 
 #[cfg(unix)]

@@ -56,12 +56,16 @@ fn normalize_paths(
     config_dir: &std::path::Path,
     state_dir: &std::path::Path,
 ) -> String {
-    let mut out = raw.to_string();
-    out = out.replace(&bare.to_string_lossy().to_string(), "<BARE>");
-    out = out.replace(&bare_root.to_string_lossy().to_string(), "<BARE_ROOT>");
-    out = out.replace(&config_dir.to_string_lossy().to_string(), "<CONFIG_DIR>");
-    out = out.replace(&state_dir.to_string_lossy().to_string(), "<STATE_DIR>");
-    strip_spinner_duration(out).replace('\\', "/")
+    let normalized = cfgd_core::normalize_for_snapshot(
+        raw,
+        &[
+            (bare, "<BARE>"),
+            (bare_root, "<BARE_ROOT>"),
+            (config_dir, "<CONFIG_DIR>"),
+            (state_dir, "<STATE_DIR>"),
+        ],
+    );
+    strip_spinner_duration(normalized)
 }
 
 use cfgd_core::output::test_capture::strip_spinner_duration;

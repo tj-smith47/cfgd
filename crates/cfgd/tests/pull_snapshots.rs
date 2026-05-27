@@ -95,9 +95,7 @@ fn pull_failed_human() {
 /// Replace tempdir-rooted paths and libgit2's error-message path with stable
 /// placeholders so the failed-pull golden is host-stable.
 fn normalize_libgit2_paths(raw: &str, config_dir: &Path) -> String {
-    let mut out = raw.to_string();
-    out = out.replace(&config_dir.to_string_lossy().to_string(), "<CONFIG_DIR>");
-    out.replace('\\', "/")
+    cfgd_core::normalize_for_snapshot(raw, &[(config_dir, "<CONFIG_DIR>")])
 }
 
 fn strip_ansi(s: &str) -> String {

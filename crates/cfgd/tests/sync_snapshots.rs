@@ -39,14 +39,14 @@ fn happy_output() -> SyncOutput {
 }
 
 fn normalize_tempdir_paths(raw: &str, config_dir: &Path) -> String {
-    let mut out = raw.to_string();
     let cfg_file = config_dir.join("cfgd.yaml");
-    out = out.replace(
-        &cfg_file.to_string_lossy().to_string(),
-        "<CONFIG_DIR>/cfgd.yaml",
-    );
-    out = out.replace(&config_dir.to_string_lossy().to_string(), "<CONFIG_DIR>");
-    out.replace('\\', "/")
+    cfgd_core::normalize_for_snapshot(
+        raw,
+        &[
+            (&cfg_file, "<CONFIG_DIR>/cfgd.yaml"),
+            (config_dir, "<CONFIG_DIR>"),
+        ],
+    )
 }
 
 /// Replace the commit short-hash (12 hex chars) with a stable placeholder so

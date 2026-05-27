@@ -54,9 +54,7 @@ fn strip_ansi(s: &str) -> String {
 }
 
 fn normalize(raw: &str, home: &Path, config_dir: &Path) -> String {
-    raw.replace(&home.display().to_string(), "<HOME>")
-        .replace(&config_dir.display().to_string(), "<CONFIG_DIR>")
-        .replace('\\', "/")
+    cfgd_core::normalize_for_snapshot(raw, &[(home, "<HOME>"), (config_dir, "<CONFIG_DIR>")])
 }
 
 fn tool_available(name: &str) -> bool {
