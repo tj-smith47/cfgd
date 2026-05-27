@@ -126,7 +126,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
 
     // 4. Create session
     let repo_root = config_dir(cli);
-    let mut session = cfgd_core::generate::session::GenerateSession::new(repo_root);
+    let mut session = cfgd_core::generate::session::GenerateSession::new(repo_root.clone());
 
     // 5. Build system prompt
     let skill = generate::GENERATE_SKILL;
@@ -256,7 +256,13 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
             printer.prompt_confirm("Commit all generated files?")?
         };
         if commit {
+            // Scope git operations to the generated-config repo. Without
+            // `current_dir`, git runs in the cargo process cwd — fine for
+            // operator use but in test/CI parallel runs it ends up locking
+            // the host workspace's `.git/index.lock` and stomps on sibling
+            // tests' git operations. `repo_root` is the dir holding cfgd.yaml.
             let mut add_cmd = cfgd_core::git_cmd_local();
+            add_cmd.current_dir(&repo_root);
             add_cmd.arg("add");
             for g in &generated {
                 add_cmd.arg(g.path.as_os_str());
@@ -272,6 +278,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
                 );
             } else {
                 let commit_out = cfgd_core::git_cmd_local()
+                    .current_dir(&repo_root)
                     .args([
                         "commit",
                         "-m",
