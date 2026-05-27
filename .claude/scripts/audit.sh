@@ -447,6 +447,65 @@ if [ -f "$rule_file" ]; then
 fi
 # --- end output audit block -------------------------------------------------
 
+# --- Path-handling consolidation gates ---
+# Lock in the migrations from `.claude/specs/2026-05-26-path-handling-consolidation.md`.
+# Each gate forbids a pattern the corresponding wave migrated away from.
+
+log_section "Path-handling consolidation (cross-OS portability)"
+
+# Wave 2: no inline `format!("file://...")` outside cfgd_core::to_file_url itself
+# (and its test_helpers::file_url alias). Anything else must go through
+# `cfgd_core::to_file_url(...)`.
+if w2=$(rg --type rust -n 'format!\("file://' \
+      "${CFGD_AUDIT_PATH:-crates/}" \
+      --glob '!crates/cfgd-core/src/util/paths.rs' \
+      --glob '!crates/cfgd-core/src/test_helpers.rs' \
+      2>/dev/null) && [ -n "$w2" ]; then
+  log_error "Wave 2 violation: inline file:// formatter (use cfgd_core::to_file_url):"
+  echo "$w2"
+fi
+
+# Wave 5 (production): no ad-hoc `replace('\\', "/")` outside paths.rs in
+# production code. Tests are excluded because some snapshot-mask helpers
+# legitimately fold the `sha256-` separator etc.; the gate would over-fire on
+# them. Production paths must use `cfgd_core::to_posix_string` / `posixify_text`
+# / `from_user_input` instead.
+if w5=$(rg --type rust -n "replace\('\\\\\\\\', \"/\"\)" \
+      "${CFGD_AUDIT_PATH:-crates/}" \
+      --glob '!crates/cfgd-core/src/util/paths.rs' \
+      --glob '!**/tests.rs' \
+      --glob '!**/tests/**' \
+      2>/dev/null) && [ -n "$w5" ]; then
+  log_error "Wave 5 violation: inline backslash fold in production (use cfgd_core::to_posix_string / posixify_text / from_user_input):"
+  echo "$w5"
+fi
+
+# Wave 3 (tests): no ad-hoc CRLF strips. Use cfgd_core::normalize_line_endings
+# or normalize_for_snapshot. Exclude paths.rs itself (where the helper lives)
+# and the output module (whose renderer has its own buffered handling).
+if w3=$(rg --type rust -n 'replace\("\\\\r\\\\n", "\\\\n"\)' \
+      "${CFGD_AUDIT_PATH:-crates/}" \
+      --glob '!crates/cfgd-core/src/util/paths.rs' \
+      --glob '!crates/cfgd-core/src/output/**' \
+      2>/dev/null) && [ -n "$w3" ]; then
+  log_error "Wave 3 violation: ad-hoc CRLF strip (use cfgd_core::normalize_line_endings or normalize_for_snapshot):"
+  echo "$w3"
+fi
+
+# Wave 1: `.display()` / `.to_string_lossy()` flowing into a serialization
+# boundary (serde_json::json!, rusqlite, yaml emitter, axum response) on the
+# same line. Coarse heuristic — same-line co-occurrence — excludes tests.
+if w1=$(rg --type rust -n '(serde_json::json!|rusqlite::|conn\.execute|to_yaml|axum::)' \
+      "${CFGD_AUDIT_PATH:-crates/}" \
+      --glob '!**/tests.rs' \
+      --glob '!**/tests/**' \
+      --glob '!crates/cfgd-core/src/test_helpers.rs' \
+      2>/dev/null \
+      | grep -E '\.display\(\)|\.to_string_lossy\(\)') && [ -n "$w1" ]; then
+  log_error "Wave 1 violation: path-to-string at serialization boundary (use cfgd_core::to_posix_string):"
+  echo "$w1"
+fi
+
 # --- Summary ---
 printf "\n"
 _bold; printf "=== Audit Complete: %d errors, %d warnings ===\n" "$ERRORS" "$WARNINGS"; _reset
