@@ -1,3 +1,4 @@
+use crate::PathDisplayExt;
 use crate::errors::Result;
 use crate::modules::ResolvedModule;
 use crate::output::{Printer, Role};
@@ -135,7 +136,7 @@ impl<'a> super::Reconciler<'a> {
                     Ok(s) => s,
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
                     Err(e) => {
-                        tracing::warn!("cannot read {}: {e}", path.display());
+                        tracing::warn!("cannot read {}: {e}", path.posix());
                         String::new()
                     }
                 };
@@ -143,7 +144,7 @@ impl<'a> super::Reconciler<'a> {
                     return Ok(format!("env:write:{}:skipped", path.display()));
                 }
                 crate::atomic_write_str(path, content)?;
-                printer.status_simple(Role::Ok, format!("Wrote {}", path.display()));
+                printer.status_simple(Role::Ok, format!("Wrote {}", path.posix()));
                 Ok(format!("env:write:{}", path.display()))
             }
             EnvAction::InjectSourceLine { rc_path, line } => {
@@ -151,7 +152,7 @@ impl<'a> super::Reconciler<'a> {
                     Ok(s) => s,
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
                     Err(e) => {
-                        tracing::warn!("cannot read {}: {e}", rc_path.display());
+                        tracing::warn!("cannot read {}: {e}", rc_path.posix());
                         String::new()
                     }
                 };
@@ -168,7 +169,7 @@ impl<'a> super::Reconciler<'a> {
                 crate::atomic_write_str(rc_path, &content)?;
                 printer.status_simple(
                     Role::Ok,
-                    format!("Injected source line into {}", rc_path.display()),
+                    format!("Injected source line into {}", rc_path.posix()),
                 );
                 Ok(format!("env:inject:{}", rc_path.display()))
             }

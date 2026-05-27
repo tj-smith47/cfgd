@@ -1,3 +1,4 @@
+use crate::PathDisplayExt;
 use crate::config::{ScriptEntry, ScriptShell};
 use crate::errors::{CfgdError, ConfigError, Result};
 use crate::output::Printer;
@@ -98,7 +99,7 @@ pub(crate) fn execute_script(
                     "script '{}' cannot run: working directory is not a directory ({}): {}",
                     run_str,
                     kind,
-                    working_dir.display()
+                    working_dir.posix()
                 ),
             }));
         }
@@ -107,7 +108,7 @@ pub(crate) fn execute_script(
                 message: format!(
                     "script '{}' cannot run: working directory does not exist: {}",
                     run_str,
-                    working_dir.display()
+                    working_dir.posix()
                 ),
             }));
         }
@@ -117,7 +118,7 @@ pub(crate) fn execute_script(
                     "script '{}' cannot run: working directory inaccessible ({}): {}",
                     run_str,
                     e,
-                    working_dir.display()
+                    working_dir.posix()
                 ),
             }));
         }
@@ -172,7 +173,7 @@ pub(crate) fn execute_script(
             return Err(CfgdError::Config(ConfigError::Invalid {
                 message: format!(
                     "shell field cannot be set on file-shebang scripts — set the shebang line inside '{}' itself",
-                    resolved.display(),
+                    resolved.posix(),
                 ),
             }));
         }
@@ -185,7 +186,7 @@ pub(crate) fn execute_script(
             return Err(CfgdError::Config(ConfigError::Invalid {
                 message: format!(
                     "script '{}' exists but is not executable ({})",
-                    resolved.display(),
+                    resolved.posix(),
                     hint,
                 ),
             }));

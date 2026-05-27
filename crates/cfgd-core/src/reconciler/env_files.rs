@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use crate::PathDisplayExt;
+
 pub(super) const ENV_FILE_HEADER: &str = "# managed by cfgd \u{2014} do not edit";
 
 /// Detect whether fish shell is in use by the current user.
@@ -173,7 +175,7 @@ pub(super) fn detect_rc_env_conflicts(
         before_lines.push(line);
     }
 
-    let rc_display = rc_path.display();
+    let rc_display = rc_path.posix();
     let mut warnings = Vec::new();
 
     // Build lookup maps for cfgd-managed values

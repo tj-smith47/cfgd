@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::PathDisplayExt;
 use crate::config::{MergedProfile, ResolvedProfile, ScriptSpec};
 use crate::errors::Result;
 use crate::expand_tilde;
@@ -117,7 +118,7 @@ impl<'a> super::Reconciler<'a> {
                 _ => continue,
             };
             let hash = content_hash_if_exists(source);
-            let label = format!("profile:{}", source.display());
+            let label = format!("profile:{}", source.posix());
             if let Some((existing_label, existing_hash)) = targets.get(target) {
                 if hash != *existing_hash {
                     return Err(crate::errors::FileError::Conflict {
@@ -447,7 +448,7 @@ impl<'a> super::Reconciler<'a> {
                                     reason: format!(
                                         "encryption mode Always incompatible with {:?} for {}",
                                         strategy,
-                                        file.source.display()
+                                        file.source.posix()
                                     ),
                                 },
                             }));
@@ -463,7 +464,7 @@ impl<'a> super::Reconciler<'a> {
                                         kind: ModuleActionKind::Skip {
                                             reason: format!(
                                                 "file {} requires encryption (backend: {}) but is not encrypted",
-                                                file.source.display(),
+                                                file.source.posix(),
                                                 enc.backend
                                             ),
                                         },
@@ -477,7 +478,7 @@ impl<'a> super::Reconciler<'a> {
                                         kind: ModuleActionKind::Skip {
                                             reason: format!(
                                                 "encryption check failed for {}: {}",
-                                                file.source.display(),
+                                                file.source.posix(),
                                                 e
                                             ),
                                         },

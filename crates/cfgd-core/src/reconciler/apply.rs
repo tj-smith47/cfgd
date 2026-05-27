@@ -1,3 +1,4 @@
+use crate::PathDisplayExt;
 use crate::config::ResolvedProfile;
 use crate::errors::{ConfigError, Result};
 use crate::modules::ResolvedModule;
@@ -207,7 +208,7 @@ impl<'a> super::Reconciler<'a> {
                         &file_state,
                     )
                 {
-                    tracing::warn!("failed to store file backup for {}: {}", path.display(), e);
+                    tracing::warn!("failed to store file backup for {}: {}", path.posix(), e);
                 }
 
                 // Journal: record action start

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::PathDisplayExt;
 use crate::providers::{FileAction, PackageAction, SecretAction};
 
 use super::types::{
@@ -114,13 +115,13 @@ pub fn format_plan_items(phase: &Phase) -> Vec<String> {
         .map(|action| match action {
             Action::File(fa) => match fa {
                 FileAction::Create { target, origin, .. } => {
-                    format!("create {}{}", target.display(), provenance_suffix(origin))
+                    format!("create {}{}", target.posix(), provenance_suffix(origin))
                 }
                 FileAction::Update { target, origin, .. } => {
-                    format!("update {}{}", target.display(), provenance_suffix(origin))
+                    format!("update {}{}", target.posix(), provenance_suffix(origin))
                 }
                 FileAction::Delete { target, origin, .. } => {
-                    format!("delete {}{}", target.display(), provenance_suffix(origin))
+                    format!("delete {}{}", target.posix(), provenance_suffix(origin))
                 }
                 FileAction::SetPermissions {
                     target,
@@ -130,7 +131,7 @@ pub fn format_plan_items(phase: &Phase) -> Vec<String> {
                 } => format!(
                     "chmod {:#o} {}{}",
                     mode,
-                    target.display(),
+                    target.posix(),
                     provenance_suffix(origin)
                 ),
                 FileAction::Skip {
@@ -140,7 +141,7 @@ pub fn format_plan_items(phase: &Phase) -> Vec<String> {
                     ..
                 } => format!(
                     "skip {}: {}{}",
-                    target.display(),
+                    target.posix(),
                     reason,
                     provenance_suffix(origin)
                 ),
@@ -195,8 +196,8 @@ pub fn format_plan_items(phase: &Phase) -> Vec<String> {
                     ..
                 } => format!(
                     "decrypt {} → {} (via {}){}",
-                    source.display(),
-                    target.display(),
+                    source.posix(),
+                    target.posix(),
                     backend,
                     provenance_suffix(origin)
                 ),
@@ -210,7 +211,7 @@ pub fn format_plan_items(phase: &Phase) -> Vec<String> {
                     "resolve {}://{} → {}{}",
                     provider,
                     reference,
-                    target.display(),
+                    target.posix(),
                     provenance_suffix(origin)
                 ),
                 SecretAction::ResolveEnv {
@@ -273,10 +274,10 @@ pub fn format_plan_items(phase: &Phase) -> Vec<String> {
             Action::Module(ma) => format_module_action_item(ma),
             Action::Env(ea) => match ea {
                 EnvAction::WriteEnvFile { path, .. } => {
-                    format!("write {}", path.display())
+                    format!("write {}", path.posix())
                 }
                 EnvAction::InjectSourceLine { rc_path, .. } => {
-                    format!("inject source line into {}", rc_path.display())
+                    format!("inject source line into {}", rc_path.posix())
                 }
             },
         })
@@ -313,10 +314,7 @@ pub(super) fn format_module_action_item(action: &ModuleAction) -> String {
             format!("[{}] {}", action.module_name, parts.join("; "))
         }
         ModuleActionKind::DeployFiles { files } => {
-            let targets: Vec<String> = files
-                .iter()
-                .map(|f| f.target.display().to_string())
-                .collect();
+            let targets: Vec<String> = files.iter().map(|f| f.target.display_posix()).collect();
             if targets.len() <= 3 {
                 format!("[{}] deploy: {}", action.module_name, targets.join(", "))
             } else {

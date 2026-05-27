@@ -1,3 +1,4 @@
+use crate::PathDisplayExt;
 use crate::output::Role;
 use crate::providers::FileAction;
 
@@ -37,7 +38,7 @@ pub(super) fn restore_file_from_backup(
                 Role::Warn,
                 format!(
                     "rollback: failed to clear {} before restore: {}",
-                    target.display(),
+                    target.posix(),
                     e
                 ),
             );
@@ -50,7 +51,7 @@ pub(super) fn restore_file_from_backup(
                 Role::Warn,
                 format!(
                     "rollback: failed to create parent dir {}: {}",
-                    parent.display(),
+                    parent.posix(),
                     e
                 ),
             );
@@ -59,7 +60,7 @@ pub(super) fn restore_file_from_backup(
         if let Err(e) = crate::atomic_write(target, &bk.content) {
             printer.status_simple(
                 Role::Warn,
-                format!("rollback: failed to restore {}: {}", target.display(), e),
+                format!("rollback: failed to restore {}: {}", target.posix(), e),
             );
             return RestoreOutcome::Failed;
         }
@@ -74,7 +75,7 @@ pub(super) fn restore_file_from_backup(
                 Role::Warn,
                 format!(
                     "rollback: restored {} but failed to set permissions {:o}: {}",
-                    target.display(),
+                    target.posix(),
                     mode,
                     e
                 ),
@@ -95,7 +96,7 @@ pub(super) fn restore_file_from_backup(
                 Role::Warn,
                 format!(
                     "rollback: failed to clear {} before symlink restore: {}",
-                    target.display(),
+                    target.posix(),
                     e
                 ),
             );
@@ -106,7 +107,7 @@ pub(super) fn restore_file_from_backup(
                 Role::Warn,
                 format!(
                     "rollback: failed to restore symlink {}: {}",
-                    target.display(),
+                    target.posix(),
                     e
                 ),
             );
@@ -120,7 +121,7 @@ pub(super) fn restore_file_from_backup(
         if let Err(e) = std::fs::remove_file(target) {
             printer.status_simple(
                 Role::Warn,
-                format!("rollback: failed to remove {}: {}", target.display(), e),
+                format!("rollback: failed to remove {}: {}", target.posix(), e),
             );
             return RestoreOutcome::Failed;
         }

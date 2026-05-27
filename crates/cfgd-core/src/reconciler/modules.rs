@@ -1,3 +1,4 @@
+use crate::PathDisplayExt;
 use crate::config::{ResolvedProfile, ScriptEntry};
 use crate::errors::{ConfigError, Result};
 use crate::expand_tilde;
@@ -92,10 +93,7 @@ impl<'a> super::Reconciler<'a> {
                                             String::new()
                                         }
                                         Err(e) => {
-                                            tracing::warn!(
-                                                "cannot read {}: {e}",
-                                                env_path.display()
-                                            );
+                                            tracing::warn!("cannot read {}: {e}", env_path.posix());
                                             String::new()
                                         }
                                     };
@@ -153,7 +151,7 @@ impl<'a> super::Reconciler<'a> {
                             &file_state,
                         )
                     {
-                        tracing::warn!("failed to backup module file {}: {}", target.display(), e);
+                        tracing::warn!("failed to backup module file {}: {}", target.posix(), e);
                     }
 
                     // Remove existing target before deploying
@@ -195,7 +193,7 @@ impl<'a> super::Reconciler<'a> {
                         match std::fs::read(&target) {
                             Ok(bytes) => crate::sha256_hex(&bytes),
                             Err(e) => {
-                                tracing::warn!("cannot read {} for hashing: {e}", target.display());
+                                tracing::warn!("cannot read {} for hashing: {e}", target.posix());
                                 String::new()
                             }
                         }

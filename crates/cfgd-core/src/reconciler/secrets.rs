@@ -1,5 +1,6 @@
 use secrecy::ExposeSecret;
 
+use crate::PathDisplayExt;
 use crate::errors::Result;
 use crate::expand_tilde;
 use crate::output::{Printer, Role};
@@ -41,7 +42,7 @@ impl<'a> super::Reconciler<'a> {
 
                 printer.status_simple(
                     Role::Info,
-                    format!("Decrypted {} → {}", source.display(), target_path.display()),
+                    format!("Decrypted {} → {}", source.posix(), target_path.posix()),
                 );
 
                 Ok(format!("secret:decrypt:{}", target_path.display()))
@@ -73,7 +74,7 @@ impl<'a> super::Reconciler<'a> {
                         "Resolved {}://{} → {}",
                         provider,
                         reference,
-                        target_path.display()
+                        target_path.posix()
                     ),
                 );
 

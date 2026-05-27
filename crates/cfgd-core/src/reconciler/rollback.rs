@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::PathDisplayExt;
 use crate::errors::Result;
 use crate::output::{Printer, Role};
 use crate::state::ApplyStatus;
@@ -122,7 +123,7 @@ impl<'a> super::Reconciler<'a> {
                             Role::Warn,
                             format!(
                                 "rollback: failed to remove {}: {}",
-                                target.display(),
+                                target.posix(),
                                 crate::output::collapse_to_subject_line(&e)
                             ),
                         );
