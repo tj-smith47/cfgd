@@ -59,7 +59,8 @@ fn module_build_missing_yaml_human() {
     assert!(result.is_err());
     drop(printer);
 
-    let stripped = strip_ansi(&cap.human()).replace(&dir.path().display().to_string(), "<DIR>");
+    let stripped =
+        cfgd_core::normalize_for_snapshot(&strip_ansi(&cap.human()), &[(dir.path(), "<DIR>")]);
     assert_snapshot(
         Path::new(SNAPSHOT_ROOT),
         "module_build/missing_yaml.txt",

@@ -2824,12 +2824,14 @@ mod enroll_mockito {
 
             // Normalize the mockito-allocated server URL (a 127.0.0.1
             // address with a random port) so the golden survives across
-            // runs / hosts.
-            let normalized = captured.replace(&url, "<SERVER_URL>");
-            // Normalize the temp credential-save path (CFGD_STATE_DIR is a
-            // unique tempdir per run).
+            // runs / hosts. Route the credential-save path through
+            // `normalize_for_snapshot` so it posixifies on Windows before
+            // substituting (production now emits forward-slash paths on
+            // every OS via `to_posix_string`).
             let cred_path = tmp.path().join("device-credential.json");
-            let normalized = normalized.replace(&cred_path.display().to_string(), "<CRED_PATH>");
+            let normalized =
+                cfgd_core::normalize_for_snapshot(&captured, &[(&cred_path, "<CRED_PATH>")]);
+            let normalized = normalized.replace(&url, "<SERVER_URL>");
             // Normalize the host-dependent device-id (default_device_id
             // returns the running machine's hostname).
             let device_id = cfgd_core::hostname_string();

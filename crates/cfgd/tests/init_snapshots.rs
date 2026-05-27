@@ -60,8 +60,10 @@ fn init_happy_human() {
 
     // Replace the tempdir-rooted target with a stable placeholder so the
     // golden survives across hosts (tempfile paths embed `/tmp/.tmpXXXX`).
-    let human = cap.human().replace(&target_str, "<TARGET_DIR>");
-    let normalized = strip_ansi(&human);
+    // Use `normalize_for_snapshot` so the captured text and substitution
+    // key share the posix separator convention on Windows.
+    let normalized =
+        cfgd_core::normalize_for_snapshot(&strip_ansi(&cap.human()), &[(&target, "<TARGET_DIR>")]);
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "init/happy.txt", &normalized);
 }
 
@@ -130,8 +132,8 @@ fn init_already_initialized_human() {
     cmd_init(&printer, &args).unwrap();
     drop(printer);
 
-    let human = cap.human().replace(&target_str, "<TARGET_DIR>");
-    let normalized = strip_ansi(&human);
+    let normalized =
+        cfgd_core::normalize_for_snapshot(&strip_ansi(&cap.human()), &[(&target, "<TARGET_DIR>")]);
     assert_snapshot(
         Path::new(SNAPSHOT_ROOT),
         "init/already_initialized.txt",
@@ -205,8 +207,8 @@ fn init_with_apply_renders_apply_status_streaming() {
     }
     result.unwrap();
 
-    let human = cap.human().replace(&target_str, "<TARGET_DIR>");
-    let normalized = strip_ansi(&human);
+    let normalized =
+        cfgd_core::normalize_for_snapshot(&strip_ansi(&cap.human()), &[(&target, "<TARGET_DIR>")]);
     assert_snapshot(
         Path::new(SNAPSHOT_ROOT),
         "init/with_apply_renders_apply_status_streaming.txt",

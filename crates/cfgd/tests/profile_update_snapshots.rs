@@ -174,6 +174,10 @@ fn profile_update_add_module_remote_hybrid_human() {
             (config_dir.path(), "<CONFIG_DIR>"),
         ],
     );
+    // `to_file_url` emits `file:///<absolute-posix-path>` on every OS; on
+    // Windows the bare path lacks a leading `/`, leaving the URL prefix's
+    // third slash visible. Fold to the unix shape so one golden survives both.
+    let stripped = stripped.replace("file:///<BARE>", "file://<BARE>");
     // Mask the 40-char hex commit SHA — git2 generates a new one each test run.
     let stripped = mask_commit_sha(&stripped);
     assert_snapshot(

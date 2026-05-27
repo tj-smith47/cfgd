@@ -904,7 +904,7 @@ fn collect_file_checks_with_encryption_declared_adds_file_encryption_check() {
     );
     assert_eq!(
         enc.target.as_deref(),
-        Some(file_path.to_string_lossy().as_ref())
+        Some(crate::to_posix_string(&file_path).as_str())
     );
 }
 

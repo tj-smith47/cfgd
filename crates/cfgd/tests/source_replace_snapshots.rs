@@ -51,7 +51,16 @@ fn normalize_bare(raw: &str, bares: &[(&std::path::Path, &str)]) -> String {
     // captured output (already in `/` form from libgit2 URL emission on
     // Windows) won't match a Windows `PathBuf`'s `\`-form `to_string_lossy`.
     let normalized = cfgd_core::normalize_for_snapshot(raw, bares);
-    strip_spinner_duration(normalized)
+    // `to_file_url` emits `file:///<absolute-posix-path>` on every OS; on
+    // Windows the substituted path lacks a leading `/`, leaving the URL
+    // prefix's third slash visible (`file:///<PLACEHOLDER>`). Fold to the
+    // unix shape (`file://<PLACEHOLDER>`) so a single golden survives both.
+    let folded = bares.iter().fold(normalized, |acc, (_, label)| {
+        let win_form = ["file:///", label].concat();
+        let unix_form = ["file://", label].concat();
+        acc.replace(&win_form, &unix_form)
+    });
+    strip_spinner_duration(folded)
 }
 
 /// Strip non-deterministic spinner finish durations like ` (0.0s)` so goldens

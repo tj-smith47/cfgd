@@ -71,7 +71,14 @@ fn normalize_paths(
             (state_dir, "<STATE_DIR>"),
         ],
     );
-    strip_git_sha_ranges(strip_spinner_duration(normalized))
+    // `to_file_url` emits `file:///<absolute-posix-path>` on every OS; on
+    // Windows the substituted path lacks a leading `/`, leaving the URL
+    // prefix's third slash visible (`file:///<PLACEHOLDER>`). Fold to the
+    // unix shape so a single golden survives both platforms.
+    let folded = normalized
+        .replace("file:///<BARE>", "file://<BARE>")
+        .replace("file:///<BARE_ROOT>", "file://<BARE_ROOT>");
+    strip_git_sha_ranges(strip_spinner_duration(folded))
 }
 
 /// Normalize git short-SHA ranges like `56f028c..865147c` to `<SHA>..<SHA>` so

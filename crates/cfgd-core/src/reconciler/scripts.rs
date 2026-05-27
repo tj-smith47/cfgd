@@ -669,7 +669,7 @@ mod tests {
                     "message should distinguish the non-dir failure mode: {message}"
                 );
                 assert!(
-                    message.contains(&file_path.display().to_string()),
+                    message.contains(&crate::to_posix_string(&file_path)),
                     "message should name the offending path: {message}"
                 );
             }

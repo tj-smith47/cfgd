@@ -342,6 +342,14 @@ fn module_add_bridge_one_blank_line() {
             (config_dir.path(), "<CONFIG_DIR>"),
         ],
     );
+    // The `to_file_url` helper emits `file:///<absolute-posix-path>` on every
+    // OS — three slashes always — so on Linux the unix bare path `/tmp/...`
+    // collapses cleanly to `file://<BARE>` once the leading `/` of the path
+    // is consumed by the substitution, while on Windows the bare path
+    // `C:/Users/...` has no leading `/`, leaving the third slash from the
+    // URL prefix in place (`file:///<BARE>`). Fold the Windows form to the
+    // unix shape so a single golden survives both platforms.
+    let stripped = stripped.replace("file:///<BARE>", "file://<BARE>");
     let stripped = mask_commit_sha(&stripped);
     assert_snapshot(Path::new(SNAPSHOT_ROOT), "module_add/bridge.txt", &stripped);
 }
@@ -416,6 +424,11 @@ fn module_add_from_registry_bridge_one_blank_line() {
             (config_dir.path(), "<CONFIG_DIR>"),
         ],
     );
+    // `to_file_url` emits `file:///<absolute-posix-path>` on every OS; on
+    // Windows the bare path lacks a leading `/`, leaving the URL prefix's
+    // third slash visible. Fold that to the unix shape (see the matching
+    // comment in `module_add_bridge_one_blank_line`).
+    let stripped = stripped.replace("file:///<REG_SRC>", "file://<REG_SRC>");
     let stripped = mask_commit_sha(&stripped);
     assert_snapshot(
         Path::new(SNAPSHOT_ROOT),
