@@ -19,6 +19,7 @@ use cfgd::cli::module;
 use cfgd_core::output::Printer;
 #[cfg(unix)]
 use cfgd_core::test_helpers::CosignTestShim;
+#[cfg(unix)]
 use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 #[cfg(unix)]
 use serial_test::serial;
