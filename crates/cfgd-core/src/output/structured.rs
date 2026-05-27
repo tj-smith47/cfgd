@@ -16,6 +16,7 @@
 use super::OutputFormat;
 use super::doc::Doc;
 use super::renderer::Writer;
+use crate::PathDisplayExt;
 
 /// Apply a kubectl-compatible jsonpath expression to a JSON value.
 ///
@@ -226,7 +227,7 @@ pub(crate) fn emit_structured(sink_stdout: &dyn Writer, doc: &Doc, format: &Outp
                 Err(e) => {
                     sink_stdout.write_line(&format!(
                         "failed to read template file '{}': {}",
-                        path.display(),
+                        path.posix(),
                         e
                     ));
                 }

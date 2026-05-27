@@ -2,6 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use super::{Renderer, Writer, role_glyph};
+use crate::PathDisplayExt;
 use crate::output::{Role, Verbosity, strip_ansi};
 
 /// Inputs to a single Status line. Builders convert to this for rendering.
@@ -91,10 +92,7 @@ impl Renderer {
             line.push_str(&strip_ansi(detail));
         }
         if let Some(target) = f.target {
-            let dim = self
-                .theme
-                .muted
-                .apply_to(format!(" ({})", target.display()));
+            let dim = self.theme.muted.apply_to(format!(" ({})", target.posix()));
             line.push_str(&dim.to_string());
         }
         if let Some(d) = f.duration {

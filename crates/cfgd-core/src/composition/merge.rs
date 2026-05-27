@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::PathDisplayExt;
 use crate::config::{LayerPolicy, MergedProfile, ProfileLayer};
 use crate::errors::CompositionError;
 use crate::{deep_merge_yaml, union_extend};
@@ -72,7 +73,7 @@ pub(super) fn merge_with_policy(
                             winning_source: layer.source.clone(),
                             details: format!(
                                 "file '{}' overridden: {} (priority {}) replaces {}",
-                                managed.target.display(),
+                                managed.target.posix(),
                                 layer.source,
                                 layer.priority,
                                 owner.source

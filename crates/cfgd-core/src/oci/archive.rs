@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+use crate::PathDisplayExt;
 use crate::errors::OciError;
 
 /// Create a tar.gz archive of a directory's contents.
@@ -30,7 +31,7 @@ fn add_dir_to_tar<W: std::io::Write>(
     root: &Path,
 ) -> Result<(), OciError> {
     let entries = std::fs::read_dir(dir).map_err(|e| OciError::ArchiveError {
-        message: format!("cannot read directory {}: {e}", dir.display()),
+        message: format!("cannot read directory {}: {e}", dir.posix()),
     })?;
 
     for entry in entries {
@@ -97,7 +98,7 @@ pub fn extract_tar_gz(data: &[u8], output_dir: &Path) -> Result<(), OciError> {
         // Skip symlinks — prevents symlink-based path traversal
         if entry.header().entry_type().is_symlink() || entry.header().entry_type().is_hard_link() {
             let path = entry.path().unwrap_or_default();
-            tracing::warn!(path = %path.display(), "skipping symlink/hardlink in OCI archive");
+            tracing::warn!(path = %path.posix(), "skipping symlink/hardlink in OCI archive");
             continue;
         }
 

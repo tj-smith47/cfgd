@@ -1,6 +1,7 @@
 use super::constants::MAX_BACKUP_FILE_SIZE;
 use super::fs_perms::file_permissions_mode;
 use super::hashing::sha256_hex;
+use super::paths::PathDisplayExt;
 
 /// Captured state of a file for backup purposes.
 #[derive(Debug, Clone)]
@@ -42,7 +43,7 @@ pub fn atomic_write(
         && let Err(e) = tmp.as_file().set_permissions(meta.permissions())
     {
         tracing::warn!(
-            target = %target.display(),
+            target = %target.posix(),
             error = %e,
             "atomic_write: failed to restore permissions on temp file before rename",
         );

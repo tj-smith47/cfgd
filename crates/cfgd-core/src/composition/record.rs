@@ -1,3 +1,4 @@
+use crate::PathDisplayExt;
 use crate::config::{PackagesSpec, PolicyItems};
 
 use super::{ConflictResolution, ResolutionType};
@@ -17,7 +18,7 @@ pub(super) fn record_policy_conflicts(
             details: format!(
                 "{} {} <- {}",
                 resolution_type.label(),
-                file.target.display(),
+                file.target.posix(),
                 source_name
             ),
         });

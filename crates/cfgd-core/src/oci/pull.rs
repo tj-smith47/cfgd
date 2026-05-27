@@ -4,6 +4,7 @@
 use std::io::Read;
 use std::path::Path;
 
+use crate::PathDisplayExt;
 use crate::errors::OciError;
 use crate::output::Printer;
 use crate::sha256_digest;
@@ -175,7 +176,7 @@ pub fn pull_module(
 
     tracing::info!(
         reference = %oci_ref,
-        output = %output_dir.display(),
+        output = %output_dir.posix(),
         "module pulled"
     );
 

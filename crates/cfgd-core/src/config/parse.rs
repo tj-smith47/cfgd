@@ -13,6 +13,7 @@ use super::security::{ModulesConfig, SecurityConfig};
 use super::source::{ConfigSourceDocument, SourceSpec};
 use super::sync_secrets::SecretsConfig;
 use super::theme::ThemeConfig;
+use crate::PathDisplayExt;
 use crate::errors::{ConfigError, Result};
 
 /// Maximum number of YAML anchors (`&name`) allowed in a single document.
@@ -35,7 +36,7 @@ pub(super) fn check_yaml_anchor_limit(contents: &str, context: &Path) -> Result<
         return Err(ConfigError::Invalid {
             message: format!(
                 "{}: too many YAML anchors ({}, max {}) — possible anchor/alias bomb",
-                context.display(),
+                context.posix(),
                 anchor_count,
                 MAX_YAML_ANCHORS
             ),
@@ -120,7 +121,7 @@ pub fn load_config(path: &Path) -> Result<CfgdConfig> {
         return Err(ConfigError::Invalid {
             message: format!(
                 "{} is too large ({} bytes, max {})",
-                path.display(),
+                path.posix(),
                 meta.len(),
                 MAX_CONFIG_SIZE
             ),
@@ -129,7 +130,7 @@ pub fn load_config(path: &Path) -> Result<CfgdConfig> {
     }
 
     let contents = std::fs::read_to_string(path).map_err(|e| ConfigError::Invalid {
-        message: format!("failed to read {}: {}", path.display(), e),
+        message: format!("failed to read {}: {}", path.posix(), e),
     })?;
 
     parse_config(&contents, path)
@@ -233,7 +234,7 @@ pub fn load_profile(path: &Path) -> Result<ProfileDocument> {
     }
 
     let contents = std::fs::read_to_string(path).map_err(|e| ConfigError::Invalid {
-        message: format!("failed to read {}: {}", path.display(), e),
+        message: format!("failed to read {}: {}", path.posix(), e),
     })?;
 
     check_yaml_anchor_limit(&contents, path)?;

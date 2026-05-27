@@ -199,8 +199,8 @@ pub fn validate_path_within(
             std::io::ErrorKind::PermissionDenied,
             format!(
                 "path {} escapes root {}",
-                canonical_path.display(),
-                canonical_root.display()
+                canonical_path.posix(),
+                canonical_root.posix()
             ),
         ));
     }
@@ -214,7 +214,7 @@ pub fn validate_path_within(
 pub fn validate_no_traversal(path: &std::path::Path) -> std::result::Result<(), String> {
     for component in path.components() {
         if let std::path::Component::ParentDir = component {
-            return Err(format!("path contains '..': {}", path.display()));
+            return Err(format!("path contains '..': {}", path.posix()));
         }
     }
     Ok(())

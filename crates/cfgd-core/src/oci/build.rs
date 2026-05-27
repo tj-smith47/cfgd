@@ -4,6 +4,7 @@
 
 use std::path::Path;
 
+use crate::PathDisplayExt;
 use crate::errors::OciError;
 
 const DOCKER_BIN_ENV: &str = "CFGD_DOCKER_BIN";
@@ -233,7 +234,7 @@ pub fn build_module(
 
     let out = output_dir.path().to_path_buf();
     let _keep = output_dir.keep();
-    tracing::info!(output = %out.display(), "module built");
+    tracing::info!(output = %out.posix(), "module built");
     Ok(out)
 }
 

@@ -9,6 +9,7 @@ pub fn create_symlink(source: &std::path::Path, target: &std::path::Path) -> std
     }
     #[cfg(windows)]
     {
+        use super::paths::PathDisplayExt;
         create_symlink_impl(source, target).map_err(|e| {
             if e.raw_os_error() == Some(1314) {
                 // ERROR_PRIVILEGE_NOT_HELD
@@ -17,8 +18,8 @@ pub fn create_symlink(source: &std::path::Path, target: &std::path::Path) -> std
                     format!(
                         "symlink creation requires Developer Mode or admin privileges: {} -> {}\n\
                          Enable Developer Mode: Settings > Update & Security > For developers",
-                        source.display(),
-                        target.display()
+                        source.posix(),
+                        target.posix()
                     ),
                 );
             }
