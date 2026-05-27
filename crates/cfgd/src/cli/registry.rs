@@ -1,5 +1,7 @@
 use super::*;
 
+use cfgd_core::PathDisplayExt;
+
 // --- Provider registry, daemon hooks, state store ---
 
 /// Extract secret backend name and age key path from config.
@@ -246,7 +248,7 @@ pub(in crate::cli) fn resolve_secret_backend(
     ));
 
     if !file.exists() {
-        anyhow::bail!("File not found: {}", file.display());
+        anyhow::bail!("File not found: {}", file.posix());
     }
 
     match registry.secret_backend {

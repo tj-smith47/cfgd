@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> anyhow::Result<()> {
@@ -180,13 +181,13 @@ pub fn cmd_module_keys_rotate(
     std::fs::rename(&old_key, &backup_key)?;
     printer.status_simple(
         Role::Info,
-        format!("Backed up old private key to {}", backup_key.display()),
+        format!("Backed up old private key to {}", backup_key.posix()),
     );
     if old_pub.exists() {
         std::fs::rename(&old_pub, &backup_pub)?;
         printer.status_simple(
             Role::Info,
-            format!("Backed up old public key to {}", backup_pub.display()),
+            format!("Backed up old public key to {}", backup_pub.posix()),
         );
     }
 
@@ -209,17 +210,17 @@ pub fn cmd_module_keys_rotate(
         {
             restore_failures.push(format!(
                 "{} → {}: {}",
-                backup_key.display(),
-                old_key.display(),
+                backup_key.posix(),
+                old_key.posix(),
                 e
             ));
             printer.status_simple(
                 Role::Fail,
                 format!(
                     "Failed to restore private key from {}: {} — backup remains at {}",
-                    backup_key.display(),
+                    backup_key.posix(),
                     e,
-                    backup_key.display()
+                    backup_key.posix()
                 ),
             );
         }
@@ -228,17 +229,17 @@ pub fn cmd_module_keys_rotate(
         {
             restore_failures.push(format!(
                 "{} → {}: {}",
-                backup_pub.display(),
-                old_pub.display(),
+                backup_pub.posix(),
+                old_pub.posix(),
                 e
             ));
             printer.status_simple(
                 Role::Fail,
                 format!(
                     "Failed to restore public key from {}: {} — backup remains at {}",
-                    backup_pub.display(),
+                    backup_pub.posix(),
                     e,
-                    backup_pub.display()
+                    backup_pub.posix()
                 ),
             );
         }

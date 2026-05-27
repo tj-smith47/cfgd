@@ -1,6 +1,7 @@
 use super::*;
 
 use anyhow::Context;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 use cfgd_core::server_client::{DeviceCredential, ServerClient};
 
@@ -81,7 +82,7 @@ pub fn cmd_checkin(
         let push_sec = printer.section("Server config");
         match cfgd_core::state::save_pending_server_config(desired) {
             Ok(path) => {
-                push_sec.status_simple(Role::Ok, format!("Saved to {}", path.display()));
+                push_sec.status_simple(Role::Ok, format!("Saved to {}", path.posix()));
                 push_sec.status_simple(Role::Info, MSG_RUN_APPLY);
             }
             Err(e) => {

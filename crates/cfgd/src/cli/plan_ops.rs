@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 
 // --- Plan output rendering ---
@@ -231,7 +232,7 @@ pub(in crate::cli) fn display_plan_preview(
                     };
                     // `printer.diff` bypasses section header flushing; wrapping the
                     // file label in `section()` would render the header after the diff.
-                    printer.heading(target.display().to_string());
+                    printer.heading(target.display_posix());
                     printer.diff(&target_content, &source_content);
                 }
             }
@@ -465,10 +466,10 @@ fn prompt_backup_choice<'a>(
         format!(
             "Module '{}': target exists as unmanaged file: {}",
             m,
-            target.display()
+            target.posix()
         )
     } else {
-        format!("Target exists as unmanaged file: {}", target.display())
+        format!("Target exists as unmanaged file: {}", target.posix())
     };
     printer.status_simple(Role::Warn, msg);
     Ok(printer
@@ -481,12 +482,12 @@ pub(in crate::cli) fn backup_file(target: &Path, printer: &Printer) -> anyhow::R
     std::fs::rename(target, &backup_path).map_err(|e| {
         anyhow::anyhow!(
             "Failed to backup {} to {}: {}",
-            target.display(),
-            backup_path.display(),
+            target.posix(),
+            backup_path.posix(),
             e
         )
     })?;
-    printer.status_simple(Role::Ok, format!("Backed up to {}", backup_path.display()));
+    printer.status_simple(Role::Ok, format!("Backed up to {}", backup_path.posix()));
     Ok(())
 }
 

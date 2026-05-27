@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 
 fn first_line(s: &str) -> String {
@@ -40,7 +41,7 @@ pub fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
         Doc::new()
             .status(
                 Role::Ok,
-                format!("Encrypted {} via {}", file.display(), backend_name),
+                format!("Encrypted {} via {}", file.posix(), backend_name),
             )
             .with_data(serde_json::json!({
                 "path": cfgd_core::to_posix_string(file),
@@ -94,7 +95,7 @@ pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
     if printer.is_structured() {
         printer.emit(
             Doc::new()
-                .status(Role::Ok, format!("Decrypted {}", file.display()))
+                .status(Role::Ok, format!("Decrypted {}", file.posix()))
                 .with_data(serde_json::json!({
                     "path": cfgd_core::to_posix_string(file),
                     "backend": backend_name,
@@ -108,7 +109,7 @@ pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
 
     printer.emit(
         Doc::new()
-            .status(Role::Ok, format!("Decrypted {}", file.display()))
+            .status(Role::Ok, format!("Decrypted {}", file.posix()))
             .with_data(serde_json::json!({
                 "path": cfgd_core::to_posix_string(file),
                 "backend": backend_name,
@@ -155,7 +156,7 @@ pub fn cmd_secret_edit(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Res
                 Role::Ok,
                 format!(
                     "Edited and re-encrypted {} via {}",
-                    file.display(),
+                    file.posix(),
                     backend_name
                 ),
             )
@@ -199,7 +200,7 @@ pub fn cmd_secret_init(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             Doc::new()
                 .status(
                     Role::Info,
-                    format!("Secrets already initialized at {}", key_path.display()),
+                    format!("Secrets already initialized at {}", key_path.posix()),
                 )
                 .with_data(serde_json::json!({
                     "backend": "age",
@@ -219,8 +220,7 @@ pub fn cmd_secret_init(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     };
 
     let init_sec = printer.section("Secrets Initialized");
-    let mut pairs: Vec<(String, String)> =
-        vec![("Age key".to_string(), key_path.display().to_string())];
+    let mut pairs: Vec<(String, String)> = vec![("Age key".to_string(), key_path.display_posix())];
     if let Some(ref p) = sops_path {
         pairs.push((".sops.yaml".to_string(), p.clone()));
     }

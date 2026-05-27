@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_profile_create(
@@ -36,14 +37,14 @@ pub fn cmd_profile_create(
             format!(
                 "Profile '{}' already exists at {}",
                 name,
-                profile_path.display()
+                profile_path.posix()
             ),
             serde_json::json!({ "path": cfgd_core::to_posix_string(&profile_path) }),
         ));
         anyhow::bail!(
             "Profile '{}' already exists at {}",
             name,
-            profile_path.display()
+            profile_path.posix()
         );
     }
 
@@ -270,7 +271,7 @@ pub fn cmd_profile_create(
 
     let mut out = Doc::new().status(
         Role::Ok,
-        format!("Created profile '{}' at {}", name, profile_path.display()),
+        format!("Created profile '{}' at {}", name, profile_path.posix()),
     );
     if !doc.spec.inherits.is_empty() {
         out = out.kv("Inherits", doc.spec.inherits.join(", "));

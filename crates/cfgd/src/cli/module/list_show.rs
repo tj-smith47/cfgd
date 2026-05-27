@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::config::ModuleLockEntry;
 use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 
@@ -44,7 +45,7 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
     if entries.is_empty() {
         doc = doc
             .status(Role::Info, "No modules found")
-            .hint(format!("Add modules to {}/modules/", config_dir.display()));
+            .hint(format!("Add modules to {}/modules/", config_dir.posix()));
         return doc.with_data(entries);
     }
 

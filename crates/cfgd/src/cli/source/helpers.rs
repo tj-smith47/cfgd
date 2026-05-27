@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role, SectionBuilder};
 
 // --- Source cache layout ---
@@ -233,7 +234,7 @@ pub(crate) fn add_source_to_config(
     source: &config::SourceSpec,
 ) -> anyhow::Result<()> {
     if !config_path.exists() {
-        anyhow::bail!("Config file not found: {}", config_path.display());
+        anyhow::bail!("Config file not found: {}", config_path.posix());
     }
 
     mutate_config_yaml(config_path, true, |raw| {

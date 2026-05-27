@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::compliance::{ComplianceCheck, ComplianceSnapshot, ComplianceStatus};
 use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 use cfgd_core::state::ComplianceHistoryRow;
@@ -311,7 +312,7 @@ pub fn build_compliance_export_doc(
         .heading("Compliance Export")
         .status(
             Role::Ok,
-            format!("Compliance snapshot written to {}", export_path.display()),
+            format!("Compliance snapshot written to {}", export_path.posix()),
         )
         .section("Summary", |s| {
             s.kv("Compliant", snapshot.summary.compliant.to_string())

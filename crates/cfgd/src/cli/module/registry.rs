@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_module_add_from_registry(
@@ -193,14 +194,14 @@ pub fn cmd_module_add_remote(
             format!(
                 "Local module '{}' already exists in {}/modules/ — local modules take precedence over remote",
                 module_name,
-                config_dir.display()
+                config_dir.posix()
             ),
             serde_json::json!({ "configDir": cfgd_core::to_posix_string(&config_dir) }),
         ));
         anyhow::bail!(
             "Local module '{}' already exists in {}/modules/ — local modules take precedence over remote",
             module_name,
-            config_dir.display()
+            config_dir.posix()
         );
     }
 
@@ -330,7 +331,7 @@ pub fn cmd_module_upgrade(
                     format!(
                         "Module '{}' is a local module — edit it directly in {}/modules/{}/",
                         name,
-                        config_dir.display(),
+                        config_dir.posix(),
                         name
                     ),
                     serde_json::json!({}),
@@ -338,7 +339,7 @@ pub fn cmd_module_upgrade(
                 anyhow::bail!(
                     "Module '{}' is a local module — edit it directly in {}/modules/{}/",
                     name,
-                    config_dir.display(),
+                    config_dir.posix(),
                     name
                 );
             } else {

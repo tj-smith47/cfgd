@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Printer, Role};
 
 pub(in crate::cli) fn load_config_and_profile(
@@ -101,7 +102,7 @@ pub(in crate::cli) fn copy_files_to_dir(
     for spec in file_specs {
         let (source, target) = parse_file_spec(spec)?;
         if !source.exists() {
-            anyhow::bail!("File not found: {}", source.display());
+            anyhow::bail!("File not found: {}", source.posix());
         }
 
         // Reject sources in system directories to prevent path traversal attacks.
@@ -134,7 +135,7 @@ pub(in crate::cli) fn copy_files_to_dir(
             if source.starts_with(prefix) || canonical_source.starts_with(prefix) {
                 anyhow::bail!(
                     "Refusing to import '{}': source is in system directory {}",
-                    source.display(),
+                    source.posix(),
                     prefix
                 );
             }
@@ -146,14 +147,14 @@ pub(in crate::cli) fn copy_files_to_dir(
         if canonical_source.starts_with("/var") {
             anyhow::bail!(
                 "Refusing to import '{}': source is in system directory /var",
-                source.display()
+                source.posix()
             );
         }
 
         std::fs::create_dir_all(repo_dir)?;
         let file_name = source
             .file_name()
-            .ok_or_else(|| anyhow::anyhow!("Invalid file path: {}", source.display()))?;
+            .ok_or_else(|| anyhow::anyhow!("Invalid file path: {}", source.posix()))?;
         let dest = repo_dir.join(file_name);
         if source.is_dir() {
             cfgd_core::copy_dir_recursive(&source, &dest)?;

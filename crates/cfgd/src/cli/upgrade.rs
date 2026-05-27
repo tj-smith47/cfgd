@@ -1,3 +1,4 @@
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_upgrade(
@@ -160,7 +161,7 @@ pub fn cmd_upgrade(
     printer.emit(
         Doc::new()
             .status(Role::Ok, format!("cfgd upgraded to {}", check.latest))
-            .kv("Installed to", report.installed_path.display().to_string())
+            .kv("Installed to", report.installed_path.display_posix())
             .with_data(serde_json::json!({
                 "currentVersion": check.current.to_string(),
                 "targetVersion": check.latest.to_string(),

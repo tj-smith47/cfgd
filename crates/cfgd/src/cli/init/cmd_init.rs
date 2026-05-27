@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 use serde::Serialize;
 
@@ -65,7 +66,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     if target_dir.join("cfgd.yaml").exists() && !from_used {
         printer.status_simple(
             Role::Info,
-            format!("Already initialized at {}", target_dir.display()),
+            format!("Already initialized at {}", target_dir.posix()),
         );
         let output = InitOutput {
             target_dir: target_dir.display().to_string(),
@@ -118,7 +119,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
         }
     }
 
-    printer.status_simple(Role::Ok, format!("Initialized at {}", target_dir.display()));
+    printer.status_simple(Role::Ok, format!("Initialized at {}", target_dir.posix()));
 
     // 7. Apply if requested
     let should_apply = should_run_apply(args.apply, args.apply_profile, args.apply_modules);
@@ -136,7 +137,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             for m in args.apply_modules {
                 let resolved_name = modules::resolve_profile_module_name(m);
                 if !all_modules.contains_key(resolved_name) {
-                    anyhow::bail!("Module '{}' not found in {}", m, target_dir.display());
+                    anyhow::bail!("Module '{}' not found in {}", m, target_dir.posix());
                 }
             }
 
@@ -187,7 +188,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 // Validate profile exists
                 let profile_path = profiles_dir.join(format!("{}.yaml", name));
                 if !profile_path.exists() {
-                    anyhow::bail!("Profile '{}' not found at {}", name, profile_path.display());
+                    anyhow::bail!("Profile '{}' not found at {}", name, profile_path.posix());
                 }
                 // Set as active profile in cfgd.yaml
                 let mut cfg = config::load_config(&config_path)?;
@@ -230,7 +231,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 for m in args.apply_modules {
                     let resolved_name = modules::resolve_profile_module_name(m);
                     if !all_modules.contains_key(resolved_name) {
-                        anyhow::bail!("Module '{}' not found in {}", m, target_dir.display());
+                        anyhow::bail!("Module '{}' not found in {}", m, target_dir.posix());
                     }
                 }
                 modules::resolve_modules(

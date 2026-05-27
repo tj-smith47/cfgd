@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 
 // --- Config CRUD ---
@@ -10,7 +11,7 @@ fn yes_no(b: bool) -> &'static str {
 pub fn build_config_show_doc(cfg: &CfgdConfig, config_path: &Path) -> Doc {
     let mut doc = Doc::new()
         .heading("Configuration")
-        .kv("File", config_path.display().to_string())
+        .kv("File", config_path.display_posix())
         .kv(
             "Profile",
             cfg.spec.profile.as_deref().unwrap_or("(none)").to_string(),

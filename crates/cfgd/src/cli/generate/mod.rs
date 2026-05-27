@@ -1,5 +1,6 @@
 use clap::{Args, Subcommand};
 
+use cfgd_core::PathDisplayExt;
 use cfgd_core::config::{self, AiConfig};
 use cfgd_core::generate::{PresentYamlRequest, PresentYamlResponse};
 use cfgd_core::output::{Doc, Printer, Role};
@@ -245,7 +246,7 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
         {
             let sec = printer.section("Generated files");
             for item in &generated {
-                sec.status(Role::Ok, format!("{}: {}", item.name, item.path.display()));
+                sec.status(Role::Ok, format!("{}: {}", item.name, item.path.posix()));
             }
         }
 

@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::config::{
     EnvVar, ManagedFileSpec, PackagesSpec, ProfileLayer, ResolvedProfile, SecretSpec,
 };
@@ -9,7 +10,7 @@ use cfgd_core::output::{Doc, Printer};
 pub fn build_profile_show_doc(resolved: &ResolvedProfile, name: &str, config_path: &Path) -> Doc {
     let mut doc = Doc::new()
         .heading(format!("Profile: {}", name))
-        .kv("Config", config_path.display().to_string())
+        .kv("Config", config_path.display_posix())
         .kv("Profile", name);
 
     doc = doc.section("Layers", |s| {
@@ -34,7 +35,7 @@ pub fn build_profile_show_doc(resolved: &ResolvedProfile, name: &str, config_pat
 
     doc = doc.section_if_nonempty("Files", &resolved.merged.files.managed, |s, files| {
         files.iter().fold(s, |s, file: &ManagedFileSpec| {
-            s.kv(&file.source, file.target.display().to_string())
+            s.kv(&file.source, file.target.display_posix())
         })
     });
 
@@ -47,8 +48,8 @@ pub fn build_profile_show_doc(resolved: &ResolvedProfile, name: &str, config_pat
     doc = doc.section_if_nonempty("Secrets", &resolved.merged.secrets, |s, secrets| {
         secrets.iter().fold(s, |s, secret: &SecretSpec| {
             let value = match (&secret.target, &secret.envs) {
-                (Some(t), Some(envs)) => format!("{} (envs: {})", t.display(), envs.join(", ")),
-                (Some(t), None) => t.display().to_string(),
+                (Some(t), Some(envs)) => format!("{} (envs: {})", t.posix(), envs.join(", ")),
+                (Some(t), None) => t.display_posix(),
                 (None, Some(envs)) => format!("envs: {}", envs.join(", ")),
                 (None, None) => "(invalid)".to_string(),
             };

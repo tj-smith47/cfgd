@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_module_export(
@@ -154,12 +155,12 @@ pub(super) fn export_devcontainer(
     let feature_path = feature_dir.join("devcontainer-feature.json");
     cfgd_core::atomic_write_str(&feature_path, &feature_json)?;
 
-    let install_path_str = install_path.display().to_string();
-    let feature_path_str = feature_path.display().to_string();
+    let install_path_str = install_path.display_posix();
+    let feature_path_str = feature_path.display_posix();
     let out_sec = printer.section(format!(
         "Exported module '{}' as DevContainer Feature to {}",
         name,
-        feature_dir.display()
+        feature_dir.posix()
     ));
     out_sec.bullet(install_path_str.clone());
     out_sec.bullet(feature_path_str.clone());

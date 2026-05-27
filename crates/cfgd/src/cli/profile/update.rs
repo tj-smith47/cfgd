@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_profile_update(
@@ -444,13 +445,13 @@ pub fn cmd_profile_update(
         {
             printer.status_simple(
                 Role::Warn,
-                format!("Secret targeting '{}' already exists", target.display()),
+                format!("Secret targeting '{}' already exists", target.posix()),
             );
             continue;
         }
         printer.status_simple(
             Role::Ok,
-            format!("Added secret: {} → {}", secret.source, target.display()),
+            format!("Added secret: {} → {}", secret.source, target.posix()),
         );
         doc.spec.secrets.push(secret);
         changes += 1;

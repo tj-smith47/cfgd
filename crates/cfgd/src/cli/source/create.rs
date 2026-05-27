@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_source_create(
@@ -16,13 +17,13 @@ pub fn cmd_source_create(
             "already_exists",
             format!(
                 "cfgd-source.yaml already exists at {} — use 'cfgd source edit' to modify it",
-                source_path.display()
+                source_path.posix()
             ),
             serde_json::json!({ "path": cfgd_core::to_posix_string(&source_path) }),
         ));
         anyhow::bail!(
             "cfgd-source.yaml already exists at {} — use 'cfgd source edit' to modify it",
-            source_path.display()
+            source_path.posix()
         );
     }
 
@@ -117,7 +118,7 @@ pub fn cmd_source_create(
 
     let mut doc = Doc::new().status(
         Role::Ok,
-        format!("Created cfgd-source.yaml at {}", source_path.display()),
+        format!("Created cfgd-source.yaml at {}", source_path.posix()),
     );
     if !profile_names.is_empty() {
         doc = doc.status(

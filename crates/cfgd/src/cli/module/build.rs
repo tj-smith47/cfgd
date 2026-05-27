@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 
 #[allow(clippy::too_many_arguments)]
@@ -18,13 +19,13 @@ pub fn cmd_module_build(
             "module_yaml_missing",
             format!(
                 "Directory '{}' does not contain a module.yaml",
-                dir_path.display()
+                dir_path.posix()
             ),
             serde_json::json!({ "dir": dir }),
         ));
         anyhow::bail!(
             "Directory '{}' does not contain a module.yaml",
-            dir_path.display()
+            dir_path.posix()
         );
     }
 
@@ -57,7 +58,7 @@ pub fn cmd_module_build(
                 ));
                 anyhow::anyhow!("{e}")
             })?;
-        printer.status_simple(Role::Ok, format!("Built to {}", output_dir.display()));
+        printer.status_simple(Role::Ok, format!("Built to {}", output_dir.posix()));
         output_artifacts.push(output_dir.display().to_string());
 
         if let Some(art) = artifact {
@@ -94,7 +95,7 @@ pub fn cmd_module_build(
             let sp = printer.spinner(format!("Building for {t}..."));
             let output_dir = match cfgd_core::oci::build_module(dir_path, Some(t), base_image) {
                 Ok(d) => {
-                    sp.finish_ok(format!("Built {t} to {}", d.display()));
+                    sp.finish_ok(format!("Built {t} to {}", d.posix()));
                     d
                 }
                 Err(e) => {

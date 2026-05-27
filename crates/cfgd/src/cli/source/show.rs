@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::config::{ConfigSourceDocument, PolicyItems};
 use cfgd_core::output::{Doc, Printer, Role, doc::SectionBuilder, renderer::Table};
 
@@ -156,7 +157,7 @@ fn append_policy_items(mut s: SectionBuilder, items: &PolicyItems) -> SectionBui
         }
     }
     for f in &items.files {
-        s = s.status(Role::Info, format!("file: {}", f.target.display()));
+        s = s.status(Role::Info, format!("file: {}", f.target.posix()));
     }
     for ev in &items.env {
         s = s.status(Role::Info, format!("env: {}", ev.name));

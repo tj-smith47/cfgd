@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 
 /// Build the `cfgd profile list` Doc from a populated entries vector + `--wide`
@@ -42,7 +43,7 @@ pub fn build_profile_list_missing_doc(profiles_dir: &Path) -> Doc {
         .heading("Available Profiles")
         .status(
             Role::Warn,
-            format!("Profiles directory not found: {}", profiles_dir.display()),
+            format!("Profiles directory not found: {}", profiles_dir.posix()),
         )
         .with_data(&empty)
 }

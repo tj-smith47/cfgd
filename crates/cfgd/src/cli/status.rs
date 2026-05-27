@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role, renderer::Table};
 
 #[derive(Serialize)]
@@ -52,7 +53,7 @@ pub fn build_fleet_status_doc(
 ) -> Doc {
     let mut doc = Doc::new()
         .heading("Status")
-        .kv("Config", config_path.display().to_string())
+        .kv("Config", config_path.display_posix())
         .kv("Profile", profile_name);
 
     match &output.last_apply {

@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Printer, Role};
 
 /// Returns true if the value is a clonable git source (URL or local git repo).
@@ -38,17 +39,17 @@ pub(crate) fn resolve_from(
         } else {
             printer.status_simple(
                 Role::Info,
-                format!("Already initialized at {}", dest.display()),
+                format!("Already initialized at {}", dest.posix()),
             );
         }
         Ok(dest)
     } else {
         let path = cfgd_core::expand_tilde(Path::new(from));
         if !path.exists() {
-            anyhow::bail!("Path does not exist: {}", path.display());
+            anyhow::bail!("Path does not exist: {}", path.posix());
         }
         if !path.join("cfgd.yaml").exists() {
-            anyhow::bail!("No cfgd.yaml found in {}", path.display());
+            anyhow::bail!("No cfgd.yaml found in {}", path.posix());
         }
         Ok(path)
     }
@@ -70,7 +71,7 @@ pub(super) fn clone_into(
     cfgd_core::sources::git_clone_with_fallback(url, target_dir, printer)
         .map_err(|e| anyhow::anyhow!("Clone failed: {}", e))?;
 
-    printer.status_simple(Role::Ok, format!("Cloned to {}", target_dir.display()));
+    printer.status_simple(Role::Ok, format!("Cloned to {}", target_dir.posix()));
 
     // Checkout the requested branch if HEAD isn't already on it.
     // git clone checks out the remote's default branch; if the user asked for

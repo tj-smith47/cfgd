@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use cfgd_core::PathDisplayExt;
 use serde::Serialize;
 
 use super::*;
@@ -39,7 +40,7 @@ pub(super) fn load_module_document(
         anyhow::bail!(
             "Module '{}' not found at {}",
             module_name,
-            module_yaml.display()
+            module_yaml.posix()
         );
     }
     let contents = std::fs::read_to_string(&module_yaml)?;

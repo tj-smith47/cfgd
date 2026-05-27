@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_module_create(
@@ -25,18 +26,10 @@ pub fn cmd_module_create(
         printer.emit(cfgd_core::output::error_doc(
             name,
             "already_exists",
-            format!(
-                "Module '{}' already exists at {}",
-                name,
-                module_dir.display()
-            ),
+            format!("Module '{}' already exists at {}", name, module_dir.posix()),
             serde_json::json!({ "path": cfgd_core::to_posix_string(&module_dir) }),
         ));
-        anyhow::bail!(
-            "Module '{}' already exists at {}",
-            name,
-            module_dir.display()
-        );
+        anyhow::bail!("Module '{}' already exists at {}", name, module_dir.posix());
     }
 
     std::fs::create_dir_all(&module_dir)?;
@@ -222,7 +215,7 @@ pub fn cmd_module_create(
     let summary_sec = printer.section(format!(
         "Created module '{}' at {}",
         name,
-        module_dir.display()
+        module_dir.posix()
     ));
     if !doc.spec.packages.is_empty() {
         summary_sec.kv(
@@ -448,7 +441,7 @@ pub fn cmd_module_update_local(
             let (source, _) = parse_file_spec(spec)?;
             let basename = source
                 .file_name()
-                .ok_or_else(|| anyhow::anyhow!("Invalid file path: {}", source.display()))?
+                .ok_or_else(|| anyhow::anyhow!("Invalid file path: {}", source.posix()))?
                 .to_string_lossy()
                 .to_string();
 
@@ -478,7 +471,7 @@ pub fn cmd_module_update_local(
             private: args.private,
             encryption: None,
         });
-        printer.status_simple(Role::Ok, format!("Added file: {}", target.display()));
+        printer.status_simple(Role::Ok, format!("Added file: {}", target.posix()));
         changes += 1;
     }
 
@@ -632,10 +625,10 @@ pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
         printer.emit(cfgd_core::output::error_doc(
             name,
             "not_found",
-            format!("Module '{}' not found at {}", name, module_yaml.display()),
+            format!("Module '{}' not found at {}", name, module_yaml.posix()),
             serde_json::json!({ "path": cfgd_core::to_posix_string(&module_yaml) }),
         ));
-        anyhow::bail!("Module '{}' not found at {}", name, module_yaml.display());
+        anyhow::bail!("Module '{}' not found at {}", name, module_yaml.posix());
     }
 
     open_in_editor(&module_yaml, printer)?;
@@ -710,10 +703,10 @@ pub fn cmd_module_delete(
         printer.emit(cfgd_core::output::error_doc(
             name,
             "not_found",
-            format!("Module '{}' not found at {}", name, module_dir.display()),
+            format!("Module '{}' not found at {}", name, module_dir.posix()),
             serde_json::json!({ "path": cfgd_core::to_posix_string(&module_dir) }),
         ));
-        anyhow::bail!("Module '{}' not found at {}", name, module_dir.display());
+        anyhow::bail!("Module '{}' not found at {}", name, module_dir.posix());
     }
 
     // Safety: refuse if any profile references this module
@@ -766,7 +759,7 @@ pub fn cmd_module_delete(
                     } else {
                         std::fs::remove_file(&target)?;
                     }
-                    purge_sec.status_simple(Role::Info, format!("Purged {}", target.display()));
+                    purge_sec.status_simple(Role::Info, format!("Purged {}", target.posix()));
                     files_processed += 1;
                 }
             }
@@ -790,7 +783,7 @@ pub fn cmd_module_delete(
                     } else {
                         std::fs::copy(&source, &target)?;
                     }
-                    restore_sec.status_simple(Role::Info, format!("Restored {}", target.display()));
+                    restore_sec.status_simple(Role::Info, format!("Restored {}", target.posix()));
                     files_processed += 1;
                 }
             }

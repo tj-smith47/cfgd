@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 
 pub struct PushOptions<'a> {
@@ -29,13 +30,13 @@ pub fn cmd_module_push(
             "module_yaml_missing",
             format!(
                 "Directory '{}' does not contain a module.yaml",
-                dir_path.display()
+                dir_path.posix()
             ),
             serde_json::json!({ "dir": dir }),
         ));
         anyhow::bail!(
             "Directory '{}' does not contain a module.yaml",
-            dir_path.display()
+            dir_path.posix()
         );
     }
 

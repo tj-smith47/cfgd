@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyhow::Result<()> {
@@ -36,7 +37,7 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
         && !printer
             .prompt_confirm(&format!(
                 "Workflow already exists at {} — overwrite?",
-                workflow_path.display()
+                workflow_path.posix()
             ))
             .unwrap_or(false)
     {
@@ -78,7 +79,7 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
         Doc::new()
             .status(
                 Role::Ok,
-                format!("Generated release workflow at {}", workflow_path.display()),
+                format!("Generated release workflow at {}", workflow_path.posix()),
             )
             .kv("Modules", module_names.len().to_string())
             .kv("Profiles", profile_names.len().to_string())

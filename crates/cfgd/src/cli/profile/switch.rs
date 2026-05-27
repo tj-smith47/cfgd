@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::Result<()> {
@@ -24,7 +25,7 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::R
         let mut doc = cfgd_core::output::error_doc(
             name,
             "not_found",
-            format!("Profile '{}' not found at {}", name, profile_path.display()),
+            format!("Profile '{}' not found at {}", name, profile_path.posix()),
             serde_json::json!({
                 "profilePath": profile_path.display().to_string(),
                 "available": available,
@@ -42,7 +43,7 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::R
         anyhow::bail!(
             "Profile '{}' not found at {}{}",
             name,
-            profile_path.display(),
+            profile_path.posix(),
             bail_hint
         );
     }

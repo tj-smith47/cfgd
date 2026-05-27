@@ -1,5 +1,6 @@
 use super::*;
 
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role, section_guard::SectionGuard};
 
 pub fn cmd_diff(
@@ -18,7 +19,7 @@ pub fn cmd_diff(
 
     let (_cfg, profile_name, mut resolved) = load_config_and_profile(cli)?;
     printer.kv_block([
-        ("Config".to_string(), cli.config.display().to_string()),
+        ("Config".to_string(), cli.config.display_posix()),
         ("Profile".to_string(), profile_name),
     ]);
 
@@ -155,7 +156,7 @@ fn cmd_diff_module(
                         if source_content != target_content {
                             has_file_diff = true;
                             files_sec
-                                .status(Role::Warn, format!("{}", file.target.display()))
+                                .status(Role::Warn, format!("{}", file.target.posix()))
                                 .detail("content differs");
                             printer.diff(&target_content, &source_content);
                         }
@@ -163,7 +164,7 @@ fn cmd_diff_module(
                 } else {
                     has_file_diff = true;
                     files_sec
-                        .status(Role::Warn, format!("{}", file.target.display()))
+                        .status(Role::Warn, format!("{}", file.target.posix()))
                         .detail("missing");
                 }
             }

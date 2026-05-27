@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 use serde::Serialize;
 
@@ -215,7 +216,7 @@ fn finish_enrollment(
 
     match cfgd_core::server_client::save_credential(&credential) {
         Ok(path) => {
-            printer.status_simple(Role::Ok, format!("Credential saved to {}", path.display()));
+            printer.status_simple(Role::Ok, format!("Credential saved to {}", path.posix()));
         }
         Err(e) => {
             printer.status_simple(
@@ -237,7 +238,7 @@ fn finish_enrollment(
             Ok(path) => {
                 printer.status_simple(
                     Role::Info,
-                    format!("Server pushed desired config — saved to {}", path.display()),
+                    format!("Server pushed desired config — saved to {}", path.posix()),
                 );
                 printer.status_simple(Role::Info, MSG_RUN_APPLY);
             }
@@ -331,7 +332,7 @@ pub(super) fn detect_ssh_key(printer: &Printer) -> Option<String> {
         {
             printer.status_simple(
                 Role::Info,
-                format!("Using SSH key from agent: {}", key.display()),
+                format!("Using SSH key from agent: {}", key.posix()),
             );
             return Some(key.to_string_lossy().to_string());
         }
@@ -339,7 +340,7 @@ pub(super) fn detect_ssh_key(printer: &Printer) -> Option<String> {
 
     // Fall back to on-disk keys
     if let Some(key) = first_existing_ssh_key(&ssh_dir) {
-        printer.status_simple(Role::Info, format!("Using SSH key: {}", key.display()));
+        printer.status_simple(Role::Info, format!("Using SSH key: {}", key.posix()));
         return Some(key.to_string_lossy().to_string());
     }
 

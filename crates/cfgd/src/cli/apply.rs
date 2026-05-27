@@ -1,5 +1,6 @@
 use super::*;
 
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Role};
 
 pub fn cmd_apply(
@@ -56,7 +57,7 @@ pub fn cmd_apply(
         match load_config_and_profile(cli) {
             Ok((cfg, profile_name, resolved)) => {
                 printer.kv_block([
-                    ("Config".to_string(), cli.config.display().to_string()),
+                    ("Config".to_string(), cli.config.display_posix()),
                     ("Profile".to_string(), profile_name),
                 ]);
                 (cfg, resolved)
@@ -67,7 +68,7 @@ pub fn cmd_apply(
                     config::load_config(&cli.config).unwrap_or_else(|_| config::minimal_config());
                 let resolved = empty_resolved_profile(mod_name);
                 printer.kv_block([
-                    ("Config".to_string(), cli.config.display().to_string()),
+                    ("Config".to_string(), cli.config.display_posix()),
                     ("Profile".to_string(), "(module-only)".to_string()),
                 ]);
                 (cfg, resolved)
@@ -76,7 +77,7 @@ pub fn cmd_apply(
     } else {
         let (cfg, profile_name, resolved) = load_config_and_profile(cli)?;
         printer.kv_block([
-            ("Config".to_string(), cli.config.display().to_string()),
+            ("Config".to_string(), cli.config.display_posix()),
             ("Profile".to_string(), profile_name),
         ]);
         (cfg, resolved)

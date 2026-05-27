@@ -1,3 +1,4 @@
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::Role;
 use tracing::warn;
 
@@ -49,14 +50,14 @@ pub(crate) fn prompt_restore_backups(
             // but the underlying failure is logged so it's not invisible.
             let confirmed = match printer.prompt_confirm(&format!(
                 "Restore backup {} to {}?",
-                backup_path.display(),
-                target.display()
+                backup_path.posix(),
+                target.posix()
             )) {
                 Ok(answer) => answer,
                 Err(e) => {
                     warn!(
-                        target = %target.display(),
-                        backup = %backup_path.display(),
+                        target = %target.posix(),
+                        backup = %backup_path.posix(),
                         error = %e,
                         "prompt_restore_backups: prompt failed; declining restore"
                     );
@@ -69,7 +70,7 @@ pub(crate) fn prompt_restore_backups(
                     std::fs::remove_file(target)?;
                 }
                 std::fs::rename(&backup_path, target)?;
-                printer.status_simple(Role::Ok, format!("Restored {}", target.display()));
+                printer.status_simple(Role::Ok, format!("Restored {}", target.posix()));
             }
         }
     }

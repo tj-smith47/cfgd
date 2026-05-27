@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_source_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
@@ -10,13 +11,13 @@ pub fn cmd_source_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             "no_config",
             format!(
                 "No cfgd-source.yaml found in {} — run 'cfgd source create' to scaffold one",
-                config_dir.display()
+                config_dir.posix()
             ),
             serde_json::json!({ "dir": cfgd_core::to_posix_string(&config_dir) }),
         ));
         anyhow::bail!(
             "No cfgd-source.yaml found in {} — run 'cfgd source create' to scaffold one",
-            config_dir.display()
+            config_dir.posix()
         );
     }
 
