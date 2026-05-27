@@ -511,6 +511,35 @@ pub fn file_url(path: &Path) -> String {
     crate::to_file_url(path)
 }
 
+/// Shared snapshot-golden assertion for output snapshot tests.
+///
+/// `base.join(name)` is the golden file. With `INSTA_UPDATE=always` (or when
+/// the golden doesn't yet exist), `actual` is written to disk and the function
+/// returns without asserting — supports the standard insta-style regen flow.
+/// Otherwise: both sides are CRLF→LF normalized and compared with
+/// `pretty_assertions::assert_eq!`, which produces an inline diff on
+/// mismatch.
+///
+/// This replaces 41 per-file `fn assert_snapshot` definitions whose bodies
+/// drifted independently. Callers route any tempdir-rooted text through
+/// [`crate::normalize_for_snapshot`] BEFORE handing it to this function;
+/// keeping the CRLF fold here guards against the harness regressing back to
+/// host-dependent line endings.
+pub fn assert_snapshot_golden(base: &Path, name: &str, actual: &str) {
+    let path = base.join(name);
+    if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !path.exists() {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create snapshot parent dir");
+        }
+        std::fs::write(&path, actual).expect("write snapshot golden");
+        return;
+    }
+    let expected = std::fs::read_to_string(&path).expect("read snapshot golden");
+    let actual_norm = crate::normalize_line_endings(actual);
+    let expected_norm = crate::normalize_line_endings(&expected);
+    pretty_assertions::assert_eq!(actual_norm, expected_norm, "snapshot mismatch: {name}");
+}
+
 /// Initialize a minimal git repository at `dir` with an initial commit.
 /// Useful for tests that depend on git operations (sources, modules, etc.).
 pub fn init_test_git_repo(dir: &Path) {
