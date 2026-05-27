@@ -63,9 +63,10 @@ fn is_path_allowed(path: &Path, home: &Path, repo_root: &Path) -> Result<(), Cfg
         }));
     }
 
-    // Check blocked patterns against the path string. Normalize backslashes
-    // to forward slashes so patterns like ".ssh/id_" match on Windows too.
-    let path_str = path.to_string_lossy().replace('\\', "/");
+    // Check blocked patterns against the path string. The patterns are POSIX
+    // form (`.ssh/id_…`), so route the candidate through `to_posix_string` so
+    // a Windows `\` separator matches a `/`-separated pattern.
+    let path_str = cfgd_core::to_posix_string(path);
     for pattern in BLOCKED_PATTERNS {
         if path_str.contains(pattern) {
             return Err(CfgdError::Generate(GenerateError::FileAccessDenied {
