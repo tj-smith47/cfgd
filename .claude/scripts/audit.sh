@@ -506,6 +506,24 @@ if w1=$(rg --type rust -n '(serde_json::json!|rusqlite::|conn\.execute|to_yaml|a
   echo "$w1"
 fi
 
+# Wave 4: `.display()` on the same line as a user-facing surface (printer
+# methods, tracing::{info,warn,error}!, anyhow!/bail!). Those should route
+# through cfgd_core::PathDisplayExt::posix() / .display_posix() so Windows
+# folds `\` → `/`. tracing::debug!/trace! is intentionally excluded — debug
+# tooling should see paths in OS-native form. Tests + paths.rs (trait
+# definition) are excluded.
+if w4=$(rg --type rust -n '(tracing::(info|warn|error)!|anyhow!|bail!|printer\.(status|kv|data_line|note|hint|heading|section|run|progress_bar|spinner))' \
+      "${CFGD_AUDIT_PATH:-crates/}" \
+      --glob '!**/tests.rs' \
+      --glob '!**/tests/**' \
+      --glob '!crates/cfgd-core/src/test_helpers.rs' \
+      --glob '!crates/cfgd-core/src/util/paths.rs' \
+      2>/dev/null \
+      | grep -E '\.display\(\)') && [ -n "$w4" ]; then
+  log_error "Wave 4 violation: path .display() on user-facing surface (use cfgd_core::PathDisplayExt::posix() / .display_posix()):"
+  echo "$w4"
+fi
+
 # --- Summary ---
 printf "\n"
 _bold; printf "=== Audit Complete: %d errors, %d warnings ===\n" "$ERRORS" "$WARNINGS"; _reset

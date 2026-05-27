@@ -23,7 +23,9 @@ mod verify;
 mod tests;
 
 pub use apply::action_matches_phase_filter;
-pub use format::{format_action_description, format_plan_items};
+pub use format::{
+    format_action_description, format_action_description_for_display, format_plan_items,
+};
 pub use types::{
     Action, ActionResult, ApplyResult, EnvAction, ModuleAction, ModuleActionKind, Phase, PhaseName,
     Plan, ReconcileContext, RollbackResult, ScriptAction, ScriptPhase, SystemAction,
