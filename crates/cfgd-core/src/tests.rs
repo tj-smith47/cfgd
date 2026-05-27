@@ -1264,3 +1264,26 @@ fn from_user_input_passthrough_for_posix_input() {
         std::path::PathBuf::from("/etc/cfgd.yaml")
     );
 }
+
+#[test]
+fn path_display_ext_display_posix_unix_passthrough() {
+    let p = std::path::Path::new("/home/foo/bar");
+    // On Unix this is identical to .display().to_string(). On Windows the
+    // forward slashes are already POSIX-form, so the result is the same.
+    assert_eq!(p.display_posix(), "/home/foo/bar");
+}
+
+#[test]
+fn path_display_ext_posix_composes_in_format() {
+    let p = std::path::Path::new("/home/foo");
+    let formatted = format!("Path is {}", p.posix());
+    assert_eq!(formatted, "Path is /home/foo");
+}
+
+#[cfg(windows)]
+#[test]
+fn path_display_ext_folds_backslashes_on_windows() {
+    let p = std::path::Path::new(r"C:\Users\foo");
+    assert_eq!(p.display_posix(), "C:/Users/foo");
+    assert_eq!(format!("{}", p.posix()), "C:/Users/foo");
+}

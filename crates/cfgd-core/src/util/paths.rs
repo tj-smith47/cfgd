@@ -367,3 +367,69 @@ pub fn from_user_input(s: &str) -> std::path::PathBuf {
     };
     expand_tilde(std::path::Path::new(&folded))
 }
+
+/// Display-only extension for human-facing path output. On Windows, folds
+/// `\` → `/` so a status subject or error message shows POSIX-form paths
+/// consistently across runners. On Unix, passes through unchanged — a
+/// legitimate `\` in a Unix filename survives byte-for-byte.
+///
+/// `display_posix()` is the eager form (returns `String`).
+/// `posix()` is the lazy form — returns `impl Display` so it composes with
+/// `format!`/`write!`/`println!` without an intermediate allocation.
+///
+/// Use in:
+/// - Printer status subjects (`status[_simple]`, kv values, error messages)
+/// - `tracing::info!`/`warn!`/`error!` event fields where the path is the
+///   human-visible value
+///
+/// Do NOT use in:
+/// - JSON / YAML / SQLite / OCI / gateway boundaries — use
+///   [`to_posix_string`] instead (always folds, not Windows-only)
+/// - Debug-only `tracing::debug!`/`trace!` event fields — keep native so
+///   debug tooling sees what's on disk
+pub trait PathDisplayExt {
+    /// Eager: returns a `String` with `\` folded to `/` on Windows, native on Unix.
+    fn display_posix(&self) -> String;
+    /// Lazy: returns a `Display` adapter suitable for `format!` / `write!`.
+    fn posix(&self) -> PathPosix<'_>;
+}
+
+impl<P: AsRef<std::path::Path>> PathDisplayExt for P {
+    fn display_posix(&self) -> String {
+        #[cfg(windows)]
+        {
+            to_posix_string(self.as_ref())
+        }
+        #[cfg(not(windows))]
+        {
+            self.as_ref().display().to_string()
+        }
+    }
+
+    fn posix(&self) -> PathPosix<'_> {
+        PathPosix(self.as_ref())
+    }
+}
+
+/// `Display` adapter returned by [`PathDisplayExt::posix`]. On Windows,
+/// renders the path with `\` → `/` substitution; on Unix it's
+/// indistinguishable from `Path::display()`.
+pub struct PathPosix<'a>(&'a std::path::Path);
+
+impl std::fmt::Display for PathPosix<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        #[cfg(windows)]
+        {
+            let s = self.0.to_string_lossy();
+            for ch in s.chars() {
+                let mapped = if ch == '\\' { '/' } else { ch };
+                std::fmt::Write::write_char(f, mapped)?;
+            }
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        {
+            std::fmt::Display::fmt(&self.0.display(), f)
+        }
+    }
+}
