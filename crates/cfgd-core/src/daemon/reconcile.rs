@@ -1,4 +1,5 @@
 use super::*;
+use crate::PathDisplayExt;
 
 // --- File Watcher ---
 
@@ -37,14 +38,14 @@ pub(crate) fn setup_file_watcher(
     for path in managed_paths {
         if path.exists() {
             if let Err(e) = watcher.watch(path, RecursiveMode::NonRecursive) {
-                tracing::warn!(path = %path.display(), error = %e, "cannot watch path");
+                tracing::warn!(path = %path.posix(), error = %e, "cannot watch path");
             }
         } else if let Some(parent) = path.parent() {
             // Watch parent directory so we detect file creation
             if parent.exists()
                 && let Err(e) = watcher.watch(parent, RecursiveMode::NonRecursive)
             {
-                tracing::warn!(path = %parent.display(), error = %e, "cannot watch path");
+                tracing::warn!(path = %parent.posix(), error = %e, "cannot watch path");
             }
         }
     }
@@ -53,7 +54,7 @@ pub(crate) fn setup_file_watcher(
     if config_dir.exists()
         && let Err(e) = watcher.watch(config_dir, RecursiveMode::Recursive)
     {
-        tracing::warn!(path = %config_dir.display(), error = %e, "cannot watch config dir");
+        tracing::warn!(path = %config_dir.posix(), error = %e, "cannot watch config dir");
     }
 
     Ok(watcher)

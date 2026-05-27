@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::PathDisplayExt;
 use crate::errors::{ModuleError, Result};
 
 // ---------------------------------------------------------------------------
@@ -393,7 +394,7 @@ fn checkout_ref(repo_path: &Path, git_src: &GitSource, module_name: &str) -> Res
 
 /// Get the HEAD commit SHA from a git repo.
 pub fn get_head_commit_sha(repo_path: &Path) -> Result<String> {
-    let path_str = repo_path.display().to_string();
+    let path_str = repo_path.display_posix();
     let repo = open_repo(repo_path, &path_str, &path_str)?;
     let head = repo.head().map_err(|e| ModuleError::GitFetchFailed {
         module: path_str.clone(),

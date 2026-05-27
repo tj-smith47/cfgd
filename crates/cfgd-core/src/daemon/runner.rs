@@ -19,6 +19,7 @@ use super::{
     DEBOUNCE_MS, DaemonHooks, DaemonState, Notifier, ReconcileTask, SourceStatus, SyncTask,
     parse_duration_or_default,
 };
+use crate::PathDisplayExt;
 use crate::config::{self, CfgdConfig};
 use crate::errors::{DaemonError, Result};
 use crate::output::{Printer, Role};
@@ -132,7 +133,7 @@ pub(super) async fn handle_file_change_tick(
     }
     last_change.insert(path.clone(), now);
 
-    tracing::info!(path = %path.display(), "file changed");
+    tracing::info!(path = %path.posix(), "file changed");
 
     let drift_recorded = super::drift::record_file_drift(&path);
     if drift_recorded {
@@ -147,7 +148,7 @@ pub(super) async fn handle_file_change_tick(
         if ctx.notify_on_drift {
             ctx.notifier.notify(
                 "cfgd: drift detected",
-                &format!("File changed: {}", path.display()),
+                &format!("File changed: {}", path.posix()),
             );
         }
     }

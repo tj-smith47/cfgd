@@ -1,4 +1,5 @@
 use super::*;
+use crate::PathDisplayExt;
 
 /// Hard cap on bytes the IPC client will read from a single daemon response.
 ///
@@ -25,22 +26,22 @@ pub(crate) fn ensure_owner_private_dir(dir: &std::path::Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     std::fs::create_dir_all(dir).map_err(|e| DaemonError::HealthSocketError {
-        message: format!("create parent {}: {}", dir.display(), e),
+        message: format!("create parent {}: {}", dir.posix(), e),
     })?;
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| {
         DaemonError::HealthSocketError {
-            message: format!("chmod parent {}: {}", dir.display(), e),
+            message: format!("chmod parent {}: {}", dir.posix(), e),
         }
     })?;
     let meta = std::fs::metadata(dir).map_err(|e| DaemonError::HealthSocketError {
-        message: format!("stat parent {}: {}", dir.display(), e),
+        message: format!("stat parent {}: {}", dir.posix(), e),
     })?;
     let mode = meta.permissions().mode() & 0o777;
     if mode & 0o077 != 0 {
         return Err(DaemonError::HealthSocketError {
             message: format!(
                 "refusing to bind: parent directory {} is not owner-private (mode {:o})",
-                dir.display(),
+                dir.posix(),
                 mode
             ),
         }

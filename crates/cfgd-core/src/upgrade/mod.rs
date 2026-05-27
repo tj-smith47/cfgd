@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use semver::Version;
 
+use crate::PathDisplayExt;
 use crate::errors::{Result, UpgradeError};
 use crate::output::{Printer, Role};
 
@@ -455,7 +456,7 @@ fn download_to_file(
 
     tmp.persist(dest)
         .map_err(|e| UpgradeError::DownloadFailed {
-            message: format!("rename to {}: {}", dest.display(), e.error),
+            message: format!("rename to {}: {}", dest.posix(), e.error),
         })?;
 
     Ok(())
@@ -477,7 +478,7 @@ fn parse_checksums(content: &str) -> HashMap<String, String> {
 /// Compute the SHA256 hex digest of a file.
 fn sha256_file(path: &Path) -> std::result::Result<String, UpgradeError> {
     let bytes = fs::read(path).map_err(|e| UpgradeError::DownloadFailed {
-        message: format!("read {}: {}", path.display(), e),
+        message: format!("read {}: {}", path.posix(), e),
     })?;
     Ok(crate::sha256_hex(&bytes))
 }
@@ -668,7 +669,7 @@ fn atomic_replace(source: &Path, target: &Path) -> std::result::Result<(), Upgra
     // Create a temp file in the target directory so rename is same-FS
     let tmp =
         tempfile::NamedTempFile::new_in(target_dir).map_err(|e| UpgradeError::InstallFailed {
-            message: format!("create temp file in {}: {}", target_dir.display(), e),
+            message: format!("create temp file in {}: {}", target_dir.posix(), e),
         })?;
 
     // Copy source to the temp file
@@ -698,12 +699,12 @@ fn atomic_replace(source: &Path, target: &Path) -> std::result::Result<(), Upgra
     // Rename running binary out of the way (can't overwrite running exe on Windows)
     if target.exists() {
         fs::rename(target, &old).map_err(|e| UpgradeError::InstallFailed {
-            message: format!("rename {} -> {}: {}", target.display(), old.display(), e),
+            message: format!("rename {} -> {}: {}", target.posix(), old.posix(), e),
         })?;
     }
     // Copy new binary into place
     fs::copy(source, target).map_err(|e| UpgradeError::InstallFailed {
-        message: format!("copy {} -> {}: {}", source.display(), target.display(), e),
+        message: format!("copy {} -> {}: {}", source.posix(), target.posix(), e),
     })?;
     Ok(())
 }
@@ -712,14 +713,14 @@ fn atomic_replace(source: &Path, target: &Path) -> std::result::Result<(), Upgra
 #[cfg(unix)]
 fn extract_tarball(archive: &Path, dest: &Path) -> std::result::Result<(), UpgradeError> {
     let file = fs::File::open(archive).map_err(|e| UpgradeError::InstallFailed {
-        message: format!("open archive {}: {}", archive.display(), e),
+        message: format!("open archive {}: {}", archive.posix(), e),
     })?;
 
     let gz = flate2::read::GzDecoder::new(file);
     let mut tar = tar::Archive::new(gz);
 
     fs::create_dir_all(dest).map_err(|e| UpgradeError::InstallFailed {
-        message: format!("create dest {}: {}", dest.display(), e),
+        message: format!("create dest {}: {}", dest.posix(), e),
     })?;
 
     // The tar crate rejects `..` and absolute paths by default, but symlinks
@@ -728,7 +729,7 @@ fn extract_tarball(archive: &Path, dest: &Path) -> std::result::Result<(), Upgra
     let canonical_dest = dest
         .canonicalize()
         .map_err(|e| UpgradeError::InstallFailed {
-            message: format!("canonicalize dest {}: {}", dest.display(), e),
+            message: format!("canonicalize dest {}: {}", dest.posix(), e),
         })?;
 
     for entry in tar.entries().map_err(|e| UpgradeError::InstallFailed {
@@ -740,7 +741,7 @@ fn extract_tarball(archive: &Path, dest: &Path) -> std::result::Result<(), Upgra
 
         if entry.header().entry_type().is_symlink() || entry.header().entry_type().is_hard_link() {
             let path = entry.path().unwrap_or_default();
-            tracing::warn!(path = %path.display(), "skipping symlink/hardlink in upgrade tarball");
+            tracing::warn!(path = %path.posix(), "skipping symlink/hardlink in upgrade tarball");
             continue;
         }
 
@@ -758,10 +759,10 @@ fn extract_tarball(archive: &Path, dest: &Path) -> std::result::Result<(), Upgra
 #[cfg(windows)]
 fn extract_zip(archive: &Path, dest: &Path) -> std::result::Result<(), UpgradeError> {
     let file = fs::File::open(archive).map_err(|e| UpgradeError::InstallFailed {
-        message: format!("open archive {}: {}", archive.display(), e),
+        message: format!("open archive {}: {}", archive.posix(), e),
     })?;
     let mut zip = zip::ZipArchive::new(file).map_err(|e| UpgradeError::InstallFailed {
-        message: format!("read zip {}: {}", archive.display(), e),
+        message: format!("read zip {}: {}", archive.posix(), e),
     })?;
     zip.extract(dest).map_err(|e| UpgradeError::InstallFailed {
         message: format!("extract zip: {}", e),

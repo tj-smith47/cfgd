@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
+use crate::PathDisplayExt;
 use crate::config::parse_module;
 use crate::errors::{ConfigError, ModuleError, Result};
 
@@ -22,7 +23,7 @@ fn read_module_yaml_capped(module_yaml: &Path) -> Result<String> {
         && meta.len() > MAX_MODULE_SIZE
     {
         return Err(ModuleError::InvalidSpec {
-            name: module_yaml.display().to_string(),
+            name: module_yaml.display_posix(),
             message: format!(
                 "module file too large ({} bytes, max {})",
                 meta.len(),
@@ -34,7 +35,7 @@ fn read_module_yaml_capped(module_yaml: &Path) -> Result<String> {
 
     std::fs::read_to_string(module_yaml).map_err(|e| {
         ConfigError::Invalid {
-            message: format!("cannot read module file {}: {e}", module_yaml.display()),
+            message: format!("cannot read module file {}: {e}", module_yaml.posix()),
         }
         .into()
     })
@@ -50,10 +51,7 @@ pub fn load_modules(config_dir: &Path) -> Result<HashMap<String, LoadedModule>> 
 
     let mut modules = HashMap::new();
     let entries = std::fs::read_dir(&modules_dir).map_err(|e| ConfigError::Invalid {
-        message: format!(
-            "cannot read modules directory {}: {e}",
-            modules_dir.display()
-        ),
+        message: format!("cannot read modules directory {}: {e}", modules_dir.posix()),
     })?;
 
     for entry in entries {
@@ -74,7 +72,7 @@ pub fn load_modules(config_dir: &Path) -> Result<HashMap<String, LoadedModule>> 
             .file_name()
             .and_then(|n| n.to_str())
             .ok_or_else(|| ConfigError::Invalid {
-                message: format!("invalid module directory name: {}", path.display()),
+                message: format!("invalid module directory name: {}", path.posix()),
             })?
             .to_string();
 
@@ -114,7 +112,7 @@ pub fn load_module(module_dir: &Path) -> Result<LoadedModule> {
             .file_name()
             .and_then(|n| n.to_str())
             .ok_or_else(|| ModuleError::InvalidSpec {
-                name: module_dir.display().to_string(),
+                name: module_dir.display_posix(),
                 message: "invalid module directory name".into(),
             })?
             .to_string();

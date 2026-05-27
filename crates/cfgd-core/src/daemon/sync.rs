@@ -1,4 +1,5 @@
 use super::*;
+use crate::PathDisplayExt;
 
 // --- Sync Handler ---
 
@@ -275,7 +276,7 @@ pub(crate) fn handle_compliance_snapshot(
     // Export if configured
     match crate::compliance::export_snapshot_to_file(&snapshot, &compliance_cfg.export) {
         Ok(file_path) => {
-            tracing::info!(path = %file_path.display(), "compliance snapshot exported");
+            tracing::info!(path = %file_path.posix(), "compliance snapshot exported");
         }
         Err(e) => {
             tracing::error!(error = %e, "compliance: failed to export snapshot");

@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use crate::PathDisplayExt;
 use crate::config::{ModuleLockEntry, ModuleLockfile};
 use crate::errors::{ConfigError, ModuleError, Result};
 
@@ -19,7 +20,7 @@ pub fn load_lockfile(config_dir: &Path) -> Result<ModuleLockfile> {
         return Ok(ModuleLockfile::default());
     }
     let contents = std::fs::read_to_string(&lockfile_path).map_err(|e| ConfigError::Invalid {
-        message: format!("cannot read lockfile {}: {e}", lockfile_path.display()),
+        message: format!("cannot read lockfile {}: {e}", lockfile_path.posix()),
     })?;
     let lockfile: ModuleLockfile = serde_yaml::from_str(&contents).map_err(ConfigError::from)?;
     Ok(lockfile)
@@ -31,7 +32,7 @@ pub fn save_lockfile(config_dir: &Path, lockfile: &ModuleLockfile) -> Result<()>
     let lockfile_path = config_dir.join("modules.lock");
     let contents = serde_yaml::to_string(lockfile).map_err(ConfigError::from)?;
     crate::atomic_write_str(&lockfile_path, &contents).map_err(|e| ConfigError::Invalid {
-        message: format!("cannot write lockfile {}: {e}", lockfile_path.display()),
+        message: format!("cannot write lockfile {}: {e}", lockfile_path.posix()),
     })?;
     Ok(())
 }

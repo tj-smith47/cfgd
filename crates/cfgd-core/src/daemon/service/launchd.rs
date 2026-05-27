@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::PathDisplayExt;
 
 /// Generate launchd plist content for the daemon service.
 #[cfg(unix)]
@@ -72,7 +73,7 @@ pub(crate) fn install_launchd_service(
         }
     })?;
 
-    tracing::info!(path = %plist_path.display(), "installed launchd service");
+    tracing::info!(path = %plist_path.posix(), "installed launchd service");
     Ok(())
 }
 
@@ -87,7 +88,7 @@ pub(crate) fn uninstall_launchd_service() -> Result<()> {
         std::fs::remove_file(&plist_path).map_err(|e| DaemonError::ServiceInstallFailed {
             message: format!("remove plist: {}", e),
         })?;
-        tracing::info!(path = %plist_path.display(), "removed launchd service");
+        tracing::info!(path = %plist_path.posix(), "removed launchd service");
     }
 
     Ok(())

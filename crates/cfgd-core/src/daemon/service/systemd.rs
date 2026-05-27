@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::PathDisplayExt;
 
 /// Generate systemd unit file content for the daemon service.
 #[cfg(unix)]
@@ -58,7 +59,7 @@ pub(crate) fn install_systemd_service(
         message: format!("write unit file: {}", e),
     })?;
 
-    tracing::info!(path = %unit_path.display(), "installed systemd user service");
+    tracing::info!(path = %unit_path.posix(), "installed systemd user service");
     Ok(())
 }
 
@@ -71,7 +72,7 @@ pub(crate) fn uninstall_systemd_service() -> Result<()> {
         std::fs::remove_file(&unit_path).map_err(|e| DaemonError::ServiceInstallFailed {
             message: format!("remove unit file: {}", e),
         })?;
-        tracing::info!(path = %unit_path.display(), "removed systemd user service");
+        tracing::info!(path = %unit_path.posix(), "removed systemd user service");
     }
 
     Ok(())
