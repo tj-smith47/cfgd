@@ -195,7 +195,7 @@ pub fn cmd_module_add_remote(
                 module_name,
                 config_dir.display()
             ),
-            serde_json::json!({ "configDir": config_dir.display().to_string() }),
+            serde_json::json!({ "configDir": cfgd_core::to_posix_string(&config_dir) }),
         ));
         anyhow::bail!(
             "Local module '{}' already exists in {}/modules/ — local modules take precedence over remote",

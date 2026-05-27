@@ -38,7 +38,7 @@ pub fn cmd_profile_create(
                 name,
                 profile_path.display()
             ),
-            serde_json::json!({ "path": profile_path.display().to_string() }),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(&profile_path) }),
         ));
         anyhow::bail!(
             "Profile '{}' already exists at {}",

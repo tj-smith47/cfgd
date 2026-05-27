@@ -60,7 +60,7 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
             &workflow_path.display().to_string(),
             "write_failed",
             format!("failed to create workflow directory: {}", e),
-            serde_json::json!({ "path": workflow_path.display().to_string() }),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(&workflow_path) }),
         ));
         anyhow::anyhow!("failed to create workflow directory: {}", e)
     })?;
@@ -69,7 +69,7 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
             &workflow_path.display().to_string(),
             "write_failed",
             format!("failed to write workflow file: {}", e),
-            serde_json::json!({ "path": workflow_path.display().to_string() }),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(&workflow_path) }),
         ));
         anyhow::anyhow!("failed to write workflow file: {}", e)
     })?;

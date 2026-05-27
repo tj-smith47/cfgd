@@ -12,7 +12,7 @@ pub fn cmd_source_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 "No cfgd-source.yaml found in {} — run 'cfgd source create' to scaffold one",
                 config_dir.display()
             ),
-            serde_json::json!({ "dir": config_dir.display().to_string() }),
+            serde_json::json!({ "dir": cfgd_core::to_posix_string(&config_dir) }),
         ));
         anyhow::bail!(
             "No cfgd-source.yaml found in {} — run 'cfgd source create' to scaffold one",

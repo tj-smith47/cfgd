@@ -14,7 +14,7 @@ pub fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
                 &file.display().to_string(),
                 "backend_unavailable",
                 first_line(&full),
-                serde_json::json!({ "path": file.display().to_string(), "detail": full }),
+                serde_json::json!({ "path": cfgd_core::to_posix_string(file), "detail": full }),
             ));
             return Err(e);
         }
@@ -28,7 +28,7 @@ pub fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
             "encryption_failed",
             first_line(&full),
             serde_json::json!({
-                "path": file.display().to_string(),
+                "path": cfgd_core::to_posix_string(file),
                 "backend": backend_name,
                 "detail": full,
             }),
@@ -43,7 +43,7 @@ pub fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
                 format!("Encrypted {} via {}", file.display(), backend_name),
             )
             .with_data(serde_json::json!({
-                "path": file.display().to_string(),
+                "path": cfgd_core::to_posix_string(file),
                 "backend": backend_name,
             })),
     );
@@ -60,7 +60,7 @@ pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
                 &file.display().to_string(),
                 "backend_unavailable",
                 first_line(&full),
-                serde_json::json!({ "path": file.display().to_string(), "detail": full }),
+                serde_json::json!({ "path": cfgd_core::to_posix_string(file), "detail": full }),
             ));
             return Err(e);
         }
@@ -76,7 +76,7 @@ pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
                 "decryption_failed",
                 first_line(&full),
                 serde_json::json!({
-                    "path": file.display().to_string(),
+                    "path": cfgd_core::to_posix_string(file),
                     "backend": backend_name,
                     "detail": full,
                 }),
@@ -96,7 +96,7 @@ pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
             Doc::new()
                 .status(Role::Ok, format!("Decrypted {}", file.display()))
                 .with_data(serde_json::json!({
-                    "path": file.display().to_string(),
+                    "path": cfgd_core::to_posix_string(file),
                     "backend": backend_name,
                     "plaintext": plaintext,
                 })),
@@ -110,7 +110,7 @@ pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
         Doc::new()
             .status(Role::Ok, format!("Decrypted {}", file.display()))
             .with_data(serde_json::json!({
-                "path": file.display().to_string(),
+                "path": cfgd_core::to_posix_string(file),
                 "backend": backend_name,
             })),
     );
@@ -127,7 +127,7 @@ pub fn cmd_secret_edit(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Res
                 &file.display().to_string(),
                 "backend_unavailable",
                 first_line(&full),
-                serde_json::json!({ "path": file.display().to_string(), "detail": full }),
+                serde_json::json!({ "path": cfgd_core::to_posix_string(file), "detail": full }),
             ));
             return Err(e);
         }
@@ -141,7 +141,7 @@ pub fn cmd_secret_edit(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Res
             "edit_failed",
             first_line(&full),
             serde_json::json!({
-                "path": file.display().to_string(),
+                "path": cfgd_core::to_posix_string(file),
                 "backend": backend_name,
                 "detail": full,
             }),
@@ -160,7 +160,7 @@ pub fn cmd_secret_edit(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Res
                 ),
             )
             .with_data(serde_json::json!({
-                "path": file.display().to_string(),
+                "path": cfgd_core::to_posix_string(file),
                 "backend": backend_name,
                 "modified": true,
             })),
@@ -186,7 +186,7 @@ pub fn cmd_secret_init(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 "backend_unavailable",
                 first_line(&full),
                 serde_json::json!({
-                    "configDir": config_dir.display().to_string(),
+                    "configDir": cfgd_core::to_posix_string(&config_dir),
                     "detail": full,
                 }),
             ));
@@ -203,8 +203,8 @@ pub fn cmd_secret_init(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 )
                 .with_data(serde_json::json!({
                     "backend": "age",
-                    "configPath": key_path.display().to_string(),
-                    "sopsConfig": sops_config_pre.display().to_string(),
+                    "configPath": cfgd_core::to_posix_string(&key_path),
+                    "sopsConfig": cfgd_core::to_posix_string(&sops_config_pre),
                     "alreadyInitialized": true,
                 })),
         );
@@ -229,7 +229,7 @@ pub fn cmd_secret_init(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 
     let mut payload = serde_json::json!({
         "backend": "age",
-        "configPath": key_path.display().to_string(),
+        "configPath": cfgd_core::to_posix_string(&key_path),
     });
     if let Some(ref p) = sops_path
         && let serde_json::Value::Object(map) = &mut payload

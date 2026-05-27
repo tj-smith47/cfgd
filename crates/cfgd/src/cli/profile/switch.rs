@@ -11,7 +11,7 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::R
             name,
             "no_config",
             MSG_NO_CONFIG,
-            serde_json::json!({ "configPath": config_path.display().to_string() }),
+            serde_json::json!({ "configPath": cfgd_core::to_posix_string(config_path) }),
         ));
         anyhow::bail!("{}", MSG_NO_CONFIG);
     }

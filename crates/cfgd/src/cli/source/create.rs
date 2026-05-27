@@ -18,7 +18,7 @@ pub fn cmd_source_create(
                 "cfgd-source.yaml already exists at {} — use 'cfgd source edit' to modify it",
                 source_path.display()
             ),
-            serde_json::json!({ "path": source_path.display().to_string() }),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(&source_path) }),
         ));
         anyhow::bail!(
             "cfgd-source.yaml already exists at {} — use 'cfgd source edit' to modify it",

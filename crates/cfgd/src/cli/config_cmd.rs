@@ -79,7 +79,7 @@ pub fn cmd_config_show(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             &config_path.display().to_string(),
             "no_config",
             MSG_NO_CONFIG.to_string(),
-            serde_json::json!({ "path": config_path.display().to_string() }),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
         ));
         anyhow::bail!("{}", MSG_NO_CONFIG);
     }
@@ -91,7 +91,7 @@ pub fn cmd_config_show(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 &config_path.display().to_string(),
                 "parse_failed",
                 format!("{}", e),
-                serde_json::json!({ "path": config_path.display().to_string() }),
+                serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
             ));
             return Err(e.into());
         }
@@ -107,7 +107,7 @@ pub fn cmd_config_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             &config_path.display().to_string(),
             "no_config",
             MSG_NO_CONFIG.to_string(),
-            serde_json::json!({ "path": config_path.display().to_string() }),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
         ));
         anyhow::bail!("{}", MSG_NO_CONFIG);
     }
@@ -143,7 +143,7 @@ pub fn cmd_config_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             Doc::new()
                 .status(Role::Ok, "Configuration is valid")
                 .with_data(serde_json::json!({
-                    "path": config_path.display().to_string(),
+                    "path": cfgd_core::to_posix_string(config_path),
                     "valid": true,
                 })),
         );
@@ -152,7 +152,7 @@ pub fn cmd_config_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             Doc::new()
                 .status(Role::Warn, "Saved with validation errors")
                 .with_data(serde_json::json!({
-                    "path": config_path.display().to_string(),
+                    "path": cfgd_core::to_posix_string(config_path),
                     "valid": false,
                 })),
         );
@@ -265,7 +265,7 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
             key,
             "no_config",
             MSG_NO_CONFIG.to_string(),
-            serde_json::json!({ "path": config_path.display().to_string() }),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
         ));
         anyhow::bail!("{}", MSG_NO_CONFIG);
     }
@@ -278,7 +278,7 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
                 key,
                 "parse_failed",
                 format!("failed to parse config: {}", e),
-                serde_json::json!({ "path": config_path.display().to_string() }),
+                serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
             ));
             return Err(e.into());
         }
@@ -291,7 +291,7 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
                 key,
                 "parse_failed",
                 "config has no 'spec' section",
-                serde_json::json!({ "path": config_path.display().to_string() }),
+                serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
             ));
             anyhow::bail!("config has no 'spec' section");
         }
@@ -304,7 +304,7 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
                 key,
                 "key_not_found",
                 format!("{}", e),
-                serde_json::json!({ "path": config_path.display().to_string() }),
+                serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
             ));
             return Err(e);
         }
@@ -351,7 +351,7 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
             key,
             "no_config",
             MSG_NO_CONFIG.to_string(),
-            serde_json::json!({ "path": config_path.display().to_string() }),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
         ));
         anyhow::bail!("{}", MSG_NO_CONFIG);
     }
@@ -378,7 +378,7 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
             key,
             kind,
             format!("{}", e),
-            serde_json::json!({ "path": config_path.display().to_string() }),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
         ));
         return Err(e);
     }
@@ -406,7 +406,7 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
             key,
             "no_config",
             MSG_NO_CONFIG.to_string(),
-            serde_json::json!({ "path": config_path.display().to_string() }),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
         ));
         anyhow::bail!("{}", MSG_NO_CONFIG);
     }
@@ -434,7 +434,7 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
             key,
             kind,
             format!("{}", e),
-            serde_json::json!({ "path": config_path.display().to_string() }),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
         ));
         return Err(e);
     }

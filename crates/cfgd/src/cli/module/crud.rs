@@ -30,7 +30,7 @@ pub fn cmd_module_create(
                 name,
                 module_dir.display()
             ),
-            serde_json::json!({ "path": module_dir.display().to_string() }),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(&module_dir) }),
         ));
         anyhow::bail!(
             "Module '{}' already exists at {}",
@@ -633,7 +633,7 @@ pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
             name,
             "not_found",
             format!("Module '{}' not found at {}", name, module_yaml.display()),
-            serde_json::json!({ "path": module_yaml.display().to_string() }),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(&module_yaml) }),
         ));
         anyhow::bail!("Module '{}' not found at {}", name, module_yaml.display());
     }
@@ -711,7 +711,7 @@ pub fn cmd_module_delete(
             name,
             "not_found",
             format!("Module '{}' not found at {}", name, module_dir.display()),
-            serde_json::json!({ "path": module_dir.display().to_string() }),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(&module_dir) }),
         ));
         anyhow::bail!("Module '{}' not found at {}", name, module_dir.display());
     }

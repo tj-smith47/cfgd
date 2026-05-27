@@ -630,7 +630,7 @@ fn dispatch_write_module_yaml(input: &Value, session: &mut GenerateSession) -> T
     };
     match session.write_module_yaml(name, content) {
         Ok(path) => ToolCallResult {
-            content: serde_json::json!({"path": path.display().to_string()}).to_string(),
+            content: serde_json::json!({"path": cfgd_core::to_posix_string(path)}).to_string(),
             is_error: false,
         },
         Err(e) => ToolCallResult {
@@ -661,7 +661,7 @@ fn dispatch_write_profile_yaml(input: &Value, session: &mut GenerateSession) -> 
     };
     match session.write_profile_yaml(name, content) {
         Ok(path) => ToolCallResult {
-            content: serde_json::json!({"path": path.display().to_string()}).to_string(),
+            content: serde_json::json!({"path": cfgd_core::to_posix_string(path)}).to_string(),
             is_error: false,
         },
         Err(e) => ToolCallResult {
