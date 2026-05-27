@@ -303,45 +303,44 @@ pub fn router(state: SharedState) -> Router<SharedState> {
         .route("/api/v1/admin/reset", post(admin_reset))
         .route_layer(middleware::from_fn(admin_auth_middleware));
 
-    // Enrollment endpoints — no pre-auth, validated in handlers. These do
-    // real work per request (gpg/ssh-keygen subprocess + tempdir + fs::write),
+    // Enrollment WRITE endpoints — no pre-auth, validated in handlers. These
+    // do real work per request (gpg/ssh-keygen subprocess + tempdir + fs::write),
     // so an in-process IP-keyed token bucket caps unauthenticated bursts.
     // Defaults: 5 attempts up-front, 5/min refill — see `RateLimiter::per_minute`.
-    // Both knobs are overridable via env vars so test/dev fixtures can crank
-    // them up without changing production defaults.
-    let burst = env_u32(ENROLL_RATE_LIMIT_BURST_ENV, ENROLL_RATE_LIMIT_BURST);
-    let per_min = env_u32(ENROLL_RATE_LIMIT_PER_MIN_ENV, ENROLL_RATE_LIMIT_PER_MIN);
-    let enroll_limiter = super::rate_limit::RateLimiter::per_minute(burst, per_min);
-    let enrollment_routes = Router::new()
+    //
+    // `/api/v1/enroll/info` is INTENTIONALLY OUT of the rate-limited group:
+    // it's a read-only discovery endpoint (returns the configured enrollment
+    // method) and does no per-request work, so rate-limiting it serves no
+    // attack-surface purpose and instead breaks legitimate clients (and the
+    // E2E suite) that probe `/enroll/info` after a few enrollment attempts.
+    let enroll_limiter = super::rate_limit::RateLimiter::per_minute(
+        ENROLL_RATE_LIMIT_BURST,
+        ENROLL_RATE_LIMIT_PER_MIN,
+    );
+    let enrollment_write_routes = Router::new()
         .route("/api/v1/enroll", post(enroll))
-        .route("/api/v1/enroll/info", get(enroll_info))
         .route("/api/v1/enroll/challenge", post(request_challenge))
         .route("/api/v1/enroll/verify", post(verify_enrollment))
         .route_layer(middleware::from_fn_with_state(
             enroll_limiter,
             super::rate_limit::rate_limit_middleware,
         ));
+    let enrollment_info_route = Router::new().route("/api/v1/enroll/info", get(enroll_info));
 
     authenticated_routes
         .merge(admin_routes)
-        .merge(enrollment_routes)
+        .merge(enrollment_write_routes)
+        .merge(enrollment_info_route)
 }
 
-/// Per-IP rate-limit budget for unauthenticated `/enroll/*` endpoints.
+/// Per-IP rate-limit budget for unauthenticated enrollment WRITE endpoints
+/// (`/api/v1/enroll`, `/api/v1/enroll/challenge`, `/api/v1/enroll/verify`).
 /// Tuned for legitimate operator flow (a handful of attempts during
 /// enrollment) while making brute-force/oracle probes infeasible.
+///
+/// `/api/v1/enroll/info` is read-only and is NOT subject to this limit.
 pub(crate) const ENROLL_RATE_LIMIT_BURST: u32 = 5;
 pub(crate) const ENROLL_RATE_LIMIT_PER_MIN: u32 = 5;
-
-const ENROLL_RATE_LIMIT_BURST_ENV: &str = "CFGD_GATEWAY_ENROLL_RATE_LIMIT_BURST";
-const ENROLL_RATE_LIMIT_PER_MIN_ENV: &str = "CFGD_GATEWAY_ENROLL_RATE_LIMIT_PER_MIN";
-
-fn env_u32(var: &str, default: u32) -> u32 {
-    std::env::var(var)
-        .ok()
-        .and_then(|s| s.parse::<u32>().ok())
-        .unwrap_or(default)
-}
 // Length bounds for device-supplied identifiers. These are enforced on
 // every enrollment / checkin entry point — they defend against log
 // injection (unbounded strings in structured logs), URL traversal (when a

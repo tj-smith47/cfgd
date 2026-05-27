@@ -5,10 +5,19 @@
 
 use super::*;
 
+/// Strip trailing whitespace including the trailing `\n` that `ssh-keygen`
+/// and any `cat key.pub` always emit. Embedded CR/LF (multi-line) is still
+/// rejected — this only normalizes the universal artifact of how key files
+/// are stored on disk.
+fn normalize_ssh_public_key(key: &str) -> &str {
+    key.trim_end_matches(['\r', '\n', ' ', '\t'])
+}
+
 fn validate_ssh_public_key(key: &str) -> Result<(), GatewayError> {
-    if key.contains('\n') || key.contains('\r') {
+    let trimmed = normalize_ssh_public_key(key);
+    if trimmed.contains('\n') || trimmed.contains('\r') {
         return Err(GatewayError::InvalidRequest(
-            "public_key must be a single line (no CR/LF)".to_string(),
+            "public_key must be a single line (no embedded CR/LF)".to_string(),
         ));
     }
     const SSH_KEY_PREFIXES: &[&str] = &[
@@ -21,13 +30,13 @@ fn validate_ssh_public_key(key: &str) -> Result<(), GatewayError> {
         "sk-ssh-ed25519@openssh.com",
         "sk-ecdsa-sha2-nistp256@openssh.com",
     ];
-    let first = key.split_whitespace().next().unwrap_or("");
+    let first = trimmed.split_whitespace().next().unwrap_or("");
     if !SSH_KEY_PREFIXES.contains(&first) {
         return Err(GatewayError::InvalidRequest(format!(
             "public_key must start with a recognized OpenSSH key type (got '{first}')"
         )));
     }
-    if key.split_whitespace().nth(1).is_none() {
+    if trimmed.split_whitespace().nth(1).is_none() {
         return Err(GatewayError::InvalidRequest(
             "public_key missing base64 payload".to_string(),
         ));
@@ -68,18 +77,24 @@ pub(super) async fn add_user_key(
         ));
     }
 
-    match req.key_type.as_str() {
-        "ssh" => validate_ssh_public_key(&req.public_key)?,
-        "gpg" => validate_gpg_public_key(&req.public_key)?,
+    let normalized_key: String = match req.key_type.as_str() {
+        "ssh" => {
+            validate_ssh_public_key(&req.public_key)?;
+            normalize_ssh_public_key(&req.public_key).to_string()
+        }
+        "gpg" => {
+            validate_gpg_public_key(&req.public_key)?;
+            req.public_key.clone()
+        }
         _ => unreachable!("key_type validated above"),
-    }
+    };
 
     let key = state
         .db
         .add_user_public_key(
             &username,
             &req.key_type,
-            &req.public_key,
+            &normalized_key,
             &req.fingerprint,
             req.label.as_deref(),
         )
@@ -141,10 +156,41 @@ mod tests {
     }
 
     #[test]
-    fn ssh_rejects_carriage_return() {
-        let key = "ssh-ed25519 AAAA user@host\r";
-        let err = validate_ssh_public_key(key).expect_err("CR should be rejected");
+    fn ssh_accepts_trailing_newline_from_ssh_keygen() {
+        // ssh-keygen + `cat key.pub` always include a trailing newline; the
+        // validator must accept that universal artifact.
+        let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleBase64Payload user@host\n";
+        assert!(validate_ssh_public_key(key).is_ok());
+    }
+
+    #[test]
+    fn ssh_accepts_trailing_crlf() {
+        let key = "ssh-ed25519 AAAA user@host\r\n";
+        assert!(validate_ssh_public_key(key).is_ok());
+    }
+
+    #[test]
+    fn ssh_rejects_embedded_carriage_return() {
+        // CR in the middle of the line (not trailing) is still rejected.
+        let key = "ssh-ed25519 AAAA user@host\rextra";
+        let err = validate_ssh_public_key(key).expect_err("embedded CR should be rejected");
         assert!(err_msg(err).contains("single line"));
+    }
+
+    #[test]
+    fn normalize_strips_trailing_newline() {
+        assert_eq!(
+            normalize_ssh_public_key("ssh-ed25519 AAAA u@h\n"),
+            "ssh-ed25519 AAAA u@h"
+        );
+        assert_eq!(
+            normalize_ssh_public_key("ssh-ed25519 AAAA u@h\r\n"),
+            "ssh-ed25519 AAAA u@h"
+        );
+        assert_eq!(
+            normalize_ssh_public_key("ssh-ed25519 AAAA u@h   \n  "),
+            "ssh-ed25519 AAAA u@h"
+        );
     }
 
     #[test]

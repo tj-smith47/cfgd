@@ -27,6 +27,11 @@ fi
 
 # Helper: enroll a new device with a fresh token. Sets GW_HELPER_DEVICE_ID and
 # GW_HELPER_API_KEY in the caller's scope. Returns 0 on success.
+#
+# Retries up to 3 times on HTTP 429 (per-IP rate limit on POST /api/v1/enroll).
+# Production defaults (burst=5, refill=5/min) are tight, so back-to-back
+# enrollments across multiple test cases can hit the limiter. The retry
+# loop honors the server's `retry_after_secs` hint.
 gw_enroll_new_device() {
     local suffix="$1"
     local token
@@ -37,14 +42,30 @@ gw_enroll_new_device() {
     fi
 
     GW_HELPER_DEVICE_ID="e2e-admin-device-${suffix}-${E2E_RUN_ID}"
-    local resp
-    resp=$(curl -sf -X POST "$GW_URL/api/v1/enroll" \
-        -H "Content-Type: application/json" \
-        -d "{\"token\":\"$token\",\"deviceId\":\"$GW_HELPER_DEVICE_ID\",\"hostname\":\"e2e-host-$suffix\",\"os\":\"linux\",\"arch\":\"x86_64\"}" 2>/dev/null || echo "")
-
-    GW_HELPER_API_KEY=$(echo "$resp" | jq -r '.apiKey // empty' 2>/dev/null)
+    local body_file="$GW_SCRATCH/enroll-$suffix.json"
+    local attempt code retry
+    for attempt in 1 2 3; do
+        code=$(curl -s -o "$body_file" -w "%{http_code}" -X POST "$GW_URL/api/v1/enroll" \
+            -H "Content-Type: application/json" \
+            -d "{\"token\":\"$token\",\"deviceId\":\"$GW_HELPER_DEVICE_ID\",\"hostname\":\"e2e-host-$suffix\",\"os\":\"linux\",\"arch\":\"x86_64\"}" 2>/dev/null || echo "000")
+        if [ "$code" = "200" ] || [ "$code" = "201" ]; then
+            break
+        fi
+        if [ "$code" = "429" ]; then
+            retry=$(jq -r '.retry_after_secs // 2' < "$body_file" 2>/dev/null)
+            [ -z "$retry" ] || ! [[ "$retry" =~ ^[0-9]+$ ]] && retry=2
+            echo "  Enroll attempt $attempt got 429; sleeping ${retry}s before retry"
+            sleep "$retry"
+            continue
+        fi
+        echo "  Enrollment failed for $suffix (HTTP $code): $(cat "$body_file" 2>/dev/null)"
+        rm -f "$body_file"
+        return 1
+    done
+    GW_HELPER_API_KEY=$(jq -r '.apiKey // empty' < "$body_file" 2>/dev/null)
+    rm -f "$body_file"
     if [ -z "$GW_HELPER_API_KEY" ]; then
-        echo "  Enrollment failed for $suffix: $resp"
+        echo "  Enrollment failed for $suffix after 3 attempts"
         return 1
     fi
     echo "  Enrolled device $GW_HELPER_DEVICE_ID (key prefix: ${GW_HELPER_API_KEY:0:12}...)"
