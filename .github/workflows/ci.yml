@@ -202,10 +202,30 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-      - name: Auto-tag all workspaces
+      - name: Install anodizer
         uses: tj-smith47/anodizer-action@v1
         with:
           from-branch: publisher-required-config
-          args: tag
+          args: --version
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+      - name: Auto-tag each workspace crate independently
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          # Per-crate tagging: each crate's bump signal is scanned over its
+          # own commit range (since its own last tag) so crates mature at
+          # different cadences. anodizer's `tag` command, when invoked
+          # without --crate on a workspace that has [workspace.package].version,
+          # would otherwise produce a single workspace-level tag. The loop
+          # below explicitly opts each crate into the per-crate flow,
+          # matching the per-crate tag history (`core-v*`, `v*`, `operator-v*`,
+          # `csi-v*`) that consumers of these crates depend on.
+          for crate in cfgd-core cfgd cfgd-operator cfgd-csi; do
+            echo "--- tagging $crate ---"
+            if anodizer tag --crate "$crate"; then
+              echo "::notice::$crate: tagged successfully"
+            else
+              echo "::warning::$crate: tag skipped or failed (exit $?)"
+            fi
+          done

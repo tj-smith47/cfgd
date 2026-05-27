@@ -1,3 +1,8 @@
+# cfgd-core ships its own version line (not workspace.package.version) so
+# anodizer can bump it independently of the cfgd binary, cfgd-operator, and
+# cfgd-csi. Each of those three crates pins this version via workspace
+# dependency declarations; anodizer's version_sync (enabled in
+# .anodizer.yaml) updates those pins automatically on bump.
 [package]
 name = "cfgd-core"
 version = "0.4.0"

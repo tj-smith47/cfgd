@@ -126,7 +126,7 @@ before:
     - cargo test
 
 after:
-  post:
+  hooks:
     - echo "Release complete for {{ ProjectName }} {{ Tag }}"
 
 # Independent workspaces for per-component release cadences.
