@@ -1,4 +1,4 @@
-use crate::config::ResolvedProfile;
+use crate::config::{ResolvedProfile, ScriptShell};
 use crate::errors::Result;
 use crate::output::Printer;
 
@@ -13,6 +13,7 @@ impl<'a> super::Reconciler<'a> {
         config_dir: &std::path::Path,
         printer: &Printer,
         context: ReconcileContext,
+        shell_override: Option<ScriptShell>,
     ) -> Result<(String, Option<String>)> {
         match action {
             ScriptAction::Run { entry, phase, .. } => {
@@ -31,6 +32,7 @@ impl<'a> super::Reconciler<'a> {
                     &env_vars,
                     crate::PROFILE_SCRIPT_TIMEOUT,
                     printer,
+                    shell_override,
                 )?;
 
                 let phase_name = phase.display_name();

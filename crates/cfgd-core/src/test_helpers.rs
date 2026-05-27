@@ -1853,6 +1853,7 @@ impl ReconcilerTestHarness {
             &[],
             crate::reconciler::ReconcileContext::Apply,
             false,
+            None,
         )
     }
 

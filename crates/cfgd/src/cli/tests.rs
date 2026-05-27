@@ -3716,6 +3716,7 @@ fn cmd_apply_dry_run_empty_profile() {
         module: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
 
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
@@ -3750,6 +3751,7 @@ fn cmd_apply_from_flag_parses() {
         module: Some("dev-tools".to_string()),
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
 
     // cmd_apply should attempt to resolve the --from URL.
@@ -3780,6 +3782,7 @@ fn cmd_apply_dry_run_with_phase_filter() {
         module: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
     h.assert_header("Plan");
@@ -3807,6 +3810,7 @@ fn cmd_apply_dry_run_with_skip() {
         module: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
     h.assert_header("Plan");
@@ -3830,6 +3834,7 @@ fn cmd_apply_dry_run_with_only() {
         module: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
     h.assert_header("Plan");
@@ -3856,6 +3861,7 @@ fn cmd_apply_real_with_empty_profile() {
         module: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
     h.assert_header("Apply");
@@ -3894,6 +3900,7 @@ fn cmd_status_after_apply() {
         module: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
 
@@ -3930,6 +3937,7 @@ fn cmd_log_after_apply() {
         module: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
 
@@ -3997,6 +4005,7 @@ fn cmd_apply_dry_run_with_files() {
         module: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
 
     let result = super::apply::cmd_apply(&cli, &printer, &args);
@@ -4054,6 +4063,7 @@ fn cmd_apply_creates_file() {
         module: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
 
     let result = super::apply::cmd_apply(&cli, &printer, &args);
@@ -4101,6 +4111,7 @@ fn cmd_apply_idempotent() {
         module: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
 
     // First apply
@@ -4341,6 +4352,7 @@ fn execute_apply_dry_run() {
         module: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     }));
     super::execute(&cli, h.printer()).unwrap();
     let output = h.output();
@@ -4529,6 +4541,7 @@ fn cmd_apply_with_module_filter() {
         module: Some("test-mod".to_string()),
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
 
     let result = super::apply::cmd_apply(&cli, &printer, &args);
@@ -4566,6 +4579,7 @@ fn cmd_apply_with_env_vars() {
         module: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
 
     let result = super::apply::cmd_apply(&cli, &printer, &args);
@@ -4661,6 +4675,7 @@ fn cmd_status_with_drift_events() {
         module: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
 
@@ -5007,6 +5022,7 @@ fn cmd_apply_dry_run_each_phase() {
             module: None,
             skip_scripts: false,
             context: "apply".to_string(),
+            shell: None,
         };
         let result = super::apply::cmd_apply(&cli, &printer, &args);
         assert!(
@@ -5045,6 +5061,7 @@ fn cmd_verify_after_apply_with_env() {
         module: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
 
@@ -5362,6 +5379,7 @@ fn cmd_rollback_after_file_apply() {
         module: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
     assert!(target.exists());
@@ -5434,6 +5452,7 @@ fn apply_one_file_and_record(
         module: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();
 
@@ -5786,6 +5805,7 @@ fn cmd_apply_dry_run_with_skip_scripts() {
         module: None,
         skip_scripts: true,
         context: "apply".to_string(),
+        shell: None,
     };
 
     let result = super::apply::cmd_apply(&cli, &printer, &args);
@@ -9280,6 +9300,7 @@ fn cmd_apply_module_only_no_profile() {
         module: Some("standalone-mod".to_string()),
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
 
     let result = super::apply::cmd_apply(&cli, &printer, &args);
@@ -9576,6 +9597,7 @@ fn cmd_apply_with_aliases() {
         module: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
 
     let result = super::apply::cmd_apply(&cli, &printer, &args);
@@ -10212,6 +10234,7 @@ fn cmd_apply_dry_run_with_skip_and_only() {
         module: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
 
     let result = super::apply::cmd_apply(&cli, &printer, &args);
@@ -10692,6 +10715,7 @@ fn cmd_apply_real_records_state() {
         from: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
 
@@ -10723,6 +10747,7 @@ fn cmd_apply_with_skip_and_only() {
         from: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
     let output = h.output();
@@ -10748,6 +10773,7 @@ fn cmd_apply_skip_scripts_flag() {
         from: None,
         skip_scripts: true,
         context: "apply".to_string(),
+        shell: None,
     };
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
     let output = h.output();
@@ -10773,6 +10799,7 @@ fn cmd_apply_invalid_context_fails() {
         from: None,
         skip_scripts: false,
         context: "bogus".to_string(),
+        shell: None,
     };
     let result = super::apply::cmd_apply(&h.cli(), h.printer(), &args);
     let err = result
@@ -10788,6 +10815,50 @@ fn cmd_apply_invalid_context_fails() {
     );
 }
 
+// `--shell bash` on `cfgd apply` parses to `Some(ApplyShell::Bash)` and lowers
+// to `Some(ScriptShell::Bash)`. Guards the debugging-override flag from quiet
+// regressions (e.g. a future rename of the variant or a missing value_enum).
+#[test]
+fn apply_shell_flag_parses() {
+    use super::{ApplyShell, Command, apply_shell_to_script_shell};
+    let cli = Cli::try_parse_from(["cfgd", "apply", "--shell", "bash", "--yes", "--dry-run"])
+        .expect("--shell bash must parse");
+    match cli.command {
+        Some(Command::Apply(args)) => {
+            let s = args.shell.expect("--shell must be Some after parse");
+            assert!(matches!(s, ApplyShell::Bash));
+            assert!(matches!(
+                apply_shell_to_script_shell(s),
+                cfgd_core::config::ScriptShell::Bash
+            ));
+        }
+        other => panic!(
+            "expected Command::Apply, got subcommand present: {}",
+            other.is_some()
+        ),
+    }
+}
+
+// Absent `--shell`, `args.shell` is `None`, so no override is applied and
+// per-entry `shell:` fields are honoured.
+#[test]
+fn apply_shell_flag_default_is_none() {
+    use super::Command;
+    let cli =
+        Cli::try_parse_from(["cfgd", "apply", "--yes", "--dry-run"]).expect("apply must parse");
+    match cli.command {
+        Some(Command::Apply(args)) => assert!(args.shell.is_none()),
+        _ => panic!("expected Command::Apply"),
+    }
+}
+
+// Reject unknown interpreter values at parse time (clap value_enum).
+#[test]
+fn apply_shell_flag_rejects_unknown_value() {
+    let result = Cli::try_parse_from(["cfgd", "apply", "--shell", "fish", "--yes", "--dry-run"]);
+    assert!(result.is_err(), "fish is not a supported interpreter");
+}
+
 #[test]
 fn cmd_apply_reconcile_context_threads_through() {
     let h = CliTestHarness::builder().build();
@@ -10801,6 +10872,7 @@ fn cmd_apply_reconcile_context_threads_through() {
         from: None,
         skip_scripts: false,
         context: "reconcile".to_string(),
+        shell: None,
     };
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
     h.assert_header("Plan");
@@ -10855,6 +10927,7 @@ spec:
         module: Some("nvim".to_string()),
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     };
 
     super::apply::cmd_apply(&cli, &printer, &args).unwrap();

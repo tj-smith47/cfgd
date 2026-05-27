@@ -311,6 +311,7 @@ pub fn cmd_module_create(
                 &[],
                 cfgd_core::reconciler::ReconcileContext::Apply,
                 false,
+                None,
             )?;
             super::print_apply_result(&result, printer, None);
             applied = true;

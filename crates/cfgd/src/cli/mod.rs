@@ -335,6 +335,11 @@ pub struct ApplyArgs {
     /// Reconciliation context: apply (default) or reconcile
     #[arg(long, default_value = "apply")]
     pub context: String,
+    /// Force every inline lifecycle script to run under this interpreter,
+    /// overriding any `shell:` field set on individual entries. File/shebang
+    /// scripts are unaffected. Intended for debugging.
+    #[arg(long, value_enum)]
+    pub shell: Option<ApplyShell>,
 }
 
 #[derive(Parser)]
@@ -1417,6 +1422,32 @@ fn apply_phase_to_phase_name(p: ApplyPhase) -> PhaseName {
         ApplyPhase::Files => PhaseName::Files,
         ApplyPhase::Secrets => PhaseName::Secrets,
         ApplyPhase::PostScripts => PhaseName::PostScripts,
+    }
+}
+
+/// Clap-facing interpreter selector for `apply --shell`. Mirrors
+/// `cfgd_core::config::ScriptShell`; lives in the CLI layer so the help text
+/// stays kebab-cased and so cfgd-core does not have to depend on `clap`.
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum ApplyShell {
+    Auto,
+    Sh,
+    Bash,
+    Zsh,
+    Pwsh,
+    Cmd,
+}
+
+/// Map a clap-validated ApplyShell to the core `ScriptShell`.
+pub(crate) fn apply_shell_to_script_shell(s: ApplyShell) -> cfgd_core::config::ScriptShell {
+    use cfgd_core::config::ScriptShell;
+    match s {
+        ApplyShell::Auto => ScriptShell::Auto,
+        ApplyShell::Sh => ScriptShell::Sh,
+        ApplyShell::Bash => ScriptShell::Bash,
+        ApplyShell::Zsh => ScriptShell::Zsh,
+        ApplyShell::Pwsh => ScriptShell::Pwsh,
+        ApplyShell::Cmd => ScriptShell::Cmd,
     }
 }
 

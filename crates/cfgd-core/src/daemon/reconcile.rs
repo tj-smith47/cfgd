@@ -436,6 +436,7 @@ pub(crate) fn handle_reconcile(
                     &script_env,
                     default_timeout,
                     printer,
+                    None,
                 ) {
                     Ok((desc, _, _)) => {
                         tracing::info!(script = %desc, "onDrift script completed");
@@ -482,6 +483,7 @@ pub(crate) fn handle_reconcile(
                     &resolved_modules_ref,
                     crate::reconciler::ReconcileContext::Reconcile,
                     false,
+                    None,
                 ) {
                     Ok(result) => {
                         let succeeded = result.succeeded();

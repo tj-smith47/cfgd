@@ -120,6 +120,7 @@ pub fn apply_args() -> ApplyArgs {
         module: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     }
 }
 
@@ -135,6 +136,7 @@ pub fn apply_args_dry_run() -> ApplyArgs {
         module: None,
         skip_scripts: false,
         context: "apply".to_string(),
+        shell: None,
     }
 }
 

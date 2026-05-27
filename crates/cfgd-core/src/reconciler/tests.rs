@@ -155,6 +155,7 @@ fn apply_empty_plan_records_success() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -657,6 +658,7 @@ fn module_state_stored_after_apply() {
             &modules,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -1838,6 +1840,7 @@ fn apply_package_install_calls_mock_and_records_state() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -1895,6 +1898,7 @@ fn apply_package_uninstall_calls_mock() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -1936,6 +1940,7 @@ fn apply_empty_plan_records_success_in_state_store() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -1980,6 +1985,7 @@ fn apply_records_correct_apply_id() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -1994,6 +2000,7 @@ fn apply_records_correct_apply_id() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -2170,6 +2177,7 @@ fn apply_full_flow_plan_apply_verify_consistent() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -2228,6 +2236,7 @@ fn apply_records_summary_json() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -2282,6 +2291,7 @@ fn apply_with_phase_filter_only_runs_matching_phase() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -2330,6 +2340,7 @@ fn apply_with_phase_filter_runs_only_packages() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -2381,6 +2392,7 @@ fn apply_file_create_action_writes_file() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -2442,6 +2454,7 @@ fn apply_multiple_package_actions_all_succeed() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -2491,6 +2504,7 @@ fn apply_package_skip_action_succeeds() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -2778,6 +2792,7 @@ fn execute_script_inline_command() {
         &[],
         std::time::Duration::from_secs(10),
         &printer,
+        None,
     )
     .unwrap();
     assert!(desc.contains("echo hello"));
@@ -2796,6 +2811,7 @@ fn execute_script_failure_returns_error() {
         &[],
         std::time::Duration::from_secs(10),
         &printer,
+        None,
     );
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
@@ -2822,6 +2838,7 @@ fn execute_script_with_timeout_override() {
         &[],
         std::time::Duration::from_secs(300),
         &printer,
+        None,
     )
     .unwrap();
     assert_eq!(output, Some("fast".to_string()));
@@ -2840,6 +2857,7 @@ fn execute_script_injects_env_vars() {
         &env,
         std::time::Duration::from_secs(10),
         &printer,
+        None,
     )
     .unwrap();
     assert_eq!(output, Some("test_value".to_string()));
@@ -2863,6 +2881,7 @@ fn execute_script_runs_executable_file() {
         &[],
         std::time::Duration::from_secs(10),
         &printer,
+        None,
     )
     .unwrap();
     assert_eq!(output, Some("from_file".to_string()));
@@ -2886,6 +2905,7 @@ fn execute_script_rejects_non_executable_file() {
         &[],
         std::time::Duration::from_secs(10),
         &printer,
+        None,
     );
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
@@ -2914,6 +2934,7 @@ fn execute_script_idle_timeout_kills_idle_process() {
         &[],
         std::time::Duration::from_secs(30),
         &printer,
+        None,
     );
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
@@ -3146,6 +3167,7 @@ fn apply_partial_when_some_actions_fail() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -3197,6 +3219,7 @@ fn apply_failed_when_all_actions_fail() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -3260,6 +3283,7 @@ fn apply_continue_on_error_post_script_continues() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -3314,6 +3338,7 @@ fn apply_continue_on_error_false_pre_script_aborts() {
         &[],
         ReconcileContext::Apply,
         false,
+        None,
     );
 
     // Pre-script failure with continueOnError=false should return an error
@@ -3358,6 +3383,7 @@ fn apply_continue_on_error_default_post_script_continues() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -3418,6 +3444,7 @@ fn apply_on_change_script_runs_when_changes_occur() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -3470,6 +3497,7 @@ fn apply_on_change_script_does_not_run_when_no_changes() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -4373,6 +4401,7 @@ fn apply_on_change_skipped_when_skip_scripts_true() {
             &[],
             ReconcileContext::Apply,
             true, // skip_scripts
+            None,
         )
         .unwrap();
 
@@ -4478,6 +4507,7 @@ fn apply_package_bootstrap_makes_manager_available() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -4524,6 +4554,7 @@ fn apply_package_bootstrap_unknown_manager_errors() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -4563,6 +4594,7 @@ fn apply_package_install_unknown_manager_errors() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -4600,6 +4632,7 @@ fn apply_package_uninstall_unknown_manager_errors() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -4671,6 +4704,7 @@ fn apply_secret_decrypt_writes_decrypted_file() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -4725,6 +4759,7 @@ fn apply_secret_decrypt_no_backend_errors() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -4770,6 +4805,7 @@ fn apply_secret_resolve_writes_provider_value_to_file() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -4820,6 +4856,7 @@ fn apply_secret_resolve_unknown_provider_errors() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -4897,6 +4934,7 @@ fn apply_secret_resolve_env_unknown_provider_errors() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -4934,6 +4972,7 @@ fn apply_secret_skip_succeeds() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -4980,6 +5019,7 @@ fn apply_file_delete_action_removes_file() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -5027,6 +5067,7 @@ fn apply_file_set_permissions_action() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -5074,6 +5115,7 @@ fn apply_file_skip_action_succeeds() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -5123,6 +5165,7 @@ fn apply_file_update_action_overwrites_target() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -5185,6 +5228,7 @@ fn apply_system_set_value_calls_configurator() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -5229,6 +5273,7 @@ fn apply_system_skip_logs_warning() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -5386,6 +5431,7 @@ fn apply_module_install_packages_calls_manager() {
             &modules,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -5470,6 +5516,7 @@ fn apply_module_deploy_files_creates_target() {
             &modules,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -5549,6 +5596,7 @@ fn apply_module_deploy_files_symlink_strategy() {
             &modules,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -5591,6 +5639,7 @@ fn apply_module_skip_reports_skipped() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -5666,6 +5715,7 @@ fn apply_module_install_packages_bootstraps_when_needed() {
             &modules,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -6066,6 +6116,7 @@ fn apply_script_action_executes_and_records_output() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -6133,6 +6184,7 @@ fn apply_module_run_script_executes_in_module_dir() {
             &modules,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -6994,6 +7046,7 @@ fn apply_module_deploy_files_hardlink_strategy() {
             &modules,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -7084,6 +7137,7 @@ fn apply_module_deploy_files_copy_strategy() {
             &modules,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -7174,6 +7228,7 @@ fn apply_module_deploy_files_directory_copy_strategy() {
             &modules,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -7253,6 +7308,7 @@ fn apply_module_deploy_files_overwrites_existing_file() {
             &modules,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -7331,6 +7387,7 @@ fn apply_module_on_change_script_runs_when_module_has_changes() {
             &modules,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -7388,6 +7445,7 @@ fn apply_module_on_change_script_does_not_run_when_no_changes() {
             &modules,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -7937,6 +7995,7 @@ mod bridge {
                 &[],
                 ReconcileContext::Apply,
                 false,
+                None,
             )
             .unwrap();
 
@@ -7982,6 +8041,7 @@ mod bridge {
                 &[],
                 ReconcileContext::Apply,
                 false,
+                None,
             )
             .unwrap();
 
@@ -8585,6 +8645,7 @@ fn apply_module_install_packages_bootstraps_unavailable_manager_and_writes_env()
             &modules,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -8683,6 +8744,7 @@ fn apply_module_install_packages_with_existing_env_appends_new_dirs() {
             &modules,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -8764,6 +8826,7 @@ fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
             &modules,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -8845,6 +8908,7 @@ fn apply_module_install_packages_script_manager_runs_per_package_script() {
             &modules,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -8908,6 +8972,7 @@ fn apply_module_install_packages_script_manager_failure_returns_err() {
             &modules,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -8985,6 +9050,7 @@ fn apply_module_on_change_script_runs_when_module_changed() {
             &module_actions,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -9039,6 +9105,7 @@ fn apply_module_on_change_script_does_not_run_when_module_unchanged() {
             &module_actions,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -9110,6 +9177,7 @@ fn apply_module_on_change_skip_scripts_flag_bypasses_module_on_change() {
             &module_actions,
             ReconcileContext::Apply,
             true,
+            None,
         )
         .unwrap();
 
@@ -9177,6 +9245,7 @@ fn apply_resolve_env_action_collects_secret_into_env_actions() {
             &[],
             ReconcileContext::Apply,
             true, // skip_scripts to keep the test deterministic
+            None,
         )
         .expect("apply must succeed");
 
@@ -9357,6 +9426,7 @@ fn apply_module_with_git_source_file_serializes_into_module_state() {
             &module_actions,
             ReconcileContext::Apply,
             true,
+            None,
         )
         .expect("apply must succeed");
 
@@ -9440,6 +9510,7 @@ fn apply_module_on_change_failure_continues_with_default_continue_on_error() {
             &module_actions,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .expect("apply must succeed when continueOnError defaults true");
 
@@ -9517,6 +9588,7 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
             &module_actions,
             ReconcileContext::Apply,
             false,
+            None,
         )
         .expect_err("explicit continueOnError=false must return Err");
     let _ = err.to_string();
@@ -9571,6 +9643,7 @@ fn apply_profile_on_change_failure_continues_with_default_continue_on_error() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .expect("apply must succeed when default continueOnError is true");
 
@@ -9632,6 +9705,7 @@ fn apply_profile_on_change_failure_aborts_when_continue_on_error_false() {
             &[],
             ReconcileContext::Apply,
             false,
+            None,
         )
         .expect_err("profile onChange continueOnError=false must propagate err");
     let _ = err.to_string();
@@ -9814,6 +9888,7 @@ fn apply_post_scripts_filter_runs_module_post_scripts() {
             std::slice::from_ref(&module),
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -9906,6 +9981,7 @@ fn apply_pre_scripts_filter_runs_module_pre_scripts() {
             std::slice::from_ref(&module),
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -9995,6 +10071,7 @@ fn apply_modules_phase_filter_runs_all_module_actions() {
             std::slice::from_ref(&module),
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 
@@ -10088,6 +10165,7 @@ fn apply_post_scripts_filter_skips_other_phases() {
             std::slice::from_ref(&module),
             ReconcileContext::Apply,
             false,
+            None,
         )
         .unwrap();
 

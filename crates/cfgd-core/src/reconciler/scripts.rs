@@ -75,6 +75,11 @@ pub(crate) fn build_module_script_env(
 
 /// Unified script executor for all hook types at both profile and module level.
 ///
+/// `shell_override` forces every inline command to run under the supplied
+/// interpreter, ignoring any `shell:` field on the entry. Set by
+/// `cfgd apply --shell <shell>` for debugging. File/shebang scripts ignore the
+/// override (the shebang owns the interpreter choice) and emit a debug log.
+///
 /// Returns (description, changed, captured_output). All scripts set changed=true.
 pub(crate) fn execute_script(
     entry: &ScriptEntry,
@@ -82,6 +87,7 @@ pub(crate) fn execute_script(
     env_vars: &[(String, String)],
     default_timeout: std::time::Duration,
     printer: &Printer,
+    shell_override: Option<ScriptShell>,
 ) -> Result<(String, bool, Option<String>)> {
     let run_str = entry.run_str();
 
@@ -148,10 +154,11 @@ pub(crate) fn execute_script(
         _ => None,
     };
 
-    let shell = match entry {
+    let entry_shell = match entry {
         ScriptEntry::Full { shell, .. } => *shell,
         ScriptEntry::Simple(_) => ScriptShell::Auto,
     };
+    let shell = shell_override.unwrap_or(entry_shell);
 
     let resolved = if std::path::Path::new(run_str).is_relative() {
         working_dir.join(run_str)
@@ -168,14 +175,25 @@ pub(crate) fn execute_script(
     };
 
     let mut cmd = if resolved.exists() {
-        // File path — check executable bit, run directly (OS handles shebang)
-        if shell != ScriptShell::Auto {
+        // File path — check executable bit, run directly (OS handles shebang).
+        // The override silently drops out on file scripts: the shebang owns
+        // interpreter choice, so wrapping the file in `bash -c` would either
+        // double-interpret it or break exec semantics. The entry's own
+        // `shell:` field on a file is still a config bug.
+        if entry_shell != ScriptShell::Auto {
             return Err(CfgdError::Config(ConfigError::Invalid {
                 message: format!(
                     "shell field cannot be set on file-shebang scripts — set the shebang line inside '{}' itself",
                     resolved.posix(),
                 ),
             }));
+        }
+        if shell_override.is_some() {
+            tracing::debug!(
+                script = %resolved.posix(),
+                shell_override = ?shell_override,
+                "--shell override ignored on file-shebang script"
+            );
         }
         let meta = std::fs::metadata(&resolved)?;
         if !crate::is_executable(&resolved, &meta) {
@@ -601,6 +619,7 @@ mod tests {
             &[],
             std::time::Duration::from_secs(5),
             &printer,
+            None,
         )
         .expect_err("missing working_dir must error");
 
@@ -639,6 +658,7 @@ mod tests {
             &[],
             std::time::Duration::from_secs(5),
             &printer,
+            None,
         )
         .expect_err("non-directory working_dir must error");
 
@@ -671,6 +691,7 @@ mod tests {
             &[],
             std::time::Duration::from_secs(5),
             &printer,
+            None,
         )
         .expect("valid working_dir + `true` must succeed");
 
@@ -726,6 +747,7 @@ mod tests {
             &[],
             std::time::Duration::from_secs(5),
             &printer,
+            None,
         )
         .expect("bash inline script must succeed");
 
@@ -760,6 +782,7 @@ mod tests {
             &[],
             std::time::Duration::from_secs(5),
             &printer,
+            None,
         )
         .expect_err("shell field on file script must be rejected");
 
@@ -912,7 +935,113 @@ mod tests {
             &[],
             std::time::Duration::from_secs(5),
             &printer,
+            None,
         );
         assert!(result.is_ok(), "Auto shell on file scripts must be allowed");
+    }
+
+    // --shell override: passing Some(Bash) on a Simple inline script wraps the
+    // command in bash, independent of the entry's own shell field (Auto here).
+    #[cfg(unix)]
+    #[test]
+    fn execute_script_uses_shell_override_for_inline_command() {
+        let printer = crate::test_helpers::test_printer();
+        let tmp = tempfile::tempdir().unwrap();
+        // BASH_VERSION is exported by bash but not by sh/dash; if the override
+        // wired through, the variable resolves and gets echoed. If not, the
+        // empty expansion shows the override was dropped on the floor.
+        let entry = ScriptEntry::Simple("echo \"${BASH_VERSION:-no-bash}\"".into());
+
+        let (_, _, captured) = execute_script(
+            &entry,
+            tmp.path(),
+            &[],
+            std::time::Duration::from_secs(5),
+            &printer,
+            Some(ScriptShell::Bash),
+        )
+        .expect("inline script with bash override must succeed");
+
+        let out = captured.expect("bash should echo a version string");
+        assert!(
+            out != "no-bash" && !out.is_empty(),
+            "override did not route through bash (got {out:?})"
+        );
+    }
+
+    // --shell override: passing Some(Bash) on a file-shebang script is silently
+    // ignored. The shebang owns interpreter choice — wrapping the file in
+    // `bash -c "/path/to/file"` would either double-interpret it or break exec
+    // semantics. The script runs directly; no error surfaces.
+    #[cfg(unix)]
+    #[test]
+    fn execute_script_override_ignored_on_file_shebang() {
+        let printer = crate::test_helpers::test_printer();
+        let tmp = tempfile::tempdir().unwrap();
+        let script_path = tmp.path().join("ok.sh");
+        std::fs::write(&script_path, "#!/bin/sh\necho file-shebang\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let entry = ScriptEntry::Simple("ok.sh".into());
+
+        let (_, _, captured) = execute_script(
+            &entry,
+            tmp.path(),
+            &[],
+            std::time::Duration::from_secs(5),
+            &printer,
+            Some(ScriptShell::Bash),
+        )
+        .expect("override on file-shebang script must not error");
+
+        assert_eq!(
+            captured.as_deref(),
+            Some("file-shebang"),
+            "file script must run via its own shebang, not via bash wrapper"
+        );
+    }
+
+    // --shell override: an entry that explicitly sets `shell:` on a file path
+    // still errors (that's a user config bug, independent of the override).
+    #[test]
+    fn execute_script_entry_shell_on_file_script_still_errors_with_override() {
+        let printer = crate::test_helpers::test_printer();
+        let tmp = tempfile::tempdir().unwrap();
+        let script_path = tmp.path().join("buggy.sh");
+        std::fs::write(&script_path, "#!/bin/sh\necho hi\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let entry = ScriptEntry::Full {
+            run: "buggy.sh".into(),
+            timeout: None,
+            idle_timeout: None,
+            continue_on_error: None,
+            shell: ScriptShell::Zsh,
+        };
+
+        let err = execute_script(
+            &entry,
+            tmp.path(),
+            &[],
+            std::time::Duration::from_secs(5),
+            &printer,
+            Some(ScriptShell::Bash),
+        )
+        .expect_err("entry-level shell on a file script must still be rejected");
+
+        match err {
+            CfgdError::Config(ConfigError::Invalid { message }) => {
+                assert!(
+                    message.contains("shell field cannot be set on file-shebang scripts"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("expected ConfigError::Invalid, got: {other:?}"),
+        }
     }
 }

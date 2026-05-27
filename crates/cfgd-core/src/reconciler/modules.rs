@@ -1,5 +1,5 @@
 use crate::PathDisplayExt;
-use crate::config::{ResolvedProfile, ScriptEntry};
+use crate::config::{ResolvedProfile, ScriptEntry, ScriptShell};
 use crate::errors::{ConfigError, Result};
 use crate::expand_tilde;
 use crate::modules::ResolvedModule;
@@ -19,6 +19,7 @@ impl<'a> super::Reconciler<'a> {
         context: ReconcileContext,
         resolved: &ResolvedProfile,
         module_actions: &[ResolvedModule],
+        shell_override: Option<ScriptShell>,
     ) -> Result<String> {
         // Find the resolved module to obtain its dir and declared env vars.
         let resolved_mod = module_actions.iter().find(|m| m.name == action.module_name);
@@ -58,6 +59,7 @@ impl<'a> super::Reconciler<'a> {
                                     &env_vars,
                                     MODULE_SCRIPT_TIMEOUT,
                                     printer,
+                                    shell_override,
                                 )
                                 .map_err(|_| {
                                     crate::errors::CfgdError::Config(ConfigError::Invalid {
@@ -244,7 +246,14 @@ impl<'a> super::Reconciler<'a> {
                 );
 
                 let working = module_dir.as_deref().unwrap_or(config_dir);
-                execute_script(script, working, &env_vars, MODULE_SCRIPT_TIMEOUT, printer)?;
+                execute_script(
+                    script,
+                    working,
+                    &env_vars,
+                    MODULE_SCRIPT_TIMEOUT,
+                    printer,
+                    shell_override,
+                )?;
 
                 Ok(format!("module:{}:script", action.module_name))
             }

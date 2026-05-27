@@ -300,6 +300,7 @@ pub fn cmd_apply(
     let _apply_lock = cfgd_core::acquire_apply_lock(apply_lock_dir)?;
 
     // Apply
+    let shell_override = args.shell.map(super::apply_shell_to_script_shell);
     let result = reconciler.apply(
         &plan,
         &effective_resolved,
@@ -309,6 +310,7 @@ pub fn cmd_apply(
         &resolved_modules,
         reconcile_context,
         args.skip_scripts,
+        shell_override,
     )?;
 
     let status = print_apply_result(&result, printer, Some(start.elapsed()));

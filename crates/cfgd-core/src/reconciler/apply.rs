@@ -1,5 +1,5 @@
 use crate::PathDisplayExt;
-use crate::config::ResolvedProfile;
+use crate::config::{ResolvedProfile, ScriptShell};
 use crate::errors::{ConfigError, Result};
 use crate::modules::ResolvedModule;
 use crate::output::{Printer, Role};
@@ -149,6 +149,11 @@ impl<'a> super::Reconciler<'a> {
 
     /// Apply a plan, executing each phase in order.
     /// Failed actions are logged and skipped — they don't abort the entire apply.
+    ///
+    /// `shell_override` forces every inline lifecycle script to run under the
+    /// supplied interpreter, ignoring entries' `shell:` field. Set by
+    /// `cfgd apply --shell <shell>` for debugging. File/shebang scripts are
+    /// unaffected.
     #[allow(clippy::too_many_arguments)]
     pub fn apply(
         &self,
@@ -160,6 +165,7 @@ impl<'a> super::Reconciler<'a> {
         module_actions: &[ResolvedModule],
         context: ReconcileContext,
         skip_scripts: bool,
+        shell_override: Option<ScriptShell>,
     ) -> Result<ApplyResult> {
         // Record apply up front as "in-progress" so the journal can reference it
         let plan_hash = crate::state::plan_hash(&plan.to_hash_string());
@@ -233,6 +239,7 @@ impl<'a> super::Reconciler<'a> {
                     context,
                     module_actions,
                     &mut secret_env_collector,
+                    shell_override,
                 );
 
                 let (desc, success, error, should_abort) = match result {
@@ -379,6 +386,7 @@ impl<'a> super::Reconciler<'a> {
                     &env_vars,
                     crate::PROFILE_SCRIPT_TIMEOUT,
                     printer,
+                    shell_override,
                 ) {
                     Ok((desc, changed, _)) => {
                         results.push(ActionResult {
@@ -436,8 +444,14 @@ impl<'a> super::Reconciler<'a> {
                 );
                 let working = &module.dir;
                 for entry in &module.on_change_scripts {
-                    match execute_script(entry, working, &env_vars, MODULE_SCRIPT_TIMEOUT, printer)
-                    {
+                    match execute_script(
+                        entry,
+                        working,
+                        &env_vars,
+                        MODULE_SCRIPT_TIMEOUT,
+                        printer,
+                        shell_override,
+                    ) {
                         Ok((desc, changed, _)) => {
                             results.push(ActionResult {
                                 phase: "modules".to_string(),
@@ -555,6 +569,7 @@ impl<'a> super::Reconciler<'a> {
         context: ReconcileContext,
         module_actions: &[ResolvedModule],
         secret_env_collector: &mut Vec<(String, String)>,
+        shell_override: Option<ScriptShell>,
     ) -> Result<(String, Option<String>)> {
         match action {
             Action::System(sys) => self
@@ -567,9 +582,14 @@ impl<'a> super::Reconciler<'a> {
             Action::Secret(secret) => self
                 .apply_secret_action(secret, config_dir, printer, secret_env_collector)
                 .map(|d| (d, None)),
-            Action::Script(script) => {
-                self.apply_script_action(script, resolved, config_dir, printer, context)
-            }
+            Action::Script(script) => self.apply_script_action(
+                script,
+                resolved,
+                config_dir,
+                printer,
+                context,
+                shell_override,
+            ),
             Action::Module(module) => self
                 .apply_module_action(
                     module,
@@ -579,6 +599,7 @@ impl<'a> super::Reconciler<'a> {
                     context,
                     resolved,
                     module_actions,
+                    shell_override,
                 )
                 .map(|d| (d, None)),
             Action::Env(env) => Self::apply_env_action(env, printer).map(|d| (d, None)),
