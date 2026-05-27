@@ -196,7 +196,7 @@ impl SourceManager {
                 Err(e) => {
                     let _ = spinner
                         .finish_fail(format!("Failed to fetch source '{}' (libgit2)", spec.name))
-                        .detail(e.to_string());
+                        .detail(crate::output::collapse_to_subject_line(e));
                 }
             }
             fetch_result?;
@@ -300,7 +300,7 @@ impl SourceManager {
             Err(e) => {
                 let _ = spinner
                     .finish_fail(format!("Failed to clone source '{}' (libgit2)", spec.name))
-                    .detail(e.to_string());
+                    .detail(crate::output::collapse_to_subject_line(e));
             }
         }
         clone_result?;
@@ -716,7 +716,7 @@ pub fn git_clone_with_fallback(
         Err(msg) => {
             let _ = spinner
                 .finish_fail(format!("Failed to clone {} (libgit2)", url))
-                .detail(msg.clone());
+                .detail(crate::output::collapse_to_subject_line(msg));
         }
     }
     result

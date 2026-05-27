@@ -3247,6 +3247,7 @@ mod bridge {
 
     fn normalize_paths(raw: &str, tmpdir: &std::path::Path) -> String {
         raw.replace(&tmpdir.to_string_lossy().to_string(), "<TMPDIR>")
+            .replace('\\', "/")
     }
 
     #[derive(serde::Serialize)]

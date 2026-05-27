@@ -314,6 +314,7 @@ mod tests {
 
         fn normalize_paths(raw: &str, tmpdir: &std::path::Path) -> String {
             raw.replace(&tmpdir.to_string_lossy().to_string(), "<TMPDIR>")
+                .replace('\\', "/")
         }
 
         /// Normalize the variable part of systemctl failure messages so goldens

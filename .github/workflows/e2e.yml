@@ -41,6 +41,7 @@ jobs:
     needs: [setup]
     timeout-minutes: 25
     env:
+      CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
       REGISTRY: ${{ vars.E2E_REGISTRY }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-node
@@ -57,6 +58,7 @@ jobs:
     needs: [setup]
     timeout-minutes: 15
     env:
+      CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
       REGISTRY: ${{ vars.E2E_REGISTRY }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-helm
@@ -74,6 +76,7 @@ jobs:
     needs: [setup, node-tests]
     timeout-minutes: 15
     env:
+      CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
       REGISTRY: ${{ vars.E2E_REGISTRY }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-srv
@@ -90,6 +93,7 @@ jobs:
     needs: [setup]
     timeout-minutes: 20
     env:
+      CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
       REGISTRY: ${{ vars.E2E_REGISTRY }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-op
@@ -107,6 +111,7 @@ jobs:
     needs: [setup]
     timeout-minutes: 25
     env:
+      CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
       REGISTRY: ${{ vars.E2E_REGISTRY }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-full
@@ -124,6 +129,7 @@ jobs:
     needs: [setup]
     timeout-minutes: 20
     env:
+      CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
       REGISTRY: ${{ vars.E2E_REGISTRY }}
     steps:
@@ -140,6 +146,7 @@ jobs:
     needs: [setup]
     timeout-minutes: 25
     env:
+      CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
       REGISTRY: ${{ vars.E2E_REGISTRY }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-gateway

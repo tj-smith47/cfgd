@@ -568,7 +568,7 @@ fn build_module_package_status(
 ) -> SectionBuilder {
     if let Some(err) = pkg.error.as_deref() {
         return sub.status_with(Role::Fail, pkg.name.clone(), |sf| {
-            sf.detail(err.to_string())
+            sf.detail(cfgd_core::output::collapse_to_subject_line(err))
         });
     }
     if let Some(reason) = pkg.skip_reason.as_deref() {

@@ -218,6 +218,11 @@ tasks:
 
   e2e:setup:
     desc: Build images and ensure E2E infrastructure is current
+    # Skipped (no-op) when CFGD_E2E_SETUP_DONE=1. CI's setup job runs once
+    # and sets this for downstream leaf jobs so they don't re-build images
+    # or require docker.sock on runner pods that lack it.
+    status:
+      - test -n "${CFGD_E2E_SETUP_DONE:-}"
     cmds:
       - bash tests/e2e/setup-cluster.sh
 

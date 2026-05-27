@@ -4,6 +4,7 @@
 # Allow project structure
 !*/
 !.gitignore
+!.gitattributes
 !.dockerignore
 !.editorconfig
 !.github/

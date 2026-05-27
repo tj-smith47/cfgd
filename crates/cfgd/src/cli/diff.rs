@@ -78,7 +78,7 @@ pub fn cmd_diff(
                 Err(e) => {
                     sys_sec
                         .status(Role::Warn, format!("{}: error checking drift", key))
-                        .detail(e.to_string());
+                        .detail(cfgd_core::output::collapse_to_subject_line(e));
                 }
                 _ => {}
             }

@@ -68,7 +68,7 @@ fn normalize_bare(raw: &str, bares: &[(&std::path::Path, &str)]) -> String {
     for (path, label) in bares {
         out = out.replace(&path.to_string_lossy().to_string(), label);
     }
-    strip_spinner_duration(out)
+    strip_spinner_duration(out).replace('\\', "/")
 }
 
 /// Strip non-deterministic spinner finish durations like ` (0.0s)` so goldens
@@ -83,8 +83,8 @@ fn source_replace_happy_human() {
     let bare_root = tempfile::tempdir().unwrap();
     let bare_old = make_bare_source_repo(bare_root.path(), "replace-old", None);
     let bare_new = make_bare_source_repo(bare_root.path(), "replace-new", None);
-    let url_old = format!("file://{}", bare_old.display());
-    let url_new = format!("file://{}", bare_new.display());
+    let url_old = cfgd_core::test_helpers::file_url(&bare_old);
+    let url_new = cfgd_core::test_helpers::file_url(&bare_new);
 
     let cli = cli_for(config_dir.path(), state_dir.path());
 

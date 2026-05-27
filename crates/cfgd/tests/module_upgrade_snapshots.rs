@@ -131,7 +131,7 @@ fn push_second_tag(
     new_tag: &str,
 ) -> std::path::PathBuf {
     let src = tmp_root.join(format!("{module_name}-src2"));
-    let bare_url = format!("file://{}", bare.display());
+    let bare_url = cfgd_core::test_helpers::file_url(&bare);
     let repo = git2::Repository::clone(&bare_url, &src).expect("clone bare");
     let yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {module_name}\n  description: upgraded test mod\nspec: {{}}\n"
@@ -184,7 +184,7 @@ fn module_upgrade_no_change_human_json() {
 
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_module_repo(bare_root.path(), "upmod", "v1.0.0");
-    let url = format!("file://{}@v1.0.0", bare.display());
+    let url = format!("{}@v1.0.0", cfgd_core::test_helpers::file_url(&bare));
 
     let cli = cli_for(config_dir.path(), config_dir.path());
     let v2a = test_printer();
@@ -221,7 +221,7 @@ fn module_upgrade_cancelled_human() {
 
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_module_repo(bare_root.path(), "upmod", "v1.0.0");
-    let url = format!("file://{}@v1.0.0", bare.display());
+    let url = format!("{}@v1.0.0", cfgd_core::test_helpers::file_url(&bare));
 
     let cli = cli_for(config_dir.path(), config_dir.path());
     let v2a = test_printer();
@@ -259,7 +259,7 @@ fn module_upgrade_happy_human_json() {
 
     let bare_root = tempfile::tempdir().unwrap();
     let bare = make_bare_module_repo(bare_root.path(), "upmod", "v1.0.0");
-    let url = format!("file://{}@v1.0.0", bare.display());
+    let url = format!("{}@v1.0.0", cfgd_core::test_helpers::file_url(&bare));
 
     let cli = cli_for(config_dir.path(), config_dir.path());
     let v2a = test_printer();

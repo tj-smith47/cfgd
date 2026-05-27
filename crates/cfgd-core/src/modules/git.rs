@@ -273,7 +273,7 @@ pub(super) fn clone_repo(
                     "Failed to clone module '{}' (libgit2)",
                     module_name
                 ))
-                .detail(e.to_string());
+                .detail(crate::output::collapse_to_subject_line(e));
         }
     }
     result?;
@@ -336,7 +336,7 @@ pub(super) fn fetch_existing_repo(
                     "Failed to fetch module '{}' (libgit2)",
                     module_name
                 ))
-                .detail(e.to_string());
+                .detail(crate::output::collapse_to_subject_line(e));
         }
     }
     fetch_result?;

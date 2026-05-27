@@ -150,11 +150,18 @@ docker tag "${REGISTRY}/function-cfgd:${IMAGE_TAG}" "${REGISTRY}/function-cfgd:l
 docker push "${REGISTRY}/function-cfgd:${IMAGE_TAG}"
 docker push "${REGISTRY}/function-cfgd:latest"
 
-# Ensure crossplane
+# Ensure crossplane CLI (crank). Pinned to a stable release; the upstream
+# install.sh from `main` rejects `linux / x86_64` as of late May 2026.
 if ! which crossplane &>/dev/null; then
-    curl -sL https://raw.githubusercontent.com/crossplane/crossplane/main/install.sh | sh
-    test -f kubectl-crossplane && mv kubectl-crossplane /usr/local/bin/crossplane
-    test -f crossplane && mv crossplane /usr/local/bin/
+    CROSSPLANE_VERSION="v2.3.1"
+    case "$(uname -m)" in
+        x86_64|amd64) CROSSPLANE_ARCH=amd64 ;;
+        aarch64|arm64) CROSSPLANE_ARCH=arm64 ;;
+        *) echo "unsupported arch: $(uname -m)"; exit 1 ;;
+    esac
+    curl -sL -o /usr/local/bin/crossplane \
+        "https://releases.crossplane.io/stable/${CROSSPLANE_VERSION}/bin/linux_${CROSSPLANE_ARCH}/crank"
+    chmod +x /usr/local/bin/crossplane
     echo "Installed crossplane:"
     crossplane version
 fi

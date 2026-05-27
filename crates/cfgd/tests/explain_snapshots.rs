@@ -112,7 +112,10 @@ fn write_snapshot(path: &Path, contents: &str) {
         std::fs::write(path, contents).expect("write snapshot");
         return;
     }
-    let on_disk = std::fs::read_to_string(path).expect("read snapshot");
+    let on_disk = std::fs::read_to_string(path)
+        .expect("read snapshot")
+        .replace("\r\n", "\n");
+    let contents = contents.replace("\r\n", "\n");
     pretty_assertions::assert_eq!(
         on_disk,
         contents,

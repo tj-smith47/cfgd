@@ -1,0 +1,19 @@
+# Force LF line endings for all text files. Snapshot fixtures committed with
+# LF must round-trip identically on Windows runners regardless of
+# core.autocrlf — without this, git's input-mode conversion rewrites them
+# to CRLF on checkout and snapshot comparisons fail with a phantom diff.
+* text=auto eol=lf
+
+# Binary types — never touch.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.zip  binary
+*.gz   binary
+*.tar  binary
+*.tgz  binary
+*.pdf  binary
+*.woff binary
+*.woff2 binary

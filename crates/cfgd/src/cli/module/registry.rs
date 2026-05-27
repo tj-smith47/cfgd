@@ -149,7 +149,7 @@ pub fn cmd_module_add_remote(
         }
         Err(e) => {
             sp.finish_fail(format!("Failed to fetch {}", url))
-                .detail(e.to_string());
+                .detail(cfgd_core::output::collapse_to_subject_line(&e));
             printer.emit(cfgd_core::output::error_doc(
                 url,
                 "clone_failed",
@@ -612,7 +612,7 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
             }
             Err(e) => {
                 sp.finish_fail(format!("Failed to fetch source: {}", source.name))
-                    .detail(e.to_string());
+                    .detail(cfgd_core::output::collapse_to_subject_line(&e));
                 errors.push(format!("{}: {}", source.name, e));
             }
         }

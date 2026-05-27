@@ -333,7 +333,7 @@ fn normalize(raw: &str, config_dir: &Path, extra_paths: &[(&Path, &str)]) -> Str
         out = out.replace(&path.to_string_lossy().to_string(), placeholder);
     }
     out = out.replace(&config_dir.to_string_lossy().to_string(), "<CONFIG_DIR>");
-    out
+    out.replace('\\', "/")
 }
 
 fn assert_snapshot(base: &Path, name: &str, actual: &str) {

@@ -62,7 +62,7 @@ fn normalize_tempdir_paths(raw: &str, config_dir: &Path, extra_paths: &[(&Path, 
         out = out.replace(&path.to_string_lossy().to_string(), placeholder);
     }
     out = out.replace(&config_dir.to_string_lossy().to_string(), "<CONFIG_DIR>");
-    out
+    out.replace('\\', "/")
 }
 
 #[test]

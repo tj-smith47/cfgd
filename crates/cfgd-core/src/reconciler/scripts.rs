@@ -704,6 +704,9 @@ mod tests {
         assert_eq!(base, with_empty);
     }
 
+    // bash on windows GHA resolves to WSL bash, which errors with "Windows
+    // Subsystem for Linux has no installed distributions". Gate to unix.
+    #[cfg(unix)]
     #[test]
     fn shell_bash_runs_inline_with_bash() {
         let printer = crate::test_helpers::test_printer();
@@ -879,6 +882,9 @@ mod tests {
         assert_eq!(args, vec!["-c", "echo hello"], "no env file → no preamble");
     }
 
+    // Auto-detection picks the file's shebang-implied interpreter (`sh`),
+    // unavailable on Windows GHA. Gate to unix.
+    #[cfg(unix)]
     #[test]
     fn shell_auto_on_file_scripts_allowed() {
         let printer = crate::test_helpers::test_printer();

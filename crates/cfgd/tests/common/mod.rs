@@ -733,7 +733,8 @@ pub fn make_bare_module_repo(
 }
 
 /// Normalize tempdir-rooted paths in a captured snapshot to stable placeholders
-/// so goldens are host-stable across runs.
+/// so goldens are host-stable across runs. Folds `\` → `/` so windows-native
+/// path separators in captured output match POSIX fixtures.
 pub fn normalize_profile_paths(raw: &str, config_dir: &std::path::Path) -> String {
     let mut out = raw.to_string();
     let cfg_file = config_dir.join("cfgd.yaml");
@@ -742,7 +743,7 @@ pub fn normalize_profile_paths(raw: &str, config_dir: &std::path::Path) -> Strin
         "<CONFIG_DIR>/cfgd.yaml",
     );
     out = out.replace(&config_dir.to_string_lossy().to_string(), "<CONFIG_DIR>");
-    out
+    out.replace('\\', "/")
 }
 
 // ---------------------------------------------------------------------------

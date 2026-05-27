@@ -337,7 +337,7 @@ fn verify_cosign_bundle(
             if let Some(s) = verify_spinner {
                 let _ = s
                     .finish_fail("Failed to verify cosign signature")
-                    .detail(e.to_string());
+                    .detail(crate::output::collapse_to_subject_line(e));
             }
         }
     }
@@ -596,7 +596,7 @@ pub(crate) fn download_and_install_to(
                 if let Some(s) = verify_spinner {
                     let _ = s
                         .finish_fail("Checksum verification failed")
-                        .detail(e.to_string());
+                        .detail(crate::output::collapse_to_subject_line(e));
                 }
             }
         }

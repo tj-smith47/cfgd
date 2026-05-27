@@ -30,7 +30,8 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                 sp.finish_ok("Already up to date");
             }
             Err(e) => {
-                sp.finish_warn("Pull failed").detail(e.to_string());
+                sp.finish_warn("Pull failed")
+                    .detail(cfgd_core::output::collapse_to_subject_line(e));
             }
         }
     }
@@ -168,7 +169,7 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                 }
                 Err(e) => {
                     sp.finish_fail(format!("Failed to sync '{}'", source_spec.name))
-                        .detail(e.to_string());
+                        .detail(cfgd_core::output::collapse_to_subject_line(e));
                     sync_payload.sources.push(SourceSyncOutput {
                         name: source_spec.name.clone(),
                         status: "failed".to_string(),

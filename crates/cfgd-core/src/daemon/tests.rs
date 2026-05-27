@@ -5777,6 +5777,10 @@ async fn handle_reconcile_auto_policy_apply_failure_notifies() {
     assert!(guard.drift_count > 0);
 }
 
+// Uses `touch` to create a marker — not a Windows builtin. The on-drift
+// loop itself is portable; this test exercises it with a Unix-typical
+// command. A Windows-targeted equivalent would need a portable script.
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handle_reconcile_runs_on_drift_scripts() {
     // Profile with `scripts.onDrift` populated → on-drift script loop runs.
@@ -9830,6 +9834,7 @@ mod harness {
 
     fn normalize_ipc(raw: &str, ipc_path: &Path) -> String {
         raw.replace(&ipc_path.to_string_lossy().to_string(), "<IPC_PATH>")
+            .replace('\\', "/")
     }
 
     fn assert_snapshot(name: &str, actual: &str) {

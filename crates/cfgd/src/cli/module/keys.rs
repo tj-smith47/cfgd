@@ -290,7 +290,7 @@ pub fn cmd_module_keys_rotate(
             }
             Err(e) => {
                 sp.finish_fail(format!("Failed to re-sign {artifact}"))
-                    .detail(e.to_string());
+                    .detail(cfgd_core::output::collapse_to_subject_line(&e));
                 printer.emit(cfgd_core::output::error_doc(
                     "keys",
                     "resign_failed",

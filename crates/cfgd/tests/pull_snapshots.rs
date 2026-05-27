@@ -96,7 +96,7 @@ fn pull_failed_human() {
 fn normalize_libgit2_paths(raw: &str, config_dir: &Path) -> String {
     let mut out = raw.to_string();
     out = out.replace(&config_dir.to_string_lossy().to_string(), "<CONFIG_DIR>");
-    out
+    out.replace('\\', "/")
 }
 
 fn assert_snapshot(base: &Path, name: &str, actual: &str) {
