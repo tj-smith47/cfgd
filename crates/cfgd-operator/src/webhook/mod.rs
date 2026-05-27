@@ -4,6 +4,7 @@ use std::sync::Arc;
 use axum::extract::DefaultBodyLimit;
 use axum::routing::post;
 use axum::{Json, Router};
+use cfgd_core::PathDisplayExt;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use kube::Client;
 use kube::api::{Api, ListParams};
@@ -42,14 +43,14 @@ pub async fn run_webhook_server(
     if certs.is_empty() {
         return Err(OperatorError::Webhook(format!(
             "no certificates found in {}",
-            cert_path.display()
+            cert_path.posix()
         )));
     }
 
     info!(
         cert_count = certs.len(),
-        cert_path = %cert_path.display(),
-        key_path = %key_path.display(),
+        cert_path = %cert_path.posix(),
+        key_path = %key_path.posix(),
         "TLS certificates loaded and validated"
     );
 
@@ -399,16 +400,13 @@ fn load_certs(
     path: &Path,
 ) -> Result<Vec<tokio_rustls::rustls::pki_types::CertificateDer<'static>>, OperatorError> {
     let file = std::fs::File::open(path).map_err(|e| {
-        OperatorError::Webhook(format!("failed to open cert file {}: {e}", path.display()))
+        OperatorError::Webhook(format!("failed to open cert file {}: {e}", path.posix()))
     })?;
     let mut reader = std::io::BufReader::new(file);
     rustls_pemfile::certs(&mut reader)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| {
-            OperatorError::Webhook(format!(
-                "failed to parse certs from {}: {e}",
-                path.display()
-            ))
+            OperatorError::Webhook(format!("failed to parse certs from {}: {e}", path.posix()))
         })
 }
 
@@ -416,16 +414,14 @@ fn load_private_key(
     path: &Path,
 ) -> Result<tokio_rustls::rustls::pki_types::PrivateKeyDer<'static>, OperatorError> {
     let file = std::fs::File::open(path).map_err(|e| {
-        OperatorError::Webhook(format!("failed to open key file {}: {e}", path.display()))
+        OperatorError::Webhook(format!("failed to open key file {}: {e}", path.posix()))
     })?;
     let mut reader = std::io::BufReader::new(file);
     rustls_pemfile::private_key(&mut reader)
         .map_err(|e| {
-            OperatorError::Webhook(format!("failed to parse key from {}: {e}", path.display()))
+            OperatorError::Webhook(format!("failed to parse key from {}: {e}", path.posix()))
         })?
-        .ok_or_else(|| {
-            OperatorError::Webhook(format!("no private key found in {}", path.display()))
-        })
+        .ok_or_else(|| OperatorError::Webhook(format!("no private key found in {}", path.posix())))
 }
 
 // ---------------------------------------------------------------------------

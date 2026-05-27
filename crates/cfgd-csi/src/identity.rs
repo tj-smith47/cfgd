@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use cfgd_core::PathDisplayExt;
 use tonic::{Request, Response, Status};
 
 use crate::csi::v1::identity_server::Identity;
@@ -54,7 +55,7 @@ impl Identity for CfgdIdentity {
         let ready = self.cache_dir.is_dir();
         if !ready {
             tracing::warn!(
-                cache_dir = %self.cache_dir.display(),
+                cache_dir = %self.cache_dir.posix(),
                 "probe: cache directory not accessible"
             );
         }

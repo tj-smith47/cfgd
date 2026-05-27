@@ -9,6 +9,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use cfgd_core::PathDisplayExt;
 use tokio::net::UnixListener;
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::Server;
@@ -59,7 +60,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!(
         socket = %socket_path,
-        cache_dir = %cache_dir.display(),
+        cache_dir = %cache_dir.posix(),
         cache_max_bytes = cache_max,
         node_id = %node_id,
         "starting cfgd-csi"

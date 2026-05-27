@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use cfgd_core::PathDisplayExt;
+
 use crate::errors::CsiError;
 
 const LAST_ACCESS_FILE: &str = ".cfgd-last-access";
@@ -133,7 +135,7 @@ impl Cache {
             }
             let size = dir_size(path);
             if let Err(e) = std::fs::remove_dir_all(path) {
-                tracing::warn!(path = %path.display(), error = %e, "failed to evict cache entry");
+                tracing::warn!(path = %path.posix(), error = %e, "failed to evict cache entry");
                 continue;
             }
             // Clean up empty parent (module name dir) if no versions remain
@@ -141,7 +143,7 @@ impl Cache {
                 let _ = std::fs::remove_dir(parent);
             }
             freed += size;
-            tracing::info!(path = %path.display(), freed_bytes = size, "evicted cache entry");
+            tracing::info!(path = %path.posix(), freed_bytes = size, "evicted cache entry");
         }
 
         Ok(())
@@ -173,7 +175,7 @@ impl Cache {
         let module_dirs = match std::fs::read_dir(&self.root) {
             Ok(rd) => rd,
             Err(e) => {
-                tracing::warn!(path = %self.root.display(), error = %e, "cannot read cache root");
+                tracing::warn!(path = %self.root.posix(), error = %e, "cannot read cache root");
                 return Ok(entries);
             }
         };

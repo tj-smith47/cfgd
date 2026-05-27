@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use cfgd_core::PathDisplayExt;
 use tonic::{Request, Response, Status};
 
 use crate::cache::Cache;
@@ -326,7 +327,7 @@ impl Node for CfgdNode {
                     if let Err(rm_err) = std::fs::remove_dir(&target_path_owned) {
                         tracing::warn!(
                             error = %rm_err,
-                            target = %target_path_owned.display(),
+                            target = %target_path_owned.posix(),
                             "failed to remove mount target after bind_mount failure",
                         );
                     }
@@ -370,7 +371,7 @@ impl Node for CfgdNode {
         tokio::task::spawn_blocking(move || -> Result<(), Status> {
             unmount(&target_path_owned)?;
             if let Err(e) = std::fs::remove_dir(&target_path_owned) {
-                tracing::warn!(target = %target_path_owned.display(), error = %e, "failed to remove target directory after unmount");
+                tracing::warn!(target = %target_path_owned.posix(), error = %e, "failed to remove target directory after unmount");
             }
             Ok(())
         })

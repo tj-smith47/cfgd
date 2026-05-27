@@ -5,6 +5,7 @@
 //! along with the `ssh-keygen` / `gpg --verify` driver helpers.
 
 use super::*;
+use cfgd_core::PathDisplayExt;
 
 pub(super) async fn enroll(
     State(state): State<SharedState>,
@@ -457,7 +458,7 @@ pub(super) fn verify_gpg_signature(
             tracing::warn!(
                 error = %e,
                 key_user = %key.username,
-                path = %gpg_home.display(),
+                path = %gpg_home.posix(),
                 "gpg verify: failed to set 0700 on per-key homedir"
             );
         }
