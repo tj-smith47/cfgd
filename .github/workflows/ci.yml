@@ -202,23 +202,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-      - name: Install anodizer
+      - name: Auto-tag all workspaces
         uses: tj-smith47/anodizer-action@v1
         with:
           from-branch: publisher-required-config
-          args: --version
+          args: tag
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-      - name: Auto-tag all workspaces
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          for crate in cfgd-core cfgd cfgd-operator cfgd-csi; do
-            echo "--- tagging $crate ---"
-            if anodizer tag --crate "$crate"; then
-              echo "::notice::$crate: tagged successfully"
-            else
-              echo "::warning::$crate: tag skipped or failed (exit $?)"
-            fi
-          done
-          git push origin master || true
