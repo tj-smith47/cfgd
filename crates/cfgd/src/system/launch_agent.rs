@@ -1,5 +1,6 @@
 use std::process::Command;
 
+use cfgd_core::PathDisplayExt;
 use cfgd_core::errors::Result;
 use cfgd_core::output::{Printer, Role};
 
@@ -98,7 +99,7 @@ impl SystemConfigurator for LaunchAgentConfigurator {
 
             printer.status_simple(
                 Role::Info,
-                format!("Writing launch agent: {}", plist_path.display()),
+                format!("Writing launch agent: {}", plist_path.posix()),
             );
 
             cfgd_core::atomic_write_str(&plist_path, &plist_content)?;

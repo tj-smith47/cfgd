@@ -4,6 +4,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 
+use cfgd_core::PathDisplayExt;
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::{Printer, Role};
 use cfgd_core::providers::PackageManager;
@@ -117,10 +118,10 @@ impl PackageManager for GoInstallManager {
                 })?;
             let bin_path = bin_dir.join(bin_name);
             if bin_path.exists() {
-                printer.status_simple(Role::Info, format!("removing {}", bin_path.display()));
+                printer.status_simple(Role::Info, format!("removing {}", bin_path.posix()));
                 std::fs::remove_file(&bin_path).map_err(|e| PackageError::UninstallFailed {
                     manager: "go".into(),
-                    message: format!("failed to remove {}: {}", bin_path.display(), e),
+                    message: format!("failed to remove {}: {}", bin_path.posix(), e),
                 })?;
             }
         }

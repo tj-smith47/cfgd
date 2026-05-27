@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use cfgd_core::PathDisplayExt;
 use cfgd_core::errors::{CfgdError, Result};
 use cfgd_core::output::{Printer, Role};
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
@@ -43,7 +44,7 @@ impl KubeletConfigurator {
         serde_yaml::from_str(&content).map_err(|e| {
             CfgdError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("failed to parse kubelet config {}: {}", path.display(), e),
+                format!("failed to parse kubelet config {}: {}", path.posix(), e),
             ))
         })
     }

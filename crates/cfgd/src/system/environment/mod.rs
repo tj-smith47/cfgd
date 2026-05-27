@@ -1,5 +1,6 @@
 use std::process::Command;
 
+use cfgd_core::PathDisplayExt;
 use cfgd_core::errors::Result;
 use cfgd_core::output::{Printer, Role};
 
@@ -494,7 +495,7 @@ impl SystemConfigurator for EnvironmentConfigurator {
                 Ok(()) => {
                     printer.status_simple(
                         Role::Ok,
-                        format!("Updated {}", Self::macos_env_sh_path().display()),
+                        format!("Updated {}", Self::macos_env_sh_path().posix()),
                     );
                     printer
                         .status_simple(Role::Info, "Add to your shell rc: . ~/.config/cfgd/env.sh");
@@ -515,7 +516,7 @@ impl SystemConfigurator for EnvironmentConfigurator {
                 Ok(()) => {
                     printer.status_simple(
                         Role::Ok,
-                        format!("Updated {}", Self::macos_plist_path().display()),
+                        format!("Updated {}", Self::macos_plist_path().posix()),
                     );
                 }
                 Err(e) => {

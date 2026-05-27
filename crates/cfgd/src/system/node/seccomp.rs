@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 
+use cfgd_core::PathDisplayExt;
 use cfgd_core::errors::Result;
 use cfgd_core::output::{Printer, Role};
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
@@ -139,11 +140,7 @@ impl SystemConfigurator for SeccompConfigurator {
             }
             printer.status_simple(
                 Role::Info,
-                format!(
-                    "Writing seccomp profile {}: {}",
-                    name,
-                    profile_path.display()
-                ),
+                format!("Writing seccomp profile {}: {}", name, profile_path.posix()),
             );
             cfgd_core::atomic_write_str(&profile_path, content)?;
         }

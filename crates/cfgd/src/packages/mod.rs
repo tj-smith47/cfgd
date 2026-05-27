@@ -18,6 +18,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use cfgd_core::PathDisplayExt;
 use cfgd_core::command_available;
 use cfgd_core::config::{MergedProfile, PackagesSpec};
 use cfgd_core::errors::{PackageError, Result};
@@ -474,7 +475,7 @@ pub fn all_package_managers() -> Vec<Box<dyn PackageManager>> {
 fn parse_brewfile(path: &Path) -> Result<(Vec<String>, Vec<String>, Vec<String>)> {
     let content = std::fs::read_to_string(path).map_err(|e| PackageError::ListFailed {
         manager: "brew".into(),
-        message: format!("failed to read Brewfile {}: {}", path.display(), e),
+        message: format!("failed to read Brewfile {}: {}", path.posix(), e),
     })?;
 
     let mut taps = Vec::new();
@@ -531,7 +532,7 @@ fn extract_brewfile_name(line: &str) -> Option<String> {
 fn parse_apt_manifest(path: &Path) -> Result<Vec<String>> {
     let content = std::fs::read_to_string(path).map_err(|e| PackageError::ListFailed {
         manager: "apt".into(),
-        message: format!("failed to read apt manifest {}: {}", path.display(), e),
+        message: format!("failed to read apt manifest {}: {}", path.posix(), e),
     })?;
 
     Ok(content
@@ -547,13 +548,13 @@ fn parse_apt_manifest(path: &Path) -> Result<Vec<String>> {
 fn parse_npm_package_json(path: &Path) -> Result<Vec<String>> {
     let content = std::fs::read_to_string(path).map_err(|e| PackageError::ListFailed {
         manager: "npm".into(),
-        message: format!("failed to read package.json {}: {}", path.display(), e),
+        message: format!("failed to read package.json {}: {}", path.posix(), e),
     })?;
 
     let json: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| PackageError::ListFailed {
             manager: "npm".into(),
-            message: format!("failed to parse package.json {}: {}", path.display(), e),
+            message: format!("failed to parse package.json {}: {}", path.posix(), e),
         })?;
 
     let mut packages = Vec::new();
@@ -576,12 +577,12 @@ fn parse_npm_package_json(path: &Path) -> Result<Vec<String>> {
 fn parse_cargo_toml(path: &Path) -> Result<Vec<String>> {
     let content = std::fs::read_to_string(path).map_err(|e| PackageError::ListFailed {
         manager: "cargo".into(),
-        message: format!("failed to read Cargo.toml {}: {}", path.display(), e),
+        message: format!("failed to read Cargo.toml {}: {}", path.posix(), e),
     })?;
 
     let toml_val: toml::Value = toml::from_str(&content).map_err(|e| PackageError::ListFailed {
         manager: "cargo".into(),
-        message: format!("failed to parse Cargo.toml {}: {}", path.display(), e),
+        message: format!("failed to parse Cargo.toml {}: {}", path.posix(), e),
     })?;
 
     let mut packages = Vec::new();

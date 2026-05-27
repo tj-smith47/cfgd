@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use cfgd_core::PathDisplayExt;
 use cfgd_core::errors::{CfgdError, Result};
 use cfgd_core::output::{Printer, Role};
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
@@ -64,7 +65,7 @@ impl AppArmorConfigurator {
         if !output.status.success() {
             return Err(CfgdError::Io(std::io::Error::other(format!(
                 "apparmor_parser -r {} failed: {}",
-                path.display(),
+                path.posix(),
                 cfgd_core::stderr_lossy_trimmed(&output)
             ))));
         }
@@ -173,7 +174,7 @@ impl SystemConfigurator for AppArmorConfigurator {
                 }
                 printer.status_simple(
                     Role::Info,
-                    format!("Writing AppArmor profile: {}", path.display()),
+                    format!("Writing AppArmor profile: {}", path.posix()),
                 );
                 cfgd_core::atomic_write_str(&path, content)?;
             }

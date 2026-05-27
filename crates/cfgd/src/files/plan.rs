@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use similar::TextDiff;
 
+use cfgd_core::PathDisplayExt;
 use cfgd_core::config::{EncryptionMode, FileStrategy, ManagedFileSpec, MergedProfile};
 use cfgd_core::errors::{FileError, Result};
 use cfgd_core::expand_tilde;
@@ -146,10 +147,7 @@ impl super::CfgdFileManager {
                     let diff = TextDiff::from_lines(&target_content, &rendered_content);
                     let unified = diff
                         .unified_diff()
-                        .header(
-                            &target_path.display().to_string(),
-                            &source_path.display().to_string(),
-                        )
+                        .header(&target_path.display_posix(), &source_path.display_posix())
                         .to_string();
 
                     let content_hash = cfgd_core::sha256_hex(rendered_content.as_bytes());
@@ -200,7 +198,7 @@ impl super::CfgdFileManager {
             if !source_path.exists() {
                 printer.status_simple(
                     Role::Warn,
-                    format!("Source not found: {}", source_path.display()),
+                    format!("Source not found: {}", source_path.posix()),
                 );
                 continue;
             }
@@ -223,12 +221,12 @@ impl super::CfgdFileManager {
 
                 if rendered_content != target_content {
                     has_diffs = true;
-                    printer.status_simple(Role::Info, format!("{}", target_path.display()));
+                    printer.status_simple(Role::Info, target_path.display_posix());
                     printer.diff(&target_content, &rendered_content);
                 }
             } else {
                 has_diffs = true;
-                printer.status_simple(Role::Info, format!("{} (new file)", target_path.display()));
+                printer.status_simple(Role::Info, format!("{} (new file)", target_path.posix()));
                 let lang = detect_language(&target_path);
                 printer.syntax_highlight(&rendered_content, &lang);
             }

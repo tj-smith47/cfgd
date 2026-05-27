@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+use cfgd_core::PathDisplayExt;
 use cfgd_core::generate::SchemaKind;
 use cfgd_core::generate::session::GenerateSession;
 use cfgd_core::platform::Platform;
@@ -541,7 +542,7 @@ fn dispatch_adopt_files(input: &Value, repo_root: &Path) -> ToolCallResult {
 
     match files::adopt_files(&pairs, repo_root) {
         Ok(written) => {
-            let paths: Vec<String> = written.iter().map(|p| p.display().to_string()).collect();
+            let paths: Vec<String> = written.iter().map(|p| p.display_posix()).collect();
             serialize_tool_content(&paths)
         }
         Err(e) => ToolCallResult {
@@ -679,7 +680,7 @@ fn dispatch_list_generated(session: &GenerateSession) -> ToolCallResult {
             serde_json::json!({
                 "kind": item.kind.as_str(),
                 "name": item.name,
-                "path": item.path.display().to_string(),
+                "path": item.path.display_posix(),
             })
         })
         .collect();

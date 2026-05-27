@@ -4,6 +4,7 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
+use cfgd_core::PathDisplayExt;
 use cfgd_core::errors::{CfgdError, Result};
 use cfgd_core::output::{Printer, Role};
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
@@ -138,7 +139,7 @@ impl SshKeysConfigurator {
         if !dir.exists() {
             printer.status_simple(
                 Role::Info,
-                format!("Creating SSH directory: {}", dir.display()),
+                format!("Creating SSH directory: {}", dir.posix()),
             );
             fs::create_dir_all(dir)?;
             cfgd_core::set_file_permissions(dir, 0o700)?;
@@ -154,7 +155,7 @@ impl SshKeysConfigurator {
                 "Generating {} SSH key '{}' at {}",
                 spec.key_type,
                 spec.name,
-                path.display()
+                path.posix()
             ),
         );
 
@@ -201,7 +202,7 @@ impl SshKeysConfigurator {
             format!(
                 "Setting permissions {} on {}",
                 spec.permissions,
-                path.display()
+                path.posix()
             ),
         );
         cfgd_core::set_file_permissions(path, mode)?;
@@ -313,7 +314,7 @@ impl SystemConfigurator for SshKeysConfigurator {
                             "SSH key '{}' at {} is type '{}' but '{}' is desired; \
                              cfgd will not overwrite an existing key — remove it manually to regenerate",
                             spec.name,
-                            path.display(),
+                            path.posix(),
                             actual_type,
                             spec.key_type
                         ),
