@@ -353,14 +353,35 @@ if [ "$GW16_PASS" = "true" ]; then
 fi
 
 if [ "$GW16_PASS" = "true" ]; then
-    GW16_REENROLL_RESP=$(curl -sf -X POST "$GW_URL/api/v1/enroll" \
-        -H "Content-Type: application/json" \
-        -d "{\"token\":\"$GW16_NEW_TOKEN\",\"deviceId\":\"$GW16_DEVICE_ID\",\"hostname\":\"e2e-host-gw16-reenroll\",\"os\":\"linux\",\"arch\":\"x86_64\"}" \
-        2>/dev/null || echo "")
-    GW16_NEW_KEY=$(echo "$GW16_REENROLL_RESP" | jq -r '.apiKey // empty' 2>/dev/null)
+    # Same retry-on-429 shape as gw_enroll_new_device — back-to-back enrolls
+    # exhaust the per-IP bucket and the server's HTTP 429 carries a
+    # retry_after_secs hint we should honor.
+    GW16_REENROLL_BODY="$GW_SCRATCH/gw16-reenroll.json"
+    GW16_REENROLL_CODE="000"
+    for attempt in 1 2 3; do
+        GW16_REENROLL_CODE=$(curl -s -o "$GW16_REENROLL_BODY" -w "%{http_code}" \
+            -X POST "$GW_URL/api/v1/enroll" \
+            -H "Content-Type: application/json" \
+            -d "{\"token\":\"$GW16_NEW_TOKEN\",\"deviceId\":\"$GW16_DEVICE_ID\",\"hostname\":\"e2e-host-gw16-reenroll\",\"os\":\"linux\",\"arch\":\"x86_64\"}" \
+            2>/dev/null || echo "000")
+        if [ "$GW16_REENROLL_CODE" = "200" ] || [ "$GW16_REENROLL_CODE" = "201" ]; then
+            break
+        fi
+        if [ "$GW16_REENROLL_CODE" = "429" ]; then
+            GW16_RETRY=$(jq -r '.retry_after_secs // 2' < "$GW16_REENROLL_BODY" 2>/dev/null)
+            [ -z "$GW16_RETRY" ] || ! [[ "$GW16_RETRY" =~ ^[0-9]+$ ]] && GW16_RETRY=2
+            echo "  Re-enroll attempt $attempt got 429; sleeping ${GW16_RETRY}s before retry"
+            sleep "$GW16_RETRY"
+            continue
+        fi
+        echo "  Re-enroll attempt $attempt got unexpected HTTP $GW16_REENROLL_CODE: $(cat "$GW16_REENROLL_BODY" 2>/dev/null)"
+        break
+    done
+    GW16_NEW_KEY=$(jq -r '.apiKey // empty' < "$GW16_REENROLL_BODY" 2>/dev/null)
+    rm -f "$GW16_REENROLL_BODY"
 
     if [ -z "$GW16_NEW_KEY" ]; then
-        fail_test "GW-16" "Re-enrollment did not return apiKey"
+        fail_test "GW-16" "Re-enrollment did not return apiKey (last HTTP $GW16_REENROLL_CODE)"
         GW16_PASS=false
     else
         echo "  Re-enrolled with new key (prefix: ${GW16_NEW_KEY:0:12}...)"
