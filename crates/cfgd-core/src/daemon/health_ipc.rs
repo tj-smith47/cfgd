@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(unix)]
 use crate::PathDisplayExt;
 
 /// Hard cap on bytes the IPC client will read from a single daemon response.
