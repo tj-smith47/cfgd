@@ -16,6 +16,7 @@ use std::path::Path;
 use cfgd::cli::SourceOverrideAction;
 use cfgd::cli::source::cmd_source_override;
 use cfgd_core::output::Printer;
+use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 
 use common::{cli_for, source_test_config_with_source_setup};
 
@@ -37,24 +38,6 @@ fn strip_ansi(s: &str) -> String {
         }
     }
     out
-}
-
-fn assert_snapshot(base: &Path, name: &str, actual: &str) {
-    let path = base.join(name);
-    if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !path.exists() {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, actual).unwrap();
-        return;
-    }
-    let expected = std::fs::read_to_string(&path).unwrap();
-
-    // Normalize CRLF→LF: windows captured output has \r\n; committed snapshot is LF.
-
-    let actual_norm = actual.replace("\r\n", "\n");
-
-    let expected_norm = expected.replace("\r\n", "\n");
-
-    pretty_assertions::assert_eq!(actual_norm, expected_norm, "snapshot mismatch: {name}");
 }
 
 #[test]

@@ -14,6 +14,7 @@ use std::path::Path;
 use cfgd::cli::output_types::RollbackOutput;
 use cfgd::cli::rollback::{build_rollback_doc, cmd_rollback};
 use cfgd_core::output::{Doc, Printer, PromptAnswer, Role, Verbosity};
+use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use pretty_assertions::assert_eq;
 
 use common::{
@@ -192,24 +193,6 @@ fn rollback_bridge_one_blank_line() {
 // ─────────────────────────────────────────────────────
 // snapshot helpers
 // ─────────────────────────────────────────────────────
-
-fn assert_snapshot(base: &Path, name: &str, actual: &str) {
-    let path = base.join(name);
-    if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !path.exists() {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, actual).unwrap();
-        return;
-    }
-    let expected = std::fs::read_to_string(&path).unwrap();
-
-    // Normalize CRLF→LF: windows captured output has \r\n; committed snapshot is LF.
-
-    let actual_norm = actual.replace("\r\n", "\n");
-
-    let expected_norm = expected.replace("\r\n", "\n");
-
-    pretty_assertions::assert_eq!(actual_norm, expected_norm, "snapshot mismatch: {name}");
-}
 
 fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
