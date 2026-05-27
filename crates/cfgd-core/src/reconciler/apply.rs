@@ -5,10 +5,7 @@ use crate::modules::ResolvedModule;
 use crate::output::{Printer, Role};
 use crate::state::ApplyStatus;
 
-use super::format::{
-    format_action_description, format_action_description_for_display,
-    parse_resource_from_description,
-};
+use super::format::{format_action_description, parse_resource_from_description};
 use super::restore::action_target_path;
 use super::scripts::{
     MODULE_SCRIPT_TIMEOUT, build_module_script_env, build_script_env, effective_continue_on_error,
@@ -251,7 +248,6 @@ impl<'a> super::Reconciler<'a> {
                     }
                     Err(e) => {
                         let desc = format_action_description(action);
-                        let desc_for_display = format_action_description_for_display(action);
 
                         // Check if this is a script action with continueOnError
                         let continue_on_err = if let Action::Script(ScriptAction::Run {
@@ -272,20 +268,14 @@ impl<'a> super::Reconciler<'a> {
                                     "[{}/{}] Script failed (continueOnError): {} — {}",
                                     action_idx + 1,
                                     total,
-                                    desc_for_display,
+                                    desc,
                                     e
                                 ),
                             );
                         } else {
                             printer.status_simple(
                                 Role::Fail,
-                                format!(
-                                    "[{}/{}] Failed: {} — {}",
-                                    action_idx + 1,
-                                    total,
-                                    desc_for_display,
-                                    e
-                                ),
+                                format!("[{}/{}] Failed: {} — {}", action_idx + 1, total, desc, e),
                             );
                         }
                         if let Some(jid) = journal_id

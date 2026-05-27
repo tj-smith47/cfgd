@@ -1,5 +1,6 @@
 use super::*;
 use crate::PathDisplayExt;
+use crate::to_posix_string;
 
 // --- File Watcher ---
 
@@ -574,13 +575,13 @@ pub(crate) fn action_resource_info(action: &crate::reconciler::Action) -> (Strin
 
     match action {
         Action::File(fa) => match fa {
-            FileAction::Create { target, .. } => ("file".to_string(), target.display().to_string()),
-            FileAction::Update { target, .. } => ("file".to_string(), target.display().to_string()),
-            FileAction::Delete { target, .. } => ("file".to_string(), target.display().to_string()),
+            FileAction::Create { target, .. } => ("file".to_string(), to_posix_string(target)),
+            FileAction::Update { target, .. } => ("file".to_string(), to_posix_string(target)),
+            FileAction::Delete { target, .. } => ("file".to_string(), to_posix_string(target)),
             FileAction::SetPermissions { target, .. } => {
-                ("file".to_string(), target.display().to_string())
+                ("file".to_string(), to_posix_string(target))
             }
-            FileAction::Skip { target, .. } => ("file".to_string(), target.display().to_string()),
+            FileAction::Skip { target, .. } => ("file".to_string(), to_posix_string(target)),
         },
         Action::Package(pa) => match pa {
             PackageAction::Bootstrap { manager, .. } => {
@@ -601,9 +602,7 @@ pub(crate) fn action_resource_info(action: &crate::reconciler::Action) -> (Strin
             PackageAction::Skip { manager, .. } => ("package".to_string(), manager.clone()),
         },
         Action::Secret(sa) => match sa {
-            SecretAction::Decrypt { target, .. } => {
-                ("secret".to_string(), target.display().to_string())
-            }
+            SecretAction::Decrypt { target, .. } => ("secret".to_string(), to_posix_string(target)),
             SecretAction::Resolve { reference, .. } => ("secret".to_string(), reference.clone()),
             SecretAction::ResolveEnv { envs, .. } => {
                 ("secret".to_string(), format!("env:[{}]", envs.join(",")))
@@ -633,11 +632,9 @@ pub(crate) fn action_resource_info(action: &crate::reconciler::Action) -> (Strin
         Action::Env(ea) => {
             use crate::reconciler::EnvAction;
             match ea {
-                EnvAction::WriteEnvFile { path, .. } => {
-                    ("env".to_string(), path.display().to_string())
-                }
+                EnvAction::WriteEnvFile { path, .. } => ("env".to_string(), to_posix_string(path)),
                 EnvAction::InjectSourceLine { rc_path, .. } => {
-                    ("env-rc".to_string(), rc_path.display().to_string())
+                    ("env-rc".to_string(), to_posix_string(rc_path))
                 }
             }
         }
@@ -683,7 +680,7 @@ pub(crate) fn extract_source_resources(merged: &MergedProfile) -> HashSet<String
     }
 
     for file in &merged.files.managed {
-        resources.insert(format!("files.{}", file.target.display()));
+        resources.insert(format!("files.{}", to_posix_string(&file.target)));
     }
 
     for ev in &merged.env {

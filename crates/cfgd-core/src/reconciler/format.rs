@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::PathDisplayExt;
 use crate::providers::{FileAction, PackageAction, SecretAction};
+use crate::to_posix_string;
 
 use super::types::{
     Action, EnvAction, ModuleAction, ModuleActionKind, Phase, ScriptAction, SystemAction,
@@ -16,44 +17,16 @@ pub(super) fn provenance_suffix(origin: &str) -> String {
     }
 }
 
-/// Format a canonical, journal-stable description of an action.
+/// Format a canonical description of an action.
 ///
-/// Used as the SQLite `managed_resource` resource_id and as the
-/// `ActionResult.description` JSON field. Native-separator output
-/// (`Path::display()`) is intentional — it keeps the per-OS form stable so
-/// drift correlation across cfgd versions on the same machine continues to
-/// work.
-///
-/// For human-display surfaces (apply-error printer lines, etc.) use
-/// [`format_action_description_for_display`] instead, which folds `\` → `/`
-/// on Windows so error messages match the Wave 4 display policy.
+/// Used as the SQLite `managed_resource` resource_id, the
+/// `ActionResult.description` JSON field, AND the user-facing apply-error
+/// printer line. Embedded paths are always folded to POSIX form via
+/// `to_posix_string` so the same logical resource carries the same key on
+/// every OS — drift correlation, JSON wire form, and human display all
+/// agree.
 pub fn format_action_description(action: &Action) -> String {
-    format_action_description_inner(action, false)
-}
-
-/// Display-form description for user-facing surfaces — folds path separators
-/// to `/` on Windows so error lines like `[N/M] Failed: file:create:<path>`
-/// match the rest of the Wave 4 display policy.
-///
-/// On Linux/macOS this returns identical output to
-/// [`format_action_description`]. On Windows it routes the embedded
-/// `Path::display()` calls through `PathDisplayExt::posix()` so the
-/// description string carries forward slashes for human consumption.
-///
-/// Wire/DB stability is NOT compromised — those continue to call
-/// [`format_action_description`].
-pub fn format_action_description_for_display(action: &Action) -> String {
-    format_action_description_inner(action, true)
-}
-
-fn format_action_description_inner(action: &Action, display_form: bool) -> String {
-    let path_str = |p: &std::path::Path| -> String {
-        if display_form {
-            p.display_posix()
-        } else {
-            p.display().to_string()
-        }
-    };
+    let path_str = to_posix_string;
     match action {
         Action::File(fa) => match fa {
             FileAction::Create { target, .. } => format!("file:create:{}", path_str(target)),

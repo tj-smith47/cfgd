@@ -9,6 +9,7 @@ use crate::modules::ResolvedModule;
 use crate::output::Printer;
 use crate::providers::ProviderRegistry;
 use crate::state::StateStore;
+use crate::to_posix_string;
 
 use super::env_files::{
     fish_in_use, generate_env_file_content, generate_fish_env_content,
@@ -98,7 +99,7 @@ pub fn verify(
                 module_ok = false;
                 results.push(VerifyResult {
                     resource_type: "module".to_string(),
-                    resource_id: format!("{}/{}", module.name, target.display()),
+                    resource_id: format!("{}/{}", module.name, to_posix_string(&target)),
                     matches: false,
                     expected: "present".to_string(),
                     actual: "missing".to_string(),
@@ -106,7 +107,7 @@ pub fn verify(
                 record_drift_or_warn(
                     state,
                     "module",
-                    &format!("{}/{}", module.name, target.display()),
+                    &format!("{}/{}", module.name, to_posix_string(&target)),
                     Some("present"),
                     Some("missing"),
                     "local",
@@ -201,7 +202,7 @@ pub fn verify(
         if target.exists() {
             results.push(VerifyResult {
                 resource_type: "file".to_string(),
-                resource_id: target.display().to_string(),
+                resource_id: to_posix_string(&target),
                 matches: true,
                 expected: "present".to_string(),
                 actual: "present".to_string(),
@@ -209,7 +210,7 @@ pub fn verify(
         } else {
             results.push(VerifyResult {
                 resource_type: "file".to_string(),
-                resource_id: target.display().to_string(),
+                resource_id: to_posix_string(&target),
                 matches: false,
                 expected: "present".to_string(),
                 actual: "missing".to_string(),
@@ -289,7 +290,7 @@ pub(super) fn verify_env(
                 .unwrap_or(false);
             results.push(VerifyResult {
                 resource_type: "env-rc".to_string(),
-                resource_id: profile_path.display().to_string(),
+                resource_id: to_posix_string(&profile_path),
                 matches: has_line,
                 expected: "source line present".to_string(),
                 actual: if has_line {
@@ -302,7 +303,7 @@ pub(super) fn verify_env(
                 record_drift_or_warn(
                     state,
                     "env-rc",
-                    &profile_path.display().to_string(),
+                    &to_posix_string(&profile_path),
                     Some("source line present"),
                     Some("source line missing"),
                     "local",
@@ -335,7 +336,7 @@ pub(super) fn verify_env(
             .unwrap_or(false);
         results.push(VerifyResult {
             resource_type: "env-rc".to_string(),
-            resource_id: rc_path.display().to_string(),
+            resource_id: to_posix_string(&rc_path),
             matches: has_source_line,
             expected: "source line present".to_string(),
             actual: if has_source_line {
@@ -348,7 +349,7 @@ pub(super) fn verify_env(
             record_drift_or_warn(
                 state,
                 "env-rc",
-                &rc_path.display().to_string(),
+                &to_posix_string(&rc_path),
                 Some("source line present"),
                 Some("source line missing"),
                 "local",
@@ -377,7 +378,7 @@ pub(super) fn verify_env_file(
         Ok(actual) if actual == expected => {
             results.push(VerifyResult {
                 resource_type: "env".to_string(),
-                resource_id: path.display().to_string(),
+                resource_id: to_posix_string(path),
                 matches: true,
                 expected: "current".to_string(),
                 actual: "current".to_string(),
@@ -386,7 +387,7 @@ pub(super) fn verify_env_file(
         Ok(_) => {
             results.push(VerifyResult {
                 resource_type: "env".to_string(),
-                resource_id: path.display().to_string(),
+                resource_id: to_posix_string(path),
                 matches: false,
                 expected: "current".to_string(),
                 actual: "stale".to_string(),
@@ -394,7 +395,7 @@ pub(super) fn verify_env_file(
             record_drift_or_warn(
                 state,
                 "env",
-                &path.display().to_string(),
+                &to_posix_string(path),
                 Some("current"),
                 Some("stale"),
                 "local",
@@ -403,7 +404,7 @@ pub(super) fn verify_env_file(
         Err(_) => {
             results.push(VerifyResult {
                 resource_type: "env".to_string(),
-                resource_id: path.display().to_string(),
+                resource_id: to_posix_string(path),
                 matches: false,
                 expected: "present".to_string(),
                 actual: "missing".to_string(),
@@ -411,7 +412,7 @@ pub(super) fn verify_env_file(
             record_drift_or_warn(
                 state,
                 "env",
-                &path.display().to_string(),
+                &to_posix_string(path),
                 Some("present"),
                 Some("missing"),
                 "local",

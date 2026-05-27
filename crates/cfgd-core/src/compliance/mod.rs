@@ -8,6 +8,7 @@ use crate::config::{ComplianceExport, ComplianceFormat, ComplianceScope, MergedP
 use crate::errors::Result;
 use crate::platform::Platform;
 use crate::providers::ProviderRegistry;
+use crate::to_posix_string;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -197,7 +198,7 @@ pub fn collect_file_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
         if !exists {
             checks.push(ComplianceCheck {
                 category: "file".into(),
-                target: Some(target.display().to_string()),
+                target: Some(to_posix_string(&target)),
                 status: ComplianceStatus::Violation,
                 detail: Some("managed file missing".into()),
                 ..Default::default()
@@ -218,7 +219,7 @@ pub fn collect_file_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
                     Some(mode) if mode == desired_mode => {
                         checks.push(ComplianceCheck {
                             category: "file".into(),
-                            target: Some(target.display().to_string()),
+                            target: Some(to_posix_string(&target)),
                             status: ComplianceStatus::Compliant,
                             detail: Some(format!("permissions {:#o}", mode)),
                             ..Default::default()
@@ -227,7 +228,7 @@ pub fn collect_file_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
                     Some(mode) => {
                         checks.push(ComplianceCheck {
                             category: "file".into(),
-                            target: Some(target.display().to_string()),
+                            target: Some(to_posix_string(&target)),
                             status: ComplianceStatus::Warning,
                             detail: Some(format!(
                                 "permissions {:#o}, expected {:#o}",
@@ -240,7 +241,7 @@ pub fn collect_file_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
                         // Windows or metadata unavailable — compliant by default
                         checks.push(ComplianceCheck {
                             category: "file".into(),
-                            target: Some(target.display().to_string()),
+                            target: Some(to_posix_string(&target)),
                             status: ComplianceStatus::Compliant,
                             detail: Some("permissions not applicable on this platform".into()),
                             ..Default::default()
@@ -251,7 +252,7 @@ pub fn collect_file_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
                 // Malformed permission string
                 checks.push(ComplianceCheck {
                     category: "file".into(),
-                    target: Some(target.display().to_string()),
+                    target: Some(to_posix_string(&target)),
                     status: ComplianceStatus::Warning,
                     detail: Some(format!("invalid permission string: {}", perm_str)),
                     ..Default::default()
@@ -261,7 +262,7 @@ pub fn collect_file_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
             // No permissions declared — file exists, compliant
             checks.push(ComplianceCheck {
                 category: "file".into(),
-                target: Some(target.display().to_string()),
+                target: Some(to_posix_string(&target)),
                 status: ComplianceStatus::Compliant,
                 detail: Some("present".into()),
                 ..Default::default()
@@ -272,7 +273,7 @@ pub fn collect_file_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
         if let Some(ref enc) = file.encryption {
             checks.push(ComplianceCheck {
                 category: "file-encryption".into(),
-                target: Some(target.display().to_string()),
+                target: Some(to_posix_string(&target)),
                 status: ComplianceStatus::Compliant,
                 detail: Some(format!("encryption: backend={}", enc.backend)),
                 ..Default::default()
@@ -427,7 +428,7 @@ pub fn collect_secret_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
         if target.exists() {
             checks.push(ComplianceCheck {
                 category: "secret".into(),
-                target: Some(target.display().to_string()),
+                target: Some(to_posix_string(&target)),
                 status: ComplianceStatus::Compliant,
                 detail: Some("target file present".into()),
                 ..Default::default()
@@ -435,7 +436,7 @@ pub fn collect_secret_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
         } else {
             checks.push(ComplianceCheck {
                 category: "secret".into(),
-                target: Some(target.display().to_string()),
+                target: Some(to_posix_string(&target)),
                 status: ComplianceStatus::Violation,
                 detail: Some("target file missing".into()),
                 ..Default::default()
@@ -457,7 +458,7 @@ fn collect_watch_path_checks(path_str: &str) -> Vec<ComplianceCheck> {
     if !path.exists() {
         return vec![ComplianceCheck {
             category: "watchPath".into(),
-            path: Some(path.display().to_string()),
+            path: Some(to_posix_string(path)),
             status: ComplianceStatus::Warning,
             detail: Some("path does not exist".into()),
             ..Default::default()
@@ -469,7 +470,7 @@ fn collect_watch_path_checks(path_str: &str) -> Vec<ComplianceCheck> {
         Err(e) => {
             return vec![ComplianceCheck {
                 category: "watchPath".into(),
-                path: Some(path.display().to_string()),
+                path: Some(to_posix_string(path)),
                 status: ComplianceStatus::Warning,
                 detail: Some(format!("cannot stat: {}", e)),
                 ..Default::default()
@@ -493,7 +494,7 @@ fn collect_watch_path_checks(path_str: &str) -> Vec<ComplianceCheck> {
 
     vec![ComplianceCheck {
         category: "watchPath".into(),
-        path: Some(path.display().to_string()),
+        path: Some(to_posix_string(path)),
         status: ComplianceStatus::Compliant,
         detail: Some(detail),
         ..Default::default()
