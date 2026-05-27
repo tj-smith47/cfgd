@@ -7651,9 +7651,13 @@ mod harness {
         senders.reconcile_tx.send(()).await.unwrap();
         tokio::time::sleep(StdDuration::from_millis(100)).await;
         senders.shutdown_tx.send(()).unwrap();
-        let result = tokio::time::timeout(StdDuration::from_secs(3), handle)
+        // 30s, not 3s — Windows CI runners under cargo-llvm-cov instrumentation
+        // run this exit path at ~3.8s vs ~0.3s un-instrumented (an order-of-
+        // magnitude slowdown that's not the daemon's fault). Generous slack so
+        // a slow runner is never the bug.
+        let result = tokio::time::timeout(StdDuration::from_secs(30), handle)
             .await
-            .expect("loop did not exit within 3s")
+            .expect("loop did not exit within 30s")
             .expect("join error");
         assert!(
             result.is_ok(),
@@ -9058,7 +9062,10 @@ mod harness {
         // Send shutdown
         senders.shutdown_tx.send(()).unwrap();
 
-        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+        // 30s, not 5s — Windows CI runners under cargo-llvm-cov instrumentation
+        // run this shutdown path much slower than un-instrumented. Generous
+        // slack so a slow runner is never the bug.
+        let result = tokio::time::timeout(StdDuration::from_secs(30), daemon)
             .await
             .expect("daemon shutdown did not complete in time")
             .expect("daemon join");
@@ -9872,7 +9879,10 @@ mod harness {
         tokio::time::sleep(StdDuration::from_millis(150)).await;
         senders.shutdown_tx.send(()).unwrap();
 
-        let result = tokio::time::timeout(StdDuration::from_secs(5), daemon)
+        // 30s, not 5s — Windows CI runners under cargo-llvm-cov instrumentation
+        // run this shutdown path much slower than un-instrumented. Generous
+        // slack so a slow runner is never the bug.
+        let result = tokio::time::timeout(StdDuration::from_secs(30), daemon)
             .await
             .expect("daemon shutdown did not complete in time")
             .expect("daemon join");

@@ -1250,6 +1250,33 @@ fn posixify_os_error_text_ignores_malformed_marker() {
 }
 
 #[test]
+fn posixify_os_error_text_collapses_libgit2_linux_form() {
+    let s = "failed to resolve path '<BARE>': No such file or directory; class=Os (2)";
+    assert_eq!(
+        posixify_os_error_text(s),
+        "failed to resolve path '<BARE>': <os error>; class=Os (2)"
+    );
+}
+
+#[test]
+fn posixify_os_error_text_collapses_libgit2_windows_form() {
+    let s = "failed to resolve path '<BARE>': The system cannot find the file specified. — ; class=Os (2)";
+    assert_eq!(
+        posixify_os_error_text(s),
+        "failed to resolve path '<BARE>': <os error>; class=Os (2)"
+    );
+}
+
+#[test]
+fn posixify_os_error_text_handles_mixed_libgit2_and_std_markers() {
+    let s = "first: foo; class=Os (2) — also: bar (os error 17)";
+    assert_eq!(
+        posixify_os_error_text(s),
+        "first: <os error>; class=Os (2) — also: <os error>"
+    );
+}
+
+#[test]
 fn from_user_input_folds_backslashes() {
     assert_eq!(
         from_user_input("C:\\Users\\foo"),

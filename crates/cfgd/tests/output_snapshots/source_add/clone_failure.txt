@@ -10,6 +10,6 @@ Add Config Source
   and the repository exists.
 ✗ Cloning source 'doomed-src'
 
-✗ Failed to clone source 'doomed-src' (libgit2) — failed to fetch source 'doomed-src': failed to resolve path '<BARE>': No such file or directory; class=Os (2)
+✗ Failed to clone source 'doomed-src' (libgit2) — failed to fetch source 'doomed-src': failed to resolve path '<BARE>': <os error>; class=Os (2)
 
-✗ Failed to load source 'doomed-src': source error: failed to fetch source 'doomed-src': failed to resolve path '<BARE>': No such file or directory; class=Os (2)
+✗ Failed to load source 'doomed-src': source error: failed to fetch source 'doomed-src': failed to resolve path '<BARE>': <os error>; class=Os (2)

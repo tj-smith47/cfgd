@@ -316,28 +316,51 @@ pub fn normalize_for_snapshot(captured: &str, paths: &[(&std::path::Path, &str)]
 /// Linux emits `... File exists (os error 17)` for `ErrorKind::AlreadyExists`;
 /// Windows emits `... Cannot create a file when that file already exists.
 /// (os error 183)` for the same kind. Both fold to a stable `<os error>`
-/// placeholder so a single golden file works on both. Use after path
-/// normalization in [`normalize_for_snapshot`]-style pipelines for tests
-/// that touch the filesystem.
+/// placeholder so a single golden file works on both.
+///
+/// Also collapses libgit2's `<prose>; class=Os (N)` form to
+/// `<os error>; class=Os (N)` — Linux libgit2 emits
+/// `... No such file or directory; class=Os (2)`, Windows libgit2 emits
+/// `... The system cannot find the file specified. — ; class=Os (2)`.
+/// Different prose, same logical error; fold to the common prefix shape
+/// so the golden is OS-independent.
+///
+/// Use after path normalization in [`normalize_for_snapshot`]-style
+/// pipelines for tests that touch the filesystem or git.
 pub fn posixify_os_error_text(s: &str) -> std::borrow::Cow<'_, str> {
-    const MARKER: &str = "(os error ";
-    if !s.contains(MARKER) {
+    const STD_MARKER: &str = "(os error ";
+    const GIT_MARKER: &str = "; class=Os (";
+    if !s.contains(STD_MARKER) && !s.contains(GIT_MARKER) {
         return std::borrow::Cow::Borrowed(s);
     }
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     loop {
-        let Some(idx) = rest.find(MARKER) else {
-            out.push_str(rest);
-            break;
+        // Pick whichever marker appears next in `rest` — process each in turn.
+        let std_idx = rest.find(STD_MARKER);
+        let git_idx = rest.find(GIT_MARKER);
+        let (idx, marker, is_git) = match (std_idx, git_idx) {
+            (None, None) => {
+                out.push_str(rest);
+                break;
+            }
+            (Some(i), None) => (i, STD_MARKER, false),
+            (None, Some(i)) => (i, GIT_MARKER, true),
+            (Some(s_i), Some(g_i)) => {
+                if s_i <= g_i {
+                    (s_i, STD_MARKER, false)
+                } else {
+                    (g_i, GIT_MARKER, true)
+                }
+            }
         };
-        let after_open = &rest[idx + MARKER.len()..];
+        let after_open = &rest[idx + marker.len()..];
         let digits_end = after_open
             .find(|c: char| !c.is_ascii_digit())
             .unwrap_or(after_open.len());
         let is_well_formed = digits_end > 0 && after_open.as_bytes().get(digits_end) == Some(&b')');
         if !is_well_formed {
-            // Not a real OS-error marker — emit one byte and continue scanning.
+            // Not a real marker — emit one byte and continue scanning.
             let safe_end = idx + 1;
             out.push_str(&rest[..safe_end]);
             rest = &rest[safe_end..];
@@ -350,6 +373,12 @@ pub fn posixify_os_error_text(s: &str) -> std::borrow::Cow<'_, str> {
         let cut = prefix.rfind(": ").map(|p| p + 2).unwrap_or(idx);
         out.push_str(&prefix[..cut]);
         out.push_str("<os error>");
+        if is_git {
+            // Preserve the `; class=Os (N)` tail so consumers that grep
+            // for the libgit2 marker still see it.
+            out.push_str(GIT_MARKER);
+            out.push_str(&after_open[..digits_end + 1]);
+        }
         rest = &after_open[digits_end + 1..];
     }
     std::borrow::Cow::Owned(out)
