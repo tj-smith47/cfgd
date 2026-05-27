@@ -119,6 +119,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: arduino/setup-task@v2
+      # cosign is required by test-oci-e2e.sh OCI-E2E-02/03 (and the
+      # cosign-keyed CSI scripts under test-csi.sh); without it those
+      # tests skip silently. Pin matches cli-tests job.
+      - uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: "v2.4.3"
       - name: Run full-stack tests
         run: task e2e:full-stack
 
