@@ -18,7 +18,7 @@ variables:
   description: "Declarative, GitOps-style machine configuration management"
 
 git:
-  tag_sort: "-version:refname"
+  tag_sort: "smartsemver"
   ignore_tags:
     - "nightly"
   ignore_tag_prefixes:
@@ -89,6 +89,7 @@ defaults:
   # suppress inheritance for that crate (DEC-9).
   publish:
     cargo:
+      required: true
       index_timeout: 600
 
 # UPX compression — shrinks binaries on targets UPX supports.
@@ -212,6 +213,7 @@ workspaces:
           # `cargo:` inherits `index_timeout: 600` from defaults.publish.cargo.
           # Homebrew is handled exclusively via the top-level `homebrew_casks:` block.
           scoop:
+            required: false
             repository:
               owner: tj-smith47
               name: scoop-bucket
@@ -227,6 +229,7 @@ workspaces:
               name: "TJ Smith"
               email: "tj@jarvispro.io"
           chocolatey:
+            required: false
             repository:
               owner: tj-smith47
               name: cfgd
@@ -251,6 +254,7 @@ workspaces:
               - rust
             republish_in_moderation: true
           winget:
+            required: false
             repository:
               owner: tj-smith47
               name: winget-pkgs
@@ -284,6 +288,7 @@ workspaces:
               email: "tj@jarvispro.io"
             update_existing_pr: true
           nix:
+            required: false
             name: cfgd
             repository:
               owner: tj-smith47
@@ -735,7 +740,8 @@ srpm:
 # CloudSmith publisher — uploads nfpm-built deb/rpm/apk artifacts to a
 # generic repo (distribution-agnostic so one repo serves all package formats).
 cloudsmiths:
-  - organization: jarvispro
+  - required: false
+    organization: jarvispro
     repository: cfgd
     formats: [deb, rpm, alpine]
     distributions:
@@ -782,6 +788,12 @@ homebrew_casks:
 
 partial:
   by: goos
+
+nightly:
+  name_template: "{{ ProjectName }}-nightly"
+  tag_name: nightly
+  publish_release: true
+  keep_single_release: true
 
 announce:
   webhook:
