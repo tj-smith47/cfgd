@@ -70,6 +70,15 @@ spec:
               value: "/tmp/cfgd-e2e.db"
             - name: CFGD_API_KEY
               value: "cfgd-e2e-admin-key"
+            # E2E gateway suite runs ~25 unauthenticated enroll/info calls
+            # back-to-back from a single port-forward IP. Production defaults
+            # (burst=5, refill=5/min) trip GW-16 and GW-23 with HTTP 429.
+            # Crank both well above the suite's burst to keep the limiter
+            # wired but out of the test's way.
+            - name: CFGD_GATEWAY_ENROLL_RATE_LIMIT_BURST
+              value: "1000"
+            - name: CFGD_GATEWAY_ENROLL_RATE_LIMIT_PER_MIN
+              value: "1000"
           livenessProbe:
             httpGet:
               path: /healthz

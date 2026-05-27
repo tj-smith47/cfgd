@@ -307,10 +307,11 @@ pub fn router(state: SharedState) -> Router<SharedState> {
     // real work per request (gpg/ssh-keygen subprocess + tempdir + fs::write),
     // so an in-process IP-keyed token bucket caps unauthenticated bursts.
     // Defaults: 5 attempts up-front, 5/min refill — see `RateLimiter::per_minute`.
-    let enroll_limiter = super::rate_limit::RateLimiter::per_minute(
-        ENROLL_RATE_LIMIT_BURST,
-        ENROLL_RATE_LIMIT_PER_MIN,
-    );
+    // Both knobs are overridable via env vars so test/dev fixtures can crank
+    // them up without changing production defaults.
+    let burst = env_u32(ENROLL_RATE_LIMIT_BURST_ENV, ENROLL_RATE_LIMIT_BURST);
+    let per_min = env_u32(ENROLL_RATE_LIMIT_PER_MIN_ENV, ENROLL_RATE_LIMIT_PER_MIN);
+    let enroll_limiter = super::rate_limit::RateLimiter::per_minute(burst, per_min);
     let enrollment_routes = Router::new()
         .route("/api/v1/enroll", post(enroll))
         .route("/api/v1/enroll/info", get(enroll_info))
@@ -331,6 +332,16 @@ pub fn router(state: SharedState) -> Router<SharedState> {
 /// enrollment) while making brute-force/oracle probes infeasible.
 pub(crate) const ENROLL_RATE_LIMIT_BURST: u32 = 5;
 pub(crate) const ENROLL_RATE_LIMIT_PER_MIN: u32 = 5;
+
+const ENROLL_RATE_LIMIT_BURST_ENV: &str = "CFGD_GATEWAY_ENROLL_RATE_LIMIT_BURST";
+const ENROLL_RATE_LIMIT_PER_MIN_ENV: &str = "CFGD_GATEWAY_ENROLL_RATE_LIMIT_PER_MIN";
+
+fn env_u32(var: &str, default: u32) -> u32 {
+    std::env::var(var)
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(default)
+}
 // Length bounds for device-supplied identifiers. These are enforced on
 // every enrollment / checkin entry point — they defend against log
 // injection (unbounded strings in structured logs), URL traversal (when a
