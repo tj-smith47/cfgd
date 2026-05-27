@@ -1,0 +1,43 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: '0 4 * * *'   # 04:00 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "25.x"
+          repo-token: ${{ github.token }}
+
+      - uses: tj-smith47/anodizer-action@v1
+        with:
+          args: release --nightly --no-preflight
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+          COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          WINGET_PKGS_TOKEN: ${{ secrets.WINGET_PKGS_TOKEN }}
+          NIX_PKGS_TOKEN: ${{ secrets.NIX_PKGS_TOKEN }}
+          KREW_INDEX_TOKEN: ${{ secrets.KREW_INDEX_TOKEN }}
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+          CLOUDSMITH_TOKEN: ${{ secrets.CLOUDSMITH_TOKEN }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
