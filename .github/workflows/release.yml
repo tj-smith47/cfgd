@@ -58,59 +58,22 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
   determinism-check:
-    name: Determinism (${{ matrix.crate }} / ${{ matrix.shard.label }})
+    name: Determinism (${{ matrix.crate }})
     needs: tag
     if: needs.tag.result == 'success' && needs.tag.outputs.crates != '[]'
     strategy:
       fail-fast: false
       matrix:
         crate: ${{ fromJson(needs.tag.outputs.crates) }}
-        shard:
-          - { os: ubuntu-latest,  label: linux,            targets: '' }
-          - { os: macos-latest,   label: macos,            targets: '' }
-          - { os: windows-latest, label: windows-x86_64,   targets: 'x86_64-pc-windows-msvc' }
-          - { os: windows-latest, label: windows-aarch64,  targets: 'aarch64-pc-windows-msvc' }
-    runs-on: ${{ matrix.shard.os }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ needs.tag.outputs.head_sha }}
-
-      - uses: arduino/setup-protoc@v3
-        with:
-          version: "25.x"
-          repo-token: ${{ github.token }}
-
-      - # from-branch: pinned to in-progress release-orchestration work; switch back to @v1 default after merge
-        uses: tj-smith47/anodizer-action@v1
-        with:
-          from-branch: publisher-required-config
-          auto-install: 'true'
-          determinism: 'true'
-          determinism-targets: ${{ matrix.shard.targets }}
-          preserve-dist: 'true'
-          shard-label: ${{ matrix.shard.label }}
-          determinism-crate: ${{ matrix.crate }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-
-      - name: Upload dist artifacts
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist-${{ matrix.crate }}-${{ matrix.shard.label }}
-          path: preserved-dist/
-          if-no-files-found: error
-
-      - name: Upload determinism report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: determinism-${{ matrix.crate }}-${{ matrix.shard.label }}
-          path: |
-            dist/run-*/determinism.json
-            dist/run-*/drift-bins/**
+    # Reusable workflow: parent matrix has one entry per crate; the
+    # 4 OS shards are nested inside determinism-shards.yml so the
+    # Actions run summary groups all of a crate's shards under one
+    # parent line instead of fanning 4×N rows out flat.
+    uses: ./.github/workflows/determinism-shards.yml
+    with:
+      crate: ${{ matrix.crate }}
+      head_sha: ${{ needs.tag.outputs.head_sha }}
+    secrets: inherit
 
   release:
     name: Publish Release
