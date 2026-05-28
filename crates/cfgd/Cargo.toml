@@ -66,3 +66,5 @@ tempfile = "3"
 pretty_assertions = "1"
 tower = { version = "0.5", features = ["util"] }
 http = "1"
+
+# release: minor bump to v0.4.0
