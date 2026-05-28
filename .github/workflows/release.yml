@@ -106,10 +106,14 @@ jobs:
             dist/run-*/drift-bins/**
 
   release:
-    name: Publish Release
+    name: Publish Release (${{ matrix.crate }})
     needs: [tag, determinism-check]
     # Run even when determinism-check was skipped (library-only crate).
     if: ${{ !cancelled() && needs.tag.result == 'success' && needs.tag.outputs.crates != '[]' && (needs.determinism-check.result == 'success' || needs.determinism-check.result == 'skipped') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: ${{ fromJson(needs.tag.outputs.crates) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -122,18 +126,29 @@ jobs:
           version: "25.x"
           repo-token: ${{ github.token }}
 
+      - name: Download dist artifacts for this crate
+        uses: actions/download-artifact@v4
+        with:
+          # Scope to this crate's shards only — prevents context.json collisions
+          # when multiple crates release in parallel.
+          pattern: dist-${{ matrix.crate }}-*
+          path: dist/
+          merge-multiple: true
+
       - name: Run anodizer release
         # from-branch: pinned to in-progress release-orchestration work; switch back to @v1 default after merge
         uses: tj-smith47/anodizer-action@v1
         with:
           from-branch: publisher-required-config
           auto-install: 'true'
-          download-dist: 'true'
+          # Artifacts already in dist/ from the step above; action's built-in
+          # download (which matches dist-* globally) is intentionally skipped.
+          download-dist: 'false'
           docker-registry: 'ghcr.io'
           docker-password: ${{ secrets.GITHUB_TOKEN }}
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
-          args: release --publish-only
+          args: release --publish-only --crate ${{ matrix.crate }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -155,7 +170,7 @@ jobs:
       # anodizer publishes the GitHub Release — addURIAndSha fetches each
       # asset's bytes to compute SHAs.
       - name: Update krew-index via krew-release-bot
-        if: contains(fromJson(needs.tag.outputs.crates), 'cfgd')
+        if: contains(fromJson(needs.tag.outputs.crates), 'cfgd') && matrix.crate == 'cfgd'
         uses: rajatjindal/krew-release-bot@v0.0.46
         with:
           krew_template_file: .krew.yaml
