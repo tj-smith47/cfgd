@@ -237,7 +237,7 @@ jobs:
   crossplane-push:
     name: Push Crossplane function
     needs: [tag, crossplane-function]
-    if: needs.tag.result == 'success'
+    if: needs.tag.result == 'success' && needs.crossplane-function.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
