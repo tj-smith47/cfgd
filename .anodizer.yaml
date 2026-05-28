@@ -91,6 +91,15 @@ defaults:
     cargo:
       required: true
       index_timeout: 600
+      # Per-crate tags fire independent Release.yml runs; downstream crates
+      # (cfgd-operator depends on cfgd-core) would otherwise race the
+      # crates.io sparse-index propagation and fail with "no matching
+      # package". This gate polls the index for every workspace-internal
+      # dep at its pinned version before invoking cargo publish.
+      wait_for_workspace_deps:
+        enabled: true
+        poll_interval: 5s
+        max_wait: 5m
 
 # UPX compression — shrinks binaries on targets UPX supports.
 # macOS ARM is broken in recent UPX; exclude it.

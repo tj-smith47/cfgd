@@ -5,7 +5,7 @@
 # .anodizer.yaml) updates those pins automatically on bump.
 [package]
 name = "cfgd-core"
-version = "0.4.0"
+version = "0.3.5"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -126,4 +126,3 @@ serial_test = "3"
 mockito = "1"
 tracing-test = "0.2"
 
-# release: minor bump to v0.4.0
