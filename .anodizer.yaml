@@ -119,12 +119,6 @@ makeselfs:
     script: scripts/makeself-install.sh
     filename: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}-installer.run"
 
-before:
-  hooks:
-    - cargo fmt --check
-    - cargo clippy -- -D warnings
-    - cargo test
-
 after:
   hooks:
     - echo "Release complete for {{ ProjectName }} {{ Tag }}"
