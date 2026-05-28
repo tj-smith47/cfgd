@@ -44,3 +44,5 @@ tempfile = "3"
 tower = "0.5"
 # Serial tests for env-var-mutating tests (CSI_ENDPOINT, CACHE_DIR, METRICS_PORT, etc.)
 serial_test = "3"
+
+# release: minor bump to v0.4.0
