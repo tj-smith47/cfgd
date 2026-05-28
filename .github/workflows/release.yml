@@ -1,12 +1,11 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
-      - "core-v*"
-      - "operator-v*"
-      - "csi-v*"
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -14,46 +13,46 @@ permissions:
   id-token: write # MCP registry publish via github-oidc auth
 
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: release-${{ github.repository }}
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Map tag → crate name + whether it has binary builds via anodizer resolve-tag.
-  resolve:
-    name: Resolve workspace
+  tag:
+    name: Tag workspace
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     outputs:
-      workspace: ${{ steps.anodizer.outputs.workspace }}
-      has-builds: ${{ steps.anodizer.outputs.has-builds }}
+      crates: ${{ steps.t.outputs.crates }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: tj-smith47/anodizer-action@v1
-        id: anodizer
+          token: ${{ secrets.GH_PAT }}
+      - id: t
+        uses: tj-smith47/anodizer-action@v1
         with:
           from-branch: publisher-required-config
-          resolve-workspace: 'true'
-          install-only: 'true'
+          args: tag
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
   determinism-check:
-    name: Determinism (${{ matrix.shard }})
-    needs: resolve
-    if: needs.resolve.outputs.has-builds == 'true'
+    name: Determinism (${{ matrix.crate }} / ${{ matrix.shard.label }})
+    needs: tag
+    if: needs.tag.outputs.crates != '[]'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { os: ubuntu-latest,  shard: linux,            targets: '' }
-          - { os: macos-latest,   shard: macos,            targets: '' }
-          - { os: windows-latest, shard: windows-x86_64,   targets: 'x86_64-pc-windows-msvc' }
-          - { os: windows-latest, shard: windows-aarch64,  targets: 'aarch64-pc-windows-msvc' }
-    runs-on: ${{ matrix.os }}
+        crate: ${{ fromJson(needs.tag.outputs.crates) }}
+        shard:
+          - { os: ubuntu-latest,  label: linux,            targets: '' }
+          - { os: macos-latest,   label: macos,            targets: '' }
+          - { os: windows-latest, label: windows-x86_64,   targets: 'x86_64-pc-windows-msvc' }
+          - { os: windows-latest, label: windows-aarch64,  targets: 'aarch64-pc-windows-msvc' }
+    runs-on: ${{ matrix.shard.os }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -69,9 +68,10 @@ jobs:
           from-branch: publisher-required-config
           auto-install: 'true'
           determinism: 'true'
-          determinism-targets: ${{ matrix.targets }}
+          determinism-targets: ${{ matrix.shard.targets }}
           preserve-dist: 'true'
-          shard-label: ${{ matrix.shard }}
+          shard-label: ${{ matrix.shard.label }}
+          args: --crate ${{ matrix.crate }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
@@ -79,7 +79,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: dist-${{ matrix.shard }}
+          name: dist-${{ matrix.crate }}-${{ matrix.shard.label }}
           path: preserved-dist/
           if-no-files-found: error
 
@@ -87,16 +87,16 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: determinism-${{ matrix.shard }}
+          name: determinism-${{ matrix.crate }}-${{ matrix.shard.label }}
           path: |
             dist/run-*/determinism.json
             dist/run-*/drift-bins/**
 
   release:
     name: Publish Release
-    needs: [resolve, determinism-check]
+    needs: [tag, determinism-check]
     # Run even when determinism-check was skipped (library-only crate).
-    if: ${{ !cancelled() && needs.resolve.result == 'success' && (needs.determinism-check.result == 'success' || needs.determinism-check.result == 'skipped') }}
+    if: ${{ !cancelled() && needs.tag.outputs.crates != '[]' && (needs.determinism-check.result == 'success' || needs.determinism-check.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -113,13 +113,12 @@ jobs:
         with:
           from-branch: publisher-required-config
           auto-install: 'true'
-          download-dist: ${{ needs.resolve.outputs.has-builds }}
-          docker-registry: ${{ needs.resolve.outputs.has-builds == 'true' && 'ghcr.io' || '' }}
+          download-dist: 'true'
+          docker-registry: ghcr.io
           docker-password: ${{ secrets.GITHUB_TOKEN }}
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
-          args: >-
-            release --verbose --debug --strict --publish-only --crate ${{ needs.resolve.outputs.workspace }}
+          args: release --verbose --debug --strict --publish-only
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -141,7 +140,7 @@ jobs:
       # anodizer publishes the GitHub Release — addURIAndSha fetches each
       # asset's bytes to compute SHAs.
       - name: Update krew-index via krew-release-bot
-        if: needs.resolve.outputs.workspace == 'cfgd'
+        if: contains(fromJson(needs.tag.outputs.crates), 'cfgd')
         uses: rajatjindal/krew-release-bot@v0.0.46
         with:
           krew_template_file: .krew.yaml
@@ -149,8 +148,8 @@ jobs:
   # --- Helm chart publish ---
   helm-chart:
     name: Publish Helm chart
-    needs: [resolve, release]
-    if: needs.resolve.outputs.workspace == 'cfgd'
+    needs: [tag, release]
+    if: contains(fromJson(needs.tag.outputs.crates), 'cfgd')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -169,8 +168,8 @@ jobs:
   # --- Crossplane function publish ---
   crossplane-function:
     name: Publish Crossplane function
-    needs: [resolve, release]
-    if: needs.resolve.outputs.workspace == 'cfgd'
+    needs: [tag, release]
+    if: contains(fromJson(needs.tag.outputs.crates), 'cfgd')
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -228,8 +227,8 @@ jobs:
   # --- OLM bundle publish ---
   olm-bundle:
     name: Publish OLM bundle
-    needs: [resolve, release]
-    if: needs.resolve.outputs.workspace == 'cfgd-operator'
+    needs: [tag, release]
+    if: contains(fromJson(needs.tag.outputs.crates), 'cfgd-operator')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
