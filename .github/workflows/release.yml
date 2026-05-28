@@ -41,6 +41,10 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT }}
           ref: ${{ github.event.workflow_run.head_sha || inputs.ref || github.sha }}
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
       - id: t
         # from-branch: pinned to in-progress release-orchestration work; switch back to @v1 default after merge
         uses: tj-smith47/anodizer-action@v1
