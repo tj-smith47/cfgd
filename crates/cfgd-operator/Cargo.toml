@@ -72,3 +72,5 @@ tower-test = "0.4"
 http = "1"
 http-body-util = "0.1"
 rcgen = "0.13"
+
+# release: minor bump to v0.4.0
