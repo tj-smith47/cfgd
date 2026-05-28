@@ -46,10 +46,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
       - id: t
-        # from-branch: pinned to in-progress release-orchestration work; switch back to @v1 default after merge
+        # Binary pre-built by ci.yml's build-anodizer job; downloaded here
+        # instead of rebuilding from source on every Linux release job.
         uses: tj-smith47/anodizer-action@v1
         with:
-          from-branch: publisher-required-config
+          from-artifact: anodizer-linux
+          artifact-run-id: auto
+          artifact-workflow: ci.yml
           args: tag
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
@@ -138,10 +141,11 @@ jobs:
           merge-multiple: true
 
       - name: Run anodizer release
-        # from-branch: pinned to in-progress release-orchestration work; switch back to @v1 default after merge
         uses: tj-smith47/anodizer-action@v1
         with:
-          from-branch: publisher-required-config
+          from-artifact: anodizer-linux
+          artifact-run-id: auto
+          artifact-workflow: ci.yml
           auto-install: 'true'
           # Artifacts already in dist/ from the step above; action's built-in
           # download (which matches dist-* globally) is intentionally skipped.

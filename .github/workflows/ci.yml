@@ -164,10 +164,27 @@ jobs:
       - name: Package all crates
         run: task package
 
+  # Build the anodizer binary once on Linux and upload it as an artifact so
+  # downstream jobs in this workflow and release.yml can download it instead
+  # of each rebuilding from source (saves 6+ redundant rebuilds per release).
+  build-anodizer:
+    name: Build anodizer binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: tj-smith47/anodizer-action@v1
+        with:
+          from-branch: publisher-required-config
+          install-only: 'true'
+      - name: Upload anodizer binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: anodizer-linux
+          path: ${{ runner.tool_cache }}/anodizer/source/anodizer
+
   snapshot:
     name: Snapshot (dry-run)
     if: github.ref == 'refs/heads/master'
-    needs: [test]
+    needs: [test, build-anodizer]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -176,7 +193,7 @@ jobs:
       - name: Validate release pipeline via anodizer
         uses: tj-smith47/anodizer-action@v1
         with:
-          from-branch: publisher-required-config
+          from-artifact: anodizer-linux
           args: release --snapshot --single-target --clean --dry-run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
