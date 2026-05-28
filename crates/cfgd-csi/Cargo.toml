@@ -39,5 +39,9 @@ nix = { version = "0.29", features = ["mount", "fs"] }
 tonic-build = "0.13"
 
 [dev-dependencies]
+cfgd-core = { path = "../cfgd-core", version = "0.3.5", features = ["test-helpers"] }
 tempfile = "3"
 tower = "0.5"
+# Serial tests for env-var-mutating tests (CSI_ENDPOINT, CACHE_DIR, METRICS_PORT, etc.)
+serial_test = "3"
+

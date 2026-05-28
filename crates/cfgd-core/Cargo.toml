@@ -1,3 +1,8 @@
+# cfgd-core ships its own version line (not workspace.package.version) so
+# anodizer can bump it independently of the cfgd binary, cfgd-operator, and
+# cfgd-csi. Each of those three crates pins this version via workspace
+# dependency declarations; anodizer's version_sync (enabled in
+# .anodizer.yaml) updates those pins automatically on bump.
 [package]
 name = "cfgd-core"
 version = "0.3.5"
@@ -22,6 +27,7 @@ toml = "0.8"
 console = "0.15"
 indicatif = { version = "0.17", features = ["tokio"] }
 syntect = "5"
+unicode-width = "0.2"
 
 # Logging / Tracing
 tracing = "0.1"
@@ -99,6 +105,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Storage_FileSystem",
+    "Win32_System_EventLog",
     "Win32_System_IO",
     "Win32_System_Registry",
     "Win32_System_Threading",
@@ -107,9 +114,15 @@ windows-sys = { version = "0.59", features = [
 windows-service = "0.7"
 
 [features]
-test-helpers = []
+test-helpers = ["dep:pretty_assertions"]
+
+[dependencies.pretty_assertions]
+version = "1"
+optional = true
 
 [dev-dependencies]
 tempfile = "3"
 serial_test = "3"
 mockito = "1"
+tracing-test = "0.2"
+
