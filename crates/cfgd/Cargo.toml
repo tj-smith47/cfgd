@@ -1,6 +1,6 @@
 [package]
 name = "cfgd"
-version = "0.4.0"
+version = "0.3.5"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -10,10 +10,6 @@ authors.workspace = true
 description = "Declarative, GitOps-style machine configuration state management"
 keywords = ["config", "management", "gitops", "reconciliation", "declarative"]
 categories = ["config", "command-line-utilities"]
-
-[lib]
-name = "cfgd"
-path = "src/lib.rs"
 
 [[bin]]
 name = "cfgd"
@@ -46,7 +42,6 @@ kube = { version = "0.98", features = ["client", "derive", "runtime", "rustls-tl
 rustls = "0.23"
 k8s-openapi = { version = "0.24", features = ["latest"] }
 schemars = "0.8"
-brontes = "0.2.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
@@ -61,9 +56,3 @@ assert_cmd = "2"
 predicates = "3"
 cfgd-core = { path = "../cfgd-core", version = "0.3.5", features = ["test-helpers"] }
 serial_test = "3"
-mockito = "1"
-tempfile = "3"
-pretty_assertions = "1"
-tower = { version = "0.5", features = ["util"] }
-http = "1"
-

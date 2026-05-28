@@ -8,15 +8,10 @@ members = [
 ]
 
 [workspace.package]
-version = "0.3.5"
+version = "0.3.2"
 edition = "2024"
 rust-version = "1.94"
 license = "MIT"
 repository = "https://github.com/tj-smith47/cfgd"
 homepage = "https://github.com/tj-smith47/cfgd"
 authors = ["TJ Smith"]
-
-# File:line backtraces survive; ~50 integration-test binaries shrink enough
-# to fit ubuntu-latest's ~14 GB free disk. No coverage or test-integrity loss.
-[profile.dev]
-debug = "line-tables-only"
