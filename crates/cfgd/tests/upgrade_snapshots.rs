@@ -136,12 +136,17 @@ fn upgrade_bridge_one_blank_line() {
         let work = printer.section("Downloading");
         work.status(Role::Ok, "Verified signature");
     }
+    // Fixture versions use the 9.9.x sentinel range so they never coincide
+    // with the real CARGO_PKG_VERSION. This test asserts bridge-formatting
+    // invariants (one blank line between sections); the version strings
+    // are illustrative scaffolding, not assertions about cfgd's actual
+    // version stream.
     printer.emit(
         Doc::new()
-            .status(Role::Ok, "Upgraded to v0.4.0")
+            .status(Role::Ok, "Upgraded to v9.9.1")
             .with_data(serde_json::json!({
-                "currentVersion": "0.3.5",
-                "targetVersion": "0.4.0",
+                "currentVersion": "9.9.0",
+                "targetVersion": "9.9.1",
                 "installed": true,
                 "verified": true,
             })),
