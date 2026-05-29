@@ -531,12 +531,21 @@ pub fn assert_snapshot_golden(base: &Path, name: &str, actual: &str) {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).expect("create snapshot parent dir");
         }
-        std::fs::write(&path, actual).expect("write snapshot golden");
+        // Regenerate with the version folded to `<VERSION>` so regenerated
+        // goldens stay version-agnostic rather than re-pinning the literal.
+        let regen = crate::normalize_cfgd_version(actual);
+        std::fs::write(&path, regen.as_ref()).expect("write snapshot golden");
         return;
     }
     let expected = std::fs::read_to_string(&path).expect("read snapshot golden");
-    let actual_norm = crate::normalize_line_endings(actual);
-    let expected_norm = crate::normalize_line_endings(&expected);
+    // Fold the running cfgd version to `<VERSION>` on both sides so
+    // version-bearing goldens survive release bumps. Applied to `expected`
+    // too in case a golden was regenerated with a literal version rather than
+    // the placeholder.
+    let actual_lf = crate::normalize_line_endings(actual);
+    let expected_lf = crate::normalize_line_endings(&expected);
+    let actual_norm = crate::normalize_cfgd_version(&actual_lf);
+    let expected_norm = crate::normalize_cfgd_version(&expected_lf);
     pretty_assertions::assert_eq!(actual_norm, expected_norm, "snapshot mismatch: {name}");
 }
 
