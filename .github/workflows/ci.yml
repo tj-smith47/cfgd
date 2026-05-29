@@ -32,7 +32,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - uses: arduino/setup-task@v2
+      - uses: go-task/setup-task@v2
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Check formatting
@@ -60,7 +60,7 @@ jobs:
         with:
           version: "25.x"
           repo-token: ${{ github.token }}
-      - uses: arduino/setup-task@v2
+      - uses: go-task/setup-task@v2
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Clippy
@@ -88,7 +88,7 @@ jobs:
         with:
           version: "25.x"
           repo-token: ${{ github.token }}
-      - uses: arduino/setup-task@v2
+      - uses: go-task/setup-task@v2
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       # nextest gives per-test process isolation + per-test timeout: a hung
@@ -133,7 +133,7 @@ jobs:
         with:
           version: "25.x"
           repo-token: ${{ github.token }}
-      - uses: arduino/setup-task@v2
+      - uses: go-task/setup-task@v2
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov,cargo-nextest
@@ -158,7 +158,7 @@ jobs:
         with:
           version: "25.x"
           repo-token: ${{ github.token }}
-      - uses: arduino/setup-task@v2
+      - uses: go-task/setup-task@v2
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Package all crates
