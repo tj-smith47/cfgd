@@ -102,4 +102,3 @@ CLAUDE.local.md
 .claude/scratch/
 .claude/audits/
 .claude/worktrees/
-scripts/restore-to-version.sh

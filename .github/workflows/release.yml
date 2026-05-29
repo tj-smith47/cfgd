@@ -150,12 +150,11 @@ jobs:
           CLOUDSMITH_TOKEN: ${{ secrets.CLOUDSMITH_TOKEN }}
 
       - name: Rollback on release failure
-        if: failure() && steps.release.outcome == 'failure'
+        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          anodizer tag rollback "${{ needs.tag.outputs.head_sha }}"
+        run: anodizer tag rollback "${{ needs.tag.outputs.head_sha }}"
 
       # Bot reads .krew.yaml that anodizer just wrote in the previous step
       # and opens the krew-index PR. Must run in the same job, after
