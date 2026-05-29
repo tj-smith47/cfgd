@@ -345,6 +345,8 @@ workspaces:
             platforms:
               - linux/amd64
               - linux/arm64
+            labels:
+              io.modelcontextprotocol.server.name: io.github.tj-smith47/cfgd
             annotations:
               org.opencontainers.image.source: "https://github.com/tj-smith47/cfgd"
               org.opencontainers.image.description: "Declarative, GitOps-style machine configuration management"

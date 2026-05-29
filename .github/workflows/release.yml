@@ -156,16 +156,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
         run: anodizer tag rollback "${{ needs.tag.outputs.head_sha }}"
 
-      # Bot reads .krew.yaml that anodizer just wrote in the previous step
-      # and opens the krew-index PR. Must run in the same job, after
-      # anodizer publishes the GitHub Release — addURIAndSha fetches each
-      # asset's bytes to compute SHAs.
-      - name: Update krew-index via krew-release-bot
-        if: contains(fromJson(needs.tag.outputs.crates), 'cfgd')
-        uses: rajatjindal/krew-release-bot@v0.0.46
-        with:
-          krew_template_file: .krew.yaml
-
   # --- Helm chart publish ---
   helm-chart:
     name: Publish Helm chart
