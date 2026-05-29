@@ -768,7 +768,7 @@ homebrew_casks:
     repository:
       owner: tj-smith47
       name: homebrew-tap
-    directory: Formula
+    directory: Casks
     description: "Declarative, GitOps-style machine configuration management"
     homepage: "https://github.com/tj-smith47/cfgd"
     license: MIT
