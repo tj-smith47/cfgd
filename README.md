@@ -214,7 +214,7 @@ Puppet is the closest philosophical match — declarative state, continuous enfo
 
 ## Distribution
 
-In addition to publishing binaries to [GitHub Releases](https://github.com/tj-smith47/cfgd/releases) (Linux, macOS, Windows — x86_64 + aarch64), each release also publishes to:
+In addition to publishing binaries to [GitHub Releases](https://github.com/tj-smith47/cfgd/releases) (Linux, macOS, Windows — amd64 + arm64), each release also publishes to:
 
 | Channel | Artifact |
 |---|---|
