@@ -290,10 +290,13 @@ last_green_sha() {
 # Best-effort: a write failure must not fail the run (next run just rebuilds).
 record_green_sha() {
     local image="$1"
-    kubectl create configmap "$LAST_GREEN_CM" -n cfgd-system \
-        --from-literal="${image}_${E2E_BRANCH_KEY}=${GIT_SHA}" \
-        --dry-run=client -o yaml 2>/dev/null \
-        | kubectl apply -f - 2>/dev/null || true
+    # Ensure the CM exists, then merge-patch only this image's key. Applying a
+    # single-key generated manifest would replace the managed `data` and clobber
+    # the sibling images' keys (so only the last image recorded would persist);
+    # a merge patch is additive per key.
+    kubectl create configmap "$LAST_GREEN_CM" -n cfgd-system >/dev/null 2>&1 || true
+    kubectl patch configmap "$LAST_GREEN_CM" -n cfgd-system --type merge \
+        -p "{\"data\":{\"${image}_${E2E_BRANCH_KEY}\":\"${GIT_SHA}\"}}" >/dev/null 2>&1 || true
 }
 
 GIT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")"
