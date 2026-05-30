@@ -34,6 +34,40 @@ E2E_JOB_LABEL_YAML="cfgd.io/e2e-job: \"$E2E_NAMESPACE\""
 
 TEST_POD=""
 
+# Heartbeat refresh interval. Must be well under the janitor's freshness window
+# (HEARTBEAT_STALE_SECONDS=900s in e2e-cleanup-cronjob.yaml) so that even a
+# missed beat or two never lets a live run's namespace look stale to the reaper.
+HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-120}"
+HEARTBEAT_PID=""
+
+# Background loop that keeps refreshing cfgd.io/heartbeat=<unix-epoch> on every
+# namespace this run owns (selected by the run label, so operator-suite
+# secondary namespaces are covered too, not just $E2E_NAMESPACE). The janitor
+# treats a fresh heartbeat as proof the owning run is alive and skips the
+# namespace regardless of its age — protecting runs that outlive the age gate.
+#
+# Mirrors start_lease_renewer in setup-cluster.sh: the subshell clears the
+# inherited EXIT trap so killing it can never re-enter cleanup_e2e.
+start_heartbeat() {
+    [ -n "$HEARTBEAT_PID" ] && return 0
+    (
+        trap - EXIT
+        while true; do
+            kubectl annotate namespace -l "$E2E_RUN_LABEL" \
+                "cfgd.io/heartbeat=$(date -u +%s)" --overwrite >/dev/null 2>&1 || true
+            sleep "$HEARTBEAT_INTERVAL_SECONDS"
+        done
+    ) &
+    HEARTBEAT_PID=$!
+}
+
+# Stop the heartbeat loop. Idempotent; safe to call from cleanup_e2e even if the
+# loop never started.
+stop_heartbeat() {
+    [ -n "$HEARTBEAT_PID" ] && kill "$HEARTBEAT_PID" 2>/dev/null || true
+    HEARTBEAT_PID=""
+}
+
 # Deploy the privileged test pod and wait for it to be Running.
 # Exports TEST_POD with the pod name.
 ensure_test_pod() {
@@ -75,7 +109,12 @@ create_e2e_namespace() {
         # leaked namespaces from crashed runs (RFC3339 UTC).
         kubectl annotate namespace "$E2E_NAMESPACE" \
             "cfgd.io/created-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite
+        # Seed a heartbeat immediately so the namespace is protected before the
+        # background loop's first tick, then keep it refreshed for the run.
+        kubectl annotate namespace "$E2E_NAMESPACE" \
+            "cfgd.io/heartbeat=$(date -u +%s)" --overwrite
     fi
+    start_heartbeat
     # Wait for Reflector to replicate registry-credentials (annotated on source secret)
     local deadline=$((SECONDS + 30))
     while [ $SECONDS -lt $deadline ]; do
@@ -89,6 +128,10 @@ create_e2e_namespace() {
 
 cleanup_e2e() {
     echo "Cleaning up E2E resources for run $E2E_RUN_ID..."
+
+    # Stop refreshing the heartbeat first: once the run is tearing down, the
+    # namespace SHOULD become reapable if cascade deletion is interrupted.
+    stop_heartbeat
 
     # Clean up host files FIRST (while pod still exists, before namespace deletion)
     if [ -n "$TEST_POD" ] && kubectl get pod "$TEST_POD" -n "$E2E_NAMESPACE" > /dev/null 2>&1; then
