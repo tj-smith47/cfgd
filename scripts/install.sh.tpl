@@ -106,6 +106,20 @@ detect_arch() {
     esac
 }
 
+# Map the detected (Rust-style) arch to the Go arch used in release asset
+# names — anodizer names archives cfgd-<ver>-<os>-<goarch>.tar.gz with
+# amd64/arm64, mirroring `cfgd upgrade`'s asset resolution.
+go_arch() {
+    case "$1" in
+        x86_64)  echo "amd64" ;;
+        aarch64) echo "arm64" ;;
+        *)
+            error "Unsupported architecture: $1"
+            exit 1
+            ;;
+    esac
+}
+
 # --- Install Directory ---
 
 resolve_install_dir() {
@@ -146,13 +160,17 @@ download_and_install() {
     local arch="$2"
     local dest_dir="$3"
 
-    local archive_name="cfgd-${VERSION_NUM}-${os}-${arch}.tar.gz"
-    local checksum_name="cfgd-${VERSION_NUM}-checksums.txt"
+    local goarch
+    goarch="$(go_arch "$arch")"
+    local archive_name="cfgd-${VERSION_NUM}-${os}-${goarch}.tar.gz"
+    local checksum_name="${archive_name}.sha256"
+    local bundle_name="${archive_name}.sha256.cosign.bundle"
     local base_url="https://github.com/${REPO}/releases/download/${VERSION}"
 
     if [ "$DRY_RUN" = true ]; then
         info "[dry-run] Would download ${base_url}/${archive_name}"
         info "[dry-run] Would verify checksum from ${base_url}/${checksum_name}"
+        info "[dry-run] Would verify cosign signature from ${base_url}/${bundle_name} (if cosign installed)"
         info "[dry-run] Would extract and install cfgd to ${dest_dir}/cfgd"
         if [ ! -w "$dest_dir" ]; then
             info "[dry-run] Would require sudo for ${dest_dir}"
@@ -171,7 +189,10 @@ download_and_install() {
         exit 1
     }
 
-    # Download and verify checksum
+    # Download and verify the per-artifact checksum. anodizer publishes a
+    # split <archive>.sha256 file containing just the bare hex digest (no
+    # filename column), plus a sibling <archive>.sha256.cosign.bundle for
+    # keyless signature verification — mirroring `cfgd upgrade`.
     if fetch "${base_url}/${checksum_name}" "${tmp_dir}/${checksum_name}" 2>/dev/null; then
         info "Verifying checksum..."
 
@@ -186,12 +207,36 @@ download_and_install() {
         fi
 
         if [ -n "$sha_cmd" ]; then
-            cd "$tmp_dir"
-            grep "  ${archive_name}$" "$checksum_name" | $sha_cmd -c >/dev/null 2>&1 || {
-                error "Checksum verification failed"
+            # Optionally verify the keyless cosign signature over the checksum
+            # file before trusting it. Only when cosign is installed AND a
+            # bundle is attached — a missing CLI or bundle degrades gracefully
+            # to SHA256-only (a curl|sh installer must not require cosign).
+            if command_exists cosign; then
+                if fetch "${base_url}/${bundle_name}" "${tmp_dir}/${bundle_name}" 2>/dev/null; then
+                    info "Verifying cosign signature..."
+                    cosign verify-blob \
+                        --bundle "${tmp_dir}/${bundle_name}" \
+                        --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+                        --certificate-identity-regexp '^https://github\.com/tj-smith47/cfgd/\.github/workflows/release\.yml@' \
+                        "${tmp_dir}/${checksum_name}" >/dev/null 2>&1 || {
+                        error "cosign signature verification failed — refusing to install"
+                        exit 1
+                    }
+                    success "cosign signature verified"
+                else
+                    info "No cosign bundle attached to this release — skipping signature verification"
+                fi
+            else
+                info "cosign not installed — skipping signature verification (sha256 only)"
+            fi
+
+            local expected actual
+            expected="$(tr -d '[:space:]' < "${tmp_dir}/${checksum_name}")"
+            actual="$($sha_cmd "${tmp_dir}/${archive_name}" | awk '{print $1}')"
+            if [ "$expected" != "$actual" ]; then
+                error "Checksum verification failed (expected ${expected}, got ${actual})"
                 exit 1
-            }
-            cd - >/dev/null
+            fi
             success "Checksum verified"
         else
             warn "No sha256sum/shasum found — skipping checksum verification"
