@@ -2323,7 +2323,7 @@ mod download_and_install_to {
                 },
                 ReleaseAsset {
                     name: format!("{ARCHIVE}.sha256"),
-                    download_url: format!("{server_url}/download/checksums.txt"),
+                    download_url: format!("{server_url}/download/cfgd.tar.gz.sha256"),
                     size: 0,
                 },
                 ReleaseAsset {
@@ -2352,7 +2352,7 @@ mod download_and_install_to {
             .with_body(&tarball)
             .create();
         let _m_checksums = server
-            .mock("GET", "/download/checksums.txt")
+            .mock("GET", "/download/cfgd.tar.gz.sha256")
             .with_status(200)
             .with_body(checksums)
             .create();
@@ -2414,7 +2414,7 @@ mod download_and_install_to {
             .with_body(&tarball)
             .create();
         let _m_checksums = server
-            .mock("GET", "/download/checksums.txt")
+            .mock("GET", "/download/cfgd.tar.gz.sha256")
             .with_status(200)
             .with_body(checksums)
             .create();
@@ -2477,7 +2477,7 @@ mod download_and_install_to {
             .with_body(&tarball)
             .create();
         let _m_checksums = server
-            .mock("GET", "/download/checksums.txt")
+            .mock("GET", "/download/cfgd.tar.gz.sha256")
             .with_status(404)
             .create();
 
@@ -2514,7 +2514,7 @@ mod download_and_install_to {
             .with_body(&tarball)
             .create();
         let _m_checksums = server
-            .mock("GET", "/download/checksums.txt")
+            .mock("GET", "/download/cfgd.tar.gz.sha256")
             .with_status(200)
             .with_body(checksums)
             .create();
@@ -2556,7 +2556,7 @@ mod download_and_install_to {
             .with_body(&tarball)
             .create();
         let _m_checksums = server
-            .mock("GET", "/download/checksums.txt")
+            .mock("GET", "/download/cfgd.tar.gz.sha256")
             .with_status(200)
             .with_body(checksums)
             .create();
@@ -2632,7 +2632,7 @@ mod download_and_install_to {
             .with_body(&tarball)
             .create();
         let _m_checksums = server
-            .mock("GET", "/download/checksums.txt")
+            .mock("GET", "/download/cfgd.tar.gz.sha256")
             .with_status(200)
             .with_body(checksums)
             .create();
@@ -2675,7 +2675,7 @@ mod download_and_install_to {
             .with_body(&tarball)
             .create();
         let _m_checksums = server
-            .mock("GET", "/download/checksums.txt")
+            .mock("GET", "/download/cfgd.tar.gz.sha256")
             .with_status(200)
             .with_body(checksums)
             .create();
@@ -2723,7 +2723,7 @@ mod download_and_install_to {
             .with_body(&tarball)
             .create();
         let _m_checksums = server
-            .mock("GET", "/download/checksums.txt")
+            .mock("GET", "/download/cfgd.tar.gz.sha256")
             .with_status(200)
             .with_body(checksums)
             .create();
@@ -2739,7 +2739,7 @@ mod download_and_install_to {
                 },
                 ReleaseAsset {
                     name: format!("{ARCHIVE}.sha256"),
-                    download_url: format!("{}/download/checksums.txt", server.url()),
+                    download_url: format!("{}/download/cfgd.tar.gz.sha256", server.url()),
                     size: 0,
                 },
             ],
@@ -3057,7 +3057,7 @@ mod download_and_install_to {
             .with_body(&tarball)
             .create();
         let _m_checksums = server
-            .mock("GET", "/download/checksums.txt")
+            .mock("GET", "/download/cfgd.tar.gz.sha256")
             .with_status(200)
             .with_body(checksums)
             .create();
@@ -3075,7 +3075,7 @@ mod download_and_install_to {
                 },
                 ReleaseAsset {
                     name: format!("{ARCHIVE}.sha256"),
-                    download_url: format!("{}/download/checksums.txt", server.url()),
+                    download_url: format!("{}/download/cfgd.tar.gz.sha256", server.url()),
                     size: 0,
                 },
             ],
@@ -3124,7 +3124,7 @@ mod download_and_install_to {
             .with_body(&tarball)
             .create();
         let _m_checksums = server
-            .mock("GET", "/download/checksums.txt")
+            .mock("GET", "/download/cfgd.tar.gz.sha256")
             .with_status(200)
             .with_body(&checksums)
             .create();
@@ -3171,7 +3171,7 @@ mod download_and_install_to {
             .with_body(&tarball)
             .create();
         let _m_checksums = server
-            .mock("GET", "/download/checksums.txt")
+            .mock("GET", "/download/cfgd.tar.gz.sha256")
             .with_status(200)
             .with_header("content-length", &checksums.len().to_string())
             .with_body(&checksums)
@@ -3213,7 +3213,7 @@ mod download_and_install_to {
             .with_body(&tarball)
             .create();
         let _m_checksums = server
-            .mock("GET", "/download/checksums.txt")
+            .mock("GET", "/download/cfgd.tar.gz.sha256")
             .with_status(200)
             .with_body(&checksums)
             .create();

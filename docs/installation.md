@@ -1,6 +1,6 @@
 # Installation
 
-cfgd ships pre-built binaries for Linux, macOS, and Windows (x86_64 + aarch64)
+cfgd ships pre-built binaries for Linux, macOS, and Windows (amd64 + arm64)
 through the [GitHub Releases page](https://github.com/tj-smith47/cfgd/releases)
 and a number of platform-native package managers. Pick whichever channel best
 fits how you manage tooling on each machine — the binary is identical across
@@ -41,11 +41,13 @@ debug-symbol-stripped release-mode build compiled against your local toolchain.
 
 Download the platform-specific archive from
 [the latest release](https://github.com/tj-smith47/cfgd/releases/latest),
-verify the checksum + signature, and place `cfgd` somewhere on `PATH`.
+verify the checksum + signature, and place `cfgd` somewhere on `PATH`. Release
+assets are versioned and named `cfgd-<version>-<os>-<arch>.tar.gz`, where
+`<arch>` is `amd64` or `arm64` (Windows ships `.zip`).
 
 ```sh
 curl -L -o cfgd.tar.gz \
-  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-linux-x86_64.tar.gz
+  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.4.0-linux-amd64.tar.gz
 tar -xzf cfgd.tar.gz
 install -m 0755 cfgd /usr/local/bin/cfgd
 ```
@@ -98,13 +100,13 @@ in CI runners or developer images). `choco upgrade cfgd` upgrades, and
 ### Direct download
 
 ```powershell
-Invoke-WebRequest -Uri https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-windows-x86_64.zip -OutFile cfgd.zip
+Invoke-WebRequest -Uri https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.4.0-windows-amd64.zip -OutFile cfgd.zip
 Expand-Archive cfgd.zip -DestinationPath C:\Tools\cfgd
 # Add C:\Tools\cfgd to your PATH (System Properties → Environment Variables)
 ```
 
-Verify the signature against the cosign public key published on the release
-page before running the binary on shared hosts.
+Before running the binary on shared hosts, verify the signature with keyless
+cosign — see [Verifying downloads](#verifying-downloads) below.
 
 ### Visual C++ runtime requirement
 
