@@ -207,13 +207,24 @@ mod tests {
 
     fn platform_asset_name(version: &str) -> String {
         let os = std::env::consts::OS;
-        let arch = std::env::consts::ARCH;
         let archive_os = if os == "macos" { "darwin" } else { os };
-        // Production upgrade::asset_for_target looks for .zip on windows,
-        // .tar.gz elsewhere. The mock must match or the resolver returns
-        // no_release before the download arm can fire.
+        // anodizer names archives with the Go arch (amd64/arm64), so the mock
+        // must use that name or the production resolver returns no_release
+        // before the download arm can fire.
+        let go_arch = match std::env::consts::ARCH {
+            "x86_64" => "amd64",
+            "aarch64" => "arm64",
+            other => other,
+        };
+        // Windows ships .zip; every other target ships .tar.gz.
         let suffix = if cfg!(windows) { "zip" } else { "tar.gz" };
-        format!("cfgd-{}-{}-{}.{}", version, archive_os, arch, suffix)
+        format!("cfgd-{}-{}-{}.{}", version, archive_os, go_arch, suffix)
+    }
+
+    /// Name of the per-artifact checksum asset (`<archive>.sha256`) anodizer
+    /// publishes alongside each archive.
+    fn checksum_asset_name(version: &str) -> String {
+        format!("{}.sha256", platform_asset_name(version))
     }
 
     fn release_json_current_version() -> String {
@@ -532,7 +543,7 @@ mod tests {
     fn cmd_upgrade_full_download_failure() {
         let version = "9.9.9";
         let asset_name = platform_asset_name(version);
-        let checksums_name = format!("cfgd-{}-checksums.txt", version);
+        let checksum_name = checksum_asset_name(version);
 
         let mut server = mockito::Server::new();
 
@@ -546,9 +557,9 @@ mod tests {
                         "size": 1048576
                     }},
                     {{
-                        "name": "{checksums_name}",
-                        "browser_download_url": "{url}/{checksums_name}",
-                        "size": 256
+                        "name": "{checksum_name}",
+                        "browser_download_url": "{url}/{checksum_name}",
+                        "size": 64
                     }}
                 ]
             }}"#,
@@ -595,17 +606,21 @@ mod tests {
     }
 
     /// Strict cosign mode (`--require-cosign` / `CFGD_REQUIRE_COSIGN=1`):
-    /// release ships archive + checksums.txt but no cosign bundle. The CLI
-    /// must surface the failure with kind `cosign_required` (distinct from
+    /// release ships the archive + its per-artifact `<archive>.sha256` but no
+    /// keyless cosign bundle (`<archive>.sha256.cosign.bundle`). The CLI must
+    /// surface the failure with kind `cosign_required` (distinct from
     /// `install_failed`) and carry `requireCosign: true` in the error payload
     /// so alerting can route strict-mode failures separately from generic
     /// install errors. Pins end-to-end thread-through of the flag from the
     /// clap surface into the error_doc.
     ///
     /// The archive bytes are arbitrary — strict cosign fires inside
-    /// `download_and_install_to` BEFORE checksum/extract, so we only need
-    /// the archive URL to resolve. Avoids pulling in `flate2` + `tar` as
-    /// dev-dependencies of the binary crate just to assemble a real tarball.
+    /// `download_and_install_to` (in `verify_cosign_bundle`) BEFORE the
+    /// checksum comparison and extract, so the `.sha256` body need only be a
+    /// well-formed bare hash for the asset to resolve and download. The
+    /// missing bundle short-circuits with `CosignRequired` first. Avoids
+    /// pulling in `flate2` + `tar` as dev-dependencies of the binary crate
+    /// just to assemble a real tarball.
     #[cfg(unix)]
     #[test]
     #[serial]
@@ -614,9 +629,10 @@ mod tests {
 
         let version = "9.9.9";
         let asset_name = platform_asset_name(version);
-        let checksums_name = format!("cfgd-{}-checksums.txt", version);
+        let checksum_name = checksum_asset_name(version);
         let archive_body: &[u8] = b"placeholder archive bytes";
-        let checksums_body = format!("deadbeef  {asset_name}\n");
+        // Per-artifact checksum holds the bare SHA256 of the archive bytes.
+        let checksum_body = cfgd_core::sha256_hex(archive_body);
 
         let _shim = CosignTestShim::builder().with_argv_logging(false).install();
 
@@ -631,15 +647,15 @@ mod tests {
                         "size": {archive_size}
                     }},
                     {{
-                        "name": "{checksums_name}",
-                        "browser_download_url": "{url}/{checksums_name}",
-                        "size": {checksums_size}
+                        "name": "{checksum_name}",
+                        "browser_download_url": "{url}/{checksum_name}",
+                        "size": {checksum_size}
                     }}
                 ]
             }}"#,
             url = server.url(),
             archive_size = archive_body.len(),
-            checksums_size = checksums_body.len()
+            checksum_size = checksum_body.len()
         );
         let _release_mock = server
             .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
@@ -652,10 +668,12 @@ mod tests {
             .with_status(200)
             .with_body(archive_body)
             .create();
-        let _checksums_mock = server
-            .mock("GET", format!("/{checksums_name}").as_str())
+        // The release deliberately omits `<archive>.sha256.cosign.bundle`;
+        // only the archive and its `.sha256` are served.
+        let _checksum_mock = server
+            .mock("GET", format!("/{checksum_name}").as_str())
             .with_status(200)
-            .with_body(&checksums_body)
+            .with_body(&checksum_body)
             .create();
 
         let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
