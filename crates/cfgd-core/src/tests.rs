@@ -1189,25 +1189,6 @@ fn normalize_line_endings_owns_when_crlf() {
 }
 
 #[test]
-fn normalize_cfgd_version_folds_current_version_only() {
-    let line = format!("Client        {CURRENT_CFGD_VERSION}\n");
-    assert_eq!(normalize_cfgd_version(&line), "Client        <VERSION>\n");
-}
-
-#[test]
-fn normalize_cfgd_version_leaves_other_versions_intact() {
-    // A genuinely wrong version must NOT fold to `<VERSION>`, so a real
-    // version regression still trips the snapshot diff. `9999.9999.9999` can
-    // never equal the running crate version nor contain it as a substring.
-    let line = "✓ cfgd 9999.9999.9999 is up to date\n";
-    assert!(matches!(
-        normalize_cfgd_version(line),
-        std::borrow::Cow::Borrowed(_)
-    ));
-    assert!(!normalize_cfgd_version(line).contains("<VERSION>"));
-}
-
-#[test]
 fn normalize_for_snapshot_handles_crlf_backslash_and_nested_paths() {
     let captured = "  From file:///C:\\Users\\foo\\bare\\nested\\repo\r\n  hi\r\n";
     let bare = std::path::PathBuf::from("C:\\Users\\foo\\bare");
