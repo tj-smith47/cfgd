@@ -174,29 +174,28 @@ Check for and install cfgd updates from GitHub releases.
 
 ```sh
 cfgd upgrade                   # download and install latest
-cfgd upgrade --check           # check only (exit 0 = current, exit 1 = update available)
+cfgd upgrade --check           # check only (exit 0 = current, 2 = update available, 1 = error)
 cfgd upgrade --require-cosign  # fail if cosign signature cannot be verified
 CFGD_REQUIRE_COSIGN=1 cfgd upgrade
 ```
 
 #### Signature verification
 
-The release's `checksums.txt` is verified by cosign when the release ships a
-`*-checksums.txt.cosign.bundle` and a `cosign.pub`, AND the `cosign` CLI is
-installed locally. The actual archive is then matched against the SHA256 entry
-inside that signed checksums file.
+Each release artifact is signed with keyless cosign (Fulcio/OIDC + Rekor).
+`cfgd upgrade` verifies the keyless signature over the per-artifact
+`<archive>.sha256` file — pinned to cfgd's own `release.yml` workflow identity —
+then confirms the downloaded archive matches that trusted checksum. This is the
+same recipe documented for manual verification in
+[installation.md](installation.md#verifying-downloads).
 
-By default, missing cosign artifacts (no bundle, no public key, or no local
-`cosign` CLI) trigger a `WARN` and silent fallback to **SHA256-only**
-verification — your trust root reduces to GitHub Releases asset hosting. An
-attacker who can MITM both the binary and `checksums.txt` downloads (compromised
-GHCR mirror, network attacker against `objects.githubusercontent.com`) gets a
-fully-trusted upgrade on a host that doesn't have cosign installed.
+By default, if the `cosign` CLI isn't installed locally (or the release lacks
+the cosign bundle), verification emits a `WARN` and falls back to **SHA256-only**,
+which trusts GitHub Releases asset hosting alone.
 
 `--require-cosign` (or `CFGD_REQUIRE_COSIGN=1`) flips the policy from
-"warn and proceed" to "block the upgrade." Any of the three skip conditions
-fails the upgrade with exit 1 and emits an error_doc with
-`error: "cosign_required"` plus `requireCosign: true` in the payload so
+"warn and proceed" to "block the upgrade." Any condition that would trigger the
+fallback fails the upgrade with exit 1 and emits an error_doc with
+`error: "cosign_required"` plus `requireCosign: true` in the payload, so
 alerting can route strict-mode failures separately from generic install
 errors. Recommended for unattended / CI updaters where a silent SHA256-only
 fallback should never happen.

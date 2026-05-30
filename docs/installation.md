@@ -130,18 +130,89 @@ sensible version:
 cfgd version
 ```
 
-To verify the signature on the downloaded archive (if you used the install
-script or direct download):
+To verify the signature on a downloaded archive by hand, see
+[Verifying downloads](#verifying-downloads) below.
+
+## Verifying downloads
+
+Each release artifact is signed with **keyless cosign** (Fulcio/OIDC + Rekor) —
+there is no long-lived public key to trust. For every archive `<archive>` (for
+example `cfgd-0.4.0-linux-amd64.tar.gz`) the release publishes:
+
+| Asset | Purpose |
+|---|---|
+| `<archive>.sha256` | bare SHA256 hash of the archive (one file per artifact, not a combined `checksums.txt`) |
+| `<archive>.sha256.cosign.bundle` | keyless cosign signature over the `.sha256` file (embeds the Fulcio cert + Rekor proof) |
+| `<archive>.sha256.cosign.pem` | the Fulcio certificate (also published; optional — the bundle already embeds it) |
+
+To verify a download, run the two steps below. This is exactly what
+`cfgd upgrade` performs internally:
 
 ```sh
+VER=0.4.0; ARCH=amd64; OS=linux          # adjust: amd64|arm64, linux|darwin|windows
+A="cfgd-${VER}-${OS}-${ARCH}.tar.gz"
+base="https://github.com/tj-smith47/cfgd/releases/download/v${VER}"
+curl -fsSLO "$base/$A"
+curl -fsSLO "$base/$A.sha256"
+curl -fsSLO "$base/$A.sha256.cosign.bundle"
+
+# 1. Verify the keyless cosign signature over the checksum file. This proves the
+#    checksum came from cfgd's own release workflow, not just from GitHub asset
+#    hosting.
 cosign verify-blob \
-  --key https://github.com/tj-smith47/cfgd/releases/latest/download/cosign.pub \
-  --signature cfgd-linux-x86_64.tar.gz.sig \
-  cfgd-linux-x86_64.tar.gz
+  --bundle "$A.sha256.cosign.bundle" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  --certificate-identity-regexp '^https://github\.com/tj-smith47/cfgd/\.github/workflows/release\.yml@' \
+  "$A.sha256"
+
+# 2. Verify the archive matches the (now-trusted) checksum.
+echo "$(cat "$A.sha256")  $A" | sha256sum -c
 ```
 
-The same `cosign.pub` key signs all release artifacts (Linux, macOS, Windows,
-container images, Helm charts).
+Notes:
+
+- The issuer is the GitHub Actions OIDC provider, and the
+  `--certificate-identity-regexp` pins the signer to cfgd's own `release.yml`
+  workflow. A publisher-compromise attacker cannot mint a passing signature
+  without running that exact workflow — replacing the binary and its `.sha256`
+  on a mirror is not enough.
+- Verification requires the [`cosign` CLI](https://docs.sigstore.dev/cosign/system_config/installation/).
+  Keyless verification needs network access to the Fulcio/Rekor roots, which
+  cosign fetches via the bundled Sigstore TUF root.
+- On Windows, swap `OS=windows` and the `.tar.gz` suffix for `.zip`, and use a
+  SHA256 tool such as `Get-FileHash` instead of `sha256sum`. The cosign step is
+  identical.
+
+## Upgrading
+
+`cfgd upgrade` self-updates the binary in place from the latest GitHub release.
+It downloads the platform archive, verifies it, and atomically replaces the
+running binary (restarting the daemon if one is active).
+
+```sh
+cfgd upgrade                   # download, verify, and install the latest release
+cfgd upgrade --check           # check only: exit 0 = current, 2 = update available, 1 = error
+cfgd upgrade --require-cosign  # fail (don't degrade) if the cosign signature can't be verified
+CFGD_REQUIRE_COSIGN=1 cfgd upgrade
+```
+
+The verification it performs is the same two steps as
+[Verifying downloads](#verifying-downloads): it verifies the keyless cosign
+signature over the `<archive>.sha256` file (pinned to cfgd's `release.yml`
+workflow identity), then confirms the archive matches that trusted checksum.
+
+By default, if the `cosign` CLI isn't installed locally — or the release lacks
+the cosign bundle — `cfgd upgrade` emits a warning and **falls back to
+SHA256-only** verification, which trusts GitHub Releases asset hosting alone.
+Pass `--require-cosign` (or set `CFGD_REQUIRE_COSIGN=1`) to make signature
+verification mandatory: any condition that would trigger the fallback fails the
+upgrade instead. This is recommended for unattended and CI updaters, where a
+silent downgrade to SHA256-only should never happen.
+
+A binary old enough to predate this self-upgrade logic cannot bootstrap the
+verified path. Reinstall once via any of the [install methods](#linux--macos)
+above (Homebrew, the install script, etc.); subsequent `cfgd upgrade` runs then
+work from the newer binary.
 
 ## Containers and Kubernetes
 
