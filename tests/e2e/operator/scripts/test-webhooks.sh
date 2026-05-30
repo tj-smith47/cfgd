@@ -86,7 +86,7 @@ begin_test "OP-WH-02: Mutating webhook — pod injection"
 
 # Create a namespace with the injection label
 kubectl create namespace "e2e-inject-${E2E_RUN_ID}" 2>/dev/null || true
-kubectl label namespace "e2e-inject-${E2E_RUN_ID}" cfgd.io/inject-modules=true --overwrite 2>/dev/null
+kubectl label namespace "e2e-inject-${E2E_RUN_ID}" "$E2E_RUN_LABEL" cfgd.io/inject-modules=true --overwrite 2>/dev/null
 
 # Ensure a Module CRD exists for the webhook to look up
 kubectl apply -f - <<EOF

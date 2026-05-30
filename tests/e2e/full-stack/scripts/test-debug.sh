@@ -32,7 +32,7 @@ EOF
 
     # Create namespace with injection and a ConfigPolicy with debugModules
     kubectl create namespace "e2e-debug-flow-${E2E_RUN_ID}" 2>/dev/null || true
-    kubectl label namespace "e2e-debug-flow-${E2E_RUN_ID}" cfgd.io/inject-modules=true --overwrite 2>/dev/null
+    kubectl label namespace "e2e-debug-flow-${E2E_RUN_ID}" "$E2E_RUN_LABEL" cfgd.io/inject-modules=true --overwrite 2>/dev/null
 
     kubectl apply -n "e2e-debug-flow-${E2E_RUN_ID}" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1

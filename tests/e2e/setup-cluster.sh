@@ -56,14 +56,20 @@ lease_now_rfc3339() {
     date -u +%Y-%m-%dT%H:%M:%S.000000Z
 }
 
-# Write/overwrite the Lease object with us as holder and a fresh renewTime.
-lease_write() {
-    kubectl apply -f - >/dev/null 2>&1 <<LEASEEOF
+# Lease manifest body with us as holder and a fresh renewTime. A
+# resourceVersion line is injected by callers that need an optimistic-
+# concurrency precondition.
+lease_manifest() {
+    local resource_version="${1:-}"
+    local rv_line=""
+    [ -n "$resource_version" ] && rv_line="  resourceVersion: \"${resource_version}\""
+    cat <<LEASEEOF
 apiVersion: coordination.k8s.io/v1
 kind: Lease
 metadata:
   name: ${LEASE_NAME}
   namespace: ${LEASE_NS}
+${rv_line}
 spec:
   holderIdentity: "${LEASE_HOLDER}"
   leaseDurationSeconds: ${LEASE_DURATION_SECONDS}
@@ -71,28 +77,86 @@ spec:
 LEASEEOF
 }
 
-# Block until the lease is free (absent, held by us, or expired), then take it.
+# Atomic create — fails (non-zero) if the Lease already exists. Only one
+# concurrent waiter observing an absent lease can win this.
+lease_create() {
+    lease_manifest | kubectl create -f - >/dev/null 2>&1
+}
+
+# Optimistic replace — fails if the object changed since we read it (the
+# embedded resourceVersion no longer matches), so a steal can't clobber a
+# write another waiter landed first.
+lease_replace_at() {
+    local resource_version="$1"
+    lease_manifest "$resource_version" | kubectl replace -f - >/dev/null 2>&1
+}
+
+# True only if the live Lease still names us as holder.
+lease_held_by_us() {
+    local holder
+    holder=$(kubectl get lease "$LEASE_NAME" -n "$LEASE_NS" \
+        -o jsonpath='{.spec.holderIdentity}' 2>/dev/null || echo "")
+    [ "$holder" = "$LEASE_HOLDER" ]
+}
+
+# Block until we hold the lease. Acquisition is atomic — never a bare apply:
+#   absent  → kubectl create (fails if another waiter created it first)
+#   expired → kubectl replace guarded by the observed resourceVersion
+# After any write that returns success we RE-READ and confirm we are the holder
+# before returning; losing the race loops back and waits. No deadlock: a dead
+# holder stops renewing, the lease expires, and the next waiter steals it.
 acquire_lease() {
     echo "Acquiring setup lease ${LEASE_NS}/${LEASE_NAME} (holder ${LEASE_HOLDER})..."
     local deadline=$((SECONDS + LEASE_DURATION_SECONDS))
     while [ $SECONDS -lt $deadline ]; do
-        local holder renew
-        holder=$(kubectl get lease "$LEASE_NAME" -n "$LEASE_NS" \
-            -o jsonpath='{.spec.holderIdentity}' 2>/dev/null || echo "__none__")
-        if [ "$holder" = "__none__" ] || [ -z "$holder" ] || [ "$holder" = "$LEASE_HOLDER" ]; then
-            lease_write && { echo "  Lease acquired"; return 0; }
-        else
-            renew=$(kubectl get lease "$LEASE_NAME" -n "$LEASE_NS" \
-                -o jsonpath='{.spec.renewTime}' 2>/dev/null || echo "")
-            local renew_epoch now_epoch
-            renew_epoch=$(lease_epoch "$renew")
-            now_epoch=$(date -u +%s)
-            if [ $((now_epoch - renew_epoch)) -gt "$LEASE_DURATION_SECONDS" ]; then
-                echo "  Lease held by ${holder} is expired — stealing"
-                lease_write && { echo "  Lease acquired"; return 0; }
-            else
-                echo "  Lease held by ${holder}; waiting..."
+        local raw holder renew rv
+        raw=$(kubectl get lease "$LEASE_NAME" -n "$LEASE_NS" \
+            -o jsonpath='{.spec.holderIdentity}|{.spec.renewTime}|{.metadata.resourceVersion}' \
+            2>/dev/null || echo "__absent__")
+
+        if [ "$raw" = "__absent__" ]; then
+            # No lease object yet — create it atomically.
+            if lease_create && lease_held_by_us; then
+                echo "  Lease acquired (created)"
+                return 0
             fi
+            sleep 5
+            continue
+        fi
+
+        holder="${raw%%|*}"
+        rv="${raw##*|}"
+        renew="${raw#*|}"; renew="${renew%|*}"
+
+        if [ -z "$holder" ]; then
+            # Object exists but holder was cleared — replace under its RV.
+            if lease_replace_at "$rv" && lease_held_by_us; then
+                echo "  Lease acquired (claimed released lease)"
+                return 0
+            fi
+            sleep 5
+            continue
+        fi
+
+        if [ "$holder" = "$LEASE_HOLDER" ]; then
+            echo "  Lease already held by us"
+            return 0
+        fi
+
+        local renew_epoch now_epoch
+        renew_epoch=$(lease_epoch "$renew")
+        now_epoch=$(date -u +%s)
+        if [ $((now_epoch - renew_epoch)) -gt "$LEASE_DURATION_SECONDS" ]; then
+            echo "  Lease held by ${holder} is expired — attempting steal"
+            # Guarded replace: only succeeds if the lease hasn't changed (e.g.
+            # the dead holder revived, or another waiter stole first) since read.
+            if lease_replace_at "$rv" && lease_held_by_us; then
+                echo "  Lease acquired (stolen from expired ${holder})"
+                return 0
+            fi
+            echo "  Steal lost the race; retrying"
+        else
+            echo "  Lease held by ${holder}; waiting..."
         fi
         sleep 5
     done
@@ -102,13 +166,23 @@ acquire_lease() {
 
 # Renew in the background so a long setup never lets the lease expire under it.
 # The subshell clears the inherited EXIT trap so killing it can't re-enter
-# release_lease.
+# release_lease. Each renewal is a guarded replace at the current RV and only
+# proceeds while we are still the holder — if a steal happened (we were
+# wrongly presumed dead), the renewer stops touching the lease.
 start_lease_renewer() {
     (
         trap - EXIT
         while true; do
             sleep $((LEASE_DURATION_SECONDS / 3))
-            lease_write || true
+            local raw holder rv
+            raw=$(kubectl get lease "$LEASE_NAME" -n "$LEASE_NS" \
+                -o jsonpath='{.spec.holderIdentity}|{.metadata.resourceVersion}' \
+                2>/dev/null || echo "")
+            holder="${raw%%|*}"
+            rv="${raw##*|}"
+            if [ "$holder" = "$LEASE_HOLDER" ] && [ -n "$rv" ]; then
+                lease_replace_at "$rv" || true
+            fi
         done
     ) &
     LEASE_RENEW_PID=$!

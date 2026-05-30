@@ -11,6 +11,7 @@ begin_test "FS-PLUGIN-01: kubectl cfgd inject"
 
 # Create a test deployment
 kubectl create namespace "e2e-plugin-test-${E2E_RUN_ID}" 2>/dev/null || true
+kubectl label namespace "e2e-plugin-test-${E2E_RUN_ID}" "$E2E_RUN_LABEL" --overwrite 2>/dev/null
 kubectl apply -n "e2e-plugin-test-${E2E_RUN_ID}" -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment

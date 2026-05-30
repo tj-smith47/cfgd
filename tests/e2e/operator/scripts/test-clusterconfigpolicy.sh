@@ -12,8 +12,8 @@ begin_test "OP-CCP-01: ClusterConfigPolicy — namespaceSelector filtering"
 # Create two namespaces: one matching, one not
 kubectl create namespace "e2e-team-alpha-${E2E_RUN_ID}" 2>/dev/null || true
 kubectl create namespace "e2e-team-beta-${E2E_RUN_ID}" 2>/dev/null || true
-kubectl label namespace "e2e-team-alpha-${E2E_RUN_ID}" cfgd.io/team=alpha --overwrite 2>/dev/null
-kubectl label namespace "e2e-team-beta-${E2E_RUN_ID}" cfgd.io/team=beta --overwrite 2>/dev/null
+kubectl label namespace "e2e-team-alpha-${E2E_RUN_ID}" "$E2E_RUN_LABEL" cfgd.io/team=alpha --overwrite 2>/dev/null
+kubectl label namespace "e2e-team-beta-${E2E_RUN_ID}" "$E2E_RUN_LABEL" cfgd.io/team=beta --overwrite 2>/dev/null
 
 # Create MachineConfigs in both namespaces
 for ns in "e2e-team-alpha-${E2E_RUN_ID}" "e2e-team-beta-${E2E_RUN_ID}"; do
