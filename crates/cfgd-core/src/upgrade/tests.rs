@@ -214,6 +214,20 @@ fn verify_archive_checksum_rejects_whitespace_only_checksums() {
 }
 
 #[test]
+fn verify_archive_checksum_rejects_non_hex_first_token() {
+    // A CDN serving an HTML error page in place of the `.sha256` yields a
+    // first token that is not a 64-char hex digest. Surface ChecksumsEmpty so
+    // triage sees "malformed checksum file" rather than a confusing mismatch.
+    let archive = write_temp_archive(b"hello world");
+    let err = super::verify_archive_checksum(archive.path(), "<html>error</html>\n", "cfgd.tar.gz")
+        .unwrap_err();
+    assert!(
+        matches!(err, crate::errors::UpgradeError::ChecksumsEmpty),
+        "non-hex first token must surface ChecksumsEmpty, got: {err:?}"
+    );
+}
+
+#[test]
 fn find_checksum_asset_matches_per_artifact_sha256() {
     // Split checksums: each archive gets its own `<archive>.sha256` asset.
     let archive = "cfgd-9.9.0-linux-amd64.tar.gz";
@@ -2688,9 +2702,9 @@ mod download_and_install_to {
     #[test]
     #[serial]
     fn skips_cosign_verification_when_release_has_no_bundle_asset() {
-        // Release lacks cosign.bundle → verify_cosign_bundle returns Ok(false)
-        // and the install proceeds with SHA256-only verification. Demonstrates
-        // the documented graceful-degradation contract.
+        // Release lacks the cosign bundle → verify_cosign_bundle returns
+        // Sha256Only and the install proceeds with SHA256-only verification.
+        // Demonstrates the documented graceful-degradation contract.
         let _shim = CosignTestShim::builder()
             .with_argv_logging(false)
             .with_exit(99)
@@ -3048,8 +3062,8 @@ mod download_and_install_to {
             .with_body(checksums)
             .create();
 
-        // Release is missing both the cosign bundle AND cosign.pub — strict
-        // mode must reject this regardless of which piece is named first.
+        // Release omits the cosign bundle — strict mode must reject the
+        // upgrade rather than silently falling back to SHA256-only.
         let release = ReleaseInfo {
             tag: "v9.9.9".into(),
             version: Version::new(9, 9, 9),

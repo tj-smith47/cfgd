@@ -70,12 +70,13 @@ struct VersionCache {
 /// `UpgradeOutput` payload so consumers (CI, alerting) can detect when an
 /// upgrade silently fell back to SHA256-only and react.
 ///
-/// * `Cosign` — full cosign signature verified against the release's bundle +
-///   public key. Strongest guarantee: a publisher-compromise attacker without
-///   the cosign private key cannot forge a passing release.
-/// * `Sha256Only` — cosign bundle, public key, or the `cosign` CLI was
-///   unavailable; verification fell through to `checksums.txt` SHA256
-///   comparison only. Trusts the GitHub Releases publisher chain.
+/// * `Cosign` — keyless cosign signature verified (Fulcio/OIDC + Rekor)
+///   against the release's per-artifact bundle. Strongest guarantee: a
+///   publisher-compromise attacker cannot mint a signature whose Fulcio
+///   identity matches the pinned release-workflow regexp.
+/// * `Sha256Only` — the cosign bundle or the `cosign` CLI was unavailable;
+///   verification fell through to the `<archive>.sha256` SHA256 comparison
+///   only. Trusts the GitHub Releases publisher chain.
 /// * `StrictCosignRequired` — strict cosign mode was requested by the caller
 ///   (`--require-cosign` / `CFGD_REQUIRE_COSIGN=1`) and verification
 ///   succeeded under that policy. Distinct from `Cosign` so audit consumers
@@ -524,10 +525,11 @@ fn sha256_file(path: &Path) -> std::result::Result<String, UpgradeError> {
 ///
 /// Two error branches, distinct on the wire so operators can tell them apart
 /// in incident triage:
-/// * `ChecksumsEmpty` — the checksum file was empty / whitespace-only
-///   (truncation, wrong file served).
-/// * `ChecksumMismatch` — a hash was present but the local SHA differs
-///   (genuine corruption or interception).
+/// * `ChecksumsEmpty` — the checksum file was empty / whitespace-only, or its
+///   first token is not a 64-char lowercase-hex SHA256 (truncation, wrong file
+///   served, or a CDN error page delivered in place of the `.sha256`).
+/// * `ChecksumMismatch` — a well-formed hash was present but the local SHA
+///   differs (genuine corruption or interception).
 ///
 /// `ChecksumMissing` is surfaced one layer up (in `download_and_install_to`)
 /// when no `<archive>.sha256` asset is attached to the release at all.
@@ -544,6 +546,12 @@ fn verify_archive_checksum(
         .next()
         .ok_or(UpgradeError::ChecksumsEmpty)?
         .to_lowercase();
+    // Reject anything that isn't a bare SHA256 hex digest before comparing.
+    // A CDN serving an HTML error page as the `.sha256` would otherwise fall
+    // through to a confusing ChecksumMismatch; ChecksumsEmpty triages cleanly.
+    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(UpgradeError::ChecksumsEmpty);
+    }
     let actual = sha256_file(archive_path)?;
     if actual != expected {
         return Err(UpgradeError::ChecksumMismatch {
@@ -557,7 +565,7 @@ fn verify_archive_checksum(
 /// over the running executable.
 ///
 /// `require_cosign` switches the cosign verifier into strict mode: when set,
-/// any missing cosign artifact (bundle, public key, or local CLI) blocks the
+/// either missing cosign artifact (bundle or local CLI) blocks the
 /// upgrade with [`UpgradeError::CosignRequired`] instead of silently falling
 /// back to SHA256-only. The returned [`InstallReport`] records which mode was
 /// actually exercised so structured-output consumers can detect fallbacks.
@@ -600,12 +608,13 @@ pub(crate) fn download_and_install_to(
         let checksums_path = tmp_dir.path().join(&checksum_asset.name);
         download_to_file(&checksum_asset.download_url, &checksums_path, printer)?;
 
-        // Best-effort cosign verification of the checksums file. Bounds
-        // publisher-compromise risk: a malicious release uploader cannot
-        // forge a valid cosign signature over a tampered checksums.txt
-        // without the private key. When `require_cosign` is true, any of
-        // the three skip conditions surfaces as Err here instead of a
-        // silent fallback to SHA256-only.
+        // Best-effort keyless cosign verification of the per-artifact
+        // `.sha256` file. Bounds publisher-compromise risk: a malicious
+        // release uploader cannot mint a Fulcio-backed signature whose
+        // identity matches the pinned release-workflow regexp over a
+        // tampered `.sha256`. When `require_cosign` is true, either skip
+        // condition (no bundle, no cosign CLI) surfaces as Err here instead
+        // of a silent fallback to SHA256-only.
         let mode = verify_cosign_bundle(
             &checksums_path,
             &checksum_asset.name,
