@@ -624,15 +624,15 @@ The server's enrollment method is configured by the administrator. cfgd auto-det
 
 **Key auto-detection:** If neither `--ssh-key` nor `--gpg-key` is specified, cfgd checks the SSH agent first, then falls back to `~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, and `~/.ssh/id_ecdsa` in order. The first available key is used.
 
-### `cfgd completions <shell>`
+### `cfgd completion <shell>`
 
 Generate shell completions.
 
 ```sh
 # Add to your shell's rc file
-source <(cfgd completions bash)  # .bashrc
-source <(cfgd completions zsh)   # .zshrc
-cfgd completions fish | source   # config.fish
+source <(cfgd completion bash)  # .bashrc
+source <(cfgd completion zsh)   # .zshrc
+cfgd completion fish | source   # config.fish
 ```
 
 ## Exit Codes

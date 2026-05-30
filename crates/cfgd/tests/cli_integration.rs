@@ -412,34 +412,46 @@ fn workflow_generate_help() {
         .success();
 }
 
-// --- completions command ---
+// --- completion command ---
 
 #[test]
-fn completions_bash() {
+fn completion_bash() {
     Command::cargo_bin("cfgd")
         .unwrap()
-        .args(["completions", "bash"])
+        .args(["completion", "bash"])
         .assert()
         .success()
         .stdout(predicate::str::contains("cfgd"));
 }
 
 #[test]
-fn completions_zsh() {
+fn completion_zsh() {
     Command::cargo_bin("cfgd")
         .unwrap()
-        .args(["completions", "zsh"])
+        .args(["completion", "zsh"])
         .assert()
         .success();
 }
 
 #[test]
-fn completions_fish() {
+fn completion_fish() {
     Command::cargo_bin("cfgd")
         .unwrap()
-        .args(["completions", "fish"])
+        .args(["completion", "fish"])
         .assert()
         .success();
+}
+
+// The `completions` (plural) alias is retained for back-compat; this guards
+// against accidental removal of `alias = "completions"` in cli/mod.rs.
+#[test]
+fn completions_alias_still_works() {
+    Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["completions", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cfgd"));
 }
 
 // --- status with valid config ---
