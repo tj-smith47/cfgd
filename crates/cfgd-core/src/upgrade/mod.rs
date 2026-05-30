@@ -1,6 +1,5 @@
 // Self-update — query GitHub releases, download, verify, atomic install
 
-use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -15,6 +14,17 @@ use crate::output::{Printer, Role};
 const GITHUB_API_BASE: &str = "https://api.github.com";
 const GITHUB_API_BASE_ENV: &str = "CFGD_GITHUB_API_BASE";
 const DEFAULT_REPO: &str = "tj-smith47/cfgd";
+
+/// OIDC issuer asserted by the keyless cosign signature: the GitHub Actions
+/// OIDC provider that mints the workflow identity token during the release run.
+const COSIGN_OIDC_ISSUER: &str = "https://token.actions.githubusercontent.com";
+
+/// Certificate-identity regexp pinning the signer to cfgd's release workflow.
+/// Matches the Fulcio SAN URI for `.github/workflows/release.yml` on any ref of
+/// the canonical repo, so a signature minted by any other workflow (or repo) is
+/// rejected even if it chains to a valid Fulcio root.
+const COSIGN_IDENTITY_REGEXP: &str =
+    r"^https://github\.com/tj-smith47/cfgd/\.github/workflows/release\.yml@";
 
 /// Resolve the GitHub Releases API base URL. Tests set CFGD_GITHUB_API_BASE
 /// to redirect at a mockito server; production calls fall through to the
@@ -205,10 +215,20 @@ pub fn find_asset_for_platform(
     release: &ReleaseInfo,
 ) -> std::result::Result<&ReleaseAsset, UpgradeError> {
     let os = std::env::consts::OS;
-    let archive_arch = std::env::consts::ARCH;
+    let rust_arch = std::env::consts::ARCH;
 
     let archive_os = match os {
         "macos" => "darwin",
+        other => other,
+    };
+
+    // anodizer names archives with the Go arch (`{{ .Arch }}`: amd64/arm64),
+    // not the Rust arch (`x86_64`/`aarch64`). Match the Go name first; tolerate
+    // the Rust-arch name as a fallback so a release built under either naming
+    // convention still resolves.
+    let go_arch = match rust_arch {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
         other => other,
     };
 
@@ -218,73 +238,90 @@ pub fn find_asset_for_platform(
     let archive_suffix = ".tar.gz";
     #[cfg(windows)]
     let archive_suffix = ".zip";
-    let expected_name = format!(
-        "cfgd-{}-{}-{}{}",
-        version_str, archive_os, archive_arch, archive_suffix
-    );
+    let candidates = [
+        format!("cfgd-{version_str}-{archive_os}-{go_arch}{archive_suffix}"),
+        format!("cfgd-{version_str}-{archive_os}-{rust_arch}{archive_suffix}"),
+    ];
 
     release
         .assets
         .iter()
-        .find(|a| a.name == expected_name)
+        .find(|a| candidates.iter().any(|c| c == &a.name))
         .ok_or_else(|| UpgradeError::NoAsset {
             os: archive_os.to_string(),
-            arch: archive_arch.to_string(),
+            arch: go_arch.to_string(),
         })
 }
 
-/// Find the checksums asset for a release.
-fn find_checksums_asset(release: &ReleaseInfo) -> Option<&ReleaseAsset> {
-    release
-        .assets
-        .iter()
-        .find(|a| a.name.ends_with("-checksums.txt"))
+/// Find the per-artifact checksum asset (`<archive>.sha256`) for `archive_name`.
+/// anodizer signs checksums with `split: true`, producing one bare-hash file
+/// per artifact rather than a single combined `checksums.txt`.
+fn find_checksum_asset<'a>(
+    release: &'a ReleaseInfo,
+    archive_name: &str,
+) -> Option<&'a ReleaseAsset> {
+    let expected = format!("{archive_name}.sha256");
+    release.assets.iter().find(|a| a.name == expected)
 }
 
-/// Find the cosign signature bundle for the checksums asset. Produced by the
-/// `checksum-cosign` entry in `.anodizer.yaml`.
-fn find_cosign_bundle_asset(release: &ReleaseInfo) -> Option<&ReleaseAsset> {
-    release
-        .assets
-        .iter()
-        .find(|a| a.name.ends_with("-checksums.txt.cosign.bundle"))
+/// Find the keyless cosign signature bundle for the per-artifact checksum
+/// asset. anodizer signs each `<archive>.sha256` file, producing a sibling
+/// `<archive>.sha256.cosign.bundle`.
+fn find_cosign_bundle_asset<'a>(
+    release: &'a ReleaseInfo,
+    checksum_asset_name: &str,
+) -> Option<&'a ReleaseAsset> {
+    let expected = format!("{checksum_asset_name}.cosign.bundle");
+    release.assets.iter().find(|a| a.name == expected)
 }
 
-/// Find a cosign public key asset, if shipped with the release.
-fn find_cosign_public_key_asset(release: &ReleaseInfo) -> Option<&ReleaseAsset> {
-    release
-        .assets
-        .iter()
-        .find(|a| a.name == "cosign.pub" || a.name.ends_with("-cosign.pub"))
+/// Find a separately-published Fulcio certificate for the checksum asset, if
+/// the release attaches one (`<archive>.sha256.cosign.pem`). Keyless bundles
+/// normally embed the certificate, so this is usually absent — when present it
+/// is passed to `cosign verify-blob --certificate`.
+fn find_cosign_cert_asset<'a>(
+    release: &'a ReleaseInfo,
+    checksum_asset_name: &str,
+) -> Option<&'a ReleaseAsset> {
+    let expected = format!("{checksum_asset_name}.cosign.pem");
+    release.assets.iter().find(|a| a.name == expected)
 }
 
-/// Verify `checksums_path` against the release's cosign bundle + public key if
-/// all pieces are present and the `cosign` CLI is installed.
+/// Verify `checksums_path` against the release's keyless cosign bundle if the
+/// bundle is attached and the `cosign` CLI is installed. The bundle signs the
+/// per-artifact `<archive>.sha256` file named by `checksum_asset_name`.
+///
+/// Verification is keyless (Fulcio/OIDC + Rekor): there is no published public
+/// key. The signer identity is pinned by [`COSIGN_OIDC_ISSUER`] and
+/// [`COSIGN_IDENTITY_REGEXP`]. A separately-published Fulcio certificate
+/// (`<archive>.sha256.cosign.pem`), if present, is passed via `--certificate`;
+/// otherwise the cert embedded in the bundle is used.
 ///
 /// Behavior depends on `require_cosign`:
 ///
-/// * **`require_cosign = false`** (default): graceful degradation. Missing
-///   bundle, missing public key, or missing cosign CLI all return
-///   `Ok(VerificationMode::Sha256Only)` after surfacing a `Role::Warn` so the
-///   caller falls back to SHA256-only verification. A successful cosign
-///   verify returns `Ok(VerificationMode::Cosign)`. An *explicit* cosign
-///   verify failure (binary present, pieces present, bad signature) returns
-///   `Err` — never proceed in that case.
+/// * **`require_cosign = false`** (default): graceful degradation. A missing
+///   bundle or missing cosign CLI returns `Ok(VerificationMode::Sha256Only)`
+///   after surfacing a `Role::Warn` so the caller falls back to SHA256-only
+///   verification. A successful cosign verify returns
+///   `Ok(VerificationMode::Cosign)`. An *explicit* cosign verify failure
+///   (binary present, bundle present, bad signature) returns `Err` — never
+///   proceed in that case.
 ///
 /// * **`require_cosign = true`** (caller opted into strict mode via
-///   `--require-cosign` / `CFGD_REQUIRE_COSIGN`): any of the three skip
-///   conditions returns `Err(UpgradeError::CosignRequired { .. })` naming the
-///   specific missing piece, blocking the upgrade. A successful verify
-///   returns `Ok(VerificationMode::StrictCosignRequired)` so the structured
-///   payload records that strict mode was honored.
+///   `--require-cosign` / `CFGD_REQUIRE_COSIGN`): either skip condition
+///   returns `Err(UpgradeError::CosignRequired { .. })` naming the specific
+///   missing piece, blocking the upgrade. A successful verify returns
+///   `Ok(VerificationMode::StrictCosignRequired)` so the structured payload
+///   records that strict mode was honored.
 fn verify_cosign_bundle(
     checksums_path: &Path,
+    checksum_asset_name: &str,
     release: &ReleaseInfo,
     tmp_dir: &Path,
     require_cosign: bool,
     printer: Option<&Printer>,
 ) -> std::result::Result<VerificationMode, UpgradeError> {
-    let Some(bundle_asset) = find_cosign_bundle_asset(release) else {
+    let Some(bundle_asset) = find_cosign_bundle_asset(release, checksum_asset_name) else {
         let reason = "no cosign bundle attached to release";
         if require_cosign {
             return Err(UpgradeError::CosignRequired {
@@ -293,18 +330,6 @@ fn verify_cosign_bundle(
         }
         if let Some(p) = printer {
             p.status_simple(Role::Warn, "no cosign bundle attached to release — falling back to SHA256-only checksum verification. Downgrades publisher-compromise resistance to GitHub Releases trust.");
-        }
-        return Ok(VerificationMode::Sha256Only);
-    };
-    let Some(pub_key_asset) = find_cosign_public_key_asset(release) else {
-        let reason = "cosign bundle found but no cosign.pub attached to release";
-        if require_cosign {
-            return Err(UpgradeError::CosignRequired {
-                reason: reason.to_string(),
-            });
-        }
-        if let Some(p) = printer {
-            p.status_simple(Role::Warn, "cosign bundle found but no public key attached to release — cannot verify without cosign.pub. Falling back to SHA256-only.");
         }
         return Ok(VerificationMode::Sha256Only);
     };
@@ -323,11 +348,19 @@ fn verify_cosign_bundle(
 
     let bundle_path = tmp_dir.join(&bundle_asset.name);
     download_to_file(&bundle_asset.download_url, &bundle_path, printer)?;
-    let pub_key_path = tmp_dir.join(&pub_key_asset.name);
-    download_to_file(&pub_key_asset.download_url, &pub_key_path, printer)?;
+
+    // Keyless bundles embed the Fulcio cert, so a separate cert asset is
+    // usually absent; download and pass it only when the release publishes one.
+    let cert_path = if let Some(cert_asset) = find_cosign_cert_asset(release, checksum_asset_name) {
+        let path = tmp_dir.join(&cert_asset.name);
+        download_to_file(&cert_asset.download_url, &path, printer)?;
+        Some(path)
+    } else {
+        None
+    };
 
     let verify_spinner = printer.map(|p| p.spinner("Verifying cosign signature..."));
-    let outcome = run_cosign_verify_blob(checksums_path, &bundle_path, &pub_key_path);
+    let outcome = run_cosign_verify_blob(checksums_path, &bundle_path, cert_path.as_deref());
     match &outcome {
         Ok(()) => {
             if let Some(s) = verify_spinner {
@@ -352,21 +385,34 @@ fn verify_cosign_bundle(
     })
 }
 
-/// Run `cosign verify-blob --key ... --bundle ... -- <checksums>` and translate
-/// the outcome into `Ok(())` / `Err(UpgradeError::DownloadFailed)`.
+/// Run keyless `cosign verify-blob --bundle ... [--certificate ...]
+/// --certificate-oidc-issuer ... --certificate-identity-regexp ... --
+/// <checksums>` and translate the outcome into `Ok(())` /
+/// `Err(UpgradeError::DownloadFailed)`.
+///
+/// `cert_path` is supplied only when the release publishes a standalone Fulcio
+/// certificate; keyless bundles normally embed the cert, in which case the
+/// `--certificate` flag is omitted.
 ///
 /// Extracted from [`verify_cosign_bundle`] so the cosign-shelling branches are
-/// testable through the `CFGD_COSIGN_BIN` shim (see `oci/sign/tests.rs`)
-/// without staging downloads through a mock HTTP server.
+/// testable through the `CFGD_COSIGN_BIN` shim (see `test_helpers`) without
+/// staging downloads through a mock HTTP server.
 fn run_cosign_verify_blob(
     checksums_path: &Path,
     bundle_path: &Path,
-    pub_key_path: &Path,
+    cert_path: Option<&Path>,
 ) -> std::result::Result<(), UpgradeError> {
-    let output = crate::cosign_cmd()
-        .arg("verify-blob")
-        .arg(format!("--key={}", pub_key_path.display()))
-        .arg(format!("--bundle={}", bundle_path.display()))
+    let mut cmd = crate::cosign_cmd();
+    cmd.arg("verify-blob")
+        .arg(format!("--bundle={}", bundle_path.display()));
+    if let Some(cert) = cert_path {
+        cmd.arg(format!("--certificate={}", cert.display()));
+    }
+    let output = cmd
+        .arg(format!("--certificate-oidc-issuer={COSIGN_OIDC_ISSUER}"))
+        .arg(format!(
+            "--certificate-identity-regexp={COSIGN_IDENTITY_REGEXP}"
+        ))
         .arg("--")
         .arg(checksums_path)
         .output();
@@ -462,19 +508,6 @@ fn download_to_file(
     Ok(())
 }
 
-/// Parse a checksums.txt file into a map of filename -> hex SHA256.
-fn parse_checksums(content: &str) -> HashMap<String, String> {
-    content
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.split_whitespace();
-            let hash = parts.next()?;
-            let filename = parts.next()?;
-            Some((filename.to_string(), hash.to_lowercase()))
-        })
-        .collect()
-}
-
 /// Compute the SHA256 hex digest of a file.
 fn sha256_file(path: &Path) -> std::result::Result<String, UpgradeError> {
     let bytes = fs::read(path).map_err(|e| UpgradeError::DownloadFailed {
@@ -483,36 +516,36 @@ fn sha256_file(path: &Path) -> std::result::Result<String, UpgradeError> {
     Ok(crate::sha256_hex(&bytes))
 }
 
-/// Verify that the archive at `archive_path` matches the SHA256 listed for
-/// `asset_name` inside the goreleaser-style `checksums.txt` body.
+/// Verify that the archive at `archive_path` matches the SHA256 published in
+/// its per-artifact checksum file (anodizer's split `{{ .Artifact }}.sha256`,
+/// which holds the bare hash of the single archive it covers). An optional
+/// trailing filename column (`<hash>  <file>`) is tolerated so a
+/// combined-style single line verifies too.
 ///
-/// Three error branches, each distinct on the wire so operators can tell them
-/// apart in incident triage:
-/// * `ChecksumsEmpty` — `parse_checksums` produced no entries (truncation /
-///   wrong file served).
-/// * `ChecksumMissing` — the file parsed but `asset_name` is not in the list
-///   (stripped-line attack or upload race).
-/// * `ChecksumMismatch` — the file is listed but the local SHA differs
+/// Two error branches, distinct on the wire so operators can tell them apart
+/// in incident triage:
+/// * `ChecksumsEmpty` — the checksum file was empty / whitespace-only
+///   (truncation, wrong file served).
+/// * `ChecksumMismatch` — a hash was present but the local SHA differs
 ///   (genuine corruption or interception).
 ///
-/// Pure helper — split out so the three branches are testable without
-/// downloading anything.
+/// `ChecksumMissing` is surfaced one layer up (in `download_and_install_to`)
+/// when no `<archive>.sha256` asset is attached to the release at all.
+///
+/// Pure helper — split out so the branches are testable without downloading
+/// anything.
 fn verify_archive_checksum(
     archive_path: &Path,
-    checksums_content: &str,
+    checksum_body: &str,
     asset_name: &str,
 ) -> std::result::Result<(), UpgradeError> {
-    let checksums = parse_checksums(checksums_content);
-    if checksums.is_empty() {
-        return Err(UpgradeError::ChecksumsEmpty);
-    }
-    let Some(expected) = checksums.get(asset_name) else {
-        return Err(UpgradeError::ChecksumMissing {
-            file: asset_name.to_string(),
-        });
-    };
+    let expected = checksum_body
+        .split_whitespace()
+        .next()
+        .ok_or(UpgradeError::ChecksumsEmpty)?
+        .to_lowercase();
     let actual = sha256_file(archive_path)?;
-    if actual != *expected {
+    if actual != expected {
         return Err(UpgradeError::ChecksumMismatch {
             file: asset_name.to_string(),
         });
@@ -561,10 +594,11 @@ pub(crate) fn download_and_install_to(
     // Download archive
     download_to_file(&asset.download_url, &archive_path, printer)?;
 
-    // Download and verify checksum if available
-    let verification_mode = if let Some(checksums_asset) = find_checksums_asset(release) {
-        let checksums_path = tmp_dir.path().join(&checksums_asset.name);
-        download_to_file(&checksums_asset.download_url, &checksums_path, printer)?;
+    // Download and verify the per-artifact checksum (`<archive>.sha256`).
+    let verification_mode = if let Some(checksum_asset) = find_checksum_asset(release, &asset.name)
+    {
+        let checksums_path = tmp_dir.path().join(&checksum_asset.name);
+        download_to_file(&checksum_asset.download_url, &checksums_path, printer)?;
 
         // Best-effort cosign verification of the checksums file. Bounds
         // publisher-compromise risk: a malicious release uploader cannot
@@ -574,6 +608,7 @@ pub(crate) fn download_and_install_to(
         // silent fallback to SHA256-only.
         let mode = verify_cosign_bundle(
             &checksums_path,
+            &checksum_asset.name,
             release,
             tmp_dir.path(),
             require_cosign,

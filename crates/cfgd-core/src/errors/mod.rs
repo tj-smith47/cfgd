@@ -337,10 +337,10 @@ pub enum UpgradeError {
     #[error("checksum verification failed for {file}")]
     ChecksumMismatch { file: String },
 
-    #[error("{file} is not listed in checksums.txt")]
+    #[error("no checksum (.sha256) published for {file}")]
     ChecksumMissing { file: String },
 
-    #[error("checksums.txt parsed but empty — release is malformed")]
+    #[error("published checksum file was empty or malformed")]
     ChecksumsEmpty,
 
     #[error("failed to install binary: {message}")]

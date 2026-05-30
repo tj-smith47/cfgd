@@ -16,29 +16,6 @@ fn current_version_is_valid_semver() {
 }
 
 #[test]
-fn parse_checksums_basic() {
-    let content =
-        "abc123  cfgd-0.2.0-linux-x86_64.tar.gz\ndef456  cfgd-0.2.0-darwin-aarch64.tar.gz\n";
-    let map = parse_checksums(content);
-    assert_eq!(map.len(), 2);
-    assert_eq!(
-        map.get("cfgd-0.2.0-linux-x86_64.tar.gz"),
-        Some(&"abc123".to_string())
-    );
-    assert_eq!(
-        map.get("cfgd-0.2.0-darwin-aarch64.tar.gz"),
-        Some(&"def456".to_string())
-    );
-}
-
-#[test]
-fn parse_checksums_empty_lines() {
-    let content = "\nabc123  foo.tar.gz\n\n";
-    let map = parse_checksums(content);
-    assert_eq!(map.len(), 1);
-}
-
-#[test]
 fn parse_release_json_valid() {
     let json = r#"{
             "tag_name": "v0.2.0",
@@ -119,6 +96,40 @@ fn find_asset_matches_current_platform() {
 }
 
 #[test]
+fn find_asset_resolves_go_arch_name() {
+    // anodizer names archives with the Go arch (amd64/arm64), NOT the Rust
+    // arch (x86_64/aarch64). Regression: the client built the Rust-arch name
+    // and so never matched a real release — `cfgd upgrade` died with
+    // "no release found for linux/x86_64" against a release that shipped
+    // cfgd-<v>-linux-amd64.tar.gz.
+    let os = std::env::consts::OS;
+    let archive_os = if os == "macos" { "darwin" } else { os };
+    let go_arch = match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        other => other,
+    };
+    #[cfg(unix)]
+    let suffix = ".tar.gz";
+    #[cfg(windows)]
+    let suffix = ".zip";
+    let go_name = format!("cfgd-9.9.0-{archive_os}-{go_arch}{suffix}");
+
+    let release = ReleaseInfo {
+        tag: "v9.9.0".into(),
+        version: Version::new(9, 9, 0),
+        assets: vec![ReleaseAsset {
+            name: go_name.clone(),
+            download_url: "https://example.com/go".into(),
+            size: 1024,
+        }],
+    };
+
+    let asset = find_asset_for_platform(&release).expect("must resolve the Go-arch archive name");
+    assert_eq!(asset.name, go_name);
+}
+
+#[test]
 fn find_asset_returns_error_when_missing() {
     let release = ReleaseInfo {
         tag: "v0.2.0".into(),
@@ -162,21 +173,29 @@ fn write_temp_archive(content: &[u8]) -> tempfile::NamedTempFile {
 }
 
 #[test]
-fn verify_archive_checksum_accepts_matching_sha() {
+fn verify_archive_checksum_accepts_bare_hash() {
+    // anodizer's split checksum file (`{{ .Artifact }}.sha256`) contains only
+    // the bare hash of the one archive it covers — no filename column.
     let archive = write_temp_archive(b"hello world");
-    let checksums = format!("{HELLO_WORLD_SHA256}  cfgd_x86_64-unknown-linux-gnu.tar.gz\n");
-    super::verify_archive_checksum(
-        archive.path(),
-        &checksums,
-        "cfgd_x86_64-unknown-linux-gnu.tar.gz",
-    )
-    .expect("matching SHA must succeed");
+    let body = format!("{HELLO_WORLD_SHA256}\n");
+    super::verify_archive_checksum(archive.path(), &body, "cfgd-9.9.0-linux-amd64.tar.gz")
+        .expect("matching bare-hash SHA must succeed");
+}
+
+#[test]
+fn verify_archive_checksum_accepts_hash_with_filename_column() {
+    // Tolerate the combined-style `<hash>  <file>` single line too, so the
+    // verifier works whether the producer emits split or combined checksums.
+    let archive = write_temp_archive(b"hello world");
+    let body = format!("{HELLO_WORLD_SHA256}  cfgd-9.9.0-linux-amd64.tar.gz\n");
+    super::verify_archive_checksum(archive.path(), &body, "cfgd-9.9.0-linux-amd64.tar.gz")
+        .expect("matching SHA with filename column must succeed");
 }
 
 #[test]
 fn verify_archive_checksum_rejects_empty_checksums_with_dedicated_variant() {
-    // Distinct from ChecksumMissing — operators triaging "checksums.txt was
-    // truncated by CDN" need to see ChecksumsEmpty, not "asset not listed."
+    // Distinct from ChecksumMissing — operators triaging "the .sha256 was
+    // truncated by CDN" need to see ChecksumsEmpty, not "no checksum published."
     let archive = write_temp_archive(b"hello world");
     let err = super::verify_archive_checksum(archive.path(), "", "cfgd.tar.gz").unwrap_err();
     assert!(
@@ -187,8 +206,7 @@ fn verify_archive_checksum_rejects_empty_checksums_with_dedicated_variant() {
 
 #[test]
 fn verify_archive_checksum_rejects_whitespace_only_checksums() {
-    // parse_checksums skips lines that don't have two tokens — purely
-    // whitespace input parses to an empty map and must surface ChecksumsEmpty.
+    // Whitespace-only input has no hash token and must surface ChecksumsEmpty.
     let archive = write_temp_archive(b"hello world");
     let err =
         super::verify_archive_checksum(archive.path(), "   \n\t\n", "cfgd.tar.gz").unwrap_err();
@@ -196,32 +214,58 @@ fn verify_archive_checksum_rejects_whitespace_only_checksums() {
 }
 
 #[test]
-fn verify_archive_checksum_returns_missing_when_asset_not_in_list() {
-    // The archive downloaded fine but checksums.txt does not list it. This
-    // is distinct from a SHA *mismatch* — see the rustdoc on the helper.
-    let archive = write_temp_archive(b"hello world");
-    let checksums = format!("{HELLO_WORLD_SHA256}  some-other-asset.tar.gz\n");
-    let err = super::verify_archive_checksum(archive.path(), &checksums, "cfgd_linux.tar.gz")
-        .unwrap_err();
-    match err {
-        crate::errors::UpgradeError::ChecksumMissing { file } => {
-            assert_eq!(file, "cfgd_linux.tar.gz");
-        }
-        other => panic!("expected ChecksumMissing, got: {other:?}"),
-    }
+fn find_checksum_asset_matches_per_artifact_sha256() {
+    // Split checksums: each archive gets its own `<archive>.sha256` asset.
+    let archive = "cfgd-9.9.0-linux-amd64.tar.gz";
+    let release = ReleaseInfo {
+        tag: "v9.9.0".into(),
+        version: Version::new(9, 9, 0),
+        assets: vec![
+            ReleaseAsset {
+                name: format!("{archive}.sha256"),
+                download_url: "https://example.com/sha".into(),
+                size: 64,
+            },
+            ReleaseAsset {
+                name: "cfgd-9.9.0-linux-arm64.tar.gz.sha256".into(),
+                download_url: "https://example.com/other".into(),
+                size: 64,
+            },
+        ],
+    };
+    let found =
+        super::find_checksum_asset(&release, archive).expect("must find per-artifact sha256");
+    assert_eq!(found.name, format!("{archive}.sha256"));
+    assert_eq!(found.download_url, "https://example.com/sha");
+}
+
+#[test]
+fn find_checksum_asset_absent_returns_none() {
+    // No `<archive>.sha256` attached → None (callers surface ChecksumMissing).
+    let release = ReleaseInfo {
+        tag: "v9.9.0".into(),
+        version: Version::new(9, 9, 0),
+        assets: vec![ReleaseAsset {
+            name: "cfgd-9.9.0-linux-amd64.tar.gz".into(),
+            download_url: "https://example.com/archive".into(),
+            size: 1024,
+        }],
+    };
+    assert!(super::find_checksum_asset(&release, "cfgd-9.9.0-linux-amd64.tar.gz").is_none());
 }
 
 #[test]
 fn verify_archive_checksum_returns_mismatch_when_sha_differs() {
-    // Local archive content disagrees with what checksums.txt advertises.
-    // Genuine corruption or in-flight interception — distinct from missing.
+    // Local archive content disagrees with the published hash.
+    // Genuine corruption or in-flight interception.
     let archive = write_temp_archive(b"tampered content");
-    let checksums = format!("{HELLO_WORLD_SHA256}  cfgd_linux.tar.gz\n");
-    let err = super::verify_archive_checksum(archive.path(), &checksums, "cfgd_linux.tar.gz")
-        .unwrap_err();
+    let body = format!("{HELLO_WORLD_SHA256}\n");
+    let err =
+        super::verify_archive_checksum(archive.path(), &body, "cfgd-9.9.0-linux-amd64.tar.gz")
+            .unwrap_err();
     match err {
         crate::errors::UpgradeError::ChecksumMismatch { file } => {
-            assert_eq!(file, "cfgd_linux.tar.gz");
+            assert_eq!(file, "cfgd-9.9.0-linux-amd64.tar.gz");
         }
         other => panic!("expected ChecksumMismatch, got: {other:?}"),
     }
@@ -230,11 +274,11 @@ fn verify_archive_checksum_returns_mismatch_when_sha_differs() {
 #[test]
 fn verify_archive_checksum_propagates_read_failure_as_download_failed() {
     // Unreadable archive surfaces through sha256_file → DownloadFailed.
-    let checksums = format!("{HELLO_WORLD_SHA256}  cfgd_linux.tar.gz\n");
+    let body = format!("{HELLO_WORLD_SHA256}\n");
     let err = super::verify_archive_checksum(
         std::path::Path::new("/nonexistent/path/to/archive.tar.gz"),
-        &checksums,
-        "cfgd_linux.tar.gz",
+        &body,
+        "cfgd-9.9.0-linux-amd64.tar.gz",
     )
     .unwrap_err();
     match err {
@@ -247,32 +291,13 @@ fn verify_archive_checksum_propagates_read_failure_as_download_failed() {
 
 #[test]
 fn verify_archive_checksum_is_case_insensitive_on_hex() {
-    // parse_checksums lowercases before storing — verify the helper
-    // still matches when the checksums file uses uppercase hex (some
-    // signers emit `SHA256SUMS` with capitalized digests).
+    // The helper lowercases the published hash before comparing, so an
+    // uppercase-hex `.sha256` (some signers emit capitalized digests) matches.
     let archive = write_temp_archive(b"hello world");
     let upper = HELLO_WORLD_SHA256.to_uppercase();
-    let checksums = format!("{upper}  cfgd_linux.tar.gz\n");
-    super::verify_archive_checksum(archive.path(), &checksums, "cfgd_linux.tar.gz")
+    let body = format!("{upper}\n");
+    super::verify_archive_checksum(archive.path(), &body, "cfgd-9.9.0-linux-amd64.tar.gz")
         .expect("uppercase hex must still match after lowercase normalization");
-}
-
-#[test]
-fn verify_archive_checksum_picks_correct_entry_when_multiple_assets_listed() {
-    let archive = write_temp_archive(b"hello world");
-    let checksums = format!(
-        "{HELLO_WORLD_SHA256}  cfgd_linux.tar.gz\n\
-         deadbeef00000000000000000000000000000000000000000000000000000000  cfgd_macos.tar.gz\n\
-         cafebabe00000000000000000000000000000000000000000000000000000000  cfgd_windows.zip\n"
-    );
-    super::verify_archive_checksum(archive.path(), &checksums, "cfgd_linux.tar.gz")
-        .expect("must match the linux entry");
-    let err = super::verify_archive_checksum(archive.path(), &checksums, "cfgd_macos.tar.gz")
-        .unwrap_err();
-    assert!(
-        matches!(err, crate::errors::UpgradeError::ChecksumMismatch { ref file } if file == "cfgd_macos.tar.gz"),
-        "wrong asset must surface as mismatch on the macos entry: {err:?}"
-    );
 }
 
 #[test]
@@ -531,20 +556,13 @@ fn download_and_install_checksum_mismatch_detection() {
         tar_builder.finish().unwrap();
     }
 
-    // Create a checksums file with WRONG hash
-    let checksums =
-        "deadbeef00000000000000000000000000000000000000000000000000000000  cfgd-test.tar.gz\n";
-    let parsed = parse_checksums(checksums);
-    assert_eq!(
-        parsed.get("cfgd-test.tar.gz").unwrap(),
-        "deadbeef00000000000000000000000000000000000000000000000000000000"
-    );
-
-    // The actual hash of the tarball should NOT match the fake hash
-    let actual_hash = sha256_file(&tarball_path).unwrap();
-    assert_ne!(
-        actual_hash, "deadbeef00000000000000000000000000000000000000000000000000000000",
-        "real hash should differ from fake"
+    // A per-artifact .sha256 advertising the WRONG hash must surface as a
+    // ChecksumMismatch against the real tarball.
+    let wrong = "deadbeef00000000000000000000000000000000000000000000000000000000\n";
+    let err = super::verify_archive_checksum(&tarball_path, wrong, "cfgd-test.tar.gz").unwrap_err();
+    assert!(
+        matches!(err, crate::errors::UpgradeError::ChecksumMismatch { .. }),
+        "wrong published hash must surface as mismatch: {err:?}"
     );
 }
 
@@ -621,73 +639,18 @@ fn find_asset_no_matching_platform() {
     if std::env::consts::ARCH != "mips" {
         let err = result.unwrap_err();
         let msg = err.to_string();
+        // NoAsset reports the Go arch (amd64/arm64) — it matches the names
+        // anodizer actually publishes, so it points the user at the right asset.
+        let go_arch = match std::env::consts::ARCH {
+            "x86_64" => "amd64",
+            "aarch64" => "arm64",
+            other => other,
+        };
         assert!(
-            msg.contains(std::env::consts::ARCH),
-            "error should mention the current arch: {msg}"
+            msg.contains(go_arch),
+            "error should mention the current Go arch: {msg}"
         );
     }
-}
-
-#[test]
-fn parse_checksums_with_multiple_entries() {
-    let content = "abc123  file1.tar.gz\ndef456  file2.tar.gz\n";
-    let parsed = parse_checksums(content);
-    assert_eq!(parsed.get("file1.tar.gz").unwrap(), "abc123");
-    assert_eq!(parsed.get("file2.tar.gz").unwrap(), "def456");
-}
-
-#[test]
-fn parse_checksums_ignores_malformed_lines() {
-    let content = "abc123  good.tar.gz\nbadline\n  \nabc456  another.tar.gz\n";
-    let parsed = parse_checksums(content);
-    assert_eq!(parsed.len(), 2);
-    assert_eq!(parsed.get("good.tar.gz").unwrap(), "abc123");
-    assert_eq!(parsed.get("another.tar.gz").unwrap(), "abc456");
-}
-
-#[test]
-fn parse_checksums_normalizes_to_lowercase() {
-    let content = "ABCDEF123456  mixed-case.tar.gz\n";
-    let parsed = parse_checksums(content);
-    assert_eq!(parsed.get("mixed-case.tar.gz").unwrap(), "abcdef123456");
-}
-
-#[test]
-fn find_checksums_asset_finds_by_suffix() {
-    let release = ReleaseInfo {
-        tag: "v0.5.0".into(),
-        version: Version::new(0, 5, 0),
-        assets: vec![
-            ReleaseAsset {
-                name: "cfgd-0.5.0-linux-x86_64.tar.gz".into(),
-                download_url: "https://example.com/binary".into(),
-                size: 5000,
-            },
-            ReleaseAsset {
-                name: "cfgd-0.5.0-checksums.txt".into(),
-                download_url: "https://example.com/checksums".into(),
-                size: 256,
-            },
-        ],
-    };
-    let asset = find_checksums_asset(&release);
-    assert!(asset.is_some());
-    assert_eq!(asset.unwrap().name, "cfgd-0.5.0-checksums.txt");
-}
-
-#[test]
-fn find_checksums_asset_none_when_missing() {
-    let release = ReleaseInfo {
-        tag: "v0.5.0".into(),
-        version: Version::new(0, 5, 0),
-        assets: vec![ReleaseAsset {
-            name: "cfgd-0.5.0-linux-x86_64.tar.gz".into(),
-            download_url: "https://example.com/binary".into(),
-            size: 5000,
-        }],
-    };
-    let asset = find_checksums_asset(&release);
-    assert!(asset.is_none());
 }
 
 #[test]
@@ -867,71 +830,70 @@ fn check_with_cache_returns_error_when_cached_version_is_unparseable() {
 }
 
 #[test]
-fn find_checksums_asset_picks_checksums_txt_over_other_assets() {
+fn find_checksum_asset_picks_matching_per_artifact_sha256() {
+    let archive = "cfgd-1.0.0-linux-amd64.tar.gz";
     let release = ReleaseInfo {
         tag: "v1.0.0".into(),
         version: Version::new(1, 0, 0),
         assets: vec![
             ReleaseAsset {
-                name: "cfgd-1.0.0-linux-x86_64.tar.gz".into(),
+                name: archive.into(),
                 download_url: "https://example.com/binary".into(),
                 size: 10000,
             },
+            // A different artifact's checksum must NOT be picked.
             ReleaseAsset {
-                name: "SHA256SUMS".into(),
-                download_url: "https://example.com/sha256sums".into(),
-                size: 512,
+                name: "cfgd-1.0.0-linux-arm64.tar.gz.sha256".into(),
+                download_url: "https://example.com/wrong".into(),
+                size: 64,
             },
             ReleaseAsset {
-                name: "cfgd-1.0.0-checksums.txt".into(),
-                download_url: "https://example.com/checksums".into(),
-                size: 256,
+                name: format!("{archive}.sha256"),
+                download_url: "https://example.com/checksum".into(),
+                size: 64,
             },
         ],
     };
 
-    let asset = find_checksums_asset(&release);
+    let asset = find_checksum_asset(&release, archive);
     assert!(asset.is_some());
-    // find_checksums_asset looks for names ending in "-checksums.txt"
-    assert_eq!(asset.unwrap().name, "cfgd-1.0.0-checksums.txt");
-    assert_eq!(asset.unwrap().download_url, "https://example.com/checksums");
+    assert_eq!(asset.unwrap().name, format!("{archive}.sha256"));
+    assert_eq!(asset.unwrap().download_url, "https://example.com/checksum");
 }
 
 #[test]
-fn find_checksums_asset_returns_none_for_non_matching_names() {
-    // SHA256SUMS does not match the -checksums.txt suffix pattern
+fn find_checksum_asset_returns_none_when_only_other_artifacts_have_checksums() {
     let release = ReleaseInfo {
         tag: "v2.0.0".into(),
         version: Version::new(2, 0, 0),
         assets: vec![
             ReleaseAsset {
-                name: "cfgd-2.0.0-linux-x86_64.tar.gz".into(),
+                name: "cfgd-2.0.0-linux-amd64.tar.gz".into(),
                 download_url: "https://example.com/binary".into(),
                 size: 10000,
             },
             ReleaseAsset {
-                name: "SHA256SUMS".into(),
-                download_url: "https://example.com/sha256sums".into(),
-                size: 512,
+                name: "cfgd-2.0.0-linux-arm64.tar.gz.sha256".into(),
+                download_url: "https://example.com/other".into(),
+                size: 64,
             },
         ],
     };
 
-    let asset = find_checksums_asset(&release);
     assert!(
-        asset.is_none(),
-        "SHA256SUMS does not end with -checksums.txt, so should not match"
+        find_checksum_asset(&release, "cfgd-2.0.0-linux-amd64.tar.gz").is_none(),
+        "no .sha256 for the amd64 archive → None"
     );
 }
 
 #[test]
-fn find_checksums_asset_empty_assets() {
+fn find_checksum_asset_empty_assets() {
     let release = ReleaseInfo {
         tag: "v1.0.0".into(),
         version: Version::new(1, 0, 0),
         assets: vec![],
     };
-    assert!(find_checksums_asset(&release).is_none());
+    assert!(find_checksum_asset(&release, "cfgd-1.0.0-linux-amd64.tar.gz").is_none());
 }
 
 #[test]
@@ -1485,28 +1447,29 @@ fn find_asset_empty_assets_returns_error() {
     assert!(find_asset_for_platform(&release).is_err());
 }
 
-// --- find_checksums_asset: various patterns ---
+// --- find_checksum_asset: various patterns ---
 
 #[test]
-fn find_checksums_asset_matches_version_prefixed() {
+fn find_checksum_asset_matches_version_prefixed_archive() {
+    let archive = "cfgd-3.0.0-linux-amd64.tar.gz";
     let release = ReleaseInfo {
         tag: "v3.0.0".into(),
         version: Version::new(3, 0, 0),
         assets: vec![
             ReleaseAsset {
-                name: "cfgd-3.0.0-linux-x86_64.tar.gz".into(),
+                name: archive.into(),
                 download_url: "https://example.com/bin".into(),
                 size: 5000,
             },
             ReleaseAsset {
-                name: "cfgd-3.0.0-checksums.txt".into(),
+                name: format!("{archive}.sha256"),
                 download_url: "https://example.com/sums".into(),
-                size: 128,
+                size: 64,
             },
         ],
     };
-    let asset = find_checksums_asset(&release).unwrap();
-    assert_eq!(asset.name, "cfgd-3.0.0-checksums.txt");
+    let asset = find_checksum_asset(&release, archive).unwrap();
+    assert_eq!(asset.name, format!("{archive}.sha256"));
     assert_eq!(asset.download_url, "https://example.com/sums");
 }
 
@@ -1820,37 +1783,6 @@ fn strip_tag_prefix_double_v() {
     assert_eq!(strip_tag_prefix("vv1.0.0"), "v1.0.0");
 }
 
-// --- parse_checksums edge cases ---
-
-#[test]
-fn parse_checksums_extra_whitespace_between_fields() {
-    let content = "abc123    file.tar.gz\n";
-    let map = parse_checksums(content);
-    assert_eq!(map.len(), 1);
-    // split_whitespace handles multiple spaces
-    assert_eq!(map.get("file.tar.gz").unwrap(), "abc123");
-}
-
-#[test]
-fn parse_checksums_tab_separated() {
-    let content = "abc123\tfile.tar.gz\n";
-    let map = parse_checksums(content);
-    assert_eq!(map.len(), 1);
-    assert_eq!(map.get("file.tar.gz").unwrap(), "abc123");
-}
-
-#[test]
-fn parse_checksums_duplicate_filename_last_wins() {
-    let content = "first_hash  file.tar.gz\nsecond_hash  file.tar.gz\n";
-    let map = parse_checksums(content);
-    assert_eq!(map.len(), 1);
-    assert_eq!(
-        map.get("file.tar.gz").unwrap(),
-        "second_hash",
-        "last occurrence should win in HashMap"
-    );
-}
-
 // --- download_to_file with content-length header ---
 
 #[test]
@@ -1985,85 +1917,85 @@ fn release_with_assets(names: &[&str]) -> ReleaseInfo {
     }
 }
 
+const ARCHIVE_1_0_0: &str = "cfgd-1.0.0-linux-amd64.tar.gz";
+
 #[test]
-fn find_cosign_bundle_asset_locates_by_suffix() {
-    let release = release_with_assets(&[
-        "cfgd-1.0.0-linux-x86_64.tar.gz",
-        "cfgd-1.0.0-checksums.txt",
-        "cfgd-1.0.0-checksums.txt.cosign.bundle",
-    ]);
-    let found = find_cosign_bundle_asset(&release).expect("bundle must be located by suffix");
-    assert_eq!(found.name, "cfgd-1.0.0-checksums.txt.cosign.bundle");
+fn find_cosign_bundle_asset_locates_per_artifact_bundle() {
+    // anodizer signs each `<archive>.sha256` with keyless cosign, producing a
+    // sibling `<archive>.sha256.cosign.bundle`.
+    let checksum = format!("{ARCHIVE_1_0_0}.sha256");
+    let bundle = format!("{checksum}.cosign.bundle");
+    let release = release_with_assets(&[ARCHIVE_1_0_0, &checksum, &bundle]);
+    let found =
+        find_cosign_bundle_asset(&release, &checksum).expect("bundle must be located by name");
+    assert_eq!(found.name, bundle);
 }
 
 #[test]
 fn find_cosign_bundle_asset_returns_none_when_no_bundle() {
-    // checksums.txt present but no .cosign.bundle — verifier must fall back.
-    let release =
-        release_with_assets(&["cfgd-1.0.0-linux-x86_64.tar.gz", "cfgd-1.0.0-checksums.txt"]);
-    assert!(find_cosign_bundle_asset(&release).is_none());
+    // sha256 present but no .cosign.bundle — verifier must fall back.
+    let checksum = format!("{ARCHIVE_1_0_0}.sha256");
+    let release = release_with_assets(&[ARCHIVE_1_0_0, &checksum]);
+    assert!(find_cosign_bundle_asset(&release, &checksum).is_none());
 }
 
 #[test]
 fn find_cosign_bundle_asset_ignores_lookalike_names() {
-    // Suffix is exact: ".cosign.bundle" must come at the end.
+    // Name is exact: a `.bak` suffix or a different artifact's bundle must not
+    // match this checksum asset's bundle.
+    let checksum = format!("{ARCHIVE_1_0_0}.sha256");
     let release = release_with_assets(&[
-        "cosign.bundle.txt",
-        "cfgd-1.0.0-checksums.txt.cosign.bundle.bak",
+        &format!("{checksum}.cosign.bundle.bak"),
+        "cfgd-1.0.0-linux-arm64.tar.gz.sha256.cosign.bundle",
     ]);
     assert!(
-        find_cosign_bundle_asset(&release).is_none(),
-        "non-matching suffix must not be selected"
+        find_cosign_bundle_asset(&release, &checksum).is_none(),
+        "non-matching name must not be selected"
     );
 }
 
 #[test]
 fn find_cosign_bundle_asset_empty_release_yields_none() {
     let release = release_with_assets(&[]);
-    assert!(find_cosign_bundle_asset(&release).is_none());
+    assert!(find_cosign_bundle_asset(&release, &format!("{ARCHIVE_1_0_0}.sha256")).is_none());
 }
 
-// --- find_cosign_public_key_asset ---
+// --- find_cosign_cert_asset ---
 
 #[test]
-fn find_cosign_public_key_asset_matches_bare_cosign_pub() {
+fn find_cosign_cert_asset_locates_per_artifact_cert() {
+    // A standalone Fulcio cert is published as `<archive>.sha256.cosign.pem`.
+    let checksum = format!("{ARCHIVE_1_0_0}.sha256");
+    let cert = format!("{checksum}.cosign.pem");
+    let release = release_with_assets(&[ARCHIVE_1_0_0, &checksum, &cert]);
+    let found = find_cosign_cert_asset(&release, &checksum).expect("cert must be located by name");
+    assert_eq!(found.name, cert);
+}
+
+#[test]
+fn find_cosign_cert_asset_returns_none_when_absent() {
+    // Keyless bundles embed the cert, so the standalone .pem is usually absent
+    // → None → verify-blob runs without --certificate.
+    let checksum = format!("{ARCHIVE_1_0_0}.sha256");
     let release = release_with_assets(&[
-        "cfgd-1.0.0-linux-x86_64.tar.gz",
-        "cosign.pub",
-        "cfgd-1.0.0-checksums.txt",
-    ]);
-    let found = find_cosign_public_key_asset(&release).expect("bare cosign.pub must be located");
-    assert_eq!(found.name, "cosign.pub");
-}
-
-#[test]
-fn find_cosign_public_key_asset_matches_versioned_cosign_pub() {
-    let release = release_with_assets(&["cfgd-1.0.0-cosign.pub"]);
-    let found = find_cosign_public_key_asset(&release)
-        .expect("versioned -cosign.pub variant must match the suffix branch");
-    assert_eq!(found.name, "cfgd-1.0.0-cosign.pub");
-}
-
-#[test]
-fn find_cosign_public_key_asset_returns_none_when_missing() {
-    let release = release_with_assets(&[
-        "cfgd-1.0.0-linux-x86_64.tar.gz",
-        "cfgd-1.0.0-checksums.txt",
-        "cfgd-1.0.0-checksums.txt.cosign.bundle",
+        ARCHIVE_1_0_0,
+        &checksum,
+        &format!("{checksum}.cosign.bundle"),
     ]);
     assert!(
-        find_cosign_public_key_asset(&release).is_none(),
-        "no key → cosign verify is skipped (caller falls back to SHA256-only)"
+        find_cosign_cert_asset(&release, &checksum).is_none(),
+        "no .cosign.pem → embedded cert is used"
     );
 }
 
 #[test]
-fn find_cosign_public_key_asset_does_not_match_pub_anywhere() {
-    // ".pub" inside the name (not as exact-name or suffix-after-hyphen) must
-    // not match — pin the contract so a future loose-match refactor doesn't
-    // accidentally pick up `cosign.public-key.bin` or similar names.
-    let release = release_with_assets(&["cosign.publickey", "another.pub.bak"]);
-    assert!(find_cosign_public_key_asset(&release).is_none());
+fn find_cosign_cert_asset_ignores_lookalike_names() {
+    let checksum = format!("{ARCHIVE_1_0_0}.sha256");
+    let release = release_with_assets(&[
+        &format!("{checksum}.cosign.pem.bak"),
+        "cfgd-1.0.0-linux-arm64.tar.gz.sha256.cosign.pem",
+    ]);
+    assert!(find_cosign_cert_asset(&release, &checksum).is_none());
 }
 
 // --- check_with_cache + check_latest via mockito ---
@@ -2176,40 +2108,50 @@ mod cosign_verify_blob {
     use crate::test_helpers::CosignTestShim;
     use serial_test::serial;
 
-    fn dummy_paths() -> (
-        tempfile::TempDir,
-        std::path::PathBuf,
-        std::path::PathBuf,
-        std::path::PathBuf,
-    ) {
+    fn dummy_paths() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
         let dir = tempfile::TempDir::new().expect("tempdir");
-        let checksums = dir.path().join("checksums.txt");
-        let bundle = dir.path().join("bundle.json");
-        let pub_key = dir.path().join("cosign.pub");
-        std::fs::write(&checksums, "deadbeef  some.tar.gz\n").unwrap();
+        let checksums = dir.path().join("cfgd-9.9.0-linux-amd64.tar.gz.sha256");
+        let bundle = dir
+            .path()
+            .join("cfgd-9.9.0-linux-amd64.tar.gz.sha256.cosign.bundle");
+        std::fs::write(&checksums, "deadbeef\n").unwrap();
         std::fs::write(&bundle, "{}").unwrap();
-        std::fs::write(&pub_key, "key").unwrap();
-        (dir, checksums, bundle, pub_key)
+        (dir, checksums, bundle)
     }
 
     #[test]
     #[serial]
-    fn run_cosign_verify_blob_passes_key_bundle_and_checksums_paths() {
+    fn run_cosign_verify_blob_emits_keyless_argv_without_key_flag() {
         let shim = CosignTestShim::install();
-        let (_dir, checksums, bundle, pub_key) = dummy_paths();
-        run_cosign_verify_blob(&checksums, &bundle, &pub_key).expect("happy path → Ok");
+        let (_dir, checksums, bundle) = dummy_paths();
+        // No standalone cert → rely on the cert embedded in the keyless bundle.
+        run_cosign_verify_blob(&checksums, &bundle, None).expect("happy path → Ok");
         let argv = shim.argv_log();
         assert!(
             argv.contains("verify-blob"),
             "argv must use verify-blob subcommand: {argv}"
         );
         assert!(
-            argv.contains(&format!("--key={}", pub_key.display())),
-            "argv must include --key=<pub_key path>: {argv}"
-        );
-        assert!(
             argv.contains(&format!("--bundle={}", bundle.display())),
             "argv must include --bundle=<bundle path>: {argv}"
+        );
+        // Keyless verification: identity + issuer pinned, NO --key.
+        assert!(
+            argv.contains("--certificate-identity-regexp="),
+            "argv must pin the signer identity regexp: {argv}"
+        );
+        assert!(
+            argv.contains("--certificate-oidc-issuer="),
+            "argv must pin the OIDC issuer: {argv}"
+        );
+        assert!(
+            !argv.contains("--key"),
+            "keyless verify must NOT pass --key: {argv}"
+        );
+        // No standalone cert was supplied → --certificate omitted (embedded cert).
+        assert!(
+            !argv.contains("--certificate="),
+            "without a standalone cert, --certificate must be omitted: {argv}"
         );
         // The "--" terminator separates the cosign flags from the file argument.
         assert!(
@@ -2220,14 +2162,35 @@ mod cosign_verify_blob {
 
     #[test]
     #[serial]
+    fn run_cosign_verify_blob_passes_certificate_when_standalone_cert_present() {
+        let shim = CosignTestShim::install();
+        let (dir, checksums, bundle) = dummy_paths();
+        let cert = dir
+            .path()
+            .join("cfgd-9.9.0-linux-amd64.tar.gz.sha256.cosign.pem");
+        std::fs::write(&cert, "-----BEGIN CERTIFICATE-----\n").unwrap();
+        run_cosign_verify_blob(&checksums, &bundle, Some(cert.as_path())).expect("happy path → Ok");
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains(&format!("--certificate={}", cert.display())),
+            "a standalone cert must be passed via --certificate: {argv}"
+        );
+        assert!(
+            !argv.contains("--key"),
+            "keyless verify must NOT pass --key even with a standalone cert: {argv}"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn run_cosign_verify_blob_propagates_failure_with_stderr_message() {
         let _shim = CosignTestShim::builder()
             .with_exit(1)
             .with_stderr("signature does not match")
             .install();
-        let (_dir, checksums, bundle, pub_key) = dummy_paths();
+        let (_dir, checksums, bundle) = dummy_paths();
         let err =
-            run_cosign_verify_blob(&checksums, &bundle, &pub_key).expect_err("non-zero exit → Err");
+            run_cosign_verify_blob(&checksums, &bundle, None).expect_err("non-zero exit → Err");
         let msg = format!("{err}");
         assert!(
             msg.contains("signature does not match"),
@@ -2249,9 +2212,9 @@ mod cosign_verify_blob {
             std::env::set_var("CFGD_COSIGN_BIN", "/no/such/cosign/binary");
             std::env::remove_var("CFGD_FAKE_COSIGN_LOG");
         }
-        let (_dir, checksums, bundle, pub_key) = dummy_paths();
-        let err = run_cosign_verify_blob(&checksums, &bundle, &pub_key)
-            .expect_err("missing binary → Err");
+        let (_dir, checksums, bundle) = dummy_paths();
+        let err =
+            run_cosign_verify_blob(&checksums, &bundle, None).expect_err("missing binary → Err");
         let msg = format!("{err}");
         assert!(
             msg.contains("cosign invocation failed"),
@@ -2321,37 +2284,37 @@ mod download_and_install_to {
         buf
     }
 
-    /// Compose a `<sha>  <name>` checksums.txt body for one asset.
-    fn checksums_line(sha: &str, name: &str) -> String {
-        format!("{sha}  {name}\n")
+    const ARCHIVE: &str = "cfgd-9.9.9-linux-amd64.tar.gz";
+
+    /// Compose a bare-hash `.sha256` body (anodizer's `split: true` form — the
+    /// hash only, no filename column).
+    fn checksum_body(sha: &str) -> String {
+        format!("{sha}\n")
     }
 
-    /// Build a `ReleaseInfo` whose assets all point at the mockito server.
-    /// Returns the release plus the index of the primary `cfgd-...tar.gz`
-    /// asset within `release.assets`.
+    /// Build a `ReleaseInfo` whose assets resolve to mockito URLs and follow
+    /// the real anodizer contract: a binary archive, its per-artifact
+    /// `<archive>.sha256` (bare hash), and the keyless
+    /// `<archive>.sha256.cosign.bundle`. No `cosign.pub` — verification is
+    /// keyless. The primary archive is `release.assets[0]`.
     fn release_with_full_signature_chain(server_url: &str) -> ReleaseInfo {
         ReleaseInfo {
             tag: "v9.9.9".into(),
             version: Version::new(9, 9, 9),
             assets: vec![
                 ReleaseAsset {
-                    name: "cfgd-9.9.9-linux-x86_64.tar.gz".into(),
+                    name: ARCHIVE.into(),
                     download_url: format!("{server_url}/download/cfgd.tar.gz"),
                     size: 0,
                 },
                 ReleaseAsset {
-                    name: "cfgd-9.9.9-checksums.txt".into(),
+                    name: format!("{ARCHIVE}.sha256"),
                     download_url: format!("{server_url}/download/checksums.txt"),
                     size: 0,
                 },
                 ReleaseAsset {
-                    name: "cfgd-9.9.9-checksums.txt.cosign.bundle".into(),
+                    name: format!("{ARCHIVE}.sha256.cosign.bundle"),
                     download_url: format!("{server_url}/download/cosign.bundle"),
-                    size: 0,
-                },
-                ReleaseAsset {
-                    name: "cosign.pub".into(),
-                    download_url: format!("{server_url}/download/cosign.pub"),
                     size: 0,
                 },
             ],
@@ -2366,8 +2329,7 @@ mod download_and_install_to {
         let binary_content = b"#!/bin/sh\necho fake cfgd binary\n";
         let tarball = build_tarball(binary_content);
         let sha = crate::sha256_hex(&tarball);
-        let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
-        let checksums = checksums_line(&sha, asset_name);
+        let checksums = checksum_body(&sha);
 
         let mut server = mockito::Server::new();
         let _m_archive = server
@@ -2384,11 +2346,6 @@ mod download_and_install_to {
             .mock("GET", "/download/cosign.bundle")
             .with_status(200)
             .with_body("{}")
-            .create();
-        let _m_pubkey = server
-            .mock("GET", "/download/cosign.pub")
-            .with_status(200)
-            .with_body("dummy-key")
             .create();
 
         let release = release_with_full_signature_chain(&server.url());
@@ -2431,8 +2388,7 @@ mod download_and_install_to {
         let binary_content = b"#!/bin/sh\necho printer cfgd binary\n";
         let tarball = build_tarball(binary_content);
         let sha = crate::sha256_hex(&tarball);
-        let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
-        let checksums = checksums_line(&sha, asset_name);
+        let checksums = checksum_body(&sha);
 
         let mut server = mockito::Server::new();
         // Mockito does not set Content-Length unless we ask, so download_to_file
@@ -2452,11 +2408,6 @@ mod download_and_install_to {
             .mock("GET", "/download/cosign.bundle")
             .with_status(200)
             .with_body("{}")
-            .create();
-        let _m_pubkey = server
-            .mock("GET", "/download/cosign.pub")
-            .with_status(200)
-            .with_body("dummy-key")
             .create();
 
         let release = release_with_full_signature_chain(&server.url());
@@ -2540,8 +2491,7 @@ mod download_and_install_to {
             .install();
         let tarball = build_tarball(b"binary");
         let sha = crate::sha256_hex(&tarball);
-        let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
-        let checksums = checksums_line(&sha, asset_name);
+        let checksums = checksum_body(&sha);
 
         let mut server = mockito::Server::new();
         let _m_archive = server
@@ -2558,11 +2508,6 @@ mod download_and_install_to {
             .mock("GET", "/download/cosign.bundle")
             .with_status(200)
             .with_body("{}")
-            .create();
-        let _m_pubkey = server
-            .mock("GET", "/download/cosign.pub")
-            .with_status(200)
-            .with_body("dummy-key")
             .create();
 
         let release = release_with_full_signature_chain(&server.url());
@@ -2586,9 +2531,9 @@ mod download_and_install_to {
         let _shim = CosignTestShim::builder().with_argv_logging(false).install();
         let tarball = build_tarball(b"actual-binary");
         // Compose checksums.txt with a *wrong* SHA so the on-disk SHA differs.
-        let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
+        let asset_name = ARCHIVE;
         let bogus_sha = "0".repeat(64);
-        let checksums = checksums_line(&bogus_sha, asset_name);
+        let checksums = checksum_body(&bogus_sha);
 
         let mut server = mockito::Server::new();
         let _m_archive = server
@@ -2605,11 +2550,6 @@ mod download_and_install_to {
             .mock("GET", "/download/cosign.bundle")
             .with_status(200)
             .with_body("{}")
-            .create();
-        let _m_pubkey = server
-            .mock("GET", "/download/cosign.pub")
-            .with_status(200)
-            .with_body("dummy-key")
             .create();
 
         let release = release_with_full_signature_chain(&server.url());
@@ -2669,8 +2609,7 @@ mod download_and_install_to {
         let _shim = CosignTestShim::builder().with_argv_logging(false).install();
         let tarball = build_tarball_without_binary();
         let sha = crate::sha256_hex(&tarball);
-        let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
-        let checksums = checksums_line(&sha, asset_name);
+        let checksums = checksum_body(&sha);
 
         let mut server = mockito::Server::new();
         let _m_archive = server
@@ -2687,11 +2626,6 @@ mod download_and_install_to {
             .mock("GET", "/download/cosign.bundle")
             .with_status(200)
             .with_body("{}")
-            .create();
-        let _m_pubkey = server
-            .mock("GET", "/download/cosign.pub")
-            .with_status(200)
-            .with_body("dummy-key")
             .create();
 
         let release = release_with_full_signature_chain(&server.url());
@@ -2710,13 +2644,15 @@ mod download_and_install_to {
 
     #[test]
     #[serial]
-    fn returns_checksum_missing_when_asset_not_listed_in_checksums_body() {
-        // checksums.txt names a *different* asset; the SHA for our archive
-        // is therefore not in the parsed map → ChecksumMissing.
+    fn returns_checksum_mismatch_when_sha256_covers_a_different_artifact() {
+        // anodizer's `split: true` checksum file holds the bare hash of the one
+        // artifact it covers. If the served `.sha256` carries some *other*
+        // artifact's hash (mirror mixup, swapped asset), the bare-hash compare
+        // against the downloaded archive differs → ChecksumMismatch.
         let _shim = CosignTestShim::builder().with_argv_logging(false).install();
         let tarball = build_tarball(b"binary");
-        let sha = crate::sha256_hex(&tarball);
-        let checksums = checksums_line(&sha, "some-other-asset.tar.gz");
+        let other_sha = crate::sha256_hex(b"some-other-artifact-bytes");
+        let checksums = checksum_body(&other_sha);
 
         let mut server = mockito::Server::new();
         let _m_archive = server
@@ -2734,11 +2670,6 @@ mod download_and_install_to {
             .with_status(200)
             .with_body("{}")
             .create();
-        let _m_pubkey = server
-            .mock("GET", "/download/cosign.pub")
-            .with_status(200)
-            .with_body("dummy-key")
-            .create();
 
         let release = release_with_full_signature_chain(&server.url());
         let asset = release.assets[0].clone();
@@ -2746,11 +2677,11 @@ mod download_and_install_to {
         let target = target_dir.path().join("cfgd");
 
         let err = download_and_install_to(&release, &asset, &target, false, None)
-            .expect_err("asset name not in checksums → Err");
+            .expect_err("sha256 of a different artifact → Err");
         let msg = err.to_string();
         assert!(
-            msg.contains(&asset.name) && msg.contains("not listed"),
-            "error names the asset whose checksum entry is missing: {msg}"
+            msg.to_ascii_lowercase().contains("checksum") && msg.contains(&asset.name),
+            "error names the asset whose checksum did not match: {msg}"
         );
     }
 
@@ -2768,8 +2699,8 @@ mod download_and_install_to {
         let binary_content = b"binary";
         let tarball = build_tarball(binary_content);
         let sha = crate::sha256_hex(&tarball);
-        let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
-        let checksums = checksums_line(&sha, asset_name);
+        let asset_name = ARCHIVE;
+        let checksums = checksum_body(&sha);
 
         let mut server = mockito::Server::new();
         let _m_archive = server
@@ -2793,7 +2724,7 @@ mod download_and_install_to {
                     size: 0,
                 },
                 ReleaseAsset {
-                    name: "cfgd-9.9.9-checksums.txt".into(),
+                    name: format!("{ARCHIVE}.sha256"),
                     download_url: format!("{}/download/checksums.txt", server.url()),
                     size: 0,
                 },
@@ -2814,7 +2745,12 @@ mod download_and_install_to {
         assert_eq!(std::fs::read(&target).unwrap(), binary_content);
     }
 
-    /// Bundle missing → verify_cosign_bundle returns Ok(false) and emits the
+    /// The per-artifact checksum asset name that the keyless bundle finder
+    /// derives `<name>.cosign.bundle` (and the optional cert finder
+    /// `<name>.cosign.pem`) from. Mirrors anodizer's `split: true` shape.
+    const CHECKSUM_ASSET: &str = "cfgd-9.9.9-linux-x86_64.tar.gz.sha256";
+
+    /// Bundle missing → verify_cosign_bundle returns `Sha256Only` and emits the
     /// "no cosign bundle" warning when a printer is supplied. Pin the warning
     /// text shape so a future change can't silently downgrade publisher-
     /// compromise resistance without an operator-visible message.
@@ -2822,15 +2758,21 @@ mod download_and_install_to {
     #[serial]
     fn verify_cosign_bundle_emits_warning_when_no_bundle_attached() {
         let _shim = CosignTestShim::builder().with_argv_logging(false).install();
-        let release = release_with_assets(&["cfgd-9.9.9-linux-x86_64.tar.gz"]);
+        let release = release_with_assets(&["cfgd-9.9.9-linux-x86_64.tar.gz", CHECKSUM_ASSET]);
         let tmp = tempfile::tempdir().unwrap();
-        let checksums_path = tmp.path().join("checksums.txt");
+        let checksums_path = tmp.path().join(CHECKSUM_ASSET);
         std::fs::write(&checksums_path, "").unwrap();
 
         let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
-        let outcome =
-            verify_cosign_bundle(&checksums_path, &release, tmp.path(), false, Some(&printer))
-                .expect("missing bundle is graceful-degrade, not Err");
+        let outcome = verify_cosign_bundle(
+            &checksums_path,
+            CHECKSUM_ASSET,
+            &release,
+            tmp.path(),
+            false,
+            Some(&printer),
+        )
+        .expect("missing bundle is graceful-degrade, not Err");
         assert_eq!(
             outcome,
             VerificationMode::Sha256Only,
@@ -2843,35 +2785,9 @@ mod download_and_install_to {
         );
     }
 
-    /// Bundle present but no public key → still graceful-degrade with a
-    /// distinct warning that names the missing piece (cosign.pub).
-    #[test]
-    #[serial]
-    fn verify_cosign_bundle_emits_warning_when_no_public_key_attached() {
-        let _shim = CosignTestShim::builder().with_argv_logging(false).install();
-        let release = release_with_assets(&[
-            "cfgd-9.9.9-linux-x86_64.tar.gz",
-            "cfgd-9.9.9-checksums.txt.cosign.bundle",
-        ]);
-        let tmp = tempfile::tempdir().unwrap();
-        let checksums_path = tmp.path().join("checksums.txt");
-        std::fs::write(&checksums_path, "").unwrap();
-
-        let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
-        let outcome =
-            verify_cosign_bundle(&checksums_path, &release, tmp.path(), false, Some(&printer))
-                .expect("missing pubkey is graceful-degrade, not Err");
-        assert_eq!(outcome, VerificationMode::Sha256Only);
-        let captured = buf.lock().unwrap().clone();
-        assert!(
-            captured.contains("no public key attached") && captured.contains("cosign.pub"),
-            "warning must name the missing cosign.pub asset: {captured}"
-        );
-    }
-
-    /// Bundle + pubkey present but the cosign CLI is "missing" (env shim
-    /// points at a path that does not exist) → graceful-degrade with the
-    /// install-hint warning. Drives the `require_cosign().is_err()` arm.
+    /// Bundle present but the cosign CLI is "missing" (env shim points at a
+    /// path that does not exist) → graceful-degrade with the install-hint
+    /// warning. Drives the `require_cosign().is_err()` arm.
     #[test]
     #[serial]
     fn verify_cosign_bundle_emits_warning_when_cosign_cli_missing() {
@@ -2895,17 +2811,23 @@ mod download_and_install_to {
 
         let release = release_with_assets(&[
             "cfgd-9.9.9-linux-x86_64.tar.gz",
-            "cfgd-9.9.9-checksums.txt.cosign.bundle",
-            "cosign.pub",
+            CHECKSUM_ASSET,
+            &format!("{CHECKSUM_ASSET}.cosign.bundle"),
         ]);
         let tmp = tempfile::tempdir().unwrap();
-        let checksums_path = tmp.path().join("checksums.txt");
+        let checksums_path = tmp.path().join(CHECKSUM_ASSET);
         std::fs::write(&checksums_path, "").unwrap();
 
         let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
-        let outcome =
-            verify_cosign_bundle(&checksums_path, &release, tmp.path(), false, Some(&printer))
-                .expect("missing cosign CLI is graceful-degrade, not Err");
+        let outcome = verify_cosign_bundle(
+            &checksums_path,
+            CHECKSUM_ASSET,
+            &release,
+            tmp.path(),
+            false,
+            Some(&printer),
+        )
+        .expect("missing cosign CLI is graceful-degrade, not Err");
         assert_eq!(outcome, VerificationMode::Sha256Only);
         let captured = buf.lock().unwrap().clone();
         assert!(
@@ -2917,7 +2839,7 @@ mod download_and_install_to {
     // ---- strict mode (--require-cosign / CFGD_REQUIRE_COSIGN=1) -------------
     //
     // Threat model: a network attacker who can swap both the cfgd archive AND
-    // the checksums.txt download (compromised mirror, MITM against
+    // the per-artifact `.sha256` download (compromised mirror, MITM against
     // objects.githubusercontent.com) gets a fully-trusted upgrade on any host
     // that doesn't have cosign installed locally. Strict mode shifts the
     // policy from "warn and proceed" to "block the upgrade" so unattended
@@ -2930,13 +2852,20 @@ mod download_and_install_to {
     #[serial]
     fn verify_cosign_bundle_strict_fails_when_no_bundle_in_release() {
         let _shim = CosignTestShim::builder().with_argv_logging(false).install();
-        let release = release_with_assets(&["cfgd-9.9.9-linux-x86_64.tar.gz"]);
+        let release = release_with_assets(&["cfgd-9.9.9-linux-x86_64.tar.gz", CHECKSUM_ASSET]);
         let tmp = tempfile::tempdir().unwrap();
-        let checksums_path = tmp.path().join("checksums.txt");
+        let checksums_path = tmp.path().join(CHECKSUM_ASSET);
         std::fs::write(&checksums_path, "").unwrap();
 
-        let err = verify_cosign_bundle(&checksums_path, &release, tmp.path(), true, None)
-            .expect_err("strict mode + missing bundle must Err, not graceful-degrade");
+        let err = verify_cosign_bundle(
+            &checksums_path,
+            CHECKSUM_ASSET,
+            &release,
+            tmp.path(),
+            true,
+            None,
+        )
+        .expect_err("strict mode + missing bundle must Err, not graceful-degrade");
         assert!(
             matches!(err, crate::errors::UpgradeError::CosignRequired { .. }),
             "expected CosignRequired variant, got: {err:?}"
@@ -2945,33 +2874,6 @@ mod download_and_install_to {
         assert!(
             msg.contains("no cosign bundle"),
             "error message must name the specific missing piece (bundle): {msg}"
-        );
-    }
-
-    /// Strict mode + bundle present but no public key → `Err(CosignRequired)`
-    /// naming the missing `cosign.pub`.
-    #[test]
-    #[serial]
-    fn verify_cosign_bundle_strict_fails_when_no_pubkey_attached() {
-        let _shim = CosignTestShim::builder().with_argv_logging(false).install();
-        let release = release_with_assets(&[
-            "cfgd-9.9.9-linux-x86_64.tar.gz",
-            "cfgd-9.9.9-checksums.txt.cosign.bundle",
-        ]);
-        let tmp = tempfile::tempdir().unwrap();
-        let checksums_path = tmp.path().join("checksums.txt");
-        std::fs::write(&checksums_path, "").unwrap();
-
-        let err = verify_cosign_bundle(&checksums_path, &release, tmp.path(), true, None)
-            .expect_err("strict mode + missing pubkey must Err");
-        assert!(
-            matches!(err, crate::errors::UpgradeError::CosignRequired { .. }),
-            "expected CosignRequired variant, got: {err:?}"
-        );
-        let msg = err.to_string();
-        assert!(
-            msg.contains("cosign.pub"),
-            "error message must name the missing cosign.pub: {msg}"
         );
     }
 
@@ -2999,15 +2901,22 @@ mod download_and_install_to {
 
         let release = release_with_assets(&[
             "cfgd-9.9.9-linux-x86_64.tar.gz",
-            "cfgd-9.9.9-checksums.txt.cosign.bundle",
-            "cosign.pub",
+            CHECKSUM_ASSET,
+            &format!("{CHECKSUM_ASSET}.cosign.bundle"),
         ]);
         let tmp = tempfile::tempdir().unwrap();
-        let checksums_path = tmp.path().join("checksums.txt");
+        let checksums_path = tmp.path().join(CHECKSUM_ASSET);
         std::fs::write(&checksums_path, "").unwrap();
 
-        let err = verify_cosign_bundle(&checksums_path, &release, tmp.path(), true, None)
-            .expect_err("strict mode + missing cosign CLI must Err");
+        let err = verify_cosign_bundle(
+            &checksums_path,
+            CHECKSUM_ASSET,
+            &release,
+            tmp.path(),
+            true,
+            None,
+        )
+        .expect_err("strict mode + missing cosign CLI must Err");
         assert!(
             matches!(err, crate::errors::UpgradeError::CosignRequired { .. }),
             "expected CosignRequired variant, got: {err:?}"
@@ -3021,20 +2930,27 @@ mod download_and_install_to {
 
     /// Regression: non-strict mode with no bundle returns `Sha256Only` (not
     /// Err) so the existing graceful-degradation contract continues to hold
-    /// for callers that did not opt in. Mirror of the three "_emits_warning_"
-    /// tests above but expressed against the non-strict default to pin the
+    /// for callers that did not opt in. Mirror of the "_emits_warning_" tests
+    /// above but expressed against the non-strict default to pin the
     /// behavioral contract from the strict-mode side.
     #[test]
     #[serial]
     fn verify_cosign_bundle_non_strict_falls_back_silently() {
         let _shim = CosignTestShim::builder().with_argv_logging(false).install();
-        let release = release_with_assets(&["cfgd-9.9.9-linux-x86_64.tar.gz"]);
+        let release = release_with_assets(&["cfgd-9.9.9-linux-x86_64.tar.gz", CHECKSUM_ASSET]);
         let tmp = tempfile::tempdir().unwrap();
-        let checksums_path = tmp.path().join("checksums.txt");
+        let checksums_path = tmp.path().join(CHECKSUM_ASSET);
         std::fs::write(&checksums_path, "").unwrap();
 
-        let outcome = verify_cosign_bundle(&checksums_path, &release, tmp.path(), false, None)
-            .expect("non-strict mode + missing bundle must return Sha256Only, not Err");
+        let outcome = verify_cosign_bundle(
+            &checksums_path,
+            CHECKSUM_ASSET,
+            &release,
+            tmp.path(),
+            false,
+            None,
+        )
+        .expect("non-strict mode + missing bundle must return Sha256Only, not Err");
         assert_eq!(
             outcome,
             VerificationMode::Sha256Only,
@@ -3042,10 +2958,11 @@ mod download_and_install_to {
         );
     }
 
-    /// Happy path under strict mode: bundle + key + cosign shim all present,
-    /// signature verifies → returns `StrictCosignRequired` (distinct from the
-    /// non-strict `Cosign` mode so audit consumers can tell apart "strict was
-    /// demanded and honored" from "strict happened by default").
+    /// Happy path under strict mode: keyless bundle present (cert embedded, no
+    /// standalone pubkey) and the cosign shim verifies → returns
+    /// `StrictCosignRequired` (distinct from the non-strict `Cosign` mode so
+    /// audit consumers can tell apart "strict was demanded and honored" from
+    /// "strict happened by default").
     #[test]
     #[serial]
     fn verify_cosign_bundle_strict_records_strict_cosign_required_on_success() {
@@ -3054,19 +2971,14 @@ mod download_and_install_to {
             .with_exit(0)
             .install();
 
-        // The bundle + pubkey assets need real URLs that resolve — point them
+        // The keyless bundle asset needs a real URL that resolves — point it
         // at a mockito server so download_to_file inside verify_cosign_bundle
-        // can fetch them.
+        // can fetch it. No pubkey asset: the Fulcio cert is embedded.
         let mut server = mockito::Server::new();
         let _m_bundle = server
             .mock("GET", "/strict/bundle")
             .with_status(200)
             .with_body("{}")
-            .create();
-        let _m_pubkey = server
-            .mock("GET", "/strict/pubkey")
-            .with_status(200)
-            .with_body("dummy-key")
             .create();
 
         let release = ReleaseInfo {
@@ -3079,23 +2991,25 @@ mod download_and_install_to {
                     size: 0,
                 },
                 ReleaseAsset {
-                    name: "cfgd-9.9.9-checksums.txt.cosign.bundle".into(),
+                    name: format!("{CHECKSUM_ASSET}.cosign.bundle"),
                     download_url: format!("{}/strict/bundle", server.url()),
-                    size: 0,
-                },
-                ReleaseAsset {
-                    name: "cosign.pub".into(),
-                    download_url: format!("{}/strict/pubkey", server.url()),
                     size: 0,
                 },
             ],
         };
         let tmp = tempfile::tempdir().unwrap();
-        let checksums_path = tmp.path().join("checksums.txt");
-        std::fs::write(&checksums_path, "deadbeef  some.tar.gz\n").unwrap();
+        let checksums_path = tmp.path().join(CHECKSUM_ASSET);
+        std::fs::write(&checksums_path, "deadbeef\n").unwrap();
 
-        let outcome = verify_cosign_bundle(&checksums_path, &release, tmp.path(), true, None)
-            .expect("strict + all pieces present + cosign exit 0 → Ok");
+        let outcome = verify_cosign_bundle(
+            &checksums_path,
+            CHECKSUM_ASSET,
+            &release,
+            tmp.path(),
+            true,
+            None,
+        )
+        .expect("strict + bundle present + cosign exit 0 → Ok");
         assert_eq!(
             outcome,
             VerificationMode::StrictCosignRequired,
@@ -3119,8 +3033,8 @@ mod download_and_install_to {
         let binary_content = b"#!/bin/sh\necho strict\n";
         let tarball = build_tarball(binary_content);
         let sha = crate::sha256_hex(&tarball);
-        let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
-        let checksums = checksums_line(&sha, asset_name);
+        let asset_name = ARCHIVE;
+        let checksums = checksum_body(&sha);
 
         let mut server = mockito::Server::new();
         let _m_archive = server
@@ -3146,7 +3060,7 @@ mod download_and_install_to {
                     size: 0,
                 },
                 ReleaseAsset {
-                    name: "cfgd-9.9.9-checksums.txt".into(),
+                    name: format!("{ARCHIVE}.sha256"),
                     download_url: format!("{}/download/checksums.txt", server.url()),
                     size: 0,
                 },
@@ -3187,8 +3101,7 @@ mod download_and_install_to {
         let binary_content = b"#!/bin/sh\necho mode\n";
         let tarball = build_tarball(binary_content);
         let sha = crate::sha256_hex(&tarball);
-        let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
-        let checksums = checksums_line(&sha, asset_name);
+        let checksums = checksum_body(&sha);
 
         let mut server = mockito::Server::new();
         let _m_archive = server
@@ -3205,11 +3118,6 @@ mod download_and_install_to {
             .mock("GET", "/download/cosign.bundle")
             .with_status(200)
             .with_body("{}")
-            .create();
-        let _m_pubkey = server
-            .mock("GET", "/download/cosign.pub")
-            .with_status(200)
-            .with_body("dummy-key")
             .create();
 
         let release = release_with_full_signature_chain(&server.url());
@@ -3239,8 +3147,7 @@ mod download_and_install_to {
         let binary_content = b"#!/bin/sh\necho progress-bar cfgd\n";
         let tarball = build_tarball(binary_content);
         let sha = crate::sha256_hex(&tarball);
-        let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
-        let checksums = checksums_line(&sha, asset_name);
+        let checksums = checksum_body(&sha);
 
         let mut server = mockito::Server::new();
         let _m_archive = server
@@ -3260,12 +3167,6 @@ mod download_and_install_to {
             .with_status(200)
             .with_header("content-length", "2")
             .with_body("{}")
-            .create();
-        let _m_pubkey = server
-            .mock("GET", "/download/cosign.pub")
-            .with_status(200)
-            .with_header("content-length", "9")
-            .with_body("dummy-key")
             .create();
 
         let release = release_with_full_signature_chain(&server.url());
@@ -3288,9 +3189,8 @@ mod download_and_install_to {
         // 495-501 of mod.rs) — SHA differs and printer is present.
         let _shim = CosignTestShim::builder().with_argv_logging(false).install();
         let tarball = build_tarball(b"binary");
-        let asset_name = "cfgd-9.9.9-linux-x86_64.tar.gz";
         let bogus_sha = "f".repeat(64);
-        let checksums = checksums_line(&bogus_sha, asset_name);
+        let checksums = checksum_body(&bogus_sha);
 
         let mut server = mockito::Server::new();
         let _m_archive = server
@@ -3307,11 +3207,6 @@ mod download_and_install_to {
             .mock("GET", "/download/cosign.bundle")
             .with_status(200)
             .with_body("{}")
-            .create();
-        let _m_pubkey = server
-            .mock("GET", "/download/cosign.pub")
-            .with_status(200)
-            .with_body("dummy-key")
             .create();
 
         let release = release_with_full_signature_chain(&server.url());
