@@ -14,34 +14,11 @@ echo "=== cfgd E2E Setup ==="
 echo "Registry: $REGISTRY"
 echo "Image tag: $IMAGE_TAG"
 
-# --- Step 0: Clean up stale E2E resources from previous runs ---
-echo "Cleaning up stale E2E resources..."
-
-# Kill stale port-forwards from previous gateway/server test runs
-pkill -f "kubectl.*port-forward.*cfgd" 2>/dev/null || true
-
-# Delete stale E2E namespaces (cfgd-e2e-* but not cfgd-system)
-for ns in $(kubectl get ns -o name 2>/dev/null | grep 'namespace/cfgd-e2e' | sed 's|namespace/||'); do
-    echo "  Deleting stale namespace: $ns"
-    kubectl delete namespace "$ns" --ignore-not-found --wait=false 2>/dev/null || true
-done
-
-# Delete stale Helm test ClusterRoles/ClusterRoleBindings
-for res in clusterrole clusterrolebinding; do
-    for name in $(kubectl get "$res" -o name 2>/dev/null | grep 'cfgd-test' | sed "s|${res}/||" | sed "s|${res}.rbac.authorization.k8s.io/||"); do
-        echo "  Deleting stale $res: $name"
-        kubectl delete "$res" "$name" --ignore-not-found 2>/dev/null || true
-    done
-done
-
-# Delete stale cluster-scoped CRD instances labeled with old E2E runs
-for kind in machineconfig configpolicy driftalert clusterconfigpolicy module; do
-    kubectl delete "$kind" -l cfgd.io/e2e-run --all-namespaces --ignore-not-found 2>/dev/null || true
-done
-
-echo "  Cleanup complete"
-
 # --- Step 1: Verify cluster access ---
+# Stale-resource cleanup (former Step 0) moved to the async cfgd-e2e-janitor
+# CronJob in cfgd-system: it deletes aged cfgd-e2e-* namespaces, cfgd-test
+# RBAC, and orphaned CRD instances off the GHA critical path. See
+# /db/manifests/k3s/namespaces/cfgd-system/e2e-cleanup-cronjob.yaml.
 echo "Verifying cluster access..."
 kubectl cluster-info >/dev/null 2>&1 || {
     echo "ERROR: Cannot reach Kubernetes cluster. Check KUBECONFIG."
@@ -52,6 +29,106 @@ kubectl cluster-info >/dev/null 2>&1 || {
 # RBAC is managed by ArgoCD (see /db/manifests/k3s/namespaces/cfgd-system/e2e-rbac.yaml).
 # This script only verifies the runner SA has what it needs; it does NOT apply RBAC.
 kubectl create namespace cfgd-system 2>/dev/null || true
+
+# --- Step 1c: Serialize on shared cluster state via a coordination Lease ---
+# Two near-simultaneous setups mutate the same cluster-scoped state (CRDs,
+# webhooks, the singleton operator/server deployments, the CSI release). A
+# coordination.k8s.io/Lease named cfgd-e2e-setup serializes them: the holder
+# identity is GITHUB_RUN_ID and a background renewer advances renewTime every
+# third of the duration. If the holder dies, renewTime stops and any waiter
+# steals the lease once it expires — auto-release on holder death without a
+# permanent lock.
+LEASE_NAME="cfgd-e2e-setup"
+LEASE_NS="cfgd-system"
+LEASE_HOLDER="${GITHUB_RUN_ID:-local-$$}"
+LEASE_DURATION_SECONDS=1200
+LEASE_RENEW_PID=""
+
+# Epoch seconds for an RFC3339 (microTime) timestamp, or 0 if unparseable.
+lease_epoch() {
+    local ts="$1"
+    [ -z "$ts" ] && { echo 0; return; }
+    date -u -d "$ts" +%s 2>/dev/null || echo 0
+}
+
+# Current UTC time in the microTime format the Lease API expects.
+lease_now_rfc3339() {
+    date -u +%Y-%m-%dT%H:%M:%S.000000Z
+}
+
+# Write/overwrite the Lease object with us as holder and a fresh renewTime.
+lease_write() {
+    kubectl apply -f - >/dev/null 2>&1 <<LEASEEOF
+apiVersion: coordination.k8s.io/v1
+kind: Lease
+metadata:
+  name: ${LEASE_NAME}
+  namespace: ${LEASE_NS}
+spec:
+  holderIdentity: "${LEASE_HOLDER}"
+  leaseDurationSeconds: ${LEASE_DURATION_SECONDS}
+  renewTime: "$(lease_now_rfc3339)"
+LEASEEOF
+}
+
+# Block until the lease is free (absent, held by us, or expired), then take it.
+acquire_lease() {
+    echo "Acquiring setup lease ${LEASE_NS}/${LEASE_NAME} (holder ${LEASE_HOLDER})..."
+    local deadline=$((SECONDS + LEASE_DURATION_SECONDS))
+    while [ $SECONDS -lt $deadline ]; do
+        local holder renew
+        holder=$(kubectl get lease "$LEASE_NAME" -n "$LEASE_NS" \
+            -o jsonpath='{.spec.holderIdentity}' 2>/dev/null || echo "__none__")
+        if [ "$holder" = "__none__" ] || [ -z "$holder" ] || [ "$holder" = "$LEASE_HOLDER" ]; then
+            lease_write && { echo "  Lease acquired"; return 0; }
+        else
+            renew=$(kubectl get lease "$LEASE_NAME" -n "$LEASE_NS" \
+                -o jsonpath='{.spec.renewTime}' 2>/dev/null || echo "")
+            local renew_epoch now_epoch
+            renew_epoch=$(lease_epoch "$renew")
+            now_epoch=$(date -u +%s)
+            if [ $((now_epoch - renew_epoch)) -gt "$LEASE_DURATION_SECONDS" ]; then
+                echo "  Lease held by ${holder} is expired — stealing"
+                lease_write && { echo "  Lease acquired"; return 0; }
+            else
+                echo "  Lease held by ${holder}; waiting..."
+            fi
+        fi
+        sleep 5
+    done
+    echo "ERROR: Could not acquire setup lease within ${LEASE_DURATION_SECONDS}s"
+    exit 1
+}
+
+# Renew in the background so a long setup never lets the lease expire under it.
+# The subshell clears the inherited EXIT trap so killing it can't re-enter
+# release_lease.
+start_lease_renewer() {
+    (
+        trap - EXIT
+        while true; do
+            sleep $((LEASE_DURATION_SECONDS / 3))
+            lease_write || true
+        done
+    ) &
+    LEASE_RENEW_PID=$!
+}
+
+# Release on any exit: stop the renewer, then delete the Lease only if we still
+# hold it (never yank a lease another run legitimately stole after our death).
+release_lease() {
+    [ -n "$LEASE_RENEW_PID" ] && kill "$LEASE_RENEW_PID" 2>/dev/null || true
+    local holder
+    holder=$(kubectl get lease "$LEASE_NAME" -n "$LEASE_NS" \
+        -o jsonpath='{.spec.holderIdentity}' 2>/dev/null || echo "")
+    if [ "$holder" = "$LEASE_HOLDER" ]; then
+        kubectl delete lease "$LEASE_NAME" -n "$LEASE_NS" --ignore-not-found >/dev/null 2>&1 || true
+    fi
+}
+trap release_lease EXIT
+
+acquire_lease
+start_lease_renewer
 
 echo "Checking runner permissions..."
 PREFLIGHT_OK=true
@@ -117,6 +194,70 @@ pull_with_fallback rust:1.94-slim-bookworm
 pull_with_fallback golang:1.25
 
 echo "Building Docker images..."
+
+# Last-green SHA is persisted per image+branch in a cfgd-system ConfigMap so it
+# survives ARC runner churn (runners are ephemeral; no host state persists).
+# A registry annotation store was rejected: distribution v2 (registry:2) has no
+# arbitrary key-value annotation API, only image manifests.
+LAST_GREEN_CM="cfgd-e2e-last-green"
+E2E_BRANCH="${GITHUB_REF_NAME:-$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)}"
+# ConfigMap keys must match [-._a-zA-Z0-9]; branch names may contain '/'.
+E2E_BRANCH_KEY="${E2E_BRANCH//[^-._a-zA-Z0-9]/_}"
+
+# Read the last-green SHA for an image on this branch. Empty on any miss
+# (no ConfigMap, no key, unreachable apiserver) so callers fail OPEN → build.
+last_green_sha() {
+    local image="$1"
+    kubectl get configmap "$LAST_GREEN_CM" -n cfgd-system \
+        -o jsonpath="{.data.${image}_${E2E_BRANCH_KEY}}" 2>/dev/null || echo ""
+}
+
+# Persist the current HEAD as the last-green SHA for an image on this branch.
+# Best-effort: a write failure must not fail the run (next run just rebuilds).
+record_green_sha() {
+    local image="$1"
+    kubectl create configmap "$LAST_GREEN_CM" -n cfgd-system \
+        --from-literal="${image}_${E2E_BRANCH_KEY}=${GIT_SHA}" \
+        --dry-run=client -o yaml 2>/dev/null \
+        | kubectl apply -f - 2>/dev/null || true
+}
+
+GIT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo "")"
+
+# Decide whether an image's inputs changed since its last-green SHA. Prints
+# "build" or "skip". Fails OPEN (prints "build") on ANY uncertainty: missing
+# last-green SHA, unreadable git history, or an empty diff range. Never skips
+# and ships a stale image. Inputs = the image's own crate dir(s), the shared
+# Cargo.lock + Cargo.toml, and the image's Dockerfile — all relative to
+# REPO_ROOT so `git diff` paths resolve regardless of CWD.
+# Usage: image_decision <image> <dockerfile_relpath> <path>...
+image_decision() {
+    local image="$1" dockerfile="$2"; shift 2
+    local paths=("$dockerfile" "$@")
+
+    local last_green
+    last_green="$(last_green_sha "$image")"
+    if [ -z "$last_green" ]; then
+        echo "build"
+        return 0
+    fi
+    if [ -z "$GIT_SHA" ]; then
+        echo "build"
+        return 0
+    fi
+    # A last-green SHA absent from local history (force-push, shallow clone)
+    # means we cannot trust the diff → build.
+    if ! git -C "$REPO_ROOT" cat-file -e "${last_green}^{commit}" 2>/dev/null; then
+        echo "build"
+        return 0
+    fi
+    if git -C "$REPO_ROOT" diff --quiet "$last_green" "$GIT_SHA" -- "${paths[@]}" 2>/dev/null; then
+        echo "skip"
+        return 0
+    fi
+    echo "build"
+}
+
 # buildx + GHA cache: unchanged layers restore from per-image scope cache
 # instead of recompiling. Gated on SCCACHE_GHA_ENABLED so local invocations
 # without GHA cache fall back to a plain `docker buildx build --load`.
@@ -128,60 +269,117 @@ build_image() {
     fi
     docker "${args[@]}"
 }
-build_image "$REPO_ROOT/Dockerfile" \
-    "${REGISTRY}/cfgd:${IMAGE_TAG}" "$REPO_ROOT" cfgd
-build_image "$REPO_ROOT/Dockerfile.operator" \
-    "${REGISTRY}/cfgd-operator:${IMAGE_TAG}" "$REPO_ROOT" cfgd-operator
-build_image "$REPO_ROOT/Dockerfile.csi" \
-    "${REGISTRY}/cfgd-csi:${IMAGE_TAG}" "$REPO_ROOT" cfgd-csi
-build_image "$REPO_ROOT/function-cfgd/Dockerfile" \
-    "${REGISTRY}/function-cfgd:${IMAGE_TAG}" "$REPO_ROOT/function-cfgd" function-cfgd
 
-echo "Tagging and pushing images to $REGISTRY..."
-# Also tag as :latest so ArgoCD-managed deployments pick up the new code
-for img in cfgd cfgd-operator cfgd-csi; do
-    docker tag "${REGISTRY}/${img}:${IMAGE_TAG}" "${REGISTRY}/${img}:latest"
-    docker push "${REGISTRY}/${img}:${IMAGE_TAG}"
-    docker push "${REGISTRY}/${img}:latest"
-done
+# Build + push an image only when its inputs changed since last-green; otherwise
+# verify the previously-pushed :IMAGE_TAG still exists in the registry. If the
+# skip-candidate tag is missing (GC raced, registry wiped), fall through to a
+# build so a green run never ships a dangling tag. Rust images also retag :latest
+# so ArgoCD-managed deployments pick up new code.
+#
+# Cargo.lock + Cargo.toml are workspace-shared; cfgd-core is linked by every Rust
+# binary, so a change there rebuilds all three Rust images.
+RUST_SHARED_PATHS=(Cargo.lock Cargo.toml crates/cfgd-core)
 
-# Build and push function-cfgd as a Crossplane xpkg (package + embedded runtime)
-docker tag "${REGISTRY}/function-cfgd:${IMAGE_TAG}" "${REGISTRY}/function-cfgd:latest"
-docker push "${REGISTRY}/function-cfgd:${IMAGE_TAG}"
-docker push "${REGISTRY}/function-cfgd:latest"
+# IMAGE_BUILT[<image>] = "true" when this run rebuilt+pushed the image, "false"
+# when it was skipped. Downstream steps (rollout restart, CSI Helm redeploy)
+# read it to skip no-op restarts on unchanged images.
+declare -A IMAGE_BUILT
 
-# Ensure crossplane CLI (crank). Pinned to a stable release; the upstream
-# install.sh from `main` rejects `linux / x86_64` as of late May 2026.
-if ! which crossplane &>/dev/null; then
-    CROSSPLANE_VERSION="v2.3.1"
-    case "$(uname -m)" in
-        x86_64|amd64) CROSSPLANE_ARCH=amd64 ;;
-        aarch64|arm64) CROSSPLANE_ARCH=arm64 ;;
-        *) echo "unsupported arch: $(uname -m)"; exit 1 ;;
-    esac
-    curl -sL -o /usr/local/bin/crossplane \
-        "https://releases.crossplane.io/stable/${CROSSPLANE_VERSION}/bin/linux_${CROSSPLANE_ARCH}/crank"
-    chmod +x /usr/local/bin/crossplane
-    echo "Installed crossplane:"
-    crossplane version
+build_and_push() {
+    local image="$1" dockerfile="$2" context="$3" scope="$4" retag_latest="$5"; shift 5
+    local input_paths=("$@")
+    local df_rel="${dockerfile#"$REPO_ROOT/"}"
+
+    local decision
+    decision="$(image_decision "$image" "$df_rel" "${input_paths[@]}")"
+
+    if [ "$decision" = "skip" ]; then
+        # Confirm the tag the deploys reference actually exists before trusting
+        # the skip — fail OPEN to a build if the registry lost it.
+        if docker manifest inspect "${REGISTRY}/${image}:${IMAGE_TAG}" >/dev/null 2>&1; then
+            echo "  SKIP ${image}: no source change since ${REGISTRY}/${image} last-green"
+            if [ "$retag_latest" = "true" ]; then
+                docker pull "${REGISTRY}/${image}:${IMAGE_TAG}" >/dev/null 2>&1 || true
+                docker tag "${REGISTRY}/${image}:${IMAGE_TAG}" "${REGISTRY}/${image}:latest" 2>/dev/null || true
+                docker push "${REGISTRY}/${image}:latest" 2>/dev/null || true
+            fi
+            IMAGE_BUILT[$image]="false"
+            return 0
+        fi
+        echo "  ${image}: last-green unchanged but :${IMAGE_TAG} missing from registry — rebuilding"
+    fi
+
+    echo "  BUILD ${image}..."
+    build_image "$dockerfile" "${REGISTRY}/${image}:${IMAGE_TAG}" "$context" "$scope"
+    docker push "${REGISTRY}/${image}:${IMAGE_TAG}"
+    if [ "$retag_latest" = "true" ]; then
+        docker tag "${REGISTRY}/${image}:${IMAGE_TAG}" "${REGISTRY}/${image}:latest"
+        docker push "${REGISTRY}/${image}:latest"
+    fi
+    IMAGE_BUILT[$image]="true"
+}
+
+build_and_push cfgd "$REPO_ROOT/Dockerfile" "$REPO_ROOT" cfgd true \
+    crates/cfgd "${RUST_SHARED_PATHS[@]}"
+build_and_push cfgd-operator "$REPO_ROOT/Dockerfile.operator" "$REPO_ROOT" cfgd-operator true \
+    crates/cfgd-operator "${RUST_SHARED_PATHS[@]}"
+build_and_push cfgd-csi "$REPO_ROOT/Dockerfile.csi" "$REPO_ROOT" cfgd-csi true \
+    crates/cfgd-csi "${RUST_SHARED_PATHS[@]}"
+
+# function-cfgd is a self-contained Go module: its dir holds go.mod/go.sum and
+# its Dockerfile, so the crate dir alone is the full input set. It is pushed as
+# a Crossplane xpkg (below), not via the plain image push, so retag_latest=false.
+FUNCTION_DECISION="$(image_decision function-cfgd function-cfgd/Dockerfile function-cfgd)"
+if [ "$FUNCTION_DECISION" = "skip" ] && docker manifest inspect "${REGISTRY}/function-cfgd:${IMAGE_TAG}" >/dev/null 2>&1; then
+    echo "  SKIP function-cfgd: no source change since last-green"
+else
+    echo "  BUILD function-cfgd..."
+    build_image "$REPO_ROOT/function-cfgd/Dockerfile" \
+        "${REGISTRY}/function-cfgd:${IMAGE_TAG}" "$REPO_ROOT/function-cfgd" function-cfgd
+    docker push "${REGISTRY}/function-cfgd:${IMAGE_TAG}"
+    docker tag "${REGISTRY}/function-cfgd:${IMAGE_TAG}" "${REGISTRY}/function-cfgd:latest"
+    docker push "${REGISTRY}/function-cfgd:latest"
+    FUNCTION_DECISION="build"
 fi
 
-echo "Building function-cfgd xpkg..."
-crossplane xpkg build \
-    --package-root="$REPO_ROOT/function-cfgd/package" \
-    --embed-runtime-image="${REGISTRY}/function-cfgd:${IMAGE_TAG}" \
-    -o /tmp/function-cfgd.xpkg
-crossplane xpkg push "${REGISTRY}/function-cfgd:${IMAGE_TAG}" -f /tmp/function-cfgd.xpkg
-crossplane xpkg push "${REGISTRY}/function-cfgd:latest" -f /tmp/function-cfgd.xpkg
+# The xpkg repackages function-cfgd's embedded runtime image. When the image
+# was rebuilt this run, the xpkg must follow; when skipped, the existing xpkg
+# tag is still valid and we avoid the crank install + build + push entirely.
+if [ "$FUNCTION_DECISION" = "build" ]; then
+    # Ensure crossplane CLI (crank). Pinned to a stable release; the upstream
+    # install.sh from `main` rejects `linux / x86_64` as of late May 2026.
+    if ! which crossplane &>/dev/null; then
+        CROSSPLANE_VERSION="v2.3.1"
+        case "$(uname -m)" in
+            x86_64|amd64) CROSSPLANE_ARCH=amd64 ;;
+            aarch64|arm64) CROSSPLANE_ARCH=arm64 ;;
+            *) echo "unsupported arch: $(uname -m)"; exit 1 ;;
+        esac
+        curl -sL -o /usr/local/bin/crossplane \
+            "https://releases.crossplane.io/stable/${CROSSPLANE_VERSION}/bin/linux_${CROSSPLANE_ARCH}/crank"
+        chmod +x /usr/local/bin/crossplane
+        echo "Installed crossplane:"
+        crossplane version
+    fi
 
-# Restart the function-cfgd deployment so it picks up the new embedded runtime image.
-# The xpkg push doesn't trigger a redeploy when the tag is unchanged.
-FUNC_DEPLOY=$(kubectl get deployment -n crossplane-system -l pkg.crossplane.io/function=function-cfgd \
-    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-if [ -n "$FUNC_DEPLOY" ]; then
-    echo "  Restarting function-cfgd deployment ($FUNC_DEPLOY)..."
-    kubectl rollout restart "deployment/$FUNC_DEPLOY" -n crossplane-system 2>/dev/null || true
-    kubectl rollout status "deployment/$FUNC_DEPLOY" -n crossplane-system --timeout=60s 2>/dev/null || true
+    echo "Building function-cfgd xpkg..."
+    XPKG_OUT="${RUNNER_TEMP:-/tmp}/function-cfgd.xpkg"
+    crossplane xpkg build \
+        --package-root="$REPO_ROOT/function-cfgd/package" \
+        --embed-runtime-image="${REGISTRY}/function-cfgd:${IMAGE_TAG}" \
+        -o "$XPKG_OUT"
+    crossplane xpkg push "${REGISTRY}/function-cfgd:${IMAGE_TAG}" -f "$XPKG_OUT"
+    crossplane xpkg push "${REGISTRY}/function-cfgd:latest" -f "$XPKG_OUT"
+
+    # Restart the function-cfgd deployment so it picks up the new embedded runtime image.
+    # The xpkg push doesn't trigger a redeploy when the tag is unchanged.
+    FUNC_DEPLOY=$(kubectl get deployment -n crossplane-system -l pkg.crossplane.io/function=function-cfgd \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    if [ -n "$FUNC_DEPLOY" ]; then
+        echo "  Restarting function-cfgd deployment ($FUNC_DEPLOY)..."
+        kubectl rollout restart "deployment/$FUNC_DEPLOY" -n crossplane-system 2>/dev/null || true
+        kubectl rollout status "deployment/$FUNC_DEPLOY" -n crossplane-system --timeout=60s 2>/dev/null || true
+    fi
 fi
 
 # (Namespace and RBAC already created in Step 1b above)
@@ -219,6 +417,12 @@ if kubectl get deployment cfgd-operator -n cfgd-system \
 fi
 
 if [ "$ARGOCD_MANAGED" = "true" ] || { [ -n "${CFGD_DEPLOY_MANIFESTS:-}" ] && [ -d "$CFGD_DEPLOY_MANIFESTS" ]; }; then
+    # Both cfgd-operator and cfgd-server run the cfgd-operator :latest image.
+    # A rollout restart only matters when that image was rebuilt this run;
+    # skipping a no-op restart is the bulk of the no-source-change time saving.
+    if [ "${IMAGE_BUILT[cfgd-operator]:-true}" != "true" ]; then
+        echo "  cfgd-operator image unchanged — skipping operator/server rollout restart"
+    else
     echo "  Deployments managed by ArgoCD — restarting to pick up :latest images..."
 
     for deploy in cfgd-operator cfgd-server; do
@@ -233,6 +437,7 @@ if [ "$ARGOCD_MANAGED" = "true" ] || { [ -n "${CFGD_DEPLOY_MANIFESTS:-}" ] && [ 
             }
         fi
     done
+    fi
 else
     echo "  Applying E2E manifests..."
     sed "s|REGISTRY_PLACEHOLDER|${REGISTRY}|g; s|IMAGE_PLACEHOLDER|${IMAGE_TAG}|g" \
@@ -262,8 +467,10 @@ fi
 
 export CA_BUNDLE
 # Generate webhook configs using the CA bundle
-WEBHOOK_FILE=$(mktemp /tmp/cfgd-e2e-webhooks.XXXXXX.yaml)
-trap "rm -f '$WEBHOOK_FILE'" EXIT
+WEBHOOK_FILE=$(mktemp "${RUNNER_TEMP:-/tmp}/cfgd-e2e-webhooks.XXXXXX.yaml")
+# Chain both cleanups into the single EXIT trap (the lease release is already
+# registered) — a bare `trap ... EXIT` here would drop the lease release.
+trap 'rm -f "$WEBHOOK_FILE"; release_lease' EXIT
 cat >"$WEBHOOK_FILE" <<WEBHOOKEOF
 apiVersion: v1
 kind: Service
@@ -397,6 +604,18 @@ kubectl apply -f "$WEBHOOK_FILE"
 rm -f "$WEBHOOK_FILE"
 
 # --- Step 11: Deploy CSI driver via Helm ---
+# Skip the Helm redeploy when the CSI image is unchanged AND a release already
+# exists (fresh clusters with no release still install). The DaemonSet keeps
+# running the existing :IMAGE_TAG image, so a re-upgrade would be a no-op.
+CSI_HELM_NEEDED=true
+if [ "${IMAGE_BUILT[cfgd-csi]:-true}" != "true" ] \
+    && helm status cfgd-csi -n cfgd-system >/dev/null 2>&1; then
+    CSI_HELM_NEEDED=false
+fi
+
+if [ "$CSI_HELM_NEEDED" != "true" ]; then
+    echo "Deploying CSI driver... cfgd-csi image unchanged and release present — skipping Helm upgrade"
+else
 echo "Deploying CSI driver..."
 helm upgrade --install cfgd-csi "$REPO_ROOT/chart/cfgd" \
     -n cfgd-system \
@@ -424,6 +643,7 @@ helm upgrade --install cfgd-csi "$REPO_ROOT/chart/cfgd" \
     --wait --timeout=120s 2>&1 || {
     echo "WARN: CSI driver Helm install failed — full-stack CSI tests will be skipped"
 }
+fi
 
 # --- Step 12: Wait for all components ---
 echo "Waiting for components..."
@@ -451,6 +671,18 @@ if [ -n "$GW_API_KEY" ]; then
     else
         echo "  WARN: Gateway DB reset failed (endpoint may not exist yet)"
     fi
+fi
+
+# --- Step 14: Record last-green SHA per image ---
+# Reached only after every prior step succeeded (set -e). Persisting HEAD as the
+# last-green SHA here is what lets the NEXT run's image_decision skip unchanged
+# images. Best-effort writes — a ConfigMap write failure just forces a rebuild
+# next run, never a stale skip.
+if [ -n "$GIT_SHA" ]; then
+    echo "Recording last-green SHA ($GIT_SHA) for branch $E2E_BRANCH..."
+    for img in cfgd cfgd-operator cfgd-csi function-cfgd; do
+        record_green_sha "$img"
+    done
 fi
 
 echo ""

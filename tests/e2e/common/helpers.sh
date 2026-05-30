@@ -71,6 +71,10 @@ create_e2e_namespace() {
     if ! kubectl get namespace "$E2E_NAMESPACE" > /dev/null 2>&1; then
         kubectl create namespace "$E2E_NAMESPACE"
         kubectl label namespace "$E2E_NAMESPACE" "$E2E_RUN_LABEL" --overwrite
+        # Stamp creation time so the cfgd-e2e-janitor CronJob can age out
+        # leaked namespaces from crashed runs (RFC3339 UTC).
+        kubectl annotate namespace "$E2E_NAMESPACE" \
+            "cfgd.io/created-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" --overwrite
     fi
     # Wait for Reflector to replicate registry-credentials (annotated on source secret)
     local deadline=$((SECONDS + 30))
