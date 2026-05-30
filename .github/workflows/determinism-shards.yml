@@ -40,10 +40,9 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.head_sha }}
 
-      - uses: arduino/setup-protoc@v3
+      - uses: ./.github/actions/setup-protoc
         with:
-          version: "25.x"
-          repo-token: ${{ github.token }}
+          version: "25.9"
 
       - # from-branch: pinned to in-progress release-orchestration work; switch back to @v1 default after merge
         uses: tj-smith47/anodizer-action@v1
@@ -60,7 +59,7 @@ jobs:
 
       - name: Upload dist artifacts
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist-${{ inputs.crate }}-${{ matrix.shard.label }}
           path: preserved-dist/
@@ -68,7 +67,7 @@ jobs:
 
       - name: Upload determinism report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: determinism-${{ inputs.crate }}-${{ matrix.shard.label }}
           path: |

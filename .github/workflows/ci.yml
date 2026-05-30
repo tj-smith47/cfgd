@@ -46,20 +46,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ci-clippy
-          # Cross-job warm-restore: if the per-key cache misses, fall back
-          # to any sibling job's cache from the same Cargo.lock generation.
-          restore-keys: |
-            ci-test-ubuntu-latest-
-            ci-coverage-
-            ci-package-
-      - uses: arduino/setup-protoc@v3
+          # shared-key shares one dependency cache across the clippy/test/
+          # package jobs (compatible build profiles); rust-cache still folds
+          # the Cargo.lock hash + toolchain + OS into the final key, so the
+          # OS matrix auto-separates.
+          shared-key: ci
+      - uses: ./.github/actions/setup-protoc
         with:
-          version: "25.x"
-          repo-token: ${{ github.token }}
+          version: "25.9"
       - uses: go-task/setup-task@v2
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -76,18 +73,16 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ci-test-${{ matrix.os }}
-          restore-keys: |
-            ci-clippy-
-            ci-coverage-
-            ci-package-
-      - uses: arduino/setup-protoc@v3
+          # Shares the dependency cache with clippy/package; the macos/windows
+          # matrix legs auto-separate because rust-cache folds the OS into the
+          # final key on top of shared-key.
+          shared-key: ci
+      - uses: ./.github/actions/setup-protoc
         with:
-          version: "25.x"
-          repo-token: ${{ github.token }}
+          version: "25.9"
       - uses: go-task/setup-task@v2
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -121,18 +116,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ci-coverage
-          restore-keys: |
-            ci-test-ubuntu-latest-
-            ci-clippy-
-            ci-package-
-      - uses: arduino/setup-protoc@v3
+          # Separate shared-key: this job builds with llvm-tools-preview
+          # instrumentation (different target/ artifacts), so it must not
+          # share or pollute the plain `ci` dependency cache.
+          shared-key: ci-coverage
+      - uses: ./.github/actions/setup-protoc
         with:
-          version: "25.x"
-          repo-token: ${{ github.token }}
+          version: "25.9"
       - uses: go-task/setup-task@v2
       - uses: taiki-e/install-action@v2
         with:
@@ -146,18 +139,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: mozilla-actions/sccache-action@v0.0.10
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ci-package
-          restore-keys: |
-            ci-test-ubuntu-latest-
-            ci-clippy-
-            ci-coverage-
-      - uses: arduino/setup-protoc@v3
+          # Shares the dependency cache with clippy/test (same build profile).
+          shared-key: ci
+      - uses: ./.github/actions/setup-protoc
         with:
-          version: "25.x"
-          repo-token: ${{ github.token }}
+          version: "25.9"
       - uses: go-task/setup-task@v2
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
@@ -176,7 +165,7 @@ jobs:
           from-branch: publisher-required-config
           install-only: 'true'
       - name: Upload anodizer binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: anodizer-linux
           path: ${{ runner.tool_cache }}/anodizer/source/anodizer

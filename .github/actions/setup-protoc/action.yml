@@ -1,0 +1,73 @@
+name: "Setup protoc"
+description: "Install the protoc compiler from protocolbuffers/protobuf releases (composite, no Node runtime)."
+
+inputs:
+  version:
+    description: "protoc release version to install (without the leading 'v')."
+    required: false
+    default: "25.9"
+
+runs:
+  using: "composite"
+  steps:
+    # Composite over arduino/setup-protoc@v3: that action's latest release
+    # runs on node20 (no node24 build exists), tripping the GHA Node 20
+    # deprecation warning. A composite action is pure shell, so it carries
+    # no Node runtime and never deprecates on a Node bump.
+    - name: Install protoc
+      shell: bash
+      env:
+        PROTOC_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+
+        os="$(uname -s)"
+        arch="$(uname -m)"
+
+        case "$os" in
+          Linux)
+            case "$arch" in
+              x86_64|amd64)        asset="protoc-${PROTOC_VERSION}-linux-x86_64.zip" ;;
+              aarch64|arm64)       asset="protoc-${PROTOC_VERSION}-linux-aarch_64.zip" ;;
+              *) echo "::error::Unsupported Linux arch: $arch"; exit 1 ;;
+            esac
+            ;;
+          Darwin)
+            case "$arch" in
+              x86_64)              asset="protoc-${PROTOC_VERSION}-osx-x86_64.zip" ;;
+              arm64|aarch64)       asset="protoc-${PROTOC_VERSION}-osx-aarch_64.zip" ;;
+              *) echo "::error::Unsupported macOS arch: $arch"; exit 1 ;;
+            esac
+            ;;
+          # Git-bash on windows runners reports MINGW64_NT / MSYS_NT for uname.
+          MINGW*|MSYS*|CYGWIN*|Windows*)
+            asset="protoc-${PROTOC_VERSION}-win64.zip"
+            ;;
+          *)
+            echo "::error::Unsupported OS: $os"; exit 1 ;;
+        esac
+
+        url="https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/${asset}"
+        dest="${RUNNER_TEMP}/protoc"
+        mkdir -p "$dest"
+
+        echo "Downloading $url"
+        curl -fsSL --retry 3 -o "${RUNNER_TEMP}/${asset}" "$url"
+        unzip -o -q "${RUNNER_TEMP}/${asset}" -d "$dest"
+
+        # The protoc zip lays out bin/protoc (bin/protoc.exe on windows).
+        # GITHUB_PATH entries must use the runner-native path separator; on
+        # windows runners $GITHUB_PATH is consumed by pwsh/cmd which want a
+        # backslash drive path, so translate the msys /c/... form.
+        bindir="${dest}/bin"
+        case "$os" in
+          MINGW*|MSYS*|CYGWIN*|Windows*)
+            bindir="$(cygpath -w "$bindir")"
+            ;;
+        esac
+        echo "$bindir" >> "$GITHUB_PATH"
+        # Make protoc resolvable for the verify step in this same shell, which
+        # runs before the appended $GITHUB_PATH entry takes effect.
+        export PATH="${dest}/bin:${PATH}"
+
+        "${dest}/bin/protoc" --version

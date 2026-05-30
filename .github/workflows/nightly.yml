@@ -17,10 +17,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: arduino/setup-protoc@v3
+      - uses: ./.github/actions/setup-protoc
         with:
-          version: "25.x"
-          repo-token: ${{ github.token }}
+          version: "25.9"
 
       - uses: tj-smith47/anodizer-action@v1
         with:

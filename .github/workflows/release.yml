@@ -100,13 +100,12 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.tag.outputs.head_sha }}
 
-      - uses: arduino/setup-protoc@v3
+      - uses: ./.github/actions/setup-protoc
         with:
-          version: "25.x"
-          repo-token: ${{ github.token }}
+          version: "25.9"
 
       - name: Download all dist artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           # All crates' shards merge into dist/<crate>/... — each crate's
           # tarball is self-contained in its <crate>/ subdir thanks to the
@@ -209,7 +208,7 @@ jobs:
             --package-file=${{ matrix.arch }}.xpkg \
             --package-root=function-cfgd/package/ \
             --embed-runtime-image-tarball=runtime-${{ matrix.arch }}.tar
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: xpkg-${{ matrix.arch }}
           path: "*.xpkg"
@@ -220,7 +219,7 @@ jobs:
     if: needs.tag.result == 'success' && needs.crossplane-function.result == 'success'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: xpkg-*
           merge-multiple: true
