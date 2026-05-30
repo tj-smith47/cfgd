@@ -3857,3 +3857,95 @@ fn download_to_file_falls_back_to_cwd_when_dest_has_no_parent() {
     assert_eq!(written, body);
     let _ = std::fs::remove_file(&dest);
 }
+
+// ---------------------------------------------------------------------------
+// Ground-truth contract: pin the client's asset-resolution logic against a
+// captured REAL release manifest. The asset names in
+// `testdata/release-v0.4.0-assets.json` were captured verbatim from the live
+// GitHub release `tj-smith47/cfgd` v0.4.0 via:
+//     gh release view v0.4.0 --json assets --jq '[.assets[].name]'
+//
+// This is the authoritative record of what an anodizer release actually
+// publishes. The original `cfgd upgrade` bug shipped because every upgrade
+// fixture hand-authored asset names that matched the client's own
+// assumptions (`cfgd-<v>-linux-x86_64.tar.gz`, combined `checksums.txt`),
+// so the suite stayed green while the producer shipped
+// `cfgd-<v>-linux-amd64.tar.gz` + split per-artifact `.sha256` +
+// `.sha256.cosign.bundle`. This test reads the names from the fixture and
+// NEVER hand-constructs the expected asset list inline — that is the whole
+// point: assert the consumer's resolution against the producer's real output
+// so producer/consumer drift fails the build instead of hiding.
+//
+// v0.4.0 was signed key-based, so each platform archive carries the archive,
+// its `.sha256`, and a `.sha256.cosign.bundle`, but NOT the optional
+// `.sha256.cosign.pem` (that standalone Fulcio cert appears only in keyless
+// releases; the client treats it as optional). Refresh this fixture from the
+// first KEYLESS release once one is cut.
+// ---------------------------------------------------------------------------
+
+const REAL_RELEASE_V0_4_0_ASSETS: &str = include_str!("testdata/release-v0.4.0-assets.json");
+
+#[test]
+fn client_resolves_against_real_release_manifest() {
+    let names: Vec<String> = serde_json::from_str(REAL_RELEASE_V0_4_0_ASSETS)
+        .expect("fixture must be a JSON array of asset name strings");
+    assert!(
+        !names.is_empty(),
+        "fixture must not be empty — did the capture run?"
+    );
+
+    let release = ReleaseInfo {
+        tag: "v0.4.0".into(),
+        version: Version::new(0, 4, 0),
+        assets: names
+            .iter()
+            .map(|n| ReleaseAsset {
+                name: n.clone(),
+                download_url: format!("https://example.com/{n}"),
+                size: 1,
+            })
+            .collect(),
+    };
+
+    // (rust_os, rust_arch, expected archive name) — the expected names use the
+    // anodizer convention (darwin for macos; amd64/arm64 for the arches). If
+    // the client resolved the Rust-arch name (`x86_64`) it would fail to match
+    // the producer's `amd64` archive: exactly the original bug.
+    let targets = [
+        ("linux", "x86_64", "cfgd-0.4.0-linux-amd64.tar.gz"),
+        ("linux", "aarch64", "cfgd-0.4.0-linux-arm64.tar.gz"),
+        ("macos", "x86_64", "cfgd-0.4.0-darwin-amd64.tar.gz"),
+        ("macos", "aarch64", "cfgd-0.4.0-darwin-arm64.tar.gz"),
+    ];
+
+    for (os, arch, expected_archive) in targets {
+        let asset = find_asset_for(&release, os, arch).unwrap_or_else(|e| {
+            panic!("client must resolve an archive for {os}/{arch} in the real manifest: {e}")
+        });
+        assert_eq!(
+            asset.name, expected_archive,
+            "{os}/{arch} must resolve to the producer's real archive name"
+        );
+    }
+
+    // Checksum + cosign-bundle discovery for the linux/amd64 archive. The
+    // producer ships split per-artifact `<archive>.sha256` files plus a
+    // sibling `<archive>.sha256.cosign.bundle` for each.
+    let linux_amd64 = "cfgd-0.4.0-linux-amd64.tar.gz";
+    let checksum = find_checksum_asset(&release, linux_amd64)
+        .expect("real manifest must carry a per-artifact .sha256 for the linux/amd64 archive");
+    assert_eq!(checksum.name, format!("{linux_amd64}.sha256"));
+
+    let bundle = find_cosign_bundle_asset(&release, &checksum.name)
+        .expect("real manifest must carry a .sha256.cosign.bundle for the linux/amd64 archive");
+    assert_eq!(bundle.name, format!("{}.cosign.bundle", checksum.name));
+
+    // v0.4.0 is key-based, so the standalone Fulcio cert (`.sha256.cosign.pem`)
+    // is absent. The client treats it as optional; assert absence rather than
+    // presence so a future keyless release (which adds the `.pem`) does not
+    // false-fail before the fixture is refreshed.
+    assert!(
+        find_cosign_cert_asset(&release, &checksum.name).is_none(),
+        "key-based v0.4.0 must not publish a standalone .sha256.cosign.pem"
+    );
+}

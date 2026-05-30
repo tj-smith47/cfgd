@@ -215,10 +215,21 @@ fn parse_release_json(body: &str) -> Result<ReleaseInfo> {
 pub fn find_asset_for_platform(
     release: &ReleaseInfo,
 ) -> std::result::Result<&ReleaseAsset, UpgradeError> {
-    let os = std::env::consts::OS;
-    let rust_arch = std::env::consts::ARCH;
+    find_asset_for(release, std::env::consts::OS, std::env::consts::ARCH)
+}
 
-    let archive_os = match os {
+/// Resolve the binary archive asset for an explicit Rust `OS`/`ARCH` pair.
+///
+/// Split out from [`find_asset_for_platform`] (which passes the host's
+/// `std::env::consts::{OS,ARCH}`) so callers can resolve assets for a platform
+/// other than the one the process runs on — the contract test exercises every
+/// supported target against a captured real-release manifest.
+fn find_asset_for<'a>(
+    release: &'a ReleaseInfo,
+    rust_os: &str,
+    rust_arch: &str,
+) -> std::result::Result<&'a ReleaseAsset, UpgradeError> {
+    let archive_os = match rust_os {
         "macos" => "darwin",
         other => other,
     };
@@ -233,12 +244,15 @@ pub fn find_asset_for_platform(
         other => other,
     };
 
-    // Look for: cfgd-<version>-<os>-<arch>.tar.gz (Unix) or .zip (Windows)
+    // Windows ships `.zip`; every other target ships `.tar.gz`. Key off the
+    // resolved target OS rather than the compile-time host so a non-host
+    // platform resolves correctly regardless of where the lookup runs.
     let version_str = strip_tag_prefix(&release.tag);
-    #[cfg(unix)]
-    let archive_suffix = ".tar.gz";
-    #[cfg(windows)]
-    let archive_suffix = ".zip";
+    let archive_suffix = if archive_os == "windows" {
+        ".zip"
+    } else {
+        ".tar.gz"
+    };
     let candidates = [
         format!("cfgd-{version_str}-{archive_os}-{go_arch}{archive_suffix}"),
         format!("cfgd-{version_str}-{archive_os}-{rust_arch}{archive_suffix}"),
