@@ -101,6 +101,23 @@ defaults:
         poll_interval: 5s
         max_wait: 5m
 
+# UPX compression — shrinks binaries on targets UPX supports.
+# macOS ARM is broken in recent UPX; exclude it.
+upx:
+  - id: default
+    enabled: true
+    binary: upx
+    args:
+      - "--best"
+      - "--lzma"
+    compress: "9"
+    lzma: true
+    targets:
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+      - x86_64-apple-darwin
+      - x86_64-pc-windows-msvc
+
 # Self-extracting installer for Linux & macOS — bundles the binary
 # with a small bootstrap script that installs it to /usr/local/bin.
 # Top-level config (not per-crate); skipped automatically for library
