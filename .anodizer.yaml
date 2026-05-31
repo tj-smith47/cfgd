@@ -47,11 +47,13 @@ tag:
   initial_version: "0.3.5"
 
 metadata:
+  # homepage / license / maintainers are derived from [workspace.package]
+  # (repository=homepage fallback, license=MIT, authors=["TJ Smith"]) — all
+  # four crates resolve identically without restating them here. `description`
+  # is retained because each crate's Cargo `description` differs from this
+  # uniform project line; dropping it would let publishers without an explicit
+  # description fall through to per-crate Cargo descriptions and drift.
   description: "Declarative, GitOps-style machine configuration management"
-  homepage: "https://github.com/tj-smith47/cfgd"
-  license: MIT
-  maintainers:
-    - "TJ Smith"
   mod_timestamp: "{{ CommitTimestamp }}"
   full_description:
     from_file: README.md
@@ -179,10 +181,14 @@ workspaces:
           - name_template: "{{ ProjectName }}"
             replace: false
         binstall:
+          # `enabled` alone triggers anodizer's per-target auto-derivation:
+          # each override's pkg_url renders through the SAME archive
+          # name_template the archive stage uses, so the URL can never drift
+          # from the uploaded asset. The former hand-written pkg_url used a
+          # `{ target }` rust-triple token that did NOT match the archive
+          # name_template ({{ Os }}-{{ Arch }}, e.g. darwin-arm64), producing
+          # 404-class URLs — dropping it lets the correct derivation take over.
           enabled: true
-          pkg_url: "https://github.com/tj-smith47/cfgd/releases/download/v{{ Version }}/cfgd-{{ Version }}-{ target }.tar.gz"
-          bin_dir: ""
-          pkg_fmt: tgz
         release:
           github:
             owner: tj-smith47
@@ -220,9 +226,7 @@ workspaces:
             repository:
               owner: tj-smith47
               name: scoop-bucket
-            description: "Declarative, GitOps-style machine configuration management"
-            homepage: "https://github.com/tj-smith47/cfgd"
-            license: MIT
+            # description / homepage / license derived from metadata + Cargo.
             depends:
               - git
             shortcuts:
@@ -238,10 +242,8 @@ workspaces:
               name: cfgd
             title: "cfgd"
             summary: "Declarative, GitOps-style machine configuration management"
-            description: "Declarative, GitOps-style machine configuration management"
-            authors: "TJ Smith"
+            # description / authors / license derived from metadata + Cargo.
             copyright: "Copyright © 2026 TJ Smith"
-            license: MIT
             require_license_acceptance: false
             project_url: "https://github.com/tj-smith47/cfgd"
             project_source_url: "https://github.com/tj-smith47/cfgd"
@@ -262,9 +264,9 @@ workspaces:
               owner: tj-smith47
               name: winget-pkgs
             short_description: "GitOps-style machine config manager"
-            description: "Declarative, GitOps-style machine configuration management"
-            homepage: "https://github.com/tj-smith47/cfgd"
-            license: MIT
+            # description / homepage / license derived from metadata + Cargo.
+            # `author` is kept: the winget renderer emits it verbatim with no
+            # metadata fallback, so dropping it would omit the author entirely.
             author: "TJ Smith"
             copyright: "Copyright © 2026 TJ Smith"
             package_identifier: "TJSmith.cfgd"
@@ -296,9 +298,9 @@ workspaces:
             repository:
               owner: tj-smith47
               name: nix-pkgs
-            homepage: "https://github.com/tj-smith47/cfgd"
-            description: "Declarative, GitOps-style machine configuration management"
-            license: mit
+            # homepage / description / license derived from metadata + Cargo.
+            # The derived SPDX `MIT` maps to `lib.licenses.mit` via anodizer's
+            # nix license resolver, matching the former explicit `license: mit`.
             skip_upload: false
             formatter: alejandra
             main_program: cfgd
@@ -324,7 +326,9 @@ workspaces:
               a declarative YAML config. It detects drift and applies changes
               safely. Inside a cluster, the kubectl plugin works with cfgd-managed
               pods and nodes.
-            homepage: "https://github.com/tj-smith47/cfgd"
+            # homepage derived from metadata.homepage fallback (same URL).
+            # `description` / `short_description` kept: intentional long-form
+            # krew-review copy distinct from the one-line Cargo description.
             # Commit as the release engineer's GH-verified identity so CNCF
             # EasyCLA matches the PR to the signed individual CLA. Default
             # bot@anodizer.dev has no GitHub account and always fails the CLA.
@@ -373,10 +377,11 @@ workspaces:
               - rpm
               - apk
             vendor: "TJ Smith"
-            homepage: "https://github.com/tj-smith47/cfgd"
+            # homepage / description / license derived from metadata + Cargo.
+            # `maintainer` is kept: it carries the email
+            # ("TJ Smith <tj@jarvispro.io>") while the derived value
+            # (Cargo authors = "TJ Smith") has none — dropping would drift.
             maintainer: "TJ Smith <tj@jarvispro.io>"
-            description: "Declarative, GitOps-style machine configuration management"
-            license: MIT
             bindir: /usr/bin
             section: utils
             priority: optional
@@ -727,8 +732,7 @@ sboms:
 # pushed by `docker_v2`.
 mcp:
   name: io.github.tj-smith47/cfgd
-  description: "Declarative, GitOps-style machine configuration management"
-  homepage: "https://github.com/tj-smith47/cfgd"
+  # description / homepage derived from the owning crate's (cfgd) metadata.
   repository:
     url: "https://github.com/tj-smith47/cfgd"
     source: github
@@ -776,9 +780,8 @@ homebrew_casks:
       owner: tj-smith47
       name: homebrew-tap
     directory: Casks
-    description: "Declarative, GitOps-style machine configuration management"
-    homepage: "https://github.com/tj-smith47/cfgd"
-    license: MIT
+    # description / homepage derived from metadata + Cargo. `license` dropped:
+    # the Homebrew cask DSL has no license stanza, so the field never rendered.
     binaries:
       - cfgd
     generate_completions_from_executable:
