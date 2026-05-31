@@ -36,11 +36,15 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     printer.heading("Initialize cfgd");
 
     if !check_prerequisites(printer) {
+        // git is a hard prerequisite: without it init scaffolds nothing, so it must exit
+        // non-zero rather than let a chained `cfgd init && cfgd apply` proceed on a false
+        // success. check_prerequisites has already printed the error and install hint, so
+        // exit directly instead of returning an Err that the CLI boundary would re-render.
         let output = InitOutput {
             target_dir: args.path.unwrap_or("").to_string(),
         };
         printer.emit(Doc::new().with_data(&output));
-        return Ok(());
+        cfgd_core::exit::ExitCode::Error.exit();
     }
 
     // 1. Determine target directory and whether --from did a fresh clone
