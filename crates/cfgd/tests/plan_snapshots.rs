@@ -119,8 +119,9 @@ fn plan_module_only_human() {
     // `--module` filter pointed at a config dir without a valid profile —
     // `cmd_plan` falls into the module-only branch and emits the
     // "Profile: (module-only)" kv. The module itself is unresolved (no
-    // module repo configured), so `resolve_modules` returns an empty list
-    // and the plan body has zero actions.
+    // module repo configured), so `resolve_modules` returns an empty list.
+    // The summary must name the unresolved module rather than claim
+    // "everything is up to date" — a silent no-op would hide the miss.
     let config_dir = tempfile::tempdir().unwrap();
     let state_dir = tempfile::tempdir().unwrap();
     // Bare config — no `spec.profile`, no profiles dir. Forces the

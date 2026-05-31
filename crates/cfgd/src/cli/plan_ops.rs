@@ -178,6 +178,96 @@ pub(in crate::cli) fn display_plan_table(
     }
 }
 
+/// Pre-filter snapshot of a plan's scope, captured *before* `--skip`/`--only`
+/// destructively prune it, so a later zero-action outcome can be reported
+/// honestly. Without this, `apply`/`plan` claim "everything is up to date" even
+/// when a scoping flag (`--phase`/`--only`/`--skip`/`--skip-scripts`/`--module`)
+/// excluded real, pending work — telling the user the system is in sync when it
+/// is not.
+pub(in crate::cli) struct ScopeReport {
+    /// Any scoping flag that can narrow the plan to a subset was set.
+    pub filter_active: bool,
+    /// Total actions the plan held before `--skip`/`--only` pruning.
+    pub unfiltered_total: usize,
+    /// Display names of the phases that held actions before pruning.
+    pub phases_with_work: Vec<String>,
+    /// Set to the requested module name when `--module <name>` resolved to
+    /// nothing (typo / not found / unreadable) rather than to real actions.
+    pub module_miss: Option<String>,
+}
+
+impl ScopeReport {
+    pub(in crate::cli) fn capture(
+        plan: &reconciler::Plan,
+        filter_active: bool,
+        module_miss: Option<String>,
+    ) -> Self {
+        Self {
+            filter_active,
+            unfiltered_total: plan.total_actions(),
+            phases_with_work: plan
+                .phases
+                .iter()
+                .filter(|p| !p.actions.is_empty())
+                .map(|p| p.name.display_name().to_string())
+                .collect(),
+            module_miss,
+        }
+    }
+}
+
+/// Emit the message for a plan that ended up with no in-scope actions.
+///
+/// Distinguishes a system that is genuinely in sync (`Ok` — "nothing to do")
+/// from one where a scoping flag excluded pending work (`Warn` — the system was
+/// *not* reconciled). Shared by both `apply` and `plan`/dry-run so the two
+/// surfaces never diverge.
+pub(in crate::cli) fn report_no_in_scope_actions(
+    printer: &Printer,
+    scope: &ScopeReport,
+    phase_filter: Option<&PhaseName>,
+) {
+    if let Some(name) = &scope.module_miss {
+        printer.status_simple(
+            Role::Warn,
+            format!(
+                "Module '{name}' matched no actions — it was not found or could not be resolved"
+            ),
+        );
+        return;
+    }
+    if !scope.filter_active || scope.unfiltered_total == 0 {
+        printer.status_simple(Role::Ok, MSG_NOTHING_TO_DO);
+        return;
+    }
+    printer.status_simple(
+        Role::Warn,
+        format!(
+            "No actions in scope — the active filter excluded all {} planned action(s); the system was not reconciled",
+            scope.unfiltered_total
+        ),
+    );
+    if !scope.phases_with_work.is_empty() {
+        printer.hint(format!(
+            "actions exist in phase(s): {}",
+            scope.phases_with_work.join(", ")
+        ));
+    }
+    // The most common scoping mistake: `--phase files` against a config whose
+    // files come from modules (those deploy in the Modules phase to keep each
+    // module's files+packages+scripts atomic and dependency-ordered).
+    if phase_filter == Some(&PhaseName::Files)
+        && scope
+            .phases_with_work
+            .iter()
+            .any(|p| p.as_str() == PhaseName::Modules.display_name())
+    {
+        printer.hint(
+            "module-sourced files apply in the 'modules' phase — try `--phase modules` or `--module <name>`",
+        );
+    }
+}
+
 pub(in crate::cli) fn display_plan_preview(
     plan: &reconciler::Plan,
     printer: &Printer,
@@ -185,6 +275,7 @@ pub(in crate::cli) fn display_plan_preview(
     context: &str,
     phase_filter: Option<&PhaseName>,
     dry_run_fm: Option<&CfgdFileManager>,
+    scope: &ScopeReport,
 ) {
     // Show pending decisions (not included in this plan)
     if let Ok(pending) = state.pending_decisions()
@@ -244,7 +335,7 @@ pub(in crate::cli) fn display_plan_preview(
     }
 
     if plan_output.total_actions == 0 {
-        printer.status_simple(Role::Ok, MSG_NOTHING_TO_DO);
+        report_no_in_scope_actions(printer, scope, phase_filter);
     } else {
         printer.status_simple(
             Role::Info,

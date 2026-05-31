@@ -10944,6 +10944,175 @@ spec:
     );
 }
 
+#[test]
+fn report_no_in_scope_actions_classifies_outcomes() {
+    // No scoping filter active → genuinely "up to date".
+    {
+        let (printer, buf) = test_printer_capture();
+        let scope = ScopeReport {
+            filter_active: false,
+            unfiltered_total: 0,
+            phases_with_work: vec![],
+            module_miss: None,
+        };
+        report_no_in_scope_actions(&printer, &scope, None);
+        printer.flush();
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains(MSG_NOTHING_TO_DO),
+            "no filter → up-to-date, got:\n{out}"
+        );
+    }
+
+    // Filter active AND the unfiltered plan had pending work → honest warning,
+    // never "up to date"; the files→modules hint fires for --phase files.
+    {
+        let (printer, buf) = test_printer_capture();
+        let scope = ScopeReport {
+            filter_active: true,
+            unfiltered_total: 3,
+            phases_with_work: vec!["Modules".to_string()],
+            module_miss: None,
+        };
+        report_no_in_scope_actions(&printer, &scope, Some(&PhaseName::Files));
+        printer.flush();
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            !out.contains(MSG_NOTHING_TO_DO),
+            "filter-excluded-all must not claim up-to-date, got:\n{out}"
+        );
+        assert!(
+            out.contains("No actions in scope"),
+            "expected warning, got:\n{out}"
+        );
+        assert!(
+            out.contains("module-sourced files apply in the 'modules' phase"),
+            "expected files→modules hint, got:\n{out}"
+        );
+    }
+
+    // Filter active but the plan was empty anyway → genuinely "up to date".
+    {
+        let (printer, buf) = test_printer_capture();
+        let scope = ScopeReport {
+            filter_active: true,
+            unfiltered_total: 0,
+            phases_with_work: vec![],
+            module_miss: None,
+        };
+        report_no_in_scope_actions(&printer, &scope, Some(&PhaseName::Files));
+        printer.flush();
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains(MSG_NOTHING_TO_DO),
+            "filter active but no pending work → up-to-date, got:\n{out}"
+        );
+    }
+
+    // --module that resolved to nothing → module-specific warning.
+    {
+        let (printer, buf) = test_printer_capture();
+        let scope = ScopeReport {
+            filter_active: true,
+            unfiltered_total: 0,
+            phases_with_work: vec![],
+            module_miss: Some("nvm".to_string()),
+        };
+        report_no_in_scope_actions(&printer, &scope, None);
+        printer.flush();
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("Module 'nvm' matched no actions"),
+            "expected module-miss warning, got:\n{out}"
+        );
+        assert!(
+            !out.contains(MSG_NOTHING_TO_DO),
+            "module miss must not claim up-to-date, got:\n{out}"
+        );
+    }
+}
+
+#[test]
+fn apply_phase_files_warns_when_files_are_module_sourced() {
+    // Bug guard: `cfgd apply --phase files` for a config whose files come from a
+    // module (Modules phase) used to print "everything is up to date" while
+    // deploying nothing — a silent no-op. It must instead warn that the active
+    // filter excluded pending work, and must not deploy the module's files.
+    let (config_dir, state_dir) = setup_test_env();
+    let target = config_dir.path().join("deployed-by-module.txt");
+
+    create_module_in_dir(
+        config_dir.path(),
+        "filekit",
+        &format!(
+            r#"apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: filekit
+spec:
+  files:
+    - source: files/hello.txt
+      target: {}
+      strategy: Copy
+"#,
+            target.display()
+        ),
+    );
+    std::fs::write(
+        config_dir
+            .path()
+            .join("modules")
+            .join("filekit")
+            .join("files")
+            .join("hello.txt"),
+        "hello from module\n",
+    )
+    .unwrap();
+
+    let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - filekit\n";
+    std::fs::write(
+        config_dir.path().join("profiles").join("default.yaml"),
+        profile,
+    )
+    .unwrap();
+
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let (printer, buf) = test_printer_capture();
+    let args = ApplyArgs {
+        from: None,
+        dry_run: false,
+        phase: Some(ApplyPhase::Files),
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: None,
+        skip_scripts: false,
+        context: "apply".to_string(),
+        shell: None,
+    };
+
+    super::apply::cmd_apply(&cli, &printer, &args).unwrap();
+    printer.flush();
+    let output = buf.lock().unwrap().clone();
+
+    assert!(
+        !output.contains(MSG_NOTHING_TO_DO),
+        "--phase files with module-sourced files must NOT claim up-to-date, got:\n{output}"
+    );
+    assert!(
+        output.contains("No actions in scope"),
+        "expected the filter-excluded-all warning, got:\n{output}"
+    );
+    assert!(
+        output.contains("module-sourced files apply in the 'modules' phase"),
+        "expected the files→modules hint, got:\n{output}"
+    );
+    assert!(
+        !target.exists(),
+        "--phase files must not deploy module files; target unexpectedly created. output:\n{output}"
+    );
+}
+
 // --- cmd_compliance ---
 
 #[test]

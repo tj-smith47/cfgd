@@ -128,6 +128,12 @@ pub fn cmd_plan(
 
     let module_only = module_filter.is_some();
 
+    // `--module <name>` that resolved to nothing (typo / not found) — captured
+    // before `resolved_modules` is consumed by planning below.
+    let module_miss = module_filter
+        .filter(|_| resolved_modules.is_empty())
+        .map(str::to_string);
+
     // Plan-only mode: no secret providers needed
     let (pkg_actions, file_actions, dry_run_fm) = if module_only {
         (Vec::new(), Vec::new(), None)
@@ -158,6 +164,14 @@ pub fn cmd_plan(
         reconcile_context,
     )?;
 
+    // Snapshot scope before --skip/--only prune the plan, so a zero-action
+    // preview distinguishes "in sync" from "a filter excluded pending work".
+    let filter_active = phase_filter.is_some()
+        || !args.skip.is_empty()
+        || !args.only.is_empty()
+        || args.skip_scripts;
+    let scope = ScopeReport::capture(&plan, filter_active, module_miss);
+
     // Apply --skip / --only filters
     filter_plan(&mut plan, &args.skip, &args.only);
 
@@ -173,6 +187,7 @@ pub fn cmd_plan(
         &args.context,
         phase_filter.as_ref(),
         dry_run_fm.as_ref(),
+        &scope,
     );
 
     Ok(())

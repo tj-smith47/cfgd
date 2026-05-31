@@ -195,6 +195,15 @@ pub fn cmd_apply(
         reconcile_context,
     )?;
 
+    // Snapshot scope before --skip/--only prune the plan, so a zero-action
+    // outcome distinguishes "in sync" from "a filter excluded pending work".
+    let filter_active =
+        phase_filter.is_some() || !skip.is_empty() || !only.is_empty() || args.skip_scripts;
+    let module_miss = module_filter
+        .filter(|_| resolved_modules.is_empty())
+        .map(str::to_string);
+    let scope = ScopeReport::capture(&plan, filter_active, module_miss);
+
     // Apply --skip / --only filters
     filter_plan(&mut plan, skip, only);
 
@@ -211,6 +220,7 @@ pub fn cmd_apply(
             &args.context,
             phase_filter.as_ref(),
             dry_run_fm.as_ref(),
+            &scope,
         );
         return Ok(());
     }
@@ -233,7 +243,7 @@ pub fn cmd_apply(
     };
 
     if !has_actions {
-        printer.status_simple(Role::Ok, MSG_NOTHING_TO_DO);
+        report_no_in_scope_actions(printer, &scope, phase_filter.as_ref());
         printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
         return Ok(());
     }
