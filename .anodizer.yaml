@@ -800,7 +800,7 @@ homebrew_casks:
       email: "tj@jarvispro.io"
 
 partial:
-  by: goos
+  by: os
 
 nightly:
   name_template: "{{ ProjectName }}-nightly"
