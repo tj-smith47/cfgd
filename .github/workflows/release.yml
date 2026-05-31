@@ -88,11 +88,21 @@ jobs:
       head_sha: ${{ needs.tag.outputs.head_sha }}
     secrets: inherit
 
-  release:
-    name: Publish Release
+  # cfgd-core publishes FIRST and in isolation (--crate cfgd-core). The three
+  # downstream crates depend on cfgd-core and each polls crates.io for its
+  # pinned cfgd-core version via `publish.cargo.wait_for_workspace_deps`
+  # (enabled in .anodizer.yaml); ordering the core publish ahead of the trio
+  # means that poll resolves promptly instead of racing the sparse-index
+  # propagation. Gated on cfgd-core actually being in this release's tag set —
+  # a release that bumps only cfgd / cfgd-csi / cfgd-operator skips this job,
+  # and the trio's `needs: publish-core` then resolves as skipped (the trio's
+  # `if:` does not require publish-core success, so it still runs).
+  publish-core:
+    name: Publish cfgd-core
     needs: [tag, determinism-check]
-    # Run even when determinism-check was skipped (library-only crate).
-    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.tag.outputs.crates != '[]' && (needs.determinism-check.result == 'success' || needs.determinism-check.result == 'skipped') }}
+    # Run even when determinism-check was skipped (cfgd-core is library-only and
+    # produces no binaries to determinism-check).
+    if: ${{ !cancelled() && needs.tag.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd-core') && (needs.determinism-check.result == 'success' || needs.determinism-check.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -115,7 +125,7 @@ jobs:
           path: dist/
           merge-multiple: true
 
-      - name: Run anodizer release
+      - name: Run anodizer release (cfgd-core)
         id: release
         uses: tj-smith47/anodizer-action@v1
         with:
@@ -130,8 +140,82 @@ jobs:
           docker-password: ${{ secrets.GITHUB_TOKEN }}
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
-          # No --crate: anodize iterates per-crate subdirs in dist/ in topo order.
-          args: release --publish-only
+          args: release --publish-only --crate cfgd-core
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          WINGET_PKGS_TOKEN: ${{ secrets.WINGET_PKGS_TOKEN }}
+          NIX_PKGS_TOKEN: ${{ secrets.NIX_PKGS_TOKEN }}
+          KREW_INDEX_TOKEN: ${{ secrets.KREW_INDEX_TOKEN }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+          CLOUDSMITH_TOKEN: ${{ secrets.CLOUDSMITH_TOKEN }}
+
+      - name: Rollback on release failure
+        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: anodizer tag rollback "${{ needs.tag.outputs.head_sha }}"
+
+  # cfgd / cfgd-csi / cfgd-operator publish IN PARALLEL after cfgd-core. Each
+  # matrix leg runs a single-crate publish (--crate <name>) and is gated on
+  # that crate being in this release's tag set, so a partial-workspace release
+  # only fans out the crates that actually bumped. `needs: publish-core` orders
+  # the legs after core but does NOT require its success in the `if:` — when a
+  # release bumps a trio crate without cfgd-core, publish-core is skipped and
+  # the leg still runs (the already-published cfgd-core on crates.io satisfies
+  # the dependency poll).
+  publish-trio:
+    name: Publish ${{ matrix.crate }}
+    needs: [tag, determinism-check, publish-core]
+    if: ${{ !cancelled() && needs.tag.result == 'success' && contains(fromJson(needs.tag.outputs.crates), matrix.crate) && (needs.determinism-check.result == 'success' || needs.determinism-check.result == 'skipped') && (needs.publish-core.result == 'success' || needs.publish-core.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [cfgd, cfgd-csi, cfgd-operator]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.tag.outputs.head_sha }}
+
+      - uses: ./.github/actions/setup-protoc
+        with:
+          version: "25.9"
+
+      - name: Download all dist artifacts
+        uses: actions/download-artifact@v8
+        with:
+          # All crates' shards merge into dist/<crate>/... — each crate's
+          # tarball is self-contained in its <crate>/ subdir thanks to the
+          # harness's per-crate preserve layout (--crate <name> on
+          # check determinism). No context.json collision.
+          pattern: dist-*
+          path: dist/
+          merge-multiple: true
+
+      - name: Run anodizer release (${{ matrix.crate }})
+        id: release
+        uses: tj-smith47/anodizer-action@v1
+        with:
+          from-artifact: anodizer-linux
+          artifact-run-id: auto
+          artifact-workflow: ci.yml
+          auto-install: 'true'
+          # Artifacts already in dist/ from the step above; action's built-in
+          # download (which matches dist-* globally) is intentionally skipped.
+          download-dist: 'false'
+          docker-registry: 'ghcr.io'
+          docker-password: ${{ secrets.GITHUB_TOKEN }}
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
+          args: release --publish-only --crate ${{ matrix.crate }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -156,8 +240,8 @@ jobs:
   # --- Helm chart publish ---
   helm-chart:
     name: Publish Helm chart
-    needs: [tag, release]
-    if: needs.tag.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd')
+    needs: [tag, publish-trio]
+    if: needs.publish-trio.result == 'success' && needs.tag.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -178,8 +262,8 @@ jobs:
   # --- Crossplane function publish ---
   crossplane-function:
     name: Publish Crossplane function
-    needs: [tag, release]
-    if: needs.tag.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd')
+    needs: [tag, publish-trio]
+    if: needs.publish-trio.result == 'success' && needs.tag.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd')
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -240,8 +324,8 @@ jobs:
   # --- OLM bundle publish ---
   olm-bundle:
     name: Publish OLM bundle
-    needs: [tag, release]
-    if: needs.tag.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd-operator')
+    needs: [tag, publish-trio]
+    if: needs.publish-trio.result == 'success' && needs.tag.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd-operator')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
