@@ -8,16 +8,21 @@ vars:
 
 env:
   REGISTRY: '{{.REGISTRY}}'
+  # The CLI binary version comes from its own crate manifest, not `git describe --tags`:
+  # the latter returns the newest monorepo tag (e.g. cfgd-core's `core-v0.4.0`), which
+  # mis-names every artifact and diverges from the published `cfgd-<version>-linux-amd64`.
   VERSION:
-    sh: git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0"
+    sh: grep -m1 '^version' crates/cfgd/Cargo.toml | sed 's/.*"\(.*\)".*/\1/'
   VERSION_NUM:
     sh: echo "{{.VERSION}}" | sed 's/^v//'
   OS:
     sh: uname -s | tr '[:upper:]' '[:lower:]'
+  # Go-arch naming to match the published release assets (anodizer maps x86_64->amd64,
+  # aarch64->arm64); uname's `x86_64` would 404 against `cfgd-<v>-linux-amd64.tar.gz`.
   ARCH:
     sh: |
       ARCH=$(uname -m)
-      case "$ARCH" in x86_64|amd64) echo "x86_64" ;; arm64|aarch64) echo "aarch64" ;; *) echo "$ARCH" ;; esac
+      case "$ARCH" in x86_64|amd64) echo "amd64" ;; arm64|aarch64) echo "arm64" ;; *) echo "$ARCH" ;; esac
 
 tasks:
   default:
