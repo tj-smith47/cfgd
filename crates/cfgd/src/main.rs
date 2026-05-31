@@ -113,23 +113,57 @@ fn main() -> anyhow::Result<()> {
     }
 
     if let Err(e) = cli::execute(&cli, &printer) {
-        // Format with `{}` not `{:#}` — CfgdError templates already include
-        // `{0}` which expands the inner error, so `{:#}` would walk source()
-        // and duplicate the inner text. See errors/mod.rs::CfgdError for the
-        // paired contract.
-        printer.status_simple(
-            cfgd_core::output::Role::Fail,
-            cfgd_core::output::collapse_to_subject_line(&e),
-        );
-        exit_code_for_anyhow(&e).exit();
+        render_cli_error(&printer, &e).exit();
     }
 
     Ok(())
 }
 
+/// Render a CLI-boundary error to stderr and return its exit code. For a missing-config
+/// failure it also emits a remediation hint: a bare "config file not found" otherwise leaves
+/// a first-run user with no path forward.
+fn render_cli_error(
+    printer: &cfgd_core::output::Printer,
+    err: &anyhow::Error,
+) -> cfgd_core::exit::ExitCode {
+    // Format with `{}` not `{:#}` — CfgdError templates already include `{0}` which expands
+    // the inner error, so `{:#}` would walk source() and duplicate the inner text. See
+    // errors/mod.rs::CfgdError for the paired contract.
+    printer.status_simple(
+        cfgd_core::output::Role::Fail,
+        cfgd_core::output::collapse_to_subject_line(err),
+    );
+    let code = exit_code_for_anyhow(err);
+    // The hint goes to the same stream (stderr) as the error above.
+    if code == cfgd_core::exit::ExitCode::NoConfig {
+        printer.hint("run `cfgd init` to create a config, or pass --config <path>");
+    }
+    code
+}
+
 #[cfg(test)]
 mod tests {
     use super::exit_code_for_anyhow;
+
+    #[test]
+    fn render_cli_error_hints_cfgd_init_on_missing_config() {
+        // A NoConfig failure must point the user at `cfgd init`, not just print "not found".
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let err: anyhow::Error =
+            cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::NotFound {
+                path: "/home/u/.config/cfgd/cfgd.yaml".into(),
+            })
+            .into();
+        let code = super::render_cli_error(&printer, &err);
+        printer.flush();
+        assert_eq!(code, cfgd_core::exit::ExitCode::NoConfig);
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("cfgd init"),
+            "expected remediation naming `cfgd init`, got: {out:?}"
+        );
+    }
 
     #[test]
     fn exit_code_for_anyhow_falls_back_to_error_for_opaque_anyhow_errors() {
