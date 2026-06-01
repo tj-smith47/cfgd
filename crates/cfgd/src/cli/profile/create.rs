@@ -246,6 +246,7 @@ pub fn cmd_profile_create(
             inherits: inh,
             modules: mods,
             env: env_vars,
+            env_scope: None,
             aliases: shell_aliases,
             packages: if has_packages {
                 Some(packages_spec)

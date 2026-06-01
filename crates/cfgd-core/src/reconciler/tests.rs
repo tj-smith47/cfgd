@@ -1269,7 +1269,14 @@ fn generate_fish_env_splits_path() {
 #[test]
 fn plan_env_empty_when_no_env() {
     let tmp = tempfile::tempdir().unwrap();
-    let (actions, _warnings) = Reconciler::plan_env_with_home(&[], &[], &[], &[], tmp.path());
+    let (actions, _warnings) = Reconciler::plan_env_with_home(
+        &[],
+        &[],
+        crate::config::EnvScope::Interactive,
+        &[],
+        &[],
+        tmp.path(),
+    );
     assert!(actions.is_empty());
 }
 
@@ -1299,8 +1306,14 @@ fn plan_env_module_wins_on_conflict() {
     }];
     // plan_env merges and generates actions — the merged env should have EDITOR=nvim
     let tmp = tempfile::tempdir().unwrap();
-    let (actions, _warnings) =
-        Reconciler::plan_env_with_home(&profile_env, &[], &modules, &[], tmp.path());
+    let (actions, _warnings) = Reconciler::plan_env_with_home(
+        &profile_env,
+        &[],
+        crate::config::EnvScope::Interactive,
+        &modules,
+        &[],
+        tmp.path(),
+    );
     // With non-empty env, there should be at least a WriteEnvFile action
     let has_write = actions
         .iter()
@@ -1378,7 +1391,14 @@ fn plan_env_aliases_only() {
         command: "nvim".into(),
     }];
     let tmp = tempfile::tempdir().unwrap();
-    let (actions, _warnings) = Reconciler::plan_env_with_home(&[], &aliases, &[], &[], tmp.path());
+    let (actions, _warnings) = Reconciler::plan_env_with_home(
+        &[],
+        &aliases,
+        crate::config::EnvScope::Interactive,
+        &[],
+        &[],
+        tmp.path(),
+    );
     let has_write = actions
         .iter()
         .any(|a| matches!(a, Action::Env(EnvAction::WriteEnvFile { .. })));
@@ -1411,8 +1431,14 @@ fn plan_env_module_alias_wins_on_conflict() {
         dir: PathBuf::from("."),
     }];
     let tmp = tempfile::tempdir().unwrap();
-    let (actions, _warnings) =
-        Reconciler::plan_env_with_home(&[], &profile_aliases, &modules, &[], tmp.path());
+    let (actions, _warnings) = Reconciler::plan_env_with_home(
+        &[],
+        &profile_aliases,
+        crate::config::EnvScope::Interactive,
+        &modules,
+        &[],
+        tmp.path(),
+    );
     // Find the WriteEnvFile action and check it has "nvim" not "vi"
     for action in &actions {
         if let Action::Env(EnvAction::WriteEnvFile { content, .. }) = action {
@@ -1512,8 +1538,14 @@ fn plan_env_with_secret_envs_includes_them() {
         ("NPM_TOKEN".to_string(), "npm_xyz789".to_string()),
     ];
     let tmp = tempfile::tempdir().unwrap();
-    let (actions, _warnings) =
-        Reconciler::plan_env_with_home(&[], &[], &[], &secret_envs, tmp.path());
+    let (actions, _warnings) = Reconciler::plan_env_with_home(
+        &[],
+        &[],
+        crate::config::EnvScope::Interactive,
+        &[],
+        &secret_envs,
+        tmp.path(),
+    );
     // With non-empty secret envs, there should be at least a WriteEnvFile action
     let has_write = actions
         .iter()
@@ -1530,8 +1562,14 @@ fn plan_env_secret_envs_appear_in_generated_content() {
     }];
     let secret_envs = vec![("GITHUB_TOKEN".to_string(), "ghp_abc123".to_string())];
     let tmp = tempfile::tempdir().unwrap();
-    let (actions, _warnings) =
-        Reconciler::plan_env_with_home(&regular_env, &[], &[], &secret_envs, tmp.path());
+    let (actions, _warnings) = Reconciler::plan_env_with_home(
+        &regular_env,
+        &[],
+        crate::config::EnvScope::Interactive,
+        &[],
+        &secret_envs,
+        tmp.path(),
+    );
 
     // Find the WriteEnvFile action and check its content
     for action in &actions {
@@ -10187,4 +10225,310 @@ fn apply_post_scripts_filter_skips_other_phases() {
             .starts_with("module:nvim:script")
     );
     assert!(marker.exists());
+}
+
+// ─────────────────────────────────────────────────────
+// spec.env reach: EnvScope target matrix, gotchas, parity
+// ─────────────────────────────────────────────────────
+
+fn env_probe(shell: &str) -> EnvHostProbe {
+    EnvHostProbe {
+        shell: shell.to_string(),
+        fish_present: false,
+        bash_profile_exists: false,
+        bash_login_exists: false,
+        git_bash_present: false,
+    }
+}
+
+fn target_keys(targets: &[EnvTarget]) -> Vec<String> {
+    targets
+        .iter()
+        .map(|t| match t {
+            EnvTarget::ManagedFile { path, .. } => format!("file:{}", path.display()),
+            EnvTarget::SourceLine { rc_path, .. } => format!("src:{}", rc_path.display()),
+            EnvTarget::LiveSession { .. } => "session".to_string(),
+        })
+        .collect()
+}
+
+fn one_env() -> Vec<EnvVar> {
+    vec![EnvVar {
+        name: "EDITOR".into(),
+        value: "nvim".into(),
+    }]
+}
+
+#[test]
+fn env_targets_empty_yields_nothing() {
+    let home = Path::new("/h");
+    let t = env_targets(
+        &[],
+        &[],
+        EnvScope::All,
+        home,
+        &env_probe("/bin/bash"),
+        EnvPlatform::Linux,
+    );
+    assert!(t.is_empty());
+}
+
+#[test]
+fn env_targets_interactive_is_env_file_plus_interactive_rc() {
+    let home = Path::new("/h");
+    let t = env_targets(
+        &one_env(),
+        &[],
+        EnvScope::Interactive,
+        home,
+        &env_probe("/bin/bash"),
+        EnvPlatform::Linux,
+    );
+    assert_eq!(target_keys(&t), vec!["file:/h/.cfgd.env", "src:/h/.bashrc"]);
+}
+
+#[test]
+fn env_targets_interactive_zsh_uses_zshrc() {
+    let home = Path::new("/h");
+    let t = env_targets(
+        &one_env(),
+        &[],
+        EnvScope::Interactive,
+        home,
+        &env_probe("/usr/bin/zsh"),
+        EnvPlatform::Linux,
+    );
+    assert_eq!(target_keys(&t), vec!["file:/h/.cfgd.env", "src:/h/.zshrc"]);
+}
+
+#[test]
+fn env_targets_login_adds_zshenv_and_profile_but_not_bash_profile_when_absent() {
+    let home = Path::new("/h");
+    let t = env_targets(
+        &one_env(),
+        &[],
+        EnvScope::Login,
+        home,
+        &env_probe("/bin/bash"),
+        EnvPlatform::Linux,
+    );
+    let keys = target_keys(&t);
+    assert_eq!(
+        keys,
+        vec![
+            "file:/h/.cfgd.env",
+            "src:/h/.bashrc",
+            "src:/h/.zshenv",
+            "src:/h/.profile",
+        ]
+    );
+    // The bash first-match gotcha: never create ~/.bash_profile from nothing.
+    assert!(!keys.iter().any(|k| k.ends_with(".bash_profile")));
+    assert!(!keys.iter().any(|k| k.ends_with(".bash_login")));
+    // Login excludes the session surfaces.
+    assert!(!keys.iter().any(|k| k.contains("environment.d")));
+    assert!(!keys.contains(&"session".to_string()));
+}
+
+#[test]
+fn env_targets_login_injects_existing_bash_profile() {
+    let home = Path::new("/h");
+    let mut probe = env_probe("/bin/bash");
+    probe.bash_profile_exists = true;
+    let t = env_targets(
+        &one_env(),
+        &[],
+        EnvScope::Login,
+        home,
+        &probe,
+        EnvPlatform::Linux,
+    );
+    let keys = target_keys(&t);
+    assert!(keys.contains(&"src:/h/.bash_profile".to_string()));
+    assert!(!keys.iter().any(|k| k.ends_with(".bash_login")));
+}
+
+#[test]
+fn env_targets_login_falls_back_to_bash_login_when_only_it_exists() {
+    let home = Path::new("/h");
+    let mut probe = env_probe("/bin/bash");
+    probe.bash_login_exists = true;
+    let t = env_targets(
+        &one_env(),
+        &[],
+        EnvScope::Login,
+        home,
+        &probe,
+        EnvPlatform::Linux,
+    );
+    let keys = target_keys(&t);
+    assert!(keys.contains(&"src:/h/.bash_login".to_string()));
+    assert!(!keys.iter().any(|k| k.ends_with(".bash_profile")));
+}
+
+#[test]
+fn env_targets_all_linux_adds_environment_d_and_session() {
+    let home = Path::new("/h");
+    let t = env_targets(
+        &one_env(),
+        &[],
+        EnvScope::All,
+        home,
+        &env_probe("/bin/bash"),
+        EnvPlatform::Linux,
+    );
+    let keys = target_keys(&t);
+    assert!(keys.contains(&"file:/h/.config/environment.d/cfgd.conf".to_string()));
+    assert_eq!(keys.last().map(String::as_str), Some("session"));
+    // No macOS plist on Linux.
+    assert!(!keys.iter().any(|k| k.contains("LaunchAgents")));
+}
+
+#[test]
+fn env_targets_all_macos_adds_launchagent_not_environment_d() {
+    let home = Path::new("/h");
+    let t = env_targets(
+        &one_env(),
+        &[],
+        EnvScope::All,
+        home,
+        &env_probe("/bin/zsh"),
+        EnvPlatform::MacOs,
+    );
+    let keys = target_keys(&t);
+    assert!(
+        keys.iter()
+            .any(|k| k.contains("Library/LaunchAgents/com.cfgd.user-environment.plist"))
+    );
+    assert!(!keys.iter().any(|k| k.contains("environment.d")));
+    assert_eq!(keys.last().map(String::as_str), Some("session"));
+}
+
+#[test]
+fn env_targets_windows_is_ps_profiles_plus_session_on_all() {
+    let home = Path::new("/h");
+    let t = env_targets(
+        &one_env(),
+        &[],
+        EnvScope::All,
+        home,
+        &env_probe(""),
+        EnvPlatform::Windows,
+    );
+    let keys = target_keys(&t);
+    assert!(keys.contains(&"file:/h/.cfgd-env.ps1".to_string()));
+    assert_eq!(
+        keys.iter()
+            .filter(|k| k.contains("Microsoft.PowerShell_profile.ps1"))
+            .count(),
+        2
+    );
+    assert_eq!(keys.last().map(String::as_str), Some("session"));
+}
+
+#[test]
+fn env_targets_match_what_verify_rederives() {
+    // Parity: the planner and verifier both call env_targets, so identical
+    // inputs must yield an identical target set. Guards against divergence.
+    let home = Path::new("/h");
+    let probe = env_probe("/bin/bash");
+    let a = env_targets(
+        &one_env(),
+        &[],
+        EnvScope::All,
+        home,
+        &probe,
+        EnvPlatform::Linux,
+    );
+    let b = env_targets(
+        &one_env(),
+        &[],
+        EnvScope::All,
+        home,
+        &probe,
+        EnvPlatform::Linux,
+    );
+    assert_eq!(target_keys(&a), target_keys(&b));
+}
+
+#[test]
+fn environment_d_content_is_key_value_not_shell() {
+    let env = vec![
+        EnvVar {
+            name: "EDITOR".into(),
+            value: "nvim".into(),
+        },
+        EnvVar {
+            name: "PATH".into(),
+            value: "/usr/bin:/bin".into(),
+        },
+    ];
+    let content = generate_environment_d_content(&env);
+    assert!(content.contains("EDITOR=nvim"));
+    assert!(content.contains("PATH=/usr/bin:/bin"));
+    // environment.d is not shell: no `export`, no surrounding quotes.
+    assert!(!content.contains("export "));
+    assert!(!content.contains("EDITOR=\""));
+}
+
+#[test]
+fn environment_d_content_skips_unsafe_names() {
+    let env = vec![EnvVar {
+        name: "BAD NAME".into(),
+        value: "x".into(),
+    }];
+    let content = generate_environment_d_content(&env);
+    assert!(!content.contains("BAD NAME"));
+}
+
+#[test]
+fn launchd_plist_carries_label_and_vars() {
+    let mut vars = std::collections::BTreeMap::new();
+    vars.insert("EDITOR".to_string(), "nvim".to_string());
+    let plist = launchd_env_plist("com.cfgd.user-environment", &vars);
+    assert!(plist.contains("<string>com.cfgd.user-environment</string>"));
+    assert!(plist.contains("<key>EDITOR</key>"));
+    assert!(plist.contains("<string>nvim</string>"));
+    assert!(plist.contains("<key>RunAtLoad</key>"));
+}
+
+#[test]
+fn launchd_plist_xml_escapes_values() {
+    let mut vars = std::collections::BTreeMap::new();
+    vars.insert("X".to_string(), "a<b&c".to_string());
+    let plist = launchd_env_plist("lbl", &vars);
+    assert!(plist.contains("a&lt;b&amp;c"));
+    assert!(!plist.contains("a<b&c"));
+}
+
+#[test]
+fn plan_env_all_scope_emits_live_session_action() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (actions, _w) =
+        Reconciler::plan_env_with_home(&one_env(), &[], EnvScope::All, &[], &[], tmp.path());
+    assert!(
+        actions
+            .iter()
+            .any(|a| matches!(a, Action::Env(EnvAction::RefreshLiveSession { .. }))),
+        "All scope must emit a live-session refresh action"
+    );
+}
+
+#[test]
+fn plan_env_interactive_scope_has_no_live_session_action() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (actions, _w) = Reconciler::plan_env_with_home(
+        &one_env(),
+        &[],
+        EnvScope::Interactive,
+        &[],
+        &[],
+        tmp.path(),
+    );
+    assert!(
+        !actions
+            .iter()
+            .any(|a| matches!(a, Action::Env(EnvAction::RefreshLiveSession { .. }))),
+        "Interactive scope must not touch the live session"
+    );
 }

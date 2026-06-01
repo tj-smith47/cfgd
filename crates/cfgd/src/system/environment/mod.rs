@@ -280,67 +280,20 @@ impl EnvironmentConfigurator {
             return Ok(());
         }
 
-        let mut env_entries = String::new();
-        for (key, value) in managed {
-            env_entries.push_str(&format!(
-                "            <key>{}</key>\n            <string>{}</string>\n",
-                cfgd_core::xml_escape(key),
-                cfgd_core::xml_escape(value)
-            ));
-        }
-
-        let plist = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.cfgd.environment</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/bin/true</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true />
-    <key>EnvironmentVariables</key>
-    <dict>
-{}    </dict>
-</dict>
-</plist>
-"#,
-            env_entries
-        );
+        // Shares the launchd plist generator with the user-scope `spec.env`
+        // path — they differ only by Label (system: com.cfgd.environment).
+        let plist = cfgd_core::reconciler::launchd_env_plist("com.cfgd.environment", managed);
 
         cfgd_core::atomic_write_str(&plist_path, &plist)
             .map_err(cfgd_core::errors::CfgdError::Io)?;
         Ok(())
     }
 
-    /// Set env vars in the current launchd session immediately.
+    /// Set env vars in the current launchd session immediately, via the shared
+    /// live-session layer (also used by the user-scope `spec.env` path).
     fn macos_launchctl_setenv(managed: &BTreeMap<String, String>, printer: &Printer) {
         for (key, value) in managed {
-            let result = Command::new("launchctl")
-                .args(["setenv", key, value])
-                .output();
-            match result {
-                Ok(output) if output.status.success() => {}
-                Ok(output) => {
-                    printer.status_simple(
-                        Role::Warn,
-                        format!(
-                            "launchctl setenv {} failed: {}",
-                            key,
-                            cfgd_core::stderr_lossy_trimmed(&output)
-                        ),
-                    );
-                }
-                Err(e) => {
-                    printer.status_simple(
-                        Role::Warn,
-                        format!("launchctl setenv {} failed: {}", key, e),
-                    );
-                }
-            }
+            cfgd_core::launchctl_setenv(key, value, printer);
         }
     }
 
@@ -375,34 +328,10 @@ impl EnvironmentConfigurator {
         Self::parse_reg_query_output(&stdout)
     }
 
-    /// Set a user environment variable via `setx` (persists to registry).
+    /// Set a user environment variable via `setx` (persists to registry), via
+    /// the shared live-session layer.
     fn windows_set_var(name: &str, value: &str, printer: &Printer) {
-        let result = Command::new("setx").args([name, value]).output();
-        match result {
-            Ok(output) if output.status.success() => {}
-            Ok(output) => {
-                // setx writes error messages to stdout, not stderr
-                let stdout = cfgd_core::stdout_lossy_trimmed(&output);
-                printer.status_simple(
-                    Role::Warn,
-                    format!(
-                        "setx {} failed: {}",
-                        name,
-                        cfgd_core::output::collapse_to_subject_line(&stdout)
-                    ),
-                );
-            }
-            Err(e) => {
-                printer.status_simple(
-                    Role::Warn,
-                    format!(
-                        "setx {} failed: {}",
-                        name,
-                        cfgd_core::output::collapse_to_subject_line(&e)
-                    ),
-                );
-            }
-        }
+        cfgd_core::windows_setx(name, value, printer);
     }
 }
 

@@ -1,6 +1,7 @@
 mod apply_lock;
 mod constants;
 mod encryption;
+mod env_session;
 mod file_io;
 mod fs_perms;
 mod git;
@@ -15,6 +16,7 @@ mod yaml_merge;
 pub use apply_lock::*;
 pub use constants::*;
 pub use encryption::*;
+pub use env_session::*;
 pub use file_io::*;
 pub use fs_perms::*;
 pub use git::*;

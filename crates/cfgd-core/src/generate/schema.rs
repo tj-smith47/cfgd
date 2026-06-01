@@ -159,6 +159,13 @@ spec:
     - name: k
       command: kubectl
 
+  # How far spec.env exports reach for the current user. Omit to inherit (resolves to All).
+  # All = every user context (interactive + login shells, systemd --user / Wayland GUI,
+  # macOS GUI, and a live-session refresh); Login = login + interactive shells only;
+  # Interactive = interactive shells only.
+  # optional, default: All
+  envScope: All
+
   # Per-manager package declarations.
   # optional
   packages:

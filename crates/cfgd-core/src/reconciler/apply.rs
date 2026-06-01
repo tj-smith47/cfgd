@@ -329,6 +329,7 @@ impl<'a> super::Reconciler<'a> {
             let (env_actions, _) = Self::plan_env(
                 &resolved.merged.env,
                 &resolved.merged.aliases,
+                resolved.merged.env_scope,
                 module_actions,
                 &secret_env_collector,
             );

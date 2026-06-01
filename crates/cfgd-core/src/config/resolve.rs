@@ -5,7 +5,7 @@ use serde::Serialize;
 
 use super::parse::{find_profile_path, load_profile};
 use super::profile_spec::{
-    FilesSpec, PackagesSpec, ProfileSpec, ScriptSpec, SecretSpec, validate_secret_specs,
+    EnvScope, FilesSpec, PackagesSpec, ProfileSpec, ScriptSpec, SecretSpec, validate_secret_specs,
 };
 use super::source::{EnvVar, ShellAlias};
 use crate::errors::{ConfigError, Result};
@@ -40,6 +40,7 @@ pub struct ResolvedProfile {
 pub struct MergedProfile {
     pub modules: Vec<String>,
     pub env: Vec<EnvVar>,
+    pub env_scope: EnvScope,
     pub aliases: Vec<ShellAlias>,
     pub packages: PackagesSpec,
     pub files: FilesSpec,
@@ -138,6 +139,12 @@ pub(super) fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
 
         // Env: later layer overrides earlier by name
         crate::merge_env(&mut merged.env, &spec.env);
+
+        // EnvScope: last layer that *specifies* it wins; an omitting layer
+        // inherits the value resolved so far (defaults to All if none set it).
+        if let Some(scope) = spec.env_scope {
+            merged.env_scope = scope;
+        }
 
         // Aliases: later layer overrides earlier by name
         crate::merge_aliases(&mut merged.aliases, &spec.aliases);
@@ -286,5 +293,48 @@ pub fn desired_packages_for_spec(manager_name: &str, packages: &PackagesSpec) ->
             }
             Vec::new()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn layer(name: &str, env_scope: Option<EnvScope>) -> ProfileLayer {
+        ProfileLayer {
+            source: "local".to_string(),
+            profile_name: name.to_string(),
+            priority: 1000,
+            policy: LayerPolicy::Local,
+            spec: ProfileSpec {
+                env_scope,
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn env_scope_defaults_to_all_when_no_layer_sets_it() {
+        let merged = merge_layers(&[layer("base", None), layer("child", None)]);
+        assert_eq!(merged.env_scope, EnvScope::All);
+    }
+
+    #[test]
+    fn env_scope_child_omitting_inherits_parent_value() {
+        // base sets Interactive; child omits — the parent's choice must survive.
+        let merged = merge_layers(&[
+            layer("base", Some(EnvScope::Interactive)),
+            layer("child", None),
+        ]);
+        assert_eq!(merged.env_scope, EnvScope::Interactive);
+    }
+
+    #[test]
+    fn env_scope_child_specifying_overrides_parent() {
+        let merged = merge_layers(&[
+            layer("base", Some(EnvScope::Interactive)),
+            layer("child", Some(EnvScope::Login)),
+        ]);
+        assert_eq!(merged.env_scope, EnvScope::Login);
     }
 }

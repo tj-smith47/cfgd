@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 
-use crate::config::ResolvedProfile;
+use crate::config::{EnvScope, ResolvedProfile};
 use crate::errors::Result;
 use crate::expand_tilde;
 use crate::modules::ResolvedModule;
@@ -11,10 +11,7 @@ use crate::providers::ProviderRegistry;
 use crate::state::StateStore;
 use crate::to_posix_string;
 
-use super::env_files::{
-    fish_in_use, generate_env_file_content, generate_fish_env_content,
-    generate_powershell_env_content,
-};
+use super::env_engine::{EnvHostProbe, EnvPlatform, EnvTarget, env_targets};
 
 /// Record a drift event or log a warning if the write fails. Previous sites
 /// used `.ok()` which silently dropped SQLite errors (locked DB, full disk),
@@ -218,10 +215,11 @@ pub fn verify(
         }
     }
 
-    // Verify env: check ~/.cfgd.env matches expected content
+    // Verify env: re-derive the same targets the planner wrote and check each.
     verify_env(
         &resolved.merged.env,
         &resolved.merged.aliases,
+        resolved.merged.env_scope,
         modules,
         state,
         &mut results,
@@ -262,6 +260,7 @@ pub(super) fn merge_module_env_aliases(
 pub(super) fn verify_env(
     profile_env: &[crate::config::EnvVar],
     profile_aliases: &[crate::config::ShellAlias],
+    scope: EnvScope,
     modules: &[ResolvedModule],
     state: &StateStore,
     results: &mut Vec<VerifyResult>,
@@ -272,98 +271,47 @@ pub(super) fn verify_env(
         return;
     }
 
-    if cfg!(windows) {
-        // Verify PowerShell env file
-        let ps_path = expand_tilde(std::path::Path::new("~/.cfgd-env.ps1"));
-        let expected_ps = generate_powershell_env_content(&merged, &merged_aliases);
-        verify_env_file(&ps_path, &expected_ps, state, results);
-
-        // Verify PowerShell profile injection
-        let ps_profile_dirs = [
-            expand_tilde(std::path::Path::new("~/Documents/PowerShell")),
-            expand_tilde(std::path::Path::new("~/Documents/WindowsPowerShell")),
-        ];
-        for profile_dir in &ps_profile_dirs {
-            let profile_path = profile_dir.join("Microsoft.PowerShell_profile.ps1");
-            let has_line = std::fs::read_to_string(&profile_path)
-                .map(|content| content.contains("cfgd-env.ps1"))
-                .unwrap_or(false);
-            results.push(VerifyResult {
-                resource_type: "env-rc".to_string(),
-                resource_id: to_posix_string(&profile_path),
-                matches: has_line,
-                expected: "source line present".to_string(),
-                actual: if has_line {
-                    "source line present".to_string()
-                } else {
-                    "source line missing".to_string()
-                },
-            });
-            if !has_line {
-                record_drift_or_warn(
-                    state,
-                    "env-rc",
-                    &to_posix_string(&profile_path),
-                    Some("source line present"),
-                    Some("source line missing"),
-                    "local",
-                );
+    // Re-derive the exact target set the planner wrote, so verify never reports
+    // a file the current scope intentionally left unwritten as drift.
+    let home = expand_tilde(std::path::Path::new("~"));
+    let probe = EnvHostProbe::detect(&home);
+    let platform = EnvPlatform::current();
+    for target in env_targets(&merged, &merged_aliases, scope, &home, &probe, platform) {
+        match target {
+            EnvTarget::ManagedFile { path, content } => {
+                verify_env_file(&path, &content, state, results);
             }
+            EnvTarget::SourceLine { rc_path, line } => {
+                let has_line = std::fs::read_to_string(&rc_path)
+                    .map(|content| content.contains(&line))
+                    .unwrap_or(false);
+                results.push(VerifyResult {
+                    resource_type: "env-rc".to_string(),
+                    resource_id: to_posix_string(&rc_path),
+                    matches: has_line,
+                    expected: "source line present".to_string(),
+                    actual: if has_line {
+                        "source line present".to_string()
+                    } else {
+                        "source line missing".to_string()
+                    },
+                });
+                if !has_line {
+                    record_drift_or_warn(
+                        state,
+                        "env-rc",
+                        &to_posix_string(&rc_path),
+                        Some("source line present"),
+                        Some("source line missing"),
+                        "local",
+                    );
+                }
+            }
+            // The live-session refresh is best-effort and ephemeral (a re-login
+            // clears it); it is not a verified-drift surface — the durable file
+            // targets above are authoritative.
+            EnvTarget::LiveSession { .. } => {}
         }
-
-        // If Git Bash available, also verify bash env file
-        if crate::command_available("sh") {
-            let bash_path = expand_tilde(std::path::Path::new("~/.cfgd.env"));
-            let expected_bash = generate_env_file_content(&merged, &merged_aliases);
-            verify_env_file(&bash_path, &expected_bash, state, results);
-        }
-    } else {
-        // Unix: verify bash/zsh env file
-        let env_path = expand_tilde(std::path::Path::new("~/.cfgd.env"));
-        let expected_content = generate_env_file_content(&merged, &merged_aliases);
-        verify_env_file(&env_path, &expected_content, state, results);
-
-        // Check shell rc source line
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-        let rc_path = if shell.contains("zsh") {
-            expand_tilde(std::path::Path::new("~/.zshrc"))
-        } else {
-            expand_tilde(std::path::Path::new("~/.bashrc"))
-        };
-
-        let has_source_line = std::fs::read_to_string(&rc_path)
-            .map(|content| content.contains("cfgd.env"))
-            .unwrap_or(false);
-        results.push(VerifyResult {
-            resource_type: "env-rc".to_string(),
-            resource_id: to_posix_string(&rc_path),
-            matches: has_source_line,
-            expected: "source line present".to_string(),
-            actual: if has_source_line {
-                "source line present".to_string()
-            } else {
-                "source line missing".to_string()
-            },
-        });
-        if !has_source_line {
-            record_drift_or_warn(
-                state,
-                "env-rc",
-                &to_posix_string(&rc_path),
-                Some("source line present"),
-                Some("source line missing"),
-                "local",
-            );
-        }
-    }
-
-    // Check fish env file only if fish is the user's shell.
-    // Windows fish lives outside $SHELL conventions — see fish_in_use().
-    let fish_conf_d = expand_tilde(std::path::Path::new("~/.config/fish/conf.d"));
-    if fish_in_use() && fish_conf_d.exists() {
-        let fish_path = fish_conf_d.join("cfgd-env.fish");
-        let expected_fish = generate_fish_env_content(&merged, &merged_aliases);
-        verify_env_file(&fish_path, &expected_fish, state, results);
     }
 }
 

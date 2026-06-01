@@ -169,7 +169,17 @@ core → base → macos → work
 
 ## Env Vars
 
-Env vars are name/value pairs available in [Tera templates](templates.md) and exported to the shell environment. They're set in the profile's `env` section and resolved through the inheritance chain (later overrides earlier for the same name).
+Env vars are name/value pairs available in [Tera templates](templates.md) and exported for the current user. They're set in the profile's `env` section and resolved through the inheritance chain (later overrides earlier for the same name).
+
+cfgd writes a managed `~/.cfgd.env` and wires it into the user's shells and session managers according to **`spec.envScope`** (default `All`):
+
+| `envScope` | Reaches |
+|---|---|
+| `All` *(default)* | Interactive + login shells, `systemd --user` / Wayland GUI (`~/.config/environment.d`), macOS GUI (LaunchAgent), and an immediate live-session refresh (`launchctl setenv` / `systemctl --user set-environment` / `setx`). No re-login needed. |
+| `Login` | Interactive + login shells (`~/.zshenv`, `~/.profile`, and an existing `~/.bash_profile`). |
+| `Interactive` | Interactive shells only (`~/.bashrc`/`~/.zshrc`, fish `conf.d`) — the historical behavior. |
+
+`spec.env` is **per-user**. For system-wide (all-users, privileged) variables, use [`spec.system.environment`](system-configurators.md). See the [profile spec](spec/profile.md#specenvscope) for the full target list and the dotfile-safety rules.
 
 ## Shell Aliases
 

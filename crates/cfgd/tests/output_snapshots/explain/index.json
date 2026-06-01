@@ -133,6 +133,12 @@
         "type": "list[{name, command}]"
       },
       {
+        "description": "How far spec.env reaches for the current user (default All): All = every context incl. login/GUI/systemd-user + live session; Login = login + interactive shells; Interactive = interactive shells only",
+        "name": "envScope",
+        "required": false,
+        "type": "All | Login | Interactive"
+      },
+      {
         "children": [
           {
             "children": [

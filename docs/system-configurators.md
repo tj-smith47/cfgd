@@ -112,7 +112,7 @@ system:
 
 ### `environment`
 
-Manages environment variables by writing them to shell profile files (e.g., `~/.profile`, `~/.zshenv`). On Windows, variables are written to the user environment via the registry (`HKCU\Environment`) using `setx`, and are available to new processes immediately after apply.
+Manages **system-wide** (all-users, privileged) environment variables: Linux writes `/etc/environment` and `/etc/profile.d/cfgd-env.sh`; macOS writes a system LaunchAgent plist plus `~/.config/cfgd/env.sh` and refreshes the live session via `launchctl setenv`; Windows writes the user registry (`HKCU\Environment`) via `setx`.
 
 ```yaml
 system:
@@ -120,6 +120,13 @@ system:
     GOPATH: ~/go
     EDITOR: nvim
 ```
+
+> **`spec.system.environment` vs `spec.env`.** These differ by *scope of affected users*, not by
+> which shells. Use `spec.system.environment` (here) for variables that should apply to **every**
+> user on the machine (requires privilege). Use [`spec.env`](spec/profile.md#specenv) for the
+> **current user** only — it reaches every user context by default (see
+> [`spec.envScope`](spec/profile.md#specenvscope)) without needing root. Both share one
+> live-session refresh and launchd-plist engine internally, so their behavior stays consistent.
 
 ### `windowsRegistry` (Windows only)
 

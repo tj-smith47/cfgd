@@ -60,6 +60,7 @@ fn happy_resolved() -> ResolvedProfile {
                     value: "en_US.UTF-8".into(),
                 },
             ],
+            env_scope: cfgd_core::config::EnvScope::All,
             aliases: Vec::new(),
             packages: PackagesSpec {
                 brew: Some(BrewSpec {

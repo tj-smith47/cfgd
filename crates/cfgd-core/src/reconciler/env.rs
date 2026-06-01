@@ -1,12 +1,11 @@
 use crate::PathDisplayExt;
+use crate::config::EnvScope;
 use crate::errors::Result;
 use crate::modules::ResolvedModule;
 use crate::output::{Printer, Role};
 
-use super::env_files::{
-    detect_rc_env_conflicts, fish_in_use, generate_env_file_content, generate_fish_env_content,
-    generate_powershell_env_content,
-};
+use super::env_engine::{EnvHostProbe, EnvPlatform, EnvTarget, env_targets};
+use super::env_files::detect_rc_env_conflicts;
 use super::types::{Action, EnvAction};
 use super::verify::merge_module_env_aliases;
 
@@ -16,16 +15,25 @@ impl<'a> super::Reconciler<'a> {
     pub(super) fn plan_env(
         profile_env: &[crate::config::EnvVar],
         profile_aliases: &[crate::config::ShellAlias],
+        scope: EnvScope,
         modules: &[ResolvedModule],
         secret_envs: &[(String, String)],
     ) -> (Vec<Action>, Vec<String>) {
         let home = crate::expand_tilde(std::path::Path::new("~"));
-        Self::plan_env_with_home(profile_env, profile_aliases, modules, secret_envs, &home)
+        Self::plan_env_with_home(
+            profile_env,
+            profile_aliases,
+            scope,
+            modules,
+            secret_envs,
+            &home,
+        )
     }
 
     pub(super) fn plan_env_with_home(
         profile_env: &[crate::config::EnvVar],
         profile_aliases: &[crate::config::ShellAlias],
+        scope: EnvScope,
         modules: &[ResolvedModule],
         secret_envs: &[(String, String)],
         home: &std::path::Path,
@@ -46,83 +54,33 @@ impl<'a> super::Reconciler<'a> {
             return (Vec::new(), Vec::new());
         }
 
+        let platform = EnvPlatform::current();
+        let probe = EnvHostProbe::detect(home);
+        let targets = env_targets(&merged, &merged_aliases, scope, home, &probe, platform);
+
         let mut actions = Vec::new();
-
-        let warnings = if cfg!(windows) {
-            // PowerShell env file — always generated on Windows
-            let ps_path = home.join(".cfgd-env.ps1");
-            let ps_content = generate_powershell_env_content(&merged, &merged_aliases);
-            actions.push(Action::Env(EnvAction::WriteEnvFile {
-                path: ps_path,
-                content: ps_content,
-            }));
-
-            // Inject dot-source line into PowerShell profiles
-            let ps_profile_dirs = [
-                home.join("Documents/PowerShell"),
-                home.join("Documents/WindowsPowerShell"),
-            ];
-            for profile_dir in &ps_profile_dirs {
-                let profile_path = profile_dir.join("Microsoft.PowerShell_profile.ps1");
-                actions.push(Action::Env(EnvAction::InjectSourceLine {
-                    rc_path: profile_path,
-                    line: ". ~/.cfgd-env.ps1".to_string(),
-                }));
-            }
-
-            // If Git Bash is available, also generate bash env file
-            if crate::command_available("sh") {
-                let bash_path = home.join(".cfgd.env");
-                let bash_content = generate_env_file_content(&merged, &merged_aliases);
-                actions.push(Action::Env(EnvAction::WriteEnvFile {
-                    path: bash_path,
-                    content: bash_content,
-                }));
-                let bashrc = home.join(".bashrc");
-                actions.push(Action::Env(EnvAction::InjectSourceLine {
-                    rc_path: bashrc,
-                    line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
-                }));
-            }
-
-            // No rc conflict detection on Windows
-            Vec::new()
-        } else {
-            // Unix: bash/zsh env file + source line
-            let env_path = home.join(".cfgd.env");
-            let content = generate_env_file_content(&merged, &merged_aliases);
-            actions.push(Action::Env(EnvAction::WriteEnvFile {
-                path: env_path.clone(),
-                content,
-            }));
-
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-            let rc_path = if shell.contains("zsh") {
-                home.join(".zshrc")
-            } else {
-                home.join(".bashrc")
-            };
-            actions.push(Action::Env(EnvAction::InjectSourceLine {
-                rc_path: rc_path.clone(),
-                line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
-            }));
-
-            // Check for conflicts with existing definitions in the shell rc file
-            detect_rc_env_conflicts(&rc_path, &merged, &merged_aliases)
-        };
-
-        // Fish shell: only generate fish env if fish is the user's shell.
-        // Windows fish lives outside $SHELL conventions — see fish_in_use().
-        let fish_conf_d = home.join(".config/fish/conf.d");
-        if fish_in_use() && fish_conf_d.exists() {
-            let fish_path = fish_conf_d.join("cfgd-env.fish");
-            let fish_content = generate_fish_env_content(&merged, &merged_aliases);
-            let existing_fish = std::fs::read_to_string(&fish_path).unwrap_or_default(); // OK: file may not exist yet
-            if existing_fish != fish_content {
-                actions.push(Action::Env(EnvAction::WriteEnvFile {
-                    path: fish_path,
-                    content: fish_content,
-                }));
+        let mut warnings = Vec::new();
+        for target in targets {
+            match target {
+                EnvTarget::ManagedFile { path, content } => {
+                    actions.push(Action::Env(EnvAction::WriteEnvFile { path, content }));
+                }
+                EnvTarget::SourceLine { rc_path, line } => {
+                    // Warn when a user-owned shell rc defines a cfgd-managed name
+                    // *before* our source line (their value would win). Bash/zsh
+                    // syntax only — skip on Windows PowerShell profiles.
+                    if platform != EnvPlatform::Windows {
+                        warnings.extend(detect_rc_env_conflicts(
+                            &rc_path,
+                            &merged,
+                            &merged_aliases,
+                        ));
+                    }
+                    actions.push(Action::Env(EnvAction::InjectSourceLine { rc_path, line }));
+                }
+                EnvTarget::LiveSession { vars } => {
+                    actions.push(Action::Env(EnvAction::RefreshLiveSession { vars }));
+                }
             }
         }
 
@@ -143,6 +101,11 @@ impl<'a> super::Reconciler<'a> {
                 if existing == *content {
                     return Ok(format!("env:write:{}:skipped", path.display()));
                 }
+                if let Some(parent) = path.parent()
+                    && !parent.exists()
+                {
+                    std::fs::create_dir_all(parent)?;
+                }
                 crate::atomic_write_str(path, content)?;
                 printer.status_simple(Role::Ok, format!("Wrote {}", path.posix()));
                 Ok(format!("env:write:{}", path.display()))
@@ -160,6 +123,11 @@ impl<'a> super::Reconciler<'a> {
                     // Already injected
                     return Ok(format!("env:inject:{}:skipped", rc_path.display()));
                 }
+                if let Some(parent) = rc_path.parent()
+                    && !parent.exists()
+                {
+                    std::fs::create_dir_all(parent)?;
+                }
                 let mut content = existing;
                 if !content.ends_with('\n') && !content.is_empty() {
                     content.push('\n');
@@ -172,6 +140,17 @@ impl<'a> super::Reconciler<'a> {
                     format!("Injected source line into {}", rc_path.posix()),
                 );
                 Ok(format!("env:inject:{}", rc_path.display()))
+            }
+            EnvAction::RefreshLiveSession { vars } => {
+                let changed = crate::refresh_session_env(vars, printer);
+                if changed == 0 {
+                    return Ok("env:session:skipped".to_string());
+                }
+                printer.status_simple(
+                    Role::Ok,
+                    format!("Refreshed {changed} live session variable(s)"),
+                );
+                Ok(format!("env:session:{changed}"))
             }
         }
     }

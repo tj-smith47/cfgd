@@ -175,6 +175,7 @@ spec:
 | `inherits` | list of string | No | `[]` | Parent profiles to inherit from. Resolved depth-first, left-to-right. |
 | `modules` | list of string | No | `[]` | Module names to activate. Modules are resolved and applied before profile-level items. |
 | `env` | list | No | `[]` | Environment variables to export. See [spec.env[]](#specenv). |
+| `envScope` | string | No | `All` | How far `spec.env` exports reach for the current user. See [spec.envScope](#specenvscope). |
 | `aliases` | list | No | `[]` | Shell aliases to install. See [spec.aliases[]](#specaliases). |
 | `packages` | object | No | | Package declarations by manager. See [spec.packages](#specpackages). |
 | `files` | object | No | | Managed files and permissions. See [spec.files](#specfiles). |
@@ -204,8 +205,11 @@ spec:
 
 ### spec.env[]
 
-Environment variables to export into the shell environment during reconciliation. Managed in the
-shell rc file (`.zshrc`, `.bashrc`, etc.) by the shell system configurator.
+Environment variables to export for the **current user**. cfgd writes a managed env file
+(`~/.cfgd.env`) and wires it into the user's shells and session managers according to
+[`spec.envScope`](#specenvscope) — by default every standard user context. For **system-wide**
+(all-users, privileged) variables, use [`spec.system.environment`](system-configurators.md)
+instead; the two differ by *scope of affected users*, not by which shells.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -222,6 +226,39 @@ env:
     value: nvim
   - name: GOPATH
     value: ~/go
+```
+
+---
+
+### spec.envScope
+
+Controls how far [`spec.env`](#specenv) exports reach across the current user's environment. Omit
+to inherit a parent layer's value (resolves to `All` when no layer sets it). Aliases are always
+interactive-only regardless of scope; fish `conf.d` always covers every fish session.
+
+| Value | Reaches |
+|-------|---------|
+| `All` *(default)* | Everything in `Login`, **plus** session managers — `~/.config/environment.d/cfgd.conf` (systemd `--user` + Wayland GUI, Linux), `~/Library/LaunchAgents/com.cfgd.user-environment.plist` (macOS GUI), and an immediate **live-session refresh** (`launchctl setenv` / `systemctl --user set-environment` / `setx`). |
+| `Login` | Everything in `Interactive`, **plus** login shells — `~/.zshenv` (zsh, all contexts), `~/.profile` (sh/bash login), and `~/.bash_profile`/`~/.bash_login` *only if one already exists*. |
+| `Interactive` | Interactive shells only — `~/.cfgd.env` sourced from `~/.bashrc`/`~/.zshrc` (and fish `conf.d`). The historical behavior. |
+
+cfgd never overwrites a user-owned dotfile: it owns the standalone `~/.cfgd.env` (and the
+`environment.d`/plist files) outright, and only appends an idempotent `source` line into shell rc
+files. It will **not create** a `~/.bash_profile` that didn't exist, because bash reads the first
+existing of `~/.bash_profile`, `~/.bash_login`, `~/.profile` and stops — creating one would shadow
+your `~/.profile`.
+
+> `~/.config/environment.d` is read by `systemd --user` and Wayland sessions started through it;
+> classic X11 display managers that don't import the systemd user environment won't see it. File
+> targets take effect in new sessions; the live-session refresh applies immediately.
+
+**Example:**
+```yaml
+spec:
+  env:
+    - name: EDITOR
+      value: nvim
+  envScope: All        # default; narrow to Login or Interactive to opt out of broader reach
 ```
 
 ---
@@ -650,6 +687,7 @@ all layers in resolution order (earliest ancestor first, current profile last).
 |-------|-----------|
 | `modules` | Union — a module listed in any layer is activated. |
 | `env` | Override by name — a child variable replaces the parent's variable of the same name. |
+| `envScope` | Last layer that *specifies* it wins; a layer that omits it inherits the value resolved so far (defaults to `All`). |
 | `aliases` | Override by name — same rule as `env`. |
 | `packages` | Union per manager — package lists across layers are combined, duplicates removed. |
 | `files.managed` | Overlay by `target` — a child entry for the same target replaces the parent's. |

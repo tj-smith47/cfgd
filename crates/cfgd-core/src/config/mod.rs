@@ -36,8 +36,8 @@ pub use parse::{load_config, load_profile, parse_config, parse_config_source};
 pub use platform::{PlatformInfo, detect_platform, match_platform_profile, source_profile_names};
 pub use profile_spec::{
     AptSpec, BrewSpec, CargoSpec, CustomManagerSpec, EncryptionConstraint, EncryptionMode,
-    EncryptionSpec, FileStrategy, FilesSpec, FlatpakSpec, ManagedFileSpec, NpmSpec, PackagesSpec,
-    ProfileDocument, ProfileMetadata, ProfileSpec, ScriptSpec, SecretSpec, SnapSpec,
+    EncryptionSpec, EnvScope, FileStrategy, FilesSpec, FlatpakSpec, ManagedFileSpec, NpmSpec,
+    PackagesSpec, ProfileDocument, ProfileMetadata, ProfileSpec, ScriptSpec, SecretSpec, SnapSpec,
     validate_secret_specs,
 };
 pub use resolve::{

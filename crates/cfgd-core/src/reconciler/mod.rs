@@ -3,6 +3,7 @@ use crate::state::StateStore;
 
 mod apply;
 mod env;
+mod env_engine;
 mod env_files;
 mod file_action;
 mod files;
@@ -23,6 +24,7 @@ mod verify;
 mod tests;
 
 pub use apply::action_matches_phase_filter;
+pub use env_engine::launchd_env_plist;
 pub use format::{format_action_description, format_plan_items};
 pub use types::{
     Action, ActionResult, ApplyResult, EnvAction, ModuleAction, ModuleActionKind, Phase, PhaseName,
@@ -41,6 +43,7 @@ use {
     crate::output::Printer,
     crate::providers::{FileAction, PackageAction, SecretAction},
     crate::state::ApplyStatus,
+    env_engine::*,
     env_files::*,
     format::*,
     restore::*,

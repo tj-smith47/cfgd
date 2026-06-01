@@ -1891,6 +1891,7 @@ fn parse_profile_yaml_to_resolved(yaml: &str) -> crate::config::ResolvedProfile 
     let merged = crate::config::MergedProfile {
         modules: spec.modules.clone(),
         env: spec.env.clone(),
+        env_scope: spec.env_scope.unwrap_or_default(),
         aliases: spec.aliases.clone(),
         packages: spec.packages.clone().unwrap_or_default(),
         files: spec.files.clone().unwrap_or_default(),

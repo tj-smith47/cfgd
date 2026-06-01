@@ -112,6 +112,7 @@ pub fn format_action_description(action: &Action) -> String {
             EnvAction::InjectSourceLine { rc_path, .. } => {
                 format!("env:inject:{}", path_str(rc_path))
             }
+            EnvAction::RefreshLiveSession { .. } => "env:session:refresh".to_string(),
         },
     }
 }
@@ -287,6 +288,9 @@ pub fn format_plan_items(phase: &Phase) -> Vec<String> {
                 }
                 EnvAction::InjectSourceLine { rc_path, .. } => {
                     format!("inject source line into {}", rc_path.posix())
+                }
+                EnvAction::RefreshLiveSession { vars } => {
+                    format!("refresh live session ({} var(s))", vars.len())
                 }
             },
         })

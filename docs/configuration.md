@@ -142,6 +142,7 @@ On Linux, cfgd supports desktop environment-specific system configurators in add
 |---|---|
 | Desktop configurators | `gsettings` (GNOME/GTK), `kdeConfig` (KDE Plasma), `xfconf` (XFCE) — each active only when its CLI tool is installed |
 | System configurators | `systemdUnits`, `environment`; plus node-level configurators (`sysctl`, `kernelModules`, `containerd`, `kubelet`, `apparmor`, `seccomp`, `certificates`) |
+| `spec.env` reach | `envScope: All` (default) writes `~/.config/environment.d/cfgd.conf` (read by `systemd --user` + Wayland GUI sessions) and refreshes the live session via `systemctl --user set-environment` |
 | Daemon service | Registered as a systemd user service; starts at login |
 
 ## Windows
@@ -152,6 +153,7 @@ On Windows, cfgd supports the same configuration structure with these platform-s
 |---|---|
 | Package managers | `winget`, `chocolatey`, `scoop` (in addition to cross-platform managers like `cargo`, `npm`, `pipx`) |
 | System configurators | `windowsRegistry`, `windowsServices`; `shell` targets Windows Terminal; `environment` writes to `HKCU\Environment` via `setx` |
+| `spec.env` reach | Writes `~/.cfgd-env.ps1` dot-sourced from the PowerShell profiles (and Git Bash rc when present); `envScope: All` (default) also persists vars to `HKCU\Environment` via `setx` |
 | File strategy | `Symlink` requires Developer Mode or an elevated prompt; `Copy` is a safe default |
 | Daemon service | Registered as a Windows Service via `sc.exe`; starts at boot; logs to `%LOCALAPPDATA%\cfgd\daemon.log` |
 | Config directory | `%APPDATA%\cfgd` (equivalent to `~/.config/cfgd` on Unix) |

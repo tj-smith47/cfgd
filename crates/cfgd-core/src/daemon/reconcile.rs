@@ -638,6 +638,9 @@ pub(crate) fn action_resource_info(action: &crate::reconciler::Action) -> (Strin
                 EnvAction::InjectSourceLine { rc_path, .. } => {
                     ("env-rc".to_string(), to_posix_string(rc_path))
                 }
+                EnvAction::RefreshLiveSession { .. } => {
+                    ("env-session".to_string(), "live-session".to_string())
+                }
             }
         }
     }

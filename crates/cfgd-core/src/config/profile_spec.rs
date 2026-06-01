@@ -35,6 +35,14 @@ pub struct ProfileSpec {
     #[serde(default)]
     pub env: Vec<EnvVar>,
 
+    /// How far `spec.env` exports reach across the current user's environment.
+    /// Omitted means "inherit" (a parent layer's value survives); the resolved
+    /// default when no layer sets it is [`EnvScope::All`] — every standard user
+    /// entry point cfgd can safely touch. Narrow it to `Login` or `Interactive`
+    /// to opt out of the broader session surfaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_scope: Option<EnvScope>,
+
     #[serde(default)]
     pub aliases: Vec<ShellAlias>,
 
@@ -52,6 +60,27 @@ pub struct ProfileSpec {
 
     #[serde(default)]
     pub scripts: Option<ScriptSpec>,
+}
+
+/// How far `spec.env` exports reach across the current user's environment.
+///
+/// The two env fields differ by *scope of affected users*: `spec.env` targets
+/// the current user, `spec.system.environment` targets all users (privileged).
+/// This knob narrows the *current-user* reach; it never widens beyond the user.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum EnvScope {
+    /// Every standard user entry point cfgd can safely touch: interactive +
+    /// login shells, `systemd --user` / Wayland GUI sessions, macOS GUI apps,
+    /// and an immediate live-session refresh. The default — no gotchas.
+    #[default]
+    All,
+    /// Interactive shells plus login shells (`~/.zshenv`, `~/.profile`, and an
+    /// existing `~/.bash_profile`). Excludes the GUI / `systemd --user` session
+    /// surfaces and the live-session refresh.
+    Login,
+    /// Interactive shells only (`~/.bashrc` / `~/.zshrc`, fish conf.d) — the
+    /// historical behavior before full reach.
+    Interactive,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -456,5 +485,32 @@ mod tests {
         let err = serde_yaml::from_str::<ManagedFileSpec>(yaml)
             .expect_err("expected deny_unknown_fields to reject bogus");
         assert!(format!("{}", err).contains("unknown field"));
+    }
+
+    #[test]
+    fn env_scope_omitted_is_none_so_inheritance_can_apply() {
+        let spec = serde_yaml::from_str::<ProfileSpec>("modules: []\n").unwrap();
+        assert_eq!(spec.env_scope, None);
+    }
+
+    #[test]
+    fn env_scope_parses_pascal_case_variants() {
+        let all = serde_yaml::from_str::<ProfileSpec>("envScope: All\n").unwrap();
+        assert_eq!(all.env_scope, Some(EnvScope::All));
+        let login = serde_yaml::from_str::<ProfileSpec>("envScope: Login\n").unwrap();
+        assert_eq!(login.env_scope, Some(EnvScope::Login));
+        let interactive = serde_yaml::from_str::<ProfileSpec>("envScope: Interactive\n").unwrap();
+        assert_eq!(interactive.env_scope, Some(EnvScope::Interactive));
+    }
+
+    #[test]
+    fn env_scope_rejects_unknown_variant() {
+        serde_yaml::from_str::<ProfileSpec>("envScope: Everywhere\n")
+            .expect_err("unknown EnvScope variant must error, not silently default");
+    }
+
+    #[test]
+    fn env_scope_default_is_all() {
+        assert_eq!(EnvScope::default(), EnvScope::All);
     }
 }

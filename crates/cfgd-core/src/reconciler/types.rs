@@ -85,6 +85,11 @@ pub enum EnvAction {
         rc_path: std::path::PathBuf,
         line: String,
     },
+    /// Refresh the current user's live session so already-running session
+    /// managers spawn new processes with these vars, without a re-login
+    /// (macOS `launchctl setenv`, Linux `systemctl --user set-environment`,
+    /// Windows `setx`). Best-effort and idempotent.
+    RefreshLiveSession { vars: Vec<(String, String)> },
 }
 
 /// A unified action across all resource types.

@@ -91,6 +91,7 @@ pub(in crate::cli) fn action_type_str(action: &reconciler::Action) -> &'static s
         reconciler::Action::Env(ea) => match ea {
             reconciler::EnvAction::WriteEnvFile { .. } => "write",
             reconciler::EnvAction::InjectSourceLine { .. } => "inject",
+            reconciler::EnvAction::RefreshLiveSession { .. } => "refresh",
         },
     }
 }
@@ -418,6 +419,9 @@ pub(in crate::cli) fn action_path(phase: &PhaseName, action: &reconciler::Action
             }
             reconciler::EnvAction::InjectSourceLine { rc_path, .. } => {
                 format!("{}:{}", prefix, rc_path.display())
+            }
+            reconciler::EnvAction::RefreshLiveSession { .. } => {
+                format!("{}:live-session", prefix)
             }
         },
     }

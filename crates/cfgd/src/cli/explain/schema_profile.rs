@@ -36,6 +36,13 @@ pub(super) static SCHEMA_PROFILE: ResourceSchema = ResourceSchema {
             children: &[],
         },
         SchemaField {
+            name: "envScope",
+            type_desc: "All | Login | Interactive",
+            required: false,
+            description: "How far spec.env reaches for the current user (default All): All = every context incl. login/GUI/systemd-user + live session; Login = login + interactive shells; Interactive = interactive shells only",
+            children: &[],
+        },
+        SchemaField {
             name: "packages",
             type_desc: "object",
             required: false,

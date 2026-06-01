@@ -43,6 +43,7 @@ impl<'a> super::Reconciler<'a> {
         let (env_actions, warnings) = Self::plan_env(
             &resolved.merged.env,
             &resolved.merged.aliases,
+            resolved.merged.env_scope,
             &module_actions,
             &[], // Secret envs are not yet resolved at plan time; they are
                  // injected during the apply phase after ResolveEnv actions run.

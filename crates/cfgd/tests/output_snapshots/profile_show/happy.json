@@ -49,6 +49,7 @@
           "value": "en_US.UTF-8"
         }
       ],
+      "env_scope": "All",
       "files": {
         "managed": [
           {
