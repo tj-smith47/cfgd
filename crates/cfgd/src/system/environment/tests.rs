@@ -863,16 +863,13 @@ fn macos_env_sh_path_is_under_default_config_dir() {
 }
 
 #[test]
-fn macos_plist_path_is_under_home_library_launchagents() {
-    let dir = tempfile::tempdir().unwrap();
-    let _g = cfgd_core::with_test_home_guard(dir.path());
+fn macos_plist_path_is_system_launchdaemon() {
+    // System scope requires a LaunchDaemon in /Library/LaunchDaemons (root launchd, system
+    // domain), not a per-user ~/Library/LaunchAgents plist that would reach only one user.
     let p = EnvironmentConfigurator::macos_plist_path();
     assert_eq!(
         p,
-        dir.path()
-            .join("Library")
-            .join("LaunchAgents")
-            .join("com.cfgd.environment.plist")
+        std::path::Path::new("/Library/LaunchDaemons/com.cfgd.environment.plist")
     );
 }
 
@@ -962,7 +959,6 @@ fn macos_current_vars_empty_when_file_missing() {
 #[test]
 fn macos_write_launchd_plist_writes_well_formed_xml() {
     let dir = tempfile::tempdir().unwrap();
-    let _g = cfgd_core::with_test_home_guard(dir.path());
 
     let mut managed = BTreeMap::new();
     managed.insert(
@@ -970,11 +966,10 @@ fn macos_write_launchd_plist_writes_well_formed_xml() {
         "http://proxy.corp:8080".to_string(),
     );
 
-    EnvironmentConfigurator::macos_write_launchd_plist(&managed).unwrap();
+    // Target a temp path, never the real /Library/LaunchDaemons (system, root-only).
+    let plist = dir.path().join("com.cfgd.environment.plist");
+    EnvironmentConfigurator::write_launchd_plist_to(&plist, &managed).unwrap();
 
-    let plist = dir
-        .path()
-        .join("Library/LaunchAgents/com.cfgd.environment.plist");
     let content = std::fs::read_to_string(&plist).unwrap();
     assert!(content.starts_with(r#"<?xml version="1.0" encoding="UTF-8"?>"#));
     assert!(content.contains("<key>Label</key>"));
@@ -991,17 +986,13 @@ fn macos_write_launchd_plist_writes_well_formed_xml() {
 #[test]
 fn macos_write_launchd_plist_xml_escapes_special_chars() {
     let dir = tempfile::tempdir().unwrap();
-    let _g = cfgd_core::with_test_home_guard(dir.path());
 
     let mut managed = BTreeMap::new();
     managed.insert("TRICKY".to_string(), r#"<value & "quoted">"#.to_string());
-    EnvironmentConfigurator::macos_write_launchd_plist(&managed).unwrap();
+    let plist = dir.path().join("com.cfgd.environment.plist");
+    EnvironmentConfigurator::write_launchd_plist_to(&plist, &managed).unwrap();
 
-    let content = std::fs::read_to_string(
-        dir.path()
-            .join("Library/LaunchAgents/com.cfgd.environment.plist"),
-    )
-    .unwrap();
+    let content = std::fs::read_to_string(&plist).unwrap();
     // xml_escape encodes <, >, &, "
     assert!(
         content.contains("&lt;value &amp; &quot;quoted&quot;&gt;"),
@@ -1014,35 +1005,27 @@ fn macos_write_launchd_plist_xml_escapes_special_chars() {
 #[test]
 fn macos_write_launchd_plist_empty_managed_removes_existing_file() {
     let dir = tempfile::tempdir().unwrap();
-    let _g = cfgd_core::with_test_home_guard(dir.path());
-    let plist = dir
-        .path()
-        .join("Library/LaunchAgents/com.cfgd.environment.plist");
-    std::fs::create_dir_all(plist.parent().unwrap()).unwrap();
+    let plist = dir.path().join("com.cfgd.environment.plist");
     std::fs::write(&plist, "stale plist").unwrap();
     assert!(plist.exists());
 
     // Empty managed shells out to `launchctl unload` (which fails harmlessly
     // on Linux — the function logs and proceeds), then removes the plist.
-    EnvironmentConfigurator::macos_write_launchd_plist(&BTreeMap::new()).unwrap();
+    EnvironmentConfigurator::write_launchd_plist_to(&plist, &BTreeMap::new()).unwrap();
     assert!(!plist.exists());
 }
 
 #[test]
 fn macos_write_launchd_plist_creates_parent_dir() {
     let dir = tempfile::tempdir().unwrap();
-    let _g = cfgd_core::with_test_home_guard(dir.path());
-    assert!(!dir.path().join("Library").exists());
+    let plist = dir.path().join("LaunchDaemons/com.cfgd.environment.plist");
+    assert!(!plist.parent().unwrap().exists());
 
     let mut managed = BTreeMap::new();
     managed.insert("X".to_string(), "y".to_string());
-    EnvironmentConfigurator::macos_write_launchd_plist(&managed).unwrap();
+    EnvironmentConfigurator::write_launchd_plist_to(&plist, &managed).unwrap();
 
-    assert!(
-        dir.path()
-            .join("Library/LaunchAgents/com.cfgd.environment.plist")
-            .exists()
-    );
+    assert!(plist.exists());
 }
 
 #[cfg(not(target_os = "macos"))]

@@ -17,9 +17,11 @@ use super::parse_reg_line;
 /// For user-level env vars, see `spec.env` which generates `~/.cfgd.env`.
 ///
 /// **Linux**: Writes to `/etc/environment` (PAM) and `/etc/profile.d/cfgd-env.sh` (login shells).
-/// **macOS**: Writes to `~/Library/LaunchAgents/com.cfgd.environment.plist` (GUI apps, via a
-///           `launchctl setenv` run at load) and `~/.config/cfgd/env.sh` (sourced by shells).
-///           Also calls `launchctl setenv` for the current session.
+/// **macOS**: Writes a system LaunchDaemon `/Library/LaunchDaemons/com.cfgd.environment.plist`
+///           (runs `launchctl setenv` in the system domain at boot, so ALL users' GUI apps inherit
+///           it) plus `~/.config/cfgd/env.sh` (sourced by shells). Also calls `launchctl setenv`
+///           for the current session. (A per-user LaunchAgent would only reach one user; system
+///           scope requires a LaunchDaemon loaded by the root launchd.)
 ///
 /// Config format:
 /// ```yaml
@@ -42,6 +44,9 @@ const LINUX_PROFILE_D: &str = "/etc/profile.d/cfgd-env.sh";
 
 // macOS paths
 const MACOS_LAUNCHD_PLIST_NAME: &str = "com.cfgd.environment.plist";
+// System LaunchDaemon dir (root launchd, system domain) — required for all-users env scope.
+// A per-user ~/Library/LaunchAgents plist would only reach the invoking user.
+const MACOS_LAUNCHDAEMONS_DIR: &str = "/Library/LaunchDaemons";
 
 impl EnvironmentConfigurator {
     /// Extract desired env vars from the YAML config value.
@@ -224,9 +229,7 @@ impl EnvironmentConfigurator {
     }
 
     fn macos_plist_path() -> std::path::PathBuf {
-        let home = cfgd_core::expand_tilde(Path::new("~"));
-        home.join("Library/LaunchAgents")
-            .join(MACOS_LAUNCHD_PLIST_NAME)
+        Path::new(MACOS_LAUNCHDAEMONS_DIR).join(MACOS_LAUNCHD_PLIST_NAME)
     }
 
     fn macos_current_vars() -> BTreeMap<String, String> {
@@ -261,30 +264,41 @@ impl EnvironmentConfigurator {
         Ok(())
     }
 
-    /// Write a launchd plist that publishes env vars to GUI apps via `launchctl setenv` at load.
+    /// Write the system LaunchDaemon plist that publishes env vars system-wide via
+    /// `launchctl setenv` at load (root launchd, system domain). Path-parameterized inner
+    /// ([`write_launchd_plist_to`]) so tests target a temp path, never the real
+    /// `/Library/LaunchDaemons` — mirrors the Linux `write_etc_environment_to` pattern.
     fn macos_write_launchd_plist(managed: &BTreeMap<String, String>) -> Result<()> {
-        let plist_path = Self::macos_plist_path();
+        Self::write_launchd_plist_to(&Self::macos_plist_path(), managed)
+    }
+
+    fn write_launchd_plist_to(plist_path: &Path, managed: &BTreeMap<String, String>) -> Result<()> {
         if let Some(parent) = plist_path.parent() {
             std::fs::create_dir_all(parent).map_err(cfgd_core::errors::CfgdError::Io)?;
         }
 
         if managed.is_empty() {
-            // Unload and remove
+            // Unload (best-effort) then remove. `launchctl unload` no-ops/fails harmlessly on a
+            // path that was never loaded or off-macOS; log and proceed to removal.
             if let Err(e) = Command::new("launchctl")
                 .args(["unload", &plist_path.to_string_lossy()])
                 .output()
             {
                 tracing::debug!("launchctl unload (cleanup): {e}");
             }
-            let _ = std::fs::remove_file(&plist_path);
+            let _ = std::fs::remove_file(plist_path);
             return Ok(());
         }
 
-        // Shares the launchd plist generator with the user-scope `spec.env`
-        // path — they differ only by Label (system: com.cfgd.environment).
+        // Shares the launchd plist generator with the user-scope `spec.env` path — they differ
+        // only by Label (system: com.cfgd.environment) and install domain (LaunchDaemon vs Agent).
         let plist = cfgd_core::reconciler::launchd_env_plist("com.cfgd.environment", managed);
 
-        cfgd_core::atomic_write_str(&plist_path, &plist)
+        cfgd_core::atomic_write_str(plist_path, &plist)
+            .map_err(cfgd_core::errors::CfgdError::Io)?;
+        // launchd loads a system daemon only if its plist is owned by root and not writable by
+        // group/other; 0644 is the conventional accepted mode (atomic_write_str defaults to 0600).
+        cfgd_core::set_file_permissions(plist_path, 0o644)
             .map_err(cfgd_core::errors::CfgdError::Io)?;
         Ok(())
     }

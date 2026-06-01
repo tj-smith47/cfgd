@@ -288,10 +288,10 @@ pub(super) fn generate_environment_d_content(env: &[EnvVar]) -> String {
 ///
 /// A plist `EnvironmentVariables` dict applies only to the job's own process, so it
 /// cannot make `spec.env` reach GUI apps. `launchctl setenv` instead sets each
-/// variable in the launchd domain the job runs in (a per-user LaunchAgent's GUI
-/// session), so every later-spawned process inherits it. Shared by the user-scope
-/// plist (`spec.env`) and the system configurator (`spec.system.environment`),
-/// which differ only by `label`.
+/// variable in the launchd domain the job runs in — the user's GUI session for a
+/// LaunchAgent (`spec.env`), the system domain for a LaunchDaemon
+/// (`spec.system.environment`) — so every later-spawned process inherits it. The
+/// two consumers differ only by `label` and install domain.
 ///
 /// Names that are not shell-safe identifiers are skipped (they would otherwise inject
 /// into the shell command); values are shell-escaped, and the whole command is
