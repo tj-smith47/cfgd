@@ -181,6 +181,39 @@ cfgd writes a managed `~/.cfgd.env` and wires it into the user's shells and sess
 
 `spec.env` is **per-user**. For system-wide (all-users, privileged) variables, use [`spec.system.environment`](system-configurators.md). See the [profile spec](spec/profile.md#specenvscope) for the full target list and the dotfile-safety rules.
 
+### Example: make `EDITOR` reach everywhere
+
+```yaml
+# profiles/workstation.yaml
+spec:
+  env:
+    - name: EDITOR
+      value: nvim
+  # envScope omitted → defaults to All
+```
+
+```console
+$ cfgd apply
+  ✓ Wrote ~/.cfgd.env
+  ✓ Injected source line into ~/.bashrc
+  ✓ Injected source line into ~/.zshenv
+  ✓ Injected source line into ~/.profile
+  ✓ Wrote ~/.config/environment.d/cfgd.conf
+  ✓ Refreshed 1 live session variable(s)
+
+# Now every entry point sees it — no re-login:
+$ ssh localhost 'echo $EDITOR'            # non-interactive ssh command
+nvim
+$ bash -lc 'echo $EDITOR'                 # login shell
+nvim
+$ systemctl --user show-environment | grep EDITOR
+EDITOR=nvim                                # systemd --user units + Wayland GUI
+```
+
+To opt out of the broader surfaces, narrow the scope — e.g. `envScope: Interactive` restores the
+classic "interactive shells only" behavior, writing just `~/.cfgd.env` + the `~/.bashrc`/`~/.zshrc`
+source line.
+
 ## Shell Aliases
 
 Shell aliases are name/command pairs written to `~/.cfgd.env` alongside env exports. They follow the same merge rules as env vars: later profile overrides earlier for the same name, and module aliases win over profile aliases on conflict.
