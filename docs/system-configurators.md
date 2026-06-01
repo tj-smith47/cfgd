@@ -112,7 +112,7 @@ system:
 
 ### `environment`
 
-Manages **system-wide** (all-users, privileged) environment variables: Linux writes `/etc/environment` and `/etc/profile.d/cfgd-env.sh`; macOS writes a system LaunchAgent plist plus `~/.config/cfgd/env.sh` and refreshes the live session via `launchctl setenv`; Windows writes the user registry (`HKCU\Environment`) via `setx`.
+Manages **system-wide** (all-users, privileged) environment variables: Linux writes `/etc/environment` and `/etc/profile.d/cfgd-env.sh`; macOS writes a system LaunchDaemon plist (`/Library/LaunchDaemons/com.cfgd.environment.plist`, which runs `launchctl setenv` in the system domain at boot so all users inherit it) plus `~/.config/cfgd/env.sh` and refreshes the live session via `launchctl setenv`; Windows writes the user registry (`HKCU\Environment`) via `setx`.
 
 ```yaml
 system:
