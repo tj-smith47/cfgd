@@ -49,7 +49,6 @@ fn strip_ansi(s: &str) -> String {
 }
 
 #[cfg(unix)]
-
 /// Mask filename-safe ISO 8601 timestamps (e.g. `20260518123456`) so backup
 /// filenames are stable across runs.
 #[cfg(unix)]

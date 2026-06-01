@@ -131,7 +131,7 @@ fn push_second_tag(
     new_tag: &str,
 ) -> std::path::PathBuf {
     let src = tmp_root.join(format!("{module_name}-src2"));
-    let bare_url = cfgd_core::test_helpers::file_url(&bare);
+    let bare_url = cfgd_core::test_helpers::file_url(bare);
     let repo = git2::Repository::clone(&bare_url, &src).expect("clone bare");
     let yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {module_name}\n  description: upgraded test mod\nspec: {{}}\n"

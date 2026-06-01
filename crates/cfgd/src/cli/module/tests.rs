@@ -4651,7 +4651,7 @@ mod cmd_module_add_remote_local_bare {
         src_repo
             .tag(new_tag, commit_obj.as_object(), &sig, "release", false)
             .unwrap();
-        let bare_url = cfgd_core::test_helpers::file_url(&bare);
+        let bare_url = cfgd_core::test_helpers::file_url(bare);
         let mut remote = src_repo.remote_anonymous(&bare_url).unwrap();
         let branch = src_repo
             .head()

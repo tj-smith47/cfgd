@@ -3580,7 +3580,7 @@ mod git_fixture_tests {
     /// Build a `file://` URL for a local repo path. git CLI and libgit2 both
     /// understand this scheme as a local-source clone.
     fn file_url(p: &Path) -> String {
-        crate::test_helpers::file_url(&p)
+        crate::test_helpers::file_url(p)
     }
 
     #[test]

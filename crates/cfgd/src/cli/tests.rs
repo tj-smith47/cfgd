@@ -17147,7 +17147,7 @@ mod cmd_source_add_local {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
-        let url = cfgd_core::test_helpers::file_url(&bare);
+        let url = cfgd_core::test_helpers::file_url(bare);
         let repo = git2::Repository::clone(&url, &clone_dir).unwrap();
         std::fs::write(clone_dir.join("cfgd-source.yaml"), new_manifest_yaml).unwrap();
         let mut index = repo.index().unwrap();
