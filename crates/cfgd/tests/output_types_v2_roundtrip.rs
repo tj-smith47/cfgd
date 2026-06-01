@@ -89,10 +89,12 @@ fn plan_output_roundtrips_through_emit() {
                     PlanActionOutput {
                         description: "install ripgrep via brew".into(),
                         action_type: "package_install".into(),
+                        targets: vec![],
                     },
                     PlanActionOutput {
                         description: "install fd via brew".into(),
                         action_type: "package_install".into(),
+                        targets: vec![],
                     },
                 ],
             },
@@ -101,6 +103,7 @@ fn plan_output_roundtrips_through_emit() {
                 actions: vec![PlanActionOutput {
                     description: "write ~/.gitconfig".into(),
                     action_type: "file_write".into(),
+                    targets: vec!["/home/u/.gitconfig".into()],
                 }],
             },
         ],

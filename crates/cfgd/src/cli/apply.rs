@@ -8,6 +8,35 @@ pub fn cmd_apply(
     printer: &cfgd_core::output::Printer,
     args: &ApplyArgs,
 ) -> anyhow::Result<()> {
+    let status = run_apply(cli, printer, args)?;
+
+    // A partial or total apply failure must surface as a nonzero exit so CI `&&`
+    // chains and the daemon don't treat a broken apply as success. The structured
+    // payload is already flushed by `run_apply`; exit directly (mirrors
+    // status/diff/upgrade) so render_cli_error doesn't double-print a failure line.
+    if matches!(
+        status,
+        cfgd_core::state::ApplyStatus::Partial | cfgd_core::state::ApplyStatus::Failed
+    ) {
+        cfgd_core::exit::ExitCode::ApplyFailed.exit();
+    }
+
+    Ok(())
+}
+
+/// Drive a full apply (or dry-run) and return the resulting [`ApplyStatus`]
+/// so the caller can map a partial/total failure to a nonzero process exit.
+///
+/// Non-apply terminal paths (dry-run, aborted, nothing-to-do) report
+/// [`ApplyStatus::Success`] — they did not run actions, so they never warrant
+/// a failure exit. Keeping the exit decision in `cmd_apply` lets in-process
+/// tests capture the rendered failure shape without `process::exit` aborting
+/// the harness.
+pub fn run_apply(
+    cli: &Cli,
+    printer: &cfgd_core::output::Printer,
+    args: &ApplyArgs,
+) -> anyhow::Result<cfgd_core::state::ApplyStatus> {
     // Parse --context (mirrors PlanArgs::context).
     let reconcile_context = match args.context.as_str() {
         "apply" => ReconcileContext::Apply,
@@ -222,7 +251,7 @@ pub fn cmd_apply(
             dry_run_fm.as_ref(),
             &scope,
         );
-        return Ok(());
+        return Ok(cfgd_core::state::ApplyStatus::Success);
     }
 
     // --- Apply mode ---
@@ -245,7 +274,7 @@ pub fn cmd_apply(
     if !has_actions {
         report_no_in_scope_actions(printer, &scope, phase_filter.as_ref());
         printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
-        return Ok(());
+        return Ok(cfgd_core::state::ApplyStatus::Success);
     }
 
     let start = std::time::Instant::now();
@@ -294,7 +323,7 @@ pub fn cmd_apply(
         if !confirmed {
             printer.status_simple(Role::Info, "Aborted");
             printer.emit(Doc::new().with_data(ApplyOutput::aborted()));
-            return Ok(());
+            return Ok(cfgd_core::state::ApplyStatus::Success);
         }
     }
 
@@ -356,7 +385,7 @@ pub fn cmd_apply(
     };
     printer.emit(Doc::new().with_data(&output));
 
-    Ok(())
+    Ok(status)
 }
 
 fn apply_status_str(status: &cfgd_core::state::ApplyStatus) -> &'static str {

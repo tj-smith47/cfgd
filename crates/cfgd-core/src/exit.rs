@@ -15,6 +15,8 @@
 //! | 3    | [`NoConfig`]      | No cfgd config file at the resolved path.                |
 //! | 4    | [`ConfigInvalid`] | Config file exists but failed parse or validation.       |
 //! | 5    | [`DriftDetected`] | `diff`/`status` with `--exit-code`: drift present.       |
+//! | 6    | [`NotFound`]      | A named resource was not found.                          |
+//! | 7    | [`ApplyFailed`]   | apply ran but ≥1 action failed (partial or total).       |
 //!
 //! External-process passthrough (e.g. `kubectl exec` forwarded by the
 //! `kubectl cfgd` plugin) is out of scope for this enum — those codes
@@ -26,6 +28,8 @@
 //! [`NoConfig`]: ExitCode::NoConfig
 //! [`ConfigInvalid`]: ExitCode::ConfigInvalid
 //! [`DriftDetected`]: ExitCode::DriftDetected
+//! [`NotFound`]: ExitCode::NotFound
+//! [`ApplyFailed`]: ExitCode::ApplyFailed
 
 use crate::errors::{CfgdError, ConfigError};
 
@@ -39,6 +43,7 @@ pub enum ExitCode {
     ConfigInvalid = 4,
     DriftDetected = 5,
     NotFound = 6,
+    ApplyFailed = 7,
 }
 
 impl ExitCode {
@@ -88,6 +93,7 @@ mod tests {
             ExitCode::ConfigInvalid.as_i32(),
             ExitCode::DriftDetected.as_i32(),
             ExitCode::NotFound.as_i32(),
+            ExitCode::ApplyFailed.as_i32(),
         ];
         let mut seen = std::collections::HashSet::new();
         for c in codes {
@@ -107,6 +113,7 @@ mod tests {
         assert_eq!(ExitCode::ConfigInvalid.as_i32(), 4);
         assert_eq!(ExitCode::DriftDetected.as_i32(), 5);
         assert_eq!(ExitCode::NotFound.as_i32(), 6);
+        assert_eq!(ExitCode::ApplyFailed.as_i32(), 7);
     }
 
     #[test]

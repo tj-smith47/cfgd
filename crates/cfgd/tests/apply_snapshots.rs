@@ -25,7 +25,7 @@ mod common;
 use std::collections::HashMap;
 use std::path::Path;
 
-use cfgd::cli::apply::{build_apply_doc, cmd_apply};
+use cfgd::cli::apply::{build_apply_doc, cmd_apply, run_apply};
 use cfgd::cli::output_types::ApplyOutput;
 use cfgd_core::output::{Doc, Printer, Role};
 use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
@@ -188,9 +188,18 @@ fn apply_with_failures_human() {
     let (printer, cap) = Printer::for_test_doc();
     let args = apply_args();
 
-    cmd_apply(&cli, &printer, &args).unwrap();
+    // `run_apply` renders the failure shape and returns the status without the
+    // `process::exit` that `cmd_apply` performs on a partial apply — that exit
+    // would abort the in-process snapshot capture (it is covered by the
+    // subprocess test in `apply_exit_code.rs`).
+    let status = run_apply(&cli, &printer, &args).unwrap();
     drop(printer);
 
+    assert_eq!(
+        status,
+        cfgd_core::state::ApplyStatus::Partial,
+        "one action succeeds and one fails — a partial apply"
+    );
     assert!(target_ok.exists(), "first file action must succeed");
     assert!(
         !target_fail.exists(),
