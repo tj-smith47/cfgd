@@ -980,9 +980,11 @@ fn macos_write_launchd_plist_writes_well_formed_xml() {
     assert!(content.contains("<key>Label</key>"));
     assert!(content.contains("<string>com.cfgd.environment</string>"));
     assert!(content.contains("<key>RunAtLoad</key>"));
-    assert!(content.contains("<key>EnvironmentVariables</key>"));
-    assert!(content.contains("<key>HTTP_PROXY</key>"));
-    assert!(content.contains("<string>http://proxy.corp:8080</string>"));
+    assert!(content.contains("<string>/bin/sh</string>"));
+    assert!(
+        content.contains("/bin/launchctl setenv HTTP_PROXY &quot;http://proxy.corp:8080&quot;")
+    );
+    assert!(!content.contains("<key>EnvironmentVariables</key>"));
     assert!(content.trim_end().ends_with("</plist>"));
 }
 

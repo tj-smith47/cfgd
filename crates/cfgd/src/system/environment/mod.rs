@@ -17,8 +17,8 @@ use super::parse_reg_line;
 /// For user-level env vars, see `spec.env` which generates `~/.cfgd.env`.
 ///
 /// **Linux**: Writes to `/etc/environment` (PAM) and `/etc/profile.d/cfgd-env.sh` (login shells).
-/// **macOS**: Writes to `~/Library/LaunchAgents/com.cfgd.environment.plist` (GUI apps via
-///           launchd `EnvironmentVariables`) and `~/.config/cfgd/env.sh` (sourced by shells).
+/// **macOS**: Writes to `~/Library/LaunchAgents/com.cfgd.environment.plist` (GUI apps, via a
+///           `launchctl setenv` run at load) and `~/.config/cfgd/env.sh` (sourced by shells).
 ///           Also calls `launchctl setenv` for the current session.
 ///
 /// Config format:
@@ -261,7 +261,7 @@ impl EnvironmentConfigurator {
         Ok(())
     }
 
-    /// Write a launchd plist that sets EnvironmentVariables for GUI apps.
+    /// Write a launchd plist that publishes env vars to GUI apps via `launchctl setenv` at load.
     fn macos_write_launchd_plist(managed: &BTreeMap<String, String>) -> Result<()> {
         let plist_path = Self::macos_plist_path();
         if let Some(parent) = plist_path.parent() {

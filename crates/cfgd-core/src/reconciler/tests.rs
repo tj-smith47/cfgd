@@ -10487,9 +10487,50 @@ fn launchd_plist_carries_label_and_vars() {
     vars.insert("EDITOR".to_string(), "nvim".to_string());
     let plist = launchd_env_plist("com.cfgd.user-environment", &vars);
     assert!(plist.contains("<string>com.cfgd.user-environment</string>"));
-    assert!(plist.contains("<key>EDITOR</key>"));
-    assert!(plist.contains("<string>nvim</string>"));
+    // The agent publishes the var via `launchctl setenv` at load, not via an inert
+    // `EnvironmentVariables` dict that only scopes to the job's own process.
+    assert!(plist.contains("/bin/launchctl setenv EDITOR"));
+    assert!(plist.contains("nvim"));
     assert!(plist.contains("<key>RunAtLoad</key>"));
+    assert!(!plist.contains("/usr/bin/true"));
+    assert!(!plist.contains("<key>EnvironmentVariables</key>"));
+}
+
+#[test]
+fn launchd_plist_shell_escapes_values_with_spaces() {
+    let mut vars = std::collections::BTreeMap::new();
+    vars.insert("ACC_EDITOR".to_string(), "nvim --acc".to_string());
+    let plist = launchd_env_plist("lbl", &vars);
+    // A `/bin/sh -c` chain runs one `launchctl setenv` per var; a value with a space
+    // must be shell-quoted so it reaches launchctl as a single argument.
+    assert!(plist.contains("<string>/bin/sh</string>"));
+    assert!(plist.contains("/bin/launchctl setenv ACC_EDITOR &quot;nvim --acc&quot;"));
+}
+
+#[test]
+fn launchd_plist_chains_multiple_setenv() {
+    let mut vars = std::collections::BTreeMap::new();
+    vars.insert("A".to_string(), "1".to_string());
+    vars.insert("B".to_string(), "2".to_string());
+    let plist = launchd_env_plist("lbl", &vars);
+    // BTreeMap iteration is sorted; the per-var setenv calls are joined with "; ".
+    assert!(
+        plist.contains(
+            "/bin/launchctl setenv A &quot;1&quot;; /bin/launchctl setenv B &quot;2&quot;"
+        )
+    );
+}
+
+#[test]
+fn launchd_plist_skips_unsafe_names() {
+    let mut vars = std::collections::BTreeMap::new();
+    vars.insert("GOOD".to_string(), "ok".to_string());
+    vars.insert("BAD; rm -rf /".to_string(), "x".to_string());
+    let plist = launchd_env_plist("lbl", &vars);
+    assert!(plist.contains("/bin/launchctl setenv GOOD"));
+    // An unsafe name must never reach the shell command.
+    assert!(!plist.contains("rm -rf"));
+    assert!(!plist.contains("BAD"));
 }
 
 #[test]

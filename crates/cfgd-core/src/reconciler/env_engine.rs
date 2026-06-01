@@ -210,14 +210,19 @@ fn unix_targets(
             });
         }
         if platform == EnvPlatform::MacOs {
-            // GUI apps launched by launchd read the LaunchAgent's EnvironmentVariables.
+            // A LaunchAgent that runs `launchctl setenv` at load publishes the vars into the
+            // GUI session's launchd domain, so launchd-spawned GUI apps inherit them.
             let vars: BTreeMap<String, String> = valid_export_pairs(env).into_iter().collect();
-            out.push(EnvTarget::ManagedFile {
-                path: home
-                    .join("Library/LaunchAgents")
-                    .join(MACOS_USER_PLIST_NAME),
-                content: launchd_env_plist(MACOS_USER_PLIST_LABEL, &vars),
-            });
+            // No publishable vars ⇒ no agent: an empty `launchctl setenv` script would be an inert
+            // `/bin/sh -c ""` job with nothing to set.
+            if !vars.is_empty() {
+                out.push(EnvTarget::ManagedFile {
+                    path: home
+                        .join("Library/LaunchAgents")
+                        .join(MACOS_USER_PLIST_NAME),
+                    content: launchd_env_plist(MACOS_USER_PLIST_LABEL, &vars),
+                });
+            }
         }
     }
 }
@@ -278,18 +283,31 @@ pub(super) fn generate_environment_d_content(env: &[EnvVar]) -> String {
     lines.join("\n")
 }
 
-/// Render a launchd LaunchAgent plist whose `EnvironmentVariables` dict carries
-/// `vars`. Shared by the user-scope plist (`spec.env`) and the system
-/// configurator (`spec.system.environment`), which differ only by `label`.
+/// Render a launchd LaunchAgent/Daemon plist that publishes `vars` into its launchd
+/// domain by running `launchctl setenv` once per variable at load.
+///
+/// A plist `EnvironmentVariables` dict applies only to the job's own process, so it
+/// cannot make `spec.env` reach GUI apps. `launchctl setenv` instead sets each
+/// variable in the launchd domain the job runs in (a per-user LaunchAgent's GUI
+/// session), so every later-spawned process inherits it. Shared by the user-scope
+/// plist (`spec.env`) and the system configurator (`spec.system.environment`),
+/// which differ only by `label`.
+///
+/// Names that are not shell-safe identifiers are skipped (they would otherwise inject
+/// into the shell command); values are shell-escaped, and the whole command is
+/// XML-escaped for the plist `<string>`.
 pub fn launchd_env_plist(label: &str, vars: &BTreeMap<String, String>) -> String {
-    let mut env_entries = String::new();
-    for (key, value) in vars {
-        env_entries.push_str(&format!(
-            "            <key>{}</key>\n            <string>{}</string>\n",
-            crate::xml_escape(key),
-            crate::xml_escape(value)
-        ));
-    }
+    let setenv_script = vars
+        .iter()
+        .filter(|(key, _)| crate::validate_env_var_name(key).is_ok())
+        .map(|(key, value)| {
+            format!(
+                "/bin/launchctl setenv {key} {}",
+                crate::shell_escape_value(value)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
 
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -300,15 +318,16 @@ pub fn launchd_env_plist(label: &str, vars: &BTreeMap<String, String>) -> String
     <string>{label}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/true</string>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>{script}</string>
     </array>
     <key>RunAtLoad</key>
     <true />
-    <key>EnvironmentVariables</key>
-    <dict>
-{env_entries}    </dict>
 </dict>
 </plist>
-"#
+"#,
+        label = crate::xml_escape(label),
+        script = crate::xml_escape(&setenv_script),
     )
 }
