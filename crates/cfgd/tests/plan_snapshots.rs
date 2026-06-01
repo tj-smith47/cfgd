@@ -42,6 +42,7 @@ fn happy_plan_output() -> PlanOutput {
             actions: vec![PlanActionOutput {
                 description: "create /etc/hosts".to_string(),
                 action_type: "file.create".to_string(),
+                targets: vec!["/etc/hosts".to_string()],
             }],
         }],
         total_actions: 1,
@@ -94,6 +95,38 @@ fn plan_happy_json() {
         "emit -o json must match serde_json::to_value(PlanOutput)"
     );
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "plan/happy.json");
+}
+
+#[test]
+fn plan_json_exposes_action_target_paths() {
+    // End-to-end through real `cmd_plan` (not the hand-built fixture): the
+    // managed-file action's structured `targets` must carry the absolute
+    // destination, so `-o json` consumers (CI, blast-radius tooling) read the
+    // target without scraping the human `description`.
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    // A structured printer so `display_plan_preview` emits the data Doc
+    // (`printer.is_structured()` gate) rather than human status lines.
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+
+    cmd_plan(&cli, &printer, &plan_args()).unwrap();
+    drop(printer);
+
+    let payload = cap.json().expect("plan doc carries a payload");
+    let files_phase = payload["phases"]
+        .as_array()
+        .expect("phases array")
+        .iter()
+        .find(|p| p["phase"] == "Files")
+        .expect("a Files phase is planned");
+    let targets = files_phase["actions"][0]["targets"]
+        .as_array()
+        .expect("file action exposes a targets array");
+    assert_eq!(
+        targets,
+        &vec![serde_json::json!(target.display().to_string())],
+        "structured targets must equal the managed file's absolute destination"
+    );
 }
 
 #[test]

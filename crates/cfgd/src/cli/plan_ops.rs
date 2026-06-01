@@ -96,6 +96,45 @@ pub(in crate::cli) fn action_type_str(action: &reconciler::Action) -> &'static s
     }
 }
 
+/// Absolute filesystem target path(s) a plan action writes, for structured
+/// (`-o json`) consumers and blast-radius tooling. Empty for actions with no
+/// direct filesystem target (package installs, system-configurator writes,
+/// live-session refresh, secret-provider resolution into the env file).
+pub(in crate::cli) fn action_targets(action: &reconciler::Action) -> Vec<String> {
+    fn show(path: &std::path::Path) -> String {
+        path.display().to_string()
+    }
+    match action {
+        reconciler::Action::File(fa) => match fa {
+            FileAction::Create { target, .. }
+            | FileAction::Update { target, .. }
+            | FileAction::Delete { target, .. }
+            | FileAction::SetPermissions { target, .. }
+            | FileAction::Skip { target, .. } => vec![show(target)],
+        },
+        reconciler::Action::Env(ea) => match ea {
+            reconciler::EnvAction::WriteEnvFile { path, .. } => vec![show(path)],
+            reconciler::EnvAction::InjectSourceLine { rc_path, .. } => vec![show(rc_path)],
+            reconciler::EnvAction::RefreshLiveSession { .. } => vec![],
+        },
+        reconciler::Action::Secret(sa) => match sa {
+            SecretAction::Decrypt { target, .. } | SecretAction::Resolve { target, .. } => {
+                vec![show(target)]
+            }
+            SecretAction::ResolveEnv { .. } | SecretAction::Skip { .. } => vec![],
+        },
+        reconciler::Action::Module(ma) => match &ma.kind {
+            reconciler::ModuleActionKind::DeployFiles { files } => {
+                files.iter().map(|f| show(&f.target)).collect()
+            }
+            _ => vec![],
+        },
+        reconciler::Action::Package(_)
+        | reconciler::Action::System(_)
+        | reconciler::Action::Script(_) => vec![],
+    }
+}
+
 /// Build a PlanOutput from a reconciler Plan, applying an optional phase filter.
 pub(in crate::cli) fn build_plan_output(
     plan: &reconciler::Plan,
@@ -117,6 +156,7 @@ pub(in crate::cli) fn build_plan_output(
             .map(|(action, desc)| PlanActionOutput {
                 description: desc.clone(),
                 action_type: action_type_str(action).to_string(),
+                targets: action_targets(action),
             })
             .collect();
         phases.push(PlanPhaseOutput {
@@ -975,6 +1015,74 @@ mod tests {
         assert_eq!(action_type_str(&secret_resolve()), "resolve");
         assert_eq!(action_type_str(&secret_resolve_env()), "resolve-env");
         assert_eq!(action_type_str(&secret_skip()), "skip");
+    }
+
+    #[test]
+    fn action_targets_file_variants_expose_the_target_path() {
+        assert_eq!(action_targets(&file_create("/etc/foo")), vec!["/etc/foo"]);
+        assert_eq!(action_targets(&file_update("/etc/foo")), vec!["/etc/foo"]);
+        assert_eq!(action_targets(&file_delete("/etc/foo")), vec!["/etc/foo"]);
+        assert_eq!(action_targets(&file_chmod("/etc/foo")), vec!["/etc/foo"]);
+        assert_eq!(action_targets(&file_skip("/etc/foo")), vec!["/etc/foo"]);
+    }
+
+    #[test]
+    fn action_targets_env_variants_expose_file_and_rc_paths() {
+        assert_eq!(action_targets(&env_write()), vec!["/home/user/.cfgd.env"]);
+        assert_eq!(action_targets(&env_inject()), vec!["/home/user/.zshrc"]);
+        // RefreshLiveSession writes no file — no target.
+        let refresh = Action::Env(EnvAction::RefreshLiveSession {
+            vars: vec![("FOO".to_string(), "bar".to_string())],
+        });
+        assert!(action_targets(&refresh).is_empty());
+    }
+
+    #[test]
+    fn action_targets_secret_decrypt_and_resolve_expose_target_others_empty() {
+        assert_eq!(action_targets(&secret_decrypt()), vec!["/secrets/foo"]);
+        assert_eq!(action_targets(&secret_resolve()), vec!["/etc/foo"]);
+        // ResolveEnv injects into the env file (no own path) and Skip touch nothing.
+        assert!(action_targets(&secret_resolve_env()).is_empty());
+        assert!(action_targets(&secret_skip()).is_empty());
+    }
+
+    #[test]
+    fn action_targets_module_deploy_files_lists_every_file_others_empty() {
+        let deploy = Action::Module(ModuleAction {
+            module_name: "dotfiles".to_string(),
+            kind: ModuleActionKind::DeployFiles {
+                files: vec![
+                    cfgd_core::modules::ResolvedFile {
+                        source: PathBuf::from("/m/.zshrc"),
+                        target: PathBuf::from("/home/user/.zshrc"),
+                        is_git_source: false,
+                        strategy: None,
+                        encryption: None,
+                    },
+                    cfgd_core::modules::ResolvedFile {
+                        source: PathBuf::from("/m/.vimrc"),
+                        target: PathBuf::from("/home/user/.vimrc"),
+                        is_git_source: false,
+                        strategy: None,
+                        encryption: None,
+                    },
+                ],
+            },
+        });
+        assert_eq!(
+            action_targets(&deploy),
+            vec!["/home/user/.zshrc", "/home/user/.vimrc"]
+        );
+        assert!(action_targets(&module_install()).is_empty());
+        assert!(action_targets(&module_run_script()).is_empty());
+        assert!(action_targets(&module_skip()).is_empty());
+    }
+
+    #[test]
+    fn action_targets_empty_for_pkg_system_script() {
+        assert!(action_targets(&pkg_install("brew", vec!["rg"])).is_empty());
+        assert!(action_targets(&system_set()).is_empty());
+        assert!(action_targets(&script_run()).is_empty());
     }
 
     #[test]

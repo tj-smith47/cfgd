@@ -5,6 +5,9 @@
       "actions": [
         {
           "description": "create /etc/hosts",
+          "targets": [
+            "/etc/hosts"
+          ],
           "type": "file.create"
         }
       ],

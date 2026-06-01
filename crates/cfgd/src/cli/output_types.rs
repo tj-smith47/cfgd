@@ -165,6 +165,13 @@ pub struct PlanActionOutput {
     pub description: String,
     #[serde(rename = "type")]
     pub action_type: String,
+    /// Absolute filesystem path(s) this action writes. Empty (and omitted from
+    /// the wire) for actions with no direct filesystem target — package
+    /// installs, system-configurator writes, live-session refresh. Lets `-o
+    /// json` consumers (CI, blast-radius tooling) read the target without
+    /// scraping `description`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub targets: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -680,6 +687,7 @@ mod tests {
                 actions: vec![PlanActionOutput {
                     description: "install pkg".to_string(),
                     action_type: "package".to_string(),
+                    targets: vec![],
                 }],
             }],
             total_actions: 1,
@@ -718,6 +726,7 @@ mod tests {
             actions: vec![PlanActionOutput {
                 description: "render file".to_string(),
                 action_type: "file".to_string(),
+                targets: vec!["/etc/hosts".to_string()],
             }],
         };
         let json = serde_json::to_value(&v).unwrap();
@@ -731,6 +740,7 @@ mod tests {
         let v = PlanActionOutput {
             description: "configure systemd".to_string(),
             action_type: "system".to_string(),
+            targets: vec![],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["description"], json!("configure systemd"));
@@ -740,8 +750,27 @@ mod tests {
             "action_type must rename to `type` on the wire"
         );
         assert!(
+            json.get("targets").is_none(),
+            "targets must be omitted from the wire when empty"
+        );
+        assert!(
             json.get("actionType").is_none(),
             "actionType camelCase must not appear; #[serde(rename)] takes precedence"
+        );
+    }
+
+    #[test]
+    fn plan_action_output_emits_targets_when_populated() {
+        let v = PlanActionOutput {
+            description: "create /etc/hosts".to_string(),
+            action_type: "file.create".to_string(),
+            targets: vec!["/etc/hosts".to_string()],
+        };
+        let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(
+            json["targets"],
+            json!(["/etc/hosts"]),
+            "targets must serialize as a string array when present"
         );
     }
 
