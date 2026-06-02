@@ -13,10 +13,6 @@ env:
   - REGISTRY=ghcr.io
   - RELEASE_TYPE=stable
 
-variables:
-  repo_url: "https://github.com/tj-smith47/cfgd"
-  description: "Declarative, GitOps-style machine configuration management"
-
 git:
   tag_sort: "smartsemver"
   ignore_tags:
@@ -421,6 +417,18 @@ workspaces:
                 dst: /usr/share/doc/cfgd/LICENSE
               - src: README.md
                 dst: /usr/share/doc/cfgd/README.md
+              # Man page + shell completions the archive stage generated into
+              # dist/.manpages|.completions/cfgd/ (the single source of truth it
+              # shares with nfpm). PowerShell completion is archive-only; the
+              # Linux packages carry bash/zsh/fish + the man page.
+              - src: dist/.manpages/cfgd/cfgd.1
+                dst: /usr/share/man/man1/cfgd.1
+              - src: dist/.completions/cfgd/cfgd
+                dst: /usr/share/bash-completion/completions/cfgd
+              - src: dist/.completions/cfgd/_cfgd
+                dst: /usr/share/zsh/site-functions/_cfgd
+              - src: dist/.completions/cfgd/cfgd.fish
+                dst: /usr/share/fish/vendor_completions.d/cfgd.fish
             # GPG signing for deb / rpm / apk packages.
             # Requires `GPG_KEY_PATH` env pointing at an exported secret key
             # file. anodizer-action wires this automatically when
@@ -823,6 +831,10 @@ homebrew_casks:
       args:
         - completion
       base_name: cfgd
+    # Man page bundled in the archive (archives.manpages -> man/man1/cfgd.1);
+    # the path is relative to the unpacked cask artifact.
+    manpages:
+      - man/man1/cfgd.1
     caveats: |
       Run `cfgd init` to scaffold a config in your repo.
     dependencies:
@@ -857,6 +869,27 @@ nightly:
   tag_name: nightly
   publish_release: true
   keep_single_release: true
+
+# Local/CI snapshot version naming (never released). States the snapshot
+# scheme explicitly so artifacts carry the short commit for identification:
+# cfgd-0.4.0-SNAPSHOT-<shortsha>.
+snapshot:
+  version_template: "{{ .Version }}-SNAPSHOT-{{ .ShortCommit }}"
+
+# Project-wide retry policy for network-bound steps (announcers, git providers,
+# HTTP uploads, docker pipes). cfgd's release fans out to many external
+# services — crates.io, ghcr, CloudSmith, and the PR-based package managers —
+# so the resilient policy lives here as the single tunable home.
+retry:
+  attempts: 10
+  delay: 10s
+  max_delay: 5m
+
+# Close the GitHub milestone matching the release tag when one exists. Non-fatal
+# no-op until milestone-based release tracking is adopted (fail_on_error
+# defaults false, so a missing milestone never breaks a release).
+milestones:
+  - close: true
 
 announce:
   webhook:
