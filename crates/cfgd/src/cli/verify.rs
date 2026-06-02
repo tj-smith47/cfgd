@@ -42,7 +42,16 @@ pub(super) fn cmd_verify(
     };
     registry.set_system_config_dir(&config_dir);
 
-    let results = reconciler::verify(&resolved, &registry, &state, printer, &resolved_modules)?;
+    let mut results = reconciler::verify(&resolved, &registry, &state, printer, &resolved_modules)?;
+    // The reconciler cannot reach the file manager (crate boundary), so it no
+    // longer checks managed files. Fold in content-aware file results here so a
+    // file whose bytes drifted out-of-band fails verification and drives
+    // `verify --exit-code` to 5. Module-filter runs (empty merged profile) have
+    // no managed files, so this is a no-op for them.
+    results.extend(super::live_drift::file_verify_results(
+        &config_dir,
+        &resolved,
+    )?);
     let pass_count = results.iter().filter(|r| r.matches).count();
     let fail_count = results.iter().filter(|r| !r.matches).count();
     let has_drift = fail_count > 0;

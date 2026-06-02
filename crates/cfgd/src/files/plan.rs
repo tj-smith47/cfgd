@@ -13,6 +13,17 @@ use cfgd_core::providers::FileAction;
 use super::is_file_encrypted;
 use super::template::is_tera_template;
 
+/// Content-drift outcome for a single managed file, produced by
+/// [`super::CfgdFileManager::file_drift_results`]. Carries enough detail to
+/// build a `VerifyResult` without re-reading the file.
+#[derive(Debug, Clone)]
+pub(crate) struct FileDriftResult {
+    pub target: String,
+    pub matches: bool,
+    pub expected: String,
+    pub actual: String,
+}
+
 impl super::CfgdFileManager {
     /// Resolve the effective strategy for a managed file.
     /// Template files always use Copy (can't symlink unrendered templates).
@@ -233,6 +244,75 @@ impl super::CfgdFileManager {
         }
 
         Ok(has_diffs)
+    }
+
+    /// Compute per-file content-drift results without rendering anything.
+    ///
+    /// Each managed file yields one [`FileDriftResult`] describing whether the
+    /// on-disk target matches the rendered source content (presence AND bytes).
+    /// This is the non-printing counterpart to [`Self::diff`]; it reuses the same
+    /// source-render and target-compare logic so `verify` and the `status`/`verify`
+    /// `--exit-code` gate share one content-aware detector instead of a presence-only
+    /// check. A source that cannot be found is reported as a non-matching result
+    /// rather than an error so a single bad entry can't mask drift elsewhere.
+    pub(crate) fn file_drift_results(
+        &self,
+        profile: &MergedProfile,
+    ) -> Result<Vec<FileDriftResult>> {
+        let mut results = Vec::new();
+
+        for managed in &profile.files.managed {
+            let source_path = self.resolve_source_path(&managed.source)?;
+            let target_path = expand_tilde(&managed.target);
+            let target_id = target_path.display_posix();
+
+            if !source_path.exists() {
+                results.push(FileDriftResult {
+                    target: target_id,
+                    matches: false,
+                    expected: "managed source present".to_string(),
+                    actual: format!("source not found: {}", source_path.posix()),
+                });
+                continue;
+            }
+
+            let rendered_content = if is_tera_template(&source_path) {
+                self.render_template(&source_path, managed.origin.as_deref())?
+            } else {
+                fs::read_to_string(&source_path).map_err(|e| FileError::Io {
+                    path: source_path.clone(),
+                    source: e,
+                })?
+            };
+
+            if target_path.exists() {
+                let target_content =
+                    fs::read_to_string(&target_path).map_err(|e| FileError::Io {
+                        path: target_path.clone(),
+                        source: e,
+                    })?;
+                let matches = rendered_content == target_content;
+                results.push(FileDriftResult {
+                    target: target_id,
+                    matches,
+                    expected: "content matches source".to_string(),
+                    actual: if matches {
+                        "content matches source".to_string()
+                    } else {
+                        "content differs from source".to_string()
+                    },
+                });
+            } else {
+                results.push(FileDriftResult {
+                    target: target_id,
+                    matches: false,
+                    expected: "present".to_string(),
+                    actual: "missing".to_string(),
+                });
+            }
+        }
+
+        Ok(results)
     }
 
     /// Check if permissions need to be changed for a target file.

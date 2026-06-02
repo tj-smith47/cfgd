@@ -193,27 +193,11 @@ pub fn verify(
         }
     }
 
-    // Verify files by checking managed file targets exist with expected content
-    for managed in &resolved.merged.files.managed {
-        let target = expand_tilde(&managed.target);
-        if target.exists() {
-            results.push(VerifyResult {
-                resource_type: "file".to_string(),
-                resource_id: to_posix_string(&target),
-                matches: true,
-                expected: "present".to_string(),
-                actual: "present".to_string(),
-            });
-        } else {
-            results.push(VerifyResult {
-                resource_type: "file".to_string(),
-                resource_id: to_posix_string(&target),
-                matches: false,
-                expected: "present".to_string(),
-                actual: "missing".to_string(),
-            });
-        }
-    }
+    // Managed-file verification is content-aware and lives in the binary crate
+    // (`cli::live_drift`), which can reach `CfgdFileManager` to compare rendered
+    // source bytes against the on-disk target. This reconciler cannot — the file
+    // manager is across the crate boundary — so file results are folded in by the
+    // caller rather than computed here as a presence-only check.
 
     // Verify env: re-derive the same targets the planner wrote and check each.
     verify_env(

@@ -247,7 +247,7 @@ pub(super) fn cmd_status(
         return cmd_status_module(cli, printer, mod_name);
     }
 
-    let (cfg, profile_name, resolved) = load_config_and_profile(cli)?;
+    let (cfg, profile_name, mut resolved) = load_config_and_profile(cli)?;
     let state = open_state_store(cli.state_dir.as_deref())?;
 
     let last_apply = state.last_apply()?;
@@ -292,7 +292,6 @@ pub(super) fn cmd_status(
         })
         .collect();
 
-    let has_drift = !drift_events.is_empty();
     let configured_source_names: Vec<String> =
         cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
 
@@ -312,8 +311,18 @@ pub(super) fn cmd_status(
         &profile_name,
     ));
 
-    if exit_code && has_drift {
-        cfgd_core::exit::ExitCode::DriftDetected.exit();
+    // The DISPLAY above is driven by RECORDED drift (state DB). The --exit-code
+    // gate, however, must reflect REALITY: a host with no daemon and no prior
+    // scan has zero recorded events even when a managed file was just edited
+    // out-of-band. So gate on a LIVE, read-only scan (never recording) — the
+    // same checks `diff`/`verify` run — instead of the recorded events.
+    if exit_code {
+        packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
+        let mut registry = build_registry_with_profile(&resolved.merged.packages);
+        registry.set_system_config_dir(&config_dir);
+        if super::live_drift::live_drift_detected(&config_dir, &resolved, &registry)? {
+            cfgd_core::exit::ExitCode::DriftDetected.exit();
+        }
     }
 
     Ok(())

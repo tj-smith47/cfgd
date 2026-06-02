@@ -6553,64 +6553,12 @@ fn verify_empty_profile_returns_no_results() {
     );
 }
 
-#[test]
-fn verify_file_target_exists() {
-    let state = test_state();
-    let registry = ProviderRegistry::new();
-    let printer = test_printer();
-    let tmp = tempfile::tempdir().unwrap();
-
-    // Create a file that exists
-    let target_path = tmp.path().join("existing.conf");
-    std::fs::write(&target_path, "content").unwrap();
-
-    let mut resolved = make_empty_resolved();
-    resolved.merged.files.managed.push(ManagedFileSpec {
-        source: "source.conf".to_string(),
-        target: target_path.clone(),
-        strategy: None,
-        private: false,
-        origin: None,
-        encryption: None,
-        permissions: None,
-    });
-
-    let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
-    let file_result = results
-        .iter()
-        .find(|r| r.resource_type == "file")
-        .expect("should have a file verify result");
-    assert!(file_result.matches, "existing file should match");
-    assert_eq!(file_result.expected, "present");
-    assert_eq!(file_result.actual, "present");
-}
-
-#[test]
-fn verify_file_target_missing() {
-    let state = test_state();
-    let registry = ProviderRegistry::new();
-    let printer = test_printer();
-
-    let mut resolved = make_empty_resolved();
-    resolved.merged.files.managed.push(ManagedFileSpec {
-        source: "source.conf".to_string(),
-        target: PathBuf::from("/tmp/cfgd-test-nonexistent-file-39485738"),
-        strategy: None,
-        private: false,
-        origin: None,
-        encryption: None,
-        permissions: None,
-    });
-
-    let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
-    let file_result = results
-        .iter()
-        .find(|r| r.resource_type == "file")
-        .expect("should have a file verify result");
-    assert!(!file_result.matches, "missing file should not match");
-    assert_eq!(file_result.expected, "present");
-    assert_eq!(file_result.actual, "missing");
-}
+// Profile-level managed-file verification moved to the binary crate
+// (`cli::live_drift`), which is content-aware via CfgdFileManager. The reconciler
+// no longer produces presence-only "file" results, so the former
+// verify_file_target_exists / verify_file_target_missing tests live there now
+// (file_verify_results_* in crates/cfgd/src/cli/live_drift.rs). Module-file
+// presence checks below remain the reconciler's responsibility.
 
 #[test]
 fn verify_module_file_target_missing_causes_drift() {

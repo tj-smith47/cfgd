@@ -2,6 +2,14 @@ use clap::{CommandFactory, FromArgMatches};
 
 use cfgd::cli;
 
+/// Examples block appended to `cfgd mcp --help`. brontes mints the `mcp`
+/// command without cfgd's help convention (every top-level command carries an
+/// `Examples:` block), so cfgd attaches one before mounting the subcommand.
+const MCP_HELP_EXAMPLES: &str = "Examples:\n  \
+    cfgd mcp start    # run the MCP server over stdio\n  \
+    cfgd mcp tools    # list the tools the server exposes\n  \
+    cfgd mcp stream   # stream events over the MCP transport";
+
 /// Map an [`anyhow::Error`] to an exit code by downcasting through the
 /// `CfgdError` boundary. Returns [`ExitCode::Error`] for errors that did
 /// not originate in cfgd's typed domain (e.g. `anyhow::anyhow!(...)` at
@@ -13,7 +21,39 @@ fn exit_code_for_anyhow(err: &anyhow::Error) -> cfgd_core::exit::ExitCode {
         .unwrap_or(cfgd_core::exit::ExitCode::Error)
 }
 
+/// Map a raw `CFGD_YES` value to the canonical `"true"`/`"false"` that clap's
+/// `BoolishValueParser` accepts. Mirrors that parser's accept-set exactly
+/// (case-insensitive): TRUE = {1, y, yes, t, true, on}, FALSE = {0, n, no, f,
+/// false, off}. Returns `None` for anything else so genuinely-invalid values
+/// still surface clap's validation error rather than being silently coerced.
+fn canonical_bool_str(raw: &str) -> Option<&'static str> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "y" | "yes" | "t" | "true" | "on" => Some("true"),
+        "0" | "n" | "no" | "f" | "false" | "off" => Some("false"),
+        _ => None,
+    }
+}
+
+/// Normalize `CFGD_YES` in the process environment to a spelling clap accepts.
+/// clap parses the env value with a bool value-parser, which rejects shell-truthy
+/// spellings like `1`/`yes`/`on` that users and scripts naturally set. Rewriting
+/// the var before any parsing keeps the env binding ergonomic without touching the
+/// ten `#[arg(env = "CFGD_YES")]` sites individually.
+fn normalize_cfgd_yes_env() {
+    if let Ok(raw) = std::env::var("CFGD_YES")
+        && let Some(canonical) = canonical_bool_str(&raw)
+    {
+        // Safe here: runs at the very start of main(), before any threads spawn.
+        unsafe {
+            std::env::set_var("CFGD_YES", canonical);
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
+    // Normalize CFGD_YES before clap reads it (see fn doc).
+    normalize_cfgd_yes_env();
+
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     // Clean up old binary from Windows upgrade rename-dance (no-op on Unix)
@@ -30,7 +70,8 @@ fn main() -> anyhow::Result<()> {
     let expanded = cli::expand_aliases(raw_args);
 
     let brontes_cfg = brontes::Config::default().tool_name_prefix("cfgd");
-    let augmented = cli::Cli::command().subcommand(brontes::command(Some(&brontes_cfg)));
+    let mcp_command = brontes::command(Some(&brontes_cfg)).after_help(MCP_HELP_EXAMPLES);
+    let augmented = cli::Cli::command().subcommand(mcp_command);
     let matches = augmented.clone().get_matches_from(&expanded);
 
     if let Some(("mcp", sub)) = matches.subcommand() {
@@ -143,7 +184,56 @@ fn render_cli_error(
 
 #[cfg(test)]
 mod tests {
-    use super::exit_code_for_anyhow;
+    use super::{canonical_bool_str, exit_code_for_anyhow};
+
+    #[test]
+    fn canonical_bool_str_accepts_truthy_spellings() {
+        for raw in [
+            "1", "y", "yes", "t", "true", "on", "YES", "Yes", "ON", "True",
+        ] {
+            assert_eq!(
+                canonical_bool_str(raw),
+                Some("true"),
+                "{raw:?} should normalize to true"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_bool_str_accepts_falsey_spellings() {
+        for raw in ["0", "n", "no", "f", "false", "off", "NO", "Off", "FALSE"] {
+            assert_eq!(
+                canonical_bool_str(raw),
+                Some("false"),
+                "{raw:?} should normalize to false"
+            );
+        }
+    }
+
+    #[test]
+    fn canonical_bool_str_trims_surrounding_whitespace() {
+        assert_eq!(canonical_bool_str("  1  "), Some("true"));
+        assert_eq!(canonical_bool_str("\toff\n"), Some("false"));
+    }
+
+    #[test]
+    fn canonical_bool_str_passes_through_canonical_values() {
+        assert_eq!(canonical_bool_str("true"), Some("true"));
+        assert_eq!(canonical_bool_str("false"), Some("false"));
+    }
+
+    #[test]
+    fn canonical_bool_str_rejects_unrecognized_values() {
+        // Unrecognized values return None so they remain untouched and clap's
+        // bool parser still rejects them, preserving validation.
+        for raw in ["garbage", "", "2", "tru", "yess", "10"] {
+            assert_eq!(
+                canonical_bool_str(raw),
+                None,
+                "{raw:?} should not be recognized as boolish"
+            );
+        }
+    }
 
     #[test]
     fn render_cli_error_hints_cfgd_init_on_missing_config() {

@@ -12,6 +12,7 @@ pub mod generate;
 mod helpers;
 pub mod init;
 mod kubectl;
+mod live_drift;
 pub mod log;
 pub mod module;
 pub mod output_types;
@@ -443,7 +444,7 @@ pub enum Command {
 
     /// Show configuration status and drift
     #[command(
-        long_about = "Show apply status, drift, and pending decisions.\n\nWith --exit-code, exit codes are:\n  0  no drift detected\n  1  runtime error\n  5  drift detected\n\nExamples:\n  cfgd status\n  cfgd status --module nettools\n  cfgd status --exit-code"
+        long_about = "Show apply status, drift, and pending decisions.\n\nThe display reflects recorded drift (from the daemon or a prior verify/diff).\n--exit-code instead performs a live, read-only drift scan so CI gating works\neven on a host with no daemon and no prior scan:\n  0  no drift detected\n  1  runtime error\n  5  drift detected\n\nExamples:\n  cfgd status\n  cfgd status --module nettools\n  cfgd status --exit-code"
     )]
     Status {
         /// Show status for a specific module (no profile required)
