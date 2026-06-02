@@ -144,8 +144,8 @@ mod tests {
 
     #[test]
     fn file_verify_results_fails_on_out_of_band_content_drift() {
-        // The exact bug Finding C fixes: a managed file overwritten out-of-band
-        // (present, but different bytes) must be reported as non-matching.
+        // A managed file overwritten out-of-band (present, but different bytes)
+        // must be reported as non-matching.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("managed.txt"), "desired\n").unwrap();
         let target = dir.path().join("deployed.txt");

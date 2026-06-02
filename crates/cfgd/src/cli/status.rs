@@ -634,8 +634,8 @@ mod tests {
     #[test]
     fn cmd_status_exit_code_false_with_drift_returns_ok() {
         // Guard: when --exit-code is not set, drift presence must NOT trigger
-        // process::exit. This is the only safe half of the exit-code semantics
-        // we can test in-process; the `true` branch would terminate the runner.
+        // process::exit. Only the non-exiting half is testable in-process; the
+        // drift-present branch would terminate the test runner via process::exit.
         let (_cfg_dir, state_dir, config_path) = setup_env();
         let store = open_state_store(Some(state_dir.path())).unwrap();
         store
@@ -651,9 +651,9 @@ mod tests {
 
     #[test]
     fn cmd_status_exit_code_true_no_drift_returns_ok() {
-        // Complement to the test above: with `exit_code=true` but no drift
-        // recorded, the function must not call `process::exit` and must return
-        // Ok. This exercises the (exit_code && has_drift) short-circuit gate.
+        // Complement to the test above: with `exit_code=true` but a clean host,
+        // the live-scan gate finds no drift, so the function must not call
+        // `process::exit` and must return Ok.
         let (_cfg_dir, state_dir, config_path) = setup_env();
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, _) = test_printers();
