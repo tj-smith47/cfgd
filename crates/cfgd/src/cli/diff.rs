@@ -30,10 +30,23 @@ pub fn cmd_diff(
     let mut diff_payload = DiffOutput::default();
     let mut has_system_drift = false;
 
+    // Resolve the profile's own modules so module-deployed files are content-aware
+    // here too — keeping `diff`, `status -e`, and `verify` consistent.
+    let resolved_modules = resolve_profile_modules(&config_dir, &resolved, printer);
+
     let has_file_drift = {
         printer.status_simple(Role::Info, "Files");
         let fm = CfgdFileManager::new(&config_dir, &resolved)?;
-        let drift = fm.diff(&resolved.merged, printer)?;
+        let mut drift = fm.diff(&resolved.merged, printer)?;
+        // Module-deployed files render the same inline content diff as profile
+        // files (module sources carry no tera origin, so pass None).
+        for module in &resolved_modules {
+            for file in &module.files {
+                if fm.diff_one(&file.source, &file.target, None, printer)? {
+                    drift = true;
+                }
+            }
+        }
         if drift {
             printer.status_simple(Role::Warn, "File drift detected");
         } else {
@@ -144,33 +157,23 @@ fn cmd_diff_module(
     let mut has_pkg_drift = false;
 
     {
-        let files_sec = printer.section("Files");
+        // Mirror the full `cmd_diff` path: a top-level "Files" line, the shared
+        // per-file inline-diff renderer, then a summary line. Module sources
+        // carry no tera origin (None). `diff_one` emits at top level, so no
+        // section is opened here (matches the full path's structure).
+        printer.status_simple(Role::Info, "Files");
+        let fm = CfgdFileManager::new(config_dir, &empty_resolved_profile(mod_name))?;
         for module in &resolved_modules {
             for file in &module.files {
-                if file.target.exists() {
-                    if file.source.exists() {
-                        let source_content =
-                            std::fs::read_to_string(&file.source).unwrap_or_default();
-                        let target_content =
-                            std::fs::read_to_string(&file.target).unwrap_or_default();
-                        if source_content != target_content {
-                            has_file_diff = true;
-                            files_sec
-                                .status(Role::Warn, format!("{}", file.target.posix()))
-                                .detail("content differs");
-                            printer.diff(&target_content, &source_content);
-                        }
-                    }
-                } else {
+                if fm.diff_one(&file.source, &file.target, None, printer)? {
                     has_file_diff = true;
-                    files_sec
-                        .status(Role::Warn, format!("{}", file.target.posix()))
-                        .detail("missing");
                 }
             }
         }
-        if !has_file_diff {
-            files_sec.status_simple(Role::Ok, "No file drift");
+        if has_file_diff {
+            printer.status_simple(Role::Warn, "File drift detected");
+        } else {
+            printer.status_simple(Role::Ok, "No file drift");
         }
     }
 

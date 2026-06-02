@@ -117,10 +117,11 @@ fn module_only_setup() -> (tempfile::TempDir, tempfile::TempDir) {
     let config_dir = tempfile::tempdir().unwrap();
     let state_dir = tempfile::tempdir().unwrap();
 
+    // Module file `source: conf` resolves relative to the module directory, so
+    // the source must live at `<module_dir>/conf` for the renderer to find it.
     let module_dir = config_dir.path().join("modules").join("diff-mod");
-    let module_files = module_dir.join("files");
-    std::fs::create_dir_all(&module_files).unwrap();
-    std::fs::write(module_files.join("conf"), "module content\n").unwrap();
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(module_dir.join("conf"), "module content\n").unwrap();
 
     let module_target = config_dir.path().join("mod-out").join("conf");
     let module_yaml = format!(

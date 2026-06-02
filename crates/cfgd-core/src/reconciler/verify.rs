@@ -49,8 +49,6 @@ pub fn verify(
     let available_managers = registry.available_package_managers();
     let mut installed_cache: HashMap<String, HashSet<String>> = HashMap::new();
     for module in modules {
-        let mut module_ok = true;
-
         for pkg in &module.packages {
             // Script-based packages can't be verified via installed_packages() —
             // trust the apply log (if the script succeeded, it's installed).
@@ -69,15 +67,23 @@ pub fn verify(
             let installed = &installed_cache[&pkg.manager];
             let ok = installed.contains(&pkg.resolved_name);
 
+            // Emit a pass OR fail row per package, mirroring the profile-package
+            // loop below. The blanket "module healthy" row is gone: module file
+            // rows are folded in content-aware by the binary crate, so a blanket
+            // healthy line could contradict a folded-in file-drift row.
+            results.push(VerifyResult {
+                resource_type: "module".to_string(),
+                resource_id: format!("{}/{}", module.name, pkg.resolved_name),
+                matches: ok,
+                expected: "installed".to_string(),
+                actual: if ok {
+                    "installed".to_string()
+                } else {
+                    "missing".to_string()
+                },
+            });
+
             if !ok {
-                module_ok = false;
-                results.push(VerifyResult {
-                    resource_type: "module".to_string(),
-                    resource_id: format!("{}/{}", module.name, pkg.resolved_name),
-                    matches: false,
-                    expected: "installed".to_string(),
-                    actual: "missing".to_string(),
-                });
                 record_drift_or_warn(
                     state,
                     "module",
@@ -87,39 +93,6 @@ pub fn verify(
                     "local",
                 );
             }
-        }
-
-        // Check module file targets exist
-        for file in &module.files {
-            let target = expand_tilde(&file.target);
-            if !target.exists() {
-                module_ok = false;
-                results.push(VerifyResult {
-                    resource_type: "module".to_string(),
-                    resource_id: format!("{}/{}", module.name, to_posix_string(&target)),
-                    matches: false,
-                    expected: "present".to_string(),
-                    actual: "missing".to_string(),
-                });
-                record_drift_or_warn(
-                    state,
-                    "module",
-                    &format!("{}/{}", module.name, to_posix_string(&target)),
-                    Some("present"),
-                    Some("missing"),
-                    "local",
-                );
-            }
-        }
-
-        if module_ok {
-            results.push(VerifyResult {
-                resource_type: "module".to_string(),
-                resource_id: module.name.clone(),
-                matches: true,
-                expected: "healthy".to_string(),
-                actual: "healthy".to_string(),
-            });
         }
     }
 

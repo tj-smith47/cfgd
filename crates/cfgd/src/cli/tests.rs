@@ -3687,11 +3687,13 @@ fn cmd_verify_module() {
         .build();
     super::verify::cmd_verify(&h.cli(), h.printer(), Some("test-mod"), false).unwrap();
     h.assert_header("Verify");
-    h.assert_output_contains("test-mod");
+    // An empty module (no packages, no files) has nothing to verify. The former
+    // blanket "module healthy" row was removed (it contradicted folded-in
+    // file-drift rows), so the honest verdict is "no managed resources".
     let output = h.output();
     assert!(
-        output.contains("match desired state") || output.contains("healthy"),
-        "should report verification result, got: {output}"
+        output.contains("No managed resources to verify"),
+        "empty module must report nothing to verify, got: {output}"
     );
 }
 
@@ -13891,28 +13893,22 @@ fn cmd_diff_module_not_found_shows_info() {
 
 #[test]
 fn cmd_diff_module_with_files_shows_file_and_package_sections() {
-    let module_yaml = r#"apiVersion: cfgd.io/v1alpha1
-kind: Module
-metadata:
-  name: diff-mod
-spec:
-  packages:
-    - name: curl
-  files:
-    - source: my-config
-      target: /tmp/cfgd-diff-test-target
-"#;
+    // Target lands in an isolated temp dir (never a shared path); it is left
+    // absent so the renderer exercises the missing-target branch.
+    let target_dir = tempfile::tempdir().unwrap();
+    let target = target_dir.path().join("cfgd-diff-test-target");
+    let module_yaml = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-mod\nspec:\n  packages:\n    - name: curl\n  files:\n    - source: my-config\n      target: {}\n",
+        target.display()
+    );
     let h = CliTestHarness::builder()
-        .module("diff-mod", module_yaml)
+        .module("diff-mod", &module_yaml)
         .build();
 
-    // Create source file in module
-    let module_files = h
-        .config_path()
-        .join("modules")
-        .join("diff-mod")
-        .join("files");
-    std::fs::write(module_files.join("my-config"), "new config content\n").unwrap();
+    // Module file `source: my-config` resolves relative to the module dir, so
+    // the source must live at `<module_dir>/my-config`.
+    let module_dir = h.config_path().join("modules").join("diff-mod");
+    std::fs::write(module_dir.join("my-config"), "new config content\n").unwrap();
 
     let result = super::diff::cmd_diff(&h.cli(), h.printer(), Some("diff-mod"), false);
     assert!(
@@ -13928,16 +13924,17 @@ spec:
     );
     assert!(
         output.contains("Files"),
-        "should show Files section, got: {output}"
+        "should show Files line, got: {output}"
     );
     assert!(
         output.contains("Packages"),
         "should show Packages section, got: {output}"
     );
-    // Target doesn't exist, so should show "missing"
+    // Target is absent: the shared renderer shows the would-be-created content
+    // ("(new file)" + the source bytes), identical to profile-file rendering.
     assert!(
-        output.contains("missing"),
-        "should show missing target file, got: {output}"
+        output.contains("(new file)") && output.contains("new config content"),
+        "should render new-file content for the missing target, got: {output}"
     );
 }
 

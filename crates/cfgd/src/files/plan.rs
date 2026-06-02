@@ -204,46 +204,70 @@ impl super::CfgdFileManager {
 
         for managed in &profile.files.managed {
             let source_path = self.resolve_source_path(&managed.source)?;
-            let target_path = expand_tilde(&managed.target);
-
-            if !source_path.exists() {
-                printer.status_simple(
-                    Role::Warn,
-                    format!("Source not found: {}", source_path.posix()),
-                );
-                continue;
-            }
-
-            let rendered_content = if is_tera_template(&source_path) {
-                self.render_template(&source_path, managed.origin.as_deref())?
-            } else {
-                fs::read_to_string(&source_path).map_err(|e| FileError::Io {
-                    path: source_path.clone(),
-                    source: e,
-                })?
-            };
-
-            if target_path.exists() {
-                let target_content =
-                    fs::read_to_string(&target_path).map_err(|e| FileError::Io {
-                        path: target_path.clone(),
-                        source: e,
-                    })?;
-
-                if rendered_content != target_content {
-                    has_diffs = true;
-                    printer.status_simple(Role::Info, target_path.display_posix());
-                    printer.diff(&target_content, &rendered_content);
-                }
-            } else {
+            if self.diff_one(
+                &source_path,
+                &managed.target,
+                managed.origin.as_deref(),
+                printer,
+            )? {
                 has_diffs = true;
-                printer.status_simple(Role::Info, format!("{} (new file)", target_path.posix()));
-                let lang = detect_language(&target_path);
-                printer.syntax_highlight(&rendered_content, &lang);
             }
         }
 
         Ok(has_diffs)
+    }
+
+    /// Render the inline content diff for a single source/target pair and report
+    /// whether it drifts. `source_path` must already be resolved; `target` is
+    /// `~`-expanded internally. A drifted target shows a unified diff; a missing
+    /// target shows the would-be-created content syntax-highlighted; a missing
+    /// source emits a warning and reports no drift (mirrors the prior behavior of
+    /// skipping an unresolvable entry). Shared by the profile-file path
+    /// ([`Self::diff`]) and the module-file path so both render identically.
+    pub fn diff_one(
+        &self,
+        source_path: &Path,
+        target: &Path,
+        origin: Option<&str>,
+        printer: &Printer,
+    ) -> Result<bool> {
+        let target_path = expand_tilde(target);
+
+        if !source_path.exists() {
+            printer.status_simple(
+                Role::Warn,
+                format!("Source not found: {}", source_path.posix()),
+            );
+            return Ok(false);
+        }
+
+        let rendered_content = if is_tera_template(source_path) {
+            self.render_template(source_path, origin)?
+        } else {
+            fs::read_to_string(source_path).map_err(|e| FileError::Io {
+                path: source_path.to_path_buf(),
+                source: e,
+            })?
+        };
+
+        if target_path.exists() {
+            let target_content = fs::read_to_string(&target_path).map_err(|e| FileError::Io {
+                path: target_path.clone(),
+                source: e,
+            })?;
+
+            if rendered_content != target_content {
+                printer.status_simple(Role::Info, target_path.display_posix());
+                printer.diff(&target_content, &rendered_content);
+                return Ok(true);
+            }
+            Ok(false)
+        } else {
+            printer.status_simple(Role::Info, format!("{} (new file)", target_path.posix()));
+            let lang = detect_language(&target_path);
+            printer.syntax_highlight(&rendered_content, &lang);
+            Ok(true)
+        }
     }
 
     /// Compute per-file content-drift results without rendering anything.
@@ -262,57 +286,78 @@ impl super::CfgdFileManager {
         let mut results = Vec::new();
 
         for managed in &profile.files.managed {
-            let source_path = self.resolve_source_path(&managed.source)?;
-            let target_path = expand_tilde(&managed.target);
-            let target_id = target_path.display_posix();
-
-            if !source_path.exists() {
-                results.push(FileDriftResult {
-                    target: target_id,
-                    matches: false,
-                    expected: "managed source present".to_string(),
-                    actual: format!("source not found: {}", source_path.posix()),
-                });
-                continue;
-            }
-
-            let rendered_content = if is_tera_template(&source_path) {
-                self.render_template(&source_path, managed.origin.as_deref())?
-            } else {
-                fs::read_to_string(&source_path).map_err(|e| FileError::Io {
-                    path: source_path.clone(),
-                    source: e,
-                })?
-            };
-
-            if target_path.exists() {
-                let target_content =
-                    fs::read_to_string(&target_path).map_err(|e| FileError::Io {
-                        path: target_path.clone(),
-                        source: e,
-                    })?;
-                let matches = rendered_content == target_content;
-                results.push(FileDriftResult {
-                    target: target_id,
-                    matches,
-                    expected: "content matches source".to_string(),
-                    actual: if matches {
-                        "content matches source".to_string()
-                    } else {
-                        "content differs from source".to_string()
-                    },
-                });
-            } else {
-                results.push(FileDriftResult {
-                    target: target_id,
-                    matches: false,
-                    expected: "present".to_string(),
-                    actual: "missing".to_string(),
-                });
-            }
+            results.push(self.file_drift_one(
+                &self.resolve_source_path(&managed.source)?,
+                &managed.target,
+                managed.origin.as_deref(),
+            )?);
         }
 
         Ok(results)
+    }
+
+    /// Content-drift outcome for a single source/target pair.
+    ///
+    /// `source_path` must already be resolved (relative entries are resolved by
+    /// the caller via [`Self::resolve_source_path`]); `target` is expanded for
+    /// `~` internally. The source is rendered (tera template when the extension
+    /// matches `origin`'s context, otherwise read as-is) and byte-compared to the
+    /// on-disk target, yielding present/missing/differs. A source that cannot be
+    /// found is reported as a non-matching result rather than an error so a single
+    /// bad entry can't mask drift elsewhere. Shared by both the profile-file path
+    /// ([`Self::file_drift_results`]) and the module-file path so every managed
+    /// file is content-aware, not presence-only.
+    pub(crate) fn file_drift_one(
+        &self,
+        source_path: &Path,
+        target: &Path,
+        origin: Option<&str>,
+    ) -> Result<FileDriftResult> {
+        let target_path = expand_tilde(target);
+        let target_id = target_path.display_posix();
+
+        if !source_path.exists() {
+            return Ok(FileDriftResult {
+                target: target_id,
+                matches: false,
+                expected: "managed source present".to_string(),
+                actual: format!("source not found: {}", source_path.posix()),
+            });
+        }
+
+        let rendered_content = if is_tera_template(source_path) {
+            self.render_template(source_path, origin)?
+        } else {
+            fs::read_to_string(source_path).map_err(|e| FileError::Io {
+                path: source_path.to_path_buf(),
+                source: e,
+            })?
+        };
+
+        if target_path.exists() {
+            let target_content = fs::read_to_string(&target_path).map_err(|e| FileError::Io {
+                path: target_path.clone(),
+                source: e,
+            })?;
+            let matches = rendered_content == target_content;
+            Ok(FileDriftResult {
+                target: target_id,
+                matches,
+                expected: "content matches source".to_string(),
+                actual: if matches {
+                    "content matches source".to_string()
+                } else {
+                    "content differs from source".to_string()
+                },
+            })
+        } else {
+            Ok(FileDriftResult {
+                target: target_id,
+                matches: false,
+                expected: "present".to_string(),
+                actual: "missing".to_string(),
+            })
+        }
     }
 
     /// Check if permissions need to be changed for a target file.

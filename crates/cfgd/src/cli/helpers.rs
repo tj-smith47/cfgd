@@ -271,6 +271,35 @@ pub(in crate::cli) fn managers_map(
         .collect()
 }
 
+/// Resolve a profile's own modules for a read-only scan (`status -e`, `diff`,
+/// full `verify`). Builds a default registry, detects the platform, and resolves
+/// `resolved.merged.modules` against the module cache. Every failure mode
+/// (missing cache dir, malformed module YAML, unresolvable reference) degrades to
+/// an empty set rather than aborting — all three callers are read-only scans, so
+/// an unresolvable module surface just goes unverified instead of erroring.
+pub(in crate::cli) fn resolve_profile_modules(
+    config_dir: &Path,
+    resolved: &ResolvedProfile,
+    printer: &Printer,
+) -> Vec<cfgd_core::modules::ResolvedModule> {
+    let registry = build_registry();
+    let platform = Platform::detect();
+    let mgr_map = managers_map(&registry);
+    let cache_base = match modules::default_module_cache_dir() {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    modules::resolve_modules(
+        &resolved.merged.modules,
+        config_dir,
+        &cache_base,
+        &platform,
+        &mgr_map,
+        printer,
+    )
+    .unwrap_or_default()
+}
+
 pub(in crate::cli) fn module_state_map(
     state: &cfgd_core::state::StateStore,
 ) -> std::collections::HashMap<String, cfgd_core::state::ModuleStateRecord> {

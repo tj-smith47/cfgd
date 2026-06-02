@@ -295,13 +295,49 @@ pub(super) fn cmd_status(
     let configured_source_names: Vec<String> =
         cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
 
-    let output = StatusOutput {
+    let mut output = StatusOutput {
         last_apply,
         drift: drift_events,
         sources: source_records,
         pending_decisions: pending,
         modules: module_entries,
         managed_resources: resources,
+    };
+
+    // Plain `status` (no --exit-code) keeps the fast RECORDED-drift dashboard by
+    // deliberate design. The --exit-code gate, however, must reflect REALITY: a
+    // host with no daemon and no prior scan has zero recorded events even when a
+    // managed file was just edited out-of-band. So in `-e` mode run the LIVE,
+    // read-only scan (never recording — the same checks `diff`/`verify` run)
+    // BEFORE emitting, fold its findings into the displayed Drift section, then
+    // exit 5 if any drift. This keeps the human verdict and the exit code in
+    // agreement instead of printing "No drift detected" alongside exit 5.
+    let live_drift = if exit_code {
+        packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
+        let mut registry = build_registry_with_profile(&resolved.merged.packages);
+        registry.set_system_config_dir(&config_dir);
+        let resolved_modules = resolve_profile_modules(&config_dir, &resolved, printer);
+        let drift = super::live_drift::live_drift_results(
+            &config_dir,
+            &resolved,
+            &registry,
+            &resolved_modules,
+        )?;
+        for r in &drift {
+            output.drift.push(cfgd_core::state::DriftEvent {
+                id: 0,
+                timestamp: cfgd_core::utc_now_iso8601(),
+                resource_type: r.resource_type.clone(),
+                resource_id: r.resource_id.clone(),
+                expected: Some(r.expected.clone()),
+                actual: Some(r.actual.clone()),
+                resolved_by: None,
+                source: "local".to_string(),
+            });
+        }
+        drift
+    } else {
+        Vec::new()
     };
 
     printer.emit(build_fleet_status_doc(
@@ -311,18 +347,8 @@ pub(super) fn cmd_status(
         &profile_name,
     ));
 
-    // The DISPLAY above is driven by RECORDED drift (state DB). The --exit-code
-    // gate, however, must reflect REALITY: a host with no daemon and no prior
-    // scan has zero recorded events even when a managed file was just edited
-    // out-of-band. So gate on a LIVE, read-only scan (never recording) — the
-    // same checks `diff`/`verify` run — instead of the recorded events.
-    if exit_code {
-        packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
-        let mut registry = build_registry_with_profile(&resolved.merged.packages);
-        registry.set_system_config_dir(&config_dir);
-        if super::live_drift::live_drift_detected(&config_dir, &resolved, &registry)? {
-            cfgd_core::exit::ExitCode::DriftDetected.exit();
-        }
+    if exit_code && !live_drift.is_empty() {
+        cfgd_core::exit::ExitCode::DriftDetected.exit();
     }
 
     Ok(())
@@ -335,9 +361,9 @@ pub(super) fn cmd_status_module(
 ) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     // Propagate (vs. unwrap_or_default in cmd_status): the module-scoped path
-    // queries a single named module, so a missing cache dir means we cannot
-    // answer the user's specific question and should error rather than silently
-    // claim "module not found".
+    // queries a single named module, so a missing cache dir means the query
+    // cannot be answered, and it must error rather than silently claim the
+    // module was not found.
     let cache_base = modules::default_module_cache_dir()?;
     let all_modules = modules::load_all_modules(&config_dir, &cache_base, printer)?;
 

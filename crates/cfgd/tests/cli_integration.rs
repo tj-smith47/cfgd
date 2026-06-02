@@ -499,6 +499,66 @@ fn verify_with_valid_config_succeeds() {
         .success();
 }
 
+/// Full `cfgd verify` on a modules-only profile must resolve the profile's
+/// modules — not report "No managed resources to verify". A content-drifted
+/// module file drives a failure (exit 5 with --exit-code). Regression guard for
+/// the full path that previously passed `Vec::new()` modules.
+#[test]
+fn verify_full_path_resolves_modules_and_catches_module_file_drift() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+
+    // Module with one file (source relative to the module dir); deploy a
+    // tampered target so the failure is driven by genuine CONTENT drift, not a
+    // missing source.
+    let module_dir = dir.path().join("modules").join("accmod");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(module_dir.join("conf"), "desired\n").unwrap();
+    let module_target = dir.path().join("mod-out").join("conf");
+    std::fs::create_dir_all(module_target.parent().unwrap()).unwrap();
+    std::fs::write(&module_target, "tampered\n").unwrap();
+
+    let module_yaml = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: accmod\nspec:\n  packages: []\n  files:\n    - source: conf\n      target: {}\n",
+        module_target.display()
+    );
+    std::fs::write(module_dir.join("module.yaml"), module_yaml).unwrap();
+
+    std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
+    std::fs::write(
+        dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: base\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("profiles/base.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  modules:\n    - accmod\n",
+    )
+    .unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("verify")
+        .arg("--exit-code")
+        .arg("--no-color")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(5);
+    // The human Doc renders to stderr; stdout is reserved for structured `-o`.
+    let out = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        !out.contains("No managed resources to verify"),
+        "modules-only profile must be verified, got:\n{out}"
+    );
+    assert!(
+        out.contains("conf") && out.contains("differs"),
+        "drifted module file must surface as content drift, got:\n{out}"
+    );
+}
+
 // --- diff with valid config ---
 
 #[test]
@@ -1112,6 +1172,94 @@ fn exit_code_flag_with_no_drift_is_0() {
         .arg(state_dir.path())
         .assert()
         .code(0);
+}
+
+/// `cfgd status --exit-code` with an out-of-band content-drifted managed file
+/// must exit 5 AND render the file in the Drift section — the human verdict can
+/// never contradict the exit code. Regression guard for the live-scan display.
+#[test]
+fn status_exit_code_renders_live_file_drift_not_no_drift() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
+    std::fs::write(
+        dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\nspec:\n  profile: base\n",
+    )
+    .unwrap();
+
+    // Managed source + a deployed target whose bytes were tampered out-of-band.
+    std::fs::write(dir.path().join("dotfile"), "desired\n").unwrap();
+    let target = dir.path().join("deployed.conf");
+    std::fs::write(&target, "tampered\n").unwrap();
+
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  files:\n    managed:\n      - source: dotfile\n        target: {}\n",
+        target.display()
+    );
+    std::fs::write(dir.path().join("profiles/base.yaml"), profile).unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("status")
+        .arg("--exit-code")
+        .arg("--no-color")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(5);
+    // The human Doc renders to stderr; stdout is reserved for structured `-o`.
+    let out = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        out.contains("deployed.conf"),
+        "drift section must name the drifted file, got:\n{out}"
+    );
+    assert!(
+        !out.contains("No drift detected"),
+        "verdict must not contradict exit 5, got:\n{out}"
+    );
+}
+
+/// Plain `cfgd status` (no --exit-code) keeps the fast RECORDED-drift dashboard:
+/// with no recorded events it shows "No drift detected" and exits 0 even when a
+/// managed file is live-drifted. The live scan is `-e`-only by design.
+#[test]
+fn status_plain_keeps_recorded_dashboard_despite_live_drift() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
+    std::fs::write(
+        dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: test\nspec:\n  profile: base\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("dotfile"), "desired\n").unwrap();
+    let target = dir.path().join("deployed.conf");
+    std::fs::write(&target, "tampered\n").unwrap();
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  files:\n    managed:\n      - source: dotfile\n        target: {}\n",
+        target.display()
+    );
+    std::fs::write(dir.path().join("profiles/base.yaml"), profile).unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("status")
+        .arg("--no-color")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(0);
+    // The human Doc renders to stderr; stdout is reserved for structured `-o`.
+    let out = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        out.contains("No drift detected"),
+        "plain status shows recorded dashboard (no live scan), got:\n{out}"
+    );
 }
 
 /// `cfgd upgrade --help` surfaces the exit-code taxonomy in the long_about

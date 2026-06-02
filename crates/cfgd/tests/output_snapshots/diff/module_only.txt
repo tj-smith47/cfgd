@@ -2,7 +2,11 @@ Diff
   Module  diff-mod
 
 Files
-  ⚠ <CONFIG_DIR>/mod-out/conf — missing
+
+<CONFIG_DIR>/mod-out/conf (new file)
+module content
+
+⚠ File drift detected
 
 Packages
   ✓ No package drift

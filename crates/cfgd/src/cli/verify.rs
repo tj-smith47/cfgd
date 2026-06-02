@@ -38,7 +38,11 @@ pub(super) fn cmd_verify(
         let (_cfg, _profile_name, mut resolved) = load_config_and_profile(cli)?;
         packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
         let registry = build_registry_with_profile(&resolved.merged.packages);
-        (resolved, Vec::new(), registry)
+        // Resolve the profile's own modules so `reconciler::verify` checks their
+        // packages and the file fold below checks their files. Without this the
+        // full path would ignore a modules-only profile entirely.
+        let mods = resolve_profile_modules(&config_dir, &resolved, printer);
+        (resolved, mods, registry)
     };
     registry.set_system_config_dir(&config_dir);
 
@@ -47,10 +51,18 @@ pub(super) fn cmd_verify(
     // longer checks managed files. Fold in content-aware file results here so a
     // file whose bytes drifted out-of-band fails verification and drives
     // `verify --exit-code` to 5. Module-filter runs (empty merged profile) have
-    // no managed files, so this is a no-op for them.
+    // no managed files, so the profile-file fold is a no-op for them.
     results.extend(super::live_drift::file_verify_results(
         &config_dir,
         &resolved,
+    )?);
+    // Module files are content-aware here (not in the reconciler, which is
+    // presence-blind across the crate boundary): a byte-tampered module file
+    // fails verification for both the full and `--module` paths.
+    results.extend(super::live_drift::module_file_verify_results(
+        &config_dir,
+        &resolved,
+        &resolved_modules,
     )?);
     let pass_count = results.iter().filter(|r| r.matches).count();
     let fail_count = results.iter().filter(|r| !r.matches).count();

@@ -733,11 +733,24 @@ fn verify_module_drift_packages() {
     assert!(drift.is_some());
     assert!(!drift.unwrap().matches);
 
-    // nvim/neovim should not appear as drift since it's installed
+    // nvim/neovim is installed → a passing per-package row (not absent, and not drift).
     let ok = results
         .iter()
         .find(|r| r.resource_type == "module" && r.resource_id == "nvim/neovim");
-    assert!(ok.is_none()); // no drift entry for installed packages
+    assert!(
+        ok.is_some(),
+        "installed module package must emit a pass row"
+    );
+    assert!(ok.unwrap().matches);
+
+    // The missing package must also be recorded as drift in the state store.
+    let recorded = state.unresolved_drift().unwrap();
+    assert!(
+        recorded
+            .iter()
+            .any(|d| d.resource_type == "module" && d.resource_id == "nvim/ripgrep"),
+        "missing module package must record drift: {recorded:?}"
+    );
 }
 
 #[test]
@@ -777,7 +790,7 @@ fn plan_hash_includes_module_actions() {
 }
 
 #[test]
-fn verify_module_healthy_when_all_installed() {
+fn verify_module_all_installed_emits_per_package_pass_rows() {
     let state = test_state();
     let mut registry = ProviderRegistry::new();
 
@@ -791,15 +804,27 @@ fn verify_module_healthy_when_all_installed() {
     let modules = vec![make_resolved_module("nvim")];
     let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
 
-    // All packages installed → should get a single "healthy" result
-    let healthy = results
+    // All packages installed → a passing per-package row each (no blanket
+    // "module healthy" row, which would contradict folded-in file-drift rows).
+    for pkg in ["nvim/neovim", "nvim/ripgrep"] {
+        let row = results
+            .iter()
+            .find(|r| r.resource_type == "module" && r.resource_id == pkg);
+        assert!(row.is_some(), "expected pass row for {pkg}: {results:?}");
+        assert!(row.unwrap().matches);
+        assert_eq!(row.unwrap().expected, "installed");
+    }
+
+    // The blanket healthy row is removed.
+    let blanket = results
         .iter()
         .find(|r| r.resource_type == "module" && r.resource_id == "nvim");
-    assert!(healthy.is_some());
-    assert!(healthy.unwrap().matches);
-    assert_eq!(healthy.unwrap().expected, "healthy");
+    assert!(
+        blanket.is_none(),
+        "no blanket module healthy row: {results:?}"
+    );
 
-    // No drift entries
+    // No drift entries.
     let drifts: Vec<_> = results
         .iter()
         .filter(|r| r.resource_type == "module" && !r.matches)
@@ -841,20 +866,16 @@ fn verify_module_script_packages_not_false_drift() {
 
     let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
 
-    // Script packages should be skipped in verification, so module should be healthy
-    let healthy = results
+    // Script packages are skipped in verification — they produce no row at all
+    // (neither pass nor drift), so a script-only module yields no module rows.
+    let module_rows: Vec<_> = results
         .iter()
-        .find(|r| r.resource_type == "module" && r.resource_id == "rustup");
-    assert!(healthy.is_some());
-    assert!(healthy.unwrap().matches);
-    assert_eq!(healthy.unwrap().expected, "healthy");
-
-    // No drift entries for script packages
-    let drifts: Vec<_> = results
-        .iter()
-        .filter(|r| r.resource_type == "module" && !r.matches)
+        .filter(|r| r.resource_type == "module")
         .collect();
-    assert!(drifts.is_empty());
+    assert!(
+        module_rows.is_empty(),
+        "script-only module must not produce verify rows: {module_rows:?}"
+    );
 }
 
 #[test]
@@ -6557,11 +6578,15 @@ fn verify_empty_profile_returns_no_results() {
 // (`cli::live_drift`), which is content-aware via CfgdFileManager. The reconciler
 // no longer produces presence-only "file" results, so the former
 // verify_file_target_exists / verify_file_target_missing tests live there now
-// (file_verify_results_* in crates/cfgd/src/cli/live_drift.rs). Module-file
-// presence checks below remain the reconciler's responsibility.
+// (file_verify_results_* in crates/cfgd/src/cli/live_drift.rs). MODULE-file
+// verification is likewise content-aware and folded in by the binary crate
+// (module_file_verify_results) — the reconciler is presence-blind across the
+// crate boundary, so it emits NO module-file rows at all.
 
 #[test]
-fn verify_module_file_target_missing_causes_drift() {
+fn verify_module_files_produce_no_reconciler_rows() {
+    // A module with files (target missing OR present) yields no module-file row
+    // from the reconciler: file content-awareness is the binary crate's job.
     let state = test_state();
     let registry = ProviderRegistry::new();
     let printer = test_printer();
@@ -6591,61 +6616,16 @@ fn verify_module_file_target_missing_causes_drift() {
 
     let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
 
-    // Should have drift for the missing file
-    let drift = results
+    // No module rows: the module has no packages (the only thing the reconciler
+    // now checks for modules) and module files are not its responsibility.
+    let module_rows: Vec<_> = results
         .iter()
-        .find(|r| r.resource_type == "module" && !r.matches);
+        .filter(|r| r.resource_type == "module")
+        .collect();
     assert!(
-        drift.is_some(),
-        "missing module file target should cause drift"
+        module_rows.is_empty(),
+        "reconciler must not emit module-file rows: {module_rows:?}"
     );
-    let d = drift.unwrap();
-    assert_eq!(d.expected, "present");
-    assert_eq!(d.actual, "missing");
-    assert!(d.resource_id.contains("test-mod"));
-}
-
-#[test]
-fn verify_module_file_target_exists_no_drift() {
-    let state = test_state();
-    let registry = ProviderRegistry::new();
-    let printer = test_printer();
-    let resolved = make_empty_resolved();
-    let tmp = tempfile::tempdir().unwrap();
-
-    let target_path = tmp.path().join("module-config");
-    std::fs::write(&target_path, "content").unwrap();
-
-    let modules = vec![ResolvedModule {
-        name: "files-mod".to_string(),
-        packages: vec![],
-        files: vec![ResolvedFile {
-            source: PathBuf::from("/src/config"),
-            target: target_path,
-            is_git_source: false,
-            strategy: None,
-            encryption: None,
-        }],
-        env: vec![],
-        aliases: vec![],
-        post_apply_scripts: vec![],
-        pre_apply_scripts: Vec::new(),
-        pre_reconcile_scripts: Vec::new(),
-        post_reconcile_scripts: Vec::new(),
-        on_change_scripts: Vec::new(),
-        system: HashMap::new(),
-        depends: vec![],
-        dir: PathBuf::from("."),
-    }];
-
-    let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
-
-    // Module should be healthy
-    let healthy = results
-        .iter()
-        .find(|r| r.resource_type == "module" && r.resource_id == "files-mod");
-    assert!(healthy.is_some(), "module should have a healthy result");
-    assert!(healthy.unwrap().matches);
 }
 
 #[test]
