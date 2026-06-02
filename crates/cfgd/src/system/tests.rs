@@ -6,7 +6,7 @@ fn workstation_configurator_names() {
     let cases: &[(&dyn SystemConfigurator, &str)] = &[
         (&ShellConfigurator, "shell"),
         (&MacosDefaultsConfigurator, "macosDefaults"),
-        (&SystemdUnitConfigurator, "systemdUnits"),
+        (&SystemdUnitConfigurator::default(), "systemdUnits"),
         (&LaunchAgentConfigurator, "launchAgents"),
         (&EnvironmentConfigurator, "environment"),
         (&WindowsRegistryConfigurator, "windowsRegistry"),
@@ -44,7 +44,7 @@ fn yaml_value_with_numeric_bools_conversion() {
 fn diff_returns_empty_for_empty_inputs() {
     let cases: &[(&dyn SystemConfigurator, serde_yaml::Value)] = &[
         (
-            &SystemdUnitConfigurator,
+            &SystemdUnitConfigurator::default(),
             serde_yaml::Value::Sequence(Vec::new()),
         ),
         (

@@ -4761,6 +4761,39 @@ fn apply_secret_decrypt_writes_decrypted_file() {
 }
 
 #[test]
+fn plan_secret_decrypt_target_is_tilde_expanded() {
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp_home.path());
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.secret_backend = Some(Box::new(TestSecretBackend {
+        decrypted_value: "x".to_string(),
+    }));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let mut profile = MergedProfile::default();
+    profile.secrets.push(crate::config::SecretSpec {
+        source: "secrets/token.age".to_string(),
+        target: Some(PathBuf::from("~/cfgd-secret")),
+        template: None,
+        backend: None,
+        envs: None,
+    });
+
+    let actions = reconciler.plan_secrets(&profile);
+    let target = actions
+        .iter()
+        .find_map(|a| match a {
+            Action::Secret(SecretAction::Decrypt { target, .. }) => Some(target),
+            _ => None,
+        })
+        .expect("expected a Decrypt action");
+    // The plan must report the same absolute path apply writes to — not a literal "~".
+    assert_eq!(target, &tmp_home.path().join("cfgd-secret"));
+}
+
+#[test]
 fn apply_secret_decrypt_no_backend_errors() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("token.enc");
@@ -5399,6 +5432,46 @@ fn plan_system_generates_skip_for_unregistered_configurator() {
         }) => {
             assert_eq!(configurator, "unknownConf");
             assert!(reason.contains("no configurator registered"));
+        }
+        other => panic!("Expected SystemAction::Skip, got {:?}", other),
+    }
+}
+
+#[test]
+fn plan_system_skip_distinguishes_unavailable_from_unregistered() {
+    // A configurator that IS registered but is unavailable on this host (e.g.
+    // systemdUnits where systemctl is absent) must skip with an accurate reason,
+    // not masquerade as "no configurator registered".
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.system_configurators.push(Box::new(
+        crate::test_helpers::MockSystemConfigurator::new("systemdUnits").unavailable(),
+    ));
+    let reconciler = Reconciler::new(&registry, &state);
+
+    let mut profile = MergedProfile::default();
+    profile.system.insert(
+        "systemdUnits".to_string(),
+        serde_yaml::from_str("[{name: x.service, enabled: true}]").unwrap(),
+    );
+
+    let actions = reconciler.plan_system(&profile, &[]).unwrap();
+    assert_eq!(actions.len(), 1);
+    match &actions[0] {
+        Action::System(SystemAction::Skip {
+            configurator,
+            reason,
+            ..
+        }) => {
+            assert_eq!(configurator, "systemdUnits");
+            assert!(
+                reason.contains("not available on this host"),
+                "reason should name the host-availability gap, got: {reason}"
+            );
+            assert!(
+                !reason.contains("no configurator registered"),
+                "registered-but-unavailable must not read as unregistered: {reason}"
+            );
         }
         other => panic!("Expected SystemAction::Skip, got {:?}", other),
     }

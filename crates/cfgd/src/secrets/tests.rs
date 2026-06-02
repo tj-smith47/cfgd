@@ -1844,3 +1844,29 @@ mod provider_shim {
         );
     }
 }
+
+#[cfg(unix)]
+mod build_backend_tilde {
+    use super::*;
+    use std::path::PathBuf;
+
+    use cfgd_core::test_helpers::ToolShim;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn build_secret_backend_expands_tilde_in_age_key_path() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home_guard = cfgd_core::with_test_home_guard(home.path());
+        std::fs::write(home.path().join("age-key.txt"), "AGE-SECRET-KEY-1\n").expect("write key");
+        let _shim = ToolShim::install("CFGD_AGE_BIN", 0, "", "");
+
+        let backend = build_secret_backend("age", Some(PathBuf::from("~/age-key.txt")), None);
+        // Without tilde expansion the literal "~/age-key.txt" never resolves and
+        // is_available() is false because the key file .exists() check fails.
+        assert!(
+            backend.is_available(),
+            "ageKey '~/age-key.txt' must expand to the home-relative key file"
+        );
+    }
+}

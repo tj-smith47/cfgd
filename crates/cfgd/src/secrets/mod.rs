@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 
 use secrecy::{ExposeSecret, SecretString};
 
-use cfgd_core::default_config_dir;
 use cfgd_core::errors::{Result, SecretError};
 use cfgd_core::providers::{SecretBackend, SecretProvider, parse_secret_reference};
+use cfgd_core::{default_config_dir, expand_tilde};
 
 mod age;
 mod bitwarden;
@@ -272,7 +272,7 @@ pub fn check_secrets_health(
     };
 
     let age_key_path = age_key_override
-        .map(PathBuf::from)
+        .map(expand_tilde)
         .unwrap_or_else(|| default_config_dir().join("age-key.txt"));
     let age_key_exists = age_key_path.exists();
 
@@ -303,7 +303,9 @@ pub fn build_secret_backend(
     age_key_path: Option<PathBuf>,
     config_dir: Option<&Path>,
 ) -> Box<dyn SecretBackend> {
-    let key_path = age_key_path.unwrap_or_else(|| default_config_dir().join("age-key.txt"));
+    let key_path = age_key_path
+        .map(|p| expand_tilde(&p))
+        .unwrap_or_else(|| default_config_dir().join("age-key.txt"));
 
     match backend_name {
         "age" => Box::new(AgeBackend::new(key_path)),

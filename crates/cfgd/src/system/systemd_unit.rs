@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cfgd_core::errors::Result;
@@ -6,7 +7,24 @@ use cfgd_core::output::{Printer, Role};
 use cfgd_core::providers::{SystemConfigurator, SystemDrift};
 
 /// SystemdUnitConfigurator — manages systemd unit files and enablement.
-pub struct SystemdUnitConfigurator;
+#[derive(Default)]
+pub struct SystemdUnitConfigurator {
+    /// Active config directory; relative `unitFile` paths resolve against it
+    /// (matching file/secret source resolution). `None` ⇒ process-CWD-relative.
+    config_dir: Option<PathBuf>,
+}
+
+impl SystemdUnitConfigurator {
+    /// Resolve a configured `unitFile` to the path cfgd should read it from:
+    /// tilde-expanded, then resolved against the config dir when one is set.
+    fn resolve_unit_file(&self, unit_file: &str) -> PathBuf {
+        let expanded = cfgd_core::expand_tilde(Path::new(unit_file));
+        match &self.config_dir {
+            Some(dir) => cfgd_core::resolve_relative_path(&expanded, dir).unwrap_or(expanded),
+            None => expanded,
+        }
+    }
+}
 
 impl SystemConfigurator for SystemdUnitConfigurator {
     fn name(&self) -> &str {
@@ -15,6 +33,10 @@ impl SystemConfigurator for SystemdUnitConfigurator {
 
     fn is_available(&self) -> bool {
         cfgd_core::command_available("systemctl")
+    }
+
+    fn set_config_dir(&mut self, config_dir: &Path) {
+        self.config_dir = Some(config_dir.to_path_buf());
     }
 
     fn current_state(&self) -> Result<serde_yaml::Value> {
@@ -56,6 +78,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
             }
 
             if let Some(unit_file) = unit.get("unitFile").and_then(|v| v.as_str()) {
+                let source = self.resolve_unit_file(unit_file);
                 let dest = format!("/etc/systemd/system/{}", name);
                 let dest_path = std::path::Path::new(&dest);
                 if !dest_path.exists() {
@@ -64,7 +87,7 @@ impl SystemConfigurator for SystemdUnitConfigurator {
                         expected: "present".to_string(),
                         actual: "missing".to_string(),
                     });
-                } else if let Ok(source_content) = std::fs::read(unit_file)
+                } else if let Ok(source_content) = std::fs::read(&source)
                     && let Ok(dest_content) = std::fs::read(&dest)
                     && source_content != dest_content
                 {
@@ -99,21 +122,31 @@ impl SystemConfigurator for SystemdUnitConfigurator {
 
             // Copy unit file if specified
             if let Some(unit_file) = unit.get("unitFile").and_then(|v| v.as_str()) {
+                let source = self.resolve_unit_file(unit_file);
                 let dest = format!("/etc/systemd/system/{}", name);
+                let dest_path = Path::new(&dest);
                 printer.status_simple(
                     Role::Info,
-                    format!("Installing unit file: {} → {}", unit_file, dest),
+                    format!("Installing unit file: {} → {}", source.display(), dest),
                 );
 
-                match std::fs::read(unit_file) {
+                match std::fs::read(&source) {
                     Ok(content) => {
-                        if let Err(e) =
-                            cfgd_core::atomic_write(std::path::Path::new(&dest), &content)
-                        {
+                        if let Err(e) = cfgd_core::atomic_write(dest_path, &content) {
                             printer.status_simple(
                                 Role::Warn,
                                 format!(
                                     "Failed to install unit file: {}",
+                                    cfgd_core::output::collapse_to_subject_line(&e)
+                                ),
+                            );
+                        } else if let Err(e) = cfgd_core::set_file_permissions(dest_path, 0o644) {
+                            // systemd unit files are world-readable by convention; the
+                            // atomic_write tempfile lands 0600, so widen it explicitly.
+                            printer.status_simple(
+                                Role::Warn,
+                                format!(
+                                    "Failed to set unit file mode: {}",
                                     cfgd_core::output::collapse_to_subject_line(&e)
                                 ),
                             );
@@ -167,8 +200,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn resolve_unit_file_resolves_relative_against_config_dir() {
+        let mut su = SystemdUnitConfigurator::default();
+        // No config dir → relative path is left process-CWD-relative (legacy behavior).
+        assert_eq!(
+            su.resolve_unit_file("my.service"),
+            PathBuf::from("my.service")
+        );
+        // With a config dir → a relative unitFile resolves against it, not the CWD.
+        su.set_config_dir(Path::new("/etc/cfgd"));
+        assert_eq!(
+            su.resolve_unit_file("my.service"),
+            PathBuf::from("/etc/cfgd/my.service")
+        );
+        // Absolute paths are preserved regardless of config dir.
+        assert_eq!(
+            su.resolve_unit_file("/abs/x.service"),
+            PathBuf::from("/abs/x.service")
+        );
+    }
+
+    #[test]
     fn systemd_diff_non_sequence_desired() {
-        let su = SystemdUnitConfigurator;
+        let su = SystemdUnitConfigurator::default();
         let desired = serde_yaml::Value::String("not a sequence".into());
         let drifts = su.diff(&desired).unwrap();
         assert!(drifts.is_empty());
@@ -176,7 +230,7 @@ mod tests {
 
     #[test]
     fn systemd_diff_unit_without_name_skipped() {
-        let su = SystemdUnitConfigurator;
+        let su = SystemdUnitConfigurator::default();
         let mut unit = serde_yaml::Mapping::new();
         unit.insert(
             serde_yaml::Value::String("enabled".into()),
@@ -189,7 +243,7 @@ mod tests {
 
     #[test]
     fn systemd_current_state_returns_empty_sequence() {
-        let su = SystemdUnitConfigurator;
+        let su = SystemdUnitConfigurator::default();
         let state = su.current_state().unwrap();
         assert!(state.is_sequence());
         assert!(state.as_sequence().unwrap().is_empty());
@@ -197,7 +251,7 @@ mod tests {
 
     #[test]
     fn systemd_diff_detects_missing_unit_file() {
-        let su = SystemdUnitConfigurator;
+        let su = SystemdUnitConfigurator::default();
         let yaml: serde_yaml::Value = serde_yaml::from_str(
             r#"
 - name: cfgd-test-nonexistent.service
@@ -221,7 +275,7 @@ mod tests {
 
     #[test]
     fn systemd_diff_with_unit_file_path_reports_missing_dest() {
-        let su = SystemdUnitConfigurator;
+        let su = SystemdUnitConfigurator::default();
         let dir = tempfile::tempdir().unwrap();
 
         // Create a "source" unit file that exists
@@ -248,7 +302,7 @@ mod tests {
 
     #[test]
     fn systemd_diff_default_enabled_is_true() {
-        let su = SystemdUnitConfigurator;
+        let su = SystemdUnitConfigurator::default();
         // When "enabled" is omitted, it defaults to true
         let yaml: serde_yaml::Value = serde_yaml::from_str(
             r#"
@@ -272,7 +326,7 @@ mod tests {
     #[test]
     fn systemd_apply_empty_sequence_is_noop() {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
-        let su = SystemdUnitConfigurator;
+        let su = SystemdUnitConfigurator::default();
         let yaml = serde_yaml::Value::Sequence(Vec::new());
         su.apply(&yaml, &printer).unwrap();
     }
@@ -280,7 +334,7 @@ mod tests {
     #[test]
     fn systemd_apply_non_sequence_is_noop() {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
-        let su = SystemdUnitConfigurator;
+        let su = SystemdUnitConfigurator::default();
         let yaml = serde_yaml::Value::String("not a sequence".into());
         su.apply(&yaml, &printer).unwrap();
     }
@@ -288,7 +342,7 @@ mod tests {
     #[test]
     fn systemd_apply_skips_units_without_name() {
         let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
-        let su = SystemdUnitConfigurator;
+        let su = SystemdUnitConfigurator::default();
         let mut unit = serde_yaml::Mapping::new();
         unit.insert(
             serde_yaml::Value::String("enabled".into()),
@@ -352,7 +406,7 @@ mod tests {
             .unwrap();
 
             let (printer, cap) = Printer::for_test_doc();
-            let su = SystemdUnitConfigurator;
+            let su = SystemdUnitConfigurator::default();
             su.apply(&yaml, &printer).unwrap();
 
             let summary = UnitApplySummary { units_processed: 1 };
@@ -389,7 +443,7 @@ mod tests {
             let yaml: serde_yaml::Value = serde_yaml::from_str(&yaml_str).unwrap();
 
             let (printer, cap) = Printer::for_test_doc();
-            let su = SystemdUnitConfigurator;
+            let su = SystemdUnitConfigurator::default();
             su.apply(&yaml, &printer).unwrap();
 
             let summary = UnitApplySummary { units_processed: 1 };

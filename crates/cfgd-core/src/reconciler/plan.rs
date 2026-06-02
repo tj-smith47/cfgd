@@ -192,20 +192,30 @@ impl<'a> super::Reconciler<'a> {
             }
         }
 
-        // Check for system keys with no registered configurator
+        // Surface system keys that won't be applied, distinguishing "this host
+        // can't run it" from "cfgd has no such configurator" — a registered-but-
+        // unavailable configurator (e.g. systemdUnits where systemctl is absent)
+        // must not masquerade as "not registered".
+        let available = self.registry.available_system_configurators();
         for key in system.keys() {
-            let has_configurator = self
+            if available.iter().any(|c| c.name() == key) {
+                continue;
+            }
+            let registered = self
                 .registry
-                .available_system_configurators()
+                .system_configurators
                 .iter()
                 .any(|c| c.name() == key);
-            if !has_configurator {
-                actions.push(Action::System(SystemAction::Skip {
-                    configurator: key.clone(),
-                    reason: format!("no configurator registered for '{}'", key),
-                    origin: "local".to_string(),
-                }));
-            }
+            let reason = if registered {
+                format!("'{}' is not available on this host", key)
+            } else {
+                format!("no configurator registered for '{}'", key)
+            };
+            actions.push(Action::System(SystemAction::Skip {
+                configurator: key.clone(),
+                reason,
+                origin: "local".to_string(),
+            }));
         }
 
         Ok(actions)
@@ -240,7 +250,7 @@ impl<'a> super::Reconciler<'a> {
                         actions.push(Action::Secret(SecretAction::Resolve {
                             provider: provider_name.to_string(),
                             reference: reference.to_string(),
-                            target: target.clone(),
+                            target: crate::expand_tilde(target),
                             origin: "local".to_string(),
                         }));
                     }
@@ -281,7 +291,11 @@ impl<'a> super::Reconciler<'a> {
 
                 actions.push(Action::Secret(SecretAction::Decrypt {
                     source: PathBuf::from(&secret.source),
-                    target: secret.target.clone().unwrap_or_default(),
+                    target: secret
+                        .target
+                        .as_deref()
+                        .map(crate::expand_tilde)
+                        .unwrap_or_default(),
                     backend: backend_name,
                     origin: "local".to_string(),
                 }));

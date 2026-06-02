@@ -136,7 +136,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             printer.heading("Applying Modules");
 
             let cfg = config::load_config(&config_path)?;
-            let registry = super::build_registry_with_config(Some(&cfg));
+            let mut registry = super::build_registry_with_config(Some(&cfg));
+            registry.set_system_config_dir(&target_dir);
             let store = super::open_state_store(None)?;
 
             // Build a minimal resolved profile for the reconciler
@@ -204,6 +205,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             let cfg = config::load_config(&config_path)?;
             let resolved = config::resolve_profile(&profile_name, &profiles_dir)?;
             let mut registry = super::build_registry_with_config(Some(&cfg));
+            registry.set_system_config_dir(&target_dir);
             let store = super::open_state_store(None)?;
 
             // Resolve modules (profile modules + any --apply-module additions)

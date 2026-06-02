@@ -110,7 +110,7 @@ pub(in crate::cli) fn build_registry_with_config_and_packages(
     if cfg!(target_os = "linux") {
         registry
             .system_configurators
-            .push(Box::new(SystemdUnitConfigurator));
+            .push(Box::new(SystemdUnitConfigurator::default()));
         // Linux desktop configurators — each checks CLI availability at runtime via is_available()
         registry
             .system_configurators

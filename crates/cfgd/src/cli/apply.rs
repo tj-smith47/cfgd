@@ -117,6 +117,7 @@ pub fn run_apply(
     let state = open_state_store(cli.state_dir.as_deref())?;
 
     let mut registry = build_registry_with_config(Some(&cfg));
+    registry.set_system_config_dir(&config_dir);
 
     // `ApplyPhase` (clap ValueEnum) is already validated at parse time.
     let phase_filter: Option<PhaseName> = args.phase.map(apply_phase_to_phase_name);

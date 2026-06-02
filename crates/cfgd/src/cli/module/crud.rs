@@ -248,7 +248,8 @@ pub fn cmd_module_create(
 
         let config_path = config_dir.join("cfgd.yaml");
         let cfg = config::load_config(&config_path)?;
-        let registry = super::build_registry_with_config(Some(&cfg));
+        let mut registry = super::build_registry_with_config(Some(&cfg));
+        registry.set_system_config_dir(&config_dir);
         let store = super::open_state_store(cli.state_dir.as_deref())?;
 
         let platform = cfgd_core::platform::Platform::detect();

@@ -3149,7 +3149,7 @@ fn systemd_apply_unit_with_missing_unit_file_emits_read_failed_warning() {
 "#,
     )
     .unwrap();
-    let su = crate::system::SystemdUnitConfigurator;
+    let su = crate::system::SystemdUnitConfigurator::default();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     // Apply may return Ok or Err depending on whether systemctl is present
@@ -3176,7 +3176,7 @@ fn systemd_apply_unit_with_readable_source_emits_install_or_enable_line() {
         source.display()
     );
     let yaml: serde_yaml::Value = serde_yaml::from_str(&yaml_str).unwrap();
-    let su = crate::system::SystemdUnitConfigurator;
+    let su = crate::system::SystemdUnitConfigurator::default();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let _ = su.apply(&yaml, &printer);
@@ -3199,7 +3199,7 @@ fn systemd_apply_unit_without_unit_file_proceeds_to_enable() {
 "#,
     )
     .unwrap();
-    let su = crate::system::SystemdUnitConfigurator;
+    let su = crate::system::SystemdUnitConfigurator::default();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let _ = su.apply(&yaml, &printer);
@@ -3220,7 +3220,7 @@ fn systemd_apply_unit_with_disabled_field_emits_disable_line() {
 "#,
     )
     .unwrap();
-    let su = crate::system::SystemdUnitConfigurator;
+    let su = crate::system::SystemdUnitConfigurator::default();
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let _ = su.apply(&yaml, &printer);

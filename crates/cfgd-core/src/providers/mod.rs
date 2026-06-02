@@ -78,6 +78,12 @@ pub trait SystemConfigurator: Send + Sync {
 
     /// Apply desired state
     fn apply(&self, desired: &serde_yaml::Value, printer: &Printer) -> Result<()>;
+
+    /// Provide the active config directory so a configurator can resolve
+    /// config-relative file paths (e.g. systemd `unitFile`) the same way file
+    /// and secret sources are resolved. Most configurators reference no external
+    /// files and keep the default no-op.
+    fn set_config_dir(&mut self, _config_dir: &std::path::Path) {}
 }
 
 // --- FileManager trait ---
@@ -274,6 +280,15 @@ impl ProviderRegistry {
             .filter(|sc| sc.is_available())
             .map(|sc| sc.as_ref())
             .collect()
+    }
+
+    /// Hand the active config directory to every system configurator so those
+    /// that reference config-relative files (e.g. systemd `unitFile`) resolve
+    /// them against the config dir rather than the process CWD.
+    pub fn set_system_config_dir(&mut self, config_dir: &std::path::Path) {
+        for sc in self.system_configurators.iter_mut() {
+            sc.set_config_dir(config_dir);
+        }
     }
 }
 

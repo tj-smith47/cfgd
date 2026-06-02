@@ -18,7 +18,7 @@ pub(super) fn cmd_verify(
     let config_dir = config_dir(cli);
     let state = open_state_store(cli.state_dir.as_deref())?;
 
-    let (resolved, resolved_modules, registry) = if let Some(mod_name) = module_filter {
+    let (resolved, resolved_modules, mut registry) = if let Some(mod_name) = module_filter {
         let resolved = empty_resolved_profile(mod_name);
         let registry = build_registry();
         let platform = Platform::detect();
@@ -40,6 +40,7 @@ pub(super) fn cmd_verify(
         let registry = build_registry_with_profile(&resolved.merged.packages);
         (resolved, Vec::new(), registry)
     };
+    registry.set_system_config_dir(&config_dir);
 
     let results = reconciler::verify(&resolved, &registry, &state, printer, &resolved_modules)?;
     let pass_count = results.iter().filter(|r| r.matches).count();
