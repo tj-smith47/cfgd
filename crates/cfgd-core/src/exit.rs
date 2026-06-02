@@ -73,6 +73,7 @@ impl From<ExitCode> for i32 {
 pub fn exit_code_for_error(err: &CfgdError) -> ExitCode {
     match err {
         CfgdError::Config(ConfigError::NotFound { .. }) => ExitCode::NoConfig,
+        CfgdError::Config(ConfigError::HomeUnresolved { .. }) => ExitCode::NoConfig,
         CfgdError::Config(_) => ExitCode::ConfigInvalid,
         _ => ExitCode::Error,
     }

@@ -297,6 +297,17 @@ pub fn default_state_dir() -> Result<PathBuf> {
     if let Ok(dir) = std::env::var("CFGD_STATE_DIR") {
         return Ok(PathBuf::from(dir));
     }
+    // Resolve home through the same policy config discovery uses (HOME on Unix,
+    // USERPROFILE/HOME on Windows). `directories` would otherwise fall back to
+    // the passwd database when HOME is unset, resolving a home that config
+    // discovery cannot — the two subsystems must agree so an unset HOME fails
+    // uniformly instead of creating an orphan state.db beside a config error.
+    if crate::home_dir_var().is_none() {
+        return Err(StateError::DirectoryNotWritable {
+            path: PathBuf::from("~/.local/share/cfgd"),
+        }
+        .into());
+    }
     let base = directories::BaseDirs::new().ok_or_else(|| StateError::DirectoryNotWritable {
         path: PathBuf::from("~/.local/share/cfgd"),
     })?;

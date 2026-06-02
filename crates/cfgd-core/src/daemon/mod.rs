@@ -361,7 +361,7 @@ use sync::*;
 
 pub use git::git_pull_sync;
 pub use health_ipc::query_daemon_status;
-pub use service::{install_service, run_as_windows_service, uninstall_service};
+pub use service::{install_service, run_as_windows_service, start_service, uninstall_service};
 
 // --- Pre-loop setup (synchronous; pulled out so the SETUP arms are unit-testable) ---
 

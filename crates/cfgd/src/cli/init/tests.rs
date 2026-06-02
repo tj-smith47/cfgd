@@ -2205,6 +2205,67 @@ fn cmd_init_from_git_with_theme_override() {
     );
 }
 
+// --- cmd_init with --from git: ALL clone-path overrides apply together ---
+
+#[test]
+fn cmd_init_from_git_applies_name_and_theme_overrides_together() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Origin repo whose cfgd.yaml carries BOTH a source-repo name and a theme,
+    // so the test proves every override is funneled through, not just one.
+    let origin = dir.path().join("origin");
+    let repo = git2::Repository::init(&origin).unwrap();
+    let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+    std::fs::write(
+        origin.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: upstream-cfg\nspec:\n  theme:\n    name: default\n",
+    )
+    .unwrap();
+    let mut index = repo.index().unwrap();
+    index.add_path(std::path::Path::new("cfgd.yaml")).unwrap();
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let tree = repo.find_tree(tree_id).unwrap();
+    repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+        .unwrap();
+
+    let target = dir.path().join("named-target");
+    let printer = quiet_printer();
+    let origin_str = origin.display().to_string();
+    let target_str = target.display().to_string();
+    let args = InitArgs {
+        path: Some(&target_str),
+        from: Some(&origin_str),
+        branch: "master",
+        name: Some("acme"),
+        apply: false,
+        dry_run: false,
+        yes: false,
+        install_daemon: false,
+        theme: Some("dracula"),
+        apply_profile: None,
+        apply_modules: &[],
+    };
+
+    let result = cmd_init(&printer, &args);
+    assert!(
+        result.is_ok(),
+        "cmd_init with name + theme overrides should succeed: {:?}",
+        result.err()
+    );
+
+    let cfg = config::load_config(&target.join("cfgd.yaml")).unwrap();
+    assert_eq!(
+        cfg.metadata.name, "acme",
+        "metadata.name should be overridden to the --name value"
+    );
+    assert_eq!(
+        cfg.spec.theme.as_ref().map(|t| t.name.as_str()),
+        Some("dracula"),
+        "spec.theme.name should be overridden to the --theme value"
+    );
+}
+
 // --- generate_release_workflow_yaml ---
 
 #[test]

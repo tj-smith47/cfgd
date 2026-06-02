@@ -57,6 +57,11 @@ pub enum ConfigError {
     #[error("config file not found: {path}")]
     NotFound { path: PathBuf },
 
+    #[error(
+        "cannot resolve home directory (HOME unset) to locate config at {path}; set HOME or pass --config <path>"
+    )]
+    HomeUnresolved { path: PathBuf },
+
     #[error("invalid config: {message}")]
     Invalid { message: String },
 

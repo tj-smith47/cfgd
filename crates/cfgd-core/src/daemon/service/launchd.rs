@@ -77,6 +77,113 @@ pub(crate) fn install_launchd_service(
     Ok(())
 }
 
+/// Build the `launchctl bootstrap` argv that loads the LaunchAgent into the
+/// user's GUI domain (`gui/<uid>`). Split out so the command construction is
+/// testable without invoking `launchctl`.
+#[cfg(unix)]
+pub(crate) fn launchd_bootstrap_argv(uid: u32, plist_path: &Path) -> Vec<String> {
+    vec![
+        "bootstrap".to_string(),
+        format!("gui/{uid}"),
+        plist_path.display().to_string(),
+    ]
+}
+
+/// Build the `launchctl enable` argv that marks the service enabled in the
+/// user's GUI domain so it survives a later bootout/bootstrap cycle.
+#[cfg(unix)]
+pub(crate) fn launchd_enable_argv(uid: u32) -> Vec<String> {
+    vec!["enable".to_string(), format!("gui/{uid}/{LAUNCHD_LABEL}")]
+}
+
+/// Bootstrap and enable the just-installed LaunchAgent into the current user's
+/// GUI domain so the daemon runs immediately rather than only after the next
+/// GUI login. Best-effort: a headless session (no `gui/<uid>` domain, e.g. over
+/// plain SSH) cannot host a LaunchAgent, so the failure is surfaced as a warning
+/// plus an actionable hint rather than aborting the calling init flow.
+///
+/// Returns `Ok(true)` when the agent was bootstrapped and enabled, `Ok(false)`
+/// when it was installed but could not be started now (the caller reports the
+/// real state instead of over-claiming `started`).
+#[cfg(unix)]
+pub(crate) fn start_launchd_service(printer: &Printer) -> Result<bool> {
+    if !crate::command_available("launchctl") {
+        printer.status_simple(
+            Role::Warn,
+            "launchctl not found — daemon installed but not started",
+        );
+        printer.hint("Start it later from a GUI login session with: cfgd daemon install");
+        return Ok(false);
+    }
+
+    let home = crate::expand_tilde(Path::new("~"));
+    let plist_path = home
+        .join(LAUNCHD_AGENTS_DIR)
+        .join(format!("{}.plist", LAUNCHD_LABEL));
+    let uid = nix::unistd::getuid().as_raw();
+
+    let bootstrap = launchd_bootstrap_argv(uid, &plist_path);
+    let mut cmd = std::process::Command::new("launchctl");
+    cmd.args(&bootstrap);
+    match crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT) {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => {
+            let detail = crate::stderr_lossy_trimmed(&output);
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "launchctl bootstrap failed: {}",
+                    crate::output::collapse_to_subject_line(&detail)
+                ),
+            );
+            printer.hint("Run from a GUI login session, or start later with: cfgd daemon install");
+            return Ok(false);
+        }
+        Err(e) => {
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "launchctl bootstrap failed: {}",
+                    crate::output::collapse_to_subject_line(&e)
+                ),
+            );
+            printer.hint("Run from a GUI login session, or start later with: cfgd daemon install");
+            return Ok(false);
+        }
+    }
+
+    let enable = launchd_enable_argv(uid);
+    let mut cmd = std::process::Command::new("launchctl");
+    cmd.args(&enable);
+    match crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT) {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => {
+            let detail = crate::stderr_lossy_trimmed(&output);
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "launchctl enable failed: {}",
+                    crate::output::collapse_to_subject_line(&detail)
+                ),
+            );
+            return Ok(false);
+        }
+        Err(e) => {
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "launchctl enable failed: {}",
+                    crate::output::collapse_to_subject_line(&e)
+                ),
+            );
+            return Ok(false);
+        }
+    }
+
+    printer.status_simple(Role::Ok, "Daemon service started");
+    Ok(true)
+}
+
 #[cfg(unix)]
 pub(crate) fn uninstall_launchd_service() -> Result<()> {
     let home = crate::expand_tilde(Path::new("~"));
@@ -157,6 +264,28 @@ mod tests {
         );
         assert!(plist.contains("<string>--profile</string>"));
         assert!(plist.contains("<string>workstation</string>"));
+    }
+
+    #[test]
+    fn launchd_bootstrap_argv_targets_gui_domain_with_plist() {
+        let argv = launchd_bootstrap_argv(
+            501,
+            &PathBuf::from("/Users/tj/Library/LaunchAgents/x.plist"),
+        );
+        assert_eq!(
+            argv,
+            [
+                "bootstrap",
+                "gui/501",
+                "/Users/tj/Library/LaunchAgents/x.plist",
+            ]
+        );
+    }
+
+    #[test]
+    fn launchd_enable_argv_targets_label_in_gui_domain() {
+        let argv = launchd_enable_argv(501);
+        assert_eq!(argv, ["enable", &format!("gui/501/{LAUNCHD_LABEL}")]);
     }
 
     #[test]

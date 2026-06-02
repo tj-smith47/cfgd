@@ -79,7 +79,6 @@ pub fn run_apply(
     }
 
     let config_dir = config_dir(cli);
-    let state = open_state_store(cli.state_dir.as_deref())?;
 
     // When --module is set, try loading profile but fall back to empty if none configured
     let (cfg, resolved) = if let Some(mod_name) = module_filter {
@@ -111,6 +110,11 @@ pub fn run_apply(
         ]);
         (cfg, resolved)
     };
+
+    // Open state only after config discovery so a missing config (or an
+    // unresolvable home) surfaces before any state.db is created — otherwise a
+    // NoConfig exit would leave an orphan state directory behind.
+    let state = open_state_store(cli.state_dir.as_deref())?;
 
     let mut registry = build_registry_with_config(Some(&cfg));
 

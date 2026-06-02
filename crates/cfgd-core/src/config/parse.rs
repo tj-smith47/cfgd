@@ -107,6 +107,16 @@ pub fn parse_config_source(contents: &str) -> Result<ConfigSourceDocument> {
 /// Load and parse the root cfgd.yaml config file
 pub fn load_config(path: &Path) -> Result<CfgdConfig> {
     if !path.exists() {
+        // A leading `~` survived expansion only because no home directory could
+        // be resolved (HOME unset on Unix, USERPROFILE/HOME unset on Windows).
+        // Reporting the literal `~` leaves the user no path to act on, so name
+        // the cause instead.
+        if path.starts_with("~") {
+            return Err(ConfigError::HomeUnresolved {
+                path: path.to_path_buf(),
+            }
+            .into());
+        }
         return Err(ConfigError::NotFound {
             path: path.to_path_buf(),
         }

@@ -63,6 +63,78 @@ pub(crate) fn install_systemd_service(
     Ok(())
 }
 
+/// Build the `systemctl --user` argv vectors that reload the unit cache and
+/// enable+start the service. Split out so the command construction is testable
+/// without a running user systemd bus.
+#[cfg(unix)]
+pub(crate) fn systemd_start_argv() -> [Vec<&'static str>; 2] {
+    [
+        vec!["--user", "daemon-reload"],
+        vec!["--user", "enable", "--now", "cfgd.service"],
+    ]
+}
+
+/// Enable and start the just-installed systemd user service so the daemon runs
+/// immediately rather than only after the next login. Best-effort: when the
+/// user has no session systemd (no lingering, no active login session) the
+/// enable-now cannot take effect, so the failure is surfaced as a warning plus
+/// an actionable hint rather than aborting the calling init flow.
+///
+/// Returns `Ok(true)` when the service was enabled and started, `Ok(false)`
+/// when it was installed but could not be started now (the caller reports the
+/// real state instead of over-claiming `started`).
+#[cfg(unix)]
+pub(crate) fn start_systemd_service(printer: &Printer) -> Result<bool> {
+    if !crate::command_available("systemctl") {
+        printer.status_simple(
+            Role::Warn,
+            "systemctl not found — daemon installed but not started",
+        );
+        printer.hint("Start it later with: systemctl --user enable --now cfgd.service");
+        return Ok(false);
+    }
+
+    for args in systemd_start_argv() {
+        let mut cmd = std::process::Command::new("systemctl");
+        cmd.args(&args);
+        match crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT) {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                let detail = crate::stderr_lossy_trimmed(&output);
+                printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "systemctl {} failed: {}",
+                        args.join(" "),
+                        crate::output::collapse_to_subject_line(&detail)
+                    ),
+                );
+                printer.hint(
+                    "If you have no active login session, enable lingering: loginctl enable-linger $USER",
+                );
+                return Ok(false);
+            }
+            Err(e) => {
+                printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "systemctl {} failed: {}",
+                        args.join(" "),
+                        crate::output::collapse_to_subject_line(&e)
+                    ),
+                );
+                printer.hint(
+                    "If you have no active login session, enable lingering: loginctl enable-linger $USER",
+                );
+                return Ok(false);
+            }
+        }
+    }
+
+    printer.status_simple(Role::Ok, "Daemon service started");
+    Ok(true)
+}
+
 #[cfg(unix)]
 pub(crate) fn uninstall_systemd_service() -> Result<()> {
     let home = crate::expand_tilde(Path::new("~"));
@@ -124,6 +196,13 @@ mod tests {
         assert!(unit.contains("Restart=on-failure"));
         assert!(unit.contains("WantedBy=default.target"));
         assert!(!unit.contains("--profile"));
+    }
+
+    #[test]
+    fn systemd_start_argv_reloads_then_enables_now() {
+        let [reload, enable] = systemd_start_argv();
+        assert_eq!(reload, ["--user", "daemon-reload"]);
+        assert_eq!(enable, ["--user", "enable", "--now", "cfgd.service"]);
     }
 
     #[test]

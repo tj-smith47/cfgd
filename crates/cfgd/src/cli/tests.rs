@@ -3770,6 +3770,75 @@ fn cmd_apply_from_flag_parses() {
 }
 
 #[test]
+#[serial_test::serial]
+fn run_apply_home_unset_errors_and_creates_no_state() {
+    use cfgd_core::test_helpers::EnvVarGuard;
+
+    // Resolve home through neither a thread-local override nor HOME: config
+    // discovery must then surface a clean error and no state.db may be created.
+    let _home = EnvVarGuard::unset("HOME");
+    let _xdg_cfg = EnvVarGuard::unset("XDG_CONFIG_HOME");
+    let _xdg_data = EnvVarGuard::unset("XDG_DATA_HOME");
+    let _state_env = EnvVarGuard::unset("CFGD_STATE_DIR");
+
+    // The default config path keeps a literal `~` once home cannot be resolved.
+    let config = super::default_config_file();
+    assert!(
+        config.starts_with("~"),
+        "with HOME unset the default config path stays literal `~`, got: {}",
+        config.display()
+    );
+
+    let cli = Cli {
+        config: config.clone(),
+        profile: None,
+        no_color: true,
+        verbose: 0,
+        quiet: true,
+        output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+        jsonpath: None,
+        state_dir: None,
+        command: Some(Command::Status {
+            module: None,
+            exit_code: false,
+        }),
+    };
+    let printer = test_printer();
+    let args = ApplyArgs {
+        from: None,
+        dry_run: false,
+        phase: None,
+        yes: true,
+        skip: vec![],
+        only: vec![],
+        module: None,
+        skip_scripts: false,
+        context: "apply".to_string(),
+        shell: None,
+    };
+
+    let err = super::apply::run_apply(&cli, &printer, &args)
+        .expect_err("apply with no resolvable home must error before any side-effect");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("HOME") || msg.contains("config"),
+        "error must name the missing config / unresolved HOME, got: {msg}"
+    );
+    // No actionable advice can come from a literal `~` — it must not leak.
+    assert!(
+        !msg.trim_end().ends_with('~'),
+        "error must not end on a bare, unactionable `~`: {msg}"
+    );
+
+    // State resolution shares the home policy, so the default state dir is
+    // unresolvable and no orphan state.db is created.
+    assert!(
+        cfgd_core::state::default_state_dir().is_err(),
+        "state dir must be unresolvable when home cannot be resolved"
+    );
+}
+
+#[test]
 fn cmd_apply_dry_run_with_phase_filter() {
     let h = CliTestHarness::builder().build();
     let args = ApplyArgs {

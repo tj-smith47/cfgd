@@ -86,19 +86,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
         if !target_dir.join(".git").exists() {
             clone_into(&target_dir, url, args.branch, printer)?;
         }
-        // If --theme was specified and the cloned repo has a cfgd.yaml, set the theme
-        if let Some(theme) = args.theme {
-            let config_path = target_dir.join("cfgd.yaml");
-            if config_path.exists() {
-                let mut cfg = config::load_config(&config_path)?;
-                cfg.spec.theme = Some(config::ThemeConfig {
-                    name: theme.to_string(),
-                    overrides: config::ThemeOverrides::default(),
-                });
-                let yaml = serde_yaml::to_string(&cfg)?;
-                cfgd_core::atomic_write_str(&config_path, &yaml)?;
-            }
-        }
+        apply_clone_overrides(&target_dir.join("cfgd.yaml"), args.name, args.theme)?;
     } else {
         scaffold(&target_dir, args.name, args.theme, printer)?;
     }
@@ -296,6 +284,9 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     #[cfg(windows)]
                     printer
                         .status_simple(Role::Info, "The service will start automatically on boot");
+                    // Writing the unit/plist alone leaves the daemon down; enable
+                    // and start it so the documented bootstrap actually runs it.
+                    cfgd_core::daemon::start_service(printer)?;
                 }
                 Err(e) => {
                     printer.status_simple(
@@ -339,6 +330,50 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     };
     printer.emit(doc);
 
+    Ok(())
+}
+
+/// Apply every `cfgd init` CLI override that rewrites a field of a *cloned*
+/// `cfgd.yaml`, in a single atomic read-modify-write. No-op when the cloned
+/// repo has no `cfgd.yaml` yet, or when no override flag was supplied.
+///
+/// This is the single funnel for clone-path config overrides: any future CLI
+/// flag that overrides a field of the cloned `cfgd.yaml` MUST be applied here.
+/// The scaffold (non-`--from`) path builds the file from scratch via
+/// `scaffold`, so the two branches diverge — centralizing the clone overrides
+/// here prevents a new flag from silently regressing on the clone path (the
+/// way `--name` once did).
+///
+/// The override set is exactly `{name → metadata.name, theme → spec.theme}`.
+/// Every other `Init` flag is intentionally absent: `apply` / `apply_profile`
+/// / `apply_module` / `dry_run` / `yes` / `install_daemon` are behavioral and
+/// run identically on both the clone and scaffold paths; `branch` / `from` /
+/// `path` are clone mechanics, not config fields. None of them rewrite the
+/// cloned `cfgd.yaml`.
+fn apply_clone_overrides(
+    config_path: &Path,
+    name: Option<&str>,
+    theme: Option<&str>,
+) -> anyhow::Result<()> {
+    if name.is_none() && theme.is_none() {
+        return Ok(());
+    }
+    if !config_path.exists() {
+        return Ok(());
+    }
+
+    let mut cfg = config::load_config(config_path)?;
+    if let Some(name) = name {
+        cfg.metadata.name = name.to_string();
+    }
+    if let Some(theme) = theme {
+        cfg.spec.theme = Some(config::ThemeConfig {
+            name: theme.to_string(),
+            overrides: config::ThemeOverrides::default(),
+        });
+    }
+    let yaml = serde_yaml::to_string(&cfg)?;
+    cfgd_core::atomic_write_str(config_path, &yaml)?;
     Ok(())
 }
 

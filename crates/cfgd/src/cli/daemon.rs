@@ -186,6 +186,12 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
         return Err(e.into());
     }
 
+    // Writing the unit/plist alone leaves the daemon down; enable and start it
+    // so `cfgd daemon install` actually runs the service. Degrades to a warning
+    // plus hint (lingering / GUI login) when the session cannot host it, in which
+    // case `started` reports false so `-o json` consumers see the real state.
+    let started = cfgd_core::daemon::start_service(printer)?;
+
     #[cfg(windows)]
     let payload = {
         let event_log_on = cfgd_core::config::load_config(&cli.config)
@@ -197,7 +203,7 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
             platform: "windows".to_string(),
             service: "cfgd".to_string(),
             path: "%LOCALAPPDATA%\\cfgd\\daemon.log".to_string(),
-            started: true,
+            started,
             windows_event_log: Some(event_log_on),
         }
     };
@@ -208,7 +214,7 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
             platform: "macos".to_string(),
             service: "com.cfgd.daemon".to_string(),
             path: "~/Library/LaunchAgents/com.cfgd.daemon.plist".to_string(),
-            started: false,
+            started,
             windows_event_log: None,
         }
     } else {
@@ -216,7 +222,7 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
             platform: "linux".to_string(),
             service: "cfgd.service".to_string(),
             path: "~/.config/systemd/user/cfgd.service".to_string(),
-            started: false,
+            started,
             windows_event_log: None,
         }
     };
@@ -249,29 +255,31 @@ pub fn build_daemon_install_doc(payload: &DaemonInstallOutput) -> Doc {
             }
         }
         "macos" => {
-            doc = doc
-                .status(
-                    Role::Ok,
-                    format!("Installed launchd service: {}", payload.service),
-                )
-                .status(
+            doc = doc.status(
+                Role::Ok,
+                format!("Installed launchd service: {}", payload.service),
+            );
+            if !payload.started {
+                doc = doc.status(
                     Role::Info,
                     format!("Load with: launchctl load {}", payload.path),
                 );
+            }
         }
         _ => {
-            doc = doc
-                .status(
-                    Role::Ok,
-                    format!("Installed systemd user service: {}", payload.service),
-                )
-                .status(
+            doc = doc.status(
+                Role::Ok,
+                format!("Installed systemd user service: {}", payload.service),
+            );
+            if !payload.started {
+                doc = doc.status(
                     Role::Info,
                     format!(
                         "Enable with: systemctl --user enable --now {}",
                         payload.service
                     ),
                 );
+            }
         }
     }
     doc.with_data(payload)
@@ -687,6 +695,25 @@ mod tests {
         let printer = make_printer();
         let result = cmd_daemon(&cli, &printer, Some(&DaemonCommand::Install));
         result.expect("install must succeed with user-level systemd dir");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cmd_daemon_install_reports_started_false_when_start_degrades() {
+        // The test-home override short-circuits start_service to "not started"
+        // (no real systemctl/launchctl against the runner), exercising the
+        // degraded path: the payload must report started == false rather than
+        // over-claiming a running daemon to -o json consumers.
+        let tmp_home = tempfile::tempdir().unwrap();
+        let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let cli = make_cli();
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_daemon(&cli, &printer, Some(&DaemonCommand::Install)).expect("install must succeed");
+        let json = cap.json().expect("install doc must carry JSON payload");
+        assert_eq!(
+            json["started"], false,
+            "degraded start must report started == false, got: {json}"
+        );
     }
 
     #[test]
