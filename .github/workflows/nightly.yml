@@ -7,7 +7,8 @@ on:
 
 permissions:
   contents: write
-  id-token: write # keyless cosign signing via Fulcio/OIDC
+  id-token: write # keyless cosign signing via Fulcio/OIDC + SLSA attestation OIDC
+  attestations: write # mint SLSA build provenance (attestations.enabled, subjects mode)
 
 jobs:
   nightly:
@@ -23,6 +24,9 @@ jobs:
 
       - uses: tj-smith47/anodizer-action@v1
         with:
+          # Build anodizer from the unreleased branch cfgd's config targets (as
+          # ci.yml does); drop once anodizer releases these features.
+          from-branch: publisher-required-config
           args: release --nightly --no-preflight
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
