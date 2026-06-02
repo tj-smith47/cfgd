@@ -467,9 +467,6 @@ pub enum OciError {
     #[error("module.yaml not found in {dir}")]
     ModuleYamlNotFound { dir: PathBuf },
 
-    #[error("signature required but not found for {reference}")]
-    SignatureRequired { reference: String },
-
     #[error("archive error: {message}")]
     ArchiveError { message: String },
 
