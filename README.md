@@ -220,6 +220,7 @@ In addition to publishing binaries to [GitHub Releases](https://github.com/tj-sm
 |---|---|
 | [Homebrew](https://github.com/tj-smith47/homebrew-tap) | `brew install tj-smith47/tap/cfgd` |
 | [crates.io](https://crates.io/crates/cfgd) | `cargo install cfgd` |
+| [AUR](https://aur.archlinux.org/packages/cfgd) | `yay -S cfgd` (Arch Linux; builds from source) |
 | [GHCR](https://ghcr.io/tj-smith47) | Docker images: `cfgd`, `cfgd-operator`, `cfgd-csi` |
 | [Helm](chart/cfgd/) | `helm install cfgd oci://ghcr.io/tj-smith47/charts/cfgd` |
 | [Krew](manifests/krew/) | `kubectl krew install cfgd` — the [kubectl plugin](docs/operator.md) for debugging nodes, exec'ing into agent pods, and inspecting fleet status |

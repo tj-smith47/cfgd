@@ -37,6 +37,23 @@ cargo install cfgd
 Useful when no pre-built binary exists for your platform, or when you want a
 debug-symbol-stripped release-mode build compiled against your local toolchain.
 
+### AUR (Arch Linux)
+
+cfgd is published to the [AUR](https://aur.archlinux.org/packages/cfgd) as a
+source package — it compiles from source on install (the `rust` and `cargo`
+build dependencies are pulled in automatically). Use any AUR helper:
+
+```sh
+yay -S cfgd      # or: paru -S cfgd
+```
+
+Or build it by hand:
+
+```sh
+git clone https://aur.archlinux.org/cfgd.git
+cd cfgd && makepkg -si
+```
+
 ### Direct download
 
 Download the platform-specific archive from
