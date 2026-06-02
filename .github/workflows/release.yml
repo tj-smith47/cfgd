@@ -15,7 +15,8 @@ on:
 permissions:
   contents: write
   packages: write
-  id-token: write # MCP registry publish via github-oidc auth
+  id-token: write # MCP registry publish via github-oidc auth; also OIDC for SLSA attestation
+  attestations: write # mint SLSA build provenance (attestations.enabled, subjects mode)
 
 concurrency:
   group: release-${{ github.repository }}
@@ -349,7 +350,7 @@ jobs:
         run: |
           VERSION="${{ fromJson(needs.tag.outputs.versions).cfgd }}"
           ./crossplane --verbose xpkg push \
-            --package-files $(echo *.xpkg | tr ' ' ,) \
+            --package-files "$(echo *.xpkg | tr ' ' ,)" \
             ghcr.io/${{ github.repository_owner }}/function-cfgd:v${VERSION}
 
   # --- OLM bundle publish ---

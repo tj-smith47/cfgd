@@ -252,8 +252,12 @@ impl From<OutputFormatArg> for clap::builder::OsStr {
     about = "Declarative, GitOps-style machine configuration"
 )]
 pub struct Cli {
-    /// Path to config file
-    #[arg(long, global = true, default_value_os_t = default_config_file(), env = "CFGD_CONFIG")]
+    /// Path to config file [default: ~/.config/cfgd/cfgd.yaml]
+    // `hide_default_value` keeps the resolved absolute path out of `--help`
+    // and the generated man page: the man page is built on a release runner
+    // whose $HOME differs from the user's, so a rendered default would point
+    // at the runner's path. The doc comment carries the portable default.
+    #[arg(long, global = true, default_value_os_t = default_config_file(), hide_default_value = true, env = "CFGD_CONFIG")]
     pub config: PathBuf,
 
     /// Profile to use (overrides config file)
@@ -683,6 +687,12 @@ pub enum Command {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+
+    /// Generate a man page
+    #[command(
+        long_about = "Emit a roff(7) man page for cfgd on stdout.\n\nExamples:\n  cfgd man > cfgd.1 && man ./cfgd.1\n  cfgd man > /usr/local/share/man/man1/cfgd.1"
+    )]
+    Man,
 
     /// AI-guided configuration generation
     #[command(
@@ -1793,6 +1803,10 @@ pub fn execute(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resul
         ),
         Command::Completion { shell } => {
             clap_complete::generate(*shell, &mut Cli::command(), "cfgd", &mut std::io::stdout());
+            Ok(())
+        }
+        Command::Man => {
+            clap_mangen::Man::new(Cli::command()).render(&mut std::io::stdout())?;
             Ok(())
         }
         Command::Generate(args) => generate::cmd_generate(cli, printer, args),

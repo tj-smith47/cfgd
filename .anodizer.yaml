@@ -172,6 +172,16 @@ workspaces:
             files:
               - LICENSE
               - README.md
+            # Generated once on the host binary (shell-/arch-agnostic) and
+            # bundled into every archive. `cfgd completion <shell>` and
+            # `cfgd man` emit to stdout; anodizer captures them to the
+            # default dst (completions/ and man/man1/). The nix publisher's
+            # extra_install consumes these from the unpacked archive.
+            completions:
+              generate: "{{ .ArtifactPath }} completion {{ .Shell }}"
+              shells: [bash, zsh, fish, powershell]
+            manpages:
+              generate: "{{ .ArtifactPath }} man"
         checksum:
           name_template: "{{ ArtifactName }}.sha256"
           algorithm: sha256
@@ -251,7 +261,7 @@ workspaces:
             docs_url: "https://github.com/tj-smith47/cfgd/blob/{{ .Tag }}/docs/configuration.md"
             bug_tracker_url: "https://github.com/tj-smith47/cfgd/issues"
             release_notes: "https://github.com/tj-smith47/cfgd/releases/tag/{{ .Tag }}"
-            icon_url: "https://raw.githubusercontent.com/tj-smith47/cfgd/main/.github/gear.svg"
+            icon_url: "https://raw.githubusercontent.com/tj-smith47/cfgd/master/.github/gear.svg"
             tags:
               - configuration
               - gitops
@@ -304,8 +314,12 @@ workspaces:
             skip_upload: false
             formatter: alejandra
             main_program: cfgd
+            # Install the man page + shell completions that the archive stage
+            # bundled (see the cfgd crate's archives.completions/manpages).
+            # Paths are relative to the unpacked archive root.
             extra_install: |
-              installManPage share/man/man1/cfgd.1
+              installManPage man/man1/cfgd.1
+              installShellCompletion --bash completions/cfgd --zsh completions/_cfgd --fish completions/cfgd.fish
             post_install: |
               echo "Installed cfgd. Run 'cfgd init' to scaffold a config."
             commit_msg_template: "cfgd {{ .Tag }}"
@@ -317,18 +331,26 @@ workspaces:
             repository:
               owner: tj-smith47
               name: krew-index
+            # Describes the kubectl-cfgd plugin surface (debug/exec/inject/
+            # status in crates/cfgd/src/cli/plugin/), not the cfgd CLI: krew
+            # ships only the plugin binary.
             # <=50 chars per krew review bot guidance.
-            short_description: "Declarative GitOps machine config manager"
-            # Wrapped to 80 cols, no usage examples / subcommand enumeration.
+            short_description: "Manage cfgd modules on pods and workloads."
             description: |
-              cfgd reconciles machine state (packages, files, services, shell,
-              kernel settings, container runtimes, and Kubernetes nodes) against
-              a declarative YAML config. It detects drift and applies changes
-              safely. Inside a cluster, the kubectl plugin works with cfgd-managed
-              pods and nodes.
+              kubectl-cfgd attaches cfgd modules — portable bundles of CLI
+              tools, dotfiles, shell config, and packages — to running
+              Kubernetes workloads without rebuilding the upstream image:
+
+                kubectl cfgd inject deploy/web -m nvim:1.2  # patch template, roll out
+                kubectl cfgd debug web-xyz -m nvim:1.2      # ephemeral debug container
+                kubectl cfgd exec web-xyz -m nvim:1.2 -- nvim
+                kubectl cfgd status                         # fleet-wide module status
+
+              Modules are mounted by the cfgd CSI driver and admission webhook.
+              To declare and reconcile local machine state, install the cfgd CLI.
             # homepage derived from metadata.homepage fallback (same URL).
-            # `description` / `short_description` kept: intentional long-form
-            # krew-review copy distinct from the one-line Cargo description.
+            # `description` / `short_description` kept: plugin-specific krew-review
+            # copy, distinct from the project-wide one-line Cargo description.
             # Commit as the release engineer's GH-verified identity so CNCF
             # EasyCLA matches the PR to the signed individual CLA. Default
             # bot@anodizer.dev has no GitHub account and always fails the CLA.
@@ -429,11 +451,13 @@ workspaces:
             icon: ".github/gear.svg"
             base: core24
             summary: "Declarative, GitOps-style machine configuration management"
+            # Scope: this snap contains only the `cfgd` binary (CLI + daemon
+            # mode); the operator and CSI plugin ship as container images.
             description: |
-              cfgd is a declarative, GitOps-style machine configuration state
-              management tool.  It ships a cross-platform CLI, a long-running
-              reconciliation daemon, a Kubernetes operator, and a CSI Node
-              plugin for injecting modules into Kubernetes pods.
+              cfgd is a declarative, GitOps-style machine configuration tool.
+              You declare packages, files, secrets, and system settings in
+              version-controlled YAML; cfgd diffs desired against actual state,
+              plans, and reconciles — one-shot or continuously via its daemon.
             grade: stable
             confinement: strict
             license: MIT
@@ -618,6 +642,16 @@ changelog:
   footer: |
     _Generated by anodizer._
 
+# SLSA build-provenance. `subjects` mode (the default) writes
+# dist/attestation-subjects.json — the derived {name, sha256} set over every
+# release-uploadable artifact — which anodizer-action feeds to GitHub's
+# actions/attest-build-provenance to mint an OIDC-backed, GitHub-trusted
+# attestation. No key and no asset of our own; the workflow already grants
+# id-token: write (used for the MCP registry + keyless cosign) which the
+# attest step reuses.
+attestations:
+  enabled: true
+
 # GPG + keyless-cosign signing for checksums / source / archives.
 # Cosign signs blobs keyless (Fulcio/OIDC + Rekor) using ambient GitHub Actions
 # OIDC — no private key, no published cosign.pub. This gives consumers a
@@ -798,6 +832,22 @@ homebrew_casks:
     commit_author:
       name: "TJ Smith"
       email: "tj@jarvispro.io"
+
+# Post-publish verification gate — runs LAST, after the release exists and every
+# publisher has run. It REPORTS delivery defects (exiting non-zero so CI goes
+# red) but never undoes the published release. Self-contained in anodizer: the
+# asset check needs only the workflow's GitHub token; the install smoke-test
+# needs the runner's Docker daemon (present on the ubuntu-latest release job,
+# skipped with a notice wherever it is absent).
+verify_release:
+  enabled: true
+  # assert_assets is on by default: every produced artifact must have a matching
+  # uploaded asset on the published release, catching the partial uploads GitHub
+  # silently tolerates.
+  # Install each Linux package (deb/rpm/apk from nfpm) in a clean container and
+  # run `cfgd --version`, proving the packages install and the binary runs.
+  # Empty map = default images (debian:stable-slim / fedora:latest / alpine:latest).
+  install_smoke: {}
 
 partial:
   by: os
