@@ -215,8 +215,7 @@ pub(in crate::cli) fn build_registry_with_config_and_packages(
 
 pub(in crate::cli) fn open_state_store(state_dir: Option<&Path>) -> anyhow::Result<StateStore> {
     if let Some(dir) = state_dir {
-        std::fs::create_dir_all(dir)?;
-        Ok(StateStore::open(&dir.join("cfgd.db"))?)
+        Ok(StateStore::open_in_dir(dir)?)
     } else {
         Ok(StateStore::open_default()?)
     }

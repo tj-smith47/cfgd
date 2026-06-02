@@ -801,7 +801,7 @@ pub(super) fn init_daemon_state_with_warning(
         .unwrap_or_else(crate::state::default_state_dir);
     match dir_result {
         Ok(dir) => (
-            DaemonState::new().with_store_path(dir.join("state.db")),
+            DaemonState::new().with_store_path(dir.join(crate::state::STATE_DB_FILENAME)),
             None,
         ),
         Err(e) => {

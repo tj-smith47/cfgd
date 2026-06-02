@@ -122,7 +122,7 @@ fn source_remove_cancelled_human() {
         "main",
         100,
     );
-    let store = cfgd_core::state::StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+    let store = cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
     store
         .upsert_managed_resource("package", "brew/curl", "team-config", Some("hash1"), None)
         .unwrap();

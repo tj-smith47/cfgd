@@ -675,7 +675,16 @@ fn profile_switch_no_config_fails() {
 
     let err = cmd_profile_switch(&cli, "default", &printer).unwrap_err();
     assert!(
-        err.to_string().contains("No cfgd.yaml found"),
+        matches!(
+            err.downcast_ref::<cfgd_core::errors::CfgdError>(),
+            Some(cfgd_core::errors::CfgdError::Config(
+                cfgd_core::errors::ConfigError::NotFound { .. }
+            ))
+        ),
+        "should be typed ConfigError::NotFound, got: {err}"
+    );
+    assert!(
+        err.to_string().contains("config file not found"),
         "should mention missing config, got: {err}"
     );
 }
@@ -2757,7 +2766,7 @@ mod profile_update_module_cleanup {
         // No modules.lock — pure local-module path. The state store still
         // carries records the module deployed, so the deployed-files
         // listing + delete_module_files + remove_module_state arms run.
-        let store = cfgd_core::state::StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+        let store = cfgd_core::state::StateStore::open(&state_dir.join("state.db")).unwrap();
         let apply_id = store
             .record_apply(
                 "default",
@@ -2802,7 +2811,7 @@ mod profile_update_module_cleanup {
 
         // After the removal, both module_deployed_files and the module
         // state row should be cleared.
-        let store2 = cfgd_core::state::StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+        let store2 = cfgd_core::state::StateStore::open(&state_dir.join("state.db")).unwrap();
         let remaining = store2.module_deployed_files("statemod").unwrap();
         assert!(
             remaining.is_empty(),
@@ -2862,13 +2871,13 @@ mod profile_update_module_cleanup {
     }
 
     /// Record one apply + one deployed-file row in the state store at
-    /// `state_dir/cfgd.db`. Returns the apply_id for backup-staging tests.
+    /// `state_dir/state.db`. Returns the apply_id for backup-staging tests.
     fn record_apply_and_deployed_file(
         state_dir: &std::path::Path,
         module: &str,
         deployed_path: &std::path::Path,
     ) -> i64 {
-        let store = cfgd_core::state::StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+        let store = cfgd_core::state::StateStore::open(&state_dir.join("state.db")).unwrap();
         let apply_id = store
             .record_apply(
                 "default",
@@ -2945,7 +2954,7 @@ mod profile_update_module_cleanup {
         // Stage a backup row at the deployed path. FileState shape:
         // - content: pre-deploy bytes to restore
         // - is_symlink=false, oversized=false, content non-empty → branch B fires
-        let state = cfgd_core::state::StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+        let state = cfgd_core::state::StateStore::open(&state_dir.join("state.db")).unwrap();
         let backup_state = cfgd_core::FileState {
             content: b"original-pre-deploy-content".to_vec(),
             content_hash: "sha256:original".to_string(),
@@ -3002,7 +3011,7 @@ mod profile_update_module_cleanup {
         std::fs::write(&original_target, b"target-payload").unwrap();
 
         let apply_id = record_apply_and_deployed_file(&state_dir, "symlinkMod", &deployed_path);
-        let state = cfgd_core::state::StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+        let state = cfgd_core::state::StateStore::open(&state_dir.join("state.db")).unwrap();
         let backup_state = cfgd_core::FileState {
             content: Vec::new(),
             content_hash: String::new(),

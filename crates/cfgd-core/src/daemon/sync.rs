@@ -227,16 +227,13 @@ pub(crate) fn handle_compliance_snapshot(
     let hash = crate::sha256_hex(json.as_bytes());
 
     let store = match state_dir_override {
-        Some(d) => {
-            std::fs::create_dir_all(d).ok();
-            match StateStore::open(&d.join("cfgd.db")) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::error!(error = %e, "compliance: state store error");
-                    return;
-                }
+        Some(d) => match StateStore::open_in_dir(d) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "compliance: state store error");
+                return;
             }
-        }
+        },
         None => match StateStore::open_default() {
             Ok(s) => s,
             Err(e) => {

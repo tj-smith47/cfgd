@@ -8,13 +8,7 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::R
     let config_dir = super::config_dir(cli);
     let config_path = config_dir.join("cfgd.yaml");
     if !config_path.exists() {
-        printer.emit(cfgd_core::output::error_doc(
-            name,
-            "no_config",
-            MSG_NO_CONFIG,
-            serde_json::json!({ "configPath": cfgd_core::to_posix_string(config_path) }),
-        ));
-        anyhow::bail!("{}", MSG_NO_CONFIG);
+        return Err(no_config_error(printer, &config_path));
     }
 
     // Verify the target profile exists

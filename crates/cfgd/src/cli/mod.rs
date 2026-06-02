@@ -67,7 +67,6 @@ use cfgd_core::reconciler::{self, PhaseName, ReconcileContext, Reconciler};
 use cfgd_core::sources::SourceManager;
 use cfgd_core::state::StateStore;
 
-const MSG_NO_CONFIG: &str = "No cfgd.yaml found — run 'cfgd init' first";
 const MSG_RUN_APPLY: &str = "Run 'cfgd apply --dry-run' to preview changes, then 'cfgd apply'";
 const MSG_NOTHING_TO_DO: &str = "Nothing to do — everything is up to date";
 
@@ -1528,7 +1527,7 @@ pub fn execute(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resul
             ProfileCommand::Switch { name } => profile::cmd_profile_switch(cli, name, printer),
             ProfileCommand::Create(args) => profile::cmd_profile_create(cli, printer, args),
             ProfileCommand::Update(args) => {
-                let profile_name = resolve_profile_name(cli, args.name.as_deref())?;
+                let profile_name = resolve_profile_name(cli, printer, args.name.as_deref())?;
                 profile::cmd_profile_update(cli, printer, &profile_name, args)
             }
             ProfileCommand::Edit { name } => profile::cmd_profile_edit(cli, printer, name),

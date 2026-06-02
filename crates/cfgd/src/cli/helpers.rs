@@ -329,9 +329,27 @@ pub(in crate::cli) fn list_yaml_stems(dir: &Path) -> anyhow::Result<Vec<String>>
     Ok(names)
 }
 
+/// Emit the structured no-config error doc and return the typed `ConfigNotFound`
+/// error so every command's missing-config path exits with the same code (3) and
+/// names the path, matching plan/status/apply. `main.rs` downcasts the returned
+/// `CfgdError` to map it onto `ExitCode::NoConfig`.
+pub(in crate::cli) fn no_config_error(printer: &Printer, config_path: &Path) -> anyhow::Error {
+    printer.emit(cfgd_core::output::error_doc(
+        &config_path.display().to_string(),
+        "no_config",
+        format!("config file not found: {}", config_path.display_posix()),
+        serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
+    ));
+    cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::NotFound {
+        path: config_path.to_path_buf(),
+    })
+    .into()
+}
+
 /// Resolve profile name from explicit name or default to active profile.
 pub(in crate::cli) fn resolve_profile_name(
     cli: &Cli,
+    printer: &Printer,
     name: Option<&str>,
 ) -> anyhow::Result<String> {
     if let Some(n) = name {
@@ -340,7 +358,7 @@ pub(in crate::cli) fn resolve_profile_name(
     // Default to active profile
     let config_path = &cli.config;
     if !config_path.exists() {
-        anyhow::bail!("{}", MSG_NO_CONFIG);
+        return Err(no_config_error(printer, config_path));
     }
     let cfg = config::load_config(config_path)?;
     if let Some(ref profile_override) = cli.profile {
@@ -1055,18 +1073,32 @@ mod tests {
         // the config file need not exist.
         let tmp = tempdir().unwrap();
         let cli = make_cli(tmp.path().join("nonexistent.yaml"));
-        let name = resolve_profile_name(&cli, Some("staging")).unwrap();
+        let name = resolve_profile_name(&cli, &quiet_printer(), Some("staging")).unwrap();
         assert_eq!(name, "staging");
     }
 
     #[test]
     fn resolve_profile_name_errors_when_no_config_and_no_explicit_name() {
         let tmp = tempdir().unwrap();
-        let cli = make_cli(tmp.path().join("nonexistent.yaml"));
-        let err = resolve_profile_name(&cli, None).unwrap_err();
+        let config_path = tmp.path().join("nonexistent.yaml");
+        let cli = make_cli(config_path.clone());
+        let err = resolve_profile_name(&cli, &quiet_printer(), None).unwrap_err();
+        let cfgd_err = err
+            .downcast_ref::<cfgd_core::errors::CfgdError>()
+            .expect("typed CfgdError");
         assert!(
-            err.to_string().contains("cfgd init"),
-            "unexpected error: {err}"
+            matches!(
+                cfgd_err,
+                cfgd_core::errors::CfgdError::Config(
+                    cfgd_core::errors::ConfigError::NotFound { .. }
+                )
+            ),
+            "expected ConfigError::NotFound, got: {cfgd_err}"
+        );
+        assert!(
+            err.to_string().contains("config file not found")
+                && err.to_string().contains("nonexistent.yaml"),
+            "error should name the path: {err}"
         );
     }
 
@@ -1078,7 +1110,7 @@ mod tests {
         let mut cli = make_cli(config_path);
         cli.profile = Some("override-profile".to_string());
         // No explicit name passed → should fall through to cli.profile.
-        let name = resolve_profile_name(&cli, None).unwrap();
+        let name = resolve_profile_name(&cli, &quiet_printer(), None).unwrap();
         assert_eq!(name, "override-profile");
     }
 

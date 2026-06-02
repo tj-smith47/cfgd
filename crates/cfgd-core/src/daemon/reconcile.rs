@@ -207,16 +207,13 @@ pub(crate) fn handle_reconcile(
     let mut registry = hooks.build_registry(&cfg);
     hooks.extend_registry_custom_managers(&mut registry, &resolved.merged.packages);
     let store = match state_dir_override {
-        Some(d) => {
-            std::fs::create_dir_all(d).ok();
-            match StateStore::open(&d.join("cfgd.db")) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::error!(error = %e, "reconcile: state store error");
-                    return;
-                }
+        Some(d) => match StateStore::open_in_dir(d) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "reconcile: state store error");
+                return;
             }
-        }
+        },
         None => match StateStore::open_default() {
             Ok(s) => s,
             Err(e) => {

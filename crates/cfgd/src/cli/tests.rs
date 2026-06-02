@@ -1910,8 +1910,8 @@ fn config_show_fails_without_config() {
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("No cfgd.yaml found"),
-        "expected 'No cfgd.yaml found' error, got: {msg}"
+        msg.contains("config file not found"),
+        "expected typed no-config error, got: {msg}"
     );
 }
 
@@ -2647,7 +2647,7 @@ fn find_subcommand_index_skips_value_taking_global_flags() {
 fn resolve_profile_name_explicit_takes_precedence() {
     let dir = create_test_config_dir();
     let cli = test_cli(dir.path());
-    let result = resolve_profile_name(&cli, Some("my-profile"));
+    let result = resolve_profile_name(&cli, &test_printer(), Some("my-profile"));
     assert_eq!(result.unwrap(), "my-profile");
 }
 
@@ -2656,7 +2656,7 @@ fn resolve_profile_name_defaults_to_active() {
     let dir = create_test_config_dir();
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
     let cli = test_cli(dir.path());
-    let result = resolve_profile_name(&cli, None);
+    let result = resolve_profile_name(&cli, &test_printer(), None);
     assert_eq!(result.unwrap(), "default");
 }
 
@@ -3531,7 +3531,7 @@ fn resolve_profile_name_explicit_from_name() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let result = super::resolve_profile_name(&cli, Some("work")).unwrap();
+    let result = super::resolve_profile_name(&cli, &test_printer(), Some("work")).unwrap();
     assert_eq!(result, "work");
 }
 
@@ -3728,7 +3728,7 @@ fn cmd_apply_dry_run_empty_profile() {
     );
 
     // Dry-run should NOT create any state store records
-    let state = StateStore::open(&h.state_path().join("cfgd.db")).unwrap();
+    let state = StateStore::open(&h.state_path().join("state.db")).unwrap();
     assert!(
         state.last_apply().unwrap().is_none(),
         "dry-run should not create apply records in state store"
@@ -3936,7 +3936,7 @@ fn cmd_apply_real_with_empty_profile() {
     h.assert_header("Apply");
     h.assert_output_contains("Nothing to do");
 
-    let state = StateStore::open(&h.state_path().join("cfgd.db")).unwrap();
+    let state = StateStore::open(&h.state_path().join("state.db")).unwrap();
     assert!(
         state.last_apply().unwrap().is_none(),
         "empty profile apply should not create apply records (nothing to do)"
@@ -6347,7 +6347,7 @@ fn open_state_store_creates_dir() {
     );
     assert!(subdir.exists(), "nested state directory should be created");
     assert!(
-        subdir.join("cfgd.db").exists(),
+        subdir.join("state.db").exists(),
         "DB file should exist in the created directory"
     );
 }
@@ -7541,7 +7541,12 @@ fn module_registry_add_no_config() {
         None,
     );
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("config file not found")
+    );
 }
 
 #[test]
@@ -7658,8 +7663,8 @@ fn module_registry_remove_no_config() {
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("No cfgd.yaml found"),
-        "expected 'No cfgd.yaml found' error, got: {msg}"
+        msg.contains("config file not found"),
+        "expected typed no-config error, got: {msg}"
     );
 }
 
@@ -7950,8 +7955,8 @@ fn module_registry_rename_no_config() {
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("No cfgd.yaml found"),
-        "expected 'No cfgd.yaml found' error, got: {msg}"
+        msg.contains("config file not found"),
+        "expected typed no-config error, got: {msg}"
     );
 }
 
@@ -8780,7 +8785,12 @@ fn cmd_config_set_no_config_errors() {
 
     let result = super::config_cmd::cmd_config_set(&cli, &printer, "profile", "work");
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("config file not found")
+    );
 }
 
 #[test]
@@ -8794,7 +8804,12 @@ fn cmd_config_unset_no_config_errors() {
 
     let result = super::config_cmd::cmd_config_unset(&cli, &printer, "profile");
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("config file not found")
+    );
 }
 
 // --- source::cmd_source_list with sources configured ---
@@ -10314,7 +10329,7 @@ fn cmd_apply_dry_run_with_skip_and_only() {
     );
 
     // Dry-run should NOT create any state store records
-    let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+    let state = StateStore::open(&state_dir.path().join("state.db")).unwrap();
     assert!(
         state.last_apply().unwrap().is_none(),
         "dry-run with skip+only filters should not create apply records"
@@ -10435,7 +10450,12 @@ fn cmd_config_show_no_config_fails() {
 
     let result = super::config_cmd::cmd_config_show(&cli, &test_printer());
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("config file not found")
+    );
 }
 
 // --- config_cmd::cmd_config_get ---
@@ -10516,7 +10536,12 @@ fn cmd_config_get_no_config_fails() {
 
     let result = super::config_cmd::cmd_config_get(&cli, &printer, "profile");
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("No cfgd.yaml"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("config file not found")
+    );
 }
 
 // --- config_cmd::cmd_config_set ---
@@ -10548,8 +10573,8 @@ fn cmd_config_set_no_config_fails() {
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("No cfgd.yaml found"),
-        "expected 'No cfgd.yaml found' error, got: {msg}"
+        msg.contains("config file not found"),
+        "expected typed no-config error, got: {msg}"
     );
 }
 
@@ -10576,8 +10601,8 @@ fn cmd_config_unset_no_config_fails() {
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("No cfgd.yaml found"),
-        "expected 'No cfgd.yaml found' error, got: {msg}"
+        msg.contains("config file not found"),
+        "expected typed no-config error, got: {msg}"
     );
 }
 
@@ -10788,7 +10813,7 @@ fn cmd_apply_real_records_state() {
     };
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
 
-    let state = StateStore::open(&h.state_path().join("cfgd.db")).unwrap();
+    let state = StateStore::open(&h.state_path().join("state.db")).unwrap();
     let last = state.last_apply().unwrap();
     assert!(last.is_some(), "should have recorded an apply in state");
     let record = last.unwrap();
@@ -11236,7 +11261,7 @@ fn cmd_source_remove_with_keep_all_transfers_resources_to_local_management() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let store = cfgd_core::state::StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+    let store = cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
     store
         .upsert_managed_resource(
             "file",
@@ -11259,7 +11284,7 @@ fn cmd_source_remove_with_keep_all_transfers_resources_to_local_management() {
     );
 
     // Resource row now claims source="local" instead of "team-config".
-    let store2 = cfgd_core::state::StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+    let store2 = cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
     let leftovers = store2.managed_resources_by_source("team-config").unwrap();
     assert!(
         leftovers.is_empty(),
@@ -11577,11 +11602,58 @@ fn open_state_store_creates_db_file() {
         result.err()
     );
 
-    let db_path = state_dir.path().join("cfgd.db");
-    assert!(db_path.exists(), "cfgd.db file should be created");
+    let db_path = state_dir.path().join("state.db");
+    assert!(db_path.exists(), "state.db file should be created");
     assert!(
         std::fs::metadata(&db_path).unwrap().len() > 0,
-        "cfgd.db should not be empty"
+        "state.db should not be empty"
+    );
+}
+
+/// Regression: an explicit `--state-dir`/`CFGD_STATE_DIR` pointed at the
+/// platform default dir must open the SAME db file the default path would,
+/// not a sibling. Both resolve `state.db`, and exactly one `*.db` is created.
+#[test]
+#[serial_test::serial(default_state_store)]
+fn open_state_store_override_matches_default_filename() {
+    use cfgd_core::test_helpers::EnvVarGuard;
+
+    let dir = tempfile::tempdir().unwrap();
+    let _state_env = EnvVarGuard::set("CFGD_STATE_DIR", dir.path().to_str().unwrap());
+
+    // The default path honors CFGD_STATE_DIR; the override path is handed the
+    // same dir. They must land on identical basenames.
+    let from_override = super::open_state_store(Some(dir.path()));
+    assert!(
+        from_override.is_ok(),
+        "override open failed: {:?}",
+        from_override.err()
+    );
+    drop(from_override);
+    let from_default = super::open_state_store(None);
+    assert!(
+        from_default.is_ok(),
+        "default open failed: {:?}",
+        from_default.err()
+    );
+
+    assert!(
+        dir.path().join("state.db").exists(),
+        "both paths resolve state.db"
+    );
+    assert!(
+        !dir.path().join("cfgd.db").exists(),
+        "no divergent cfgd.db sibling should be created"
+    );
+    let dbs: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "db"))
+        .collect();
+    assert_eq!(
+        dbs.len(),
+        1,
+        "exactly one *.db file should be created, found: {dbs:?}"
     );
 }
 
@@ -11595,10 +11667,18 @@ fn cmd_module_search_no_config_fails() {
 
     let result = module::cmd_module_search(&cli, &printer, "test");
     let err = result.unwrap_err();
-    let msg = err.to_string();
     assert!(
-        msg.contains("No config found"),
-        "expected 'No config found' error, got: {msg}"
+        matches!(
+            err.downcast_ref::<cfgd_core::errors::CfgdError>(),
+            Some(cfgd_core::errors::CfgdError::Config(
+                cfgd_core::errors::ConfigError::NotFound { .. }
+            ))
+        ),
+        "expected typed ConfigError::NotFound, got: {err}"
+    );
+    assert!(
+        err.to_string().contains("config file not found"),
+        "expected typed no-config error, got: {err}"
     );
 }
 
@@ -11706,8 +11786,8 @@ fn cmd_module_add_from_registry_no_config_fails() {
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("No cfgd.yaml found"),
-        "expected 'No cfgd.yaml found' error, got: {msg}"
+        msg.contains("config file not found"),
+        "expected typed no-config error, got: {msg}"
     );
 }
 
@@ -11861,7 +11941,7 @@ fn cmd_config_edit_no_config_fails() {
     let printer = test_printer();
     let result = super::config_cmd::cmd_config_edit(&cli, &printer);
     assert!(result.is_err());
-    assert_error_contains(&result, "No cfgd.yaml");
+    assert_error_contains(&result, "config file not found");
 }
 
 #[test]
@@ -13659,7 +13739,7 @@ fn cmd_config_show_missing_file_errors() {
         result
             .unwrap_err()
             .to_string()
-            .contains("No cfgd.yaml found"),
+            .contains("config file not found"),
         "should report missing config"
     );
 }
@@ -17136,7 +17216,7 @@ mod cmd_source_add_local {
 
             // The state store should now have a row recording the source.
             let store =
-                cfgd_core::state::StateStore::open(&h.state_path().join("cfgd.db")).unwrap();
+                cfgd_core::state::StateStore::open(&h.state_path().join("state.db")).unwrap();
             let sources = store.config_sources().unwrap();
             assert!(
                 sources.iter().any(|s| s.name == "upd-src"),
@@ -17426,7 +17506,7 @@ mod cmd_source_add_local {
 
             // The status update arm should have flipped the row to 'error'.
             let store =
-                cfgd_core::state::StateStore::open(&h.state_path().join("cfgd.db")).unwrap();
+                cfgd_core::state::StateStore::open(&h.state_path().join("state.db")).unwrap();
             let sources = store.config_sources().unwrap();
             let row = sources
                 .iter()

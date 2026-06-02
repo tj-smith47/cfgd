@@ -30,13 +30,7 @@ pub fn cmd_module_add_from_registry(
 
     // Load config to find the registry
     if !cli.config.exists() {
-        printer.emit(cfgd_core::output::error_doc(
-            reference,
-            "no_config",
-            MSG_NO_CONFIG.to_string(),
-            serde_json::json!({}),
-        ));
-        anyhow::bail!("{}", MSG_NO_CONFIG);
+        return Err(no_config_error(printer, &cli.config));
     }
     let cfg = config::load_config(&cli.config)?;
 
@@ -574,13 +568,7 @@ pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::R
     let lib_printer = null_lib_printer();
 
     if !cli.config.exists() {
-        printer.emit(cfgd_core::output::error_doc(
-            query,
-            "no_config",
-            "No config found — add module registries to cfgd.yaml first".to_string(),
-            serde_json::json!({}),
-        ));
-        anyhow::bail!("No config found — add module registries to cfgd.yaml first");
+        return Err(no_config_error(printer, &cli.config));
     }
 
     let cfg = config::load_config(&cli.config)?;
@@ -689,13 +677,7 @@ pub fn cmd_module_registry_add(
     };
 
     if !cli.config.exists() {
-        printer.emit(cfgd_core::output::error_doc(
-            &registry_name,
-            "no_config",
-            MSG_NO_CONFIG.to_string(),
-            serde_json::json!({}),
-        ));
-        anyhow::bail!("{}", MSG_NO_CONFIG);
+        return Err(no_config_error(printer, &cli.config));
     }
 
     let new_entry = serde_yaml::to_value(cfgd_core::config::ModuleRegistryEntry {
@@ -772,13 +754,7 @@ pub fn cmd_module_registry_remove(cli: &Cli, printer: &Printer, name: &str) -> a
     printer.heading("Remove Module Registry");
 
     if !cli.config.exists() {
-        printer.emit(cfgd_core::output::error_doc(
-            name,
-            "no_config",
-            MSG_NO_CONFIG.to_string(),
-            serde_json::json!({}),
-        ));
-        anyhow::bail!("{}", MSG_NO_CONFIG);
+        return Err(no_config_error(printer, &cli.config));
     }
 
     let mut outcome = RegistryRemoveOutcome::NoRegistries;
@@ -883,13 +859,7 @@ pub fn cmd_module_registry_rename(
     new_name: &str,
 ) -> anyhow::Result<()> {
     if !cli.config.exists() {
-        printer.emit(cfgd_core::output::error_doc(
-            name,
-            "no_config",
-            MSG_NO_CONFIG.to_string(),
-            serde_json::json!({}),
-        ));
-        anyhow::bail!("{}", MSG_NO_CONFIG);
+        return Err(no_config_error(printer, &cli.config));
     }
 
     let cfg = config::load_config(&cli.config)?;

@@ -25,6 +25,11 @@ pub use types::{
     PendingDecision, SourceConfigHash, SourceConflictRecord,
 };
 
+/// Canonical state DB filename. The single source of truth so the default and
+/// explicit-`--state-dir`/`CFGD_STATE_DIR` paths can never diverge onto sibling
+/// files (the divergence silently read an empty DB and reported "no history").
+pub const STATE_DB_FILENAME: &str = "state.db";
+
 const MIGRATIONS: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS applies (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -199,12 +204,17 @@ impl StateStore {
     /// Open or create a state store at the default location.
     /// Uses `~/.local/share/cfgd/state.db`.
     pub fn open_default() -> Result<Self> {
-        let data_dir = default_state_dir()?;
-        std::fs::create_dir_all(&data_dir).map_err(|_| StateError::DirectoryNotWritable {
-            path: data_dir.clone(),
+        Self::open_in_dir(&default_state_dir()?)
+    }
+
+    /// Open or create the canonical [`STATE_DB_FILENAME`] DB inside `dir`,
+    /// creating the directory if needed. Every state-dir override resolves the
+    /// DB through here so it cannot drift from the default-location filename.
+    pub fn open_in_dir(dir: &Path) -> Result<Self> {
+        std::fs::create_dir_all(dir).map_err(|_| StateError::DirectoryNotWritable {
+            path: dir.to_path_buf(),
         })?;
-        let db_path = data_dir.join("state.db");
-        Self::open(&db_path)
+        Self::open(&dir.join(STATE_DB_FILENAME))
     }
 
     /// Open or create a state store at the given path.

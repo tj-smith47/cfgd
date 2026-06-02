@@ -5244,7 +5244,7 @@ async fn handle_reconcile_with_valid_config_records_drift_events() {
     .unwrap();
 
     // Verify drift events were recorded in the state store
-    let store = StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+    let store = StateStore::open(&state_dir.join("state.db")).unwrap();
     let drift_events = store.unresolved_drift().unwrap();
     assert!(
         !drift_events.is_empty(),
@@ -5346,7 +5346,7 @@ async fn handle_reconcile_notify_only_drift_policy_does_not_apply() {
     .unwrap();
 
     // Drift should be recorded
-    let store = StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+    let store = StateStore::open(&state_dir.join("state.db")).unwrap();
     let drift_events = store.unresolved_drift().unwrap();
     assert!(
         !drift_events.is_empty(),
@@ -5430,7 +5430,7 @@ async fn handle_reconcile_no_drift_when_no_actions() {
     .unwrap();
 
     // No drift events should have been recorded
-    let store = StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+    let store = StateStore::open(&state_dir.join("state.db")).unwrap();
     let drift_events = store.unresolved_drift().unwrap();
     assert!(
         drift_events.is_empty(),
@@ -5588,7 +5588,7 @@ async fn handle_reconcile_multiple_actions_records_all_drift() {
     .await
     .unwrap();
 
-    let store = StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+    let store = StateStore::open(&state_dir.join("state.db")).unwrap();
     let drift_events = store.unresolved_drift().unwrap();
     // Should have drift events for all actions:
     // 1 file create + 2 package install actions = 3 drift events
@@ -5769,7 +5769,7 @@ async fn handle_reconcile_auto_policy_apply_failure_notifies() {
     // Target never created — apply failed.
     assert!(!target.exists(), "apply should have failed to copy");
     // Drift recorded regardless.
-    let store = StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+    let store = StateStore::open(&state_dir.join("state.db")).unwrap();
     let drift_events = store.unresolved_drift().unwrap();
     assert!(!drift_events.is_empty());
     let guard = state.lock().await;
@@ -5949,7 +5949,7 @@ async fn handle_reconcile_notify_only_with_notify_on_drift_sends_notification() 
 
     // Drift event recorded. notify ran (stdout notifier just traces; we assert
     // the call path was reached by checking the drift bookkeeping side-effects).
-    let store = StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+    let store = StateStore::open(&state_dir.join("state.db")).unwrap();
     let drift_events = store.unresolved_drift().unwrap();
     assert!(!drift_events.is_empty());
     let guard = state.lock().await;
@@ -8507,7 +8507,7 @@ mod harness {
 
         // Snapshot row was written to the override DB.
         let store =
-            crate::state::StateStore::open(&state_dir.join("cfgd.db")).expect("override db");
+            crate::state::StateStore::open(&state_dir.join("state.db")).expect("override db");
         let hash = store
             .latest_compliance_hash()
             .expect("hash query")
@@ -8543,7 +8543,7 @@ mod harness {
 
         // No snapshot stored because config load failed.
         let store =
-            crate::state::StateStore::open(&state_dir.join("cfgd.db")).expect("override db");
+            crate::state::StateStore::open(&state_dir.join("state.db")).expect("override db");
         let hash = store.latest_compliance_hash().expect("hash query");
         assert!(hash.is_none());
     }
@@ -8585,7 +8585,7 @@ mod harness {
 
         // No snapshot stored because resolve_profile failed.
         let store =
-            crate::state::StateStore::open(&state_dir.join("cfgd.db")).expect("override db");
+            crate::state::StateStore::open(&state_dir.join("state.db")).expect("override db");
         let hash = store.latest_compliance_hash().expect("hash query");
         assert!(
             hash.is_none(),
@@ -8626,7 +8626,7 @@ mod harness {
         );
 
         let store =
-            crate::state::StateStore::open(&state_dir.join("cfgd.db")).expect("override db");
+            crate::state::StateStore::open(&state_dir.join("state.db")).expect("override db");
         let hash = store.latest_compliance_hash().expect("hash query");
         assert!(hash.is_none());
     }
@@ -9118,15 +9118,19 @@ mod harness {
             .expect("daemon join");
         assert!(result.is_ok(), "daemon Ok, got {:?}", result);
         // The state dir override is honored; a state.db should now exist
-        // (handle_reconcile opens the store via state_dir_override).
-        let store = tmp.path().join("cfgd.db");
-        // Either the reconcile-driven path or the daemon-startup path may
-        // create it; tolerate either name (the override-side handler uses
-        // `cfgd.db` while the production-default uses `state.db`).
+        // (handle_reconcile opens the store via state_dir_override). Both the
+        // override and the production-default paths resolve the same canonical
+        // filename, so no sibling `cfgd.db` is ever created.
+        let store = tmp.path().join(crate::state::STATE_DB_FILENAME);
         assert!(
-            store.exists() || tmp.path().join("state.db").exists(),
-            "expected a state DB under {}",
+            store.exists(),
+            "expected {} under {}",
+            crate::state::STATE_DB_FILENAME,
             tmp.path().display()
+        );
+        assert!(
+            !tmp.path().join("cfgd.db").exists(),
+            "no divergent cfgd.db sibling should be created"
         );
     }
 
@@ -10289,7 +10293,7 @@ async fn handle_reconcile_auto_apply_with_sources_processes_decisions_and_resolv
     // Pre-stage a pending decision for a source that's NOT in the config —
     // the auto-resolve loop at 226-238 should flip it to "rejected".
     {
-        let store = StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+        let store = StateStore::open(&state_dir.join("state.db")).unwrap();
         store
             .upsert_pending_decision(
                 "removed-src",
@@ -10328,7 +10332,7 @@ async fn handle_reconcile_auto_apply_with_sources_processes_decisions_and_resolv
     }
 
     // The removed-src pending decision should now be rejected.
-    let store = StateStore::open(&state_dir.join("cfgd.db")).unwrap();
+    let store = StateStore::open(&state_dir.join("state.db")).unwrap();
     let pending = store.pending_decisions().unwrap();
     assert!(
         pending.iter().all(|d| d.source != "removed-src"),

@@ -167,11 +167,11 @@ pub fn empty_profile_setup() -> (tempfile::TempDir, tempfile::TempDir) {
 pub fn state_with_pending_decision_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
     let (config_dir, state_dir, target) = tiny_profile_setup();
 
-    // `cmd_plan` opens the state DB at `<state_dir>/cfgd.db` via
+    // `cmd_plan` opens the state DB at `<state_dir>/state.db` via
     // `open_state_store`; record the pending decision against the same path so
     // the subsequent `pending_decisions()` query inside `display_plan_preview`
     // sees it.
-    let store = cfgd_core::state::StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+    let store = cfgd_core::state::StateStore::open(&state_dir.path().join("state.db")).unwrap();
     store
         .upsert_pending_decision(
             "team-config",
@@ -438,7 +438,7 @@ pub fn rollback_state_with_backups_setup() -> (tempfile::TempDir, tempfile::Temp
     let file_path = target.display().to_string();
 
     std::fs::create_dir_all(state_dir.path()).unwrap();
-    let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+    let state = StateStore::open(&state_dir.path().join("state.db")).unwrap();
 
     // Apply 1: creates file with v1 content.
     let apply_id_1 = state
@@ -474,7 +474,7 @@ pub fn rollback_state_with_backups_setup() -> (tempfile::TempDir, tempfile::Temp
 pub fn rollback_state_no_changes_setup() -> (tempfile::TempDir, i64) {
     let state_dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(state_dir.path()).unwrap();
-    let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+    let state = StateStore::open(&state_dir.path().join("state.db")).unwrap();
     let apply_id = state
         .record_apply("test", "hash1", ApplyStatus::Success, None)
         .unwrap();
@@ -492,7 +492,7 @@ pub fn log_history_setup(
 ) -> (tempfile::TempDir, Vec<i64>) {
     let state_dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(state_dir.path()).unwrap();
-    let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+    let state = StateStore::open(&state_dir.path().join("state.db")).unwrap();
 
     let mut ids = Vec::with_capacity(rows.len());
     for (i, (profile, status, summary)) in rows.iter().enumerate() {
@@ -515,7 +515,7 @@ pub fn log_show_output_setup(
 ) -> (tempfile::TempDir, i64) {
     let state_dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(state_dir.path()).unwrap();
-    let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+    let state = StateStore::open(&state_dir.path().join("state.db")).unwrap();
 
     let apply_id = state
         .record_apply("test", "hash1", ApplyStatus::Success, None)
@@ -538,7 +538,7 @@ pub fn log_show_output_setup(
 pub fn log_show_output_no_journal_setup() -> (tempfile::TempDir, i64) {
     let state_dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(state_dir.path()).unwrap();
-    let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+    let state = StateStore::open(&state_dir.path().join("state.db")).unwrap();
 
     let apply_id = state
         .record_apply("test", "hash1", ApplyStatus::Success, None)
@@ -910,7 +910,7 @@ pub fn push_replacement_manifest_to_bare(
 pub fn rollback_state_with_non_file_actions_setup() -> (tempfile::TempDir, i64) {
     let state_dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(state_dir.path()).unwrap();
-    let state = StateStore::open(&state_dir.path().join("cfgd.db")).unwrap();
+    let state = StateStore::open(&state_dir.path().join("state.db")).unwrap();
 
     let apply_id_1 = state
         .record_apply("test", "hash1", ApplyStatus::Success, None)

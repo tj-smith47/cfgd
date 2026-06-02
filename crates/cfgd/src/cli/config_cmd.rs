@@ -76,13 +76,7 @@ pub fn build_config_show_doc(cfg: &CfgdConfig, config_path: &Path) -> Doc {
 pub fn cmd_config_show(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
-        printer.emit(cfgd_core::output::error_doc(
-            &config_path.display().to_string(),
-            "no_config",
-            MSG_NO_CONFIG.to_string(),
-            serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
-        ));
-        anyhow::bail!("{}", MSG_NO_CONFIG);
+        return Err(no_config_error(printer, config_path));
     }
 
     let cfg = match config::load_config(config_path) {
@@ -104,13 +98,7 @@ pub fn cmd_config_show(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 pub fn cmd_config_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
-        printer.emit(cfgd_core::output::error_doc(
-            &config_path.display().to_string(),
-            "no_config",
-            MSG_NO_CONFIG.to_string(),
-            serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
-        ));
-        anyhow::bail!("{}", MSG_NO_CONFIG);
+        return Err(no_config_error(printer, config_path));
     }
 
     open_in_editor(config_path, printer)?;
@@ -262,13 +250,7 @@ pub(super) fn parse_yaml_value(s: &str) -> serde_yaml::Value {
 pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
-        printer.emit(cfgd_core::output::error_doc(
-            key,
-            "no_config",
-            MSG_NO_CONFIG.to_string(),
-            serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
-        ));
-        anyhow::bail!("{}", MSG_NO_CONFIG);
+        return Err(no_config_error(printer, config_path));
     }
 
     let contents = std::fs::read_to_string(config_path)?;
@@ -348,13 +330,7 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
 pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
-        printer.emit(cfgd_core::output::error_doc(
-            key,
-            "no_config",
-            MSG_NO_CONFIG.to_string(),
-            serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
-        ));
-        anyhow::bail!("{}", MSG_NO_CONFIG);
+        return Err(no_config_error(printer, config_path));
     }
 
     let parsed_value = parse_yaml_value(value);
@@ -403,13 +379,7 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
 pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result<()> {
     let config_path = &cli.config;
     if !config_path.exists() {
-        printer.emit(cfgd_core::output::error_doc(
-            key,
-            "no_config",
-            MSG_NO_CONFIG.to_string(),
-            serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
-        ));
-        anyhow::bail!("{}", MSG_NO_CONFIG);
+        return Err(no_config_error(printer, config_path));
     }
 
     let mut previous: serde_json::Value = serde_json::Value::Null;
@@ -488,6 +458,31 @@ mod tests {
             state_dir: None,
             command: None,
         }
+    }
+
+    /// Assert a config-command error follows the no-config contract: it
+    /// downcasts to the typed `ConfigError::NotFound` (so `exit_code_for_error`
+    /// maps it to `NoConfig` = 3) and its message names the missing path.
+    fn assert_no_config_error(err: &anyhow::Error, expected_path: &std::path::Path) {
+        let cfgd_err = err
+            .downcast_ref::<cfgd_core::errors::CfgdError>()
+            .expect("typed CfgdError");
+        assert!(
+            matches!(
+                cfgd_err,
+                cfgd_core::errors::CfgdError::Config(
+                    cfgd_core::errors::ConfigError::NotFound { .. }
+                )
+            ),
+            "expected ConfigError::NotFound, got: {cfgd_err}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("config file not found"),
+            "message should match plan's wording: {msg}"
+        );
+        let name = expected_path.file_name().unwrap().to_string_lossy();
+        assert!(msg.contains(&*name), "message should name the path: {msg}");
     }
 
     /// Minimal valid `Config` kind YAML that load_config will accept.
@@ -611,11 +606,12 @@ spec:
     #[test]
     fn cmd_config_show_missing_file_bails_with_no_config_msg() {
         let dir = tempfile::tempdir().unwrap();
-        let cli = test_cli_for(dir.path().join("does-not-exist.yaml"));
+        let path = dir.path().join("does-not-exist.yaml");
+        let cli = test_cli_for(path.clone());
         let printer = test_printer();
 
         let err = cmd_config_show(&cli, &printer).unwrap_err();
-        assert_eq!(err.to_string(), MSG_NO_CONFIG);
+        assert_no_config_error(&err, &path);
     }
 
     #[test]
@@ -660,11 +656,12 @@ spec:
     #[test]
     fn cmd_config_get_missing_file_bails_with_no_config_msg() {
         let dir = tempfile::tempdir().unwrap();
-        let cli = test_cli_for(dir.path().join("does-not-exist.yaml"));
+        let path = dir.path().join("does-not-exist.yaml");
+        let cli = test_cli_for(path.clone());
         let printer = test_printer();
 
         let err = cmd_config_get(&cli, &printer, "profile").unwrap_err();
-        assert_eq!(err.to_string(), MSG_NO_CONFIG);
+        assert_no_config_error(&err, &path);
     }
 
     #[test]
@@ -744,11 +741,12 @@ spec:
     #[test]
     fn cmd_config_set_missing_file_bails_with_no_config_msg() {
         let dir = tempfile::tempdir().unwrap();
-        let cli = test_cli_for(dir.path().join("does-not-exist.yaml"));
+        let path = dir.path().join("does-not-exist.yaml");
+        let cli = test_cli_for(path.clone());
         let printer = test_printer();
 
         let err = cmd_config_set(&cli, &printer, "profile", "dev").unwrap_err();
-        assert_eq!(err.to_string(), MSG_NO_CONFIG);
+        assert_no_config_error(&err, &path);
     }
 
     #[test]
@@ -823,11 +821,12 @@ spec:
     #[test]
     fn cmd_config_unset_missing_file_bails_with_no_config_msg() {
         let dir = tempfile::tempdir().unwrap();
-        let cli = test_cli_for(dir.path().join("does-not-exist.yaml"));
+        let path = dir.path().join("does-not-exist.yaml");
+        let cli = test_cli_for(path.clone());
         let printer = test_printer();
 
         let err = cmd_config_unset(&cli, &printer, "profile").unwrap_err();
-        assert_eq!(err.to_string(), MSG_NO_CONFIG);
+        assert_no_config_error(&err, &path);
     }
 
     #[test]

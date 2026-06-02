@@ -26,7 +26,7 @@ fn cmd_apply_increments_apply_log_by_one() {
     let args = apply_args();
 
     // Baseline: no applies recorded.
-    let db_path = state_dir.path().join("cfgd.db");
+    let db_path = state_dir.path().join("state.db");
     {
         let state = StateStore::open(&db_path).unwrap();
         let before = state.history(100).unwrap();
