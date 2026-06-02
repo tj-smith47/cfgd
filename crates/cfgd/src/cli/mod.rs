@@ -71,7 +71,7 @@ const MSG_RUN_APPLY: &str = "Run 'cfgd apply --dry-run' to preview changes, then
 const MSG_NOTHING_TO_DO: &str = "Nothing to do — everything is up to date";
 
 fn default_config_file() -> PathBuf {
-    cfgd_core::default_config_dir().join("cfgd.yaml")
+    cfgd_core::default_config_dir().join(cfgd_core::config::CONFIG_FILENAME)
 }
 
 /// No built-in aliases — all aliases come from cfgd.yaml spec.aliases.

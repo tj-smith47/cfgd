@@ -32,7 +32,10 @@ pub use module::{
     ModulePackageEntry, ModuleRegistryEntry, ModuleSpec, ScriptEntry, ScriptShell, parse_module,
 };
 pub use origin::{OriginSpec, OriginType, SshHostKeyPolicy};
-pub use parse::{load_config, load_profile, parse_config, parse_config_source};
+pub use parse::{
+    CONFIG_FILENAME, CONFIG_FILENAME_TOML, load_config, load_profile, parse_config,
+    parse_config_source, resolve_config_path,
+};
 pub use platform::{PlatformInfo, detect_platform, match_platform_profile, source_profile_names};
 pub use profile_spec::{
     AptSpec, BrewSpec, CargoSpec, CustomManagerSpec, EncryptionConstraint, EncryptionMode,

@@ -16,6 +16,16 @@ use super::theme::ThemeConfig;
 use crate::PathDisplayExt;
 use crate::errors::{ConfigError, Result};
 
+/// Canonical discovery filename for the root cfgd config (YAML form). The single
+/// source of truth so the CLI default and the directory-inference path can never
+/// diverge onto a sibling filename.
+pub const CONFIG_FILENAME: &str = "cfgd.yaml";
+
+/// Canonical discovery filename for the root cfgd config (TOML form). TOML is a
+/// first-class supported config form (see [`parse_config`]), so a config repo may
+/// carry `cfgd.toml` instead of [`CONFIG_FILENAME`].
+pub const CONFIG_FILENAME_TOML: &str = "cfgd.toml";
+
 /// Maximum number of YAML anchors (`&name`) allowed in a single document.
 /// Prevents billion-laughs-style anchor/alias expansion attacks (CVE-2019-11253).
 const MAX_YAML_ANCHORS: usize = 256;
@@ -104,8 +114,36 @@ pub fn parse_config_source(contents: &str) -> Result<ConfigSourceDocument> {
     Ok(doc)
 }
 
+/// Resolve a config path that may name a directory to the concrete config file
+/// inside it. A directory argument (`--config <dir>`, `CFGD_CONFIG=<dir>`, or a
+/// default that resolves to a dir) infers the conventional discovery filename:
+/// [`CONFIG_FILENAME`] if present, else [`CONFIG_FILENAME_TOML`], else falls back
+/// to the `.yaml` path so the NotFound error names a concrete file the user can
+/// create rather than the bare directory. Non-directory paths pass through
+/// unchanged.
+///
+/// Callers that derive sibling locations from the config path (e.g. the
+/// `profiles/` directory next to it) should normalize through this first so the
+/// loaded file and its derived siblings agree on a single resolved path.
+pub fn resolve_config_path(path: &Path) -> PathBuf {
+    if !path.is_dir() {
+        return path.to_path_buf();
+    }
+    let yaml = path.join(CONFIG_FILENAME);
+    if yaml.exists() {
+        return yaml;
+    }
+    let toml = path.join(CONFIG_FILENAME_TOML);
+    if toml.exists() {
+        return toml;
+    }
+    yaml
+}
+
 /// Load and parse the root cfgd.yaml config file
 pub fn load_config(path: &Path) -> Result<CfgdConfig> {
+    let resolved = resolve_config_path(path);
+    let path = resolved.as_path();
     if !path.exists() {
         // A leading `~` survived expansion only because no home directory could
         // be resolved (HOME unset on Unix, USERPROFILE/HOME unset on Windows).

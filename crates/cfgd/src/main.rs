@@ -84,7 +84,14 @@ fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("{e}"));
     }
 
-    let cli = cli::Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    let mut cli = cli::Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+
+    // A `--config <dir>` / `CFGD_CONFIG=<dir>` argument names the config directory;
+    // infer the discovery file inside it once, up front, so every downstream
+    // consumer (theme load, profiles-dir derivation, dispatch) agrees on the same
+    // resolved file rather than load_config silently inferring while config_dir()
+    // derives `profiles/` from the wrong parent.
+    cli.config = cfgd_core::config::resolve_config_path(&cli.config);
 
     // Resolve output format with --jsonpath backwards compat.
     // NOTE: --jsonpath is deprecated; --output jsonpath=EXPR is canonical.

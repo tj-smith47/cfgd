@@ -996,6 +996,54 @@ fn load_config_missing_file() {
     );
 }
 
+#[test]
+fn load_config_dir_infers_yaml() {
+    let dir = tempfile::tempdir().unwrap();
+    let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: from-yaml\nspec:\n  profile: default\n";
+    std::fs::write(dir.path().join(CONFIG_FILENAME), yaml).unwrap();
+    let cfg = load_config(dir.path()).unwrap();
+    assert_eq!(cfg.metadata.name, "from-yaml");
+}
+
+#[test]
+fn load_config_dir_infers_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let toml = "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"from-toml\"\n\n[spec]\nprofile = \"default\"\n";
+    std::fs::write(dir.path().join(CONFIG_FILENAME_TOML), toml).unwrap();
+    let cfg = load_config(dir.path()).unwrap();
+    assert_eq!(cfg.metadata.name, "from-toml");
+}
+
+#[test]
+fn load_config_dir_prefers_yaml_over_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: from-yaml\nspec:\n  profile: default\n";
+    let toml = "apiVersion = \"cfgd.io/v1alpha1\"\nkind = \"Config\"\n\n[metadata]\nname = \"from-toml\"\n\n[spec]\nprofile = \"default\"\n";
+    std::fs::write(dir.path().join(CONFIG_FILENAME), yaml).unwrap();
+    std::fs::write(dir.path().join(CONFIG_FILENAME_TOML), toml).unwrap();
+    let cfg = load_config(dir.path()).unwrap();
+    assert_eq!(cfg.metadata.name, "from-yaml");
+}
+
+#[test]
+fn load_config_empty_dir_reports_yaml_filename() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = load_config(dir.path()).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("config file not found"),
+        "expected 'config file not found' in error, got: {msg}"
+    );
+    assert!(
+        msg.ends_with(CONFIG_FILENAME) || msg.contains(&format!("/{CONFIG_FILENAME}")),
+        "expected error to name {CONFIG_FILENAME}, not the bare dir, got: {msg}"
+    );
+    assert!(
+        !msg.contains("Is a directory"),
+        "directory arg must not surface a raw OS read error, got: {msg}"
+    );
+}
+
 // --- resolve_profile deeper inheritance ---
 
 #[test]

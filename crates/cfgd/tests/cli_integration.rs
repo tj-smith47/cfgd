@@ -93,6 +93,38 @@ fn apply_dry_run_with_empty_config() {
 }
 
 #[test]
+fn config_dir_arg_infers_config_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path();
+
+    create_valid_config(config_dir);
+
+    // Pass the directory, not the file — cfgd should infer cfgd.yaml inside it.
+    Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["apply", "--dry-run"])
+        .arg("--config")
+        .arg(config_dir)
+        .assert()
+        .success();
+}
+
+#[test]
+fn config_env_var_dir_infers_config_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path();
+
+    create_valid_config(config_dir);
+
+    Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["apply", "--dry-run"])
+        .env("CFGD_CONFIG", config_dir)
+        .assert()
+        .success();
+}
+
+#[test]
 fn help_subcommand_shows_help() {
     Command::cargo_bin("cfgd")
         .unwrap()
