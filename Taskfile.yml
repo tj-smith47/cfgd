@@ -187,6 +187,14 @@ tasks:
           MODIFIED_LIST: "{{.MODIFIED_PRE}}"
       - git commit {{.CLI_ARGS}}
 
+  commit:quick:
+    desc: "Lightweight commit: commit already-staged files WITHOUT the lint/snapshot chain. Use only when the full `task commit` is blocked by an issue unrelated to the staged change AND the code gates (fmt/clippy/test/audit) were run manually. Usage: `git add <paths>` first, then `task commit:quick -- -F msg.txt` (or `-- -m 'msg'`)."
+    preconditions:
+      - sh: test -n "$(git diff --cached --name-only)"
+        msg: "Nothing staged. Stage files with `git add <path>` before running task commit:quick."
+    cmds:
+      - git commit {{.CLI_ARGS}}
+
   _commit:restage:
     internal: true
     desc: "Internal: re-stage files that were staged at task start (capture lint touchups) plus any files lint NEWLY modified (auto-generated content). Files modified-but-unstaged at task start are left untouched so they don't contaminate the commit."
