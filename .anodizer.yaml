@@ -363,7 +363,12 @@ workspaces:
             tags:
               - "{{ Version }}"
               - "v{{ Version }}"
-              - "latest"
+              # `latest` only on real releases; a rolling `nightly` tag on
+              # --nightly (Version already carries the nightly version). The
+              # IsNightly conditionals render empty in the off case and anodizer
+              # drops empty-rendered tags.
+              - "{{ if not .IsNightly }}latest{{ end }}"
+              - "{{ if .IsNightly }}nightly{{ end }}"
             platforms:
               - linux/amd64
               - linux/arm64
@@ -376,15 +381,8 @@ workspaces:
             build_args:
               VERSION: "{{ Version }}"
             sbom: true
-        docker_manifests:
-          - name_template: "ghcr.io/tj-smith47/cfgd:{{ Version }}"
-            image_templates:
-              - "ghcr.io/tj-smith47/cfgd:{{ Version }}-amd64"
-              - "ghcr.io/tj-smith47/cfgd:{{ Version }}-arm64"
-          - name_template: "ghcr.io/tj-smith47/cfgd:latest"
-            image_templates:
-              - "ghcr.io/tj-smith47/cfgd:latest-amd64"
-              - "ghcr.io/tj-smith47/cfgd:latest-arm64"
+        # No docker_manifests needed: multi-platform docker_v2 pushes a native
+        # multi-arch manifest per tag.
         docker_digest:
           name_template: "cfgd_{{ .Tag }}.digest"
         nfpm:
@@ -505,7 +503,8 @@ workspaces:
             tags:
               - "{{ Version }}"
               - "v{{ Version }}"
-              - "latest"
+              - "{{ if not .IsNightly }}latest{{ end }}"
+              - "{{ if .IsNightly }}nightly{{ end }}"
             platforms:
               - linux/amd64
               - linux/arm64
@@ -516,15 +515,8 @@ workspaces:
             build_args:
               VERSION: "{{ Version }}"
             sbom: true
-        docker_manifests:
-          - name_template: "ghcr.io/tj-smith47/cfgd-operator:{{ Version }}"
-            image_templates:
-              - "ghcr.io/tj-smith47/cfgd-operator:{{ Version }}-amd64"
-              - "ghcr.io/tj-smith47/cfgd-operator:{{ Version }}-arm64"
-          - name_template: "ghcr.io/tj-smith47/cfgd-operator:latest"
-            image_templates:
-              - "ghcr.io/tj-smith47/cfgd-operator:latest-amd64"
-              - "ghcr.io/tj-smith47/cfgd-operator:latest-arm64"
+        # No docker_manifests needed: multi-platform docker_v2 pushes a native
+        # multi-arch manifest per tag.
         docker_digest:
           name_template: "cfgd-operator_{{ .Tag }}.digest"
         release:
@@ -573,7 +565,8 @@ workspaces:
             tags:
               - "{{ Version }}"
               - "v{{ Version }}"
-              - "latest"
+              - "{{ if not .IsNightly }}latest{{ end }}"
+              - "{{ if .IsNightly }}nightly{{ end }}"
             platforms:
               - linux/amd64
               - linux/arm64
@@ -584,15 +577,8 @@ workspaces:
             build_args:
               VERSION: "{{ Version }}"
             sbom: true
-        docker_manifests:
-          - name_template: "ghcr.io/tj-smith47/cfgd-csi:{{ Version }}"
-            image_templates:
-              - "ghcr.io/tj-smith47/cfgd-csi:{{ Version }}-amd64"
-              - "ghcr.io/tj-smith47/cfgd-csi:{{ Version }}-arm64"
-          - name_template: "ghcr.io/tj-smith47/cfgd-csi:latest"
-            image_templates:
-              - "ghcr.io/tj-smith47/cfgd-csi:latest-amd64"
-              - "ghcr.io/tj-smith47/cfgd-csi:latest-arm64"
+        # No docker_manifests needed: multi-platform docker_v2 pushes a native
+        # multi-arch manifest per tag.
         docker_digest:
           name_template: "cfgd-csi_{{ .Tag }}.digest"
         release:
