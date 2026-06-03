@@ -63,17 +63,20 @@ impl PackageManager for NixManager {
     }
 
     fn installed_packages(&self) -> Result<HashSet<String>> {
-        // Try `nix profile list` first (new-style), fall back to `nix-env -q`
+        // Prefer `nix profile list --json`: the plain-text format changed to
+        // a multi-line `Key: value` block in nix 2.20+, which no line-oriented
+        // parser can reliably read; the JSON shape is stable across versions.
         if nix_available() {
-            let output = nix_cmd().args(["profile", "list"]).output().map_err(|e| {
-                PackageError::CommandFailed {
+            let output = nix_cmd()
+                .args(["profile", "list", "--json"])
+                .output()
+                .map_err(|e| PackageError::CommandFailed {
                     manager: "nix".into(),
                     source: e,
-                }
-            })?;
+                })?;
 
             if output.status.success() {
-                return Ok(parse_nix_profile_list(&String::from_utf8_lossy(
+                return Ok(parse_nix_profile_list_json(&String::from_utf8_lossy(
                     &output.stdout,
                 )));
             }
@@ -118,11 +121,17 @@ impl PackageManager for NixManager {
     fn uninstall(&self, packages: &[String], printer: &Printer) -> Result<()> {
         for pkg in packages {
             if nix_available() {
-                let label = format!("nix profile remove nixpkgs#{}", pkg);
+                // nix 2.20+ removes by profile element NAME, not by flake
+                // selector: `nix profile remove nixpkgs#<pkg>` matches nothing
+                // and exits 0 (silent no-op). cfgd installs via
+                // `nix profile install nixpkgs#<pkg>`, which names the element
+                // `<pkg>` (final attrPath segment), so the package string equals
+                // the element name.
+                let label = format!("nix profile remove {}", pkg);
                 run_pkg_cmd_live(
                     printer,
                     "nix",
-                    nix_cmd().args(["profile", "remove", &format!("nixpkgs#{}", pkg)]),
+                    nix_cmd().args(["profile", "remove", pkg]),
                     &label,
                     "uninstall",
                 )?;
@@ -166,22 +175,53 @@ impl PackageManager for NixManager {
     }
 }
 
-/// Parse `nix profile list` stdout into a `HashSet` of package names.
-/// Each line is whitespace-split — `parts[1]` is the flake ref like
-/// `nixpkgs#ripgrep`; the name after the final `#` is the package.
-/// Lines without a flake ref token (or empty lines) are dropped.
-pub(super) fn parse_nix_profile_list(stdout: &str) -> HashSet<String> {
-    stdout
-        .lines()
-        .filter(|l| !l.is_empty())
-        .filter_map(|l| {
-            let parts: Vec<&str> = l.split_whitespace().collect();
-            if parts.len() < 2 {
-                return None;
-            }
-            parts[1].rsplit('#').next().map(|s| s.to_string())
-        })
-        .collect()
+/// Parse `nix profile list --json` stdout into a `HashSet` of profile element
+/// names. Handles both JSON shapes nix has emitted: the modern (`version` 3)
+/// object form where `elements` is keyed by element name, and the legacy
+/// (`version` 1/2) array form where each entry is named from its `attrPath`'s
+/// final `.`-segment (falling back to the flake fragment after `#` in
+/// `originalUrl`/`url`). Entries that cannot be named are dropped. Returns an
+/// empty set on missing/empty/malformed JSON.
+pub(super) fn parse_nix_profile_list_json(stdout: &str) -> HashSet<String> {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(stdout) else {
+        return HashSet::new();
+    };
+    let Some(elements) = parsed.get("elements") else {
+        return HashSet::new();
+    };
+
+    if let Some(obj) = elements.as_object() {
+        return obj.keys().cloned().collect();
+    }
+
+    if let Some(arr) = elements.as_array() {
+        return arr.iter().filter_map(element_name_from_value).collect();
+    }
+
+    HashSet::new()
+}
+
+/// Derive a profile element name from a legacy (array-shape) `elements` entry.
+/// Prefers the final `.`-segment of `attrPath` (e.g.
+/// `legacyPackages.x86_64-linux.hello` → `hello`); falls back to the flake
+/// fragment after `#` in `originalUrl` then `url`. Returns `None` when neither
+/// yields a non-empty name.
+fn element_name_from_value(value: &serde_json::Value) -> Option<String> {
+    if let Some(attr) = value.get("attrPath").and_then(|v| v.as_str())
+        && let Some(last) = attr.rsplit('.').next()
+        && !last.is_empty()
+    {
+        return Some(last.to_string());
+    }
+    for key in ["originalUrl", "url"] {
+        if let Some(url) = value.get(key).and_then(|v| v.as_str())
+            && let Some((_, frag)) = url.rsplit_once('#')
+            && !frag.is_empty()
+        {
+            return Some(frag.to_string());
+        }
+    }
+    None
 }
 
 /// Parse `nix-env -q --no-name --attr-path` stdout into a `HashSet` of
@@ -346,50 +386,76 @@ mod tests {
         mgr.update(&printer).unwrap();
     }
 
-    // --- parse_nix_profile_list ---
+    // --- parse_nix_profile_list_json ---
 
     #[test]
-    fn parse_nix_profile_list_extracts_pkg_after_hash() {
-        let stdout = "0 nixpkgs#ripgrep /nix/store/abc-ripgrep-14.1.0\n\
-                      1 nixpkgs#fd /nix/store/def-fd-9.0.0\n";
-        let pkgs = parse_nix_profile_list(stdout);
+    fn parse_nix_profile_list_json_v3_object_uses_keys() {
+        // nix 2.34 (version 3): `elements` is an object keyed by element name.
+        let stdout = r#"{"elements":{"hello":{"active":true,"attrPath":"legacyPackages.x86_64-linux.hello","originalUrl":"flake:nixpkgs","outputs":null,"priority":5,"storePaths":["/nix/store/x-hello-2.12.3"],"url":"github:NixOS/nixpkgs/abc?narHash=sha256-y"},"nix":{"active":true,"priority":5,"storePaths":["/nix/store/x-nix-2.34.7"]}},"version":3}"#;
+        let pkgs = parse_nix_profile_list_json(stdout);
+        assert_eq!(pkgs.len(), 2);
+        assert!(pkgs.contains("hello"));
+        assert!(pkgs.contains("nix"));
+    }
+
+    #[test]
+    fn parse_nix_profile_list_json_v3_multi_package_object() {
+        let stdout = r#"{"elements":{"ripgrep":{"storePaths":["/nix/store/a"]},"fd":{"storePaths":["/nix/store/b"]},"bat":{"storePaths":["/nix/store/c"]}},"version":3}"#;
+        let pkgs = parse_nix_profile_list_json(stdout);
+        assert_eq!(pkgs.len(), 3);
+        assert!(pkgs.contains("ripgrep"));
+        assert!(pkgs.contains("fd"));
+        assert!(pkgs.contains("bat"));
+    }
+
+    #[test]
+    fn parse_nix_profile_list_json_legacy_array_names_from_attr_path() {
+        // pre-2.20 (version 1/2): `elements` is an array; derive name from the
+        // final '.'-segment of attrPath.
+        let stdout = r#"{"elements":[{"active":true,"attrPath":"legacyPackages.x86_64-linux.hello","originalUrl":"flake:nixpkgs","storePaths":["/nix/store/x-hello-2.12.3"],"url":"github:NixOS/nixpkgs/abc"}]}"#;
+        let pkgs = parse_nix_profile_list_json(stdout);
+        assert_eq!(pkgs.len(), 1);
+        assert!(pkgs.contains("hello"));
+    }
+
+    #[test]
+    fn parse_nix_profile_list_json_legacy_array_falls_back_to_url_fragment() {
+        // No attrPath → name from the flake fragment after '#'.
+        let stdout = r#"{"elements":[{"originalUrl":"flake:nixpkgs#ripgrep","storePaths":["/nix/store/x"]},{"url":"github:NixOS/nixpkgs/abc#fd","storePaths":["/nix/store/y"]}]}"#;
+        let pkgs = parse_nix_profile_list_json(stdout);
         assert_eq!(pkgs.len(), 2);
         assert!(pkgs.contains("ripgrep"));
         assert!(pkgs.contains("fd"));
     }
 
     #[test]
-    fn parse_nix_profile_list_handles_namespaced_flake_refs() {
-        // Real-world: nixpkgs/release-23.11#fd → strip everything before the
-        // final '#' and return the package name.
-        let stdout = "0 nixpkgs/release-23.11#fd /nix/store/abc-fd\n";
-        let pkgs = parse_nix_profile_list(stdout);
+    fn parse_nix_profile_list_json_legacy_array_drops_unnameable_entries() {
+        // Neither attrPath nor a '#'-bearing url → entry cannot be named.
+        let stdout = r#"{"elements":[{"storePaths":["/nix/store/x"]},{"attrPath":"legacyPackages.x86_64-linux.git","storePaths":["/nix/store/y"]}]}"#;
+        let pkgs = parse_nix_profile_list_json(stdout);
         assert_eq!(pkgs.len(), 1);
-        assert!(pkgs.contains("fd"));
+        assert!(pkgs.contains("git"));
     }
 
     #[test]
-    fn parse_nix_profile_list_drops_empty_and_malformed_lines() {
-        let stdout = "\nrandom-no-spaces\n0 nixpkgs#ripgrep /store/x\n  \n";
-        let pkgs = parse_nix_profile_list(stdout);
-        assert_eq!(pkgs.len(), 1, "must skip empty/short lines");
-        assert!(pkgs.contains("ripgrep"));
+    fn parse_nix_profile_list_json_empty_object_elements() {
+        assert!(parse_nix_profile_list_json(r#"{"elements":{},"version":3}"#).is_empty());
     }
 
     #[test]
-    fn parse_nix_profile_list_treats_no_hash_as_full_token() {
-        // No '#' in the second column — `rsplit('#').next()` returns the whole
-        // string, which becomes the package name. Pin this contract: arbitrary
-        // tokens that happen to slip into column 2 are surfaced as-is rather
-        // than silently dropped.
-        let stdout = "0 plain-name /store/x\n";
-        let pkgs = parse_nix_profile_list(stdout);
-        assert!(pkgs.contains("plain-name"));
+    fn parse_nix_profile_list_json_empty_array_elements() {
+        assert!(parse_nix_profile_list_json(r#"{"elements":[]}"#).is_empty());
     }
 
     #[test]
-    fn parse_nix_profile_list_empty_input_returns_empty_set() {
-        assert!(parse_nix_profile_list("").is_empty());
+    fn parse_nix_profile_list_json_missing_elements_key() {
+        assert!(parse_nix_profile_list_json(r#"{"version":3}"#).is_empty());
+    }
+
+    #[test]
+    fn parse_nix_profile_list_json_malformed_returns_empty_set() {
+        assert!(parse_nix_profile_list_json("not json at all").is_empty());
+        assert!(parse_nix_profile_list_json("").is_empty());
     }
 
     // --- parse_nix_env_query ---
@@ -465,24 +531,36 @@ mod tests {
         fn nix_uninstall_routes_through_nix_profile_when_nix_available() {
             let s = ToolShim::install(SHIM_ENV, 0, "", "");
             let p = test_printer();
-            NixManager.uninstall(&["ripgrep".into()], &p).expect("Ok");
+            NixManager.uninstall(&["hello".into()], &p).expect("Ok");
+            let argv = s.argv_log();
+            // nix 2.20+ removes by element NAME; `nix profile remove
+            // nixpkgs#hello` matches nothing and exits 0, silently failing the
+            // declarative prune.
             assert!(
-                s.argv_log().contains("profile remove nixpkgs#ripgrep"),
-                "argv: {}",
-                s.argv_log()
+                argv.contains("profile remove hello"),
+                "argv must remove by element name: {argv}"
+            );
+            assert!(
+                !argv.contains("nixpkgs#hello"),
+                "argv must NOT use the flake selector that nix 2.20+ rejects: {argv}"
             );
         }
 
         #[test]
         #[serial]
         fn nix_installed_packages_uses_nix_profile_list_when_nix_available() {
-            let stdout = "0 nixpkgs#ripgrep /nix/store/abc-ripgrep\n\
-                          1 nixpkgs#fd /nix/store/def-fd\n";
-            let _s = ToolShim::install(SHIM_ENV, 0, stdout, "");
+            // nix 2.34 `nix profile list --json` (version 3) object shape.
+            let stdout = r#"{"elements":{"ripgrep":{"storePaths":["/nix/store/abc-ripgrep"]},"fd":{"storePaths":["/nix/store/def-fd"]}},"version":3}"#;
+            let s = ToolShim::install(SHIM_ENV, 0, stdout, "");
             let pkgs = NixManager.installed_packages().expect("Ok");
             assert_eq!(pkgs.len(), 2);
             assert!(pkgs.contains("ripgrep"));
             assert!(pkgs.contains("fd"));
+            assert!(
+                s.argv_log().contains("profile list --json"),
+                "must query JSON, not the version-fragile text format: {}",
+                s.argv_log()
+            );
         }
 
         #[test]
