@@ -133,6 +133,10 @@ Removal is deliberately conservative:
 - **Shared packages survive until the last consumer is dropped.** The desired set is the merge of the active profile and *all* its modules, so a package required by more than one module is removed only when the final module that wants it is removed.
 - **Only a full apply prunes.** A scoped run — `--module`, `--phase`, `--only`, `--skip` — never uninstalls, because it sees only part of the desired set and a package it omits may still be needed by something not applied this run.
 - **Tracking self-heals.** If a tracked package is removed out of band, cfgd drops its tracking on the next full apply, so it is not "re-removed" or otherwise acted on.
+- **Custom managers can prune even after their definition is deleted.** Built-in managers derive their uninstall command from code, but a custom (scripted) manager's uninstall lives only in its config block, so cfgd handles it specially:
+  - **Persist + delete-block flow.** cfgd persists the uninstall script alongside each package a custom manager installs. If you later delete the whole custom-manager block, the next full apply (and the daemon reconcile) still runs the persisted script to remove its packages, then drops the tracking.
+  - **Legacy rows have no script.** A package tracked by a custom manager *before* this behavior existed has no persisted script: cfgd reports it (it cannot guess how to remove it) and leaves it for you to remove manually, rather than silently dropping the tracking.
+  - **`--dry-run` previews both cases.** `cfgd apply --dry-run` prints `would uninstall orphaned <manager>/<pkg> via persisted script` for packages it can prune, and `orphaned <manager>/<pkg> — no persisted uninstall; manual removal needed` for legacy rows.
 
 ```yaml
 # before: jq is installed by cfgd

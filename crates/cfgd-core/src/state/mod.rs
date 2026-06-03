@@ -193,6 +193,10 @@ const MIGRATIONS: &[&str] = &[
         summary_warning INTEGER NOT NULL,
         summary_violation INTEGER NOT NULL
     );",
+    // Migration 5: persist the scripted uninstall command alongside each package
+    // tracking row, so a custom/scripted manager's packages can still be pruned
+    // after its definition leaves the config (the script vanishes with it).
+    "ALTER TABLE managed_resources ADD COLUMN uninstall_cmd TEXT;",
 ];
 
 /// SQLite-backed state store for cfgd.

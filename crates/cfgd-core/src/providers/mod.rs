@@ -68,6 +68,15 @@ pub trait PackageManager: Send + Sync {
     fn package_identity(&self, entry: &str) -> String {
         entry.to_string()
     }
+
+    /// The uninstall command template to PERSIST alongside this package's tracking
+    /// row, so the package can still be removed after its manager definition leaves
+    /// the config. `None` for managers whose uninstall is derivable from code (every
+    /// built-in manager); `Some` only for user-defined scripted managers, whose
+    /// script vanishes with the config block.
+    fn persisted_uninstall(&self) -> Option<String> {
+        None
+    }
 }
 
 // --- SystemConfigurator trait ---
@@ -207,6 +216,19 @@ pub enum PackageAction {
     },
 }
 
+/// A tracked package whose custom/scripted manager has left the config. Carries
+/// the manager and package names plus the uninstall command persisted at install
+/// time (`None` for rows tracked before the persisted-uninstall column existed),
+/// so the GC pass can run the script and prune the row — or warn when there is no
+/// script to run. Crosses the `DaemonHooks` boundary, so it lives here alongside
+/// [`PackageAction`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrphanedPackage {
+    pub manager: String,
+    pub package: String,
+    pub uninstall_cmd: Option<String>,
+}
+
 // --- SecretBackend trait ---
 
 pub trait SecretBackend: Send + Sync {
@@ -292,6 +314,15 @@ impl ProviderRegistry {
             .iter()
             .filter(|sc| sc.is_available())
             .map(|sc| sc.as_ref())
+            .collect()
+    }
+
+    /// The set of registered (config-present) package-manager names — used to
+    /// detect orphaned tracked packages whose custom manager left the config.
+    pub fn manager_names(&self) -> HashSet<String> {
+        self.package_managers
+            .iter()
+            .map(|m| m.name().to_string())
             .collect()
     }
 

@@ -73,6 +73,14 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
     fn expand_tilde(&self, path: &std::path::Path) -> std::path::PathBuf {
         cfgd_core::expand_tilde(path)
     }
+
+    fn prune_orphaned_packages(
+        &self,
+        orphans: &[cfgd_core::providers::OrphanedPackage],
+        printer: &cfgd_core::output::Printer,
+    ) -> Vec<(String, String)> {
+        crate::packages::prune_orphaned_packages(orphans, printer)
+    }
 }
 
 pub(in crate::cli) fn build_registry_with_profile(

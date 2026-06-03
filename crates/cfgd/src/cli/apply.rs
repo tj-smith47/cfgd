@@ -272,6 +272,12 @@ pub fn run_apply(
             dry_run_fm.as_ref(),
             &scope,
         );
+        // Preview orphaned custom-manager packages a real apply would prune
+        // (read-only — execute nothing here). Same gating + query as the apply
+        // path so the preview matches the action.
+        if prune_eligible {
+            preview_orphaned_custom_packages(&state, &registry, printer);
+        }
         return Ok(cfgd_core::state::ApplyStatus::Success);
     }
 
@@ -292,6 +298,7 @@ pub fn run_apply(
             .map(|m| m.as_ref())
             .collect();
         gc_stale_package_tracking(&state, &all_managers);
+        gc_orphaned_custom_packages(&state, &registry, printer);
     }
 
     // Check if filtered plan has actions
@@ -449,6 +456,70 @@ fn gc_stale_package_tracking(
     }
 }
 
+/// Run persisted uninstall scripts for orphaned custom-manager packages, then
+/// drop the rows that were removed successfully. Best-effort: store errors are
+/// logged, never propagated, so the GC can't fail an apply. Mirrors
+/// [`gc_stale_package_tracking`].
+fn gc_orphaned_custom_packages(
+    state: &cfgd_core::state::StateStore,
+    registry: &cfgd_core::providers::ProviderRegistry,
+    printer: &cfgd_core::output::Printer,
+) {
+    let known = registry.manager_names();
+    let orphans = match state.orphaned_package_resources(&known) {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to read orphaned package rows for GC");
+            return;
+        }
+    };
+    if orphans.is_empty() {
+        return;
+    }
+    for (mgr, pkg) in packages::prune_orphaned_packages(&orphans, printer) {
+        let rid = format!("{mgr}/{pkg}");
+        if let Err(e) = state.remove_managed_resource("package", &rid) {
+            tracing::warn!(resource = %rid, error = %e, "failed to GC orphaned package tracking row");
+        }
+    }
+}
+
+/// Preview, without executing, which orphaned custom-manager packages a real
+/// apply would prune via their persisted uninstall script — and which lack one
+/// and need manual removal. Read-only; runs only on the dry-run path.
+pub(in crate::cli) fn preview_orphaned_custom_packages(
+    state: &cfgd_core::state::StateStore,
+    registry: &cfgd_core::providers::ProviderRegistry,
+    printer: &cfgd_core::output::Printer,
+) {
+    let known = registry.manager_names();
+    let orphans = match state.orphaned_package_resources(&known) {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to read orphaned package rows for preview");
+            return;
+        }
+    };
+    for orphan in orphans {
+        match orphan.uninstall_cmd {
+            Some(_) => printer.status_simple(
+                Role::Accent,
+                format!(
+                    "would uninstall orphaned {}/{} via persisted script",
+                    orphan.manager, orphan.package
+                ),
+            ),
+            None => printer.status_simple(
+                Role::Warn,
+                format!(
+                    "orphaned {}/{} — no persisted uninstall; manual removal needed",
+                    orphan.manager, orphan.package
+                ),
+            ),
+        }
+    }
+}
+
 fn apply_status_str(status: &cfgd_core::state::ApplyStatus) -> &'static str {
     match status {
         cfgd_core::state::ApplyStatus::Success => "success",
@@ -463,4 +534,77 @@ fn apply_status_str(status: &cfgd_core::state::ApplyStatus) -> &'static str {
 /// up a reconciler.
 pub fn build_apply_doc(output: &ApplyOutput) -> Doc {
     Doc::new().with_data(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cfgd_core::output::{Printer, Verbosity, strip_ansi};
+
+    #[test]
+    fn preview_orphaned_custom_packages_pins_both_contract_strings_and_executes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("preview-should-not-run");
+
+        let state = cfgd_core::state::StateStore::open_in_memory().unwrap();
+        // Orphan WITH a persisted script: would create the marker file if the
+        // preview ever executed it (it must not).
+        state
+            .upsert_package_resource(
+                "widgetmgr/widget",
+                "local",
+                None,
+                Some(&format!("touch {}", marker.display())),
+            )
+            .unwrap();
+        // Orphan with NO persisted script (legacy row).
+        state
+            .upsert_package_resource("legacymgr/legacypkg", "local", None, None)
+            .unwrap();
+        // A package under a registered (built-in) manager — NOT orphaned.
+        state
+            .upsert_package_resource("cargo/bat", "local", None, None)
+            .unwrap();
+
+        // Registry contains only built-in managers, so cargo is "known" but
+        // widgetmgr / legacymgr are not — exactly the orphan condition.
+        let mut registry = cfgd_core::providers::ProviderRegistry::new();
+        registry.package_managers = crate::packages::all_package_managers();
+
+        // Normal verbosity: Accent/Warn status lines are suppressed under Quiet
+        // (the default for `for_test`).
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        preview_orphaned_custom_packages(&state, &registry, &printer);
+        drop(printer);
+        let out = strip_ansi(&buf.lock().unwrap());
+
+        assert!(
+            out.contains("would uninstall orphaned widgetmgr/widget via persisted script"),
+            "persisted-script preview line missing, got: {out}"
+        );
+        assert!(
+            out.contains(
+                "orphaned legacymgr/legacypkg — no persisted uninstall; manual removal needed"
+            ),
+            "no-persisted-script preview line missing, got: {out}"
+        );
+        assert!(
+            !out.contains("cargo/bat"),
+            "a package under a registered manager must not be previewed as orphaned, got: {out}"
+        );
+
+        // Preview is read-only: the script was never executed and no row was
+        // removed.
+        assert!(
+            !marker.exists(),
+            "preview must not execute any uninstall script"
+        );
+        let known = registry.manager_names();
+        let still_orphaned = state.orphaned_package_resources(&known).unwrap();
+        assert_eq!(
+            still_orphaned.len(),
+            2,
+            "preview must not remove any tracking rows"
+        );
+    }
 }

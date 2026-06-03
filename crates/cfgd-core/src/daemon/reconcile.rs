@@ -521,6 +521,28 @@ pub(crate) fn handle_reconcile(
                                     tracing::warn!(error = %e, "failed to compute stale package tracking rows")
                                 }
                             }
+                            // Prune packages whose custom/scripted manager block
+                            // left the config: run the persisted uninstall script
+                            // via the hook, then drop each row that was removed.
+                            let known = registry.manager_names();
+                            match store.orphaned_package_resources(&known) {
+                                Ok(orphans) if !orphans.is_empty() => {
+                                    for (mgr, pkg) in
+                                        hooks.prune_orphaned_packages(&orphans, printer)
+                                    {
+                                        let rid = format!("{mgr}/{pkg}");
+                                        if let Err(e) =
+                                            store.remove_managed_resource("package", &rid)
+                                        {
+                                            tracing::warn!(resource = %rid, error = %e, "failed to GC orphaned package tracking row");
+                                        }
+                                    }
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "failed to compute orphaned package rows")
+                                }
+                            }
                         }
                         if failed > 0 && notify_on_drift {
                             notifier.notify(

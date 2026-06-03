@@ -65,6 +65,17 @@ pub trait DaemonHooks: Send + Sync {
 
     /// Expand tilde (~) to home directory in a path.
     fn expand_tilde(&self, path: &Path) -> PathBuf;
+
+    /// Run persisted uninstall scripts for orphaned custom-manager packages and
+    /// return the `(manager, package)` rows successfully removed, for the caller to
+    /// GC. Default no-op for hooks that don't manage scripted packages.
+    fn prune_orphaned_packages(
+        &self,
+        _orphans: &[crate::providers::OrphanedPackage],
+        _printer: &Printer,
+    ) -> Vec<(String, String)> {
+        Vec::new()
+    }
 }
 
 const DEBOUNCE_MS: u64 = 500;

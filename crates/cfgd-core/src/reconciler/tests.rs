@@ -2010,6 +2010,121 @@ fn apply_package_install_calls_mock_and_records_state() {
     assert!(installed.contains("fd"));
 }
 
+/// A mock scripted manager that persists an uninstall command, mirroring how a
+/// user-defined custom manager behaves.
+struct ScriptedLikeManager {
+    name: String,
+    uninstall_cmd: String,
+}
+
+impl PackageManager for ScriptedLikeManager {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn can_bootstrap(&self) -> bool {
+        false
+    }
+    fn bootstrap(&self, _printer: &Printer) -> Result<()> {
+        Ok(())
+    }
+    fn installed_packages(&self) -> Result<HashSet<String>> {
+        Ok(HashSet::new())
+    }
+    fn install(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
+        Ok(())
+    }
+    fn uninstall(&self, _packages: &[String], _printer: &Printer) -> Result<()> {
+        Ok(())
+    }
+    fn update(&self, _printer: &Printer) -> Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, _package: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
+    fn persisted_uninstall(&self) -> Option<String> {
+        Some(self.uninstall_cmd.clone())
+    }
+}
+
+#[test]
+fn apply_scripted_install_persists_uninstall_cmd_and_builtin_leaves_null() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(ScriptedLikeManager {
+            name: "widgetmgr".to_string(),
+            uninstall_cmd: "widgetmgr rm {package}".to_string(),
+        }));
+    registry
+        .package_managers
+        .push(Box::new(TrackingPackageManager::new("cargo")));
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let pkg_actions = vec![
+        PackageAction::Install {
+            manager: "widgetmgr".to_string(),
+            packages: vec!["widget".to_string()],
+            origin: "local".to_string(),
+        },
+        PackageAction::Install {
+            manager: "cargo".to_string(),
+            packages: vec!["bat".to_string()],
+            origin: "local".to_string(),
+        },
+    ];
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            pkg_actions,
+            Vec::new(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let printer = test_printer();
+    reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+        )
+        .unwrap();
+
+    // The scripted install must have persisted its uninstall command; the
+    // built-in install must leave it NULL. Probe via the orphan query with an
+    // empty known set so every package row surfaces.
+    let known = HashSet::new();
+    let mut orphans = state.orphaned_package_resources(&known).unwrap();
+    orphans.sort_by(|a, b| a.manager.cmp(&b.manager));
+    assert_eq!(orphans.len(), 2);
+    assert_eq!(orphans[0].manager, "cargo");
+    assert!(
+        orphans[0].uninstall_cmd.is_none(),
+        "built-in install must not persist a script"
+    );
+    assert_eq!(orphans[1].manager, "widgetmgr");
+    assert_eq!(
+        orphans[1].uninstall_cmd.as_deref(),
+        Some("widgetmgr rm {package}"),
+        "scripted install must persist its uninstall command"
+    );
+}
+
 #[test]
 fn apply_package_uninstall_calls_mock() {
     let state = test_state();

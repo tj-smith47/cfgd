@@ -124,6 +124,115 @@ fn upsert_managed_resource() {
 }
 
 #[test]
+fn upsert_package_resource_persists_uninstall_cmd() {
+    use crate::providers::OrphanedPackage;
+
+    let store = StateStore::open_in_memory().unwrap();
+    // Scripted manager package — carries a persisted uninstall command.
+    store
+        .upsert_package_resource(
+            "widgetmgr/widget",
+            "local",
+            None,
+            Some("widgetmgr rm {package}"),
+        )
+        .unwrap();
+    // Built-in package — no persisted command (NULL).
+    store
+        .upsert_package_resource("cargo/foo", "local", None, None)
+        .unwrap();
+
+    let known: std::collections::HashSet<String> = ["cargo".to_string(), "apt".to_string()]
+        .into_iter()
+        .collect();
+    let orphans = store.orphaned_package_resources(&known).unwrap();
+    assert_eq!(
+        orphans,
+        vec![OrphanedPackage {
+            manager: "widgetmgr".to_string(),
+            package: "widget".to_string(),
+            uninstall_cmd: Some("widgetmgr rm {package}".to_string()),
+        }],
+        "only the package whose manager left the known set is orphaned"
+    );
+
+    // The package row must still be queryable as a managed package.
+    let ids = store.managed_package_ids().unwrap();
+    assert!(ids.contains(&("cargo".to_string(), "foo".to_string())));
+    assert!(ids.contains(&("widgetmgr".to_string(), "widget".to_string())));
+}
+
+#[test]
+fn upsert_package_resource_refreshes_changed_uninstall_cmd() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_package_resource("widgetmgr/widget", "local", None, Some("old rm {package}"))
+        .unwrap();
+    // Re-install with a changed script must update the persisted command.
+    store
+        .upsert_package_resource("widgetmgr/widget", "local", None, Some("new rm {package}"))
+        .unwrap();
+
+    let known = std::collections::HashSet::new();
+    let orphans = store.orphaned_package_resources(&known).unwrap();
+    assert_eq!(orphans.len(), 1);
+    assert_eq!(
+        orphans[0].uninstall_cmd.as_deref(),
+        Some("new rm {package}"),
+        "re-install must refresh a changed uninstall script"
+    );
+}
+
+#[test]
+fn orphaned_package_resources_empty_when_manager_known() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_package_resource("widgetmgr/widget", "local", None, Some("widgetmgr rm"))
+        .unwrap();
+
+    let known: std::collections::HashSet<String> = ["widgetmgr".to_string()].into_iter().collect();
+    let orphans = store.orphaned_package_resources(&known).unwrap();
+    assert!(
+        orphans.is_empty(),
+        "a package whose manager is still in the registry is not orphaned"
+    );
+}
+
+#[test]
+fn orphaned_package_resources_reports_null_cmd_rows() {
+    let store = StateStore::open_in_memory().unwrap();
+    // A custom-manager package tracked before the persisted-uninstall column
+    // existed: NULL command, but still orphaned and must be reported.
+    store
+        .upsert_package_resource("legacymgr/legacypkg", "local", None, None)
+        .unwrap();
+
+    let known = std::collections::HashSet::new();
+    let orphans = store.orphaned_package_resources(&known).unwrap();
+    assert_eq!(orphans.len(), 1);
+    assert_eq!(orphans[0].manager, "legacymgr");
+    assert_eq!(orphans[0].package, "legacypkg");
+    assert!(
+        orphans[0].uninstall_cmd.is_none(),
+        "a NULL persisted command must surface as None for the caller to warn on"
+    );
+}
+
+#[test]
+fn generic_upsert_managed_resource_leaves_uninstall_cmd_null() {
+    let store = StateStore::open_in_memory().unwrap();
+    // The generic upsert (used for files/system resources) must not touch the
+    // new column — it stays NULL.
+    store
+        .upsert_managed_resource("package", "widgetmgr/widget", "local", None, None)
+        .unwrap();
+    let known = std::collections::HashSet::new();
+    let orphans = store.orphaned_package_resources(&known).unwrap();
+    assert_eq!(orphans.len(), 1);
+    assert!(orphans[0].uninstall_cmd.is_none());
+}
+
+#[test]
 fn is_resource_managed() {
     let store = StateStore::open_in_memory().unwrap();
 
@@ -822,10 +931,28 @@ fn update_apply_status_works() {
 }
 
 #[test]
-fn schema_version_is_4_after_migration() {
+fn schema_version_advances_to_migration_count() {
     let store = StateStore::open_in_memory().unwrap();
     let version = store.schema_version();
-    assert_eq!(version, 4);
+    assert_eq!(
+        version,
+        super::MIGRATIONS.len(),
+        "open must run every migration and advance schema_version to the count"
+    );
+}
+
+#[test]
+fn migration_adds_uninstall_cmd_column() {
+    // Assert the column exists by writing and reading it back through the
+    // package-resource helper, rather than pinning a fragile version number.
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_package_resource("widgetmgr/widget", "local", None, Some("widgetmgr rm"))
+        .unwrap();
+    let known = std::collections::HashSet::new();
+    let orphans = store.orphaned_package_resources(&known).unwrap();
+    assert_eq!(orphans.len(), 1);
+    assert_eq!(orphans[0].uninstall_cmd.as_deref(), Some("widgetmgr rm"));
 }
 
 // --- Compliance snapshot tests ---

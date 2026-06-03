@@ -722,6 +722,118 @@ fn scripted_manager_bootstrap_through_trait() {
     mgr.bootstrap(&printer).unwrap();
 }
 
+#[test]
+fn scripted_manager_persists_its_uninstall_command() {
+    let spec = cfgd_core::config::CustomManagerSpec {
+        name: "widgetmgr".to_string(),
+        check: "true".to_string(),
+        list_installed: "echo".to_string(),
+        install: "widgetmgr add {package}".to_string(),
+        uninstall: "widgetmgr rm {package}".to_string(),
+        update: None,
+        packages: vec![],
+    };
+    let mgr = ScriptedManager::from_spec(&spec);
+    assert_eq!(
+        mgr.persisted_uninstall(),
+        Some("widgetmgr rm {package}".to_string()),
+        "a scripted manager must persist its uninstall template"
+    );
+}
+
+#[test]
+fn builtin_manager_persists_no_uninstall_command() {
+    // SimpleManager (and every built-in) derives uninstall from code, so it
+    // must return None via the trait default.
+    let mgr = crate::packages::CargoManager;
+    assert!(
+        mgr.persisted_uninstall().is_none(),
+        "built-in managers derive uninstall from code; must not persist a script"
+    );
+}
+
+#[test]
+fn from_uninstall_only_builds_minimal_manager() {
+    // The GC path reconstructs a manager from just the persisted uninstall
+    // template; the other script fields are never invoked.
+    let mgr =
+        ScriptedManager::from_uninstall_only("widgetmgr", "widgetmgr rm {package}".to_string());
+    assert_eq!(mgr.name(), "widgetmgr");
+    assert_eq!(
+        mgr.persisted_uninstall(),
+        Some("widgetmgr rm {package}".to_string())
+    );
+}
+
+#[test]
+fn prune_orphaned_packages_runs_persisted_script_and_returns_rows() {
+    use cfgd_core::providers::OrphanedPackage;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let marker = tmp.path().join("removed-{package}");
+    let cmd = format!("touch {}", marker.display());
+    let orphans = vec![
+        OrphanedPackage {
+            manager: "widgetmgr".to_string(),
+            package: "widget".to_string(),
+            uninstall_cmd: Some(cmd.clone()),
+        },
+        OrphanedPackage {
+            manager: "widgetmgr".to_string(),
+            package: "gadget".to_string(),
+            uninstall_cmd: Some(cmd),
+        },
+    ];
+    let printer = cfgd_core::test_helpers::test_printer();
+    let removed = super::super::prune_orphaned_packages(&orphans, &printer);
+
+    let mut removed_sorted = removed.clone();
+    removed_sorted.sort();
+    assert_eq!(
+        removed_sorted,
+        vec![
+            ("widgetmgr".to_string(), "gadget".to_string()),
+            ("widgetmgr".to_string(), "widget".to_string()),
+        ]
+    );
+    assert!(tmp.path().join("removed-widget").exists());
+    assert!(tmp.path().join("removed-gadget").exists());
+}
+
+#[test]
+fn prune_orphaned_packages_skips_rows_with_no_persisted_command() {
+    use cfgd_core::providers::OrphanedPackage;
+
+    let orphans = vec![OrphanedPackage {
+        manager: "legacymgr".to_string(),
+        package: "legacypkg".to_string(),
+        uninstall_cmd: None,
+    }];
+    let printer = cfgd_core::test_helpers::test_printer();
+    let removed = super::super::prune_orphaned_packages(&orphans, &printer);
+    assert!(
+        removed.is_empty(),
+        "a row with no persisted script cannot be removed and must not be GC'd"
+    );
+}
+
+#[test]
+fn prune_orphaned_packages_keeps_row_when_script_fails() {
+    use cfgd_core::providers::OrphanedPackage;
+
+    let orphans = vec![OrphanedPackage {
+        manager: "failmgr".to_string(),
+        package: "failpkg".to_string(),
+        uninstall_cmd: Some("exit 1".to_string()),
+    }];
+    let printer = cfgd_core::test_helpers::test_printer();
+    let removed = super::super::prune_orphaned_packages(&orphans, &printer);
+    assert!(
+        removed.is_empty(),
+        "a failed uninstall must leave its row intact for retry"
+    );
+}
+
 // --- build_template_invocations ---
 
 #[test]

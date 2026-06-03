@@ -523,12 +523,20 @@ impl<'a> super::Reconciler<'a> {
                     let rid = format!("{manager}/{pkg}");
                     match verb.as_str() {
                         "install" => {
-                            self.state.upsert_managed_resource(
-                                "package",
+                            // Persist the scripted uninstall command (Some only for
+                            // custom managers) so the package can still be pruned
+                            // after its manager block leaves the config.
+                            let uninstall_cmd = self
+                                .registry
+                                .package_managers
+                                .iter()
+                                .find(|m| m.name() == manager)
+                                .and_then(|m| m.persisted_uninstall());
+                            self.state.upsert_package_resource(
                                 &rid,
                                 "local",
-                                None,
                                 Some(apply_id),
+                                uninstall_cmd.as_deref(),
                             )?;
                             self.state.resolve_drift(apply_id, "package", &rid)?;
                         }

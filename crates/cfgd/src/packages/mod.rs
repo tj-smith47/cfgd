@@ -22,9 +22,8 @@ use cfgd_core::PathDisplayExt;
 use cfgd_core::command_available;
 use cfgd_core::config::{MergedProfile, PackagesSpec};
 use cfgd_core::errors::{PackageError, Result};
-#[cfg(test)]
 use cfgd_core::output::{Printer, Role};
-use cfgd_core::providers::{PackageAction, PackageManager};
+use cfgd_core::providers::{OrphanedPackage, PackageAction, PackageManager};
 
 mod brew;
 mod cargo;
@@ -538,6 +537,63 @@ pub fn all_package_managers() -> Vec<Box<dyn PackageManager>> {
         Box::new(ChocolateyManager),
         Box::new(ScoopManager),
     ]
+}
+
+/// Run the persisted uninstall command for each orphaned custom-manager package
+/// (its manager block left the config). Returns the `(manager, package)` rows
+/// that were uninstalled successfully, for the caller to GC. Groups by manager so
+/// a batch template runs once; a failed uninstall leaves its row intact (warned)
+/// so a later run can retry. Rows with no persisted command are reported via the
+/// printer and skipped (cannot remove what we have no script for).
+pub fn prune_orphaned_packages(
+    orphans: &[OrphanedPackage],
+    printer: &Printer,
+) -> Vec<(String, String)> {
+    // Group by (manager, uninstall_cmd) so each scripted manager's persisted
+    // template runs once over its full package batch.
+    let mut groups: std::collections::BTreeMap<(String, String), Vec<String>> =
+        std::collections::BTreeMap::new();
+    let mut removed = Vec::new();
+
+    for orphan in orphans {
+        match &orphan.uninstall_cmd {
+            Some(cmd) => groups
+                .entry((orphan.manager.clone(), cmd.clone()))
+                .or_default()
+                .push(orphan.package.clone()),
+            None => {
+                printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "orphaned {}/{} tracked but its custom manager left the config with no persisted uninstall script — remove it manually",
+                        orphan.manager, orphan.package
+                    ),
+                );
+            }
+        }
+    }
+
+    for ((manager, uninstall_cmd), packages) in groups {
+        let mgr = ScriptedManager::from_uninstall_only(&manager, uninstall_cmd);
+        match mgr.uninstall(&packages, printer) {
+            Ok(()) => {
+                for pkg in packages {
+                    removed.push((manager.clone(), pkg));
+                }
+            }
+            Err(e) => {
+                printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "failed to uninstall orphaned packages via {manager}: {}",
+                        cfgd_core::output::collapse_to_subject_line(&e)
+                    ),
+                );
+            }
+        }
+    }
+
+    removed
 }
 
 // --- Native manifest support ---

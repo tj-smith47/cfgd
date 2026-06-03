@@ -30,6 +30,22 @@ impl ScriptedManager {
         }
     }
 
+    /// Build a `ScriptedManager` carrying only an uninstall template, for the
+    /// orphaned-package GC path: the manager block has left the config, so only
+    /// the persisted uninstall command survives. The other script fields are left
+    /// empty and are never invoked on this instance. `mgr_name` is kept so error
+    /// messages still name the manager.
+    pub fn from_uninstall_only(name: &str, uninstall_cmd: String) -> Self {
+        Self {
+            mgr_name: name.to_string(),
+            check_cmd: String::new(),
+            list_cmd: String::new(),
+            install_cmd: String::new(),
+            uninstall_cmd,
+            update_cmd: None,
+        }
+    }
+
     fn run_template(
         &self,
         template: &str,
@@ -163,6 +179,10 @@ impl PackageManager for ScriptedManager {
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
         // Custom managers don't have a standard way to query available versions
         Ok(None)
+    }
+
+    fn persisted_uninstall(&self) -> Option<String> {
+        Some(self.uninstall_cmd.clone())
     }
 }
 

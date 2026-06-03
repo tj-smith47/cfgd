@@ -1,8 +1,11 @@
+use std::collections::HashSet;
+
 use rusqlite::params;
 
 use super::StateStore;
 use super::types::ManagedResource;
 use crate::errors::Result;
+use crate::providers::OrphanedPackage;
 
 impl StateStore {
     /// Upsert a managed resource record.
@@ -26,6 +29,71 @@ impl StateStore {
             )
             ?;
         Ok(())
+    }
+
+    /// Upsert a package tracking row, persisting the manager's uninstall command.
+    ///
+    /// Like [`upsert_managed_resource`](Self::upsert_managed_resource) but fixed to
+    /// `resource_type = "package"` with a NULL `last_hash`, and it records
+    /// `uninstall_cmd` — the scripted uninstall template (`Some` only for
+    /// user-defined custom managers; `None` for built-ins, whose uninstall derives
+    /// from code). On conflict it refreshes source, `last_applied`, AND
+    /// `uninstall_cmd`, so a re-install picks up a changed script. This persistence
+    /// lets the package still be pruned after its custom-manager block leaves the
+    /// config (the script would otherwise vanish with it).
+    pub fn upsert_package_resource(
+        &self,
+        resource_id: &str,
+        source: &str,
+        apply_id: Option<i64>,
+        uninstall_cmd: Option<&str>,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO managed_resources (resource_type, resource_id, source, last_hash, last_applied, uninstall_cmd)
+                 VALUES ('package', ?1, ?2, NULL, ?3, ?4)
+                 ON CONFLICT(resource_type, resource_id) DO UPDATE SET
+                    source = excluded.source,
+                    last_applied = excluded.last_applied,
+                    uninstall_cmd = excluded.uninstall_cmd",
+            params![resource_id, source, apply_id, uninstall_cmd],
+        )?;
+        Ok(())
+    }
+
+    /// Package tracking rows whose `<manager>` is not in `known_managers` — i.e.
+    /// rows for a custom/scripted manager whose definition has left the config.
+    ///
+    /// The manager is parsed from `resource_id` by splitting on the first `/`
+    /// (matching [`managed_package_ids`](Self::managed_package_ids)). Built-in
+    /// managers are always present in the registry, so they never appear here; the
+    /// only orphans are custom-manager packages. Each row carries its persisted
+    /// `uninstall_cmd` (`None` for rows tracked before the column existed) so the
+    /// caller can run the script and prune, or warn when there is no script.
+    pub fn orphaned_package_resources(
+        &self,
+        known_managers: &HashSet<String>,
+    ) -> Result<Vec<OrphanedPackage>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT resource_id, uninstall_cmd FROM managed_resources
+                 WHERE resource_type = 'package' ORDER BY resource_id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(id, uninstall_cmd)| {
+                id.split_once('/').and_then(|(mgr, pkg)| {
+                    (!known_managers.contains(mgr)).then(|| OrphanedPackage {
+                        manager: mgr.to_string(),
+                        package: pkg.to_string(),
+                        uninstall_cmd,
+                    })
+                })
+            })
+            .collect())
     }
 
     /// Remove a managed resource record. Idempotent: deleting a row that is not
