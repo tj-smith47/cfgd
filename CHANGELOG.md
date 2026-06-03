@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **packaging**: Ship completions + man page in linux packages and cask
 - **release**: Publish cfgd to AUR via aur_source (build-from-source)
 - **packages**: State-tracked declarative package removal
+- **packages**: Persist custom-manager uninstall so orphaned packages still prune
 
 ### CI/CD
 
@@ -44,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **rules**: Catalog env_session shared-util + module boundary
 - **configuration**: Note --config accepts a directory
 - **changelog**: Regenerate from conventional commits
+- **changelog**: Regenerate from conventional commits
 
 ### Fixed
 
@@ -71,6 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Miscellaneous
 
 - **tests**: Fix clippy --all-targets needless-borrow and attribute lints
+- **krew**: Drop vestigial committed plugin manifest
 
 ### Testing
 
