@@ -43,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **changelog**: Regenerate from conventional commits
 - **rules**: Catalog env_session shared-util + module boundary
 - **configuration**: Note --config accepts a directory
+- **changelog**: Regenerate from conventional commits
 
 ### Fixed
 
@@ -65,6 +66,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **verify,status**: Content-aware module-file drift + truthful status -e display
 - **config**: --config <dir> infers the discovery config file
 - **packages**: Use `dnf list --installed` flag for dnf5 compatibility
+- **files**: Probe real write access instead of mode bits in ensure_target_writable
 
 ### Miscellaneous
 
