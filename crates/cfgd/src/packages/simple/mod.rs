@@ -247,7 +247,10 @@ pub(super) fn apt_manager() -> SimpleManager {
 pub(super) fn dnf_manager() -> SimpleManager {
     SimpleManager {
         mgr_name: "dnf",
-        list_cmd: &["dnf", "list", "installed", "--quiet"],
+        // `--installed` (flag) not `installed` (positional): dnf5 (Fedora 41+)
+        // reads a positional `installed` as a package spec and exits 1; the flag
+        // form is accepted by both dnf4 and dnf5.
+        list_cmd: &["dnf", "list", "--installed", "--quiet"],
         install_cmd: &["sudo", "dnf", "install", "-y"],
         uninstall_cmd: &["sudo", "dnf", "remove", "-y"],
         update_cmd: Some(&["sudo", "dnf", "check-update"]),

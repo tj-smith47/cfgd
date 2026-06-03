@@ -232,6 +232,25 @@ fn dnf_manager_list_cmd_uses_quiet() {
 }
 
 #[test]
+fn dnf_manager_list_cmd_uses_installed_flag_not_positional() {
+    // dnf5 (Fedora 41+) reinterprets a positional `installed` as a package
+    // spec, so `dnf list installed` matches nothing and exits 1 even on a
+    // populated system. The `--installed` flag is accepted by both dnf4 and
+    // dnf5, so it is the only cross-version-safe form.
+    let mgr = dnf_manager();
+    assert!(
+        mgr.list_cmd.contains(&"--installed"),
+        "dnf list must use the --installed flag (dnf4+dnf5 safe): {:?}",
+        mgr.list_cmd
+    );
+    assert!(
+        !mgr.list_cmd.contains(&"installed"),
+        "dnf list must not pass a positional `installed` (dnf5 reads it as a package spec): {:?}",
+        mgr.list_cmd
+    );
+}
+
+#[test]
 fn apk_manager_install_cmd_is_add() {
     let mgr = apk_manager();
     assert_eq!(mgr.install_cmd, &["apk", "add"]);
