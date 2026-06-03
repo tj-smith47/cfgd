@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use cfgd_core::config::FileStrategy;
 use cfgd_core::errors::{FileError, Result};
@@ -299,40 +301,66 @@ fn scan_directory(
     Ok(())
 }
 
-/// Ensure the target's parent directory exists and the target is writable.
+/// Ensure the target's parent directory exists and is writable.
+///
+/// Writability is decided by a real probe (create + remove a transient entry in
+/// the parent), not `Permissions::readonly()`. Every apply strategy mutates the
+/// parent directory — `remove_file(target)` followed by symlink/hardlink/
+/// atomic_write all create or replace an entry there — so the target file's own
+/// mode never gates the write; only the parent's writability does. Mode bits are
+/// also a poor proxy for access: `readonly()` rejects writes root can perform
+/// into a 0550 directory (e.g. Fedora's /root) and accepts writes a non-owner
+/// cannot. Probing asks the kernel the real question, honoring uid, root-override,
+/// ACLs, and read-only mounts.
 pub(super) fn ensure_target_writable(target: &Path) -> Result<()> {
-    if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent).map_err(|e| FileError::Io {
-            path: parent.to_path_buf(),
-            source: e,
-        })?;
-        if parent.exists() {
-            let meta = fs::metadata(parent).map_err(|e| FileError::Io {
-                path: parent.to_path_buf(),
-                source: e,
-            })?;
-            if meta.permissions().readonly() {
-                return Err(FileError::TargetNotWritable {
-                    path: target.to_path_buf(),
-                }
-                .into());
-            }
+    let Some(parent) = target.parent() else {
+        return Ok(());
+    };
+    fs::create_dir_all(parent).map_err(|e| FileError::Io {
+        path: parent.to_path_buf(),
+        source: e,
+    })?;
+    probe_dir_writable(parent, target)
+}
+
+/// Probe whether an entry can be created in `dir` by actually creating and
+/// removing a uniquely-named transient file — the same mutation every apply
+/// strategy performs. A permission / read-only-filesystem failure maps to the
+/// friendly [`FileError::TargetNotWritable`] for `target`; any other failure
+/// surfaces as IO against `dir`.
+fn probe_dir_writable(dir: &Path, target: &Path) -> Result<()> {
+    static PROBE_SEQ: AtomicU64 = AtomicU64::new(0);
+    let probe = dir.join(format!(
+        ".cfgd-write-probe-{}-{}",
+        std::process::id(),
+        PROBE_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = fs::remove_file(&probe);
+            Ok(())
         }
-    }
-    // Check existing target (real files — symlinks are checked via symlink_metadata)
-    if target.exists() {
-        let meta = fs::metadata(target).map_err(|e| FileError::Io {
-            path: target.to_path_buf(),
-            source: e,
-        })?;
-        if meta.permissions().readonly() {
-            return Err(FileError::TargetNotWritable {
+        Err(e)
+            if matches!(
+                e.kind(),
+                io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
+            ) =>
+        {
+            Err(FileError::TargetNotWritable {
                 path: target.to_path_buf(),
             }
-            .into());
+            .into())
         }
+        Err(e) => Err(FileError::Io {
+            path: dir.to_path_buf(),
+            source: e,
+        }
+        .into()),
     }
-    Ok(())
 }
 
 /// Set file permissions (Unix mode bits). No-op on Windows.

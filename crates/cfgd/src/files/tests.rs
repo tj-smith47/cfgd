@@ -3035,18 +3035,18 @@ fn apply_create_with_matching_source_hash_writes_target() {
 
 #[test]
 #[cfg(unix)]
-fn ensure_target_writable_errors_on_readonly_existing_target() {
+fn ensure_target_writable_allows_readonly_existing_target_in_writable_parent() {
+    // A 0444 target is still replaceable: apply does remove_file(target) then
+    // recreates via the parent (symlink/hardlink/atomic_write), so the target
+    // file's own mode never gates the write — only the parent's writability does.
+    // The old mode-bit check wrongly rejected this.
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("ro.txt");
     fs::write(&target, "x").unwrap();
     fs::set_permissions(&target, fs::Permissions::from_mode(0o444)).unwrap();
 
-    let err = ensure_target_writable(&target).expect_err("readonly target must error");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("not writable") || msg.contains("writable"),
-        "expected writability error, got: {msg}"
-    );
+    ensure_target_writable(&target)
+        .expect("a 0444 target inside a writable parent is replaceable, so this must succeed");
 
     // Restore perms so tempdir cleanup works on all platforms
     let _ = fs::set_permissions(&target, fs::Permissions::from_mode(0o644));
@@ -3055,15 +3055,17 @@ fn ensure_target_writable_errors_on_readonly_existing_target() {
 #[test]
 #[cfg(unix)]
 fn ensure_target_writable_errors_on_readonly_parent_directory() {
-    // The parent-readonly arm (apply.rs ~314-321) — covered separately from
-    // the existing-target-readonly arm above, which fires on lines 328-333.
+    // A 0555 parent has no write bit. For a non-root process that cannot create
+    // an entry there, the probe must reject the target. Root bypasses DAC and
+    // genuinely can write, so it is asserted by the no-write-bit test below.
+    if cfgd_core::is_root() {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let parent = dir.path().join("ro_parent");
     fs::create_dir(&parent).unwrap();
     fs::set_permissions(&parent, fs::Permissions::from_mode(0o555)).unwrap();
 
-    // Target inside a readonly parent — file does not yet exist, so the
-    // existing-target arm is bypassed and the parent-readonly arm fires.
     let target = parent.join("dst.txt");
     let err =
         ensure_target_writable(&target).expect_err("readonly parent should reject new target");
@@ -3074,6 +3076,37 @@ fn ensure_target_writable_errors_on_readonly_parent_directory() {
     );
 
     // Restore perms so tempdir cleanup succeeds.
+    let _ = fs::set_permissions(&parent, fs::Permissions::from_mode(0o755));
+}
+
+#[test]
+#[cfg(unix)]
+fn ensure_target_writable_probes_real_access_not_mode_bits() {
+    // Regression for the dnf5/Fedora case: Fedora's /root is mode 0550 (no write
+    // bit) yet root writes there fine, while `Permissions::readonly()` reports it
+    // read-only. The check must reflect the kernel's real access decision, not the
+    // mode bits — so the outcome is privilege-dependent and asserted both ways.
+    let dir = tempfile::tempdir().unwrap();
+    let parent = dir.path().join("no_write_bit");
+    fs::create_dir(&parent).unwrap();
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o550)).unwrap();
+    let target = parent.join("f.txt");
+
+    let res = ensure_target_writable(&target);
+    if cfgd_core::is_root() {
+        assert!(
+            res.is_ok(),
+            "root can create entries in a 0550 dir; the check must not reject it: {res:?}"
+        );
+    } else {
+        // The test process owns `parent`, but 0550 grants the owner no write bit,
+        // so it genuinely cannot create a child entry.
+        assert!(
+            res.is_err(),
+            "a non-root owner of a 0550 dir cannot create entries there"
+        );
+    }
+
     let _ = fs::set_permissions(&parent, fs::Permissions::from_mode(0o755));
 }
 
