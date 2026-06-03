@@ -198,7 +198,7 @@ These flags work with any subcommand:
 
 | Flag | Short | Env Var | Description |
 |---|---|---|---|
-| `--config <path>` | | `CFGD_CONFIG` | Path to cfgd.yaml |
+| `--config <path>` | | `CFGD_CONFIG` | Path to `cfgd.yaml` (or a directory — cfgd infers `cfgd.yaml`, then `cfgd.toml`, inside it) |
 | `--profile <name>` | | `CFGD_PROFILE` | Override the active profile |
 | `--verbose` | `-v` | `CFGD_VERBOSE` | Show debug output |
 | `--quiet` | `-q` | `CFGD_QUIET` | Suppress all non-error output |
