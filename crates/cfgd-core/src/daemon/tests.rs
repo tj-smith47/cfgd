@@ -5206,6 +5206,7 @@ async fn handle_reconcile_with_valid_config_records_drift_events() {
             &self,
             _: &MergedProfile,
             _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             // Return a package install action to create drift
             Ok(vec![PackageAction::Install {
@@ -5309,6 +5310,7 @@ async fn handle_reconcile_notify_only_drift_policy_does_not_apply() {
             &self,
             _: &MergedProfile,
             _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             Ok(vec![PackageAction::Install {
                 manager: "cargo".into(),
@@ -5397,6 +5399,7 @@ async fn handle_reconcile_no_drift_when_no_actions() {
             &self,
             _: &MergedProfile,
             _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             Ok(vec![])
         }
@@ -5545,6 +5548,7 @@ async fn handle_reconcile_multiple_actions_records_all_drift() {
             &self,
             _: &MergedProfile,
             _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             Ok(vec![
                 PackageAction::Install {
@@ -5645,6 +5649,7 @@ impl DaemonHooks for DriftingFileHooks {
         &self,
         _: &MergedProfile,
         _: &[&dyn PackageManager],
+        _: &std::collections::HashSet<String>,
     ) -> crate::errors::Result<Vec<PackageAction>> {
         Ok(vec![])
     }
@@ -5828,6 +5833,7 @@ async fn handle_reconcile_runs_on_drift_scripts() {
             &self,
             _: &MergedProfile,
             _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             Ok(vec![PackageAction::Install {
                 manager: "cargo".into(),
@@ -5867,6 +5873,314 @@ async fn handle_reconcile_runs_on_drift_scripts() {
         marker.exists(),
         "onDrift script should have created marker file at {}",
         marker.display()
+    );
+}
+
+/// Records every package name passed to `uninstall`, so a daemon prune test can
+/// assert the reconcile actually executed the removal (not just planned it).
+struct RecordingUninstallManager {
+    uninstalled: Arc<Mutex<Vec<String>>>,
+    installed: HashSet<String>,
+}
+
+impl PackageManager for RecordingUninstallManager {
+    fn name(&self) -> &str {
+        "cargo"
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn can_bootstrap(&self) -> bool {
+        false
+    }
+    fn bootstrap(&self, _: &crate::output::Printer) -> crate::errors::Result<()> {
+        Ok(())
+    }
+    fn installed_packages(&self) -> crate::errors::Result<HashSet<String>> {
+        Ok(self.installed.clone())
+    }
+    fn install(&self, _: &[String], _: &crate::output::Printer) -> crate::errors::Result<()> {
+        Ok(())
+    }
+    fn uninstall(
+        &self,
+        packages: &[String],
+        _: &crate::output::Printer,
+    ) -> crate::errors::Result<()> {
+        // blocking_lock is safe: reconcile apply runs on spawn_blocking, off the
+        // async runtime worker.
+        self.uninstalled
+            .blocking_lock()
+            .extend(packages.iter().cloned());
+        Ok(())
+    }
+    fn update(&self, _: &crate::output::Printer) -> crate::errors::Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, _: &str) -> crate::errors::Result<Option<String>> {
+        Ok(None)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_reconcile_auto_policy_prunes_tracked_dropped_package() {
+    // The daemon is the primary GitOps reconcile path. A package cfgd installed
+    // (tracked in managed_resources) that has left the desired set must be
+    // pruned by `cfgd daemon`, and its tracking row deleted afterward. This
+    // proves cfgd_installed is read from state, threaded to the hook, the
+    // resulting Uninstall executed, and the row removed.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    // Pre-seed: cfgd previously installed cargo/bat (tracked) and cargo/ripgrep.
+    {
+        let seed = StateStore::open_in_dir(&state_dir).unwrap();
+        seed.upsert_managed_resource("package", "cargo/bat", "local", None, None)
+            .unwrap();
+        seed.upsert_managed_resource("package", "cargo/ripgrep", "local", None, None)
+            .unwrap();
+    }
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    let uninstalled = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    // Hook that registers the recording manager and emits an Uninstall for the
+    // dropped tracked package — but ONLY for packages actually present in the
+    // daemon-supplied cfgd_installed set, so the assertion proves the wiring.
+    struct PruneHooks {
+        uninstalled: Arc<Mutex<Vec<String>>>,
+        seen: Arc<Mutex<Vec<String>>>,
+    }
+    impl DaemonHooks for PruneHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            let mut reg = ProviderRegistry::new();
+            reg.package_managers
+                .push(Box::new(RecordingUninstallManager {
+                    uninstalled: Arc::clone(&self.uninstalled),
+                    // bat is still on the system; ripgrep too (desired, kept).
+                    installed: ["bat".to_string(), "ripgrep".to_string()]
+                        .into_iter()
+                        .collect(),
+                }));
+            reg
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+            cfgd_installed: &std::collections::HashSet<String>,
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            self.seen
+                .blocking_lock()
+                .extend(cfgd_installed.iter().cloned());
+            // bat dropped from desired but tracked+installed → prune it.
+            // ripgrep is desired (kept) so it is not pruned.
+            let mut actions = Vec::new();
+            if cfgd_installed.contains("cargo/bat") {
+                actions.push(PackageAction::Uninstall {
+                    manager: "cargo".into(),
+                    packages: vec!["bat".into()],
+                    origin: "local".into(),
+                });
+            }
+            Ok(actions)
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+    let hooks = PruneHooks {
+        uninstalled: Arc::clone(&uninstalled),
+        seen: Arc::clone(&seen),
+    };
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &hooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    // The daemon read both tracked rows from state and forwarded them.
+    let seen = seen.lock().await;
+    assert!(
+        seen.contains(&"cargo/bat".to_string()) && seen.contains(&"cargo/ripgrep".to_string()),
+        "daemon must forward the real tracked set to the hook: {seen:?}"
+    );
+
+    // The Uninstall executed against the manager.
+    let uninstalled = uninstalled.lock().await;
+    assert_eq!(
+        *uninstalled,
+        vec!["bat".to_string()],
+        "daemon should have pruned the dropped tracked package"
+    );
+
+    // The tracking row for the pruned package is gone; the kept one remains.
+    let after = StateStore::open_in_dir(&state_dir).unwrap();
+    assert!(
+        !after.is_resource_managed("package", "cargo/bat").unwrap(),
+        "pruned package's tracking row must be deleted"
+    );
+    assert!(
+        after
+            .is_resource_managed("package", "cargo/ripgrep")
+            .unwrap(),
+        "kept package's tracking row must remain"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_reconcile_auto_policy_gcs_stale_tracking_row() {
+    // A tracked row whose package is gone out-of-band produces no plan action,
+    // so prune can't reach it. The daemon's full-reconcile GC must reap it.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    {
+        let seed = StateStore::open_in_dir(&state_dir).unwrap();
+        // bat is installed (kept); phantom is tracked but NOT installed (stale).
+        seed.upsert_managed_resource("package", "cargo/bat", "local", None, None)
+            .unwrap();
+        seed.upsert_managed_resource("package", "cargo/phantom", "local", None, None)
+            .unwrap();
+    }
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    // Profile desires bat so there is drift → an apply runs → GC fires after.
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  packages:\n    cargo:\n      - bat\n",
+    )
+    .unwrap();
+
+    let uninstalled = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    struct GcHooks {
+        uninstalled: Arc<Mutex<Vec<String>>>,
+    }
+    impl DaemonHooks for GcHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            let mut reg = ProviderRegistry::new();
+            reg.package_managers
+                .push(Box::new(RecordingUninstallManager {
+                    uninstalled: Arc::clone(&self.uninstalled),
+                    // Only bat is on the system — phantom is gone.
+                    installed: ["bat".to_string()].into_iter().collect(),
+                }));
+            reg
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            // Emit one (idempotent) action so the reconcile enters the Auto-apply
+            // branch where GC runs; the GC is what this test asserts on.
+            Ok(vec![PackageAction::Install {
+                manager: "cargo".into(),
+                packages: vec!["bat".into()],
+                origin: "local".into(),
+            }])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    let hooks = GcHooks {
+        uninstalled: Arc::clone(&uninstalled),
+    };
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &hooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    let after = StateStore::open_in_dir(&state_dir).unwrap();
+    assert!(
+        !after
+            .is_resource_managed("package", "cargo/phantom")
+            .unwrap(),
+        "stale tracking row (package gone) must be GC'd by the daemon"
+    );
+    assert!(
+        after.is_resource_managed("package", "cargo/bat").unwrap(),
+        "tracking row for an installed package must remain"
     );
 }
 
@@ -5911,6 +6225,7 @@ async fn handle_reconcile_notify_only_with_notify_on_drift_sends_notification() 
             &self,
             _: &MergedProfile,
             _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             Ok(vec![PackageAction::Install {
                 manager: "cargo".into(),
@@ -7363,6 +7678,7 @@ mod harness {
             &self,
             _: &MergedProfile,
             _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             Ok(vec![])
         }
@@ -7397,6 +7713,7 @@ mod harness {
             &self,
             _: &MergedProfile,
             _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             Ok(vec![])
         }
@@ -7702,6 +8019,7 @@ mod harness {
             &self,
             _: &MergedProfile,
             _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             Ok(vec![])
         }
@@ -10067,6 +10385,7 @@ impl DaemonHooks for DiscoverTestHooks {
         &self,
         _: &MergedProfile,
         _: &[&dyn PackageManager],
+        _: &std::collections::HashSet<String>,
     ) -> crate::errors::Result<Vec<PackageAction>> {
         Ok(vec![])
     }
@@ -10169,6 +10488,7 @@ impl DaemonHooks for EmptyPlanHooks {
         &self,
         _: &MergedProfile,
         _: &[&dyn PackageManager],
+        _: &std::collections::HashSet<String>,
     ) -> crate::errors::Result<Vec<PackageAction>> {
         Ok(vec![])
     }
@@ -11092,6 +11412,7 @@ mod discover_managed_paths_extra {
             &self,
             _: &MergedProfile,
             _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
         ) -> crate::errors::Result<Vec<PackageAction>> {
             Ok(vec![])
         }
@@ -11182,6 +11503,7 @@ mod tests_run_daemon_wrapper {
             &self,
             _: &MergedProfile,
             _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
         ) -> CfgdResult<Vec<PackageAction>> {
             Ok(vec![])
         }

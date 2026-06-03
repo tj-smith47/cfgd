@@ -109,12 +109,49 @@ pub fn bootstrap_method(manager: &dyn PackageManager) -> &'static str {
     }
 }
 
+/// Compute the packages to prune for one manager: cfgd-tracked, still installed,
+/// no longer desired. User-installed packages (not in `cfgd_installed`) are
+/// never returned, so they survive a prune even when installed-and-not-desired.
+///
+/// `installed` holds identity names (what `installed_packages` reports), and the
+/// tracking key is `<manager>/<identity>`. Desired entries are mapped through
+/// `package_identity` so a manager whose install argument differs from its
+/// listed name (e.g. go: `rsc.io/2fa` → `2fa`) compares like with like; the
+/// returned values are identities, which is exactly what `uninstall` expects.
+fn uninstall_for_manager(
+    manager: &dyn PackageManager,
+    desired: &[String],
+    installed: &HashSet<String>,
+    cfgd_installed: &HashSet<String>,
+) -> Vec<String> {
+    let desired_identities: HashSet<String> = desired
+        .iter()
+        .map(|p| manager.package_identity(p))
+        .collect();
+    let name = manager.name();
+    installed
+        .iter()
+        .filter(|pkg| {
+            !desired_identities.contains(*pkg) && cfgd_installed.contains(&format!("{name}/{pkg}"))
+        })
+        .cloned()
+        .collect()
+}
+
 /// Plan package actions by diffing installed vs desired for all managers.
 /// Handles bootstrap: unavailable managers that can be bootstrapped get Bootstrap
 /// actions before their Install actions.
+///
+/// `cfgd_installed` carries the set of packages cfgd itself installed, as
+/// `"<manager>/<identity>"` entries (the installed-DB identity name — i.e. what
+/// `installed_packages` reports, which for go is the binary name). It bounds
+/// declarative prune: a package is only ever uninstalled when cfgd installed it,
+/// it is still on the system, and it has left the desired set — so packages the
+/// user installed outside cfgd are never removed.
 pub fn plan_packages(
     profile: &MergedProfile,
     managers: &[&dyn PackageManager],
+    cfgd_installed: &HashSet<String>,
 ) -> Result<Vec<PackageAction>> {
     let mut actions = Vec::new();
 
@@ -133,19 +170,40 @@ pub fn plan_packages(
     // Pass 2: generate actions
     for manager in managers {
         let desired = cfgd_core::config::desired_packages_for(manager.name(), profile);
-        if desired.is_empty() {
+
+        // A manager with no desired packages AND no cfgd-tracked installs has
+        // nothing to do — skip it without touching the system. Reading
+        // installed state for an idle manager is both wasteful and unsafe: a
+        // partially-installed manager (e.g. pacman present but its db
+        // unreadable) would error out and abort the whole plan even though no
+        // package under it is in play. Prune still fires when the LAST package
+        // is dropped because the dropped package leaves a tracked entry behind,
+        // so `has_tracked` stays true even as `desired` empties.
+        let mgr_prefix = format!("{}/", manager.name());
+        let has_tracked = cfgd_installed.iter().any(|id| id.starts_with(&mgr_prefix));
+        if desired.is_empty() && !has_tracked {
             continue;
         }
 
+        // Prune is computed independently of `desired` so dropping the LAST
+        // package from a manager still removes its cfgd-tracked installs.
+        // Only available managers can read installed state to confirm the
+        // package is still present before pruning.
         if manager.is_available() {
-            // Normal path: diff installed vs desired
             let installed = manager.installed_packages()?;
+
+            // Install before uninstall so a rename (old pkg dropped, new pkg
+            // added) lands the replacement before removing the old. The diff
+            // compares by IDENTITY (what `installed_packages` reports), not the
+            // raw entry: for go, `rsc.io/2fa` installs as binary `2fa`, so a
+            // raw-string compare would always re-install. The Install action
+            // still carries the ORIGINAL entries so `go install` gets the full
+            // module path.
             let to_install: Vec<String> = desired
                 .iter()
-                .filter(|p| !installed.contains(*p))
+                .filter(|p| !installed.contains(&manager.package_identity(p)))
                 .cloned()
                 .collect();
-
             if !to_install.is_empty() {
                 actions.push(PackageAction::Install {
                     manager: manager.name().to_string(),
@@ -153,6 +211,21 @@ pub fn plan_packages(
                     origin: "local".to_string(),
                 });
             }
+
+            let to_uninstall =
+                uninstall_for_manager(*manager, &desired, &installed, cfgd_installed);
+            if !to_uninstall.is_empty() {
+                actions.push(PackageAction::Uninstall {
+                    manager: manager.name().to_string(),
+                    packages: to_uninstall,
+                    origin: "local".to_string(),
+                });
+            }
+        } else if desired.is_empty() {
+            // Unavailable manager with only tracked installs and nothing desired:
+            // it cannot read installed state to confirm presence, so it cannot
+            // safely prune — leave its packages untouched.
+            continue;
         } else if manager.can_bootstrap() {
             // Unavailable but bootstrappable: add Bootstrap + Install all desired
             actions.push(PackageAction::Bootstrap {

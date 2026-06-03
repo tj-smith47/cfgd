@@ -55,6 +55,19 @@ pub trait PackageManager: Send + Sync {
     fn package_aliases(&self, _canonical_name: &str) -> Result<Vec<String>> {
         Ok(vec![])
     }
+
+    /// Map a profile package entry to the identity name that
+    /// [`installed_packages`](Self::installed_packages) reports for it.
+    ///
+    /// Most managers install and list under the same name, so the default is
+    /// identity. Managers whose install argument differs from the listed name —
+    /// notably `go`, where `rsc.io/2fa@v1` installs but lists as the binary
+    /// `2fa` — override this so install-diffing and prune compare like with
+    /// like. The returned value is also the per-package tracking key suffix
+    /// (`<manager>/<identity>`), keeping install-tracking and prune coherent.
+    fn package_identity(&self, entry: &str) -> String {
+        entry.to_string()
+    }
 }
 
 // --- SystemConfigurator trait ---

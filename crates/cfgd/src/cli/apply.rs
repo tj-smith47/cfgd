@@ -178,6 +178,16 @@ pub fn run_apply(
     // If --module is set, skip profile-level packages/files
     let module_only = module_filter.is_some();
 
+    // Declarative prune (and the post-apply tracking-table GC below) reconcile
+    // removals, which is only safe on a FULL, unscoped run: it needs the
+    // complete desired set to know a package has truly left the config. A scoped
+    // apply (--phase / --only / --skip / --skip-scripts) or a module-only run
+    // sees a partial picture, so prune/GC are suppressed there — a
+    // not-applied-this-run consumer might still need the package.
+    let scope_restricted =
+        phase_filter.is_some() || !skip.is_empty() || !only.is_empty() || args.skip_scripts;
+    let prune_eligible = !module_only && !scope_restricted;
+
     // In dry-run mode we don't need secret providers wired up — just plan files for display.
     // In apply mode we wire up the full file manager with secret providers.
     let (pkg_actions, file_actions, dry_run_fm) = if module_only {
@@ -188,7 +198,13 @@ pub fn run_apply(
             .iter()
             .map(|m| m.as_ref())
             .collect();
-        let pkg = packages::plan_packages(&effective_resolved.merged, &all_managers)?;
+        let cfgd_installed = if prune_eligible {
+            cfgd_installed_packages(&state)?
+        } else {
+            std::collections::HashSet::new()
+        };
+        let pkg =
+            packages::plan_packages(&effective_resolved.merged, &all_managers, &cfgd_installed)?;
 
         let mut fm = CfgdFileManager::new(&config_dir, &effective_resolved)?;
         fm.set_global_strategy(cfg.spec.file_strategy);
@@ -264,6 +280,19 @@ pub fn run_apply(
     // Handle unmanaged file targets: if a target exists as a non-cfgd file, prompt to
     // adopt (proceed), backup (rename to .cfgd-backup), or skip.
     handle_unmanaged_file_targets(&mut plan, &config_dir, &state, printer, yes)?;
+
+    // Self-heal the package-tracking table on a full unscoped apply, BEFORE the
+    // no-op early-return: a row whose package vanished (partial-uninstall
+    // failure or out-of-band removal) produces no plan action, so it would never
+    // be reached after the `has_actions` gate. Best-effort.
+    if prune_eligible {
+        let all_managers: Vec<&dyn cfgd_core::providers::PackageManager> = registry
+            .package_managers
+            .iter()
+            .map(|m| m.as_ref())
+            .collect();
+        gc_stale_package_tracking(&state, &all_managers);
+    }
 
     // Check if filtered plan has actions
     let has_actions = if let Some(ref pf) = phase_filter {
@@ -391,6 +420,33 @@ pub fn run_apply(
     printer.emit(Doc::new().with_data(&output));
 
     Ok(status)
+}
+
+/// Remove package-tracking rows whose package is no longer installed (stale
+/// after a partial-uninstall failure or an out-of-band removal). Best-effort:
+/// any failure is logged, never propagated, so it can't fail an apply.
+fn gc_stale_package_tracking(
+    state: &cfgd_core::state::StateStore,
+    managers: &[&dyn cfgd_core::providers::PackageManager],
+) {
+    let tracked = match cfgd_installed_packages(state) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to read tracked packages for GC");
+            return;
+        }
+    };
+    match cfgd_core::reconciler::stale_tracked_packages(managers, &tracked) {
+        Ok(stale) => {
+            for (mgr, id) in stale {
+                let rid = format!("{mgr}/{id}");
+                if let Err(e) = state.remove_managed_resource("package", &rid) {
+                    tracing::warn!(resource = %rid, error = %e, "failed to GC stale package tracking row");
+                }
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "failed to compute stale package tracking rows"),
+    }
 }
 
 fn apply_status_str(status: &cfgd_core::state::ApplyStatus) -> &'static str {

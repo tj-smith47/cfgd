@@ -363,3 +363,67 @@ pub(super) fn parse_resource_from_description(desc: &str) -> (String, String) {
         ("unknown".to_string(), desc.to_string())
     }
 }
+
+/// Parse a package action description (`"package:<mgr>:<verb>:<csv-packages>"`)
+/// into `(manager, verb, packages)`. Returns `None` for any description that is
+/// not a package action or lacks a package list (e.g. `package:<mgr>:bootstrap`,
+/// `package:<mgr>:skip`), so per-package tracking only fires for install/uninstall.
+pub(super) fn parse_package_description(desc: &str) -> Option<(String, String, Vec<String>)> {
+    let parts: Vec<&str> = desc.splitn(4, ':').collect();
+    if parts.len() != 4 || parts[0] != "package" {
+        return None;
+    }
+    let manager = parts[1].to_string();
+    let verb = parts[2].to_string();
+    let packages: Vec<String> = parts[3].split(',').map(str::to_string).collect();
+    Some((manager, verb, packages))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_package_description;
+
+    #[test]
+    fn parse_package_install_single() {
+        let parsed = parse_package_description("package:apt:install:hello").unwrap();
+        assert_eq!(parsed.0, "apt");
+        assert_eq!(parsed.1, "install");
+        assert_eq!(parsed.2, vec!["hello".to_string()]);
+    }
+
+    #[test]
+    fn parse_package_install_csv_multi() {
+        let parsed =
+            parse_package_description("package:cargo:install:bat,ripgrep,fd-find").unwrap();
+        assert_eq!(parsed.0, "cargo");
+        assert_eq!(parsed.1, "install");
+        assert_eq!(
+            parsed.2,
+            vec![
+                "bat".to_string(),
+                "ripgrep".to_string(),
+                "fd-find".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_package_uninstall() {
+        let parsed = parse_package_description("package:apt:uninstall:fd-find").unwrap();
+        assert_eq!(parsed.1, "uninstall");
+        assert_eq!(parsed.2, vec!["fd-find".to_string()]);
+    }
+
+    #[test]
+    fn parse_package_bootstrap_and_skip_have_no_packages() {
+        // bootstrap/skip descriptions carry no csv package list, so parsing
+        // declines them — they never drive per-package tracking.
+        assert!(parse_package_description("package:brew:bootstrap").is_none());
+        assert!(parse_package_description("package:apt:skip").is_none());
+    }
+
+    #[test]
+    fn parse_non_package_description_declines() {
+        assert!(parse_package_description("file:create:/home/.zshrc").is_none());
+    }
+}

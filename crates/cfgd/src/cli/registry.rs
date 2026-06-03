@@ -52,8 +52,12 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
         &self,
         profile: &cfgd_core::config::MergedProfile,
         managers: &[&dyn cfgd_core::providers::PackageManager],
+        cfgd_installed: &std::collections::HashSet<String>,
     ) -> cfgd_core::errors::Result<Vec<cfgd_core::providers::PackageAction>> {
-        packages::plan_packages(profile, managers)
+        // The daemon reconcile is a full, unscoped run, so forward the real
+        // tracked set: it prunes packages cfgd installed that have left the
+        // desired set (the safety invariant bounds it to cfgd-owned packages).
+        packages::plan_packages(profile, managers, cfgd_installed)
     }
 
     fn extend_registry_custom_managers(
@@ -211,6 +215,18 @@ pub(in crate::cli) fn build_registry_with_config_and_packages(
     }
 
     registry
+}
+
+/// Build the cfgd-installed package set (`"<manager>/<package>"` entries) from
+/// tracked state, for [`packages::plan_packages`] to bound declarative prune.
+pub(in crate::cli) fn cfgd_installed_packages(
+    state: &StateStore,
+) -> anyhow::Result<std::collections::HashSet<String>> {
+    Ok(state
+        .managed_package_ids()?
+        .into_iter()
+        .map(|(mgr, pkg)| format!("{mgr}/{pkg}"))
+        .collect())
 }
 
 pub(in crate::cli) fn open_state_store(state_dir: Option<&Path>) -> anyhow::Result<StateStore> {

@@ -1795,6 +1795,9 @@ struct TrackingPackageManager {
     installed: std::sync::Mutex<HashSet<String>>,
     install_calls: std::sync::Mutex<Vec<Vec<String>>>,
     uninstall_calls: std::sync::Mutex<Vec<Vec<String>>>,
+    // When true, `package_identity` maps an entry to its last `/`-segment after
+    // stripping `@<version>`, mimicking go (module path → binary name).
+    identity_strip: bool,
 }
 
 impl TrackingPackageManager {
@@ -1804,6 +1807,7 @@ impl TrackingPackageManager {
             installed: std::sync::Mutex::new(HashSet::new()),
             install_calls: std::sync::Mutex::new(Vec::new()),
             uninstall_calls: std::sync::Mutex::new(Vec::new()),
+            identity_strip: false,
         }
     }
 
@@ -1817,7 +1821,14 @@ impl TrackingPackageManager {
             installed: std::sync::Mutex::new(set),
             install_calls: std::sync::Mutex::new(Vec::new()),
             uninstall_calls: std::sync::Mutex::new(Vec::new()),
+            identity_strip: false,
         }
+    }
+
+    fn go_like(name: &str) -> Self {
+        let mut m = Self::new(name);
+        m.identity_strip = true;
+        m
     }
 }
 
@@ -1859,6 +1870,89 @@ impl PackageManager for TrackingPackageManager {
     fn available_version(&self, _package: &str) -> Result<Option<String>> {
         Ok(None)
     }
+    fn package_identity(&self, entry: &str) -> String {
+        if self.identity_strip {
+            entry
+                .split('@')
+                .next()
+                .unwrap_or(entry)
+                .rsplit('/')
+                .next()
+                .unwrap_or(entry)
+                .to_string()
+        } else {
+            entry.to_string()
+        }
+    }
+}
+
+#[test]
+fn stale_tracked_packages_core_identifies_gone_rows() {
+    use super::stale_tracked_packages;
+    // bat still installed → kept; ghost gone → stale.
+    let mgr = TrackingPackageManager::with_installed("cargo", &["bat"]);
+    let managers: Vec<&dyn PackageManager> = vec![&mgr];
+    let cfgd_installed: HashSet<String> = ["cargo/bat".to_string(), "cargo/ghost".to_string()]
+        .into_iter()
+        .collect();
+    let stale = stale_tracked_packages(&managers, &cfgd_installed).unwrap();
+    assert_eq!(stale, vec![("cargo".to_string(), "ghost".to_string())]);
+}
+
+#[test]
+fn apply_package_install_tracks_under_identity_for_go_like_manager() {
+    // go installs `rsc.io/2fa` but lists the binary `2fa`; the tracking key must
+    // be the identity `go/2fa` so prune later matches installed state.
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(TrackingPackageManager::go_like("go")));
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let pkg_actions = vec![PackageAction::Install {
+        manager: "go".to_string(),
+        packages: vec!["rsc.io/2fa".to_string()],
+        origin: "local".to_string(),
+    }];
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            pkg_actions,
+            Vec::new(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let printer = test_printer();
+    reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+        )
+        .unwrap();
+
+    assert!(
+        state.is_resource_managed("package", "go/2fa").unwrap(),
+        "install must track under the binary identity"
+    );
+    assert!(
+        !state
+            .is_resource_managed("package", "go/rsc.io/2fa")
+            .unwrap(),
+        "the module-path key must never be written"
+    );
 }
 
 #[test]
@@ -1969,6 +2063,126 @@ fn apply_package_uninstall_calls_mock() {
     let installed = pm.installed_packages().unwrap();
     assert!(!installed.contains("ripgrep"));
     assert!(installed.contains("fd"));
+}
+
+#[test]
+fn apply_package_install_tracks_per_package_managed_resource() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(TrackingPackageManager::new("brew")));
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let pkg_actions = vec![PackageAction::Install {
+        manager: "brew".to_string(),
+        packages: vec!["ripgrep".to_string(), "fd".to_string()],
+        origin: "local".to_string(),
+    }];
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            pkg_actions,
+            Vec::new(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let printer = test_printer();
+    reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+        )
+        .unwrap();
+
+    // Each installed package tracks under its own "<mgr>/<pkg>" key.
+    assert!(
+        state
+            .is_resource_managed("package", "brew/ripgrep")
+            .unwrap()
+    );
+    assert!(state.is_resource_managed("package", "brew/fd").unwrap());
+    // The lossy "install:<pkg>" key must never be written.
+    assert!(
+        !state
+            .is_resource_managed("package", "install:ripgrep")
+            .unwrap()
+    );
+}
+
+#[test]
+fn apply_package_uninstall_untracks_managed_resource() {
+    let state = test_state();
+    // Pre-track a package as cfgd-installed.
+    state
+        .upsert_managed_resource("package", "brew/ripgrep", "local", None, None)
+        .unwrap();
+
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(TrackingPackageManager::with_installed(
+            "brew",
+            &["ripgrep"],
+        )));
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let pkg_actions = vec![PackageAction::Uninstall {
+        manager: "brew".to_string(),
+        packages: vec!["ripgrep".to_string()],
+        origin: "local".to_string(),
+    }];
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            pkg_actions,
+            Vec::new(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let printer = test_printer();
+    reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+        )
+        .unwrap();
+
+    // The tracking row is deleted, not re-added under a bogus key.
+    assert!(
+        !state
+            .is_resource_managed("package", "brew/ripgrep")
+            .unwrap()
+    );
+    assert!(
+        !state
+            .is_resource_managed("package", "uninstall:ripgrep")
+            .unwrap()
+    );
 }
 
 #[test]

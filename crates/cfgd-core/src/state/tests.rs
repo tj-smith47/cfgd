@@ -143,6 +143,60 @@ fn is_resource_managed() {
 }
 
 #[test]
+fn remove_managed_resource_deletes_tracked_row() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_managed_resource("package", "apt/fd-find", "local", None, None)
+        .unwrap();
+    assert!(store.is_resource_managed("package", "apt/fd-find").unwrap());
+
+    store
+        .remove_managed_resource("package", "apt/fd-find")
+        .unwrap();
+    assert!(!store.is_resource_managed("package", "apt/fd-find").unwrap());
+}
+
+#[test]
+fn remove_managed_resource_is_idempotent_on_missing_row() {
+    let store = StateStore::open_in_memory().unwrap();
+    // Deleting a row that was never tracked is a no-op, not an error.
+    store
+        .remove_managed_resource("package", "apt/nonexistent")
+        .unwrap();
+}
+
+#[test]
+fn managed_package_ids_round_trip() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_managed_resource("package", "apt/fd-find", "local", None, None)
+        .unwrap();
+    store
+        .upsert_managed_resource("package", "cargo/ripgrep", "local", None, None)
+        .unwrap();
+    // A non-package resource must never appear in the package id list.
+    store
+        .upsert_managed_resource("file", "/home/.zshrc", "local", None, None)
+        .unwrap();
+
+    let mut ids = store.managed_package_ids().unwrap();
+    ids.sort();
+    assert_eq!(
+        ids,
+        vec![
+            ("apt".to_string(), "fd-find".to_string()),
+            ("cargo".to_string(), "ripgrep".to_string()),
+        ]
+    );
+
+    store
+        .remove_managed_resource("package", "apt/fd-find")
+        .unwrap();
+    let ids = store.managed_package_ids().unwrap();
+    assert_eq!(ids, vec![("cargo".to_string(), "ripgrep".to_string())]);
+}
+
+#[test]
 fn managed_resources_unique_constraint() {
     let store = StateStore::open_in_memory().unwrap();
     store

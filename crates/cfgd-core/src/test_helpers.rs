@@ -937,6 +937,7 @@ impl crate::daemon::DaemonHooks for NoopDaemonHooks {
         &self,
         _: &crate::config::MergedProfile,
         _: &[&dyn crate::providers::PackageManager],
+        _: &std::collections::HashSet<String>,
     ) -> crate::errors::Result<Vec<crate::providers::PackageAction>> {
         Ok(vec![])
     }

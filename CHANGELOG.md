@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **packages**: Declarative package removal. `cfgd apply` (and the daemon reconcile loop) now uninstalls a package once it leaves the desired set — removed from a profile, or from the last module that required it. Removal is state-tracked and conservative: only packages cfgd itself installed are ever removed (pre-existing/user-installed packages are never touched), a shared package survives until its last consumer is dropped, and only a full unscoped apply prunes (`--module`/`--phase`/`--only`/`--skip` never uninstall). The tracking table self-heals when a tracked package is removed out of band.
+
 ## [0.4.0] - 2026-05-25
 
 ### Security

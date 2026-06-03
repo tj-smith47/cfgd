@@ -28,6 +28,38 @@ impl StateStore {
         Ok(())
     }
 
+    /// Remove a managed resource record. Idempotent: deleting a row that is not
+    /// tracked is a no-op, not an error — so an uninstall of an already-untracked
+    /// package succeeds cleanly.
+    pub fn remove_managed_resource(&self, resource_type: &str, resource_id: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM managed_resources WHERE resource_type = ?1 AND resource_id = ?2",
+            params![resource_type, resource_id],
+        )?;
+        Ok(())
+    }
+
+    /// Tracked cfgd-installed packages as `(manager, package)` pairs.
+    ///
+    /// Rows have `resource_type = "package"` and `resource_id = "<manager>/<package>"`;
+    /// the id is split on the first `/` so package names containing `/` (none today,
+    /// but defensive) keep their tail intact. Rows whose id has no `/` are skipped.
+    pub fn managed_package_ids(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT resource_id FROM managed_resources WHERE resource_type = 'package' ORDER BY resource_id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|id| {
+                id.split_once('/')
+                    .map(|(mgr, pkg)| (mgr.to_string(), pkg.to_string()))
+            })
+            .collect())
+    }
+
     /// Check if a resource is tracked in managed_resources.
     pub fn is_resource_managed(&self, resource_type: &str, resource_id: &str) -> Result<bool> {
         let count: i64 = self.conn.query_row(

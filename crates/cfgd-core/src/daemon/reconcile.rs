@@ -285,13 +285,22 @@ pub(crate) fn handle_reconcile(
     let reconciler = crate::reconciler::Reconciler::new(&registry, &store);
 
     let available_managers = registry.available_package_managers();
-    let pkg_actions = match hooks.plan_packages(&resolved.merged, &available_managers) {
-        Ok(a) => a,
-        Err(e) => {
-            tracing::error!(error = %e, "reconcile: package planning failed");
-            return;
-        }
-    };
+    // The daemon is a full, unscoped reconcile, so it prunes: feed the real
+    // cfgd-tracked set as `"<manager>/<identity>"` entries.
+    let cfgd_installed: HashSet<String> = store
+        .managed_package_ids()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(mgr, pkg)| format!("{mgr}/{pkg}"))
+        .collect();
+    let pkg_actions =
+        match hooks.plan_packages(&resolved.merged, &available_managers, &cfgd_installed) {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::error!(error = %e, "reconcile: package planning failed");
+                return;
+            }
+        };
 
     let file_actions = match hooks.plan_files(&config_dir, &resolved) {
         Ok(a) => a,
@@ -490,6 +499,29 @@ pub(crate) fn handle_reconcile(
                             failed = failed,
                             "auto-apply complete"
                         );
+                        // Self-heal the tracking table on a full (non-module)
+                        // reconcile: drop rows whose package is gone (partial
+                        // uninstall / out-of-band removal) so they can't leak.
+                        if module_filter.is_none() {
+                            match crate::reconciler::stale_tracked_packages(
+                                &available_managers,
+                                &cfgd_installed,
+                            ) {
+                                Ok(stale) => {
+                                    for (mgr, id) in stale {
+                                        let rid = format!("{mgr}/{id}");
+                                        if let Err(e) =
+                                            store.remove_managed_resource("package", &rid)
+                                        {
+                                            tracing::warn!(resource = %rid, error = %e, "failed to GC stale package tracking row");
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "failed to compute stale package tracking rows")
+                                }
+                            }
+                        }
                         if failed > 0 && notify_on_drift {
                             notifier.notify(
                                 "cfgd: auto-apply partial failure",

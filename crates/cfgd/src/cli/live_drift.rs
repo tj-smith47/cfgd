@@ -82,6 +82,7 @@ pub(super) fn live_drift_results(
     resolved: &ResolvedProfile,
     registry: &ProviderRegistry,
     modules: &[ResolvedModule],
+    cfgd_installed: &std::collections::HashSet<String>,
 ) -> anyhow::Result<Vec<VerifyResult>> {
     let mut drift = Vec::new();
 
@@ -105,7 +106,7 @@ pub(super) fn live_drift_results(
         .iter()
         .map(|m| m.as_ref())
         .collect();
-    for action in packages::plan_packages(&resolved.merged, &all_managers)? {
+    for action in packages::plan_packages(&resolved.merged, &all_managers, cfgd_installed)? {
         if let Some(result) = package_action_drift(&action) {
             drift.push(result);
         }
@@ -268,7 +269,14 @@ mod tests {
 
         let resolved = resolved_with_file(target);
         let registry = crate::cli::build_registry_with_profile(&resolved.merged.packages);
-        let drift = live_drift_results(dir.path(), &resolved, &registry, &[]).unwrap();
+        let drift = live_drift_results(
+            dir.path(),
+            &resolved,
+            &registry,
+            &[],
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
         assert!(
             !drift.is_empty(),
             "content drift on a managed file must register as live drift: {drift:?}"
@@ -284,7 +292,14 @@ mod tests {
 
         let resolved = resolved_with_file(target);
         let registry = crate::cli::build_registry_with_profile(&resolved.merged.packages);
-        let drift = live_drift_results(dir.path(), &resolved, &registry, &[]).unwrap();
+        let drift = live_drift_results(
+            dir.path(),
+            &resolved,
+            &registry,
+            &[],
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
         assert!(
             drift.is_empty(),
             "matching file + empty packages/system must be no-drift: {drift:?}"
@@ -377,7 +392,14 @@ mod tests {
         let resolved = resolved_with_file(profile_target);
         let registry = crate::cli::build_registry_with_profile(&resolved.merged.packages);
         let modules = vec![module_with_file("accmod", mod_source, mod_target)];
-        let drift = live_drift_results(dir.path(), &resolved, &registry, &modules).unwrap();
+        let drift = live_drift_results(
+            dir.path(),
+            &resolved,
+            &registry,
+            &modules,
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
         assert_eq!(drift.len(), 1, "only the module file drifts: {drift:?}");
         assert_eq!(drift[0].resource_type, "module");
     }
@@ -397,7 +419,14 @@ mod tests {
         let resolved = resolved_with_file(profile_target);
         let registry = crate::cli::build_registry_with_profile(&resolved.merged.packages);
         let modules = vec![module_with_file("accmod", mod_source, mod_target)];
-        let drift = live_drift_results(dir.path(), &resolved, &registry, &modules).unwrap();
+        let drift = live_drift_results(
+            dir.path(),
+            &resolved,
+            &registry,
+            &modules,
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
         assert!(
             drift.is_empty(),
             "clean module file must not drift: {drift:?}"

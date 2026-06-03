@@ -26,6 +26,7 @@ mod tests;
 pub use apply::action_matches_phase_filter;
 pub use env_engine::launchd_env_plist;
 pub use format::{format_action_description, format_plan_items};
+pub use packages::stale_tracked_packages;
 pub use types::{
     Action, ActionResult, ApplyResult, EnvAction, ModuleAction, ModuleActionKind, Phase, PhaseName,
     Plan, ReconcileContext, RollbackResult, ScriptAction, ScriptPhase, SystemAction,

@@ -144,7 +144,20 @@ pub fn cmd_plan(
             .iter()
             .map(|m| m.as_ref())
             .collect();
-        let pkg = packages::plan_packages(&effective_resolved.merged, &all_managers)?;
+        // Mirror apply's prune guard so the preview matches what a real run does:
+        // a scoped plan (--phase / --only / --skip / --skip-scripts) sees a
+        // partial picture, so suppress prune previews with an empty tracked set.
+        let scope_restricted = phase_filter.is_some()
+            || !args.skip.is_empty()
+            || !args.only.is_empty()
+            || args.skip_scripts;
+        let cfgd_installed = if scope_restricted {
+            std::collections::HashSet::new()
+        } else {
+            cfgd_installed_packages(&state)?
+        };
+        let pkg =
+            packages::plan_packages(&effective_resolved.merged, &all_managers, &cfgd_installed)?;
 
         let mut fm = CfgdFileManager::new(&config_dir, &effective_resolved)?;
         fm.set_global_strategy(cfg.spec.file_strategy);

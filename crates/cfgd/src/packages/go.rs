@@ -106,10 +106,11 @@ impl PackageManager for GoInstallManager {
 
         let bin_dir = std::path::PathBuf::from(&gopath).join("bin");
         for pkg in packages {
-            // The binary name is the last path component of the module path.
-            // Validate it contains no path separators to prevent traversal.
-            let raw_name = pkg.rsplit('/').next().unwrap_or(pkg);
-            let bin_name = std::path::Path::new(raw_name)
+            // Derive the binary name from the module path (idempotent if `pkg`
+            // is already a bare binary name from the prune path), then re-validate
+            // it carries no path separators to prevent traversal.
+            let raw_name = go_binary_name(pkg);
+            let bin_name = std::path::Path::new(&raw_name)
                 .file_name()
                 .and_then(|n| n.to_str())
                 .ok_or_else(|| PackageError::UninstallFailed {
@@ -131,6 +132,10 @@ impl PackageManager for GoInstallManager {
     fn update(&self, _printer: &Printer) -> Result<()> {
         // go install pkg@latest re-installs to update; no separate update command
         Ok(())
+    }
+
+    fn package_identity(&self, entry: &str) -> String {
+        go_binary_name(entry)
     }
 
     fn available_version(&self, package: &str) -> Result<Option<String>> {
@@ -165,6 +170,20 @@ pub(super) fn scan_go_bin_dir(bin_dir: &std::path::Path) -> HashSet<String> {
         }
     }
     packages
+}
+
+/// Derive the binary name `go install` produces from a module-path entry: the
+/// last `/`-segment after stripping any `@<version>` suffix
+/// (`rsc.io/2fa@v1.2.0` → `2fa`). This is what `installed_packages()` reports
+/// (it scans `$GOPATH/bin` for binary names), so it is the identity used for
+/// install-diffing, prune, and the per-package tracking key.
+pub(super) fn go_binary_name(entry: &str) -> String {
+    let without_version = entry.split('@').next().unwrap_or(entry);
+    without_version
+        .rsplit('/')
+        .next()
+        .unwrap_or(without_version)
+        .to_string()
 }
 
 /// Derive the `go install` argument from a user-supplied package reference:
@@ -337,6 +356,39 @@ mod tests {
     }
 
     // --- go_install_path ---
+
+    // --- go_binary_name / package_identity ---
+
+    #[test]
+    fn go_binary_name_takes_last_segment() {
+        assert_eq!(go_binary_name("rsc.io/2fa"), "2fa");
+        assert_eq!(go_binary_name("golang.org/x/tools/gopls"), "gopls");
+    }
+
+    #[test]
+    fn go_binary_name_strips_version() {
+        assert_eq!(go_binary_name("rsc.io/2fa@v1.2.0"), "2fa");
+        assert_eq!(go_binary_name("golang.org/x/tools/gopls@latest"), "gopls");
+        assert_eq!(
+            go_binary_name("example.com/pkg@v0.0.0-20240101000000-abcdef123456"),
+            "pkg"
+        );
+    }
+
+    #[test]
+    fn go_binary_name_passthrough_for_bare_name() {
+        // A bare binary name (from the prune path) maps to itself — idempotent.
+        assert_eq!(go_binary_name("2fa"), "2fa");
+    }
+
+    #[test]
+    fn go_package_identity_matches_binary_name() {
+        // package_identity is the installed-DB identity; for go that is the
+        // binary name, so install-diffing and prune compare like with like.
+        let mgr = GoInstallManager;
+        assert_eq!(mgr.package_identity("rsc.io/2fa@v1.2.0"), "2fa");
+        assert_eq!(mgr.package_identity("golang.org/x/tools/gopls"), "gopls");
+    }
 
     #[test]
     fn go_install_path_appends_at_latest_for_bare_module() {

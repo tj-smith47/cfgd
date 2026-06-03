@@ -123,6 +123,30 @@ packages:
 
 cfgd picks the first available manager that satisfies the version constraint, using `aliases` to map package names where they differ.
 
+## Declarative removal
+
+cfgd tracks the packages it installs. When a package leaves the desired set — you remove it from a profile, or remove the last module that required it — the next full `cfgd apply` (and the daemon's reconcile loop) uninstalls it through the owning manager.
+
+Removal is deliberately conservative:
+
+- **Only packages cfgd installed are ever removed.** A package already present the first time cfgd would have installed it is treated as pre-existing: cfgd never recorded it, so it is never uninstalled — even if it appears in no profile. cfgd will not remove software you installed yourself.
+- **Shared packages survive until the last consumer is dropped.** The desired set is the merge of the active profile and *all* its modules, so a package required by more than one module is removed only when the final module that wants it is removed.
+- **Only a full apply prunes.** A scoped run — `--module`, `--phase`, `--only`, `--skip` — never uninstalls, because it sees only part of the desired set and a package it omits may still be needed by something not applied this run.
+- **Tracking self-heals.** If a tracked package is removed out of band, cfgd drops its tracking on the next full apply, so it is not "re-removed" or otherwise acted on.
+
+```yaml
+# before: jq is installed by cfgd
+packages:
+  brew:
+    formulae: [git, jq]
+```
+```yaml
+# after: drop jq, then `cfgd apply` → brew uninstall jq (cfgd installed it; nothing else wants it)
+packages:
+  brew:
+    formulae: [git]
+```
+
 ## Version Queries
 
 Each manager supports querying available package versions without installing:

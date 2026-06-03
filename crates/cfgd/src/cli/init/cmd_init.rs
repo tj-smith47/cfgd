@@ -245,7 +245,13 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 .iter()
                 .map(|m| m.as_ref())
                 .collect();
-            let pkg_actions = super::packages::plan_packages(&resolved.merged, &all_managers)?;
+            // First-run init must never prune: pass an empty tracked set so a
+            // fresh machine only ever installs, never uninstalls.
+            let pkg_actions = super::packages::plan_packages(
+                &resolved.merged,
+                &all_managers,
+                &std::collections::HashSet::new(),
+            )?;
 
             let fm = super::CfgdFileManager::new(&target_dir, &resolved)?;
             let file_actions = fm.plan(&resolved.merged)?;

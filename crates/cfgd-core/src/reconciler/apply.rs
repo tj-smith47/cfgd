@@ -5,7 +5,9 @@ use crate::modules::ResolvedModule;
 use crate::output::{Printer, Role};
 use crate::state::ApplyStatus;
 
-use super::format::{format_action_description, parse_resource_from_description};
+use super::format::{
+    format_action_description, parse_package_description, parse_resource_from_description,
+};
 use super::restore::action_target_path;
 use super::scripts::{
     MODULE_SCRIPT_TIMEOUT, build_module_script_env, build_script_env, effective_continue_on_error,
@@ -507,12 +509,43 @@ impl<'a> super::Reconciler<'a> {
 
         // Update managed resources
         for result in &results {
-            if result.success {
-                let (rtype, rid) = parse_resource_from_description(&result.description);
-                self.state
-                    .upsert_managed_resource(&rtype, &rid, "local", None, Some(apply_id))?;
-                self.state.resolve_drift(apply_id, &rtype, &rid)?;
+            if !result.success {
+                continue;
             }
+
+            // Packages track per-resolved-name under "package"/"<mgr>/<pkg>" so the
+            // set is usable for declarative prune. The generic parser is lossy for
+            // multi-package installs and embeds the verb, so handle them explicitly:
+            // install adds a tracking row per package, uninstall deletes it.
+            if let Some((manager, verb, packages)) = parse_package_description(&result.description)
+            {
+                for pkg in &packages {
+                    let rid = format!("{manager}/{pkg}");
+                    match verb.as_str() {
+                        "install" => {
+                            self.state.upsert_managed_resource(
+                                "package",
+                                &rid,
+                                "local",
+                                None,
+                                Some(apply_id),
+                            )?;
+                            self.state.resolve_drift(apply_id, "package", &rid)?;
+                        }
+                        "uninstall" => {
+                            self.state.remove_managed_resource("package", &rid)?;
+                            self.state.resolve_drift(apply_id, "package", &rid)?;
+                        }
+                        _ => {}
+                    }
+                }
+                continue;
+            }
+
+            let (rtype, rid) = parse_resource_from_description(&result.description);
+            self.state
+                .upsert_managed_resource(&rtype, &rid, "local", None, Some(apply_id))?;
+            self.state.resolve_drift(apply_id, &rtype, &rid)?;
         }
 
         // Update module state and file manifests for successfully applied modules

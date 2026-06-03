@@ -62,7 +62,12 @@ pub fn cmd_diff(
             .iter()
             .map(|m| m.as_ref())
             .collect();
-        let pkg_actions = packages::plan_packages(&resolved.merged, &all_managers)?;
+        // Tracked-but-dropped packages must surface as drift here, so read the
+        // cfgd-installed set from state to bound prune the same way apply does.
+        let state = open_state_store(cli.state_dir.as_deref())?;
+        let cfgd_installed = cfgd_installed_packages(&state)?;
+        let pkg_actions =
+            packages::plan_packages(&resolved.merged, &all_managers, &cfgd_installed)?;
         print_package_drift(&pkg_actions, &pkg_sec, &mut diff_payload)
     };
 

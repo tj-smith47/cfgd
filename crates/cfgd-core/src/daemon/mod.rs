@@ -44,10 +44,16 @@ pub trait DaemonHooks: Send + Sync {
     fn plan_files(&self, config_dir: &Path, resolved: &ResolvedProfile) -> Result<Vec<FileAction>>;
 
     /// Plan package actions by comparing installed vs desired.
+    ///
+    /// `cfgd_installed` is the set of cfgd-tracked packages as
+    /// `"<manager>/<identity>"` entries; it bounds declarative prune so only
+    /// packages cfgd installed are ever removed. The daemon is a full, unscoped
+    /// reconcile, so it passes the real tracked set and DOES prune.
     fn plan_packages(
         &self,
         profile: &MergedProfile,
         managers: &[&dyn PackageManager],
+        cfgd_installed: &std::collections::HashSet<String>,
     ) -> Result<Vec<PackageAction>>;
 
     /// Extend the registry with custom (user-defined) package managers from the profile.
