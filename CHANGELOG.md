@@ -40,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **env**: Add worked envScope example showing reach across contexts
 - **system**: MacOS environment configurator is a system LaunchDaemon
 - Add AUR (Arch Linux) install entry
+- **changelog**: Regenerate from conventional commits
+- **rules**: Catalog env_session shared-util + module boundary
+- **configuration**: Note --config accepts a directory
 
 ### Fixed
 
@@ -61,6 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **state,cli**: Unify state DB filename + typed no-config exit (exit 3, names path)
 - **verify,status**: Content-aware module-file drift + truthful status -e display
 - **config**: --config <dir> infers the discovery config file
+- **packages**: Use `dnf list --installed` flag for dnf5 compatibility
 
 ### Miscellaneous
 
