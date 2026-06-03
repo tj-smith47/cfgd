@@ -121,7 +121,13 @@ upx:
 # Top-level config (not per-crate); skipped automatically for library
 # crates that produce no binaries.
 makeselfs:
+  # cfgd CLI (gnu) only. A self-extracting /usr/local/bin installer is meaningful
+  # solely for the CLI; operator/csi are k8s-deployed (docker images + helm), and
+  # the musl build is nfpm-package-only — so restricting to ids:[cfgd] both keeps
+  # the installer CLI-only and prevents the musl linux-amd64 build from colliding
+  # with the gnu one on the {Os}-{Arch} installer filename.
   - id: default
+    ids: [cfgd]
     name: "cfgd Installer"
     script: scripts/makeself-install.sh
     filename: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}-installer.run"
@@ -156,11 +162,31 @@ workspaces:
           enabled: true
           mode: cargo
         builds:
-          - binary: cfgd
+          # gnu build → tarballs / binstall / homebrew cask / makeself installer
+          # (dynamic glibc, the native experience for direct downloads).
+          # Inherits defaults.targets (the six gnu/darwin/windows triples).
+          - id: cfgd
+            binary: cfgd
             features: []
             no_default_features: false
+          # musl build → feeds ONLY the nfpm Linux packages (deb/rpm/apk). A static
+          # musl binary carries no glibc dependency, so those packages install and
+          # run on every Linux distro: Alpine (apk) and ANY glibc distro including
+          # old EL7/EL8/EL9 + AL2 and LTS releases (deb/rpm) that sit below the gnu
+          # build-host glibc floor and would otherwise get an unrunnable binary.
+          # Cross-compiled by cargo-zigbuild (defaults.cross: auto detects it).
+          - id: cfgd-musl
+            binary: cfgd
+            features: []
+            no_default_features: false
+            targets:
+              - x86_64-unknown-linux-musl
         archives:
-          - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
+          # gnu only: the musl build is package-only (nfpm), never a standalone
+          # tarball, so binstall/homebrew/install.sh asset names never gain a musl
+          # variant and the existing linux-amd64 archive name is unchanged.
+          - ids: [cfgd]
+            name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
             formats: [tar.gz]
             format_overrides:
               - os: windows
@@ -421,8 +447,16 @@ workspaces:
         docker_digest:
           name_template: "cfgd_{{ .Tag }}.digest"
         nfpm:
+          # Every Linux native package is built from the STATIC musl binary
+          # (ids: [cfgd-musl]). A static binary has no shared-libc dependency, so
+          # one set of deb/rpm/apk installs and runs on every distro — Alpine
+          # (apk) and any glibc distro incl. those below the gnu build-host floor
+          # (old EL7/8/9 + AL2 via rpm/yum, LTS via deb). The gnu build stays for
+          # tarballs/binstall/homebrew (ids:[cfgd]); it is excluded here so deb/rpm
+          # never carry an unrunnable-on-old-glibc binary.
           - id: default
             package_name: cfgd
+            ids: [cfgd-musl]
             formats:
               - deb
               - rpm
@@ -442,8 +476,9 @@ workspaces:
             mtime: "{{ CommitDate }}"
             recommends:
               - git
-            provides:
-              - cfgd
+            # No `provides: [cfgd]`: a package already provides its own name on
+            # deb/rpm/apk, and on apk a self-provide is rejected as a conflict
+            # (`conflicts: cfgd[cfgd]`), making the package uninstallable.
             file_name_template: "{{ ProjectName }}_{{ RawVersion }}_{{ Os }}_{{ Arch }}"
             contents:
               - src: LICENSE
