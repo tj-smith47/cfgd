@@ -19,6 +19,7 @@ External call sites do not change: `cfgd_core::utc_now_iso8601(...)`, `cfgd_core
 | `util/fs_perms.rs` | Cross-platform symlinks, permissions, exec-bit, inode/file-index identity |
 | `util/file_io.rs` | `atomic_write[_str]`, `capture_file_state[_resolved]`, `FileState` struct |
 | `util/process.rs` | Command helpers (`command_output_with_timeout`, `command_available`, `terminate_process`, `stdout/stderr_lossy_trimmed`, `is_root`, `hostname_string`, `tracing_env_filter`, `require_tool`) |
+| `util/env_session.rs` | User-session live env refresh shell-outs: `refresh_session_env` (idempotent, all-platform dispatch), `launchctl_setenv`, `windows_setx`. The controlled `Command` layer for `launchctl`/`systemctl --user`/`setx` (see module-boundaries.md); shared by the user `spec.env` path and the system `environment` configurator |
 | `util/git.rs` | Git + Sigstore/cosign factories: `git_cmd_safe`, `try_git_cmd`, `cosign_cmd`, `detect_default_branch`, `git_ssh_credentials` |
 | `util/hashing.rs` | SHA256 helpers + loose-semver parsing/satisfaction |
 | `util/apply_lock.rs` | `ApplyLockGuard` + `acquire_apply_lock` (Unix/Windows) |
