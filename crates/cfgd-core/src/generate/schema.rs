@@ -168,6 +168,14 @@ spec:
 
   # Per-manager package declarations.
   # optional
+  #
+  # Every manager accepts BOTH a bare list and a struct form. The bare list
+  # maps to the manager's primary list (packages for most, global for npm,
+  # formulae for brew):
+  #   flatpak: [org.gnome.Calculator]   ==   flatpak: {packages: [org.gnome.Calculator]}
+  #   cargo:   [bat, eza]               ==   cargo:   {packages: [bat, eza]}
+  # Use the struct form to set extra fields (file manifests, brew taps/casks,
+  # flatpak remote, snap classic).
   packages:
     # Homebrew (macOS, Linux)
     brew:
@@ -189,9 +197,7 @@ spec:
         - build-essential
         - curl
 
-    # Cargo (Rust) — accepts list form or object form
-    # List form: cargo: [bat, eza]
-    # Object form shown below:
+    # Cargo (Rust)
     cargo:
       file: Cargo.toml          # optional, string — path to Cargo.toml with [dependencies]
       packages:                  # optional, list of strings

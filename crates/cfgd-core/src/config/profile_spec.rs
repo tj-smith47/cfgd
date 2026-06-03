@@ -1,11 +1,157 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::module::ScriptEntry;
 use super::source::{EnvVar, ShellAlias};
 use crate::errors::{ConfigError, Result};
+
+/// A package-manager spec struct that can be built from a bare list of package
+/// names, so a manager accepts both `manager: [a, b]` and
+/// `manager: {<knobs>}`. The bare list maps to the manager's primary list
+/// field; every other field takes its default.
+pub trait FromPackageList {
+    /// Build the spec from a bare list of package names.
+    fn from_package_list(packages: Vec<String>) -> Self;
+}
+
+/// Accept either a YAML sequence (the package list) or a map with a `packages:`
+/// key (rejecting any other key) for a field whose type stays `Vec<String>`.
+///
+/// This gives the 12 bare-`Vec<String>` managers a struct form
+/// (`manager: {packages: [...]}`) without changing their field type, so the
+/// list and struct forms are interchangeable by construction. A map with an
+/// unrecognized key still errors loudly (typo-detection preserved) — a hand
+/// visitor is used rather than `#[serde(untagged)]` because untagged collapses
+/// the precise `unknown field` error into a useless "did not match any variant".
+fn list_or_packages_vec<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de;
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PackagesMap {
+        #[serde(default)]
+        packages: Vec<String>,
+    }
+
+    struct ListOrPackagesVisitor;
+
+    impl<'de> de::Visitor<'de> for ListOrPackagesVisitor {
+        type Value = Vec<String>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a list of package names or a map with a `packages` key")
+        }
+
+        // A serialized-then-reloaded empty manager surfaces as `manager: null`;
+        // treat it as the empty list so round-trips stay lossless.
+        fn visit_unit<E>(self) -> std::result::Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(Vec::new())
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+        where
+            A: de::SeqAccess<'de>,
+        {
+            let mut packages = Vec::new();
+            while let Some(item) = seq.next_element::<String>()? {
+                packages.push(item);
+            }
+            Ok(packages)
+        }
+
+        fn visit_map<M>(self, map: M) -> std::result::Result<Self::Value, M::Error>
+        where
+            M: de::MapAccess<'de>,
+        {
+            let m = PackagesMap::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            Ok(m.packages)
+        }
+    }
+
+    deserializer.deserialize_any(ListOrPackagesVisitor)
+}
+
+/// Accept either a YAML sequence (→ `T::from_package_list`) or a map (→ derived
+/// `T`) for an `Option<T>` field. An absent field stays `None` (via the field's
+/// `#[serde(default)]`); a present value is resolved as list-or-map through one
+/// shared mechanism for every struct-backed manager.
+///
+/// A hand visitor (not `#[serde(untagged)]`) preserves `T`'s precise
+/// `deny_unknown_fields` error on a typo'd map key.
+fn list_or_struct<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + FromPackageList,
+{
+    use std::marker::PhantomData;
+
+    use serde::de;
+
+    // The visitor yields `Option<U>` so `manager: null` (a serialized-then-
+    // reloaded empty manager) round-trips back to `None`, matching the prior
+    // `Option<XSpec>` behavior, while a sequence or map resolves to `Some`.
+    struct ListOrStructVisitor<U>(PhantomData<U>);
+
+    impl<'de, U> de::Visitor<'de> for ListOrStructVisitor<U>
+    where
+        U: Deserialize<'de> + FromPackageList,
+    {
+        type Value = Option<U>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a list of package names, a manager spec map, or null")
+        }
+
+        fn visit_none<E>(self) -> std::result::Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> std::result::Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_some<D2>(self, deserializer: D2) -> std::result::Result<Self::Value, D2::Error>
+        where
+            D2: Deserializer<'de>,
+        {
+            deserializer.deserialize_any(self)
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+        where
+            A: de::SeqAccess<'de>,
+        {
+            let mut packages = Vec::new();
+            while let Some(item) = seq.next_element::<String>()? {
+                packages.push(item);
+            }
+            Ok(Some(U::from_package_list(packages)))
+        }
+
+        fn visit_map<M>(self, map: M) -> std::result::Result<Self::Value, M::Error>
+        where
+            M: de::MapAccess<'de>,
+        {
+            U::deserialize(de::value::MapAccessDeserializer::new(map)).map(Some)
+        }
+    }
+
+    deserializer.deserialize_option(ListOrStructVisitor(PhantomData))
+}
 // --- Profile ---
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,41 +232,41 @@ pub enum EnvScope {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackagesSpec {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "list_or_struct")]
     pub brew: Option<BrewSpec>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "list_or_struct")]
     pub apt: Option<AptSpec>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "list_or_struct")]
     pub cargo: Option<CargoSpec>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "list_or_struct")]
     pub npm: Option<NpmSpec>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub pipx: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub dnf: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub apk: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub pacman: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub zypper: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub yum: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub pkg: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "list_or_struct")]
     pub snap: Option<SnapSpec>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "list_or_struct")]
     pub flatpak: Option<FlatpakSpec>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub nix: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub go: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub winget: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub chocolatey: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "list_or_packages_vec")]
     pub scoop: Vec<String>,
     #[serde(default)]
     pub custom: Vec<CustomManagerSpec>,
@@ -208,6 +354,17 @@ pub struct BrewSpec {
     pub casks: Vec<String>,
 }
 
+impl FromPackageList for BrewSpec {
+    fn from_package_list(packages: Vec<String>) -> Self {
+        // Bare `brew: [...]` is the common case: formulae. Taps and casks
+        // remain struct-only knobs.
+        BrewSpec {
+            formulae: packages,
+            ..Default::default()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AptSpec {
@@ -215,6 +372,15 @@ pub struct AptSpec {
     pub file: Option<String>,
     #[serde(default)]
     pub packages: Vec<String>,
+}
+
+impl FromPackageList for AptSpec {
+    fn from_package_list(packages: Vec<String>) -> Self {
+        AptSpec {
+            packages,
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -226,9 +392,21 @@ pub struct NpmSpec {
     pub global: Vec<String>,
 }
 
+impl FromPackageList for NpmSpec {
+    fn from_package_list(packages: Vec<String>) -> Self {
+        // Bare `npm: [...]` maps to globally-installed packages.
+        NpmSpec {
+            global: packages,
+            ..Default::default()
+        }
+    }
+}
+
 /// Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`)
-/// and object form (`cargo: { file: Cargo.toml, packages: [...] }`).
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+/// and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the
+/// shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CargoSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
@@ -236,59 +414,12 @@ pub struct CargoSpec {
     pub packages: Vec<String>,
 }
 
-impl<'de> Deserialize<'de> for CargoSpec {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        use serde::de;
-
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase", deny_unknown_fields)]
-        struct CargoSpecFull {
-            #[serde(default)]
-            file: Option<String>,
-            #[serde(default)]
-            packages: Vec<String>,
+impl FromPackageList for CargoSpec {
+    fn from_package_list(packages: Vec<String>) -> Self {
+        CargoSpec {
+            packages,
+            ..Default::default()
         }
-
-        // Try to deserialize as either a list of strings or a map with file/packages
-        struct CargoSpecVisitor;
-
-        impl<'de> de::Visitor<'de> for CargoSpecVisitor {
-            type Value = CargoSpec;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a list of package names or a map with file/packages keys")
-            }
-
-            fn visit_seq<A>(self, mut seq: A) -> std::result::Result<CargoSpec, A::Error>
-            where
-                A: de::SeqAccess<'de>,
-            {
-                let mut packages = Vec::new();
-                while let Some(item) = seq.next_element::<String>()? {
-                    packages.push(item);
-                }
-                Ok(CargoSpec {
-                    file: None,
-                    packages,
-                })
-            }
-
-            fn visit_map<M>(self, map: M) -> std::result::Result<CargoSpec, M::Error>
-            where
-                M: de::MapAccess<'de>,
-            {
-                let full = CargoSpecFull::deserialize(de::value::MapAccessDeserializer::new(map))?;
-                Ok(CargoSpec {
-                    file: full.file,
-                    packages: full.packages,
-                })
-            }
-        }
-
-        deserializer.deserialize_any(CargoSpecVisitor)
     }
 }
 
@@ -301,6 +432,15 @@ pub struct SnapSpec {
     pub classic: Vec<String>,
 }
 
+impl FromPackageList for SnapSpec {
+    fn from_package_list(packages: Vec<String>) -> Self {
+        SnapSpec {
+            packages,
+            ..Default::default()
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FlatpakSpec {
@@ -308,6 +448,15 @@ pub struct FlatpakSpec {
     pub packages: Vec<String>,
     #[serde(default)]
     pub remote: Option<String>,
+}
+
+impl FromPackageList for FlatpakSpec {
+    fn from_package_list(packages: Vec<String>) -> Self {
+        FlatpakSpec {
+            packages,
+            ..Default::default()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

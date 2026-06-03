@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
-
 use super::parse::parse_config;
 use super::resolve::merge_layers;
 use super::*;
@@ -427,18 +425,17 @@ origin:
 
 #[test]
 fn cargo_spec_deserialize_list() {
+    // Dual-form lives on the `PackagesSpec::cargo` field, the real consumer
+    // path — not on `CargoSpec` itself.
     let yaml = r#"
 cargo:
   - bat
   - ripgrep
 "#;
-    #[derive(Deserialize)]
-    struct Wrapper {
-        cargo: CargoSpec,
-    }
-    let w: Wrapper = serde_yaml::from_str(yaml).unwrap();
-    assert_eq!(w.cargo.packages, vec!["bat", "ripgrep"]);
-    assert!(w.cargo.file.is_none());
+    let spec: PackagesSpec = serde_yaml::from_str(yaml).unwrap();
+    let cargo = spec.cargo.unwrap();
+    assert_eq!(cargo.packages, vec!["bat", "ripgrep"]);
+    assert!(cargo.file.is_none());
 }
 
 #[test]
@@ -449,13 +446,10 @@ cargo:
   packages:
     - extra-pkg
 "#;
-    #[derive(Deserialize)]
-    struct Wrapper {
-        cargo: CargoSpec,
-    }
-    let w: Wrapper = serde_yaml::from_str(yaml).unwrap();
-    assert_eq!(w.cargo.file.as_deref(), Some("Cargo.toml"));
-    assert_eq!(w.cargo.packages, vec!["extra-pkg"]);
+    let spec: PackagesSpec = serde_yaml::from_str(yaml).unwrap();
+    let cargo = spec.cargo.unwrap();
+    assert_eq!(cargo.file.as_deref(), Some("Cargo.toml"));
+    assert_eq!(cargo.packages, vec!["extra-pkg"]);
 }
 
 #[test]
@@ -464,13 +458,10 @@ fn cargo_spec_deserialize_file_only() {
 cargo:
   file: Cargo.toml
 "#;
-    #[derive(Deserialize)]
-    struct Wrapper {
-        cargo: CargoSpec,
-    }
-    let w: Wrapper = serde_yaml::from_str(yaml).unwrap();
-    assert_eq!(w.cargo.file.as_deref(), Some("Cargo.toml"));
-    assert!(w.cargo.packages.is_empty());
+    let spec: PackagesSpec = serde_yaml::from_str(yaml).unwrap();
+    let cargo = spec.cargo.unwrap();
+    assert_eq!(cargo.file.as_deref(), Some("Cargo.toml"));
+    assert!(cargo.packages.is_empty());
 }
 
 #[test]
@@ -1901,4 +1892,124 @@ spec:
     super::parse::warn_on_legacy_theme_keys(yaml);
     assert!(!logs_contain("no longer supported"));
     assert!(!logs_contain("renamed to"));
+}
+
+/// Resolve the primary package list a bare-list form should populate, for a
+/// given manager field name, so the table test can assert both forms agree.
+fn primary_list_for<'a>(spec: &'a PackagesSpec, manager: &str) -> Vec<String> {
+    match manager {
+        "brew" => spec.brew.as_ref().map(|b| b.formulae.clone()),
+        "apt" => spec.apt.as_ref().map(|a| a.packages.clone()),
+        "cargo" => spec.cargo.as_ref().map(|c| c.packages.clone()),
+        "npm" => spec.npm.as_ref().map(|n| n.global.clone()),
+        "snap" => spec.snap.as_ref().map(|s| s.packages.clone()),
+        "flatpak" => spec.flatpak.as_ref().map(|f| f.packages.clone()),
+        other => spec.simple_list(other).map(|s| s.to_vec()),
+    }
+    .unwrap_or_default()
+}
+
+/// Every manager — the 12 bare-`Vec<String>` ones and the 6 struct-backed ones
+/// — must accept BOTH `manager: [a, b]` and `manager: {packages|global|formulae: [a, b]}`
+/// and resolve to the identical package set. This makes the historical
+/// three-shapes inconsistency unrepresentable: no manager may accept only one form.
+#[test]
+fn every_manager_accepts_list_and_struct_forms_identically() {
+    // (field, struct-key-for-the-primary-list). Struct key is None for the
+    // bare-Vec managers (their map form uses `packages:`).
+    let struct_managers: &[(&str, &str)] = &[
+        ("brew", "formulae"),
+        ("apt", "packages"),
+        ("cargo", "packages"),
+        ("npm", "global"),
+        ("snap", "packages"),
+        ("flatpak", "packages"),
+    ];
+    let bare_managers: &[&str] = &[
+        "pipx",
+        "dnf",
+        "apk",
+        "pacman",
+        "zypper",
+        "yum",
+        "pkg",
+        "nix",
+        "go",
+        "winget",
+        "chocolatey",
+        "scoop",
+    ];
+
+    for (field, key) in struct_managers {
+        let list_yaml = format!("{field}: [alpha, beta]\n");
+        let struct_yaml = format!("{field}:\n  {key}: [alpha, beta]\n");
+        let from_list: PackagesSpec = serde_yaml::from_str(&list_yaml)
+            .unwrap_or_else(|e| panic!("{field} list form must parse: {e}"));
+        let from_struct: PackagesSpec = serde_yaml::from_str(&struct_yaml)
+            .unwrap_or_else(|e| panic!("{field} struct form must parse: {e}"));
+        assert_eq!(
+            primary_list_for(&from_list, field),
+            vec!["alpha".to_string(), "beta".to_string()],
+            "{field} list form resolved wrong set"
+        );
+        assert_eq!(
+            primary_list_for(&from_list, field),
+            primary_list_for(&from_struct, field),
+            "{field} list and struct forms disagree"
+        );
+    }
+
+    for field in bare_managers {
+        let list_yaml = format!("{field}: [alpha, beta]\n");
+        let struct_yaml = format!("{field}:\n  packages: [alpha, beta]\n");
+        let from_list: PackagesSpec = serde_yaml::from_str(&list_yaml)
+            .unwrap_or_else(|e| panic!("{field} list form must parse: {e}"));
+        let from_struct: PackagesSpec = serde_yaml::from_str(&struct_yaml)
+            .unwrap_or_else(|e| panic!("{field} struct (packages:) form must parse: {e}"));
+        assert_eq!(
+            primary_list_for(&from_list, field),
+            vec!["alpha".to_string(), "beta".to_string()],
+            "{field} list form resolved wrong set"
+        );
+        assert_eq!(
+            primary_list_for(&from_list, field),
+            primary_list_for(&from_struct, field),
+            "{field} list and struct forms disagree"
+        );
+    }
+}
+
+/// The reported root-cause symptom: `flatpak: [app]` must now parse where it
+/// previously errored with `invalid type: sequence, expected struct FlatpakSpec`.
+#[test]
+fn flatpak_accepts_bare_list_form() {
+    let spec: PackagesSpec = serde_yaml::from_str("flatpak: [org.gnome.Calculator]\n")
+        .expect("flatpak bare-list form must parse");
+    assert_eq!(
+        spec.flatpak.unwrap().packages,
+        vec!["org.gnome.Calculator".to_string()]
+    );
+}
+
+/// A bare-Vec manager given a map form with an unknown key must still error
+/// (the map form preserves typo-detection; only `packages:` is accepted).
+#[test]
+fn bare_vec_manager_map_form_rejects_unknown_key() {
+    let err = serde_yaml::from_str::<PackagesSpec>("nix:\n  pakages: [hello]\n")
+        .expect_err("unknown key in nix map form must error");
+    assert!(
+        format!("{err}").contains("packages") || format!("{err}").contains("pakages"),
+        "expected an unknown-key error, got: {err}"
+    );
+}
+
+/// The struct-backed managers keep `deny_unknown_fields` on their map form.
+#[test]
+fn struct_manager_map_form_rejects_unknown_key() {
+    let err = serde_yaml::from_str::<PackagesSpec>("flatpak:\n  packges: [x]\n")
+        .expect_err("unknown key in flatpak map form must error");
+    assert!(
+        format!("{err}").contains("unknown field"),
+        "expected unknown-field error, got: {err}"
+    );
 }

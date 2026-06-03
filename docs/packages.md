@@ -67,6 +67,42 @@ packages:
     - bat
 ```
 
+## Two equivalent forms: list or struct
+
+Every package manager accepts **both** a bare list of package names and a struct
+with named fields. The two forms below are identical:
+
+```yaml
+# list form — shortest; the list maps to the manager's primary package list
+packages:
+  flatpak: [org.gnome.Calculator, com.spotify.Client]
+```
+
+```yaml
+# struct form — same packages, plus access to manager-specific knobs
+packages:
+  flatpak:
+    packages: [org.gnome.Calculator, com.spotify.Client]
+    remote: flathub
+```
+
+This holds uniformly: `cargo: [bat, eza]` equals `cargo: {packages: [bat, eza]}`,
+`apt: [curl]` equals `apt: {packages: [curl]}`, `nix: [hello]` equals
+`nix: {packages: [hello]}`, and so on for all 18 managers. The bare list maps to
+each manager's primary list — `packages` for most, `global` for npm, `formulae`
+for brew:
+
+```yaml
+packages:
+  npm: [typescript]          # == npm: {global: [typescript]}
+  brew: [git, ripgrep]       # == brew: {formulae: [git, ripgrep]}
+```
+
+Use the struct form when you need a manager's extra fields — brew `taps`/`casks`,
+a `file` manifest (Brewfile, package.json, Cargo.toml, apt list), flatpak `remote`,
+or snap `classic`. The struct form still rejects unknown keys, so a typo like
+`flatpak: {packges: [...]}` is reported loudly rather than silently dropped.
+
 ## Windows Package Managers
 
 ### winget
