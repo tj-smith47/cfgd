@@ -57,7 +57,9 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
         // The daemon reconcile is a full, unscoped run, so forward the real
         // tracked set: it prunes packages cfgd installed that have left the
         // desired set (the safety invariant bounds it to cfgd-owned packages).
-        packages::plan_packages(profile, managers, cfgd_installed)
+        // Profile-scoped (`&[]`): the daemon adds module packages separately via
+        // `reconciler.plan` as `Action::Module`, so this planner stays profile-only.
+        packages::plan_packages(profile, &[], managers, cfgd_installed)
     }
 
     fn extend_registry_custom_managers(

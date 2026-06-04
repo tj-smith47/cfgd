@@ -890,6 +890,182 @@ fn verify_module_script_packages_not_false_drift() {
     );
 }
 
+/// Build a single-package `ResolvedModule` (no defaults) for verify tests.
+fn module_one_pkg(name: &str, manager: &str, pkg: &str) -> ResolvedModule {
+    let mut m = make_resolved_module(name);
+    m.packages = vec![ResolvedPackage {
+        canonical_name: pkg.to_string(),
+        resolved_name: pkg.to_string(),
+        manager: manager.to_string(),
+        version: None,
+        script: None,
+    }];
+    m
+}
+
+#[test]
+fn verify_module_package_not_installed_is_module_drift() {
+    // A module-only package the host lacks must surface as a `module` non-match,
+    // recorded in the state store under `<module>/<name>`.
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        MockPackageManager::new("brew").with_installed(&[]),
+    ));
+
+    let resolved = make_empty_resolved();
+    let printer = test_printer();
+    let modules = vec![module_one_pkg("dev", "brew", "ripgrep")];
+
+    let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
+
+    let row = results
+        .iter()
+        .find(|r| r.resource_type == "module" && r.resource_id == "dev/ripgrep")
+        .expect("module package must emit a module row");
+    assert!(!row.matches, "uninstalled module package must be drift");
+
+    let recorded = state.unresolved_drift().unwrap();
+    assert!(
+        recorded
+            .iter()
+            .any(|d| d.resource_type == "module" && d.resource_id == "dev/ripgrep"),
+        "module package drift must be recorded: {recorded:?}"
+    );
+}
+
+#[test]
+fn verify_package_in_profile_and_module_appears_once() {
+    // The same (manager, name) declared by both the profile and a module must
+    // verify once, attributed to the module (module wins), with no duplicate
+    // `package:` row for the profile scope.
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        MockPackageManager::new("brew").with_installed(&[]),
+    ));
+
+    let mut resolved = make_empty_resolved();
+    resolved.merged.packages.brew = Some(crate::config::BrewSpec {
+        formulae: vec!["ripgrep".to_string()],
+        ..Default::default()
+    });
+    let printer = test_printer();
+    let modules = vec![module_one_pkg("dev", "brew", "ripgrep")];
+
+    let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
+
+    let rows: Vec<_> = results
+        .iter()
+        .filter(|r| {
+            (r.resource_type == "module" && r.resource_id == "dev/ripgrep")
+                || (r.resource_type == "package" && r.resource_id == "brew:ripgrep")
+        })
+        .collect();
+    assert_eq!(
+        rows.len(),
+        1,
+        "duplicate profile+module package must verify once: {rows:?}"
+    );
+    assert_eq!(
+        rows[0].resource_type, "module",
+        "module wins the dedup: {rows:?}"
+    );
+}
+
+#[test]
+fn verify_module_package_on_unavailable_manager_is_skipped() {
+    // CONSISTENCY: a module package whose manager is unavailable on this host
+    // cannot be installed or probed here, so it must NOT be reported missing —
+    // matching how profile packages on unavailable managers are already skipped.
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(MockPackageManager::new("brew").unavailable()));
+
+    let resolved = make_empty_resolved();
+    let printer = test_printer();
+    let modules = vec![module_one_pkg("dev", "brew", "ripgrep")];
+
+    let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
+
+    assert!(
+        !results
+            .iter()
+            .any(|r| r.resource_type == "module" && r.resource_id == "dev/ripgrep"),
+        "unavailable-manager module package must be skipped, not reported missing: {results:?}"
+    );
+    assert!(
+        state.unresolved_drift().unwrap().is_empty(),
+        "no false drift may be recorded for an unavailable manager"
+    );
+}
+
+#[test]
+fn verify_profile_package_on_unavailable_manager_is_skipped() {
+    // The profile-origin half of the same consistency rule.
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .package_managers
+        .push(Box::new(MockPackageManager::new("brew").unavailable()));
+
+    let mut resolved = make_empty_resolved();
+    resolved.merged.packages.brew = Some(crate::config::BrewSpec {
+        formulae: vec!["ripgrep".to_string()],
+        ..Default::default()
+    });
+    let printer = test_printer();
+
+    let results = verify(&resolved, &registry, &state, &printer, &[]).unwrap();
+
+    assert!(
+        !results
+            .iter()
+            .any(|r| r.resource_type == "package" && r.resource_id == "brew:ripgrep"),
+        "unavailable-manager profile package must be skipped: {results:?}"
+    );
+}
+
+#[test]
+fn verify_module_system_tweak_surfaces_as_system_drift() {
+    // A system configurator that drifts is only consulted when the desired map
+    // has its key. Declaring that key ONLY in a module proves verify now reads
+    // the effective (profile ⊕ modules) system map.
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .system_configurators
+        .push(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
+            vec![crate::providers::SystemDrift {
+                key: "vm.swappiness".to_string(),
+                expected: "10".to_string(),
+                actual: "60".to_string(),
+            }],
+        )));
+
+    // Profile has NO system config; the module contributes the sysctl key.
+    let resolved = make_empty_resolved();
+    let printer = test_printer();
+    let mut module = make_resolved_module("dev");
+    module.packages = Vec::new();
+    module.system.insert(
+        "sysctl".to_string(),
+        serde_yaml::to_value(serde_yaml::Mapping::new()).unwrap(),
+    );
+
+    let results = verify(&resolved, &registry, &state, &printer, &[module]).unwrap();
+
+    let row = results
+        .iter()
+        .find(|r| r.resource_type == "system" && r.resource_id == "sysctl.vm.swappiness")
+        .expect("module system config must be verified via the effective map");
+    assert!(!row.matches);
+    assert_eq!(row.expected, "10");
+    assert_eq!(row.actual, "60");
+}
+
 #[test]
 fn plan_module_with_script_packages() {
     let state = test_state();

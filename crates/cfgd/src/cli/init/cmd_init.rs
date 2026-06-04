@@ -246,9 +246,12 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 .map(|m| m.as_ref())
                 .collect();
             // First-run init must never prune: pass an empty tracked set so a
-            // fresh machine only ever installs, never uninstalls.
+            // fresh machine only ever installs, never uninstalls. Profile-scoped:
+            // module packages are added separately by `reconciler.plan` as
+            // `Action::Module`, so this planner stays profile-only.
             let pkg_actions = super::packages::plan_packages(
                 &resolved.merged,
+                &[],
                 &all_managers,
                 &std::collections::HashSet::new(),
             )?;

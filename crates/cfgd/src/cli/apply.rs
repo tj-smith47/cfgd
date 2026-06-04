@@ -203,8 +203,15 @@ pub fn run_apply(
         } else {
             std::collections::HashSet::new()
         };
-        let pkg =
-            packages::plan_packages(&effective_resolved.merged, &all_managers, &cfgd_installed)?;
+        // Profile-scoped: module packages are added separately by
+        // `reconciler.plan` as `Action::Module`, so this planner must stay
+        // profile-only to avoid double-handling them.
+        let pkg = packages::plan_packages(
+            &effective_resolved.merged,
+            &[],
+            &all_managers,
+            &cfgd_installed,
+        )?;
 
         let mut fm = CfgdFileManager::new(&config_dir, &effective_resolved)?;
         fm.set_global_strategy(cfg.spec.file_strategy);

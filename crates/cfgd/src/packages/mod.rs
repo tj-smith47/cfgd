@@ -21,7 +21,9 @@ use std::path::Path;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::command_available;
 use cfgd_core::config::{MergedProfile, PackagesSpec};
+use cfgd_core::effective::effective_desired_packages;
 use cfgd_core::errors::{PackageError, Result};
+use cfgd_core::modules::ResolvedModule;
 use cfgd_core::output::{Printer, Role};
 use cfgd_core::providers::{OrphanedPackage, PackageAction, PackageManager};
 
@@ -149,15 +151,29 @@ fn uninstall_for_manager(
 /// user installed outside cfgd are never removed.
 pub fn plan_packages(
     profile: &MergedProfile,
+    modules: &[ResolvedModule],
     managers: &[&dyn PackageManager],
     cfgd_installed: &HashSet<String>,
 ) -> Result<Vec<PackageAction>> {
     let mut actions = Vec::new();
 
+    // Single-source the desired set from the effective (profile ⊕ modules) view
+    // so this planner sees exactly what every other read/write surface does.
+    // With `modules` empty this equals the profile's own desired packages, so
+    // the profile-scoped write path is unchanged.
+    let effective = effective_desired_packages(profile, modules);
+    let desired_for = |manager_name: &str| -> Vec<String> {
+        effective
+            .iter()
+            .filter(|p| p.manager == manager_name)
+            .map(|p| p.name.clone())
+            .collect()
+    };
+
     // Pass 1: determine which managers will be bootstrapped
     let mut bootstrapping: HashSet<String> = HashSet::new();
     for manager in managers {
-        let desired = cfgd_core::config::desired_packages_for(manager.name(), profile);
+        let desired = desired_for(manager.name());
         if desired.is_empty() {
             continue;
         }
@@ -168,7 +184,7 @@ pub fn plan_packages(
 
     // Pass 2: generate actions
     for manager in managers {
-        let desired = cfgd_core::config::desired_packages_for(manager.name(), profile);
+        let desired = desired_for(manager.name());
 
         // A manager with no desired packages AND no cfgd-tracked installs has
         // nothing to do — skip it without touching the system. Reading

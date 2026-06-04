@@ -44,96 +44,71 @@ pub fn verify(
 ) -> Result<Vec<VerifyResult>> {
     let mut results = Vec::new();
 
-    // Verify modules — check that module packages are installed
-    // Cache installed-packages per manager to avoid N+1 queries
+    // Verify packages — profile and module packages share one effective desired
+    // set so a `(manager, name)` declared in both is checked once, and the
+    // module-vs-profile attribution drives the result shape. The per-manager
+    // installed set is cached to avoid N+1 queries.
     let available_managers = registry.available_package_managers();
     let mut installed_cache: HashMap<String, HashSet<String>> = HashMap::new();
-    for module in modules {
-        for pkg in &module.packages {
-            // Script-based packages can't be verified via installed_packages() —
-            // trust the apply log (if the script succeeded, it's installed).
-            if pkg.manager == "script" {
-                continue;
-            }
-
-            if !installed_cache.contains_key(&pkg.manager) {
-                let mgr = available_managers.iter().find(|m| m.name() == pkg.manager);
-                let set = mgr
-                    .map(|m| m.installed_packages())
-                    .transpose()?
-                    .unwrap_or_default();
-                installed_cache.insert(pkg.manager.clone(), set);
-            }
-            let installed = &installed_cache[&pkg.manager];
-            let ok = installed.contains(&pkg.resolved_name);
-
-            // Emit a pass OR fail row per package, mirroring the profile-package
-            // loop below. The blanket "module healthy" row is gone: module file
-            // rows are folded in content-aware by the binary crate, so a blanket
-            // healthy line could contradict a folded-in file-drift row.
-            results.push(VerifyResult {
-                resource_type: "module".to_string(),
-                resource_id: format!("{}/{}", module.name, pkg.resolved_name),
-                matches: ok,
-                expected: "installed".to_string(),
-                actual: if ok {
-                    "installed".to_string()
-                } else {
-                    "missing".to_string()
-                },
-            });
-
-            if !ok {
-                record_drift_or_warn(
-                    state,
-                    "module",
-                    &format!("{}/{}", module.name, pkg.resolved_name),
-                    Some("installed"),
-                    Some("missing"),
-                    "local",
-                );
-            }
-        }
-    }
-
-    // Verify packages
-    let available_managers = registry.available_package_managers();
-    for pm in &available_managers {
-        let desired = crate::config::desired_packages_for(pm.name(), &resolved.merged);
-        if desired.is_empty() {
+    for ep in crate::effective::effective_desired_packages(&resolved.merged, modules) {
+        // Script-based packages can't be verified via installed_packages() —
+        // trust the apply log (if the script succeeded, it's installed).
+        if ep.manager == "script" {
             continue;
         }
-        let installed = pm.installed_packages()?;
-        for pkg in &desired {
-            let ok = installed.contains(pkg);
-            results.push(VerifyResult {
-                resource_type: "package".to_string(),
-                resource_id: format!("{}:{}", pm.name(), pkg),
-                matches: ok,
-                expected: "installed".to_string(),
-                actual: if ok {
-                    "installed".to_string()
-                } else {
-                    "missing".to_string()
-                },
-            });
 
-            if !ok {
-                record_drift_or_warn(
-                    state,
-                    "package",
-                    &format!("{}:{}", pm.name(), pkg),
-                    Some("installed"),
-                    Some("missing"),
-                    "local",
-                );
-            }
+        // A manager that isn't available on this host cannot install or report
+        // its packages, so a "missing" verdict here would be a false alarm. Skip
+        // such packages for BOTH origins (profile packages were already skipped
+        // by iterating only available managers; module packages used to be
+        // reported missing — this makes the two consistent).
+        let Some(mgr) = available_managers.iter().find(|m| m.name() == ep.manager) else {
+            continue;
+        };
+
+        if !installed_cache.contains_key(&ep.manager) {
+            installed_cache.insert(ep.manager.clone(), mgr.installed_packages()?);
+        }
+        let installed = &installed_cache[&ep.manager];
+        let ok = installed.contains(&ep.name);
+
+        // Preserve each origin's resource conventions: module packages report as
+        // `module` / `<module>/<name>`; profile packages as `package` /
+        // `<manager>:<name>`.
+        let (resource_type, resource_id) = match &ep.origin {
+            crate::effective::Origin::Module(name) => ("module", format!("{}/{}", name, ep.name)),
+            crate::effective::Origin::Profile => ("package", format!("{}:{}", ep.manager, ep.name)),
+        };
+
+        results.push(VerifyResult {
+            resource_type: resource_type.to_string(),
+            resource_id: resource_id.clone(),
+            matches: ok,
+            expected: "installed".to_string(),
+            actual: if ok {
+                "installed".to_string()
+            } else {
+                "missing".to_string()
+            },
+        });
+
+        if !ok {
+            record_drift_or_warn(
+                state,
+                resource_type,
+                &resource_id,
+                Some("installed"),
+                Some("missing"),
+                "local",
+            );
         }
     }
 
-    // Verify system configurators
+    // Verify system configurators against the effective (profile ⊕ modules)
+    // system map so module system config is verified too.
+    let system = crate::effective::effective_system_map(&resolved.merged, modules);
     for sc in registry.available_system_configurators() {
-        if let Some(desired) = resolved.merged.system.get(sc.name()) {
+        if let Some(desired) = system.get(sc.name()) {
             let drifts = sc.diff(desired)?;
             if drifts.is_empty() {
                 results.push(VerifyResult {

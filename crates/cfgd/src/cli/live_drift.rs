@@ -106,15 +106,19 @@ pub(super) fn live_drift_results(
         .iter()
         .map(|m| m.as_ref())
         .collect();
-    for action in packages::plan_packages(&resolved.merged, &all_managers, cfgd_installed)? {
+    for action in packages::plan_packages(&resolved.merged, modules, &all_managers, cfgd_installed)?
+    {
         if let Some(result) = package_action_drift(&action) {
             drift.push(result);
         }
     }
 
-    // System: any configurator reporting a non-empty diff is drift.
+    // System: any configurator reporting a non-empty diff is drift. The desired
+    // map combines profile and module system config so module system tweaks
+    // surface here exactly as they do on the write path.
+    let system = cfgd_core::effective::effective_system_map(&resolved.merged, modules);
     for configurator in &registry.available_system_configurators() {
-        if let Some(desired) = resolved.merged.system.get(configurator.name()) {
+        if let Some(desired) = system.get(configurator.name()) {
             // A configurator that errors while probing is treated as
             // indeterminate, not drift — surfacing it as drift here would make a
             // transient probe failure flip the exit code. The display path
@@ -405,6 +409,124 @@ mod tests {
         .unwrap();
         assert_eq!(drift.len(), 1, "only the module file drifts: {drift:?}");
         assert_eq!(drift[0].resource_type, "module");
+    }
+
+    /// A resolved profile with no managed files (so only packages/system can
+    /// drive drift) for the module-package / module-system live-drift tests.
+    fn resolved_no_files() -> ResolvedProfile {
+        ResolvedProfile {
+            layers: vec![ProfileLayer {
+                source: "local".to_string(),
+                profile_name: "test".to_string(),
+                priority: 1000,
+                policy: LayerPolicy::Local,
+                spec: ProfileSpec::default(),
+            }],
+            merged: MergedProfile::default(),
+        }
+    }
+
+    /// A `ResolvedModule` carrying a single package, no files.
+    fn module_with_package(name: &str, manager: &str, pkg: &str) -> ResolvedModule {
+        ResolvedModule {
+            name: name.to_string(),
+            packages: vec![cfgd_core::modules::ResolvedPackage {
+                canonical_name: pkg.to_string(),
+                resolved_name: pkg.to_string(),
+                manager: manager.to_string(),
+                version: None,
+                script: None,
+            }],
+            files: Vec::new(),
+            env: Vec::new(),
+            aliases: Vec::new(),
+            system: HashMap::new(),
+            pre_apply_scripts: Vec::new(),
+            post_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            on_drift_scripts: Vec::new(),
+            depends: Vec::new(),
+            dir: std::path::PathBuf::new(),
+            platform_skip_reason: None,
+        }
+    }
+
+    #[test]
+    fn live_drift_results_includes_module_only_package() {
+        // A module-only package the host lacks must register as live drift, via
+        // the effective desired set the package planner now consumes. Built with
+        // a hand-wired registry (available mock manager, package not installed)
+        // so the result is host-independent.
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = resolved_no_files();
+
+        let mut registry = ProviderRegistry::new();
+        registry.package_managers.push(Box::new(
+            cfgd_core::test_helpers::MockPackageManager::new("brew").with_installed(&[]),
+        ));
+
+        let modules = vec![module_with_package("dev", "brew", "ripgrep")];
+        let drift = live_drift_results(
+            dir.path(),
+            &resolved,
+            &registry,
+            &modules,
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
+
+        assert!(
+            drift
+                .iter()
+                .any(|r| r.resource_type == "package" && r.resource_id.contains("ripgrep")),
+            "module-only package must register as live drift: {drift:?}"
+        );
+    }
+
+    #[test]
+    fn live_drift_results_includes_module_only_system_tweak() {
+        // A module-only system tweak must register as live drift, via the
+        // effective system map the system loop now consumes. The configurator
+        // drifts only when its key is in the desired map — declaring it ONLY in
+        // a module proves the module system config is read.
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = resolved_no_files();
+
+        let mut registry = ProviderRegistry::new();
+        registry.system_configurators.push(Box::new(
+            cfgd_core::test_helpers::MockSystemConfigurator::new("sysctl").with_drift(vec![
+                cfgd_core::providers::SystemDrift {
+                    key: "vm.swappiness".to_string(),
+                    expected: "10".to_string(),
+                    actual: "60".to_string(),
+                },
+            ]),
+        ));
+
+        let mut module = module_with_package("dev", "brew", "ignored");
+        module.packages = Vec::new();
+        module.system.insert(
+            "sysctl".to_string(),
+            serde_yaml::to_value(serde_yaml::Mapping::new()).unwrap(),
+        );
+
+        let drift = live_drift_results(
+            dir.path(),
+            &resolved,
+            &registry,
+            &[module],
+            &std::collections::HashSet::new(),
+        )
+        .unwrap();
+
+        assert!(
+            drift
+                .iter()
+                .any(|r| r.resource_type == "system" && r.resource_id == "sysctl.vm.swappiness"),
+            "module-only system tweak must register as live drift: {drift:?}"
+        );
     }
 
     #[test]

@@ -172,7 +172,7 @@ fn plan_installs_missing_packages() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
 
     assert_eq!(actions.len(), 1);
     match &actions[0] {
@@ -200,7 +200,7 @@ fn plan_skips_unavailable_manager() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
 
     assert_eq!(actions.len(), 1);
     match &actions[0] {
@@ -226,7 +226,7 @@ fn plan_empty_when_all_installed() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
 
     assert!(actions.is_empty());
 }
@@ -237,7 +237,7 @@ fn plan_skips_manager_with_no_desired_packages() {
     let profile = test_profile(PackagesSpec::default());
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
 
     assert!(actions.is_empty());
 }
@@ -476,7 +476,7 @@ fn plan_multiple_managers() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&cargo_mock, &npm_mock];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
 
     // cargo needs ripgrep, npm needs eslint (typescript already installed)
     assert_eq!(actions.len(), 2);
@@ -509,7 +509,7 @@ fn plan_bootstrap_unavailable_bootstrappable_manager() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
 
     assert_eq!(actions.len(), 2);
     assert!(matches!(&actions[0], PackageAction::Bootstrap { manager, .. } if manager == "cargo"));
@@ -530,7 +530,7 @@ fn plan_skip_unavailable_non_bootstrappable_manager() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
 
     assert_eq!(actions.len(), 1);
     match &actions[0] {
@@ -560,7 +560,7 @@ fn plan_sub_manager_installs_when_parent_bootstrapping() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&brew_mock, &tap_mock];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
 
     // Should have: Bootstrap(brew), Install(brew: ripgrep), Install(brew-tap: some/tap)
     assert_eq!(actions.len(), 3);
@@ -589,7 +589,7 @@ fn plan_uninstalls_tracked_package_dropped_from_desired() {
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     let cfgd_installed = cfgd_set(&["cargo/bat", "cargo/ripgrep"]);
-    let actions = plan_packages(&profile, &managers, &cfgd_installed).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed).unwrap();
 
     let uninstall = actions.iter().find_map(|a| match a {
         PackageAction::Uninstall {
@@ -621,7 +621,7 @@ fn plan_never_uninstalls_untracked_package() {
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     // Only ripgrep is tracked; bat was installed by the user, not cfgd.
     let cfgd_installed = cfgd_set(&["cargo/ripgrep"]);
-    let actions = plan_packages(&profile, &managers, &cfgd_installed).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed).unwrap();
 
     assert!(
         !actions
@@ -645,7 +645,7 @@ fn plan_steady_state_tracked_desired_installed() {
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     let cfgd_installed = cfgd_set(&["cargo/ripgrep"]);
-    let actions = plan_packages(&profile, &managers, &cfgd_installed).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed).unwrap();
 
     assert!(actions.is_empty(), "expected no actions, got: {actions:?}");
 }
@@ -665,7 +665,7 @@ fn plan_no_uninstall_for_tracked_package_already_gone_out_of_band() {
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     let cfgd_installed = cfgd_set(&["cargo/bat", "cargo/ripgrep"]);
-    let actions = plan_packages(&profile, &managers, &cfgd_installed).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed).unwrap();
 
     assert!(
         !actions
@@ -691,7 +691,7 @@ fn plan_uninstall_scoped_to_owning_manager() {
     let managers: Vec<&dyn PackageManager> = vec![&cargo_mock];
     // "shared" is tracked under apt, not cargo.
     let cfgd_installed = cfgd_set(&["apt/shared"]);
-    let actions = plan_packages(&profile, &managers, &cfgd_installed).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed).unwrap();
 
     assert!(
         !actions
@@ -710,7 +710,7 @@ fn plan_does_not_probe_idle_available_manager() {
     let profile = test_profile(PackagesSpec::default());
 
     let managers: Vec<&dyn PackageManager> = vec![&broken];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
     assert!(actions.is_empty(), "idle manager must yield no actions");
 }
 
@@ -724,7 +724,7 @@ fn plan_probes_available_manager_only_when_it_has_tracked_packages() {
 
     let managers: Vec<&dyn PackageManager> = vec![&broken];
     let cfgd_installed = cfgd_set(&["pacman/htop"]);
-    let result = plan_packages(&profile, &managers, &cfgd_installed);
+    let result = plan_packages(&profile, &[], &managers, &cfgd_installed);
     assert!(
         result.is_err(),
         "a tracked package forces a real installed-state read"
@@ -748,7 +748,7 @@ fn plan_keeps_shared_package_when_one_consumer_removed() {
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     let cfgd_installed = cfgd_set(&["cargo/shared", "cargo/solo"]);
-    let actions = plan_packages(&profile, &managers, &cfgd_installed).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed).unwrap();
 
     let uninstall = actions.iter().find_map(|a| match a {
         PackageAction::Uninstall { packages, .. } => Some(packages),
@@ -773,7 +773,7 @@ fn plan_prunes_shared_package_when_last_consumer_removed() {
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     let cfgd_installed = cfgd_set(&["cargo/shared"]);
-    let actions = plan_packages(&profile, &managers, &cfgd_installed).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed).unwrap();
 
     let uninstall = actions.iter().find_map(|a| match a {
         PackageAction::Uninstall { packages, .. } => Some(packages),
@@ -798,7 +798,7 @@ fn plan_scoped_apply_empty_tracked_set_never_prunes() {
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     // Empty set models the scoped-apply guard.
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
     assert!(
         !actions
             .iter()
@@ -824,7 +824,7 @@ fn plan_never_prunes_user_package_absent_from_tracked_set() {
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     // git is tracked; vim is a user package cfgd never installed.
     let cfgd_installed = cfgd_set(&["apt/git"]);
-    let actions = plan_packages(&profile, &managers, &cfgd_installed).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed).unwrap();
     assert!(
         !actions
             .iter()
@@ -848,7 +848,7 @@ fn plan_go_no_reinstall_when_binary_already_present() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
     assert!(
         actions.is_empty(),
         "binary already installed → no Install, no Uninstall: {actions:?}"
@@ -866,7 +866,7 @@ fn plan_go_install_carries_full_module_path() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
     let install = actions.iter().find_map(|a| match a {
         PackageAction::Install { packages, .. } => Some(packages),
         _ => None,
@@ -886,7 +886,7 @@ fn plan_go_prunes_dropped_tracked_binary() {
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
     let cfgd_installed = cfgd_set(&["go/2fa"]);
-    let actions = plan_packages(&profile, &managers, &cfgd_installed).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &cfgd_installed).unwrap();
     let uninstall = actions.iter().find_map(|a| match a {
         PackageAction::Uninstall { packages, .. } => Some(packages),
         _ => None,
@@ -1285,7 +1285,7 @@ fn plan_with_new_managers() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&apk, &pacman, &snap];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
 
     // apk: git is missing → Install
     assert!(actions.iter().any(|a| matches!(
@@ -1485,7 +1485,7 @@ fn plan_skip_unavailable_no_bootstrap() {
         ..Default::default()
     });
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
 
     assert_eq!(actions.len(), 1);
     match &actions[0] {
@@ -1862,7 +1862,7 @@ fn format_package_actions_uninstall() {
 fn plan_packages_no_managers() {
     let profile = test_profile(PackagesSpec::default());
     let managers: Vec<&dyn PackageManager> = vec![];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
     assert!(actions.is_empty());
 }
 
@@ -2052,7 +2052,7 @@ fn plan_packages_available_manager_no_desired_is_noop() {
     let mock = MockPackageManager::new("brew", true, vec!["ripgrep"]);
     let profile = test_profile(PackagesSpec::default());
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
     assert!(actions.is_empty());
 }
 
@@ -2229,7 +2229,7 @@ fn plan_packages_mixed_available_and_unavailable() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&available, &unavailable, &bootstrappable];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
 
     // cargo: ripgrep needs install (bat already installed)
     let cargo_install = actions.iter().find(|a| {
@@ -2274,7 +2274,7 @@ fn plan_packages_all_already_installed() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
     assert!(actions.is_empty());
 }
 
@@ -2291,7 +2291,7 @@ fn plan_packages_empty_desired_skips_available_manager() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&mock];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
     assert!(actions.is_empty());
 }
 
@@ -2928,7 +2928,7 @@ fn plan_packages_with_custom_manager() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&custom];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
 
     // "existing" is installed, "new-pkg" is not → should have Install action for new-pkg
     assert_eq!(actions.len(), 1);
@@ -2965,7 +2965,7 @@ fn plan_packages_brew_submanagers_available() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&brew, &brew_tap, &brew_cask];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
 
     // brew: fd needs install (ripgrep already installed)
     let brew_install = actions.iter().find(|a| {
@@ -3182,7 +3182,7 @@ fn plan_sub_manager_skips_when_parent_not_bootstrapping() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&brew, &cask];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
 
     // brew-cask is unavailable and non-bootstrappable, and parent is not being bootstrapped
     assert!(actions.iter().any(|a| matches!(
@@ -3208,7 +3208,7 @@ fn plan_brew_cask_installs_when_brew_bootstrapping() {
     });
 
     let managers: Vec<&dyn PackageManager> = vec![&brew, &cask];
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
 
     // brew-cask should get Install (not Skip) because brew parent is being bootstrapped
     assert!(actions.iter().any(|a| matches!(
@@ -3363,7 +3363,7 @@ fn plan_packages_many_managers_all_empty() {
     let profile = test_profile(PackagesSpec::default());
     let managers: Vec<&dyn PackageManager> =
         mocks.iter().map(|m| m as &dyn PackageManager).collect();
-    let actions = plan_packages(&profile, &managers, &HashSet::new()).unwrap();
+    let actions = plan_packages(&profile, &[], &managers, &HashSet::new()).unwrap();
     assert!(actions.is_empty(), "no desired packages → no actions");
 }
 

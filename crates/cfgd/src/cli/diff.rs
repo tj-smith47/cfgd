@@ -66,17 +66,25 @@ pub fn cmd_diff(
         // cfgd-installed set from state to bound prune the same way apply does.
         let state = open_state_store(cli.state_dir.as_deref())?;
         let cfgd_installed = cfgd_installed_packages(&state)?;
-        let pkg_actions =
-            packages::plan_packages(&resolved.merged, &all_managers, &cfgd_installed)?;
+        let pkg_actions = packages::plan_packages(
+            &resolved.merged,
+            &resolved_modules,
+            &all_managers,
+            &cfgd_installed,
+        )?;
         print_package_drift(&pkg_actions, &pkg_sec, &mut diff_payload)
     };
 
     {
         let sys_sec = printer.section("System");
         let available_configurators = registry.available_system_configurators();
+        // Combine profile and module system config so module system tweaks
+        // surface in `diff` exactly as they do on the write path.
+        let system =
+            cfgd_core::effective::effective_system_map(&resolved.merged, &resolved_modules);
         for configurator in &available_configurators {
             let key = configurator.name();
-            let desired = match resolved.merged.system.get(key) {
+            let desired = match system.get(key) {
                 Some(v) => v,
                 None => continue,
             };
