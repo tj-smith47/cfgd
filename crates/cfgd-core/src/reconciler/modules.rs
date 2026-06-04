@@ -20,7 +20,7 @@ impl<'a> super::Reconciler<'a> {
         resolved: &ResolvedProfile,
         module_actions: &[ResolvedModule],
         shell_override: Option<ScriptShell>,
-    ) -> Result<String> {
+    ) -> Result<(String, bool)> {
         // Find the resolved module to obtain its dir and declared env vars.
         let resolved_mod = module_actions.iter().find(|m| m.name == action.module_name);
         let module_dir = resolved_mod.map(|m| m.dir.clone());
@@ -128,10 +128,13 @@ impl<'a> super::Reconciler<'a> {
                     }
                 }
 
-                Ok(format!(
-                    "module:{}:packages:{}",
-                    action.module_name,
-                    pkg_names.join(",")
+                Ok((
+                    format!(
+                        "module:{}:packages:{}",
+                        action.module_name,
+                        pkg_names.join(",")
+                    ),
+                    true,
                 ))
             }
             ModuleActionKind::DeployFiles { files } => {
@@ -232,10 +235,9 @@ impl<'a> super::Reconciler<'a> {
                     ),
                 );
 
-                Ok(format!(
-                    "module:{}:files:{}",
-                    action.module_name,
-                    files.len()
+                Ok((
+                    format!("module:{}:files:{}", action.module_name, files.len()),
+                    true,
                 ))
             }
             ModuleActionKind::RunScript {
@@ -258,7 +260,7 @@ impl<'a> super::Reconciler<'a> {
                 );
 
                 let working = module_dir.as_deref().unwrap_or(config_dir);
-                execute_script(
+                let (_label, changed, _captured) = execute_script(
                     script,
                     working,
                     &env_vars,
@@ -267,14 +269,16 @@ impl<'a> super::Reconciler<'a> {
                     shell_override,
                 )?;
 
-                Ok(format!("module:{}:script", action.module_name))
+                Ok((format!("module:{}:script", action.module_name), changed))
             }
             ModuleActionKind::Skip { reason } => {
                 printer.status_simple(
                     Role::Warn,
                     format!("Module {}: skipped — {}", action.module_name, reason),
                 );
-                Ok(format!("module:{}:skip", action.module_name))
+                // A planned skip did nothing this run, so it must not count as
+                // changed and must not fire the module's onChange hooks.
+                Ok((format!("module:{}:skip", action.module_name), false))
             }
         }
     }

@@ -2989,6 +2989,9 @@ fn effective_continue_on_error_uses_explicit_value() {
         idle_timeout: None,
         continue_on_error: Some(true),
         shell: ScriptShell::Auto,
+        only_if: None,
+        unless: None,
+        creates: None,
     };
     // Should be true even for pre-apply (which defaults to false)
     assert!(super::effective_continue_on_error(
@@ -3002,6 +3005,9 @@ fn effective_continue_on_error_uses_explicit_value() {
         idle_timeout: None,
         continue_on_error: Some(false),
         shell: ScriptShell::Auto,
+        only_if: None,
+        unless: None,
+        creates: None,
     };
     // Should be false even for post-apply (which defaults to true)
     assert!(!super::effective_continue_on_error(
@@ -3028,6 +3034,9 @@ fn effective_continue_on_error_falls_back_to_default() {
         idle_timeout: None,
         continue_on_error: None,
         shell: ScriptShell::Auto,
+        only_if: None,
+        unless: None,
+        creates: None,
     };
     assert!(!super::effective_continue_on_error(
         &full_no_override,
@@ -3101,6 +3110,9 @@ fn plan_scripts_carries_full_entry() {
         idle_timeout: None,
         continue_on_error: Some(true),
         shell: ScriptShell::Auto,
+        only_if: None,
+        unless: None,
+        creates: None,
     }];
 
     let plan = reconciler
@@ -3225,6 +3237,9 @@ fn execute_script_with_timeout_override() {
         idle_timeout: None,
         continue_on_error: None,
         shell: ScriptShell::Auto,
+        only_if: None,
+        unless: None,
+        creates: None,
     };
     let dir = tempfile::tempdir().unwrap();
     let (_, _, output) = super::execute_script(
@@ -3321,6 +3336,9 @@ fn execute_script_idle_timeout_kills_idle_process() {
         idle_timeout: Some("1s".to_string()),
         continue_on_error: None,
         shell: ScriptShell::Auto,
+        only_if: None,
+        unless: None,
+        creates: None,
     };
     let dir = tempfile::tempdir().unwrap();
     let result = super::execute_script(
@@ -3649,6 +3667,9 @@ fn apply_continue_on_error_post_script_continues() {
         idle_timeout: None,
         continue_on_error: Some(true),
         shell: ScriptShell::Auto,
+        only_if: None,
+        unless: None,
+        creates: None,
     }];
 
     let pkg_actions = vec![PackageAction::Install {
@@ -3711,6 +3732,9 @@ fn apply_continue_on_error_false_pre_script_aborts() {
         idle_timeout: None,
         continue_on_error: Some(false),
         shell: ScriptShell::Auto,
+        only_if: None,
+        unless: None,
+        creates: None,
     }];
 
     let plan = reconciler
@@ -3901,6 +3925,338 @@ fn apply_on_change_script_does_not_run_when_no_changes() {
     assert!(
         !marker.exists(),
         "onChange marker should NOT exist when no changes occurred"
+    );
+}
+
+// --- Idempotency-guard skip propagation through the apply layer ---
+//
+// These drive guarded scripts through the FULL `reconciler.apply(...)` (not
+// `execute_script` directly) to prove the `changed=false` returned by a
+// guard-skipped script survives the apply dispatch — and that a skipped MODULE
+// script does NOT fire its module's onChange hooks.
+
+#[test]
+#[cfg(unix)]
+fn apply_guard_skipped_profile_script_records_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let sentinel = dir.path().join("body-ran");
+    // `unless: true` always succeeds → the body is skipped.
+    let entry = ScriptEntry::Full {
+        run: format!("touch {}", sentinel.display()),
+        timeout: None,
+        idle_timeout: None,
+        continue_on_error: None,
+        shell: ScriptShell::Auto,
+        only_if: None,
+        unless: Some("true".to_string()),
+        creates: None,
+    };
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let mut resolved = make_empty_resolved();
+    resolved.merged.scripts.post_apply = vec![entry];
+
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            false,
+            None,
+        )
+        .unwrap();
+
+    let script_result = result
+        .action_results
+        .iter()
+        .find(|r| r.description.contains("script:"))
+        .expect("script action should be recorded");
+    assert!(
+        script_result.success,
+        "a skip is a clean no-op, not a failure"
+    );
+    assert!(
+        !script_result.changed,
+        "guard-skipped profile script must record changed=false through apply"
+    );
+    assert!(!sentinel.exists(), "body must not run when unless holds");
+}
+
+#[test]
+#[cfg(unix)]
+fn apply_guard_skipped_module_script_does_not_fire_on_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let sentinel = dir.path().join("module-body-ran");
+    let on_change_marker = dir.path().join("module-on-change-fired");
+
+    // `unless: true` → the module's RunScript body is skipped → changed=false.
+    let guarded = ScriptEntry::Full {
+        run: format!("touch {}", sentinel.display()),
+        timeout: None,
+        idle_timeout: None,
+        continue_on_error: None,
+        shell: ScriptShell::Auto,
+        only_if: None,
+        unless: Some("true".to_string()),
+        creates: None,
+    };
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let modules = vec![ResolvedModule {
+        name: "testmod".to_string(),
+        packages: vec![],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        pre_apply_scripts: Vec::new(),
+        post_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: vec![ScriptEntry::Simple(format!(
+            "touch {}",
+            on_change_marker.display()
+        ))],
+        system: HashMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+    }];
+
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Modules,
+            actions: vec![Action::Module(ModuleAction {
+                module_name: "testmod".to_string(),
+                kind: ModuleActionKind::RunScript {
+                    script: guarded,
+                    phase: ScriptPhase::PostApply,
+                },
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseName::Modules),
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+        )
+        .unwrap();
+
+    let module_result = result
+        .action_results
+        .iter()
+        .find(|r| r.description.contains("module:testmod:script"))
+        .expect("module script action should be recorded");
+    assert!(module_result.success);
+    assert!(
+        !module_result.changed,
+        "guard-skipped module script must record changed=false"
+    );
+    assert!(
+        !sentinel.exists(),
+        "module body must not run when unless holds"
+    );
+    assert!(
+        !on_change_marker.exists(),
+        "module onChange must NOT fire when the module's script was skipped (nothing changed)"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn apply_guard_permitted_module_script_fires_on_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let sentinel = dir.path().join("module-body-ran-pos");
+    let on_change_marker = dir.path().join("module-on-change-fired-pos");
+
+    // `unless: false` → condition does NOT hold → the body RUNS → changed=true.
+    let guarded = ScriptEntry::Full {
+        run: format!("touch {}", sentinel.display()),
+        timeout: None,
+        idle_timeout: None,
+        continue_on_error: None,
+        shell: ScriptShell::Auto,
+        only_if: None,
+        unless: Some("false".to_string()),
+        creates: None,
+    };
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let modules = vec![ResolvedModule {
+        name: "testmod".to_string(),
+        packages: vec![],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        pre_apply_scripts: Vec::new(),
+        post_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: vec![ScriptEntry::Simple(format!(
+            "touch {}",
+            on_change_marker.display()
+        ))],
+        system: HashMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+    }];
+
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Modules,
+            actions: vec![Action::Module(ModuleAction {
+                module_name: "testmod".to_string(),
+                kind: ModuleActionKind::RunScript {
+                    script: guarded,
+                    phase: ScriptPhase::PostApply,
+                },
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseName::Modules),
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+        )
+        .unwrap();
+
+    let module_result = result
+        .action_results
+        .iter()
+        .find(|r| r.description.contains("module:testmod:script"))
+        .expect("module script action should be recorded");
+    assert!(module_result.success);
+    assert!(
+        module_result.changed,
+        "guard-permitted module script must record changed=true"
+    );
+    assert!(
+        sentinel.exists(),
+        "module body must run when unless does not hold"
+    );
+    assert!(
+        on_change_marker.exists(),
+        "module onChange MUST fire when the module's script ran (positive control)"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn apply_skipped_module_does_not_fire_on_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let on_change_marker = dir.path().join("skipped-module-on-change-fired");
+
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    // The module carries onChange scripts but its only action this run is a
+    // planned Skip (the upcoming module-platforms scenario: a whole module is
+    // skipped). The skip did nothing, so onChange must not fire.
+    let modules = vec![ResolvedModule {
+        name: "skippedmod".to_string(),
+        packages: vec![],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        pre_apply_scripts: Vec::new(),
+        post_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: vec![ScriptEntry::Simple(format!(
+            "touch {}",
+            on_change_marker.display()
+        ))],
+        system: HashMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+    }];
+
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Modules,
+            actions: vec![Action::Module(ModuleAction {
+                module_name: "skippedmod".to_string(),
+                kind: ModuleActionKind::Skip {
+                    reason: "platform not matched".to_string(),
+                },
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseName::Modules),
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+        )
+        .unwrap();
+
+    let module_result = result
+        .action_results
+        .iter()
+        .find(|r| r.description.contains("module:skippedmod:skip"))
+        .expect("module skip action should be recorded");
+    assert!(module_result.success);
+    assert!(
+        !module_result.changed,
+        "a planned module skip must record changed=false"
+    );
+    assert!(
+        !on_change_marker.exists(),
+        "module onChange must NOT fire when the module was skipped (nothing changed)"
     );
 }
 
@@ -6121,6 +6477,10 @@ fn apply_module_skip_reports_skipped() {
 
     assert_eq!(result.status, ApplyStatus::Success);
     assert!(result.action_results[0].success);
+    assert!(
+        !result.action_results[0].changed,
+        "a planned module skip did nothing and must record changed=false"
+    );
     assert!(
         result.action_results[0].description.contains("skip"),
         "desc: {}",
@@ -8441,6 +8801,9 @@ mod bridge {
             idle_timeout: None,
             continue_on_error: Some(true),
             shell: ScriptShell::Auto,
+            only_if: None,
+            unless: None,
+            creates: None,
         }];
 
         let pkg_actions = vec![
@@ -10039,6 +10402,9 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
             idle_timeout: None,
             continue_on_error: Some(false),
             shell: ScriptShell::Auto,
+            only_if: None,
+            unless: None,
+            creates: None,
         }],
         system: HashMap::new(),
         depends: vec![],
@@ -10162,6 +10528,9 @@ fn apply_profile_on_change_failure_aborts_when_continue_on_error_false() {
         idle_timeout: None,
         continue_on_error: Some(false),
         shell: ScriptShell::Auto,
+        only_if: None,
+        unless: None,
+        creates: None,
     }];
 
     let file_actions = vec![FileAction::Create {

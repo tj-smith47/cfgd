@@ -139,6 +139,22 @@ pub enum ScriptEntry {
         /// Interpreter to use for inline commands. Ignored (and rejected) on file scripts.
         #[serde(default, skip_serializing_if = "is_shell_auto")]
         shell: ScriptShell,
+        /// Run the script only if this command exits zero. A non-zero exit skips
+        /// the script (the condition for running was not met). Evaluated with the
+        /// same shell, working directory, and environment as the body.
+        #[serde(default, skip_serializing_if = "Option::is_none", rename = "onlyIf")]
+        only_if: Option<String>,
+        /// Run the script only if this command exits NON-zero. A zero exit
+        /// (success) skips the script (the guarded state already holds).
+        /// Evaluated with the same shell, working directory, and environment as
+        /// the body.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unless: Option<String>,
+        /// Skip the script if this path already exists. A leading `~` expands to
+        /// the home directory; a relative path resolves against the script's
+        /// working directory. Existence follows symlinks.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        creates: Option<String>,
     },
 }
 
@@ -302,6 +318,9 @@ shell: ruby
             idle_timeout: None,
             continue_on_error: None,
             shell: ScriptShell::Bash,
+            only_if: None,
+            unless: None,
+            creates: None,
         };
         let yaml = serde_yaml::to_string(&entry).unwrap();
         assert!(
@@ -321,11 +340,79 @@ shell: ruby
             idle_timeout: None,
             continue_on_error: None,
             shell: ScriptShell::Auto,
+            only_if: None,
+            unless: None,
+            creates: None,
         };
         let yaml = serde_yaml::to_string(&entry).unwrap();
         assert!(
             !yaml.contains("shell"),
             "Auto shell should be skipped in serialization: {yaml}"
         );
+    }
+
+    #[test]
+    fn script_guards_roundtrip() {
+        let yaml = r#"
+run: install-thing
+onlyIf: test -d /opt
+unless: command -v thing
+creates: ~/.local/bin/thing
+"#;
+        let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
+        match &entry {
+            ScriptEntry::Full {
+                only_if,
+                unless,
+                creates,
+                ..
+            } => {
+                assert_eq!(only_if.as_deref(), Some("test -d /opt"));
+                assert_eq!(unless.as_deref(), Some("command -v thing"));
+                assert_eq!(creates.as_deref(), Some("~/.local/bin/thing"));
+            }
+            other => panic!("expected Full variant, got: {other:?}"),
+        }
+
+        let out = serde_yaml::to_string(&entry).unwrap();
+        assert!(out.contains("onlyIf: test -d /opt"), "onlyIf: {out}");
+        assert!(out.contains("unless: command -v thing"), "unless: {out}");
+        assert!(
+            out.contains("creates: ~/.local/bin/thing"),
+            "creates: {out}"
+        );
+        let roundtripped: ScriptEntry = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(entry, roundtripped);
+    }
+
+    #[test]
+    fn script_guards_absent_are_none() {
+        let yaml = "run: echo hi\n";
+        let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
+        match &entry {
+            ScriptEntry::Full {
+                only_if,
+                unless,
+                creates,
+                ..
+            } => {
+                assert!(only_if.is_none());
+                assert!(unless.is_none());
+                assert!(creates.is_none());
+            }
+            other => panic!("expected Full variant, got: {other:?}"),
+        }
+        // Absent guards must not serialize.
+        let out = serde_yaml::to_string(&entry).unwrap();
+        assert!(!out.contains("onlyIf"), "onlyIf should be absent: {out}");
+        assert!(!out.contains("unless"), "unless should be absent: {out}");
+        assert!(!out.contains("creates"), "creates should be absent: {out}");
+    }
+
+    #[test]
+    fn script_simple_bare_string_still_parses() {
+        let yaml = "make build\n";
+        let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(entry, ScriptEntry::Simple("make build".into()));
     }
 }

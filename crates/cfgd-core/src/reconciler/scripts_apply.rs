@@ -14,7 +14,7 @@ impl<'a> super::Reconciler<'a> {
         printer: &Printer,
         context: ReconcileContext,
         shell_override: Option<ScriptShell>,
-    ) -> Result<(String, Option<String>)> {
+    ) -> Result<(String, bool, Option<String>)> {
         match action {
             ScriptAction::Run { entry, phase, .. } => {
                 let profile_name = resolved
@@ -26,7 +26,7 @@ impl<'a> super::Reconciler<'a> {
                 let env_vars =
                     build_script_env(config_dir, profile_name, context, phase, None, None);
 
-                let (_desc, _changed, captured) = execute_script(
+                let (_desc, changed, captured) = execute_script(
                     entry,
                     config_dir,
                     &env_vars,
@@ -38,6 +38,7 @@ impl<'a> super::Reconciler<'a> {
                 let phase_name = phase.display_name();
                 Ok((
                     format!("script:{}:{}", phase_name, entry.run_str()),
+                    changed,
                     captured,
                 ))
             }

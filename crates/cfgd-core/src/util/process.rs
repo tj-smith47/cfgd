@@ -6,27 +6,51 @@ use super::fs_perms::is_executable;
 /// reclaim the slot regardless of what the child does.
 pub const KILL_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Run a [`Command`] with a timeout. On timeout the watchdog sends SIGTERM,
-/// waits [`KILL_GRACE_PERIOD`] for the child to exit cleanly, then escalates
-/// to SIGKILL (Unix) / `TerminateProcess` retry (Windows).
+/// Result of [`command_output_with_timeout_outcome`]: the captured process
+/// output plus whether the watchdog had to terminate the child for exceeding
+/// the timeout.
+///
+/// On timeout the `output` carries a signal-killed exit status, which is
+/// indistinguishable from a genuine non-zero exit. Callers that must treat a
+/// hang as a hard error (rather than as a normal failure exit) inspect
+/// [`timed_out`](CommandOutcome::timed_out).
+pub struct CommandOutcome {
+    /// Captured stdout/stderr and exit status of the child process.
+    pub output: std::process::Output,
+    /// `true` if the watchdog terminated the child because it exceeded the
+    /// timeout. When `true`, `output.status` reflects the kill signal, not the
+    /// command's own exit code.
+    pub timed_out: bool,
+}
+
+/// Run a [`Command`] with a timeout, surfacing whether the timeout fired.
+///
+/// On timeout the watchdog sends SIGTERM, waits [`KILL_GRACE_PERIOD`] for the
+/// child to exit cleanly, then escalates to SIGKILL (Unix) / `TerminateProcess`
+/// retry (Windows), and the returned [`CommandOutcome::timed_out`] is `true`.
 ///
 /// **Caveat**: if the child forks descendants that inherit its stdout/stderr
 /// pipes (e.g. a shell wrapper spawning a long-running grandchild), SIGKILL
 /// on the immediate child will not close those pipes — `wait_with_output`
 /// will block on them until the grandchild also dies. Production callers
 /// should invoke the target binary directly rather than via a shell wrapper.
-pub fn command_output_with_timeout(
+pub fn command_output_with_timeout_outcome(
     cmd: &mut std::process::Command,
     timeout: std::time::Duration,
-) -> std::io::Result<std::process::Output> {
+) -> std::io::Result<CommandOutcome> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
 
     let child = cmd.spawn()?;
     let id = child.id();
     let (tx, rx) = mpsc::channel();
+    let timed_out = Arc::new(AtomicBool::new(false));
+    let timed_out_watchdog = Arc::clone(&timed_out);
 
     std::thread::spawn(move || {
         if rx.recv_timeout(timeout).is_err() {
+            timed_out_watchdog.store(true, Ordering::SeqCst);
             terminate_process(id);
             // SIGTERM-trapping children can hang the wait_with_output below
             // indefinitely. Give them a grace window to flush, then escalate.
@@ -38,7 +62,22 @@ pub fn command_output_with_timeout(
 
     let result = child.wait_with_output();
     let _ = tx.send(());
-    result
+    result.map(|output| CommandOutcome {
+        output,
+        timed_out: timed_out.load(Ordering::SeqCst),
+    })
+}
+
+/// Run a [`Command`] with a timeout, discarding the timeout signal.
+///
+/// Thin wrapper over [`command_output_with_timeout_outcome`] for callers that
+/// only need the captured output. Callers that must distinguish a hang from a
+/// non-zero exit should use [`command_output_with_timeout_outcome`] directly.
+pub fn command_output_with_timeout(
+    cmd: &mut std::process::Command,
+    timeout: std::time::Duration,
+) -> std::io::Result<std::process::Output> {
+    command_output_with_timeout_outcome(cmd, timeout).map(|o| o.output)
 }
 
 /// Send a graceful termination signal to a process by PID.
@@ -454,5 +493,33 @@ mod tests {
         let filter = tracing_env_filter("warn");
         let s = format!("{filter}");
         assert!(s.contains("warn") || !s.is_empty());
+    }
+
+    // A command that sleeps past a short timeout is terminated and reported as
+    // timed_out; the signal-killed exit status alone could not convey this.
+    #[cfg(unix)]
+    #[test]
+    fn command_outcome_reports_timeout_for_hung_command() {
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("5");
+        let outcome =
+            command_output_with_timeout_outcome(&mut cmd, std::time::Duration::from_millis(100))
+                .expect("spawn should succeed");
+        assert!(outcome.timed_out, "a hung command must report timed_out");
+    }
+
+    // A fast command finishes before the timeout fires; timed_out stays false.
+    #[cfg(unix)]
+    #[test]
+    fn command_outcome_no_timeout_for_fast_command() {
+        let mut cmd = std::process::Command::new("true");
+        let outcome =
+            command_output_with_timeout_outcome(&mut cmd, std::time::Duration::from_secs(5))
+                .expect("spawn should succeed");
+        assert!(
+            !outcome.timed_out,
+            "a fast command must not report timed_out"
+        );
+        assert!(outcome.output.status.success());
     }
 }

@@ -14074,6 +14074,9 @@ fn action_path_script_run_full_entry() {
         idle_timeout: None,
         continue_on_error: None,
         shell: config::ScriptShell::Auto,
+        only_if: None,
+        unless: None,
+        creates: None,
     };
     let action = reconciler::Action::Script(reconciler::ScriptAction::Run {
         entry,

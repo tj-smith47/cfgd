@@ -143,17 +143,17 @@ spec:
 
   scripts:
     preApply:
-      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string }
     postApply:
-      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string }
     preReconcile:
-      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string }
     postReconcile:
-      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string }
     onDrift:
-      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string }
     onChange:
-      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string }
 ```
 
 ---
@@ -639,7 +639,7 @@ When `envs` has multiple entries and the source resolves to a single value, all 
 
 ### spec.scripts
 
-Lifecycle scripts run at different points during apply and reconciliation. Scripts are executed in the order listed. Each entry can be a simple string (command or file path) or an object with `run`, `shell`, `timeout`, `idleTimeout`, and `continueOnError` fields.
+Lifecycle scripts run at different points during apply and reconciliation. Scripts are executed in the order listed. Each entry can be a simple string (command or file path) or an object with `run`, `shell`, `timeout`, `idleTimeout`, `continueOnError`, and the idempotency guards `onlyIf`, `unless`, and `creates`.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -654,6 +654,16 @@ The `shell` field selects the interpreter for inline commands: `bash`, `zsh`, `s
 
 When `shell` is `bash` or `zsh`, the script automatically sources `~/.cfgd.env` before execution, making all resolved `spec.env` vars and `spec.aliases` available (with alias expansion enabled). See [Lifecycle Scripts](../lifecycle-scripts.md) for details.
 
+The idempotency guards `onlyIf`, `unless`, and `creates` make a script re-run-safe by construction. They are evaluated **before** the script body, in this order; any guard that says "skip" skips the body and reports `changed=false` with a `Skipped` status line naming the guard:
+
+| Field | Type | Skips the body when… |
+|---|---|---|
+| `creates` | string (path) | the path already exists |
+| `onlyIf` | string (command) | the command exits **non-zero** (the condition to run is not met) |
+| `unless` | string (command) | the command exits **zero** (the guarded state already holds) |
+
+When more than one guard is set, **all** must permit running for the body to run. `onlyIf`/`unless` commands run with the same shell, working directory, and environment as the body, bounded by a timeout so a guard can never hang; a guard command that fails to spawn (e.g. a missing interpreter) is a hard error. For `creates`, a leading `~` expands to the home directory and a relative path resolves against the script's working directory (the config root for profile scripts); existence follows symlinks.
+
 Each entry can be a string or an object:
 
 ```yaml
@@ -667,6 +677,12 @@ scripts:
     - scripts/reload-shell.sh
     - run: echo "applied at $(date)"
       shell: bash
+    # Idempotent: only clone when the checkout is missing.
+    - run: git clone https://example.com/repo ~/.local/share/repo
+      creates: ~/.local/share/repo
+    # Idempotent: only install when the tool is absent.
+    - run: ./install.sh
+      unless: command -v mytool
   onChange:
     - run: systemctl restart myservice
       timeout: 60s

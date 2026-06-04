@@ -244,8 +244,8 @@ impl<'a> super::Reconciler<'a> {
                     shell_override,
                 );
 
-                let (desc, success, error, should_abort) = match result {
-                    Ok((desc, script_output)) => {
+                let (desc, success, action_changed, error, should_abort) = match result {
+                    Ok((desc, action_changed, script_output)) => {
                         if let Some(jid) = journal_id
                             && let Err(e) =
                                 self.state
@@ -253,7 +253,7 @@ impl<'a> super::Reconciler<'a> {
                         {
                             tracing::warn!("failed to record journal completion: {e}");
                         }
-                        (desc, true, None, false)
+                        (desc, true, action_changed, None, false)
                     }
                     Err(e) => {
                         let desc = format_action_description(action);
@@ -292,11 +292,11 @@ impl<'a> super::Reconciler<'a> {
                         {
                             tracing::warn!("failed to record journal failure: {je}");
                         }
-                        (desc, false, Some(e.to_string()), !continue_on_err)
+                        (desc, false, false, Some(e.to_string()), !continue_on_err)
                     }
                 };
 
-                let changed = success && !desc.contains(":skipped");
+                let changed = success && action_changed;
                 results.push(ActionResult {
                     phase: phase.name.as_str().to_string(),
                     description: desc.clone(),
@@ -339,6 +339,12 @@ impl<'a> super::Reconciler<'a> {
                 if let Action::Env(ea) = env_action {
                     match Self::apply_env_action(ea, printer) {
                         Ok(desc) => {
+                            // The `:skipped` substring convention is confined to
+                            // env-action descriptions, where it is the actual
+                            // data shape produced by `apply_env_action` (a no-op
+                            // write marks itself skipped). This path calls
+                            // `apply_env_action` directly, so it reads the same
+                            // shape — it is not a general description sniff.
                             let changed = !desc.contains(":skipped");
                             results.push(ActionResult {
                                 phase: PhaseName::Secrets.as_str().to_string(),
@@ -612,18 +618,20 @@ impl<'a> super::Reconciler<'a> {
         module_actions: &[ResolvedModule],
         secret_env_collector: &mut Vec<(String, String)>,
         shell_override: Option<ScriptShell>,
-    ) -> Result<(String, Option<String>)> {
+    ) -> Result<(String, bool, Option<String>)> {
         match action {
             Action::System(sys) => self
                 .apply_system_action(sys, &resolved.merged, printer)
-                .map(|d| (d, None)),
-            Action::Package(pkg) => self.apply_package_action(pkg, printer).map(|d| (d, None)),
+                .map(|d| (d, true, None)),
+            Action::Package(pkg) => self
+                .apply_package_action(pkg, printer)
+                .map(|d| (d, true, None)),
             Action::File(file) => self
                 .apply_file_action(file, &resolved.merged, config_dir, printer)
-                .map(|d| (d, None)),
+                .map(|d| (d, true, None)),
             Action::Secret(secret) => self
                 .apply_secret_action(secret, config_dir, printer, secret_env_collector)
-                .map(|d| (d, None)),
+                .map(|d| (d, true, None)),
             Action::Script(script) => self.apply_script_action(
                 script,
                 resolved,
@@ -643,8 +651,14 @@ impl<'a> super::Reconciler<'a> {
                     module_actions,
                     shell_override,
                 )
-                .map(|d| (d, None)),
-            Action::Env(env) => Self::apply_env_action(env, printer).map(|d| (d, None)),
+                .map(|(d, c)| (d, c, None)),
+            // The `:skipped` substring convention is confined to env-action
+            // descriptions, where it is the actual data shape produced by
+            // `apply_env_action` (no-op writes mark themselves skipped).
+            Action::Env(env) => Self::apply_env_action(env, printer).map(|d| {
+                let changed = !d.contains(":skipped");
+                (d, changed, None)
+            }),
         }
     }
 }

@@ -1,7 +1,7 @@
 use crate::PathDisplayExt;
 use crate::config::{ScriptEntry, ScriptShell};
 use crate::errors::{CfgdError, ConfigError, Result};
-use crate::output::Printer;
+use crate::output::{Printer, Role};
 
 use super::types::{ReconcileContext, ScriptPhase};
 
@@ -130,6 +130,61 @@ pub(crate) fn execute_script(
         }
     }
 
+    let label = format!("Running script: {}", run_str);
+
+    // Idempotency guards run BEFORE the body: `creates` (path existence),
+    // then `onlyIf` (run only on zero exit), then `unless` (run only on
+    // non-zero exit). Any guard that says "skip" short-circuits with
+    // changed=false. A skip is a clean no-op, not a failure.
+    if let ScriptEntry::Full {
+        only_if,
+        unless,
+        creates,
+        shell,
+        ..
+    } = entry
+    {
+        let guard_shell = shell_override.unwrap_or(*shell);
+
+        if let Some(path) = creates {
+            let resolved_creates = resolve_creates_path(path, working_dir);
+            if resolved_creates.exists() {
+                printer.status_simple(
+                    Role::Skipped,
+                    format!(
+                        "{run_str} — creates path already exists: {}",
+                        resolved_creates.posix()
+                    ),
+                );
+                return Ok((label, false, None));
+            }
+        }
+
+        if let Some(cmd) = only_if {
+            let success =
+                run_guard_command(cmd, guard_shell, working_dir, env_vars, default_timeout)?;
+            if !success {
+                printer.status_simple(
+                    Role::Skipped,
+                    format!("{run_str} — onlyIf condition not met: {cmd}"),
+                );
+                return Ok((label, false, None));
+            }
+        }
+
+        if let Some(cmd) = unless {
+            let success =
+                run_guard_command(cmd, guard_shell, working_dir, env_vars, default_timeout)?;
+            if success {
+                printer.status_simple(
+                    Role::Skipped,
+                    format!("{run_str} — unless condition already holds: {cmd}"),
+                );
+                return Ok((label, false, None));
+            }
+        }
+    }
+
     tracing::debug!(
         run = %run_str,
         working_dir = %working_dir.display(),
@@ -166,13 +221,7 @@ pub(crate) fn execute_script(
         std::path::PathBuf::from(run_str)
     };
 
-    let cfgd_env_path = match shell {
-        ScriptShell::Bash | ScriptShell::Zsh => {
-            let p = crate::expand_tilde(std::path::Path::new("~/.cfgd.env"));
-            if p.exists() { Some(p) } else { None }
-        }
-        _ => None,
-    };
+    let cfgd_env_path = cfgd_env_path_for(shell);
 
     let mut cmd = if resolved.exists() {
         // File path — check executable bit, run directly (OS handles shebang).
@@ -226,8 +275,6 @@ pub(crate) fn execute_script(
     for (key, value) in env_vars {
         cmd.env(key, value);
     }
-
-    let label = format!("Running script: {}", run_str);
 
     // Execute with timeout
     cmd.stdin(std::process::Stdio::null());
@@ -447,6 +494,64 @@ fn build_inline_command(
         c.process_group(0);
     }
     c
+}
+
+/// Resolve the `~/.cfgd.env` preamble path for bash/zsh inline commands.
+/// Returns the expanded path only when it exists; `None` for other shells or
+/// when the env file is absent.
+fn cfgd_env_path_for(shell: ScriptShell) -> Option<std::path::PathBuf> {
+    match shell {
+        ScriptShell::Bash | ScriptShell::Zsh => {
+            let p = crate::expand_tilde(std::path::Path::new("~/.cfgd.env"));
+            if p.exists() { Some(p) } else { None }
+        }
+        _ => None,
+    }
+}
+
+/// Resolve a `creates:` guard path.
+///
+/// A leading `~` expands to the home directory; a relative path resolves
+/// against the script's `working_dir`. Absolute paths are used verbatim.
+fn resolve_creates_path(path: &str, working_dir: &std::path::Path) -> std::path::PathBuf {
+    let expanded = crate::expand_tilde(std::path::Path::new(path));
+    if expanded.is_relative() {
+        working_dir.join(expanded)
+    } else {
+        expanded
+    }
+}
+
+/// Run an `onlyIf` / `unless` guard command and report whether it succeeded
+/// (exited zero). Uses the same interpreter, working directory, and environment
+/// as the script body, bounded by `timeout` so a guard can never hang the
+/// reconcile.
+///
+/// Two failure modes are real errors, distinct from a non-zero exit (the normal
+/// condition signal): a spawn failure (e.g. a missing interpreter, surfaced via
+/// `?`), and a timeout (a hung guard is an environment fault, not a "skip" or
+/// "run" decision — the watchdog's signal-kill exit status would otherwise be
+/// silently read as a non-zero condition).
+fn run_guard_command(
+    cmd_str: &str,
+    shell: ScriptShell,
+    working_dir: &std::path::Path,
+    env_vars: &[(String, String)],
+    timeout: std::time::Duration,
+) -> Result<bool> {
+    let cfgd_env_path = cfgd_env_path_for(shell);
+    let mut cmd = build_inline_command(shell, cmd_str, working_dir, cfgd_env_path.as_deref());
+    for (key, value) in env_vars {
+        cmd.env(key, value);
+    }
+    cmd.stdin(std::process::Stdio::null());
+    let outcome = crate::command_output_with_timeout_outcome(&mut cmd, timeout)?;
+    if outcome.timed_out {
+        return Err(CfgdError::Config(ConfigError::Invalid {
+            message: format!("guard command timed out after {timeout:?}: {cmd_str}"),
+        }));
+    }
+    Ok(outcome.output.status.success())
 }
 
 /// Kill a script's process group (SIGTERM + grace period + SIGKILL).
@@ -739,6 +844,9 @@ mod tests {
             idle_timeout: None,
             continue_on_error: None,
             shell: ScriptShell::Bash,
+            only_if: None,
+            unless: None,
+            creates: None,
         };
 
         let (label, changed, captured) = execute_script(
@@ -774,6 +882,9 @@ mod tests {
             idle_timeout: None,
             continue_on_error: None,
             shell: ScriptShell::Bash,
+            only_if: None,
+            unless: None,
+            creates: None,
         };
 
         let err = execute_script(
@@ -927,6 +1038,9 @@ mod tests {
             idle_timeout: None,
             continue_on_error: None,
             shell: ScriptShell::Auto,
+            only_if: None,
+            unless: None,
+            creates: None,
         };
 
         let result = execute_script(
@@ -1022,6 +1136,9 @@ mod tests {
             idle_timeout: None,
             continue_on_error: None,
             shell: ScriptShell::Zsh,
+            only_if: None,
+            unless: None,
+            creates: None,
         };
 
         let err = execute_script(
@@ -1043,5 +1160,268 @@ mod tests {
             }
             other => panic!("expected ConfigError::Invalid, got: {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Idempotency guards: creates / onlyIf / unless
+    // -----------------------------------------------------------------------
+
+    // A guarded entry whose body writes a sentinel marker into the tempdir.
+    // After execution, marker presence proves the body ran; absence proves a
+    // skip. The marker name is fixed; the guard fields are the variable.
+    #[cfg(unix)]
+    fn guarded_entry(
+        only_if: Option<&str>,
+        unless: Option<&str>,
+        creates: Option<&str>,
+    ) -> ScriptEntry {
+        ScriptEntry::Full {
+            run: "touch ran.marker".into(),
+            timeout: None,
+            idle_timeout: None,
+            continue_on_error: None,
+            shell: ScriptShell::Auto,
+            only_if: only_if.map(String::from),
+            unless: unless.map(String::from),
+            creates: creates.map(String::from),
+        }
+    }
+
+    #[cfg(unix)]
+    fn run_guarded(entry: &ScriptEntry, working_dir: &std::path::Path) -> (bool, bool) {
+        let printer = crate::test_helpers::test_printer();
+        let (_label, changed, _captured) = execute_script(
+            entry,
+            working_dir,
+            &[],
+            std::time::Duration::from_secs(5),
+            &printer,
+            None,
+        )
+        .expect("guarded script must not error");
+        let ran = working_dir.join("ran.marker").exists();
+        (changed, ran)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guard_creates_existing_skips() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("present"), b"x").unwrap();
+        let entry = guarded_entry(None, None, Some("present"));
+        let (changed, ran) = run_guarded(&entry, tmp.path());
+        assert!(!changed, "existing creates path must report changed=false");
+        assert!(!ran, "body must not run when creates path exists");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guard_creates_missing_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = guarded_entry(None, None, Some("absent"));
+        let (changed, ran) = run_guarded(&entry, tmp.path());
+        assert!(changed, "missing creates path must report changed=true");
+        assert!(ran, "body must run when creates path is absent");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guard_only_if_true_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = guarded_entry(Some("true"), None, None);
+        let (changed, ran) = run_guarded(&entry, tmp.path());
+        assert!(changed, "onlyIf zero-exit must permit running");
+        assert!(ran, "body must run when onlyIf succeeds");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guard_only_if_false_skips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = guarded_entry(Some("false"), None, None);
+        let (changed, ran) = run_guarded(&entry, tmp.path());
+        assert!(!changed, "onlyIf non-zero-exit must skip");
+        assert!(!ran, "body must not run when onlyIf fails");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guard_unless_true_skips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = guarded_entry(None, Some("true"), None);
+        let (changed, ran) = run_guarded(&entry, tmp.path());
+        assert!(!changed, "unless zero-exit must skip");
+        assert!(!ran, "body must not run when unless succeeds");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guard_unless_false_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = guarded_entry(None, Some("false"), None);
+        let (changed, ran) = run_guarded(&entry, tmp.path());
+        assert!(changed, "unless non-zero-exit must permit running");
+        assert!(ran, "body must run when unless fails");
+    }
+
+    // All guards permit running only when every one says "run".
+    #[cfg(unix)]
+    #[test]
+    fn guard_combined_all_pass_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = guarded_entry(Some("true"), Some("false"), Some("absent"));
+        let (changed, ran) = run_guarded(&entry, tmp.path());
+        assert!(changed);
+        assert!(ran, "body must run when all guards permit");
+    }
+
+    // A single skipping guard short-circuits even when others would permit.
+    #[cfg(unix)]
+    #[test]
+    fn guard_combined_one_blocks_skips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = guarded_entry(Some("true"), Some("true"), Some("absent"));
+        let (changed, ran) = run_guarded(&entry, tmp.path());
+        assert!(!changed, "any blocking guard must skip");
+        assert!(!ran, "body must not run when unless already holds");
+    }
+
+    // creates resolves a leading `~` via expand_tilde; a relative path resolves
+    // against working_dir.
+    #[cfg(unix)]
+    #[test]
+    fn creates_path_resolution() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rel = resolve_creates_path("sub/file", tmp.path());
+        assert_eq!(rel, tmp.path().join("sub/file"));
+
+        let abs = resolve_creates_path("/etc/hosts", tmp.path());
+        assert_eq!(abs, std::path::PathBuf::from("/etc/hosts"));
+
+        let home = tempfile::tempdir().unwrap();
+        crate::with_test_home(home.path(), || {
+            let tilde = resolve_creates_path("~/thing", tmp.path());
+            assert_eq!(tilde, home.path().join("thing"));
+        });
+    }
+
+    // A guard command whose interpreter cannot spawn is a real error, distinct
+    // from a non-zero exit (the normal condition signal). Skip when pwsh is
+    // actually installed (the spawn would then succeed).
+    #[test]
+    fn guard_spawn_failure_errors() {
+        if crate::command_available("pwsh") {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let result = run_guard_command(
+            "irrelevant",
+            ScriptShell::Pwsh,
+            tmp.path(),
+            &[],
+            std::time::Duration::from_secs(5),
+        );
+        assert!(
+            result.is_err(),
+            "a guard whose interpreter cannot spawn must error, not skip silently"
+        );
+    }
+
+    // A guard command that hangs past its timeout is a hard error — not a
+    // silently coerced "skip"/"run" condition signal. Uses the parameterized
+    // timeout seam so the test stays fast.
+    #[cfg(unix)]
+    #[test]
+    fn guard_timeout_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = run_guard_command(
+            "sleep 5",
+            ScriptShell::Auto,
+            tmp.path(),
+            &[],
+            std::time::Duration::from_millis(100),
+        );
+        match result {
+            Err(CfgdError::Config(ConfigError::Invalid { message })) => {
+                assert!(
+                    message.contains("timed out"),
+                    "timeout error should say so: {message}"
+                );
+                assert!(
+                    message.contains("sleep 5"),
+                    "timeout error should name the guard command: {message}"
+                );
+            }
+            other => panic!("a hung guard must error with a timeout message, got: {other:?}"),
+        }
+    }
+
+    // End-to-end: a guarded script whose onlyIf/unless command hangs past the
+    // (parameterized) default timeout must make execute_script return Err, not
+    // silently skip or run the body.
+    #[cfg(unix)]
+    #[test]
+    fn execute_script_guard_timeout_returns_err() {
+        let printer = crate::test_helpers::test_printer();
+        let tmp = tempfile::tempdir().unwrap();
+        let sentinel = tmp.path().join("body-ran");
+        let entry = ScriptEntry::Full {
+            run: format!("touch {}", sentinel.display()),
+            timeout: None,
+            idle_timeout: None,
+            continue_on_error: None,
+            shell: ScriptShell::Auto,
+            only_if: Some("sleep 5".to_string()),
+            unless: None,
+            creates: None,
+        };
+
+        let result = execute_script(
+            &entry,
+            tmp.path(),
+            &[],
+            std::time::Duration::from_millis(100),
+            &printer,
+            None,
+        );
+
+        match result {
+            Err(CfgdError::Config(ConfigError::Invalid { message })) => {
+                assert!(
+                    message.contains("timed out"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("a hung guard must propagate as Err, got: {other:?}"),
+        }
+        assert!(
+            !sentinel.exists(),
+            "body must not run when a guard timed out"
+        );
+    }
+
+    // A skip emits a Role::Skipped status line naming the guard and reason.
+    #[cfg(all(unix, feature = "test-helpers"))]
+    #[test]
+    fn guard_skip_emits_skipped_status_line() {
+        let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = guarded_entry(None, Some("true"), None);
+        let (_label, changed, _captured) = execute_script(
+            &entry,
+            tmp.path(),
+            &[],
+            std::time::Duration::from_secs(5),
+            &printer,
+            None,
+        )
+        .expect("skip must not error");
+        printer.flush();
+        assert!(!changed);
+        let out = crate::output::strip_ansi(&buf.lock().unwrap());
+        assert!(
+            out.contains("unless condition already holds"),
+            "skip line should name the unless guard and reason: {out:?}"
+        );
     }
 }

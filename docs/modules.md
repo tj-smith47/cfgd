@@ -220,7 +220,7 @@ Modules support lifecycle hooks that run at different points during apply and re
 
 `onDrift` is profile-level only and cannot be set on modules.
 
-Each entry can be a simple string (`"scripts/rebuild-index.sh"`) or a full object with `run`, `timeout`, `idleTimeout`, and `continueOnError` fields. Default timeout for module scripts is 2 minutes. `idleTimeout` kills scripts that produce no output for the specified duration (e.g. `30s`). See the [Module spec reference](spec/module.md#specscripts) for the complete field reference, defaults, and environment variables available to scripts.
+Each entry can be a simple string (`"scripts/rebuild-index.sh"`) or a full object with `run`, `timeout`, `idleTimeout`, `continueOnError`, and the idempotency guards `onlyIf`/`unless`/`creates` fields. Default timeout for module scripts is 2 minutes. `idleTimeout` kills scripts that produce no output for the specified duration (e.g. `30s`). The guards make a script re-run-safe: `creates` skips when a path exists, `onlyIf` runs only on a zero-exit condition, `unless` runs only on a non-zero-exit condition. See the [Module spec reference](spec/module.md#specscripts) for the complete field reference, defaults, and environment variables available to scripts.
 
 ## Profile Integration
 
