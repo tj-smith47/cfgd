@@ -11682,7 +11682,7 @@ fn dedup_profile_loses_to_module_same_manager_name() {
     )];
     let claimed = Reconciler::dedup_module_packages(&mut module_phase);
 
-    assert!(claimed.contains(&("brew".to_string(), "gh".to_string())));
+    assert!(claimed.is_claimed("brew", "gh"));
 
     let pkg_actions = vec![PackageAction::Install {
         manager: "brew".to_string(),
@@ -11753,7 +11753,7 @@ fn dedup_script_manager_never_dropped() {
     let claimed = Reconciler::dedup_module_packages(&mut module_phase);
 
     assert!(
-        !claimed.contains(&("script".to_string(), "setup".to_string())),
+        !claimed.is_claimed("script", "setup"),
         "script keys must not be claimed"
     );
     assert_eq!(module_phase.len(), 2, "both script installs must survive");
@@ -11804,10 +11804,11 @@ fn dedup_profile_install_partial_retains_unclaimed() {
 
 #[test]
 fn dedup_passes_through_non_install_package_actions() {
-    let claimed: std::collections::HashSet<(String, String)> =
+    let claimed = crate::config::PackageClaim::from_claimed(
         [("brew".to_string(), "gh".to_string())]
             .into_iter()
-            .collect();
+            .collect(),
+    );
     let pkg_actions = vec![
         PackageAction::Bootstrap {
             manager: "brew".to_string(),

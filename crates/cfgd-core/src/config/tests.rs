@@ -2000,6 +2000,55 @@ fn every_manager_accepts_list_and_struct_forms_identically() {
     }
 }
 
+/// `ALL_MANAGER_NAMES` must list exactly the names `desired_packages_for_spec`
+/// handles via a dedicated match arm — never a name that silently falls through
+/// to the custom-manager catch-all. A built-in name placed in `custom` must
+/// resolve via its built-in arm (empty here, since the built-in field is empty),
+/// NOT return the custom packages; an unknown name must hit the catch-all and
+/// return the custom packages. This keeps the const and the match from drifting:
+/// if `/add-package-manager` adds a name to the const without a match arm, the
+/// built-in lookup would fall through and this test flips red.
+#[test]
+fn all_manager_names_resolve_via_builtin_arms() {
+    for name in ALL_MANAGER_NAMES {
+        let spec = PackagesSpec {
+            custom: vec![custom_manager(name, "shadow")],
+            ..Default::default()
+        };
+        let resolved = desired_packages_for_spec(name, &spec);
+        assert!(
+            resolved.is_empty(),
+            "'{name}' is in ALL_MANAGER_NAMES but resolved to the custom-manager \
+             fallthrough ({resolved:?}) — it has no built-in match arm in \
+             desired_packages_for_spec"
+        );
+    }
+
+    // Negative control: an unknown name must fall through to the custom lookup.
+    let spec = PackagesSpec {
+        custom: vec![custom_manager("definitely-not-a-builtin", "pkg-a")],
+        ..Default::default()
+    };
+    assert_eq!(
+        desired_packages_for_spec("definitely-not-a-builtin", &spec),
+        vec!["pkg-a".to_string()],
+        "unknown manager names must resolve via the custom-manager catch-all"
+    );
+}
+
+/// Minimal `CustomManagerSpec` with one package, for the manager-name drift guard.
+fn custom_manager(name: &str, package: &str) -> CustomManagerSpec {
+    CustomManagerSpec {
+        name: name.to_string(),
+        check: String::new(),
+        list_installed: String::new(),
+        install: String::new(),
+        uninstall: String::new(),
+        update: None,
+        packages: vec![package.to_string()],
+    }
+}
+
 /// The reported root-cause symptom: `flatpak: [app]` must now parse where it
 /// previously errored with `invalid type: sequence, expected struct FlatpakSpec`.
 #[test]

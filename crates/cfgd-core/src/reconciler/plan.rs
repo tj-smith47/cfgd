@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::PathDisplayExt;
@@ -174,17 +174,7 @@ impl<'a> super::Reconciler<'a> {
         profile: &MergedProfile,
         modules: &[ResolvedModule],
     ) -> Result<Vec<Action>> {
-        // Build effective system map: start from profile, deep-merge each module in order.
-        // Module values override profile values at leaf level (consistent with env/aliases).
-        let mut system = profile.system.clone();
-        for module in modules {
-            for (key, value) in &module.system {
-                crate::deep_merge_yaml(
-                    system.entry(key.clone()).or_insert(serde_yaml::Value::Null),
-                    value,
-                );
-            }
-        }
+        let system = crate::effective::effective_system_map(profile, modules);
 
         let mut actions = Vec::new();
 
@@ -557,18 +547,15 @@ impl<'a> super::Reconciler<'a> {
 
     /// Dedupe module `InstallPackages` actions in place, keeping the first-seen
     /// `(manager, resolved_name)` across the whole module phase, and return the
-    /// set of real (non-`script`) keys that were kept.
+    /// [`crate::config::PackageClaim`] recording the keys that were kept.
     ///
-    /// Earlier modules win over later ones because the slice is walked in module
-    /// order; the first occurrence claims the key and subsequent duplicates are
-    /// filtered out. Emptied `InstallPackages` actions are dropped so no empty
-    /// install is emitted. `manager == "script"` is never claimed or filtered:
-    /// a custom inline script is not package-manager-idempotent, so two
-    /// same-named scripts may differ and both must run.
+    /// Emptied `InstallPackages` actions are dropped so no empty install is
+    /// emitted. The claiming rules (earlier-module-wins, `script` exemption) live
+    /// in [`crate::config::PackageClaim::claim_module`].
     pub(super) fn dedup_module_packages(
         module_phase: &mut Vec<Action>,
-    ) -> HashSet<(String, String)> {
-        let mut claimed: HashSet<(String, String)> = HashSet::new();
+    ) -> crate::config::PackageClaim {
+        let mut claim = crate::config::PackageClaim::new();
         module_phase.retain_mut(|action| {
             let Action::Module(ModuleAction {
                 kind: ModuleActionKind::InstallPackages { resolved },
@@ -577,15 +564,10 @@ impl<'a> super::Reconciler<'a> {
             else {
                 return true;
             };
-            resolved.retain(|rp| {
-                if rp.manager == "script" {
-                    return true;
-                }
-                claimed.insert((rp.manager.clone(), rp.resolved_name.clone()))
-            });
+            resolved.retain(|rp| claim.claim_module(&rp.manager, &rp.resolved_name));
             !resolved.is_empty()
         });
-        claimed
+        claim
     }
 
     /// Drop profile `Install` entries whose `(manager, name)` was already claimed
@@ -597,7 +579,7 @@ impl<'a> super::Reconciler<'a> {
     /// All non-`Install` variants pass through untouched.
     pub(super) fn filter_profile_packages(
         pkg_actions: Vec<PackageAction>,
-        claimed: &HashSet<(String, String)>,
+        claim: &crate::config::PackageClaim,
     ) -> Vec<PackageAction> {
         pkg_actions
             .into_iter()
@@ -607,10 +589,9 @@ impl<'a> super::Reconciler<'a> {
                     packages,
                     origin,
                 } => {
-                    let mgr = manager.clone();
                     let kept: Vec<String> = packages
                         .into_iter()
-                        .filter(|name| !claimed.contains(&(mgr.clone(), name.clone())))
+                        .filter(|name| !claim.is_claimed(&manager, name))
                         .collect();
                     if kept.is_empty() {
                         None

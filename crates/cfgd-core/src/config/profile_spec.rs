@@ -314,6 +314,27 @@ impl PackagesSpec {
         }
     }
 
+    /// Return the names of every package manager that has at least one entry,
+    /// including the virtual `brew-tap` / `brew-cask` managers and any custom
+    /// managers. Order is stable but not significant.
+    ///
+    /// Built-in managers are walked from [`crate::config::ALL_MANAGER_NAMES`] and
+    /// kept when [`crate::config::desired_packages_for_spec`] yields a non-empty
+    /// list, so this never re-encodes which field each manager reads.
+    pub fn manager_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = crate::config::ALL_MANAGER_NAMES
+            .iter()
+            .filter(|name| !crate::config::desired_packages_for_spec(name, self).is_empty())
+            .map(|name| name.to_string())
+            .collect();
+        for custom in &self.custom {
+            if !custom.packages.is_empty() {
+                names.push(custom.name.clone());
+            }
+        }
+        names
+    }
+
     /// Return all non-empty simple-list managers as `(name, packages)` pairs.
     pub fn non_empty_simple_lists(&self) -> Vec<(&str, &[String])> {
         let mut result = Vec::new();

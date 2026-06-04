@@ -44,8 +44,8 @@ pub use profile_spec::{
     validate_secret_specs,
 };
 pub use resolve::{
-    LayerPolicy, MergedProfile, ProfileLayer, ResolvedProfile, desired_packages_for,
-    desired_packages_for_spec, resolve_profile,
+    ALL_MANAGER_NAMES, LayerPolicy, MergedProfile, PackageClaim, ProfileLayer, ResolvedProfile,
+    desired_packages_for, desired_packages_for_spec, resolve_profile,
 };
 pub use root::{
     CfgdConfig, ConfigMetadata, ConfigSpec, for_each_yaml_file, is_yaml_ext, minimal_config,

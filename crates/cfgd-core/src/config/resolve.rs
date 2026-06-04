@@ -217,6 +217,37 @@ pub(super) fn merge_layers(layers: &[ProfileLayer]) -> MergedProfile {
     merged
 }
 
+/// Every built-in package-manager name [`desired_packages_for_spec`] resolves.
+///
+/// This is the single canonical list of built-in managers: it must stay in sync
+/// with the match arms of [`desired_packages_for_spec`] (a co-located test
+/// enforces that), and is the enumeration source for callers that need to walk
+/// "every configured manager" without re-encoding which field each one reads.
+/// Custom managers are not listed here — they are discovered from
+/// [`PackagesSpec::custom`] by name.
+pub const ALL_MANAGER_NAMES: &[&str] = &[
+    "brew",
+    "brew-tap",
+    "brew-cask",
+    "apt",
+    "cargo",
+    "npm",
+    "pipx",
+    "dnf",
+    "apk",
+    "pacman",
+    "zypper",
+    "yum",
+    "pkg",
+    "snap",
+    "flatpak",
+    "nix",
+    "go",
+    "winget",
+    "chocolatey",
+    "scoop",
+];
+
 /// Get the list of desired packages for a specific package manager from a merged profile.
 pub fn desired_packages_for(manager_name: &str, profile: &MergedProfile) -> Vec<String> {
     desired_packages_for_spec(manager_name, &profile.packages)
@@ -293,6 +324,50 @@ pub fn desired_packages_for_spec(manager_name: &str, packages: &PackagesSpec) ->
             }
             Vec::new()
         }
+    }
+}
+
+/// Cross-scope package-claiming primitive shared by every path that combines
+/// module and profile packages.
+///
+/// Module packages are offered first, in module order, via [`Self::claim_module`]:
+/// the first occurrence of a `(manager, name)` claims it and wins; later
+/// duplicates (in the same or a later module) are dropped. The `script` manager
+/// is exempt — a custom inline script is not package-manager-idempotent, so two
+/// same-named scripts may differ and both must run. Profile packages are then
+/// tested with [`Self::is_claimed`]; an already-claimed `(manager, name)` is
+/// dropped so it installs only once (the module install wins).
+#[derive(Debug, Default)]
+pub struct PackageClaim {
+    claimed: std::collections::HashSet<(String, String)>,
+}
+
+impl PackageClaim {
+    /// Create an empty claim set.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Build a claim from an already-computed set of `(manager, name)` keys.
+    pub fn from_claimed(claimed: std::collections::HashSet<(String, String)>) -> Self {
+        Self { claimed }
+    }
+
+    /// Offer a module package. Returns `true` if it is kept (claimed now, or a
+    /// `script`-manager package which is always kept) and `false` if it
+    /// duplicates an already-claimed `(manager, name)` and must be dropped.
+    pub fn claim_module(&mut self, manager: &str, name: &str) -> bool {
+        if manager == "script" {
+            return true;
+        }
+        self.claimed.insert((manager.to_string(), name.to_string()))
+    }
+
+    /// Whether a profile `(manager, name)` was already claimed by a module and
+    /// must therefore be dropped from the profile scope.
+    pub fn is_claimed(&self, manager: &str, name: &str) -> bool {
+        self.claimed
+            .contains(&(manager.to_string(), name.to_string()))
     }
 }
 
