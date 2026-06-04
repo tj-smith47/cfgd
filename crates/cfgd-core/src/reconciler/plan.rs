@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::PathDisplayExt;
@@ -57,15 +57,26 @@ impl<'a> super::Reconciler<'a> {
         // Packages are grouped with system/native managers first, then
         // bootstrappable managers, so build deps are installed before
         // packages that need them.
-        let module_phase_actions = self.plan_modules(&module_actions, context);
+        let mut module_phase_actions = self.plan_modules(&module_actions, context);
+
+        // Cross-scope package dedup: a (manager, resolved_name) declared in both a
+        // module and the profile (or in two modules) installs once. Module installs
+        // win because this phase runs first and a module's postApply may need the
+        // package present; among modules the earlier one wins (module-order walk).
+        let claimed = Self::dedup_module_packages(&mut module_phase_actions);
+
         phases.push(Phase {
             name: PhaseName::Modules,
             actions: module_phase_actions,
         });
 
         // Packages: profile-level packages, installed after modules
-        // so module deps are available.
-        let package_actions = pkg_actions.into_iter().map(Action::Package).collect();
+        // so module deps are available. Profile entries already claimed by a
+        // module install are dropped here so the package installs only once.
+        let package_actions = Self::filter_profile_packages(pkg_actions, &claimed)
+            .into_iter()
+            .map(Action::Package)
+            .collect();
         phases.push(Phase {
             name: PhaseName::Packages,
             actions: package_actions,
@@ -542,5 +553,77 @@ impl<'a> super::Reconciler<'a> {
         }
 
         actions
+    }
+
+    /// Dedupe module `InstallPackages` actions in place, keeping the first-seen
+    /// `(manager, resolved_name)` across the whole module phase, and return the
+    /// set of real (non-`script`) keys that were kept.
+    ///
+    /// Earlier modules win over later ones because the slice is walked in module
+    /// order; the first occurrence claims the key and subsequent duplicates are
+    /// filtered out. Emptied `InstallPackages` actions are dropped so no empty
+    /// install is emitted. `manager == "script"` is never claimed or filtered:
+    /// a custom inline script is not package-manager-idempotent, so two
+    /// same-named scripts may differ and both must run.
+    pub(super) fn dedup_module_packages(
+        module_phase: &mut Vec<Action>,
+    ) -> HashSet<(String, String)> {
+        let mut claimed: HashSet<(String, String)> = HashSet::new();
+        module_phase.retain_mut(|action| {
+            let Action::Module(ModuleAction {
+                kind: ModuleActionKind::InstallPackages { resolved },
+                ..
+            }) = action
+            else {
+                return true;
+            };
+            resolved.retain(|rp| {
+                if rp.manager == "script" {
+                    return true;
+                }
+                claimed.insert((rp.manager.clone(), rp.resolved_name.clone()))
+            });
+            !resolved.is_empty()
+        });
+        claimed
+    }
+
+    /// Drop profile `Install` entries whose `(manager, name)` was already claimed
+    /// by a module install, dropping the whole `Install` when it empties.
+    ///
+    /// Module installs win over profile duplicates: the Modules phase runs before
+    /// the Packages phase, and a module's own postApply scripts may depend on the
+    /// package being present, so the module's install must be the one that runs.
+    /// All non-`Install` variants pass through untouched.
+    pub(super) fn filter_profile_packages(
+        pkg_actions: Vec<PackageAction>,
+        claimed: &HashSet<(String, String)>,
+    ) -> Vec<PackageAction> {
+        pkg_actions
+            .into_iter()
+            .filter_map(|action| match action {
+                PackageAction::Install {
+                    manager,
+                    packages,
+                    origin,
+                } => {
+                    let mgr = manager.clone();
+                    let kept: Vec<String> = packages
+                        .into_iter()
+                        .filter(|name| !claimed.contains(&(mgr.clone(), name.clone())))
+                        .collect();
+                    if kept.is_empty() {
+                        None
+                    } else {
+                        Some(PackageAction::Install {
+                            manager,
+                            packages: kept,
+                            origin,
+                        })
+                    }
+                }
+                other => Some(other),
+            })
+            .collect()
     }
 }

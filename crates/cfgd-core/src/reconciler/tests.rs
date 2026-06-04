@@ -11588,3 +11588,191 @@ fn plan_env_interactive_scope_has_no_live_session_action() {
         "Interactive scope must not touch the live session"
     );
 }
+
+// --- Cross-scope package dedup tests ---
+
+fn dedup_rp(name: &str, manager: &str) -> ResolvedPackage {
+    ResolvedPackage {
+        canonical_name: name.to_string(),
+        resolved_name: name.to_string(),
+        manager: manager.to_string(),
+        version: None,
+        script: None,
+    }
+}
+
+fn install_packages_action(module: &str, resolved: Vec<ResolvedPackage>) -> Action {
+    Action::Module(ModuleAction {
+        module_name: module.to_string(),
+        kind: ModuleActionKind::InstallPackages { resolved },
+    })
+}
+
+fn resolved_names_of(action: &Action) -> Vec<String> {
+    match action {
+        Action::Module(ModuleAction {
+            kind: ModuleActionKind::InstallPackages { resolved },
+            ..
+        }) => resolved.iter().map(|r| r.resolved_name.clone()).collect(),
+        _ => Vec::new(),
+    }
+}
+
+#[test]
+fn dedup_profile_loses_to_module_same_manager_name() {
+    let mut module_phase = vec![install_packages_action(
+        "gh-auth",
+        vec![dedup_rp("gh", "brew")],
+    )];
+    let claimed = Reconciler::dedup_module_packages(&mut module_phase);
+
+    assert!(claimed.contains(&("brew".to_string(), "gh".to_string())));
+
+    let pkg_actions = vec![PackageAction::Install {
+        manager: "brew".to_string(),
+        packages: vec!["gh".to_string()],
+        origin: "profile".to_string(),
+    }];
+    let filtered = Reconciler::filter_profile_packages(pkg_actions, &claimed);
+
+    assert!(
+        filtered.is_empty(),
+        "profile Install emptied by dedup must be dropped, got {filtered:?}"
+    );
+    // module keeps gh
+    assert_eq!(resolved_names_of(&module_phase[0]), vec!["gh".to_string()]);
+}
+
+#[test]
+fn dedup_different_managers_keep_both() {
+    let mut module_phase = vec![install_packages_action(
+        "rg-mod",
+        vec![dedup_rp("ripgrep", "cargo")],
+    )];
+    let claimed = Reconciler::dedup_module_packages(&mut module_phase);
+
+    let pkg_actions = vec![PackageAction::Install {
+        manager: "brew".to_string(),
+        packages: vec!["ripgrep".to_string()],
+        origin: "profile".to_string(),
+    }];
+    let filtered = Reconciler::filter_profile_packages(pkg_actions, &claimed);
+
+    assert_eq!(filtered.len(), 1, "different managers must both survive");
+    match &filtered[0] {
+        PackageAction::Install { packages, .. } => {
+            assert_eq!(packages, &vec!["ripgrep".to_string()]);
+        }
+        other => panic!("expected Install, got {other:?}"),
+    }
+}
+
+#[test]
+fn dedup_earlier_module_wins_over_later() {
+    let mut module_phase = vec![
+        install_packages_action("a", vec![dedup_rp("fd", "brew")]),
+        install_packages_action("b", vec![dedup_rp("fd", "brew")]),
+    ];
+    Reconciler::dedup_module_packages(&mut module_phase);
+
+    // module a keeps fd; module b's InstallPackages emptied -> action dropped
+    assert_eq!(
+        module_phase.len(),
+        1,
+        "later duplicate action must be dropped"
+    );
+    match &module_phase[0] {
+        Action::Module(ModuleAction { module_name, .. }) => assert_eq!(module_name, "a"),
+        other => panic!("expected Module action, got {other:?}"),
+    }
+    assert_eq!(resolved_names_of(&module_phase[0]), vec!["fd".to_string()]);
+}
+
+#[test]
+fn dedup_script_manager_never_dropped() {
+    let mut module_phase = vec![
+        install_packages_action("a", vec![dedup_rp("setup", "script")]),
+        install_packages_action("b", vec![dedup_rp("setup", "script")]),
+    ];
+    let claimed = Reconciler::dedup_module_packages(&mut module_phase);
+
+    assert!(
+        !claimed.contains(&("script".to_string(), "setup".to_string())),
+        "script keys must not be claimed"
+    );
+    assert_eq!(module_phase.len(), 2, "both script installs must survive");
+    assert_eq!(
+        resolved_names_of(&module_phase[0]),
+        vec!["setup".to_string()]
+    );
+    assert_eq!(
+        resolved_names_of(&module_phase[1]),
+        vec!["setup".to_string()]
+    );
+}
+
+#[test]
+fn dedup_mixed_kept_and_dropped_in_one_action() {
+    let mut module_phase = vec![
+        install_packages_action("a", vec![dedup_rp("fd", "brew")]),
+        install_packages_action("b", vec![dedup_rp("fd", "brew"), dedup_rp("bat", "brew")]),
+    ];
+    Reconciler::dedup_module_packages(&mut module_phase);
+
+    assert_eq!(module_phase.len(), 2);
+    assert_eq!(resolved_names_of(&module_phase[0]), vec!["fd".to_string()]);
+    // module b's fd dropped, bat retained
+    assert_eq!(resolved_names_of(&module_phase[1]), vec!["bat".to_string()]);
+}
+
+#[test]
+fn dedup_profile_install_partial_retains_unclaimed() {
+    let mut module_phase = vec![install_packages_action("a", vec![dedup_rp("gh", "brew")])];
+    let claimed = Reconciler::dedup_module_packages(&mut module_phase);
+
+    let pkg_actions = vec![PackageAction::Install {
+        manager: "brew".to_string(),
+        packages: vec!["gh".to_string(), "jq".to_string()],
+        origin: "profile".to_string(),
+    }];
+    let filtered = Reconciler::filter_profile_packages(pkg_actions, &claimed);
+
+    assert_eq!(filtered.len(), 1);
+    match &filtered[0] {
+        PackageAction::Install { packages, .. } => {
+            assert_eq!(packages, &vec!["jq".to_string()], "gh deduped, jq kept");
+        }
+        other => panic!("expected Install, got {other:?}"),
+    }
+}
+
+#[test]
+fn dedup_passes_through_non_install_package_actions() {
+    let claimed: std::collections::HashSet<(String, String)> =
+        [("brew".to_string(), "gh".to_string())]
+            .into_iter()
+            .collect();
+    let pkg_actions = vec![
+        PackageAction::Bootstrap {
+            manager: "brew".to_string(),
+            method: "curl".to_string(),
+            origin: "profile".to_string(),
+        },
+        PackageAction::Uninstall {
+            manager: "brew".to_string(),
+            packages: vec!["gh".to_string()],
+            origin: "profile".to_string(),
+        },
+        PackageAction::Skip {
+            manager: "brew".to_string(),
+            reason: "available".to_string(),
+            origin: "profile".to_string(),
+        },
+    ];
+    let filtered = Reconciler::filter_profile_packages(pkg_actions, &claimed);
+    assert_eq!(
+        filtered.len(),
+        3,
+        "Bootstrap/Uninstall/Skip must pass through untouched"
+    );
+}

@@ -187,6 +187,30 @@ The full resolution logic for each package entry:
 
 Version strings are normalized to semver: `"0.9"` becomes `"0.9.0"`, `"18"` becomes `"18.0.0"`. This lets cfgd compare versions from different package managers consistently, even when they report versions in different formats.
 
+### Cross-Scope Deduplication
+
+A package declared in more than one scope — the profile and a module, or two modules — installs **once**. cfgd dedupes the combined profile + module install set keyed on `(manager, name)`. The module side contributes its alias-resolved name; the profile side matches on the name as literally declared (profiles have no per-package alias mechanism). When both sides land on the same effective `(manager, name)`, only one install runs — a module that aliases a package to a name different from the profile's literal entry does not collide, so both install (which is correct):
+
+- **Same manager + same name across scopes** → installed once; the duplicates are dropped.
+- **Different managers** → both install. `ripgrep` via `brew` in the profile and via `cargo` in a module are two distinct installs.
+- **Module installs win** over profile duplicates, and an **earlier module wins** over a later one. The Modules phase runs before the Packages phase, so a module's own `postApply` script can rely on the package already being present.
+- **`prefer: [script]` entries are never deduped.** A custom install script is not package-manager-idempotent — two same-named scripts may differ, so both always run.
+- Dedup is **silent**: no warning is emitted for a dropped duplicate.
+
+```yaml
+# profile.yaml
+spec:
+  packages:
+    brew: [gh]          # declared here
+
+# modules/gh-auth/module.yaml
+spec:
+  packages:
+    - name: gh          # ...and here, same manager
+```
+
+`gh` installs once (the `gh-auth` module's install runs; the profile entry is dropped).
+
 ### Script Execution
 
 When `prefer: [script]` is selected (or `"script"` is reached in the prefer list), cfgd runs the package's `script` field as a custom installer. The script can be inline shell or a path to a script file relative to the module directory.
