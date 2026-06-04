@@ -59,6 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **changelog**: Regenerate from conventional commits
 - **changelog**: Regenerate from conventional commits
 - **changelog**: Regenerate for persisted custom-manager uninstall
+- **changelog**: Regenerate for module spec.system apply fix
 
 ### Fixed
 
@@ -85,6 +86,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **packages**: Repair nix manager on nix 2.20+ (JSON list + remove by element name)
 - **release**: Build Linux deb/rpm/apk from a static musl binary
 - **reconciler**: Apply module-contributed spec.system settings
+- **module**: Omit null description + correct parse-vs-not-found error code
 
 ### Miscellaneous
 
