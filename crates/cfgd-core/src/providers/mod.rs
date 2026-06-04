@@ -183,11 +183,41 @@ pub enum FileAction {
     },
 }
 
+/// Content-drift outcome for a single managed file: whether the on-disk target
+/// matches the rendered source content (presence AND bytes), plus the
+/// human-readable `expected`/`actual` descriptions used to build a drift report.
+///
+/// `target` is the display path of the managed target. `matches` is `true` only
+/// when the target exists and its bytes equal the rendered source; a missing
+/// source or missing target yields `matches: false` with `actual` describing the
+/// reason rather than an error.
+#[derive(Debug, Clone)]
+pub struct FileDriftResult {
+    pub target: String,
+    pub matches: bool,
+    pub expected: String,
+    pub actual: String,
+}
+
 pub trait FileManager: Send + Sync {
     fn scan_source(&self, layers: &[FileLayer]) -> Result<FileTree>;
     fn scan_target(&self, paths: &[PathBuf]) -> Result<FileTree>;
     fn diff(&self, source: &FileTree, target: &FileTree) -> Result<Vec<FileDiff>>;
     fn apply(&self, actions: &[FileAction], printer: &Printer) -> Result<()>;
+
+    /// Content-aware drift check for a single source/target pair.
+    ///
+    /// Renders the source (tera template when applicable, otherwise read as-is)
+    /// and byte-compares it to the on-disk target, returning a
+    /// [`FileDriftResult`]. A missing source or missing target yields a
+    /// non-matching result (`matches: false`) rather than an error, so a single
+    /// unresolvable entry cannot mask drift elsewhere.
+    fn content_drift(
+        &self,
+        source: &Path,
+        target: &Path,
+        origin: Option<&str>,
+    ) -> Result<FileDriftResult>;
 }
 
 // --- PackageAction ---

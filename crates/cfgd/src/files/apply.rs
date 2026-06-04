@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use cfgd_core::config::FileStrategy;
 use cfgd_core::errors::{FileError, Result};
 use cfgd_core::output::Printer;
-use cfgd_core::providers::{FileAction, FileDiff, FileDiffKind, FileEntry, FileLayer, FileTree};
+use cfgd_core::providers::{
+    FileAction, FileDiff, FileDiffKind, FileDriftResult, FileEntry, FileLayer, FileTree,
+};
 
 use super::template::is_tera_template;
 
@@ -235,6 +237,15 @@ impl cfgd_core::providers::FileManager for super::CfgdFileManager {
 
         pb.finish();
         Ok(())
+    }
+
+    fn content_drift(
+        &self,
+        source: &Path,
+        target: &Path,
+        origin: Option<&str>,
+    ) -> Result<FileDriftResult> {
+        self.file_drift_one(source, target, origin)
     }
 }
 

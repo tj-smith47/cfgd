@@ -8,21 +8,10 @@ use cfgd_core::config::{EncryptionMode, FileStrategy, ManagedFileSpec, MergedPro
 use cfgd_core::errors::{FileError, Result};
 use cfgd_core::expand_tilde;
 use cfgd_core::output::{Printer, Role};
-use cfgd_core::providers::FileAction;
+use cfgd_core::providers::{FileAction, FileDriftResult};
 
 use super::is_file_encrypted;
 use super::template::is_tera_template;
-
-/// Content-drift outcome for a single managed file, produced by
-/// [`super::CfgdFileManager::file_drift_results`]. Carries enough detail to
-/// build a `VerifyResult` without re-reading the file.
-#[derive(Debug, Clone)]
-pub(crate) struct FileDriftResult {
-    pub target: String,
-    pub matches: bool,
-    pub expected: String,
-    pub actual: String,
-}
 
 impl super::CfgdFileManager {
     /// Resolve the effective strategy for a managed file.
@@ -472,7 +461,7 @@ mod tests {
         MergedProfile, ProfileLayer, ProfileSpec, ResolvedProfile,
     };
     use cfgd_core::output::{Printer, Verbosity};
-    use cfgd_core::providers::FileAction;
+    use cfgd_core::providers::{FileAction, FileManager};
 
     use super::super::CfgdFileManager;
     use super::detect_language;
@@ -512,6 +501,54 @@ mod tests {
             encryption: None,
             permissions: None,
         }
+    }
+
+    #[test]
+    fn content_drift_trait_delegates_matching() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let source = config_dir.join("src.txt");
+        let target = config_dir.join("target.txt");
+        fs::write(&source, "hello world").unwrap();
+        fs::write(&target, "hello world").unwrap();
+
+        let fm = make_manager(config_dir);
+        let result = FileManager::content_drift(&fm, &source, &target, None).unwrap();
+        assert!(result.matches);
+        assert_eq!(result.actual, "content matches source");
+    }
+
+    #[test]
+    fn content_drift_trait_delegates_tampered() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let source = config_dir.join("src.txt");
+        let target = config_dir.join("target.txt");
+        fs::write(&source, "hello world").unwrap();
+        fs::write(&target, "tampered").unwrap();
+
+        let fm = make_manager(config_dir);
+        let result = FileManager::content_drift(&fm, &source, &target, None).unwrap();
+        assert!(!result.matches);
+        assert!(
+            result.actual.contains("differs"),
+            "expected 'differs' in actual, got: {}",
+            result.actual
+        );
+    }
+
+    #[test]
+    fn content_drift_trait_delegates_missing_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path();
+        let source = config_dir.join("src.txt");
+        let target = config_dir.join("absent.txt");
+        fs::write(&source, "hello world").unwrap();
+
+        let fm = make_manager(config_dir);
+        let result = FileManager::content_drift(&fm, &source, &target, None).unwrap();
+        assert!(!result.matches);
+        assert_eq!(result.actual, "missing");
     }
 
     #[test]

@@ -13,8 +13,8 @@ use secrecy::SecretString;
 use crate::errors::{CfgdError, FileError, SecretError};
 use crate::output::Printer;
 use crate::providers::{
-    FileAction, FileDiff, FileLayer, FileTree, SecretBackend, SecretProvider, SystemConfigurator,
-    SystemDrift,
+    FileAction, FileDiff, FileDriftResult, FileLayer, FileTree, SecretBackend, SecretProvider,
+    SystemConfigurator, SystemDrift,
 };
 
 // ---------------------------------------------------------------------------
@@ -27,7 +27,11 @@ pub struct MockFileManager {
     pub scan_target_calls: Mutex<Vec<String>>,
     pub diff_calls: Mutex<Vec<String>>,
     pub apply_calls: Mutex<Vec<String>>,
+    pub content_drift_calls: Mutex<Vec<String>>,
     pub fail_apply: Mutex<bool>,
+    /// When set, `content_drift` returns this result verbatim instead of deriving
+    /// the outcome from on-disk content. Lets tests pin an exact drift shape.
+    pub content_drift_result: Mutex<Option<FileDriftResult>>,
 }
 
 impl MockFileManager {
@@ -37,12 +41,20 @@ impl MockFileManager {
             scan_target_calls: Mutex::new(Vec::new()),
             diff_calls: Mutex::new(Vec::new()),
             apply_calls: Mutex::new(Vec::new()),
+            content_drift_calls: Mutex::new(Vec::new()),
             fail_apply: Mutex::new(false),
+            content_drift_result: Mutex::new(None),
         }
     }
 
     pub fn set_fail_apply(&self, fail: bool) {
         *self.fail_apply.lock().unwrap() = fail;
+    }
+
+    /// Pin the [`FileDriftResult`] that `content_drift` returns regardless of
+    /// the source/target arguments.
+    pub fn set_content_drift_result(&self, result: FileDriftResult) {
+        *self.content_drift_result.lock().unwrap() = Some(result);
     }
 }
 
@@ -85,6 +97,59 @@ impl crate::providers::FileManager for MockFileManager {
             }));
         }
         Ok(())
+    }
+
+    fn content_drift(
+        &self,
+        source: &Path,
+        target: &Path,
+        _origin: Option<&str>,
+    ) -> crate::errors::Result<FileDriftResult> {
+        self.content_drift_calls
+            .lock()
+            .unwrap()
+            .push(target.display().to_string());
+
+        if let Some(pinned) = self.content_drift_result.lock().unwrap().clone() {
+            return Ok(pinned);
+        }
+
+        // Mirror production (`CfgdFileManager::file_drift_one`): tilde-expand the
+        // target and report it POSIX-normalized so tests see the same shape.
+        let target_path = crate::expand_tilde(target);
+        let target_id = crate::PathDisplayExt::display_posix(&target_path);
+        if !source.exists() {
+            return Ok(FileDriftResult {
+                target: target_id,
+                matches: false,
+                expected: "managed source present".to_string(),
+                actual: "source not found".to_string(),
+            });
+        }
+        if !target_path.exists() {
+            return Ok(FileDriftResult {
+                target: target_id,
+                matches: false,
+                expected: "present".to_string(),
+                actual: "missing".to_string(),
+            });
+        }
+        // Only a successful read on BOTH sides counts as a comparison; if either
+        // read fails, report drift rather than letting two `None`s compare equal.
+        let matches = matches!(
+            (std::fs::read(source), std::fs::read(&target_path)),
+            (Ok(a), Ok(b)) if a == b
+        );
+        Ok(FileDriftResult {
+            target: target_id,
+            matches,
+            expected: "content matches source".to_string(),
+            actual: if matches {
+                "content matches source".to_string()
+            } else {
+                "content differs from source".to_string()
+            },
+        })
     }
 }
 
@@ -1957,6 +2022,57 @@ mod tests {
             err_msg.contains("mock-failure"),
             "expected mock-failure path in error, got: {err_msg}"
         );
+    }
+
+    #[test]
+    fn mock_file_manager_content_drift_derives_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("src.txt");
+        let matching = dir.path().join("same.txt");
+        let drifted = dir.path().join("diff.txt");
+        std::fs::write(&source, "hello").unwrap();
+        std::fs::write(&matching, "hello").unwrap();
+        std::fs::write(&drifted, "tampered").unwrap();
+
+        let fm = MockFileManager::new();
+
+        let ok = fm.content_drift(&source, &matching, None).unwrap();
+        assert!(ok.matches);
+        assert_eq!(ok.actual, "content matches source");
+
+        let bad = fm.content_drift(&source, &drifted, None).unwrap();
+        assert!(!bad.matches);
+        assert!(bad.actual.contains("differs"));
+
+        let missing = fm
+            .content_drift(&source, &dir.path().join("nope.txt"), None)
+            .unwrap();
+        assert!(!missing.matches);
+        assert_eq!(missing.actual, "missing");
+
+        assert_eq!(fm.content_drift_calls.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn mock_file_manager_content_drift_returns_pinned_result() {
+        let fm = MockFileManager::new();
+        fm.set_content_drift_result(FileDriftResult {
+            target: "~/.bashrc".to_string(),
+            matches: false,
+            expected: "content matches source".to_string(),
+            actual: "content differs from source".to_string(),
+        });
+
+        let result = fm
+            .content_drift(
+                Path::new("/does/not/exist"),
+                Path::new("/also/missing"),
+                None,
+            )
+            .unwrap();
+        assert_eq!(result.target, "~/.bashrc");
+        assert!(!result.matches);
+        assert!(result.actual.contains("differs"));
     }
 
     #[test]
