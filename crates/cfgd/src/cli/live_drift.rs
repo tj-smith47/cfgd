@@ -332,6 +332,7 @@ mod tests {
             pre_reconcile_scripts: Vec::new(),
             post_reconcile_scripts: Vec::new(),
             on_change_scripts: Vec::new(),
+            on_drift_scripts: Vec::new(),
             depends: Vec::new(),
             dir: std::path::PathBuf::new(),
             platform_skip_reason: None,

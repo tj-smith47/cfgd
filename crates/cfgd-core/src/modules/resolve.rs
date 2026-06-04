@@ -292,16 +292,7 @@ pub fn resolve_modules(
             .map(|s| s.post_reconcile.clone())
             .unwrap_or_default();
         let on_change_scripts = scripts.map(|s| s.on_change.clone()).unwrap_or_default();
-
-        // Warn if module defines onDrift scripts — onDrift is profile-level only
-        if let Some(ref scripts) = module.spec.scripts
-            && !scripts.on_drift.is_empty()
-        {
-            tracing::warn!(
-                "module '{}' defines onDrift scripts, but onDrift is profile-level only — these will be ignored",
-                name
-            );
-        }
+        let on_drift_scripts = scripts.map(|s| s.on_drift.clone()).unwrap_or_default();
 
         resolved.push(ResolvedModule {
             name: name.clone(),
@@ -315,6 +306,7 @@ pub fn resolve_modules(
             pre_reconcile_scripts,
             post_reconcile_scripts,
             on_change_scripts,
+            on_drift_scripts,
             depends: module.spec.depends.clone(),
             dir: module.dir.clone(),
             platform_skip_reason: None,

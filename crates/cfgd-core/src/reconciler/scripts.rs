@@ -12,7 +12,7 @@ use super::types::{ReconcileContext, ScriptPhase};
 // ---------------------------------------------------------------------------
 
 /// Default timeout for module-level scripts.
-pub(super) const MODULE_SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+pub(crate) const MODULE_SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// How `execute_script` should treat a script given its `interactive` flag and
 /// whether stdin is a TTY.

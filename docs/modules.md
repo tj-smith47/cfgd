@@ -265,8 +265,9 @@ Modules support lifecycle hooks that run at different points during apply and re
 | `preReconcile` | Before the module is reconciled by the daemon |
 | `postReconcile` | After daemon-initiated reconciliation of the module |
 | `onChange` | After apply/reconcile, only if this module's resources actually changed |
+| `onDrift` | In the daemon, when drift is detected in this module's own resources |
 
-`onDrift` is profile-level only and cannot be set on modules.
+`onDrift` scripts are observability, not remediation: they fire before the daemon decides how to handle the drift (`autoApply`, notify, or prompt), regardless of the drift policy. A module's `onDrift` fires only when that module's own packages, files, or scripts drift — both on a whole-profile reconcile tick and on a per-module tick. Profiles also have `onDrift` (see the [Profile spec reference](spec/profile.md#specscripts)); the two are independent.
 
 Each entry can be a simple string (`"scripts/rebuild-index.sh"`) or a full object with `run`, `timeout`, `idleTimeout`, `continueOnError`, `interactive`, and the idempotency guards `onlyIf`/`unless`/`creates` fields. Default timeout for module scripts is 2 minutes. `idleTimeout` kills scripts that produce no output for the specified duration (e.g. `30s`). The guards make a script re-run-safe: `creates` skips when a path exists, `onlyIf` runs only on a zero-exit condition, `unless` runs only on a non-zero-exit condition. Set `interactive: true` to run a script attached to the terminal so it can prompt the user (e.g. `echo "press Enter"; read`); it requires a TTY and is skipped with a warning when none is present (CI, piped stdin, or the daemon). See the [Module spec reference](spec/module.md#specscripts) for the complete field reference, defaults, and environment variables available to scripts.
 

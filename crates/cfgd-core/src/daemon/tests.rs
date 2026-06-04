@@ -55,6 +55,82 @@ fn parse_duration_with_whitespace() {
     assert_eq!(parse_duration_or_default(" 10m "), Duration::from_secs(600));
 }
 
+fn module_drift_plan(action: crate::reconciler::Action) -> crate::reconciler::Plan {
+    crate::reconciler::Plan {
+        phases: vec![crate::reconciler::Phase {
+            name: crate::reconciler::PhaseName::Modules,
+            actions: vec![action],
+        }],
+        warnings: Vec::new(),
+    }
+}
+
+fn module_action(
+    name: &str,
+    kind: crate::reconciler::ModuleActionKind,
+) -> crate::reconciler::Action {
+    crate::reconciler::Action::Module(crate::reconciler::ModuleAction {
+        module_name: name.to_string(),
+        kind,
+    })
+}
+
+#[test]
+fn module_has_drift_true_for_install_packages_action() {
+    let plan = module_drift_plan(module_action(
+        "watched",
+        crate::reconciler::ModuleActionKind::InstallPackages { resolved: vec![] },
+    ));
+    assert!(module_has_drift(&plan, "watched"));
+}
+
+#[test]
+fn module_has_drift_true_for_deploy_files_and_run_script_actions() {
+    let files_plan = module_drift_plan(module_action(
+        "watched",
+        crate::reconciler::ModuleActionKind::DeployFiles { files: vec![] },
+    ));
+    assert!(module_has_drift(&files_plan, "watched"));
+
+    let script_plan = module_drift_plan(module_action(
+        "watched",
+        crate::reconciler::ModuleActionKind::RunScript {
+            script: crate::config::ScriptEntry::Simple("echo hi".into()),
+            phase: crate::reconciler::ScriptPhase::PostApply,
+        },
+    ));
+    assert!(module_has_drift(&script_plan, "watched"));
+}
+
+#[test]
+fn module_has_drift_false_for_skip_action() {
+    let plan = module_drift_plan(module_action(
+        "watched",
+        crate::reconciler::ModuleActionKind::Skip {
+            reason: "dependency not met".into(),
+        },
+    ));
+    assert!(!module_has_drift(&plan, "watched"));
+}
+
+#[test]
+fn module_has_drift_false_for_other_module_action() {
+    let plan = module_drift_plan(module_action(
+        "other",
+        crate::reconciler::ModuleActionKind::InstallPackages { resolved: vec![] },
+    ));
+    assert!(!module_has_drift(&plan, "watched"));
+}
+
+#[test]
+fn module_has_drift_false_for_empty_plan() {
+    let plan = crate::reconciler::Plan {
+        phases: Vec::new(),
+        warnings: Vec::new(),
+    };
+    assert!(!module_has_drift(&plan, "watched"));
+}
+
 #[test]
 fn daemon_state_initial() {
     let state = DaemonState::new();

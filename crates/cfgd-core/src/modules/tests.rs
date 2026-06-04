@@ -668,6 +668,65 @@ spec:
 }
 
 #[test]
+fn resolve_modules_populates_on_drift_scripts() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let mod_dir = dir.path().join("modules").join("watched");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: watched
+spec:
+  scripts:
+    onDrift:
+      - echo drifted
+"#,
+    )
+    .unwrap();
+
+    let managers = make_manager_map(&[]);
+    let platform = linux_ubuntu_platform();
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let resolved = resolve_modules(
+        &["watched".into()],
+        dir.path(),
+        cache_dir.path(),
+        &platform,
+        &managers,
+        &printer,
+    )
+    .unwrap();
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].on_drift_scripts.len(), 1);
+    assert_eq!(
+        resolved[0].on_drift_scripts[0].run_str(),
+        "echo drifted",
+        "module onDrift scripts must survive resolution"
+    );
+}
+
+#[test]
+fn skipped_resolved_module_has_empty_on_drift_scripts() {
+    let skipped = ResolvedModule::skipped(
+        "gated".into(),
+        std::path::PathBuf::from("/tmp/gated"),
+        Vec::new(),
+        "platform not matched".into(),
+    );
+    assert!(
+        skipped.on_drift_scripts.is_empty(),
+        "a platform-skipped module must carry no onDrift scripts"
+    );
+}
+
+#[test]
 fn resolve_modules_platform_gated_module_is_skipped_not_dropped() {
     let dir = tempfile::tempdir().unwrap();
 

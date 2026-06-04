@@ -306,7 +306,7 @@ system:
 
 ### spec.scripts
 
-Lifecycle scripts executed at different points during module apply and reconciliation. `onDrift` is not available at the module level (profile-level only).
+Lifecycle scripts executed at different points during module apply and reconciliation.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -315,6 +315,7 @@ Lifecycle scripts executed at different points during module apply and reconcili
 | `preReconcile` | list | No | `[]` | Run before daemon-initiated reconciliation of this module. |
 | `postReconcile` | list | No | `[]` | Run after daemon-initiated reconciliation of this module. |
 | `onChange` | list | No | `[]` | Run after apply/reconcile only if this module's resources changed. |
+| `onDrift` | list | No | `[]` | Run in the daemon when drift is detected in this module's own resources, before the drift policy decides how to respond. Observability, not remediation. Fires on both whole-profile and per-module reconcile ticks. |
 
 Each entry can be a simple string or a full object with `run`, `shell`, `timeout`, `continueOnError`, `interactive`, and the idempotency guards `onlyIf`, `unless`, and `creates`.
 

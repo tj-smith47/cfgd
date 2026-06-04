@@ -33,7 +33,9 @@ pub use types::{
 };
 pub use verify::{VerifyResult, verify};
 
-pub(crate) use scripts::{build_script_env, execute_script};
+pub(crate) use scripts::{
+    MODULE_SCRIPT_TIMEOUT, build_module_script_env, build_script_env, execute_script,
+};
 
 // Re-export sibling submodule items at the parent level so the externalized
 // tests submodule can reach them via `super::*`. The `#[cfg(test)]` guard

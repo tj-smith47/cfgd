@@ -454,6 +454,47 @@ pub(crate) fn handle_reconcile(
             }
         }
 
+        // Execute module-level onDrift scripts for each module that drifted.
+        // Unlike profile onDrift, this fires on per-module ticks too: the plan is
+        // already pruned to the filtered module above, so iterating it scopes
+        // correctly in both the whole-profile and per-module cases.
+        for module in &resolved_modules_ref {
+            if module.on_drift_scripts.is_empty() || !module_has_drift(&plan, &module.name) {
+                continue;
+            }
+            tracing::info!(
+                module = %module.name,
+                count = module.on_drift_scripts.len(),
+                "running module onDrift script(s)"
+            );
+            let script_env = crate::reconciler::build_module_script_env(
+                &config_dir,
+                profile_name,
+                crate::reconciler::ReconcileContext::Reconcile,
+                &crate::reconciler::ScriptPhase::OnDrift,
+                Some(&module.name),
+                Some(&module.dir),
+                &module.env,
+            );
+            for entry in &module.on_drift_scripts {
+                match crate::reconciler::execute_script(
+                    entry,
+                    &module.dir,
+                    &script_env,
+                    crate::reconciler::MODULE_SCRIPT_TIMEOUT,
+                    printer,
+                    None,
+                ) {
+                    Ok((desc, _, _)) => {
+                        tracing::info!(module = %module.name, script = %desc, "module onDrift script completed");
+                    }
+                    Err(e) => {
+                        tracing::error!(module = %module.name, error = %e, "module onDrift script failed");
+                    }
+                }
+            }
+        }
+
         // Update drift count
         rt.block_on(async {
             let mut st = state.lock().await;
@@ -620,6 +661,23 @@ pub(crate) fn handle_reconcile(
             tracing::warn!(error = %e, "failed to load pending server config");
         }
     }
+}
+
+/// Whether `plan` contains a non-Skip `Action::Module` targeting `module_name`.
+///
+/// Mirrors the profile-level "fire on detected drift" rule scoped to one
+/// module's own actions: a `Skip` module action records no change, so it does
+/// not count as drift.
+pub(crate) fn module_has_drift(plan: &crate::reconciler::Plan, module_name: &str) -> bool {
+    use crate::reconciler::{Action, ModuleActionKind};
+    plan.phases.iter().flat_map(|p| &p.actions).any(|a| {
+        matches!(
+            a,
+            Action::Module(ma)
+                if ma.module_name == module_name
+                    && !matches!(ma.kind, ModuleActionKind::Skip { .. })
+        )
+    })
 }
 
 pub(crate) fn action_resource_info(action: &crate::reconciler::Action) -> (String, String) {

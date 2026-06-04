@@ -1045,6 +1045,7 @@ pub fn make_resolved_module(name: &str) -> crate::modules::ResolvedModule {
         pre_reconcile_scripts: Vec::new(),
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
         system: std::collections::HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),

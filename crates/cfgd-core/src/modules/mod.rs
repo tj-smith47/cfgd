@@ -89,6 +89,7 @@ pub struct ResolvedModule {
     pub pre_reconcile_scripts: Vec<crate::config::ScriptEntry>,
     pub post_reconcile_scripts: Vec<crate::config::ScriptEntry>,
     pub on_change_scripts: Vec<crate::config::ScriptEntry>,
+    pub on_drift_scripts: Vec<crate::config::ScriptEntry>,
     pub depends: Vec<String>,
     /// Module directory — used as working directory for module scripts.
     pub dir: PathBuf,
@@ -117,6 +118,7 @@ impl ResolvedModule {
             pre_reconcile_scripts: Vec::new(),
             post_reconcile_scripts: Vec::new(),
             on_change_scripts: Vec::new(),
+            on_drift_scripts: Vec::new(),
             depends,
             dir,
             platform_skip_reason: Some(reason),
