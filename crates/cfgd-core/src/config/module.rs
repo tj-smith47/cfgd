@@ -94,6 +94,9 @@ pub struct ModuleFileEntry {
     /// Encryption settings for this module file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub encryption: Option<EncryptionSpec>,
+    /// Unix permission bits (e.g. "600", "644") to apply after deployment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<String>,
 }
 
 /// Interpreter for inline lifecycle scripts.

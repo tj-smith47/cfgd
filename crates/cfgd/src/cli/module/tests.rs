@@ -3745,6 +3745,7 @@ fn build_module_crd_json_files_emit_only_source_and_target() {
         strategy: Some(config::FileStrategy::Symlink),
         private: true,
         encryption: None,
+        permissions: None,
     };
     let doc = module_doc_with("m", vec![], vec![f], vec![]);
     let v = super::push_pull::build_module_crd_json(&doc, "art");

@@ -180,6 +180,7 @@ pub fn resolve_module_files(
                 is_git_source: true,
                 strategy: entry.strategy,
                 encryption: entry.encryption.clone(),
+                permissions: entry.permissions.clone(),
             });
         } else {
             // Local path — relative to module directory
@@ -211,6 +212,7 @@ pub fn resolve_module_files(
                 is_git_source: false,
                 strategy: entry.strategy,
                 encryption: entry.encryption.clone(),
+                permissions: entry.permissions.clone(),
             });
         }
     }

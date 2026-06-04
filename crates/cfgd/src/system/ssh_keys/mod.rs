@@ -50,7 +50,7 @@ impl SshKeySpec {
 
     /// Parse the `permissions` string (octal like "600") into a u32 mode.
     fn permissions_mode(&self) -> Result<u32> {
-        u32::from_str_radix(&self.permissions, 8).map_err(|_| {
+        cfgd_core::parse_octal_mode(&self.permissions).map_err(|_| {
             CfgdError::Config(cfgd_core::errors::ConfigError::Invalid {
                 message: format!(
                     "invalid permissions '{}' for SSH key '{}': must be an octal string like '600'",

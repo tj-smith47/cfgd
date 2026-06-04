@@ -81,6 +81,7 @@ fn happy_show_output() -> ModuleShowOutput {
                     strategy: None,
                     private: false,
                     encryption: None,
+                    permissions: None,
                 },
                 ModuleFileEntry {
                     source: "git@example.com:org/dotfiles.git//tmux.conf".into(),
@@ -88,6 +89,7 @@ fn happy_show_output() -> ModuleShowOutput {
                     strategy: None,
                     private: false,
                     encryption: None,
+                    permissions: None,
                 },
             ],
             env: vec![

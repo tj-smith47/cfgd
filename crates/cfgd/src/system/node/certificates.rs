@@ -81,7 +81,7 @@ impl SystemConfigurator for CertificateConfigurator {
             }
 
             if let Some(mode_str) = cert.get("mode").and_then(|v| v.as_str()) {
-                let desired_mode = u32::from_str_radix(mode_str, 8).unwrap_or(0o644);
+                let desired_mode = cfgd_core::parse_octal_mode(mode_str)?;
                 for path_key in &["certPath", "keyPath", "caPath"] {
                     if let Some(path) = cert.get(*path_key).and_then(|v| v.as_str())
                         && let Ok(meta) = fs::metadata(path)
@@ -128,7 +128,7 @@ impl SystemConfigurator for CertificateConfigurator {
             };
 
             let mode_str = cert.get("mode").and_then(|v| v.as_str()).unwrap_or("0644");
-            let desired_mode = u32::from_str_radix(mode_str, 8).unwrap_or(0o644);
+            let desired_mode = cfgd_core::parse_octal_mode(mode_str)?;
 
             for path_key in &["certPath", "keyPath", "caPath"] {
                 if let Some(path_str) = cert.get(*path_key).and_then(|v| v.as_str()) {
@@ -157,5 +157,60 @@ impl SystemConfigurator for CertificateConfigurator {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diff_rejects_invalid_mode_instead_of_silently_defaulting() {
+        let desired: serde_yaml::Value = serde_yaml::from_str(
+            r#"
+certificates:
+  - name: apiserver
+    certPath: /nonexistent/apiserver.crt
+    mode: "9zz"
+"#,
+        )
+        .unwrap();
+        let result = CertificateConfigurator.diff(&desired);
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("invalid octal mode must surface as an error, not default to 0644"),
+        };
+        assert!(
+            err.to_string().contains("9zz"),
+            "error should name the offending mode: {err}"
+        );
+    }
+
+    #[test]
+    fn apply_rejects_invalid_mode_instead_of_silently_defaulting() {
+        let (printer, _doc) = cfgd_core::output::Printer::for_test_doc();
+        let dir = tempfile::tempdir().unwrap();
+        let ca_dir = dir.path().join("pki");
+        let cert_path = dir.path().join("apiserver.crt");
+        std::fs::write(&cert_path, "cert").unwrap();
+        let desired: serde_yaml::Value = serde_yaml::from_str(&format!(
+            r#"
+caCertDir: {}
+certificates:
+  - name: apiserver
+    certPath: {}
+    mode: "9zz"
+"#,
+            ca_dir.display(),
+            cert_path.display(),
+        ))
+        .unwrap();
+        let err = CertificateConfigurator
+            .apply(&desired, &printer)
+            .expect_err("invalid octal mode must surface as an error, not default to 0644");
+        assert!(
+            err.to_string().contains("9zz"),
+            "error should name the offending mode: {err}"
+        );
     }
 }

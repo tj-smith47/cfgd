@@ -561,6 +561,7 @@ fn resolve_local_files() {
                 strategy: None,
                 private: false,
                 encryption: None,
+                permissions: None,
             }],
             ..Default::default()
         },
@@ -1264,6 +1265,7 @@ fn diff_module_specs_detects_changes() {
                 strategy: None,
                 private: false,
                 encryption: None,
+                permissions: None,
             }],
             env: vec![],
             aliases: vec![],
@@ -1303,6 +1305,7 @@ fn diff_module_specs_detects_changes() {
                 strategy: None,
                 private: false,
                 encryption: None,
+                permissions: None,
             }],
             env: vec![],
             aliases: vec![],
@@ -1875,6 +1878,7 @@ fn diff_module_specs_added_file() {
             strategy: None,
             private: false,
             encryption: None,
+            permissions: None,
         }],
         ..Default::default()
     };
@@ -2312,6 +2316,7 @@ fn resolve_module_files_local_relative() {
                 strategy: None,
                 private: false,
                 encryption: None,
+                permissions: None,
             }],
             ..Default::default()
         },
@@ -2345,6 +2350,7 @@ fn resolve_module_files_path_traversal_rejected() {
                 strategy: None,
                 private: false,
                 encryption: None,
+                permissions: None,
             }],
             ..Default::default()
         },
@@ -2381,6 +2387,7 @@ fn resolve_module_files_multiple_files() {
                     strategy: Some(crate::config::FileStrategy::Copy),
                     private: false,
                     encryption: None,
+                    permissions: None,
                 },
                 ModuleFileEntry {
                     source: "zshrc".into(),
@@ -2388,6 +2395,7 @@ fn resolve_module_files_multiple_files() {
                     strategy: Some(crate::config::FileStrategy::Symlink),
                     private: false,
                     encryption: None,
+                    permissions: None,
                 },
             ],
             ..Default::default()
@@ -2456,6 +2464,7 @@ fn resolve_module_files_symlink_escape_rejected() {
                 strategy: None,
                 private: false,
                 encryption: None,
+                permissions: None,
             }],
             ..Default::default()
         },
@@ -2673,6 +2682,7 @@ fn diff_module_specs_file_changes() {
                     strategy: None,
                     private: false,
                     encryption: None,
+                    permissions: None,
                 },
                 ModuleFileEntry {
                     source: "shared.conf".into(),
@@ -2680,6 +2690,7 @@ fn diff_module_specs_file_changes() {
                     strategy: None,
                     private: false,
                     encryption: None,
+                    permissions: None,
                 },
             ],
             ..Default::default()
@@ -2696,6 +2707,7 @@ fn diff_module_specs_file_changes() {
                     strategy: None,
                     private: false,
                     encryption: None,
+                    permissions: None,
                 },
                 ModuleFileEntry {
                     source: "shared.conf".into(),
@@ -2703,6 +2715,7 @@ fn diff_module_specs_file_changes() {
                     strategy: None,
                     private: false,
                     encryption: None,
+                    permissions: None,
                 },
             ],
             ..Default::default()

@@ -1326,6 +1326,27 @@ target: ~/.tmux.conf
 }
 
 #[test]
+fn module_file_entry_permissions() {
+    let yaml = r#"
+source: files/git-helper
+target: ~/.local/bin/git-helper
+permissions: "755"
+"#;
+    let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
+    assert_eq!(entry.permissions.as_deref(), Some("755"));
+}
+
+#[test]
+fn module_file_entry_permissions_absent() {
+    let yaml = r#"
+source: files/.tmux.conf
+target: ~/.tmux.conf
+"#;
+    let entry: ModuleFileEntry = serde_yaml::from_str(yaml).unwrap();
+    assert!(entry.permissions.is_none());
+}
+
+#[test]
 fn encryption_spec_mode_defaults_to_in_repo_when_omitted() {
     let yaml = r#"
 backend: sops

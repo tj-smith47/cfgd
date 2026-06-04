@@ -166,6 +166,7 @@ same deployment strategies as profile files. Paths are resolved relative to the 
 | `target` | string | Yes | | Absolute destination path on the machine. Supports `~/` expansion. |
 | `strategy` | enum | No | Global `fileStrategy` | Deployment strategy for this file. Overrides the global default from `cfgd.yaml`. See [FileStrategy values](#filestrategy-values). |
 | `private` | bool | No | `false` | When `true`, the source file is local-only: automatically added to `.gitignore` and silently skipped on machines where it does not exist. |
+| `permissions` | string | No | | Octal permission mode to enforce on the deployed target file (e.g. `"755"`). Applied after deployment; ignored on Windows (NTFS uses inherited ACLs). |
 
 **Example:**
 ```yaml
@@ -180,6 +181,11 @@ files:
     target: ~/.config/nvim/local.lua
     strategy: Copy
     private: true
+
+  - source: bin/git-helper
+    target: ~/.local/bin/git-helper
+    strategy: Copy
+    permissions: "755"
 ```
 
 #### FileStrategy values

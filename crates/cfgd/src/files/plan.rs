@@ -396,11 +396,12 @@ impl super::CfgdFileManager {
             }
             #[cfg(not(windows))]
             {
-                let desired_mode =
-                    u32::from_str_radix(mode_str, 8).map_err(|_| FileError::TemplateError {
+                let desired_mode = cfgd_core::parse_octal_mode(mode_str).map_err(|_| {
+                    FileError::TemplateError {
                         path: target.to_path_buf(),
                         message: format!("invalid permission mode: {}", mode_str),
-                    })?;
+                    }
+                })?;
 
                 if target.exists() {
                     let metadata = fs::metadata(target).map_err(|e| FileError::Io {

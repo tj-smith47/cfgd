@@ -346,6 +346,7 @@ fn plan_module_with_files() {
             is_git_source: false,
             strategy: None,
             encryption: None,
+            permissions: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -573,6 +574,7 @@ fn format_module_plan_items_files() {
                     is_git_source: false,
                     strategy: None,
                     encryption: None,
+                    permissions: None,
                 }],
             },
         })],
@@ -1016,6 +1018,7 @@ fn conflict_detection_different_content() {
             is_git_source: false,
             strategy: None,
             encryption: None,
+            permissions: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -1127,6 +1130,7 @@ fn conflict_detection_identical_content_ok() {
             is_git_source: false,
             strategy: None,
             encryption: None,
+            permissions: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -1158,6 +1162,7 @@ fn conflict_detection_identical_content_ok() {
             is_git_source: false,
             strategy: None,
             encryption: None,
+            permissions: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -1203,6 +1208,7 @@ fn conflict_detection_no_overlap_ok() {
             is_git_source: false,
             strategy: None,
             encryption: None,
+            permissions: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -1232,6 +1238,7 @@ fn conflict_detection_no_overlap_ok() {
             is_git_source: false,
             strategy: None,
             encryption: None,
+            permissions: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -4117,6 +4124,7 @@ fn format_action_description_module_deploy_files() {
                     is_git_source: false,
                     strategy: None,
                     encryption: None,
+                    permissions: None,
                 },
                 crate::modules::ResolvedFile {
                     source: PathBuf::from("/src/b"),
@@ -4124,6 +4132,7 @@ fn format_action_description_module_deploy_files() {
                     is_git_source: false,
                     strategy: None,
                     encryption: None,
+                    permissions: None,
                 },
             ],
         },
@@ -4568,6 +4577,7 @@ fn format_module_action_item_deploy_truncates_many_files() {
             is_git_source: false,
             strategy: None,
             encryption: None,
+            permissions: None,
         })
         .collect();
     let action = ModuleAction {
@@ -4612,6 +4622,7 @@ fn detect_file_conflicts_skip_and_delete_actions_ignored() {
             is_git_source: false,
             strategy: None,
             encryption: None,
+            permissions: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -5934,6 +5945,7 @@ fn apply_module_deploy_files_creates_target() {
             is_git_source: false,
             strategy: Some(crate::config::FileStrategy::Copy),
             encryption: None,
+            permissions: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -5959,6 +5971,7 @@ fn apply_module_deploy_files_creates_target() {
                         is_git_source: false,
                         strategy: Some(crate::config::FileStrategy::Copy),
                         encryption: None,
+                        permissions: None,
                     }],
                 },
             })],
@@ -6014,6 +6027,7 @@ fn apply_module_deploy_files_symlink_strategy() {
             is_git_source: false,
             strategy: None, // uses default = Symlink
             encryption: None,
+            permissions: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -6039,6 +6053,7 @@ fn apply_module_deploy_files_symlink_strategy() {
                         is_git_source: false,
                         strategy: None,
                         encryption: None,
+                        permissions: None,
                     }],
                 },
             })],
@@ -6275,6 +6290,7 @@ fn plan_modules_encryption_always_with_symlink_skips() {
                 backend: "sops".to_string(),
                 mode: crate::config::EncryptionMode::Always,
             }),
+            permissions: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -6333,6 +6349,7 @@ fn plan_modules_encryption_always_with_copy_proceeds() {
                 backend: "sops".to_string(),
                 mode: crate::config::EncryptionMode::Always,
             }),
+            permissions: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -6386,6 +6403,7 @@ fn plan_modules_encryption_check_err_skips_with_error_reason() {
                 backend: "gpg".to_string(),
                 mode: crate::config::EncryptionMode::Always,
             }),
+            permissions: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -6440,6 +6458,7 @@ fn plan_modules_encryption_check_err_breaks_after_first_file() {
                     backend: "unsupported".to_string(),
                     mode: crate::config::EncryptionMode::Always,
                 }),
+                permissions: None,
             },
             ResolvedFile {
                 source: b.clone(),
@@ -6447,6 +6466,7 @@ fn plan_modules_encryption_check_err_breaks_after_first_file() {
                 is_git_source: false,
                 strategy: Some(crate::config::FileStrategy::Copy),
                 encryption: None,
+                permissions: None,
             },
         ],
         env: vec![],
@@ -6509,6 +6529,7 @@ fn plan_modules_encryption_file_not_encrypted_skips() {
                 backend: "sops".to_string(),
                 mode: crate::config::EncryptionMode::Always,
             }),
+            permissions: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -6930,6 +6951,7 @@ fn verify_module_files_produce_no_reconciler_rows() {
             is_git_source: false,
             strategy: None,
             encryption: None,
+            permissions: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -7089,6 +7111,7 @@ fn format_action_description_module_deploy_two_files() {
                     is_git_source: false,
                     strategy: None,
                     encryption: None,
+                    permissions: None,
                 },
                 ResolvedFile {
                     source: PathBuf::from("/src/plugins.lua"),
@@ -7096,6 +7119,7 @@ fn format_action_description_module_deploy_two_files() {
                     is_git_source: false,
                     strategy: None,
                     encryption: None,
+                    permissions: None,
                 },
             ],
         },
@@ -7374,6 +7398,7 @@ fn apply_module_deploy_files_hardlink_strategy() {
                         is_git_source: false,
                         strategy: Some(crate::config::FileStrategy::Hardlink),
                         encryption: None,
+                        permissions: None,
                     }],
                 },
             })],
@@ -7390,6 +7415,7 @@ fn apply_module_deploy_files_hardlink_strategy() {
             is_git_source: false,
             strategy: Some(crate::config::FileStrategy::Hardlink),
             encryption: None,
+            permissions: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -7465,6 +7491,7 @@ fn apply_module_deploy_files_copy_strategy() {
                         is_git_source: false,
                         strategy: Some(crate::config::FileStrategy::Copy),
                         encryption: None,
+                        permissions: None,
                     }],
                 },
             })],
@@ -7481,6 +7508,7 @@ fn apply_module_deploy_files_copy_strategy() {
             is_git_source: false,
             strategy: Some(crate::config::FileStrategy::Copy),
             encryption: None,
+            permissions: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -7525,6 +7553,87 @@ fn apply_module_deploy_files_copy_strategy() {
     }
 }
 
+// --- Module deploy files: permissions applied after deploy ---
+
+#[cfg(unix)]
+#[test]
+fn apply_module_deploy_files_applies_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let source_file = dir.path().join("source.sh");
+    let target_file = dir.path().join("bin").join("tool");
+    std::fs::write(&source_file, "#!/bin/sh\necho hi\n").unwrap();
+
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Copy;
+
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let file = ResolvedFile {
+        source: source_file.clone(),
+        target: target_file.clone(),
+        is_git_source: false,
+        strategy: Some(crate::config::FileStrategy::Copy),
+        encryption: None,
+        permissions: Some("750".to_string()),
+    };
+
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Modules,
+            actions: vec![Action::Module(ModuleAction {
+                module_name: "permmod".to_string(),
+                kind: ModuleActionKind::DeployFiles {
+                    files: vec![file.clone()],
+                },
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let modules = vec![ResolvedModule {
+        name: "permmod".to_string(),
+        packages: vec![],
+        files: vec![file],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        system: HashMap::new(),
+        depends: vec![],
+        dir: dir.path().to_path_buf(),
+    }];
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseName::Modules),
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    let mode = std::fs::metadata(&target_file)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o750, "deployed module file should be mode 0o750");
+}
+
 // --- Module deploy files: directory with symlink vs copy ---
 
 #[test]
@@ -7556,6 +7665,7 @@ fn apply_module_deploy_files_directory_copy_strategy() {
                         is_git_source: false,
                         strategy: Some(crate::config::FileStrategy::Copy),
                         encryption: None,
+                        permissions: None,
                     }],
                 },
             })],
@@ -7572,6 +7682,7 @@ fn apply_module_deploy_files_directory_copy_strategy() {
             is_git_source: false,
             strategy: Some(crate::config::FileStrategy::Copy),
             encryption: None,
+            permissions: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -7642,6 +7753,7 @@ fn apply_module_deploy_files_overwrites_existing_file() {
                         is_git_source: false,
                         strategy: Some(crate::config::FileStrategy::Copy),
                         encryption: None,
+                        permissions: None,
                     }],
                 },
             })],
@@ -7718,6 +7830,7 @@ fn apply_module_on_change_script_runs_when_module_has_changes() {
                         is_git_source: false,
                         strategy: Some(crate::config::FileStrategy::Copy),
                         encryption: None,
+                        permissions: None,
                     }],
                 },
             })],
@@ -8584,6 +8697,7 @@ fn format_module_action_item_deploy_many_files_truncates() {
             is_git_source: false,
             strategy: None,
             encryption: None,
+            permissions: None,
         })
         .collect();
     let phase = Phase {
@@ -9400,6 +9514,7 @@ fn apply_module_on_change_script_runs_when_module_changed() {
                         is_git_source: false,
                         strategy: Some(crate::config::FileStrategy::Copy),
                         encryption: None,
+                        permissions: None,
                     }],
                 },
             })],
@@ -9526,6 +9641,7 @@ fn apply_module_on_change_skip_scripts_flag_bypasses_module_on_change() {
                         is_git_source: false,
                         strategy: Some(crate::config::FileStrategy::Copy),
                         encryption: None,
+                        permissions: None,
                     }],
                 },
             })],
@@ -9751,6 +9867,7 @@ fn apply_module_with_git_source_file_serializes_into_module_state() {
             is_git_source: true,
             strategy: Some(crate::config::FileStrategy::Copy),
             encryption: None,
+            permissions: None,
         }],
         env: vec![],
         aliases: vec![],
@@ -9776,6 +9893,7 @@ fn apply_module_with_git_source_file_serializes_into_module_state() {
                         is_git_source: true,
                         strategy: Some(crate::config::FileStrategy::Copy),
                         encryption: None,
+                        permissions: None,
                     }],
                 },
             })],
@@ -9860,6 +9978,7 @@ fn apply_module_on_change_failure_continues_with_default_continue_on_error() {
                         is_git_source: false,
                         strategy: Some(crate::config::FileStrategy::Copy),
                         encryption: None,
+                        permissions: None,
                     }],
                 },
             })],
@@ -9938,6 +10057,7 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
                         is_git_source: false,
                         strategy: Some(crate::config::FileStrategy::Copy),
                         encryption: None,
+                        permissions: None,
                     }],
                 },
             })],

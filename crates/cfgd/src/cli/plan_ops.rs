@@ -1058,6 +1058,7 @@ mod tests {
                         is_git_source: false,
                         strategy: None,
                         encryption: None,
+                        permissions: None,
                     },
                     cfgd_core::modules::ResolvedFile {
                         source: PathBuf::from("/m/.vimrc"),
@@ -1065,6 +1066,7 @@ mod tests {
                         is_git_source: false,
                         strategy: None,
                         encryption: None,
+                        permissions: None,
                     },
                 ],
             },

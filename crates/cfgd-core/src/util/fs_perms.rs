@@ -54,6 +54,22 @@ pub fn file_permissions_mode(_metadata: &std::fs::Metadata) -> Option<u32> {
     None
 }
 
+/// Parse an octal Unix permission string (e.g. "600", "0755", "0o644") into mode bits.
+/// Rejects values above 0o7777 (the valid permission + special-bit range).
+pub fn parse_octal_mode(s: &str) -> Result<u32, crate::errors::ConfigError> {
+    let trimmed = s.trim().trim_start_matches("0o");
+    let mode =
+        u32::from_str_radix(trimmed, 8).map_err(|_| crate::errors::ConfigError::Invalid {
+            message: format!("invalid octal permission mode '{s}'"),
+        })?;
+    if mode > 0o7777 {
+        return Err(crate::errors::ConfigError::Invalid {
+            message: format!("permission mode '{s}' exceeds 0o7777"),
+        });
+    }
+    Ok(mode)
+}
+
 /// Set Unix permission mode bits on a file. No-op on Windows (NTFS uses inherited ACLs).
 #[cfg(unix)]
 pub fn set_file_permissions(path: &std::path::Path, mode: u32) -> std::io::Result<()> {
@@ -122,5 +138,38 @@ pub fn is_same_inode(a: &std::path::Path, b: &std::path::Path) -> bool {
                 && ia.nFileIndexLow == ib.nFileIndexLow
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_octal_mode;
+
+    #[test]
+    fn parse_octal_mode_plain() {
+        assert_eq!(parse_octal_mode("755").unwrap(), 0o755);
+        assert_eq!(parse_octal_mode("600").unwrap(), 0o600);
+    }
+
+    #[test]
+    fn parse_octal_mode_prefix_forms() {
+        assert_eq!(parse_octal_mode("0o644").unwrap(), 0o644);
+        assert_eq!(parse_octal_mode("0644").unwrap(), 0o644);
+    }
+
+    #[test]
+    fn parse_octal_mode_trims_whitespace() {
+        assert_eq!(parse_octal_mode("  640  ").unwrap(), 0o640);
+    }
+
+    #[test]
+    fn parse_octal_mode_invalid_radix_errs() {
+        assert!(parse_octal_mode("9zz").is_err());
+    }
+
+    #[test]
+    fn parse_octal_mode_overflow_errs() {
+        // "10000" parses as 0o10000 which exceeds 0o7777.
+        assert!(parse_octal_mode("10000").is_err());
     }
 }

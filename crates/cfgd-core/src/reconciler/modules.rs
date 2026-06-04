@@ -145,6 +145,13 @@ impl<'a> super::Reconciler<'a> {
                     // fall back to the global file-strategy from cfgd.yaml (default: symlink).
                     let strategy = file.strategy.unwrap_or(self.registry.default_file_strategy);
 
+                    // Parse the declared mode BEFORE touching the filesystem so an
+                    // invalid value fails fast and never leaves a half-deployed file.
+                    let mode = match file.permissions {
+                        Some(ref perm_str) => Some(crate::parse_octal_mode(perm_str)?),
+                        None => None,
+                    };
+
                     // Backup existing target before overwriting
                     if let Ok(Some(file_state)) = crate::capture_file_state(&target)
                         && let Err(e) = self.state.store_file_backup(
@@ -188,6 +195,11 @@ impl<'a> super::Reconciler<'a> {
                                 crate::atomic_write(&target, &content)?;
                             }
                         }
+                    }
+
+                    // Apply declared permissions after deployment (no-op on Windows).
+                    if let Some(mode) = mode {
+                        crate::set_file_permissions(&target, mode)?;
                     }
 
                     // Record in module file manifest

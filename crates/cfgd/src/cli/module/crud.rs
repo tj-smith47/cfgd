@@ -133,6 +133,7 @@ pub fn cmd_module_create(
             strategy: None,
             private: is_private,
             encryption: None,
+            permissions: None,
         })
         .collect();
     if is_private {
@@ -472,6 +473,7 @@ pub fn cmd_module_update_local(
             strategy: None,
             private: args.private,
             encryption: None,
+            permissions: None,
         });
         printer.status_simple(Role::Ok, format!("Added file: {}", target.posix()));
         changes += 1;

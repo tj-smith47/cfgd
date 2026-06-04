@@ -322,6 +322,7 @@ mod tests {
                 is_git_source: false,
                 strategy: None,
                 encryption: None,
+                permissions: None,
             }],
             env: Vec::new(),
             aliases: Vec::new(),

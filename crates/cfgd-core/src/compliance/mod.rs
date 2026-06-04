@@ -208,9 +208,7 @@ pub fn collect_file_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
 
         // Check permissions if declared
         if let Some(ref perm_str) = file.permissions {
-            if let Ok(desired_mode) = u32::from_str_radix(perm_str, 8)
-                && desired_mode <= 0o7777
-            {
+            if let Ok(desired_mode) = crate::parse_octal_mode(perm_str) {
                 let actual_mode = target
                     .metadata()
                     .ok()

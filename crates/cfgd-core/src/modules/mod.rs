@@ -69,6 +69,8 @@ pub struct ResolvedFile {
     pub strategy: Option<crate::config::FileStrategy>,
     /// Encryption settings carried from the module file entry.
     pub encryption: Option<crate::config::EncryptionSpec>,
+    /// Unix permission bits (e.g. "600", "644") to apply after deployment.
+    pub permissions: Option<String>,
 }
 
 /// A fully resolved module — ready for the reconciler.
