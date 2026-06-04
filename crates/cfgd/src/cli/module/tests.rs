@@ -882,6 +882,52 @@ fn cmd_module_update_nonexistent_fails() {
 }
 
 #[test]
+fn cmd_module_update_json_absent_reports_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("modules")).unwrap();
+
+    let cli = test_cli_json(dir.path());
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+
+    let args = make_module_update_args("ghost");
+    let _ = cmd_module_update_local(&cli, &printer, &args).unwrap_err();
+    drop(printer);
+
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(
+        json["error"], "not_found",
+        "an absent module is genuinely not-found, got: {json}"
+    );
+}
+
+#[test]
+fn cmd_module_update_json_malformed_reports_parse_failed() {
+    let dir = tempfile::tempdir().unwrap();
+    // module.yaml exists but has a duplicate key — a parse error, NOT not-found.
+    make_module(
+        dir.path(),
+        "broken",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: broken\n  name: broken\nspec:\n  packages: []\n",
+    );
+
+    let cli = test_cli_json(dir.path());
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+
+    let args = super::ModuleUpdateArgs {
+        packages: vec!["ripgrep".to_string()],
+        ..make_module_update_args("broken")
+    };
+    let _ = cmd_module_update_local(&cli, &printer, &args).unwrap_err();
+    drop(printer);
+
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(
+        json["error"], "parse_failed",
+        "a present-but-malformed module.yaml is a parse failure, got: {json}"
+    );
+}
+
+#[test]
 fn cmd_module_update_add_files_with_duplicate_basename_bails() {
     let dir = tempfile::tempdir().unwrap();
     make_module(
@@ -3441,6 +3487,41 @@ fn cmd_module_create_description_and_depends_output() {
     assert!(
         output.contains("base, core"),
         "should list dependencies, got: {output}"
+    );
+}
+
+// ─── cmd_module_create — no description omits the field ─────────
+
+#[test]
+fn cmd_module_create_no_description_omits_field() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    // Supply a package so create stays non-interactive (no prompt) while
+    // leaving description unset — the case that used to serialize `null`.
+    let args = super::ModuleCreateArgs {
+        packages: vec!["curl".to_string()],
+        ..make_module_create_args("nodesc-mod")
+    };
+    cmd_module_create(&cli, &printer, &args).unwrap();
+
+    let yaml = std::fs::read_to_string(
+        dir.path()
+            .join("modules")
+            .join("nodesc-mod")
+            .join("module.yaml"),
+    )
+    .unwrap();
+    assert!(
+        !yaml.contains("description:"),
+        "a module created without --description must omit the field entirely, got: {yaml}"
+    );
+
+    let (doc, _) = load_module_document(dir.path(), "nodesc-mod").unwrap();
+    assert_eq!(
+        doc.metadata.description, None,
+        "round-trip must keep description absent"
     );
 }
 

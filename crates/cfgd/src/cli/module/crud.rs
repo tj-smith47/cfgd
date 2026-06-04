@@ -355,11 +355,11 @@ pub fn cmd_module_update_local(
         Err(e) => {
             printer.emit(cfgd_core::output::error_doc(
                 name,
-                "not_found",
+                e.error_code(),
                 e.to_string(),
                 serde_json::json!({}),
             ));
-            return Err(e);
+            return Err(e.into());
         }
     };
     let module_dir = config_dir.join("modules").join(name);

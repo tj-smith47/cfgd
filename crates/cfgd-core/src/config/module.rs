@@ -23,7 +23,7 @@ pub struct ModuleDocument {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleMetadata {
     pub name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
 

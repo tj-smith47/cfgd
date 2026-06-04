@@ -30,21 +30,69 @@ pub struct ModuleShowOutput {
     pub spec: cfgd_core::config::ModuleSpec,
 }
 
+/// Failure modes of [`load_module_document`], distinguished so callers can emit
+/// the correct structured-error code: a genuinely absent module is `not_found`,
+/// while a present-but-malformed `module.yaml` is `parse_failed`.
+///
+/// The `Parse` variant carries the underlying [`cfgd_core::errors::CfgdError`]
+/// so that converting to `anyhow::Error` keeps it downcastable — `main.rs` maps
+/// exit codes by downcasting the top-level anyhow error to `CfgdError`, so a
+/// parse failure must surface its `ConfigError` to earn exit code 4.
+#[derive(Debug)]
+pub(super) enum ModuleLoadError {
+    /// The module's `module.yaml` does not exist.
+    NotFound(String),
+    /// The module's `module.yaml` exists but could not be read or parsed.
+    Parse(cfgd_core::errors::CfgdError),
+}
+
+impl ModuleLoadError {
+    /// Structured-error code for the `-o json` `error` field. Matches the
+    /// spellings used elsewhere (`config_cmd.rs` parse path → `parse_failed`).
+    pub(super) fn error_code(&self) -> &'static str {
+        match self {
+            ModuleLoadError::NotFound(_) => "not_found",
+            ModuleLoadError::Parse(_) => "parse_failed",
+        }
+    }
+}
+
+impl std::fmt::Display for ModuleLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ModuleLoadError::NotFound(msg) => f.write_str(msg),
+            ModuleLoadError::Parse(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl From<ModuleLoadError> for anyhow::Error {
+    fn from(err: ModuleLoadError) -> Self {
+        match err {
+            // Preserve the typed CfgdError as the top-level anyhow error so
+            // main.rs::exit_code_for_anyhow downcasts it to the parse exit code.
+            ModuleLoadError::Parse(inner) => inner.into(),
+            ModuleLoadError::NotFound(msg) => anyhow::anyhow!(msg),
+        }
+    }
+}
+
 pub(super) fn load_module_document(
     config_dir: &Path,
     module_name: &str,
-) -> anyhow::Result<(config::ModuleDocument, PathBuf)> {
+) -> Result<(config::ModuleDocument, PathBuf), ModuleLoadError> {
     let module_dir = config_dir.join("modules").join(module_name);
     let module_yaml = module_dir.join("module.yaml");
     if !module_yaml.exists() {
-        anyhow::bail!(
+        return Err(ModuleLoadError::NotFound(format!(
             "Module '{}' not found at {}",
             module_name,
             module_yaml.posix()
-        );
+        )));
     }
-    let contents = std::fs::read_to_string(&module_yaml)?;
-    let doc = config::parse_module(&contents)?;
+    let contents = std::fs::read_to_string(&module_yaml)
+        .map_err(|e| ModuleLoadError::Parse(cfgd_core::errors::CfgdError::Io(e)))?;
+    let doc = config::parse_module(&contents).map_err(ModuleLoadError::Parse)?;
     Ok((doc, module_yaml))
 }
 
