@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **release**: Publish cfgd to AUR via aur_source (build-from-source)
 - **packages**: State-tracked declarative package removal
 - **packages**: Persist custom-manager uninstall so orphaned packages still prune
+- **config**: Accept both list and struct forms for every package manager
+- **modules**: Permissions on module file entries + shared octal-mode parser
+- **scripts**: Declarative idempotency guards onlyIf/unless/creates
+- **system**: Nested git keys + warn on unknown system keys
+- **scripts**: Interactive lifecycle scripts (TTY-or-skip-with-warn)
+- **modules**: Module-level platforms gating on ModuleSpec
+- **packages**: Dedupe package installs across profile and module scopes
+- **modules**: Fire module-level onDrift scripts in the daemon drift path
+- **core**: Add FileManager::content_drift so core can check file content
+- **drift**: Make diff, status -e, and verify see module packages and system
+- **compliance**: Include module resources and check file content
 
 ### CI/CD
 
@@ -29,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **errors**: Drop orphaned OciError::SignatureRequired variant
 - **cli**: Drop audit tag, first-person, and stale comment in drift code
+- **core**: Add effective-state source of truth for profile-modules merge
 
 ### Documentation
 
@@ -46,6 +58,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **configuration**: Note --config accepts a directory
 - **changelog**: Regenerate from conventional commits
 - **changelog**: Regenerate from conventional commits
+- **changelog**: Regenerate for persisted custom-manager uninstall
 
 ### Fixed
 
@@ -69,11 +82,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **config**: --config <dir> infers the discovery config file
 - **packages**: Use `dnf list --installed` flag for dnf5 compatibility
 - **files**: Probe real write access instead of mode bits in ensure_target_writable
+- **packages**: Repair nix manager on nix 2.20+ (JSON list + remove by element name)
+- **release**: Build Linux deb/rpm/apk from a static musl binary
+- **reconciler**: Apply module-contributed spec.system settings
 
 ### Miscellaneous
 
 - **tests**: Fix clippy --all-targets needless-borrow and attribute lints
 - **krew**: Drop vestigial committed plugin manifest
+- **lint**: Broaden clippy gate to --workspace --all-targets
+- **audit**: Guard read paths against profile-only desired-state reads
 
 ### Testing
 
