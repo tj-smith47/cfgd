@@ -212,8 +212,19 @@ pub(in crate::cli) fn display_plan_table(
         if items.is_empty() {
             phase.empty_state("(nothing to do)");
         } else {
-            for item in &items {
-                phase.bullet(item);
+            // `format_plan_items` yields one item per action in order, so the
+            // zip stays aligned. An unknown system key (likely a typo) surfaces
+            // as a real warning instead of a neutral bullet so it isn't missed.
+            for (item, action) in items.iter().zip(&phase_item.actions) {
+                if let reconciler::Action::System(reconciler::SystemAction::Skip {
+                    unknown: true,
+                    ..
+                }) = action
+                {
+                    phase.status_simple(Role::Warn, item);
+                } else {
+                    phase.bullet(item);
+                }
             }
         }
     }
@@ -894,6 +905,7 @@ mod tests {
             configurator: "sysctl".to_string(),
             reason: "already set".to_string(),
             origin: "test".to_string(),
+            unknown: false,
         })
     }
 
@@ -1634,6 +1646,50 @@ mod tests {
         assert!(
             !out.contains("Packages"),
             "Packages phase should be filtered out, got: {out}"
+        );
+    }
+
+    #[test]
+    fn display_plan_table_unknown_system_key_renders_warn() {
+        // A typo'd system key (no configurator registered) must surface as a
+        // real warning (⚠) at plan time, not a neutral bullet.
+        let unknown = Action::System(SystemAction::Skip {
+            configurator: "gti".to_string(),
+            reason: "no configurator registered for 'gti'".to_string(),
+            origin: "local".to_string(),
+            unknown: true,
+        });
+        let plan = make_plan(vec![(PhaseName::System, vec![unknown])]);
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        display_plan_table(&plan, &printer, None);
+
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains('\u{26A0}'),
+            "unknown system key must warn (⚠) at plan time, got: {out}"
+        );
+        assert!(
+            out.contains("unknown system key 'gti'"),
+            "warning must name the typo'd key, got: {out}"
+        );
+    }
+
+    #[test]
+    fn display_plan_table_unavailable_system_key_renders_neutral() {
+        // A registered-but-unavailable configurator is expected; the plan
+        // preview must render it neutrally, never as a warning.
+        let plan = make_plan(vec![(PhaseName::System, vec![system_skip()])]);
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        display_plan_table(&plan, &printer, None);
+
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            !out.contains('\u{26A0}'),
+            "expected platform skip must not warn (⚠), got: {out}"
+        );
+        assert!(
+            out.contains("skip sysctl"),
+            "neutral skip should still show the skip line, got: {out}"
         );
     }
 

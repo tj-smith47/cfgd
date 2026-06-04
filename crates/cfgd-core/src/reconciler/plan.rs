@@ -215,6 +215,7 @@ impl<'a> super::Reconciler<'a> {
                 configurator: key.clone(),
                 reason,
                 origin: "local".to_string(),
+                unknown: !registered,
             }));
         }
 

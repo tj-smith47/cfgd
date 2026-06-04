@@ -941,6 +941,7 @@ fn action_resource_info_system_skip() {
         configurator: "gsettings".into(),
         reason: "not on GNOME".into(),
         origin: "local".into(),
+        unknown: false,
     });
     let (rtype, rid) = action_resource_info(&action);
     assert_eq!(rtype, "system");

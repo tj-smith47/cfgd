@@ -145,6 +145,10 @@ pub enum SystemAction {
         configurator: String,
         reason: String,
         origin: String,
+        /// `true` when no configurator is registered for this key (a likely
+        /// typo, surfaced as a warning); `false` when the configurator exists
+        /// but is unavailable on this host (expected, surfaced neutrally).
+        unknown: bool,
     },
 }
 

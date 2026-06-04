@@ -35,9 +35,23 @@ impl<'a> super::Reconciler<'a> {
             SystemAction::Skip {
                 configurator,
                 reason,
+                unknown,
                 ..
             } => {
-                printer.status_simple(Role::Warn, format!("{}: {}", configurator, reason));
+                // An unknown key (no configurator registered) is a likely typo —
+                // warn so it is not missed. A registered-but-unavailable
+                // configurator is expected, so render it neutrally.
+                if *unknown {
+                    printer.status_simple(
+                        Role::Warn,
+                        format!(
+                            "unknown system key '{}' — no such configurator (ignored)",
+                            configurator
+                        ),
+                    );
+                } else {
+                    printer.status_simple(Role::Skipped, format!("{}: {}", configurator, reason));
+                }
                 Ok(format!("system:{} (skipped)", configurator))
             }
         }

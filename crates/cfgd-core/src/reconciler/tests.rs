@@ -4448,6 +4448,7 @@ fn format_action_description_system_skip() {
         configurator: "custom".into(),
         reason: "no configurator".into(),
         origin: "local".into(),
+        unknown: true,
     });
     let desc = format_action_description(&action);
     assert_eq!(desc, "system:custom:skip");
@@ -4835,6 +4836,7 @@ fn format_plan_items_all_action_types() {
                 configurator: "custom".into(),
                 reason: "no configurator".into(),
                 origin: "local".into(),
+                unknown: false,
             }),
         ],
     };
@@ -6045,6 +6047,7 @@ fn apply_system_skip_logs_warning() {
                 configurator: "customThing".to_string(),
                 reason: "no configurator registered".to_string(),
                 origin: "local".to_string(),
+                unknown: true,
             })],
         }],
         warnings: vec![],
@@ -6071,6 +6074,74 @@ fn apply_system_skip_logs_warning() {
         result.action_results[0].description.contains("skipped"),
         "desc: {}",
         result.action_results[0].description
+    );
+}
+
+#[test]
+fn apply_system_action_unknown_key_renders_warn() {
+    // An unknown system key (no configurator registered) is a likely typo and
+    // must surface as a real warning (⚠), not a neutral skip line.
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let profile = MergedProfile::default();
+
+    let action = SystemAction::Skip {
+        configurator: "gti".to_string(),
+        reason: "no configurator registered for 'gti'".to_string(),
+        origin: "local".to_string(),
+        unknown: true,
+    };
+
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    reconciler
+        .apply_system_action(&action, &profile, &printer)
+        .unwrap();
+
+    let out = crate::output::strip_ansi(&cap.human());
+    assert!(
+        out.contains('\u{26A0}'),
+        "unknown key must warn (⚠), got: {out}"
+    );
+    assert!(
+        out.contains("unknown system key 'gti'"),
+        "warning must name the typo'd key, got: {out}"
+    );
+    assert!(
+        !out.contains("gti: "),
+        "must not render as a neutral skip line ('<key>: <reason>'), got: {out}"
+    );
+}
+
+#[test]
+fn apply_system_action_unavailable_renders_non_warn() {
+    // A registered-but-unavailable configurator is expected; it must render
+    // neutrally (Skipped, — glyph), never as a warning.
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let profile = MergedProfile::default();
+
+    let action = SystemAction::Skip {
+        configurator: "systemdUnits".to_string(),
+        reason: "'systemdUnits' is not available on this host".to_string(),
+        origin: "local".to_string(),
+        unknown: false,
+    };
+
+    let (printer, cap) = crate::output::Printer::for_test_doc();
+    reconciler
+        .apply_system_action(&action, &profile, &printer)
+        .unwrap();
+
+    let out = crate::output::strip_ansi(&cap.human());
+    assert!(
+        !out.contains('\u{26A0}'),
+        "an expected platform skip must not warn (⚠), got: {out}"
+    );
+    assert!(
+        out.contains("not available on this host"),
+        "neutral skip must still explain why, got: {out}"
     );
 }
 
@@ -6145,10 +6216,12 @@ fn plan_system_generates_skip_for_unregistered_configurator() {
         Action::System(SystemAction::Skip {
             configurator,
             reason,
+            unknown,
             ..
         }) => {
             assert_eq!(configurator, "unknownConf");
             assert!(reason.contains("no configurator registered"));
+            assert!(*unknown, "unregistered key must be flagged unknown (typo)");
         }
         other => panic!("Expected SystemAction::Skip, got {:?}", other),
     }
@@ -6178,6 +6251,7 @@ fn plan_system_skip_distinguishes_unavailable_from_unregistered() {
         Action::System(SystemAction::Skip {
             configurator,
             reason,
+            unknown,
             ..
         }) => {
             assert_eq!(configurator, "systemdUnits");
@@ -6188,6 +6262,10 @@ fn plan_system_skip_distinguishes_unavailable_from_unregistered() {
             assert!(
                 !reason.contains("no configurator registered"),
                 "registered-but-unavailable must not read as unregistered: {reason}"
+            );
+            assert!(
+                !*unknown,
+                "registered-but-unavailable must not be flagged unknown"
             );
         }
         other => panic!("Expected SystemAction::Skip, got {:?}", other),
@@ -7427,6 +7505,7 @@ fn format_action_description_system_skip_sysctl() {
         configurator: "sysctl".to_string(),
         reason: "not available".to_string(),
         origin: "local".to_string(),
+        unknown: false,
     });
     let desc = format_action_description(&action);
     assert_eq!(desc, "system:sysctl:skip");
@@ -10987,6 +11066,7 @@ fn apply_post_scripts_filter_skips_other_phases() {
                     configurator: "shell".to_string(),
                     reason: "blocked".to_string(),
                     origin: "local".to_string(),
+                    unknown: false,
                 })],
             },
             Phase {

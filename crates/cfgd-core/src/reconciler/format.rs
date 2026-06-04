@@ -263,8 +263,18 @@ pub fn format_plan_items(phase: &Phase) -> Vec<String> {
                 SystemAction::Skip {
                     configurator,
                     reason,
+                    unknown,
                     ..
-                } => format!("skip {}: {}", configurator, reason),
+                } => {
+                    if *unknown {
+                        format!(
+                            "unknown system key '{}' — no such configurator (ignored)",
+                            configurator
+                        )
+                    } else {
+                        format!("skip {}: {}", configurator, reason)
+                    }
+                }
             },
             Action::Script(sa) => match sa {
                 ScriptAction::Run {

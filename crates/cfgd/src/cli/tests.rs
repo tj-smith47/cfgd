@@ -8445,6 +8445,7 @@ fn action_type_str_system_variants() {
             configurator: "shell".into(),
             reason: "test".into(),
             origin: "local".into(),
+            unknown: false,
         })),
         "skip"
     );
@@ -14106,6 +14107,7 @@ fn action_path_system_skip() {
         configurator: "macosDefaults".into(),
         reason: "not on macOS".into(),
         origin: "profile".into(),
+        unknown: false,
     });
     let path = super::action_path(&PhaseName::System, &action);
     assert_eq!(path, "system.macosDefaults");

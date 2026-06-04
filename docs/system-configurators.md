@@ -1,6 +1,11 @@
 # System Configurators
 
-The `system:` section in profiles routes each key to a registered system configurator. Available configurators depend on the OS and context. Configurators that aren't available on the current platform are silently skipped.
+The `system:` section in profiles routes each key to a registered system configurator. Available configurators depend on the OS and context.
+
+`cfgd plan` and `cfgd apply` distinguish two kinds of unapplied keys:
+
+- A **known configurator that isn't available** on the current platform (e.g. `systemdUnits` on macOS) is skipped neutrally — this is expected, not a problem.
+- An **unknown key with no matching configurator** (typically a typo, e.g. `gti` for `git`) surfaces as a warning: `unknown system key 'gti' — no such configurator (ignored)`. The key is ignored, but the warning makes the typo easy to catch.
 
 Each configurator follows the same pattern: read what the system has now, compare against what you want, and apply the difference.
 
@@ -216,18 +221,27 @@ Key fingerprints are visible via `cfgd status`, making them easy to reference in
 
 ### `git`
 
-Manages global git configuration. Each key maps directly to `git config --global <key> <value>`. The configurator uses dotted key-value pairs (not nested YAML) to match git's internal model. Keys not declared by cfgd are not modified.
+Manages global git configuration. Each key maps directly to `git config --global <key> <value>`. Keys not declared by cfgd are not modified.
+
+Keys may be written either as flat dotted strings or as nested YAML mappings — cfgd flattens nested maps to git's dotted form, so both styles (and any mix of them) are equivalent. Nesting groups related keys under a common section:
 
 ```yaml
 system:
   git:
+    # flat dotted form
     user.name: "Jane Doe"
     user.email: jane@work.com
     user.signingKey: ~/.ssh/id_ed25519.pub
     commit.gpgSign: true
     gpg.format: ssh
     init.defaultBranch: main
+    # nested form — flattened to push.autoSetupRemote / push.default
+    push:
+      autoSetupRemote: true
+      default: simple
 ```
+
+Leaf values must be scalars git can store (string, number, boolean). A non-scalar leaf (an empty list or a `null` value) has no `git config` representation and is skipped with a warning naming the key; it is not written. An empty nested map (`push: {}`) is simply a no-op — it contributes no keys and produces no warning.
 
 Drift is detected when any managed key has a value that differs from the declared value. cfgd reads current values via `git config --global --get <key>` and applies only the keys that differ.
 
