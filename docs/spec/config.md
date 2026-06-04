@@ -547,7 +547,7 @@ Continuous compliance snapshot configuration. When enabled, the daemon captures 
 | `enabled` | bool | No | `false` | Enable compliance snapshots. |
 | `interval` | duration | No | `1h` | How often to capture a snapshot. Duration string: `30s`, `5m`, `1h`. |
 | `retention` | duration | No | `720h` | How long to keep snapshots locally before the daemon deletes them. |
-| `scope.files` | bool | No | `true` | Include managed file state (existence, permissions, encryption status). |
+| `scope.files` | bool | No | `true` | Include managed file state. Each present file is content-checked: its on-disk bytes are compared to its rendered source, so a file that exists but drifted is a violation (not just existence + permissions + encryption status). |
 | `scope.packages` | bool | No | `true` | Include managed package state (installed version per manager). |
 | `scope.system` | bool | No | `true` | Include system configurator state (covers `sshKeys`, `gpgKeys`, `git`, and all other configurators). |
 | `scope.secrets` | bool | No | `true` | Include secret target existence and permissions. Secret values are never recorded. |
@@ -578,5 +578,7 @@ compliance:
     format: json
     path: ~/.local/share/cfgd/compliance/
 ```
+
+Compliance reports the **effective** desired state — the active profile combined with the modules it pulls in — so files, packages, and system settings contributed by a module are first-class in every compliance surface (snapshot, export, diff, history) and in the checkin summary, exactly as they appear in `cfgd verify` and `cfgd diff`. Module resources are attributed to their module in the check detail. File checks are content-aware on both profile and module files.
 
 Snapshot summaries are included in device checkin payloads to the operator gateway. The fleet dashboard shows per-device compliance scores. Use `cfgd compliance` to run a snapshot on demand, `cfgd compliance history` to list past snapshots, and `cfgd compliance diff <id1> <id2>` to compare two snapshots.

@@ -311,32 +311,8 @@ pub(crate) fn handle_reconcile(
     };
 
     // Resolve modules from profile + lockfile
-    let resolved_modules = if !resolved.merged.modules.is_empty() {
-        let platform = crate::platform::Platform::detect();
-        let mgr_map: std::collections::HashMap<String, &dyn PackageManager> = registry
-            .package_managers
-            .iter()
-            .map(|m| (m.name().to_string(), m.as_ref() as &dyn PackageManager))
-            .collect();
-        let cache_base = crate::modules::default_module_cache_dir()
-            .unwrap_or_else(|_| config_dir.join(".module-cache"));
-        match crate::modules::resolve_modules(
-            &resolved.merged.modules,
-            &config_dir,
-            &cache_base,
-            &platform,
-            &mgr_map,
-            printer,
-        ) {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!(error = %e, "reconcile: module resolution failed");
-                Vec::new()
-            }
-        }
-    } else {
-        Vec::new()
-    };
+    let resolved_modules =
+        super::resolve_daemon_modules(&registry, &resolved, &config_dir, printer);
     let resolved_modules_ref = resolved_modules.clone();
     let mut plan = match reconciler.plan(
         &resolved,

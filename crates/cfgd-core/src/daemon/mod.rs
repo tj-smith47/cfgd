@@ -63,6 +63,19 @@ pub trait DaemonHooks: Send + Sync {
         packages: &config::PackagesSpec,
     );
 
+    /// Build a content-aware file manager for compliance file checks, if this
+    /// binary has one. The default returns `None`, leaving the daemon's compliance
+    /// file checks at existence + permissions only; binaries that own a concrete
+    /// `FileManager` (the workstation agent) override this so daemon-stored
+    /// compliance snapshots report content drift exactly as the CLI does.
+    fn build_file_manager(
+        &self,
+        _config_dir: &Path,
+        _resolved: &ResolvedProfile,
+    ) -> Result<Option<Box<dyn crate::providers::FileManager>>> {
+        Ok(None)
+    }
+
     /// Expand tilde (~) to home directory in a path.
     fn expand_tilde(&self, path: &Path) -> PathBuf;
 
@@ -75,6 +88,46 @@ pub trait DaemonHooks: Send + Sync {
         _printer: &Printer,
     ) -> Vec<(String, String)> {
         Vec::new()
+    }
+}
+
+/// Resolve a profile's modules for a daemon tick.
+///
+/// Builds the platform + available-manager map + module cache base and drives
+/// [`crate::modules::resolve_modules`]. Returns an empty vector when the profile
+/// declares no modules or when resolution fails, logging the failure at `warn`
+/// so it is never silently swallowed. Shared by the reconcile and compliance
+/// ticks so both resolve modules identically.
+pub(crate) fn resolve_daemon_modules(
+    registry: &ProviderRegistry,
+    resolved: &ResolvedProfile,
+    config_dir: &Path,
+    printer: &Printer,
+) -> Vec<crate::modules::ResolvedModule> {
+    if resolved.merged.modules.is_empty() {
+        return Vec::new();
+    }
+    let platform = crate::platform::Platform::detect();
+    let mgr_map: HashMap<String, &dyn PackageManager> = registry
+        .package_managers
+        .iter()
+        .map(|m| (m.name().to_string(), m.as_ref() as &dyn PackageManager))
+        .collect();
+    let cache_base = crate::modules::default_module_cache_dir()
+        .unwrap_or_else(|_| config_dir.join(".module-cache"));
+    match crate::modules::resolve_modules(
+        &resolved.merged.modules,
+        config_dir,
+        &cache_base,
+        &platform,
+        &mgr_map,
+        printer,
+    ) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(error = %e, "daemon: module resolution failed");
+            Vec::new()
+        }
     }
 }
 

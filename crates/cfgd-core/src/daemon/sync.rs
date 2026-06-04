@@ -197,6 +197,25 @@ pub(crate) fn handle_compliance_snapshot(
     let mut registry = hooks.build_registry(&cfg);
     hooks.extend_registry_custom_managers(&mut registry, &resolved.merged.packages);
 
+    // Resolve the profile's modules so module files/packages/system appear in the
+    // daemon-stored snapshot, matching the CLI compliance surface. A quiet printer
+    // keeps module resolution diagnostics off the daemon's stdout (the reconcile
+    // tick passes its live printer instead, to show module-clone progress).
+    let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+    let resolved_modules =
+        super::resolve_daemon_modules(&registry, &resolved, &config_dir, &printer);
+
+    // Wire a content-aware file manager when this binary provides one. The
+    // workstation agent does; absent it (default hook), daemon file checks stay
+    // existence + permissions only (honest degradation), while the daemon's own
+    // drift action is already content + module aware via the reconcile plan.
+    match hooks.build_file_manager(&config_dir, &resolved) {
+        Ok(fm) => registry.file_manager = fm,
+        Err(e) => {
+            tracing::warn!(error = %e, "compliance: file manager build failed — file checks degrade to existence + permissions");
+        }
+    }
+
     let source_names: Vec<String> = std::iter::once("local".to_string())
         .chain(cfg.spec.sources.iter().map(|s| s.name.clone()))
         .collect();
@@ -204,6 +223,8 @@ pub(crate) fn handle_compliance_snapshot(
     let snapshot = match crate::compliance::collect_snapshot(
         profile_name,
         &resolved.merged,
+        &resolved_modules,
+        &config_dir,
         &registry,
         &compliance_cfg.scope,
         &source_names,

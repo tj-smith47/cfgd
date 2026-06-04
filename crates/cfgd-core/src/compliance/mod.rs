@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{ComplianceExport, ComplianceFormat, ComplianceScope, MergedProfile};
+use crate::effective::{Origin, effective_files};
 use crate::errors::Result;
+use crate::modules::ResolvedModule;
 use crate::platform::Platform;
 use crate::providers::ProviderRegistry;
 use crate::to_posix_string;
@@ -74,9 +76,23 @@ pub struct ComplianceSummary {
 // ---------------------------------------------------------------------------
 
 /// Collect a full compliance snapshot for the current machine state.
+///
+/// The collected state is the *effective* desired state — the profile combined
+/// with the modules it pulls in — so module-contributed files, packages, and
+/// system settings appear in compliance reporting exactly as they do on the
+/// write/verify paths. `config_dir` resolves profile-relative file sources so
+/// file checks can compare content; `modules` are the profile's resolved modules
+/// (empty slice for a module-free profile).
+///
+/// File checks are content-aware when `registry.file_manager` is set: a managed
+/// file present on disk but whose bytes drifted from its rendered source is a
+/// violation, matching the live drift paths. When no file manager is wired, file
+/// checks degrade to existence + permissions only.
 pub fn collect_snapshot(
     profile_name: &str,
     profile: &MergedProfile,
+    modules: &[ResolvedModule],
+    config_dir: &Path,
     registry: &ProviderRegistry,
     scope: &ComplianceScope,
     sources: &[String],
@@ -93,13 +109,13 @@ pub fn collect_snapshot(
     let mut checks = Vec::new();
 
     if scope.files {
-        checks.extend(collect_file_checks(profile));
+        checks.extend(collect_file_checks(profile, modules, config_dir, registry));
     }
     if scope.packages {
-        checks.extend(collect_package_checks(profile, registry)?);
+        checks.extend(collect_package_checks(profile, modules, registry)?);
     }
     if scope.system {
-        checks.extend(collect_system_checks(profile, registry)?);
+        checks.extend(collect_system_checks(profile, modules, registry)?);
     }
     if scope.secrets {
         checks.extend(collect_secret_checks(profile));
@@ -187,24 +203,93 @@ pub fn export_snapshot_to_file(
 // File checks
 // ---------------------------------------------------------------------------
 
-/// Check managed files: existence, permissions, encryption declaration.
-pub fn collect_file_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
+/// Detail suffix attributing a check to the module that contributed it. Empty
+/// for profile-declared resources so existing profile-file detail is unchanged.
+fn origin_suffix(origin: &Origin) -> String {
+    match origin {
+        Origin::Profile => String::new(),
+        Origin::Module(name) => format!(" (module: {})", name),
+    }
+}
+
+/// Check managed files across the effective desired state (profile AND modules):
+/// content drift, existence, permissions, and encryption declaration.
+///
+/// When `registry.file_manager` is set, each present file's on-disk bytes are
+/// compared to its rendered source via `FileManager::content_drift` — a file that
+/// exists but drifted is a violation, matching the live drift paths. Without a
+/// file manager, content checking is skipped and only existence + permissions are
+/// reported (honest degradation). Module-contributed files are attributed in each
+/// check's detail so a reader can tell their origin.
+pub fn collect_file_checks(
+    profile: &MergedProfile,
+    modules: &[ResolvedModule],
+    config_dir: &Path,
+    registry: &ProviderRegistry,
+) -> Vec<ComplianceCheck> {
     let mut checks = Vec::new();
 
-    for file in &profile.files.managed {
+    for file in effective_files(profile, modules, config_dir) {
         let target = crate::expand_tilde(&file.target);
         let exists = target.exists();
+        let suffix = origin_suffix(&file.origin);
 
         if !exists {
             checks.push(ComplianceCheck {
                 category: "file".into(),
                 target: Some(to_posix_string(&target)),
                 status: ComplianceStatus::Violation,
-                detail: Some("managed file missing".into()),
+                detail: Some(format!("managed file missing{}", suffix)),
                 ..Default::default()
             });
             continue;
         }
+
+        // Content drift: compare on-disk bytes to the rendered source. When a
+        // file manager is wired this check is the existence signal (content
+        // matching proves the file is present), so the legacy "present" check is
+        // suppressed below to avoid two Compliant rows for the same signal.
+        // Without a file manager, content checking is skipped and the "present"
+        // check stands in as the existence signal.
+        let content_checked = if let Some(ref fm) = registry.file_manager {
+            match fm.content_drift(
+                Path::new(&file.source),
+                &file.target,
+                file.tera_origin.as_deref(),
+            ) {
+                Ok(drift) => {
+                    if drift.matches {
+                        checks.push(ComplianceCheck {
+                            category: "file-content".into(),
+                            target: Some(to_posix_string(&target)),
+                            status: ComplianceStatus::Compliant,
+                            detail: Some(format!("content matches source{}", suffix)),
+                            ..Default::default()
+                        });
+                    } else {
+                        checks.push(ComplianceCheck {
+                            category: "file-content".into(),
+                            target: Some(to_posix_string(&target)),
+                            status: ComplianceStatus::Violation,
+                            detail: Some(format!("{}{}", drift.actual, suffix)),
+                            ..Default::default()
+                        });
+                    }
+                }
+                Err(e) => {
+                    checks.push(ComplianceCheck {
+                        category: "file-content".into(),
+                        target: Some(to_posix_string(&target)),
+                        status: ComplianceStatus::Warning,
+                        detail: Some(format!("cannot compare content: {}{}", e, suffix)),
+                        ..Default::default()
+                    });
+                }
+            }
+            true
+        } else {
+            false
+        };
 
         // Check permissions if declared
         if let Some(ref perm_str) = file.permissions {
@@ -219,7 +304,7 @@ pub fn collect_file_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
                             category: "file".into(),
                             target: Some(to_posix_string(&target)),
                             status: ComplianceStatus::Compliant,
-                            detail: Some(format!("permissions {:#o}", mode)),
+                            detail: Some(format!("permissions {:#o}{}", mode, suffix)),
                             ..Default::default()
                         });
                     }
@@ -229,8 +314,8 @@ pub fn collect_file_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
                             target: Some(to_posix_string(&target)),
                             status: ComplianceStatus::Warning,
                             detail: Some(format!(
-                                "permissions {:#o}, expected {:#o}",
-                                mode, desired_mode
+                                "permissions {:#o}, expected {:#o}{}",
+                                mode, desired_mode, suffix
                             )),
                             ..Default::default()
                         });
@@ -241,7 +326,10 @@ pub fn collect_file_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
                             category: "file".into(),
                             target: Some(to_posix_string(&target)),
                             status: ComplianceStatus::Compliant,
-                            detail: Some("permissions not applicable on this platform".into()),
+                            detail: Some(format!(
+                                "permissions not applicable on this platform{}",
+                                suffix
+                            )),
                             ..Default::default()
                         });
                     }
@@ -252,17 +340,19 @@ pub fn collect_file_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
                     category: "file".into(),
                     target: Some(to_posix_string(&target)),
                     status: ComplianceStatus::Warning,
-                    detail: Some(format!("invalid permission string: {}", perm_str)),
+                    detail: Some(format!("invalid permission string: {}{}", perm_str, suffix)),
                     ..Default::default()
                 });
             }
-        } else {
-            // No permissions declared — file exists, compliant
+        } else if !content_checked {
+            // No permissions declared and no content check ran (no file manager):
+            // the "present" check is the existence signal. When a content check
+            // ran it already proved presence, so this would double-count.
             checks.push(ComplianceCheck {
                 category: "file".into(),
                 target: Some(to_posix_string(&target)),
                 status: ComplianceStatus::Compliant,
-                detail: Some("present".into()),
+                detail: Some(format!("present{}", suffix)),
                 ..Default::default()
             });
         }
@@ -273,7 +363,7 @@ pub fn collect_file_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
                 category: "file-encryption".into(),
                 target: Some(to_posix_string(&target)),
                 status: ComplianceStatus::Compliant,
-                detail: Some(format!("encryption: backend={}", enc.backend)),
+                detail: Some(format!("encryption: backend={}{}", enc.backend, suffix)),
                 ..Default::default()
             });
         }
@@ -286,15 +376,37 @@ pub fn collect_file_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
 // Package checks
 // ---------------------------------------------------------------------------
 
-/// Check that declared packages are installed via their respective managers.
+/// Check that the effective desired packages (profile AND modules) are installed
+/// via their respective managers.
+///
+/// The desired set is derived from
+/// [`crate::effective::effective_desired_packages`] and intersected with the
+/// registry's available managers: a package whose manager is unavailable on this
+/// host is skipped (consistent with the verify path), and a manager that cannot
+/// be queried yields a single per-manager warning. Module packages now appear,
+/// attributed to their module in the check detail.
 pub fn collect_package_checks(
     profile: &MergedProfile,
+    modules: &[ResolvedModule],
     registry: &ProviderRegistry,
 ) -> Result<Vec<ComplianceCheck>> {
+    use std::collections::HashMap;
+
     let mut checks = Vec::new();
 
+    // Group desired packages by manager, preserving origin for attribution.
+    let mut by_manager: HashMap<String, Vec<(String, Origin)>> = HashMap::new();
+    for ep in crate::effective::effective_desired_packages(profile, modules) {
+        by_manager
+            .entry(ep.manager)
+            .or_default()
+            .push((ep.name, ep.origin));
+    }
+
     for pm in registry.available_package_managers() {
-        let desired = crate::config::desired_packages_for_spec(pm.name(), &profile.packages);
+        let Some(desired) = by_manager.get(pm.name()) else {
+            continue;
+        };
         if desired.is_empty() {
             continue;
         }
@@ -314,14 +426,15 @@ pub fn collect_package_checks(
             }
         };
 
-        for pkg in &desired {
+        for (pkg, origin) in desired {
+            let suffix = origin_suffix(origin);
             if installed.contains(pkg) {
                 checks.push(ComplianceCheck {
                     category: "package".into(),
                     name: Some(pkg.clone()),
                     manager: Some(pm.name().to_owned()),
                     status: ComplianceStatus::Compliant,
-                    detail: Some("installed".into()),
+                    detail: Some(format!("installed{}", suffix)),
                     ..Default::default()
                 });
             } else {
@@ -330,7 +443,7 @@ pub fn collect_package_checks(
                     name: Some(pkg.clone()),
                     manager: Some(pm.name().to_owned()),
                     status: ComplianceStatus::Violation,
-                    detail: Some("not installed".into()),
+                    detail: Some(format!("not installed{}", suffix)),
                     ..Default::default()
                 });
             }
@@ -344,15 +457,19 @@ pub fn collect_package_checks(
 // System checks
 // ---------------------------------------------------------------------------
 
-/// Check system configurator state for drift.
+/// Check system configurator state for drift across the effective desired state
+/// (profile system settings deep-merged with every module's), so module system
+/// tweaks surface in compliance exactly as they do on the write path.
 pub fn collect_system_checks(
     profile: &MergedProfile,
+    modules: &[ResolvedModule],
     registry: &ProviderRegistry,
 ) -> Result<Vec<ComplianceCheck>> {
     let mut checks = Vec::new();
     let available = registry.available_system_configurators();
+    let system = crate::effective::effective_system_map(profile, modules);
 
-    for (key, desired) in &profile.system {
+    for (key, desired) in &system {
         let configurator = available.iter().find(|c| c.name() == key);
 
         let Some(configurator) = configurator else {

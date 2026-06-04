@@ -38,13 +38,7 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
         config_dir: &std::path::Path,
         resolved: &ResolvedProfile,
     ) -> cfgd_core::errors::Result<Vec<FileAction>> {
-        let mut fm = CfgdFileManager::new(config_dir, resolved)?;
-        let cfg = config::load_config(&config_dir.join("cfgd.yaml"))?;
-        fm.set_global_strategy(cfg.spec.file_strategy);
-        let (backend_name, age_key_path) = secret_backend_from_config(Some(&cfg));
-        let backend = secrets::build_secret_backend(&backend_name, age_key_path, Some(config_dir));
-        let providers = secrets::build_secret_providers();
-        fm.set_secret_providers(Some(backend), providers);
+        let fm = build_compliance_file_manager(config_dir, resolved)?;
         fm.plan(&resolved.merged)
     }
 
@@ -72,6 +66,16 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
             .extend(crate::packages::custom_managers(&packages.custom));
     }
 
+    fn build_file_manager(
+        &self,
+        config_dir: &std::path::Path,
+        resolved: &ResolvedProfile,
+    ) -> cfgd_core::errors::Result<Option<Box<dyn cfgd_core::providers::FileManager>>> {
+        Ok(Some(Box::new(build_compliance_file_manager(
+            config_dir, resolved,
+        )?)))
+    }
+
     fn expand_tilde(&self, path: &std::path::Path) -> std::path::PathBuf {
         cfgd_core::expand_tilde(path)
     }
@@ -89,6 +93,27 @@ pub(in crate::cli) fn build_registry_with_profile(
     spec: &cfgd_core::config::PackagesSpec,
 ) -> ProviderRegistry {
     build_registry_with_config_and_packages(None, Some(spec))
+}
+
+/// Build a `CfgdFileManager` configured for read-only content comparison.
+///
+/// Wires the global file strategy and secret backend/providers so templates that
+/// reference `${secret:...}` render to the same bytes the apply path would write,
+/// making compliance content checks compare against the true desired content.
+/// Shared by the compliance/checkin CLI callers and the daemon's compliance hook
+/// so every surface content-checks identically.
+pub(in crate::cli) fn build_compliance_file_manager(
+    config_dir: &std::path::Path,
+    resolved: &ResolvedProfile,
+) -> cfgd_core::errors::Result<CfgdFileManager> {
+    let mut fm = CfgdFileManager::new(config_dir, resolved)?;
+    let cfg = config::load_config(&config_dir.join("cfgd.yaml"))?;
+    fm.set_global_strategy(cfg.spec.file_strategy);
+    let (backend_name, age_key_path) = secret_backend_from_config(Some(&cfg));
+    let backend = secrets::build_secret_backend(&backend_name, age_key_path, Some(config_dir));
+    let providers = secrets::build_secret_providers();
+    fm.set_secret_providers(Some(backend), providers);
+    Ok(fm)
 }
 
 pub(in crate::cli) fn build_registry_with_config(cfg: Option<&CfgdConfig>) -> ProviderRegistry {

@@ -452,6 +452,8 @@ merged spec using the following rules:
 | `system` | Deep merge — module keys overwrite profile keys at the leaf level. |
 | `scripts` | Each hook list is appended after the profile's corresponding hook list. |
 
+This merged (effective) view drives every read surface, not just apply: a module's files, packages, and system settings are first-class in `cfgd verify`, `cfgd diff`, and `cfgd compliance` (snapshot, export, diff, history) and in the device checkin summary — no longer profile-only. Compliance file checks are content-aware on module files (a deployed module file whose bytes drifted is a violation).
+
 ---
 
 ## Remote Modules

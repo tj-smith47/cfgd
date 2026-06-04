@@ -15,7 +15,17 @@ pub fn cmd_checkin(
     printer.heading("Checkin");
 
     let (cfg, _profile_name, resolved) = load_config_and_profile(cli)?;
-    let registry = build_registry_with_profile(&resolved.merged.packages);
+    let config_dir = config_dir(cli);
+    let mut registry = build_registry_with_profile(&resolved.merged.packages);
+
+    // Resolve modules + wire a content-aware file manager so the checkin payload's
+    // compliance summary reflects module resources and real content drift — same
+    // as the `compliance snapshot` surface.
+    let resolved_modules = resolve_profile_modules(&config_dir, &resolved, printer);
+    registry.file_manager = Some(Box::new(build_compliance_file_manager(
+        &config_dir,
+        &resolved,
+    )?));
 
     let stored_cred = cfgd_core::server_client::load_credential().ok().flatten();
     let client = build_checkin_client(server_url, api_key, device_id, stored_cred.as_ref());
@@ -30,6 +40,8 @@ pub fn cmd_checkin(
             match cfgd_core::compliance::collect_snapshot(
                 profile_name,
                 &resolved.merged,
+                &resolved_modules,
+                &config_dir,
                 &registry,
                 &compliance_cfg.scope,
                 &[],

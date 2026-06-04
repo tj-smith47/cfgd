@@ -15,6 +15,7 @@
 //! write and read paths agree on the desired set.
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use crate::config::{ManagedFileSpec, MergedProfile, PackageClaim, desired_packages_for_spec};
 use crate::modules::ResolvedModule;
@@ -49,7 +50,10 @@ pub struct EffectivePackage {
 /// file regardless of which scope declared it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EffectiveFile {
-    /// Source path (profile: as written in config; module: resolved local path).
+    /// Resolved absolute source path. Profile sources (written relative in
+    /// config) are resolved against `config_dir`; module sources are already
+    /// absolute and pass through. Consumers can content-check directly without
+    /// re-resolving.
     pub source: String,
     /// Target path on the machine. The identity key for a managed file.
     pub target: std::path::PathBuf,
@@ -66,6 +70,11 @@ pub struct EffectiveFile {
     pub is_git_source: bool,
     /// Whether the file came from the profile or a specific module.
     pub origin: Origin,
+    /// Tera template origin used to render the source: the profile entry's
+    /// `origin` for profile files, `None` for module files (module sources carry
+    /// no tera origin). Drives content rendering so a profile template compares
+    /// against its correctly-rendered bytes.
+    pub tera_origin: Option<String>,
 }
 
 /// Build the effective system-configurator map: start from the profile's system
@@ -141,11 +150,22 @@ pub fn effective_desired_packages(
 /// Build the effective managed-file list: every file declared by the profile
 /// (`spec.files.managed`) followed by every file each module deploys, each
 /// tagged with its origin so a consumer can build a stable resource id.
-pub fn effective_files(profile: &MergedProfile, modules: &[ResolvedModule]) -> Vec<EffectiveFile> {
+///
+/// Profile sources are resolved against `config_dir` so [`EffectiveFile::source`]
+/// is always an absolute path a consumer can content-check without re-resolving;
+/// module sources are already absolute and pass through. A profile source that
+/// fails traversal validation is kept as its raw relative string rather than
+/// dropped, so the file still appears (a downstream content check then reports it
+/// as a missing/unresolvable source rather than silently hiding the entry).
+pub fn effective_files(
+    profile: &MergedProfile,
+    modules: &[ResolvedModule],
+    config_dir: &Path,
+) -> Vec<EffectiveFile> {
     let mut files = Vec::new();
 
     for spec in &profile.files.managed {
-        files.push(profile_file(spec));
+        files.push(profile_file(spec, config_dir));
     }
 
     for module in modules {
@@ -159,6 +179,7 @@ pub fn effective_files(profile: &MergedProfile, modules: &[ResolvedModule]) -> V
                 private: false,
                 is_git_source: file.is_git_source,
                 origin: Origin::Module(module.name.clone()),
+                tera_origin: None,
             });
         }
     }
@@ -166,9 +187,14 @@ pub fn effective_files(profile: &MergedProfile, modules: &[ResolvedModule]) -> V
     files
 }
 
-fn profile_file(spec: &ManagedFileSpec) -> EffectiveFile {
+fn profile_file(spec: &ManagedFileSpec, config_dir: &Path) -> EffectiveFile {
+    let resolved_source = crate::resolve_relative_path(Path::new(&spec.source), config_dir)
+        .map_or_else(
+            |_| spec.source.clone(),
+            |p| p.to_string_lossy().into_owned(),
+        );
     EffectiveFile {
-        source: spec.source.clone(),
+        source: resolved_source,
         target: spec.target.clone(),
         strategy: spec.strategy,
         permissions: spec.permissions.clone(),
@@ -176,6 +202,7 @@ fn profile_file(spec: &ManagedFileSpec) -> EffectiveFile {
         private: spec.private,
         is_git_source: false,
         origin: Origin::Profile,
+        tera_origin: spec.origin.clone(),
     }
 }
 
@@ -434,12 +461,15 @@ mod tests {
         let mut profile = empty_profile();
         let mut spec = managed("dot/gitconfig", "~/.gitconfig");
         spec.private = true;
+        spec.origin = Some("local".into());
         profile.files.managed = vec![spec];
 
-        let files = effective_files(&profile, &[]);
+        let config_dir = PathBuf::from("/cfg");
+        let files = effective_files(&profile, &[], &config_dir);
 
         assert_eq!(files.len(), 1);
-        assert_eq!(files[0].source, "dot/gitconfig");
+        // Profile source resolved against config_dir to an absolute path.
+        assert_eq!(files[0].source, "/cfg/dot/gitconfig");
         assert_eq!(files[0].target, PathBuf::from("~/.gitconfig"));
         assert_eq!(files[0].strategy, Some(FileStrategy::Copy));
         assert_eq!(files[0].permissions.as_deref(), Some("600"));
@@ -448,6 +478,8 @@ mod tests {
         assert!(files[0].private);
         assert!(!files[0].is_git_source);
         assert_eq!(files[0].origin, Origin::Profile);
+        // Profile files carry the tera origin from the spec.
+        assert_eq!(files[0].tera_origin.as_deref(), Some("local"));
     }
 
     #[test]
@@ -456,7 +488,7 @@ mod tests {
         let mut m = module("dev");
         m.files = vec![resolved_file("/cache/vimrc", "~/.vimrc")];
 
-        let files = effective_files(&profile, &[m]);
+        let files = effective_files(&profile, &[m], Path::new("/cfg"));
 
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].source, "/cache/vimrc");
@@ -467,6 +499,8 @@ mod tests {
         assert!(files[0].is_git_source);
         assert!(!files[0].private);
         assert_eq!(files[0].origin, Origin::Module("dev".into()));
+        // Module files carry no tera origin.
+        assert_eq!(files[0].tera_origin, None);
     }
 
     #[test]
@@ -476,7 +510,7 @@ mod tests {
         let mut m = module("dev");
         m.files = vec![resolved_file("/cache/vimrc", "~/.vimrc")];
 
-        let files = effective_files(&profile, &[m]);
+        let files = effective_files(&profile, &[m], Path::new("/cfg"));
 
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].origin, Origin::Profile);

@@ -414,6 +414,8 @@ Each module is tracked independently. cfgd stores a hash of the resolved package
 
 A module's status is one of: `installed` (healthy), `outdated` (upstream has changed), or `error` (a package is missing or a file has diverged).
 
+Module resources are first-class in compliance reporting, not profile-only. A module's files, packages, and system settings appear in every `cfgd compliance` surface (snapshot, export, diff, history) and in the device checkin summary, attributed to their module — the same effective profile-plus-modules view that `cfgd verify` and `cfgd diff` use. Module file checks are content-aware: a deployed module file present on disk but whose bytes drifted from its source is reported as a violation.
+
 ## Plan Output Format
 
 `cfgd plan` shows module actions grouped by module, with dependencies, resolved managers, and file deployments:
