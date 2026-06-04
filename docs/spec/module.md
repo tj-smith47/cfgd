@@ -47,15 +47,15 @@ spec:
 
   scripts:
     preApply:
-      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string }
+      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
     postApply:
-      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string }
+      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
     preReconcile:
-      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string }
+      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
     postReconcile:
-      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string }
+      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
     onChange:
-      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string }
+      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
 ```
 
 ---
@@ -277,7 +277,7 @@ Lifecycle scripts executed at different points during module apply and reconcili
 | `postReconcile` | list | No | `[]` | Run after daemon-initiated reconciliation of this module. |
 | `onChange` | list | No | `[]` | Run after apply/reconcile only if this module's resources changed. |
 
-Each entry can be a simple string or a full object with `run`, `shell`, `timeout`, `continueOnError`, and the idempotency guards `onlyIf`, `unless`, and `creates`.
+Each entry can be a simple string or a full object with `run`, `shell`, `timeout`, `continueOnError`, `interactive`, and the idempotency guards `onlyIf`, `unless`, and `creates`.
 
 The `shell` field selects the interpreter for inline commands: `bash`, `zsh`, `sh`, `pwsh`, `cmd`, or `auto` (default). `auto` uses `sh` on Unix and `cmd.exe` on Windows. `shell` only applies to inline commands; file scripts use their shebang.
 
@@ -296,6 +296,21 @@ The guards make a script re-run-safe by construction, so authors no longer need 
 When more than one guard is set, **all** must permit running for the body to run. `onlyIf`/`unless` commands run with the same shell, working directory, and environment as the body, bounded by a timeout so a guard can never hang. A guard command that fails to spawn (e.g. a missing interpreter) is a hard error, distinct from a non-zero exit.
 
 `creates` path resolution: a leading `~` expands to the home directory; a relative path resolves against the script's working directory (the module directory for module scripts); an absolute path is used as-is. Existence follows symlinks.
+
+### Interactive scripts
+
+Set `interactive: true` on a script entry that needs to prompt the user — for example, pausing until a manual step is done. The script runs **attached to the terminal** (inherited stdin/stdout/stderr, no spinner, no output capture) and is **not** subject to the idle timeout, because an interactive step is attended by definition.
+
+An interactive script requires a TTY. When stdin is **not** a terminal — CI, piped input, or any run by the `cfgd daemon` (the daemon never has a TTY) — the script is **skipped with a warning** rather than hanging on instant EOF, and reports `changed=false`. This is the intended daemon-safe behavior: interactive steps run only during an attended `cfgd apply`, never under unattended reconcile.
+
+```yaml
+scripts:
+  postApply:
+    - run: |
+        echo "Install Azure VPN from Self Service, then press Enter"
+        read
+      interactive: true
+```
 
 **Example:**
 ```yaml

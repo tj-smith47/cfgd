@@ -143,17 +143,17 @@ spec:
 
   scripts:
     preApply:
-      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
     postApply:
-      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
     preReconcile:
-      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
     postReconcile:
-      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
     onDrift:
-      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
     onChange:
-      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
 ```
 
 ---
@@ -639,7 +639,7 @@ When `envs` has multiple entries and the source resolves to a single value, all 
 
 ### spec.scripts
 
-Lifecycle scripts run at different points during apply and reconciliation. Scripts are executed in the order listed. Each entry can be a simple string (command or file path) or an object with `run`, `shell`, `timeout`, `idleTimeout`, `continueOnError`, and the idempotency guards `onlyIf`, `unless`, and `creates`.
+Lifecycle scripts run at different points during apply and reconciliation. Scripts are executed in the order listed. Each entry can be a simple string (command or file path) or an object with `run`, `shell`, `timeout`, `idleTimeout`, `continueOnError`, `interactive`, and the idempotency guards `onlyIf`, `unless`, and `creates`.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -663,6 +663,21 @@ The idempotency guards `onlyIf`, `unless`, and `creates` make a script re-run-sa
 | `unless` | string (command) | the command exits **zero** (the guarded state already holds) |
 
 When more than one guard is set, **all** must permit running for the body to run. `onlyIf`/`unless` commands run with the same shell, working directory, and environment as the body, bounded by a timeout so a guard can never hang; a guard command that fails to spawn (e.g. a missing interpreter) is a hard error. For `creates`, a leading `~` expands to the home directory and a relative path resolves against the script's working directory (the config root for profile scripts); existence follows symlinks.
+
+### Interactive scripts
+
+Set `interactive: true` on a script entry that must prompt the user — for example, pausing a `postApply` step until a manual install is done. The script runs **attached to the terminal** (inherited stdin/stdout/stderr, no spinner, no output capture) and is **not** subject to the idle timeout, since an interactive step is attended by definition.
+
+An interactive script requires a TTY. When stdin is **not** a terminal — CI, piped input, or any run by the `cfgd daemon` (the daemon never has a TTY) — the script is **skipped with a warning** instead of hanging on instant EOF, and reports `changed=false`. Interactive steps therefore run only during an attended `cfgd apply`, never under unattended reconcile.
+
+```yaml
+scripts:
+  postApply:
+    - run: |
+        echo "Install Azure VPN from Self Service, then press Enter"
+        read
+      interactive: true
+```
 
 Each entry can be a string or an object:
 

@@ -155,6 +155,13 @@ pub enum ScriptEntry {
         /// working directory. Existence follows symlinks.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         creates: Option<String>,
+        /// Run the script attached to the terminal (inherited stdin/stdout/stderr,
+        /// no spinner, no output capture, no idle timeout) so it can prompt the
+        /// user — e.g. `echo "press Enter when done"; read`. Requires a TTY: when
+        /// stdin is not a terminal (CI, piped input, or any daemon-run phase) the
+        /// script is skipped with a warning rather than hanging on instant EOF.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        interactive: bool,
     },
 }
 
@@ -321,6 +328,7 @@ shell: ruby
             only_if: None,
             unless: None,
             creates: None,
+            interactive: false,
         };
         let yaml = serde_yaml::to_string(&entry).unwrap();
         assert!(
@@ -343,6 +351,7 @@ shell: ruby
             only_if: None,
             unless: None,
             creates: None,
+            interactive: false,
         };
         let yaml = serde_yaml::to_string(&entry).unwrap();
         assert!(
@@ -414,5 +423,56 @@ creates: ~/.local/bin/thing
         let yaml = "make build\n";
         let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(entry, ScriptEntry::Simple("make build".into()));
+    }
+
+    #[test]
+    fn script_entry_full_deserializes_interactive_field() {
+        let yaml = r#"
+run: 'echo press Enter; read'
+interactive: true
+"#;
+        let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
+        match entry {
+            ScriptEntry::Full { interactive, .. } => assert!(interactive),
+            other => panic!("expected Full variant, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn script_entry_interactive_defaults_to_false() {
+        let yaml = "run: echo hi\n";
+        let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
+        match entry {
+            ScriptEntry::Full { interactive, .. } => assert!(!interactive),
+            other => panic!("expected Full variant, got: {other:?}"),
+        }
+        // Default-false must not serialize.
+        let out = serde_yaml::to_string(&entry).unwrap();
+        assert!(
+            !out.contains("interactive"),
+            "interactive should be absent when false: {out}"
+        );
+    }
+
+    #[test]
+    fn script_interactive_roundtrip_serialization() {
+        let entry = ScriptEntry::Full {
+            run: "echo hi; read".into(),
+            timeout: None,
+            idle_timeout: None,
+            continue_on_error: None,
+            shell: ScriptShell::Auto,
+            only_if: None,
+            unless: None,
+            creates: None,
+            interactive: true,
+        };
+        let yaml = serde_yaml::to_string(&entry).unwrap();
+        assert!(
+            yaml.contains("interactive: true"),
+            "yaml should contain 'interactive: true': {yaml}"
+        );
+        let roundtripped: ScriptEntry = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(entry, roundtripped);
     }
 }

@@ -14078,6 +14078,7 @@ fn action_path_script_run_full_entry() {
         only_if: None,
         unless: None,
         creates: None,
+        interactive: false,
     };
     let action = reconciler::Action::Script(reconciler::ScriptAction::Run {
         entry,

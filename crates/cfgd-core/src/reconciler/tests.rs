@@ -2992,6 +2992,7 @@ fn effective_continue_on_error_uses_explicit_value() {
         only_if: None,
         unless: None,
         creates: None,
+        interactive: false,
     };
     // Should be true even for pre-apply (which defaults to false)
     assert!(super::effective_continue_on_error(
@@ -3008,6 +3009,7 @@ fn effective_continue_on_error_uses_explicit_value() {
         only_if: None,
         unless: None,
         creates: None,
+        interactive: false,
     };
     // Should be false even for post-apply (which defaults to true)
     assert!(!super::effective_continue_on_error(
@@ -3037,6 +3039,7 @@ fn effective_continue_on_error_falls_back_to_default() {
         only_if: None,
         unless: None,
         creates: None,
+        interactive: false,
     };
     assert!(!super::effective_continue_on_error(
         &full_no_override,
@@ -3113,6 +3116,7 @@ fn plan_scripts_carries_full_entry() {
         only_if: None,
         unless: None,
         creates: None,
+        interactive: false,
     }];
 
     let plan = reconciler
@@ -3240,6 +3244,7 @@ fn execute_script_with_timeout_override() {
         only_if: None,
         unless: None,
         creates: None,
+        interactive: false,
     };
     let dir = tempfile::tempdir().unwrap();
     let (_, _, output) = super::execute_script(
@@ -3339,6 +3344,7 @@ fn execute_script_idle_timeout_kills_idle_process() {
         only_if: None,
         unless: None,
         creates: None,
+        interactive: false,
     };
     let dir = tempfile::tempdir().unwrap();
     let result = super::execute_script(
@@ -3670,6 +3676,7 @@ fn apply_continue_on_error_post_script_continues() {
         only_if: None,
         unless: None,
         creates: None,
+        interactive: false,
     }];
 
     let pkg_actions = vec![PackageAction::Install {
@@ -3735,6 +3742,7 @@ fn apply_continue_on_error_false_pre_script_aborts() {
         only_if: None,
         unless: None,
         creates: None,
+        interactive: false,
     }];
 
     let plan = reconciler
@@ -3950,6 +3958,7 @@ fn apply_guard_skipped_profile_script_records_unchanged() {
         only_if: None,
         unless: Some("true".to_string()),
         creates: None,
+        interactive: false,
     };
 
     let state = test_state();
@@ -4016,6 +4025,7 @@ fn apply_guard_skipped_module_script_does_not_fire_on_change() {
         only_if: None,
         unless: Some("true".to_string()),
         creates: None,
+        interactive: false,
     };
 
     let state = test_state();
@@ -4108,6 +4118,7 @@ fn apply_guard_permitted_module_script_fires_on_change() {
         only_if: None,
         unless: Some("false".to_string()),
         creates: None,
+        interactive: false,
     };
 
     let state = test_state();
@@ -8883,6 +8894,7 @@ mod bridge {
             only_if: None,
             unless: None,
             creates: None,
+            interactive: false,
         }];
 
         let pkg_actions = vec![
@@ -10484,6 +10496,7 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
             only_if: None,
             unless: None,
             creates: None,
+            interactive: false,
         }],
         system: HashMap::new(),
         depends: vec![],
@@ -10610,6 +10623,7 @@ fn apply_profile_on_change_failure_aborts_when_continue_on_error_false() {
         only_if: None,
         unless: None,
         creates: None,
+        interactive: false,
     }];
 
     let file_actions = vec![FileAction::Create {

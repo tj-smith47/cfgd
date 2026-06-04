@@ -1,3 +1,5 @@
+use std::io::IsTerminal;
+
 use crate::PathDisplayExt;
 use crate::config::{ScriptEntry, ScriptShell};
 use crate::errors::{CfgdError, ConfigError, Result};
@@ -11,6 +13,30 @@ use super::types::{ReconcileContext, ScriptPhase};
 
 /// Default timeout for module-level scripts.
 pub(super) const MODULE_SCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// How `execute_script` should treat a script given its `interactive` flag and
+/// whether stdin is a TTY.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InteractiveDisposition {
+    /// Interactive and a TTY is present: run attached to the terminal.
+    Run,
+    /// Interactive but no TTY (CI, piped stdin, daemon): skip with a warning.
+    SkipNoTty,
+    /// Not an interactive script: run via the normal piped/spinner path.
+    NotInteractive,
+}
+
+/// Decide how to run a script from its `interactive` flag and stdin TTY state.
+///
+/// Pure so both terminal-attached and skip-with-warn paths are unit-testable
+/// without a PTY.
+fn interactive_disposition(interactive: bool, stdin_is_tty: bool) -> InteractiveDisposition {
+    match (interactive, stdin_is_tty) {
+        (false, _) => InteractiveDisposition::NotInteractive,
+        (true, true) => InteractiveDisposition::Run,
+        (true, false) => InteractiveDisposition::SkipNoTty,
+    }
+}
 
 /// Build environment variables injected into every script invocation.
 pub(crate) fn build_script_env(
@@ -274,6 +300,43 @@ pub(crate) fn execute_script(
     // Inject environment variables
     for (key, value) in env_vars {
         cmd.env(key, value);
+    }
+
+    let interactive = matches!(
+        entry,
+        ScriptEntry::Full {
+            interactive: true,
+            ..
+        }
+    );
+    match interactive_disposition(interactive, std::io::stdin().is_terminal()) {
+        InteractiveDisposition::Run => {
+            // Attach to the controlling terminal so the script can prompt the user
+            // (e.g. `read`). No spinner and no capture — the user drives the pace,
+            // and no idle timeout applies because an interactive step is attended
+            // by definition.
+            cmd.stdin(std::process::Stdio::inherit());
+            cmd.stdout(std::process::Stdio::inherit());
+            cmd.stderr(std::process::Stdio::inherit());
+            let status = cmd.status()?;
+            if !status.success() {
+                let exit_code = status.code().unwrap_or(-1);
+                return Err(CfgdError::Config(ConfigError::Invalid {
+                    message: format!("script '{}' failed (exit {})", run_str, exit_code),
+                }));
+            }
+            return Ok((label, true, None));
+        }
+        InteractiveDisposition::SkipNoTty => {
+            // No TTY (CI, piped stdin, or any daemon-run phase): skip rather than
+            // hang on instant EOF. changed=false records this as a clean no-op.
+            printer.status_simple(
+                Role::Warn,
+                format!("{run_str} — interactive script skipped: no TTY available"),
+            );
+            return Ok((label, false, None));
+        }
+        InteractiveDisposition::NotInteractive => {}
     }
 
     // Execute with timeout
@@ -847,6 +910,7 @@ mod tests {
             only_if: None,
             unless: None,
             creates: None,
+            interactive: false,
         };
 
         let (label, changed, captured) = execute_script(
@@ -885,6 +949,7 @@ mod tests {
             only_if: None,
             unless: None,
             creates: None,
+            interactive: false,
         };
 
         let err = execute_script(
@@ -1041,6 +1106,7 @@ mod tests {
             only_if: None,
             unless: None,
             creates: None,
+            interactive: false,
         };
 
         let result = execute_script(
@@ -1139,6 +1205,7 @@ mod tests {
             only_if: None,
             unless: None,
             creates: None,
+            interactive: false,
         };
 
         let err = execute_script(
@@ -1184,6 +1251,7 @@ mod tests {
             only_if: only_if.map(String::from),
             unless: unless.map(String::from),
             creates: creates.map(String::from),
+            interactive: false,
         }
     }
 
@@ -1374,6 +1442,7 @@ mod tests {
             only_if: Some("sleep 5".to_string()),
             unless: None,
             creates: None,
+            interactive: false,
         };
 
         let result = execute_script(
@@ -1397,6 +1466,78 @@ mod tests {
         assert!(
             !sentinel.exists(),
             "body must not run when a guard timed out"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Interactive scripts (TTY-or-skip-with-warn)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn interactive_disposition_branches() {
+        assert_eq!(
+            interactive_disposition(false, true),
+            InteractiveDisposition::NotInteractive
+        );
+        assert_eq!(
+            interactive_disposition(false, false),
+            InteractiveDisposition::NotInteractive
+        );
+        assert_eq!(
+            interactive_disposition(true, true),
+            InteractiveDisposition::Run
+        );
+        assert_eq!(
+            interactive_disposition(true, false),
+            InteractiveDisposition::SkipNoTty
+        );
+    }
+
+    // The test process has no TTY, so an interactive script must be SKIPPED:
+    // changed=false, the body does not run (sentinel absent), and a Warn line
+    // names the script and the missing-TTY reason.
+    #[cfg(all(unix, feature = "test-helpers"))]
+    #[test]
+    fn interactive_script_without_tty_skips_with_warn() {
+        let (printer, buf) = crate::output::Printer::for_test_at(crate::output::Verbosity::Normal);
+        let tmp = tempfile::tempdir().unwrap();
+        let sentinel = tmp.path().join("body-ran");
+        let entry = ScriptEntry::Full {
+            run: format!("touch {}", sentinel.display()),
+            timeout: None,
+            idle_timeout: None,
+            continue_on_error: None,
+            shell: ScriptShell::Auto,
+            only_if: None,
+            unless: None,
+            creates: None,
+            interactive: true,
+        };
+
+        let (_label, changed, captured) = execute_script(
+            &entry,
+            tmp.path(),
+            &[],
+            std::time::Duration::from_secs(5),
+            &printer,
+            None,
+        )
+        .expect("interactive skip must not error");
+        printer.flush();
+
+        assert!(
+            !changed,
+            "no-TTY interactive script must report changed=false"
+        );
+        assert!(captured.is_none(), "skip captures no output");
+        assert!(
+            !sentinel.exists(),
+            "body must not run when an interactive script is skipped"
+        );
+        let out = crate::output::strip_ansi(&buf.lock().unwrap());
+        assert!(
+            out.contains("interactive script skipped") && out.contains("no TTY"),
+            "skip line should name the missing-TTY reason: {out:?}"
         );
     }
 
