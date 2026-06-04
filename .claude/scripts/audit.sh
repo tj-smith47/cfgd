@@ -361,6 +361,43 @@ else
     log_ok "Config parsing confined to config/, generate/, and modules/ in cfgd-core"
 fi
 
+log_section "Effective-state routing (module↔profile coherence)"
+# Read-back commands (diff/status/live-drift/verify/compliance) must derive
+# desired state from cfgd_core::effective::* — the single source that merges
+# module resources into the profile's desired state. A read path that reads
+# profile-only views instead silently drops every module-contributed resource,
+# making module packages/system-settings/files invisible to that command. Bans:
+#   desired_packages_for( / desired_packages_for_spec(  → effective_desired_packages
+#   .merged.system / profile.system  (direct field reads) → effective_system_map
+#   .files.managed                                        → effective_files
+# Passing &resolved.merged or profile as an ARGUMENT to effective_* is fine and
+# does not match (the bans target the .system FIELD read, not .merged itself).
+# crates/cfgd-core/src/effective.rs is intentionally exempt — it IS the source
+# of truth and is simply not in the scanned list below.
+effective_read_paths=(
+    crates/cfgd/src/cli/diff.rs
+    crates/cfgd/src/cli/status.rs
+    crates/cfgd/src/cli/live_drift.rs
+    crates/cfgd-core/src/reconciler/verify.rs
+    crates/cfgd-core/src/compliance/mod.rs
+)
+effective_pattern='desired_packages_for\(|desired_packages_for_spec\(|\.merged\.system|profile\.system|\.files\.managed'
+effective_violations=""
+for rsfile in "${effective_read_paths[@]}"; do
+    [[ -f "$rsfile" ]] || continue
+    file_results=$(strip_test_blocks_from_file "$rsfile" | grep -E "$effective_pattern" || true)
+    if [[ -n "$file_results" ]]; then
+        effective_violations="${effective_violations}${file_results}"$'\n'
+    fi
+done
+effective_violations=$(echo "$effective_violations" | sed '/^$/d')
+if [[ -n "$effective_violations" ]]; then
+    log_error "Read path reads profile-only desired state (use cfgd_core::effective::* so module resources stay visible):"
+    echo "$effective_violations" | head -20
+else
+    log_ok "Read paths route desired state through cfgd_core::effective::*"
+fi
+
 log_section "DRY — Timestamp/Hash/Command Wrappers"
 # Detect local wrappers around shared lib.rs functions.
 check_pattern warn \
