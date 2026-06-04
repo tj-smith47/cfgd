@@ -621,7 +621,7 @@ impl<'a> super::Reconciler<'a> {
     ) -> Result<(String, bool, Option<String>)> {
         match action {
             Action::System(sys) => self
-                .apply_system_action(sys, &resolved.merged, printer)
+                .apply_system_action(sys, &resolved.merged, module_actions, printer)
                 .map(|d| (d, true, None)),
             Action::Package(pkg) => self
                 .apply_package_action(pkg, printer)

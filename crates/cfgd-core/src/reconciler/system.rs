@@ -1,5 +1,6 @@
 use crate::config::MergedProfile;
 use crate::errors::Result;
+use crate::modules::ResolvedModule;
 use crate::output::{Printer, Role};
 
 use super::types::SystemAction;
@@ -9,6 +10,7 @@ impl<'a> super::Reconciler<'a> {
         &self,
         action: &SystemAction,
         profile: &MergedProfile,
+        modules: &[ResolvedModule],
         printer: &Printer,
     ) -> Result<String> {
         match action {
@@ -19,7 +21,13 @@ impl<'a> super::Reconciler<'a> {
                 current,
                 ..
             } => {
-                if let Some(desired_value) = profile.system.get(configurator.as_str()) {
+                // Resolve the desired value from the EFFECTIVE system map (profile ⊕
+                // modules), the same source plan_system uses. Reading profile.system
+                // alone would miss a module-contributed configurator key — the action
+                // plans but the apply silently no-ops (the original module-vs-profile
+                // coherence gap this branch closes).
+                let system = crate::effective::effective_system_map(profile, modules);
+                if let Some(desired_value) = system.get(configurator.as_str()) {
                     for sc in self.registry.available_system_configurators() {
                         if sc.name() == configurator {
                             sc.apply(desired_value, printer)?;

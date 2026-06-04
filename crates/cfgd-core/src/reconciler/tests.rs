@@ -6259,6 +6259,75 @@ fn apply_system_set_value_calls_configurator() {
 }
 
 #[test]
+fn apply_system_set_value_applies_module_contributed_system() {
+    // Regression: a `spec.system` key declared only in a MODULE (absent from the
+    // profile) must still be applied. The plan emits the SetValue from the
+    // effective (profile ⊕ modules) map; the executor must resolve the desired
+    // value from the same map, not profile.system alone — otherwise the action
+    // plans but the apply silently no-ops (no ~/.gitconfig write, etc.).
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry
+        .system_configurators
+        .push(Box::new(MockSystemConfigurator::new("sysctl").with_drift(
+            vec![crate::providers::SystemDrift {
+                key: "net.ipv4.ip_forward".to_string(),
+                expected: "1".to_string(),
+                actual: "0".to_string(),
+            }],
+        )));
+
+    let reconciler = Reconciler::new(&registry, &state);
+    // Profile carries NO system config — the setting exists only in the module.
+    let resolved = make_empty_resolved();
+    let mut module = crate::test_helpers::make_resolved_module("netmod");
+    module.packages.clear();
+    module.system.insert(
+        "sysctl".to_string(),
+        serde_yaml::from_str("{net.ipv4.ip_forward: 1}").unwrap(),
+    );
+
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::System,
+            actions: vec![Action::System(SystemAction::SetValue {
+                configurator: "sysctl".to_string(),
+                key: "net.ipv4.ip_forward".to_string(),
+                desired: "1".to_string(),
+                current: "0".to_string(),
+                origin: "local".to_string(),
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            Path::new("."),
+            &printer,
+            Some(&PhaseName::System),
+            std::slice::from_ref(&module),
+            ReconcileContext::Apply,
+            false,
+            None,
+        )
+        .unwrap();
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    // The "→" arrow in the description appears ONLY in the apply branch (the
+    // configurator's apply() was actually invoked). The pre-fix no-op path
+    // returned a bare "system:sysctl.<key>" with no arrow.
+    assert!(
+        result.action_results[0].description.contains('\u{2192}'),
+        "module-contributed system setting must reach the configurator's apply (got: {})",
+        result.action_results[0].description
+    );
+}
+
+#[test]
 fn apply_system_skip_logs_warning() {
     let state = test_state();
     let registry = ProviderRegistry::new();
@@ -6320,7 +6389,7 @@ fn apply_system_action_unknown_key_renders_warn() {
 
     let (printer, cap) = crate::output::Printer::for_test_doc();
     reconciler
-        .apply_system_action(&action, &profile, &printer)
+        .apply_system_action(&action, &profile, &[], &printer)
         .unwrap();
 
     let out = crate::output::strip_ansi(&cap.human());
@@ -6356,7 +6425,7 @@ fn apply_system_action_unavailable_renders_non_warn() {
 
     let (printer, cap) = crate::output::Printer::for_test_doc();
     reconciler
-        .apply_system_action(&action, &profile, &printer)
+        .apply_system_action(&action, &profile, &[], &printer)
         .unwrap();
 
     let out = crate::output::strip_ansi(&cap.human());
