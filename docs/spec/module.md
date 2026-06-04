@@ -76,6 +76,7 @@ spec:
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `depends` | list of string | No | `[]` | Other module names this module depends on. Dependency modules are applied first. |
+| `platforms` | list of string | No | `[]` | Platform filter for the whole module. When set and the current platform matches none, the entire module is skipped. See [spec.platforms[]](#specplatforms). |
 | `packages` | list | No | `[]` | Cross-platform package declarations. See [spec.packages[]](#specpackages). |
 | `files` | list | No | `[]` | Files to deploy from the module directory to the machine. See [spec.files[]](#specfiles). |
 | `env` | list | No | `[]` | Environment variables to export. See [spec.env[]](#specenv). |
@@ -96,6 +97,44 @@ spec:
   depends:
     - node
     - python
+```
+
+---
+
+### spec.platforms[]
+
+A platform filter gating the **whole module**. When `platforms` is non-empty and the current
+platform matches none of the listed tags, the module is skipped in its entirety — its packages,
+files, scripts, env, and aliases are all omitted. Tags match against the platform's OS
+(`linux`, `macos`, `freebsd`, `windows`), distro (`ubuntu`, `fedora`, `arch`, ...), or
+architecture (`x86_64`, `aarch64`). The canonical macOS token is `macos` (not `darwin`). Omit
+the field to apply the module on every platform.
+
+This is the module-level analogue of per-package [`spec.packages[].platforms`](#specpackages):
+use `spec.platforms` when an entire module is platform-specific, and the per-package filter when
+only some packages within an otherwise cross-platform module are.
+
+**Skip behavior:** a platform-skipped module is not silently dropped. It appears in the plan as a
+**Skipped** action, so it is always visible that the module was gated out rather than missing.
+
+**Dependency rule:** an active module may not `depends` on a module that is skipped on the current
+platform. Doing so is a configuration error (the dependency would never be applied). Gate the
+dependent module with the same `platforms` if it should also be platform-specific.
+
+**Example — a macOS-only module:**
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: mac-desktop
+spec:
+  platforms: [macos]
+  packages:
+    - name: rectangle
+  system:
+    macosDefaults:
+      com.apple.dock:
+        autohide: true
 ```
 
 ---

@@ -196,6 +196,7 @@ pub fn cmd_module_create(
         },
         spec: config::ModuleSpec {
             depends: dep_list,
+            platforms: Vec::new(),
             packages: package_entries,
             files: file_entries,
             env: env_entries,

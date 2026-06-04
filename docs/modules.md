@@ -65,6 +65,30 @@ spec:
       - nvim --headless -c "MasonInstallAll" -c "qa"
 ```
 
+### Module-Level Platform Filter
+
+`spec.platforms` gates the **whole module**. When it is non-empty and the current platform matches
+none of the listed tags, the entire module is skipped — packages, files, scripts, env, and aliases
+included. Tags match the platform's OS (`linux`, `macos`, `freebsd`, `windows`), distro, or arch.
+The canonical macOS token is `macos` (not `darwin`). A skipped module shows up as a **Skipped**
+action in the plan rather than vanishing, and an active module may not `depends` on a module that
+is skipped on the current platform (that is a configuration error).
+
+Use `spec.platforms` for a wholly platform-specific module; use the per-package
+[`platforms`](#package-entry-fields) field when only some packages within a cross-platform module
+are platform-specific.
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: mac-desktop
+spec:
+  platforms: [macos]
+  packages:
+    - name: rectangle
+```
+
 ### Package Entry Fields
 
 | Field | Required | Type | Description |

@@ -381,6 +381,19 @@ impl<'a> super::Reconciler<'a> {
         let mut actions = Vec::new();
 
         for module in modules {
+            // Platform-gated module: surface a single visible Skip and emit no
+            // other actions. A Skip action reports changed=false and does not
+            // fire onChange, so no apply-side handling is needed.
+            if let Some(reason) = &module.platform_skip_reason {
+                actions.push(Action::Module(ModuleAction {
+                    module_name: module.name.clone(),
+                    kind: ModuleActionKind::Skip {
+                        reason: reason.clone(),
+                    },
+                }));
+                continue;
+            }
+
             // Select pre/post scripts based on context
             let (pre_scripts, pre_phase, post_scripts, post_phase) = match context {
                 ReconcileContext::Apply => (

@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use std::collections::HashSet;
+
 use crate::config::ModulePackageEntry;
 use crate::errors::{ModuleError, Result};
 use crate::platform::Platform;
@@ -244,9 +246,41 @@ pub fn resolve_modules(
 
     let order = resolve_dependency_order(&resolved_names, &all_modules)?;
 
+    // Determine platform-skipped modules up front so an active module that
+    // depends on a skipped one can be rejected as a config error before any
+    // package/file resolution runs.
+    let skipped: HashSet<&str> = order
+        .iter()
+        .filter(|name| !platform.matches_any(&all_modules[*name].spec.platforms))
+        .map(|name| name.as_str())
+        .collect();
+
+    validate_no_active_dependents_on_skipped(&order, &skipped, |name| {
+        let spec = &all_modules[name].spec;
+        (&spec.depends, &spec.platforms)
+    })?;
+
     let mut resolved = Vec::new();
     for name in &order {
         let module = &all_modules[name];
+
+        // Platform-gated out: emit a placeholder carrying the skip reason and
+        // empty contents. The visible Skip action is produced by plan_modules.
+        // Resolving packages/files here is wasteful and could error on the
+        // other platform's assets, so it is deliberately skipped.
+        if skipped.contains(name.as_str()) {
+            resolved.push(ResolvedModule::skipped(
+                name.clone(),
+                module.dir.clone(),
+                module.spec.depends.clone(),
+                format!(
+                    "platform not matched (requires: {})",
+                    module.spec.platforms.join(", ")
+                ),
+            ));
+            continue;
+        }
+
         let packages = resolve_module_packages(module, platform, managers)?;
         let files = resolve_module_files(module, cache_base, printer)?;
 
@@ -283,8 +317,47 @@ pub fn resolve_modules(
             on_change_scripts,
             depends: module.spec.depends.clone(),
             dir: module.dir.clone(),
+            platform_skip_reason: None,
         });
     }
 
     Ok(resolved)
+}
+
+/// Reject an active module that depends on a platform-skipped one.
+///
+/// Pure (no I/O): `order` is the resolution order, `skipped` the set of
+/// lookup-names gated out on the current platform, and `lookup` returns each
+/// module's `(depends, platforms)`. A skipped module's own dependencies are not
+/// checked — it will never run. Dependency names pass through
+/// `resolve_profile_module_name` before comparison for robustness, though the
+/// loader has already required each `depends` entry to be a bare module key by
+/// the time this runs.
+pub(crate) fn validate_no_active_dependents_on_skipped<'a, F>(
+    order: &'a [String],
+    skipped: &HashSet<&str>,
+    lookup: F,
+) -> Result<()>
+where
+    F: Fn(&'a str) -> (&'a [String], &'a [String]),
+{
+    for name in order {
+        if skipped.contains(name.as_str()) {
+            continue;
+        }
+        let (depends, _) = lookup(name);
+        for dep in depends {
+            let dep_name = resolve_profile_module_name(dep);
+            if skipped.contains(dep_name) {
+                let (_, dep_platforms) = lookup(dep_name);
+                return Err(ModuleError::DependencyPlatformSkipped {
+                    module: name.clone(),
+                    dependency: dep_name.to_string(),
+                    platforms: dep_platforms.join(", "),
+                }
+                .into());
+            }
+        }
+    }
+    Ok(())
 }

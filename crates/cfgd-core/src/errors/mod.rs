@@ -372,6 +372,15 @@ pub enum ModuleError {
     MissingDependency { module: String, dependency: String },
 
     #[error(
+        "module '{module}' depends on '{dependency}', which is skipped on this platform ({dependency} requires: {platforms})"
+    )]
+    DependencyPlatformSkipped {
+        module: String,
+        dependency: String,
+        platforms: String,
+    },
+
+    #[error(
         "package '{package}' in module '{module}' cannot be resolved: no available manager satisfies the requirements (minVersion: {min_version})"
     )]
     UnresolvablePackage {

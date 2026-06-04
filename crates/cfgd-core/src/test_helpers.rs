@@ -1048,6 +1048,7 @@ pub fn make_resolved_module(name: &str) -> crate::modules::ResolvedModule {
         system: std::collections::HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        platform_skip_reason: None,
     }
 }
 

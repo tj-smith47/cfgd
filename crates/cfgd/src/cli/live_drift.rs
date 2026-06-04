@@ -334,6 +334,7 @@ mod tests {
             on_change_scripts: Vec::new(),
             depends: Vec::new(),
             dir: std::path::PathBuf::new(),
+            platform_skip_reason: None,
         }
     }
 

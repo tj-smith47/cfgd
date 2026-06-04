@@ -73,6 +73,7 @@ fn happy_show_output() -> ModuleShowOutput {
         }),
         spec: ModuleSpec {
             depends: vec!["base".into()],
+            platforms: vec![],
             packages: vec![],
             files: vec![
                 ModuleFileEntry {

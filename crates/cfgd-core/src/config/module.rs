@@ -33,6 +33,14 @@ pub struct ModuleSpec {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends: Vec<String>,
 
+    /// Platform tags gating the whole module. When non-empty and the current
+    /// platform matches none of them, the module is skipped entirely (it
+    /// appears as a Skipped action rather than vanishing). Tags are matched
+    /// against OS / distro / arch via `Platform::matches_any`; the canonical
+    /// macOS token is `macos`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub platforms: Vec<String>,
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub packages: Vec<ModulePackageEntry>,
 
@@ -269,6 +277,39 @@ spec: {}
         assert!(
             msg.contains("unknown field") && msg.contains("bogusField"),
             "expected unknown-field error mentioning bogusField, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn module_spec_platforms_deserializes() {
+        let yaml = "platforms: [macos]\n";
+        let spec: ModuleSpec = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(spec.platforms, vec!["macos".to_string()]);
+    }
+
+    #[test]
+    fn module_spec_platforms_absent_is_empty_and_not_serialized() {
+        let spec: ModuleSpec = serde_yaml::from_str("depends: []\n").unwrap();
+        assert!(spec.platforms.is_empty());
+
+        let spec = ModuleSpec {
+            platforms: vec!["macos".to_string()],
+            ..Default::default()
+        };
+        let out = serde_yaml::to_string(&spec).unwrap();
+        assert!(
+            out.contains("platforms"),
+            "platforms should serialize: {out}"
+        );
+        let roundtripped: ModuleSpec = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(roundtripped.platforms, vec!["macos".to_string()]);
+
+        // Empty platforms must not appear in serialized output.
+        let empty = ModuleSpec::default();
+        let out = serde_yaml::to_string(&empty).unwrap();
+        assert!(
+            !out.contains("platforms"),
+            "empty platforms should be skipped: {out}"
         );
     }
 

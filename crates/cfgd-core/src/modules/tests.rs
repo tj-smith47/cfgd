@@ -667,6 +667,182 @@ spec:
     assert_eq!(resolved[1].post_apply_scripts.len(), 1);
 }
 
+#[test]
+fn resolve_modules_platform_gated_module_is_skipped_not_dropped() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let mac_only_dir = dir.path().join("modules").join("macstuff");
+    std::fs::create_dir_all(&mac_only_dir).unwrap();
+    std::fs::write(
+        mac_only_dir.join("module.yaml"),
+        r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: macstuff
+spec:
+  platforms: [macos]
+  packages:
+    - name: rectangle
+  files:
+    - source: nonexistent.conf
+      target: ~/.macstuff
+"#,
+    )
+    .unwrap();
+
+    let managers = make_manager_map(&[]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    // On Linux the macOS-only module is gated out — it must still appear,
+    // carrying the skip reason and empty packages/files (no resolution ran,
+    // so the missing file source did not error).
+    let resolved = resolve_modules(
+        &["macstuff".into()],
+        dir.path(),
+        cache_dir.path(),
+        &linux_ubuntu_platform(),
+        &managers,
+        &printer,
+    )
+    .unwrap();
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].name, "macstuff");
+    assert!(resolved[0].packages.is_empty());
+    assert!(resolved[0].files.is_empty());
+    let reason = resolved[0]
+        .platform_skip_reason
+        .as_deref()
+        .expect("platform-gated module must carry a skip reason");
+    assert!(
+        reason.contains("macos"),
+        "skip reason should name the required platform: {reason}"
+    );
+
+    // On macOS the same module is active — no skip reason, and its package
+    // resolves through the native manager.
+    let brew = MockManager::new("brew").with_package("rectangle", "0.9.0");
+    let mac_managers = make_manager_map(&[("brew", &brew)]);
+    let resolved = resolve_modules(
+        &["macstuff".into()],
+        dir.path(),
+        cache_dir.path(),
+        &macos_platform(),
+        &mac_managers,
+        &printer,
+    )
+    .unwrap();
+    assert_eq!(resolved.len(), 1);
+    assert!(resolved[0].platform_skip_reason.is_none());
+    assert_eq!(resolved[0].packages.len(), 1);
+}
+
+#[test]
+fn resolve_modules_active_dependent_on_skipped_module_is_config_error() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let dep_dir = dir.path().join("modules").join("macbase");
+    std::fs::create_dir_all(&dep_dir).unwrap();
+    std::fs::write(
+        dep_dir.join("module.yaml"),
+        r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: macbase
+spec:
+  platforms: [macos]
+"#,
+    )
+    .unwrap();
+
+    let user_dir = dir.path().join("modules").join("app");
+    std::fs::create_dir_all(&user_dir).unwrap();
+    std::fs::write(
+        user_dir.join("module.yaml"),
+        r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: app
+spec:
+  depends: [macbase]
+"#,
+    )
+    .unwrap();
+
+    let managers = make_manager_map(&[]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let err = resolve_modules(
+        &["app".into()],
+        dir.path(),
+        cache_dir.path(),
+        &linux_ubuntu_platform(),
+        &managers,
+        &printer,
+    )
+    .expect_err("active module depending on a skipped module must be a config error");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("app") && msg.contains("macbase") && msg.contains("macos"),
+        "error must name both modules and the platform constraint: {msg}"
+    );
+}
+
+#[test]
+fn validate_no_active_dependents_on_skipped_helper() {
+    let order: Vec<String> = vec!["dep".into(), "active".into(), "other".into()];
+
+    // active → dep (skipped) is an error
+    let mut skipped = std::collections::HashSet::new();
+    skipped.insert("dep");
+    let deps: std::collections::HashMap<&str, (Vec<String>, Vec<String>)> =
+        std::collections::HashMap::from([
+            ("dep", (vec![], vec!["macos".to_string()])),
+            ("active", (vec!["dep".to_string()], vec![])),
+            ("other", (vec![], vec![])),
+        ]);
+    let lookup = |name: &str| {
+        let (d, p) = &deps[name];
+        (d.as_slice(), p.as_slice())
+    };
+    let err = super::resolve::validate_no_active_dependents_on_skipped(&order, &skipped, lookup)
+        .expect_err("active depending on skipped must error");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("active") && msg.contains("dep") && msg.contains("macos"),
+        "{msg}"
+    );
+
+    // active → active is OK
+    let skipped_none: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    super::resolve::validate_no_active_dependents_on_skipped(&order, &skipped_none, lookup)
+        .expect("active depending on active is fine");
+
+    // a skipped module depending on anything is OK (it won't run)
+    let order2: Vec<String> = vec!["dep".into(), "skipped_consumer".into()];
+    let mut skipped2 = std::collections::HashSet::new();
+    skipped2.insert("dep");
+    skipped2.insert("skipped_consumer");
+    let deps2: std::collections::HashMap<&str, (Vec<String>, Vec<String>)> =
+        std::collections::HashMap::from([
+            ("dep", (vec![], vec!["macos".to_string()])),
+            (
+                "skipped_consumer",
+                (vec!["dep".to_string()], vec!["macos".to_string()]),
+            ),
+        ]);
+    let lookup2 = |name: &str| {
+        let (d, p) = &deps2[name];
+        (d.as_slice(), p.as_slice())
+    };
+    super::resolve::validate_no_active_dependents_on_skipped(&order2, &skipped2, lookup2)
+        .expect("skipped module depending on anything is fine");
+}
+
 // --- Module YAML parsing tests ---
 
 #[test]
@@ -1210,6 +1386,7 @@ fn diff_module_specs_no_changes() {
     let module = LoadedModule {
         name: "test".into(),
         spec: ModuleSpec {
+            platforms: vec![],
             depends: vec!["dep1".into()],
             packages: vec![ModulePackageEntry {
                 name: "pkg1".into(),
@@ -1238,6 +1415,7 @@ fn diff_module_specs_detects_changes() {
     let old = LoadedModule {
         name: "test".into(),
         spec: ModuleSpec {
+            platforms: vec![],
             depends: vec!["dep1".into()],
             packages: vec![
                 ModulePackageEntry {
@@ -1278,6 +1456,7 @@ fn diff_module_specs_detects_changes() {
     let new = LoadedModule {
         name: "test".into(),
         spec: ModuleSpec {
+            platforms: vec![],
             depends: vec!["dep1".into(), "dep2".into()],
             packages: vec![
                 ModulePackageEntry {
@@ -1634,6 +1813,7 @@ fn diff_module_specs_scripts_changed() {
     let old = LoadedModule {
         name: "test".into(),
         spec: ModuleSpec {
+            platforms: vec![],
             depends: vec![],
             packages: vec![],
             files: vec![],
@@ -1650,6 +1830,7 @@ fn diff_module_specs_scripts_changed() {
     let new = LoadedModule {
         name: "test".into(),
         spec: ModuleSpec {
+            platforms: vec![],
             depends: vec![],
             packages: vec![],
             files: vec![],

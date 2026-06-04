@@ -92,6 +92,36 @@ pub struct ResolvedModule {
     pub depends: Vec<String>,
     /// Module directory — used as working directory for module scripts.
     pub dir: PathBuf,
+    /// Set when the module is gated out by its `spec.platforms` on the current
+    /// platform. A skipped module carries empty packages/files/scripts and is
+    /// surfaced as a visible Skip action (never silently dropped).
+    pub platform_skip_reason: Option<String>,
+}
+
+impl ResolvedModule {
+    /// Build a platform-skipped placeholder: identity (`name`, `dir`, `depends`)
+    /// is preserved, `platform_skip_reason` is set, and every applyable field
+    /// (packages, files, env, aliases, system, scripts) is empty. Centralizing
+    /// the empty-contents invariant here keeps a skipped module from silently
+    /// acquiring applyable state if `ResolvedModule` later gains a field.
+    pub fn skipped(name: String, dir: PathBuf, depends: Vec<String>, reason: String) -> Self {
+        ResolvedModule {
+            name,
+            packages: Vec::new(),
+            files: Vec::new(),
+            env: Vec::new(),
+            aliases: Vec::new(),
+            system: HashMap::new(),
+            pre_apply_scripts: Vec::new(),
+            post_apply_scripts: Vec::new(),
+            pre_reconcile_scripts: Vec::new(),
+            post_reconcile_scripts: Vec::new(),
+            on_change_scripts: Vec::new(),
+            depends,
+            dir,
+            platform_skip_reason: Some(reason),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

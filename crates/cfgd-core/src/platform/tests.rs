@@ -186,6 +186,28 @@ fn platform_matches_any_arch() {
 }
 
 #[test]
+fn macos_is_the_canonical_token_for_module_platform_gating() {
+    // The module-level `platforms` filter resolves through `matches_any`; the
+    // canonical macOS token is `macos` (NOT `darwin`). A macOS platform matches
+    // it, a Linux platform does not, and `darwin` matches nothing.
+    let mac = Platform {
+        os: Os::MacOS,
+        distro: Distro::MacOS,
+        version: "14.0".into(),
+        arch: Arch::Aarch64,
+    };
+    let linux = Platform {
+        os: Os::Linux,
+        distro: Distro::Ubuntu,
+        version: "22.04".into(),
+        arch: Arch::X86_64,
+    };
+    assert!(mac.matches_any(&["macos".into()]));
+    assert!(!linux.matches_any(&["macos".into()]));
+    assert!(!mac.matches_any(&["darwin".into()]));
+}
+
+#[test]
 fn platform_matches_any_empty_matches_all() {
     let p = Platform {
         os: Os::MacOS,
