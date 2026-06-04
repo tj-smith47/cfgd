@@ -1917,7 +1917,7 @@ spec:
 
 /// Resolve the primary package list a bare-list form should populate, for a
 /// given manager field name, so the table test can assert both forms agree.
-fn primary_list_for<'a>(spec: &'a PackagesSpec, manager: &str) -> Vec<String> {
+fn primary_list_for(spec: &PackagesSpec, manager: &str) -> Vec<String> {
     match manager {
         "brew" => spec.brew.as_ref().map(|b| b.formulae.clone()),
         "apt" => spec.apt.as_ref().map(|a| a.packages.clone()),

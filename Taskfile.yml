@@ -91,7 +91,7 @@ tasks:
     desc: Run clippy linter
     deps: [_check:tmp-headroom]
     cmds:
-      - cargo clippy -- -D warnings
+      - cargo clippy --workspace --all-targets -- -D warnings
 
   test:
     desc: Run all tests. Pass `-- <args>` to forward to cargo test.
