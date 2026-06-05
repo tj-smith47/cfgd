@@ -233,11 +233,11 @@ pub enum SourceError {
     #[error("invalid ConfigSource manifest in '{name}': {message}")]
     InvalidManifest { name: String, message: String },
 
-    #[error("source version {version} does not match pin {pin} for '{name}'")]
-    VersionMismatch {
+    #[error("no git ref matched pin '{pin}' for source '{name}'{}", .available.as_ref().map(|a| format!(" (available tags: {a})")).unwrap_or_default())]
+    PinRefNotFound {
         name: String,
-        version: String,
         pin: String,
+        available: Option<String>,
     },
 
     #[error("source '{name}' contains no profiles")]

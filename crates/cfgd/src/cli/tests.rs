@@ -16952,6 +16952,64 @@ mod cmd_source_add_local {
         bare
     }
 
+    /// Like [`make_bare_with_manifest`] but tags the single commit with `tag`
+    /// (and pushes the tag) so a `pinVersion` range can resolve against it.
+    fn make_bare_with_tag(
+        scratch: &tempfile::TempDir,
+        name: &str,
+        tag: &str,
+    ) -> std::path::PathBuf {
+        let bare = scratch.path().join(format!("{name}-bare.git"));
+        git2::Repository::init_bare(&bare).unwrap();
+        let src = scratch.path().join(format!("{name}-src"));
+        let src_repo = git2::Repository::init(&src).unwrap();
+        let manifest = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: {name}\nspec:\n  provides:\n    profiles:\n      - default\n"
+        );
+        std::fs::write(src.join("cfgd-source.yaml"), &manifest).unwrap();
+        std::fs::create_dir_all(src.join("profiles")).unwrap();
+        std::fs::write(
+            src.join("profiles").join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+        )
+        .unwrap();
+        let mut index = src_repo.index().unwrap();
+        index
+            .add_path(std::path::Path::new("cfgd-source.yaml"))
+            .unwrap();
+        index
+            .add_path(std::path::Path::new("profiles/default.yaml"))
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        let oid = src_repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        drop(tree);
+        let obj = src_repo.find_object(oid, None).unwrap();
+        src_repo.tag_lightweight(tag, &obj, false).unwrap();
+        let url = cfgd_core::test_helpers::file_url(&bare);
+        let mut remote = src_repo.remote("origin", &url).unwrap();
+        let branch = src_repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        remote
+            .push(
+                &[
+                    &format!("refs/heads/{branch}:refs/heads/{branch}"),
+                    &format!("refs/tags/{tag}:refs/tags/{tag}"),
+                ],
+                None,
+            )
+            .unwrap();
+        bare
+    }
+
     fn empty_source_args(url: String) -> SourceAddArgs {
         SourceAddArgs {
             url,
@@ -17000,7 +17058,8 @@ mod cmd_source_add_local {
     fn cmd_source_add_pin_version_persists_to_config() {
         with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
-            let bare = make_bare_with_manifest(&scratch, "pinned-src", Some("1.2.3"));
+            // Pin resolves against git tags now, so the bare must carry a tag.
+            let bare = make_bare_with_tag(&scratch, "pinned-src", "v1.2.3");
             let h = CliTestHarness::builder().build();
             let url = cfgd_core::test_helpers::file_url(&bare);
             let args = SourceAddArgs {
@@ -17014,6 +17073,70 @@ mod cmd_source_add_local {
             assert!(
                 cfg_after.contains("pinVersion") || cfg_after.contains("~1"),
                 "expected pinVersion field in cfgd.yaml: {cfg_after}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_source_add_rejects_branch_and_pin_together() {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let scratch = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_tag(&scratch, "conflict-src", "v1.0.0");
+            let h = CliTestHarness::builder().build();
+            let url = cfgd_core::test_helpers::file_url(&bare);
+            let args = SourceAddArgs {
+                name: Some("conflict-src".to_string()),
+                branch: Some("main".to_string()),
+                pin_version: Some("~1".to_string()),
+                ..empty_source_args(url)
+            };
+            let err = super::source::cmd_source_add(&h.cli(), h.printer(), &args)
+                .expect_err("branch + pin should be rejected");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("mutually exclusive") || msg.contains("branch_pin_conflict"),
+                "expected branch/pin conflict error, got: {msg}"
+            );
+            // Must reject before writing config.
+            assert!(
+                !h.config_path().join("cfgd.yaml").exists()
+                    || !std::fs::read_to_string(h.config_path().join("cfgd.yaml"))
+                        .unwrap()
+                        .contains("conflict-src"),
+                "conflicting add must not persist the source"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_source_add_rejects_dash_leading_pin_version() {
+        // Argument-injection guard at the CLI boundary: a `-`-leading pin is
+        // rejected before any clone, with a clear error.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let scratch = tempfile::tempdir().unwrap();
+            let bare = make_bare_with_tag(&scratch, "dash-pin-src", "v1.0.0");
+            let h = CliTestHarness::builder().build();
+            let url = cfgd_core::test_helpers::file_url(&bare);
+            let args = SourceAddArgs {
+                name: Some("dash-pin-src".to_string()),
+                pin_version: Some("-x".to_string()),
+                ..empty_source_args(url)
+            };
+            let err = super::source::cmd_source_add(&h.cli(), h.printer(), &args)
+                .expect_err("dash-leading pin should be rejected");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("invalid_pin_version") || msg.contains("must not start with '-'"),
+                "expected invalid_pin_version error, got: {msg}"
+            );
+            assert!(
+                !h.config_path().join("cfgd.yaml").exists()
+                    || !std::fs::read_to_string(h.config_path().join("cfgd.yaml"))
+                        .unwrap()
+                        .contains("dash-pin-src"),
+                "rejected add must not persist the source"
             );
         });
     }

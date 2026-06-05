@@ -160,59 +160,143 @@ spec:
     assert_eq!(manifest.spec.provides.profiles, vec!["base"]);
 }
 
-#[test]
-fn check_version_pin_passes() {
-    let dir = tempfile::tempdir().unwrap();
-    let mgr = SourceManager::new(dir.path());
-
-    let manifest = ConfigSourceDocument {
-        api_version: crate::API_VERSION.into(),
-        kind: "ConfigSource".into(),
-        metadata: crate::config::ConfigSourceMetadata {
-            name: "test".into(),
-            version: Some("2.1.0".into()),
-            description: None,
+/// Build an in-memory `v1.0.0 / v2.0.0 / v2.1.0` tag list with synthetic SHAs.
+fn sample_tags() -> Vec<RemoteTag> {
+    vec![
+        RemoteTag {
+            sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            name: "v1.0.0".into(),
         },
-        spec: crate::config::ConfigSourceSpec {
-            provides: Default::default(),
-            policy: Default::default(),
+        RemoteTag {
+            sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            name: "v2.0.0".into(),
         },
-    };
-
-    // All three pins should match version 2.1.0 — unwrap to prove success
-    mgr.check_version_pin("test", &manifest, "~2")
-        .expect("~2 should match 2.1.0");
-    mgr.check_version_pin("test", &manifest, "^2")
-        .expect("^2 should match 2.1.0");
-    mgr.check_version_pin("test", &manifest, "~2.1")
-        .expect("~2.1 should match 2.1.0");
+        RemoteTag {
+            sha: "cccccccccccccccccccccccccccccccccccccccc".into(),
+            name: "v2.1.0".into(),
+        },
+    ]
 }
 
 #[test]
-fn check_version_pin_fails() {
-    let dir = tempfile::tempdir().unwrap();
-    let mgr = SourceManager::new(dir.path());
+fn resolve_ref_range_selects_highest_in_major() {
+    // ~2 -> highest v2.x.x == v2.1.0
+    let r = resolve_ref_from_tags("s", "~2", &sample_tags()).unwrap();
+    assert_eq!(
+        r,
+        ResolvedRef::Tag {
+            tag: "v2.1.0".into(),
+            version: Version::new(2, 1, 0),
+        }
+    );
+}
 
-    let manifest = ConfigSourceDocument {
-        api_version: crate::API_VERSION.into(),
-        kind: "ConfigSource".into(),
-        metadata: crate::config::ConfigSourceMetadata {
-            name: "test".into(),
-            version: Some("3.0.0".into()),
-            description: None,
-        },
-        spec: crate::config::ConfigSourceSpec {
-            provides: Default::default(),
-            policy: Default::default(),
-        },
-    };
+#[test]
+fn resolve_ref_caret_one_selects_v1() {
+    let r = resolve_ref_from_tags("s", "^1", &sample_tags()).unwrap();
+    assert_eq!(
+        r,
+        ResolvedRef::Tag {
+            tag: "v1.0.0".into(),
+            version: Version::new(1, 0, 0),
+        }
+    );
+}
 
-    let err = mgr.check_version_pin("test", &manifest, "~2").unwrap_err();
+#[test]
+fn resolve_ref_exact_semver_picks_that_tag_not_higher() {
+    // Bare 2.0.0 parses as a VersionReq matching exactly 2.0.0 — must NOT pick v2.1.0.
+    let r = resolve_ref_from_tags("s", "2.0.0", &sample_tags()).unwrap();
+    assert_eq!(
+        r,
+        ResolvedRef::Tag {
+            tag: "v2.0.0".into(),
+            version: Version::new(2, 0, 0),
+        }
+    );
+}
+
+#[test]
+fn resolve_ref_exact_eq_pin_picks_that_tag() {
+    let r = resolve_ref_from_tags("s", "=2.0.0", &sample_tags()).unwrap();
+    assert_eq!(
+        r,
+        ResolvedRef::Tag {
+            tag: "v2.0.0".into(),
+            version: Version::new(2, 0, 0),
+        }
+    );
+}
+
+#[test]
+fn resolve_ref_commit_sha_pin() {
+    let sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let r = resolve_ref_from_tags("s", sha, &sample_tags()).unwrap();
+    assert_eq!(r, ResolvedRef::Commit(sha.to_string()));
+}
+
+#[test]
+fn resolve_ref_no_match_errors_with_pin_and_available() {
+    let err = resolve_ref_from_tags("mysource", "~9", &sample_tags()).unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("3.0.0") && msg.contains("~2"),
-        "expected version mismatch with '3.0.0' and '~2', got: {msg}"
+        msg.contains("~9") && msg.contains("mysource"),
+        "expected pin + name in error, got: {msg}"
     );
+    assert!(
+        msg.contains("v2.1.0"),
+        "expected available-tags hint, got: {msg}"
+    );
+    assert!(
+        matches!(
+            err,
+            crate::errors::CfgdError::Source(SourceError::PinRefNotFound { .. })
+        ),
+        "expected PinRefNotFound variant"
+    );
+}
+
+#[test]
+fn resolve_ref_rejects_dash_leading_pin() {
+    // Argument-injection guard: a `-`-leading pin must never resolve, even if a
+    // tag with that exact name exists in the remote.
+    let tags = vec![RemoteTag {
+        sha: "aaaaaaa".into(),
+        name: "-x".into(),
+    }];
+    let err = resolve_ref_from_tags("s", "-x", &tags).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            crate::errors::CfgdError::Source(SourceError::PinRefNotFound { .. })
+        ),
+        "expected PinRefNotFound for dash-leading pin, got: {err}"
+    );
+    // A `--output=...`-style pin is rejected the same way.
+    assert!(resolve_ref_from_tags("s", "--output=/etc/x", &tags).is_err());
+}
+
+#[test]
+fn resolve_ref_available_hint_sorted_newest_first() {
+    // Hint lists tags semver-descending so a mis-pin error surfaces newest first.
+    let err = resolve_ref_from_tags("s", "~9", &sample_tags()).unwrap_err();
+    let msg = err.to_string();
+    let pos_21 = msg.find("v2.1.0").expect("hint should list v2.1.0");
+    let pos_20 = msg.find("v2.0.0").expect("hint should list v2.0.0");
+    let pos_10 = msg.find("v1.0.0").expect("hint should list v1.0.0");
+    assert!(
+        pos_21 < pos_20 && pos_20 < pos_10,
+        "expected newest-first tag order in hint, got: {msg}"
+    );
+}
+
+#[test]
+fn parse_ls_remote_tags_drops_peeled_lines() {
+    let stdout = "aaaa\trefs/tags/v1.0.0\nbbbb\trefs/tags/v1.0.0^{}\ncccc\trefs/tags/v2.0.0\n";
+    let tags = parse_ls_remote_tags(stdout);
+    assert_eq!(tags.len(), 2);
+    assert_eq!(tags[0].name, "v1.0.0");
+    assert_eq!(tags[1].name, "v2.0.0");
 }
 
 #[test]
@@ -385,90 +469,43 @@ fn normalize_semver_pin_plain_version() {
 }
 
 #[test]
-fn check_version_pin_no_manifest_version_uses_zero() {
-    let dir = tempfile::tempdir().unwrap();
-    let mgr = SourceManager::new(dir.path());
-
-    let manifest = ConfigSourceDocument {
-        api_version: crate::API_VERSION.into(),
-        kind: "ConfigSource".into(),
-        metadata: crate::config::ConfigSourceMetadata {
-            name: "test".into(),
-            version: None, // No version — defaults to 0.0.0
-            description: None,
-        },
-        spec: crate::config::ConfigSourceSpec {
-            provides: Default::default(),
-            policy: Default::default(),
-        },
-    };
-
-    // ~0 matches 0.0.0
-    mgr.check_version_pin("test", &manifest, "~0")
-        .expect("~0 should match defaulted version 0.0.0");
-    // ~1 does NOT match 0.0.0
-    let err = mgr.check_version_pin("test", &manifest, "~1").unwrap_err();
-    let msg = err.to_string();
-    assert!(
-        msg.contains("0.0.0") && msg.contains("~1"),
-        "expected version mismatch with '0.0.0' and '~1', got: {msg}"
+fn resolve_ref_exact_tag_name_pin() {
+    // An exact tag name that is not a parseable VersionReq resolves verbatim.
+    let tags = vec![RemoteTag {
+        sha: "aaaaaaa".into(),
+        name: "release-2024".into(),
+    }];
+    let r = resolve_ref_from_tags("s", "release-2024", &tags).unwrap();
+    assert_eq!(
+        r,
+        ResolvedRef::Tag {
+            tag: "release-2024".into(),
+            version: Version::new(0, 0, 0),
+        }
     );
 }
 
 #[test]
-fn check_version_pin_invalid_semver_in_manifest() {
-    let dir = tempfile::tempdir().unwrap();
-    let mgr = SourceManager::new(dir.path());
-
-    let manifest = ConfigSourceDocument {
-        api_version: crate::API_VERSION.into(),
-        kind: "ConfigSource".into(),
-        metadata: crate::config::ConfigSourceMetadata {
-            name: "test".into(),
-            version: Some("not-a-version".into()),
-            description: None,
-        },
-        spec: crate::config::ConfigSourceSpec {
-            provides: Default::default(),
-            policy: Default::default(),
-        },
-    };
-
-    let result = mgr.check_version_pin("test", &manifest, "~1");
-    assert!(result.is_err());
-    let err = result.unwrap_err().to_string();
+fn resolve_ref_unknown_tag_name_errors() {
+    let tags = vec![RemoteTag {
+        sha: "aaaaaaa".into(),
+        name: "release-2024".into(),
+    }];
+    let err = resolve_ref_from_tags("s", "release-9999", &tags).unwrap_err();
     assert!(
-        err.contains("semver") || err.contains("invalid"),
-        "expected semver error, got: {err}"
+        err.to_string().contains("release-9999"),
+        "expected pin in error, got: {err}"
     );
 }
 
 #[test]
-fn check_version_pin_invalid_pin_format() {
-    let dir = tempfile::tempdir().unwrap();
-    let mgr = SourceManager::new(dir.path());
-
-    let manifest = ConfigSourceDocument {
-        api_version: crate::API_VERSION.into(),
-        kind: "ConfigSource".into(),
-        metadata: crate::config::ConfigSourceMetadata {
-            name: "test".into(),
-            version: Some("1.0.0".into()),
-            description: None,
-        },
-        spec: crate::config::ConfigSourceSpec {
-            provides: Default::default(),
-            policy: Default::default(),
-        },
-    };
-
-    let err = mgr
-        .check_version_pin("test", &manifest, "not-a-pin")
-        .unwrap_err();
+fn resolve_ref_no_tags_gives_no_available_hint() {
+    let err = resolve_ref_from_tags("s", "~2", &[]).unwrap_err();
     let msg = err.to_string();
+    // Empty tag set must NOT render an "(available tags: )" suffix.
     assert!(
-        msg.contains("not-a-pin") && msg.contains("version"),
-        "expected version mismatch error mentioning 'not-a-pin', got: {msg}"
+        !msg.contains("available tags"),
+        "empty tag set should omit the available hint, got: {msg}"
     );
 }
 
@@ -1493,51 +1530,38 @@ fn remove_source_missing_directory_still_removes_cache_entry() {
     assert!(mgr.get("already-gone").is_none());
 }
 
-// --- check_version_pin: exact version match ---
+// --- resolve_ref_from_tags: exact tag resolution ---
 
 #[test]
-fn check_version_pin_exact_match() {
-    let dir = tempfile::tempdir().unwrap();
-    let mgr = SourceManager::new(dir.path());
-
-    let manifest = ConfigSourceDocument {
-        api_version: crate::API_VERSION.into(),
-        kind: "ConfigSource".into(),
-        metadata: crate::config::ConfigSourceMetadata {
-            name: "test".into(),
-            version: Some("1.2.3".into()),
-            description: None,
+fn resolve_ref_exact_tag_match_via_range() {
+    // =1.2.3 is a VersionReq matching exactly the v1.2.3 tag.
+    let tags = vec![
+        RemoteTag {
+            sha: "aaaaaaa".into(),
+            name: "v1.2.3".into(),
         },
-        spec: crate::config::ConfigSourceSpec {
-            provides: Default::default(),
-            policy: Default::default(),
+        RemoteTag {
+            sha: "bbbbbbb".into(),
+            name: "v2.0.0".into(),
         },
-    };
-
-    mgr.check_version_pin("test", &manifest, "=1.2.3")
-        .expect("exact version should match");
+    ];
+    let r = resolve_ref_from_tags("test", "=1.2.3", &tags).unwrap();
+    assert_eq!(
+        r,
+        ResolvedRef::Tag {
+            tag: "v1.2.3".into(),
+            version: Version::new(1, 2, 3),
+        }
+    );
 }
 
 #[test]
-fn check_version_pin_exact_mismatch() {
-    let dir = tempfile::tempdir().unwrap();
-    let mgr = SourceManager::new(dir.path());
-
-    let manifest = ConfigSourceDocument {
-        api_version: crate::API_VERSION.into(),
-        kind: "ConfigSource".into(),
-        metadata: crate::config::ConfigSourceMetadata {
-            name: "test".into(),
-            version: Some("1.2.3".into()),
-            description: None,
-        },
-        spec: crate::config::ConfigSourceSpec {
-            provides: Default::default(),
-            policy: Default::default(),
-        },
-    };
-
-    let result = mgr.check_version_pin("test", &manifest, "=2.0.0");
+fn resolve_ref_exact_range_no_match_errors() {
+    let tags = vec![RemoteTag {
+        sha: "aaaaaaa".into(),
+        name: "v1.2.3".into(),
+    }];
+    let result = resolve_ref_from_tags("test", "=2.0.0", &tags);
     assert!(result.is_err());
 }
 
@@ -1835,6 +1859,336 @@ mod local_source_fixture {
         "master".to_string()
     }
 
+    /// Build a bare upstream whose history carries one commit per supplied tag,
+    /// each tagged with that name. Returns `(bare_path, [(tag, commit_oid)])`.
+    /// The committed `cfgd-source.yaml` declares a single `default` profile so
+    /// `load_source` accepts the manifest regardless of which tag is checked out.
+    fn make_bare_with_tags(
+        tmp: &tempfile::TempDir,
+        name: &str,
+        tags: &[&str],
+    ) -> (std::path::PathBuf, Vec<(String, String)>) {
+        let bare = tmp.path().join(format!("{}-bare.git", name));
+        git2::Repository::init_bare(&bare).unwrap();
+
+        let src = tmp.path().join(format!("{}-src", name));
+        let src_repo = git2::Repository::init(&src).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        let manifest = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: {}\nspec:\n  provides:\n    profiles:\n      - default\n",
+            name
+        );
+        std::fs::write(src.join("cfgd-source.yaml"), &manifest).unwrap();
+
+        let mut tag_oids: Vec<(String, String)> = Vec::new();
+        let mut parent: Option<git2::Oid> = None;
+        for tag in tags {
+            std::fs::write(src.join("VERSION"), format!("{tag}\n")).unwrap();
+            let mut index = src_repo.index().unwrap();
+            index
+                .add_path(std::path::Path::new("cfgd-source.yaml"))
+                .unwrap();
+            index.add_path(std::path::Path::new("VERSION")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = src_repo.find_tree(tree_id).unwrap();
+            let parents: Vec<git2::Commit> = parent
+                .map(|p| vec![src_repo.find_commit(p).unwrap()])
+                .unwrap_or_default();
+            let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+            let commit_oid = src_repo
+                .commit(
+                    Some("HEAD"),
+                    &sig,
+                    &sig,
+                    &format!("release {tag}"),
+                    &tree,
+                    &parent_refs,
+                )
+                .unwrap();
+            drop(tree);
+            let commit_obj = src_repo.find_object(commit_oid, None).unwrap();
+            // Lightweight tag — its target is the commit oid directly, which is
+            // what HEAD resolves to after a detached checkout.
+            src_repo.tag_lightweight(tag, &commit_obj, false).unwrap();
+            tag_oids.push((tag.to_string(), commit_oid.to_string()));
+            parent = Some(commit_oid);
+        }
+
+        let bare_url = crate::test_helpers::file_url(&bare);
+        let mut remote = src_repo.remote("origin", &bare_url).unwrap();
+        let branch = src_repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        // libgit2 push needs explicit per-tag refspecs (no `refs/tags/*` glob).
+        let mut refspecs: Vec<String> = vec![format!("refs/heads/{branch}:refs/heads/{branch}")];
+        for tag in tags {
+            refspecs.push(format!("refs/tags/{tag}:refs/tags/{tag}"));
+        }
+        let refspec_refs: Vec<&str> = refspecs.iter().map(String::as_str).collect();
+        remote.push(&refspec_refs, None).unwrap();
+        (bare, tag_oids)
+    }
+
+    /// HEAD commit oid of a checked-out source under the cache dir.
+    fn head_oid(cache_dir: &std::path::Path, name: &str) -> String {
+        let repo = git2::Repository::open(cache_dir.join(name)).unwrap();
+        repo.head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string()
+    }
+
+    fn pinned_spec(name: &str, bare: &std::path::Path, pin: &str) -> SourceSpec {
+        let url = crate::test_helpers::file_url(bare);
+        let branch = detect_branch(bare);
+        let mut spec = build_spec(name, &url, &branch);
+        spec.sync.pin_version = Some(pin.to_string());
+        spec
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_pin_range_resolves_highest_tag() {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let (bare, oids) =
+                make_bare_with_tags(&tmp, "pin-range", &["v1.0.0", "v2.0.0", "v2.1.0"]);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = pinned_spec("pin-range", &bare, "~2");
+            mgr.load_source(&spec, &test_printer()).unwrap();
+            let want = &oids.iter().find(|(t, _)| t == "v2.1.0").unwrap().1;
+            assert_eq!(&head_oid(&cache_dir, "pin-range"), want);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_pin_caret_one_resolves_v1() {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let (bare, oids) =
+                make_bare_with_tags(&tmp, "pin-caret", &["v1.0.0", "v2.0.0", "v2.1.0"]);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = pinned_spec("pin-caret", &bare, "^1");
+            mgr.load_source(&spec, &test_printer()).unwrap();
+            let want = &oids.iter().find(|(t, _)| t == "v1.0.0").unwrap().1;
+            assert_eq!(&head_oid(&cache_dir, "pin-caret"), want);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_pin_exact_semver_resolves_that_tag() {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let (bare, oids) =
+                make_bare_with_tags(&tmp, "pin-exact", &["v1.0.0", "v2.0.0", "v2.1.0"]);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            // Bare 2.0.0 == VersionReq matching exactly 2.0.0, not v2.1.0.
+            let spec = pinned_spec("pin-exact", &bare, "2.0.0");
+            mgr.load_source(&spec, &test_printer()).unwrap();
+            let want = &oids.iter().find(|(t, _)| t == "v2.0.0").unwrap().1;
+            assert_eq!(&head_oid(&cache_dir, "pin-exact"), want);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_pin_exact_tag_name_resolves() {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let (bare, oids) =
+                make_bare_with_tags(&tmp, "pin-tag", &["v1.0.0", "v2.0.0", "v2.1.0"]);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = pinned_spec("pin-tag", &bare, "v2.0.0");
+            mgr.load_source(&spec, &test_printer()).unwrap();
+            let want = &oids.iter().find(|(t, _)| t == "v2.0.0").unwrap().1;
+            assert_eq!(&head_oid(&cache_dir, "pin-tag"), want);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_pin_commit_sha_resolves() {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let (bare, oids) =
+                make_bare_with_tags(&tmp, "pin-sha", &["v1.0.0", "v2.0.0", "v2.1.0"]);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let sha = oids.iter().find(|(t, _)| t == "v1.0.0").unwrap().1.clone();
+            let spec = pinned_spec("pin-sha", &bare, &sha);
+            mgr.load_source(&spec, &test_printer()).unwrap();
+            assert_eq!(head_oid(&cache_dir, "pin-sha"), sha);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_pin_no_match_fails_fast() {
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let (bare, _) = make_bare_with_tags(&tmp, "pin-nomatch", &["v1.0.0", "v2.0.0"]);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = pinned_spec("pin-nomatch", &bare, "~9");
+            let err = mgr.load_source(&spec, &test_printer()).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("~9") && msg.contains("pin-nomatch"),
+                "expected PinRefNotFound mentioning pin + source, got: {msg}"
+            );
+            assert!(
+                matches!(
+                    err,
+                    crate::errors::CfgdError::Source(SourceError::PinRefNotFound { .. })
+                ),
+                "expected PinRefNotFound variant"
+            );
+            // No clone should have been left behind on a fail-fast pin.
+            assert!(!cache_dir.join("pin-nomatch").exists());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_pin_reresolves_higher_tag_on_update() {
+        // A semver-range pin must re-select a newly-pushed higher tag on the
+        // second (fetch) load, not stay frozen on the first checkout.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let (bare, oids) = make_bare_with_tags(&tmp, "pin-rereso", &["v2.0.0"]);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = pinned_spec("pin-rereso", &bare, "~2");
+            mgr.load_source(&spec, &test_printer()).unwrap();
+            let first = &oids.iter().find(|(t, _)| t == "v2.0.0").unwrap().1;
+            assert_eq!(&head_oid(&cache_dir, "pin-rereso"), first);
+
+            // Push a higher tag v2.1.0 to the bare.
+            let src = tmp.path().join("pin-rereso-src");
+            let src_repo = git2::Repository::open(&src).unwrap();
+            let sig = git2::Signature::now("t", "t@example.com").unwrap();
+            std::fs::write(src.join("VERSION"), "v2.1.0\n").unwrap();
+            let mut index = src_repo.index().unwrap();
+            index.add_path(std::path::Path::new("VERSION")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = src_repo.find_tree(tree_id).unwrap();
+            let parent = src_repo.head().unwrap().peel_to_commit().unwrap();
+            let new_oid = src_repo
+                .commit(
+                    Some("HEAD"),
+                    &sig,
+                    &sig,
+                    "release v2.1.0",
+                    &tree,
+                    &[&parent],
+                )
+                .unwrap();
+            drop(tree);
+            let obj = src_repo.find_object(new_oid, None).unwrap();
+            src_repo.tag_lightweight("v2.1.0", &obj, false).unwrap();
+            let mut remote = src_repo.find_remote("origin").unwrap();
+            remote
+                .push(&["refs/tags/v2.1.0:refs/tags/v2.1.0"], None)
+                .unwrap();
+
+            // Second load re-resolves the range → v2.1.0.
+            mgr.load_source(&spec, &test_printer()).unwrap();
+            assert_eq!(head_oid(&cache_dir, "pin-rereso"), new_oid.to_string());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_pin_existing_dir_sha_refetch() {
+        // Clone shallow at tag A's commit, then re-pin to SHA B (a different
+        // commit). The existing shallow clone lacks B, so checkout must fetch it.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let (bare, oids) =
+                make_bare_with_tags(&tmp, "pin-refetch", &["v1.0.0", "v2.0.0", "v2.1.0"]);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+
+            // First load: pin to v2.1.0 (the tip), producing a shallow clone.
+            let sha_a = oids.iter().find(|(t, _)| t == "v2.1.0").unwrap().1.clone();
+            let spec_a = pinned_spec("pin-refetch", &bare, &sha_a);
+            mgr.load_source(&spec_a, &test_printer()).unwrap();
+            assert_eq!(head_oid(&cache_dir, "pin-refetch"), sha_a);
+
+            // Re-pin to v1.0.0's commit — an ancestor not guaranteed present in
+            // the depth-1 clone of v2.1.0. checkout_pinned_ref must fetch it.
+            let sha_b = oids.iter().find(|(t, _)| t == "v1.0.0").unwrap().1.clone();
+            let spec_b = pinned_spec("pin-refetch", &bare, &sha_b);
+            mgr.load_source(&spec_b, &test_printer()).unwrap();
+            assert_eq!(head_oid(&cache_dir, "pin-refetch"), sha_b);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_pin_dash_leading_tag_is_rejected() {
+        // A malicious source publishes a tag literally named `-x`. Pinning to it
+        // must FAIL resolution and never reach a `git checkout`/`fetch` positional.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let (bare, oids) = make_bare_with_tags(&tmp, "pin-dash", &["v1.0.0"]);
+            let commit = oids.first().unwrap().1.clone();
+
+            // Create + push a `-x` tag (git2 rejects the name; use git CLI refs).
+            let src = tmp.path().join("pin-dash-src");
+            let mut tag_cmd = crate::git_cmd_local();
+            tag_cmd.args([
+                "-C",
+                &src.display().to_string(),
+                "update-ref",
+                "refs/tags/-x",
+                &commit,
+            ]);
+            let out =
+                crate::command_output_with_timeout(&mut tag_cmd, crate::COMMAND_TIMEOUT).unwrap();
+            assert!(out.status.success(), "creating -x tag should succeed");
+            let mut push_cmd = crate::git_cmd_safe(None, None);
+            push_cmd.args([
+                "-C",
+                &src.display().to_string(),
+                "push",
+                "origin",
+                "refs/tags/-x:refs/tags/-x",
+            ]);
+            let pout =
+                crate::command_output_with_timeout(&mut push_cmd, crate::GIT_NETWORK_TIMEOUT)
+                    .unwrap();
+            assert!(pout.status.success(), "pushing -x tag should succeed");
+
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = pinned_spec("pin-dash", &bare, "-x");
+            let err = mgr.load_source(&spec, &test_printer()).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    crate::errors::CfgdError::Source(SourceError::PinRefNotFound { .. })
+                ),
+                "expected PinRefNotFound for a dash-leading pin, got: {err}"
+            );
+            // No checkout happened → no clone left behind.
+            assert!(!cache_dir.join("pin-dash").exists());
+        });
+    }
+
     #[test]
     #[serial]
     fn load_source_clones_then_fetches_from_local_bare() {
@@ -1876,46 +2230,6 @@ mod local_source_fixture {
                 "last_commit should be populated after clone"
             );
             assert!(cached.last_fetched.is_some());
-        });
-    }
-
-    #[test]
-    #[serial]
-    fn load_source_with_version_pin_match_succeeds() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
-            let tmp = tempfile::tempdir().unwrap();
-            let bare = make_bare_with_manifest(&tmp, "ts3", Some("2.1.0"), &[]);
-            let branch = detect_branch(&bare);
-            let url = crate::test_helpers::file_url(&bare);
-            let cache_dir = tmp.path().join("cache");
-            let mut mgr = SourceManager::new(&cache_dir);
-            let mut spec = build_spec("ts3", &url, &branch);
-            spec.sync.pin_version = Some("~2".to_string());
-            let printer = test_printer();
-            mgr.load_source(&spec, &printer).unwrap();
-            assert!(mgr.get("ts3").is_some());
-        });
-    }
-
-    #[test]
-    #[serial]
-    fn load_source_with_version_pin_mismatch_fails() {
-        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
-            let tmp = tempfile::tempdir().unwrap();
-            let bare = make_bare_with_manifest(&tmp, "ts4", Some("1.0.0"), &[]);
-            let branch = detect_branch(&bare);
-            let url = crate::test_helpers::file_url(&bare);
-            let cache_dir = tmp.path().join("cache");
-            let mut mgr = SourceManager::new(&cache_dir);
-            let mut spec = build_spec("ts4", &url, &branch);
-            spec.sync.pin_version = Some("^2".to_string());
-            let printer = test_printer();
-            let err = mgr.load_source(&spec, &printer).unwrap_err();
-            let msg = err.to_string();
-            assert!(
-                msg.contains("ts4") || msg.contains("version"),
-                "expected version mismatch error, got: {msg}"
-            );
         });
     }
 

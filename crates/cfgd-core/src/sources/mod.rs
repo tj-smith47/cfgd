@@ -110,21 +110,29 @@ impl SourceManager {
 
         let source_dir = self.cache_dir.join(&spec.name);
 
-        if source_dir.exists() {
-            self.fetch_source(spec, &source_dir, printer)?;
-        } else {
-            self.clone_source(spec, &source_dir, printer)?;
+        // A pin resolves to a concrete git ref (tag or commit SHA) rather than
+        // tracking a branch. Resolution happens on every load so a semver-range
+        // pin re-selects the highest matching tag when the remote gains one.
+        let pinned_ref = match spec.sync.pin_version.as_deref() {
+            Some(pin) => Some(self.resolve_pinned_ref(spec, pin)?),
+            None => None,
+        };
+
+        match (&pinned_ref, source_dir.exists()) {
+            (Some(resolved), true) => {
+                self.checkout_pinned_ref(spec, &source_dir, resolved, printer)?
+            }
+            (Some(resolved), false) => {
+                self.clone_pinned_source(spec, &source_dir, resolved, printer)?
+            }
+            (None, true) => self.fetch_source(spec, &source_dir, printer)?,
+            (None, false) => self.clone_source(spec, &source_dir, printer)?,
         }
 
         let manifest = self.parse_manifest(&spec.name, &source_dir)?;
 
         // Signature verification: if the source requires signed commits, verify HEAD
         self.verify_commit_signature(&spec.name, &source_dir, &manifest.spec.policy.constraints)?;
-
-        // Version pinning check
-        if let Some(ref pin) = spec.sync.pin_version {
-            self.check_version_pin(&spec.name, &manifest, pin)?;
-        }
 
         let last_commit = Self::head_commit(&source_dir);
 
@@ -311,6 +319,97 @@ impl SourceManager {
         Ok(())
     }
 
+    /// Clone a source pinned to a resolved git ref (tag or commit SHA).
+    ///
+    /// Tags use the same fully-hardened shallow `--branch <tag>` clone as the
+    /// branch path (libgit2 fallback included). Commit SHAs cannot be cloned
+    /// via `--branch`, so the default branch is cloned shallow and the commit is
+    /// fetched-by-SHA then checked out (detached); a server that refuses
+    /// `allowReachableSHA1InWant` triggers a deeper fetch fallback (announced via
+    /// a Printer note so the depth relaxation is never silent). All clones keep
+    /// `--depth=1`, `--no-recurse-submodules`, and `0o700` directory perms.
+    fn clone_pinned_source(
+        &self,
+        spec: &SourceSpec,
+        source_dir: &Path,
+        resolved: &ResolvedRef,
+        printer: &Printer,
+    ) -> Result<()> {
+        match resolved {
+            ResolvedRef::Tag { tag, .. } => {
+                let tag_spec = SourceSpec {
+                    origin: OriginSpec {
+                        branch: tag.clone(),
+                        ..spec.origin.clone()
+                    },
+                    ..spec.clone()
+                };
+                self.clone_source(&tag_spec, source_dir, printer)
+            }
+            ResolvedRef::Commit(sha) => self.clone_commit_source(spec, source_dir, sha, printer),
+        }
+    }
+
+    /// Clone the default/declared branch shallow, then fetch + checkout a commit SHA.
+    /// On ANY failure the partial clone is removed so the next `load_source` does
+    /// not mistake a broken directory for a usable cache entry.
+    fn clone_commit_source(
+        &self,
+        spec: &SourceSpec,
+        source_dir: &Path,
+        sha: &str,
+        printer: &Printer,
+    ) -> Result<()> {
+        self.clone_commit_source_inner(spec, source_dir, sha, printer)
+            .inspect_err(|_| {
+                let _ = std::fs::remove_dir_all(source_dir);
+            })
+    }
+
+    fn clone_commit_source_inner(
+        &self,
+        spec: &SourceSpec,
+        source_dir: &Path,
+        sha: &str,
+        printer: &Printer,
+    ) -> Result<()> {
+        if let Some(parent) = source_dir.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| SourceError::CacheError {
+                message: format!("cannot create cache dir: {}", e),
+            })?;
+        }
+
+        let mut cmd = crate::git_cmd_safe(
+            Some(&spec.origin.url),
+            Some(spec.origin.ssh_strict_host_key_checking),
+        );
+        cmd.args([
+            "clone",
+            "--depth=1",
+            "--single-branch",
+            "--no-recurse-submodules",
+            &spec.origin.url,
+            &source_dir.display().to_string(),
+        ]);
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        let label = format!("Cloning source '{}'", spec.name);
+        let cli_result = printer.run(&mut cmd, &label);
+        if !matches!(&cli_result, Ok(output) if output.status.success()) {
+            return Err(SourceError::FetchFailed {
+                name: spec.name.clone(),
+                message: format!("failed to clone '{}' for commit pin", spec.origin.url),
+            }
+            .into());
+        }
+        let _ = crate::set_file_permissions(source_dir, 0o700);
+
+        // Shallow-first/stepped-deepen/unbounded fetch of the pinned commit, then
+        // detached checkout. `fetch_ref_with_fallback` inserts `--end-of-options`.
+        self.fetch_ref_with_fallback(spec, source_dir, sha, sha, printer)?;
+        self.git_checkout_detached(spec, source_dir, sha)
+    }
+
     /// Parse the ConfigSource manifest from a source directory.
     pub fn parse_manifest(&self, name: &str, source_dir: &Path) -> Result<ConfigSourceDocument> {
         read_manifest(name, source_dir)
@@ -341,37 +440,154 @@ impl SourceManager {
         verify_head_signature(name, source_dir)
     }
 
-    /// Check version pin against source manifest version.
-    fn check_version_pin(
+    /// Resolve a `pinVersion` value to a concrete git ref against the remote.
+    ///
+    /// The pin is interpreted (in order):
+    /// 1. A semver range (after [`normalize_semver_pin`]) — list the remote's
+    ///    tags, strip a leading `v`, filter by the range, and select the highest
+    ///    matching tag.
+    /// 2. A 7–40 hex commit SHA.
+    /// 3. An exact tag name that matches a remote tag verbatim.
+    ///
+    /// This pins against the remote's git refs rather than the source's
+    /// self-reported `metadata.version`, so a source cannot bypass the pin by
+    /// editing its own manifest. (Signature verification of the resulting HEAD
+    /// is a separate step — see [`Self::verify_commit_signature`].)
+    fn resolve_pinned_ref(&self, spec: &SourceSpec, pin: &str) -> Result<ResolvedRef> {
+        let tags = list_remote_tags(&spec.name, &spec.origin)?;
+        resolve_ref_from_tags(&spec.name, pin, &tags)
+    }
+
+    /// Checkout a previously-resolved pinned ref in an already-cloned source.
+    /// Detached-HEAD checkout — re-resolution of a semver range may have selected
+    /// a different (higher) tag than the last load, and a SHA re-pin may target a
+    /// commit absent from the existing shallow clone, so both first fetch the ref.
+    fn checkout_pinned_ref(
         &self,
-        name: &str,
-        manifest: &ConfigSourceDocument,
-        pin: &str,
+        spec: &SourceSpec,
+        source_dir: &Path,
+        resolved: &ResolvedRef,
+        printer: &Printer,
     ) -> Result<()> {
-        let version_str = manifest.metadata.version.as_deref().unwrap_or("0.0.0");
+        // The existing shallow clone was created for a different ref, so the
+        // newly-resolved tag/commit may be absent. Fetch it (with the same
+        // stepped-depth fallback as the initial commit clone) before checkout.
+        match resolved {
+            ResolvedRef::Tag { tag, .. } => self.fetch_ref_with_fallback(
+                spec,
+                source_dir,
+                &format!("refs/tags/{tag}:refs/tags/{tag}"),
+                tag,
+                printer,
+            )?,
+            ResolvedRef::Commit(sha) => {
+                self.fetch_ref_with_fallback(spec, source_dir, sha, sha, printer)?
+            }
+        }
 
-        let version = Version::parse(version_str).map_err(|e| SourceError::InvalidManifest {
-            name: name.to_string(),
-            message: format!("invalid semver '{}': {}", version_str, e),
-        })?;
+        let target = match resolved {
+            ResolvedRef::Tag { tag, .. } => tag.as_str(),
+            ResolvedRef::Commit(sha) => sha.as_str(),
+        };
+        self.git_checkout_detached(spec, source_dir, target)
+    }
 
-        // Support tilde (~2) as shorthand for ~2.0.0
-        let normalized_pin = normalize_semver_pin(pin);
-        let req = VersionReq::parse(&normalized_pin).map_err(|_| SourceError::VersionMismatch {
-            name: name.to_string(),
-            version: version_str.to_string(),
-            pin: pin.to_string(),
-        })?;
+    /// Fetch a single ref (tag refspec or bare commit SHA) into an existing
+    /// clone, preserving the shallow-first/stepped-deepen/unbounded ladder.
+    ///
+    /// `fetch_arg` is the positional passed to `git fetch origin <fetch_arg>`
+    /// (a `refs/tags/x:refs/tags/x` refspec or a SHA); `display` names the ref
+    /// in the Printer note. Each step inserts `--end-of-options` so an
+    /// attacker-shaped tag/refspec can never be parsed as a git flag.
+    fn fetch_ref_with_fallback(
+        &self,
+        spec: &SourceSpec,
+        source_dir: &Path,
+        fetch_arg: &str,
+        display: &str,
+        printer: &Printer,
+    ) -> Result<()> {
+        let dir = source_dir.display().to_string();
+        let run_fetch = |depth: Option<u32>| -> bool {
+            let mut cmd = crate::git_cmd_safe(
+                Some(&spec.origin.url),
+                Some(spec.origin.ssh_strict_host_key_checking),
+            );
+            cmd.args(["-C", &dir, "fetch"]);
+            if let Some(d) = depth {
+                cmd.arg(format!("--depth={d}"));
+            }
+            cmd.args(["origin", "--end-of-options", fetch_arg]);
+            matches!(
+                crate::command_output_with_timeout(&mut cmd, crate::GIT_NETWORK_TIMEOUT),
+                Ok(o) if o.status.success()
+            )
+        };
 
-        if !req.matches(&version) {
-            return Err(SourceError::VersionMismatch {
-                name: name.to_string(),
-                version: version_str.to_string(),
-                pin: pin.to_string(),
+        // 1) shallow. 2) stepped deepen (keeps a size bound for the common case).
+        // 3) unbounded — last resort for a deeply-buried commit.
+        if run_fetch(Some(1)) {
+            return Ok(());
+        }
+        printer.note(format!(
+            "Source '{}': shallow fetch of {} failed; deepening fetch (--depth=50)",
+            spec.name, display
+        ));
+        if run_fetch(Some(50)) {
+            return Ok(());
+        }
+        printer.note(format!(
+            "Source '{}': stepped deepen of {} failed; fetching full history",
+            spec.name, display
+        ));
+        if run_fetch(None) {
+            return Ok(());
+        }
+        Err(SourceError::FetchFailed {
+            name: spec.name.clone(),
+            message: format!("could not fetch ref '{}' from origin", display),
+        }
+        .into())
+    }
+
+    /// Run a detached-HEAD `git checkout <target>` in the source dir.
+    /// `--end-of-options` precedes the (attacker-influenced) target so a tag
+    /// named e.g. `-x` can never be parsed as a checkout flag.
+    fn git_checkout_detached(
+        &self,
+        spec: &SourceSpec,
+        source_dir: &Path,
+        target: &str,
+    ) -> Result<()> {
+        let mut checkout = crate::git_cmd_local();
+        checkout.args([
+            "-C",
+            &source_dir.display().to_string(),
+            "-c",
+            "advice.detachedHead=false",
+            "checkout",
+            "--detach",
+            "--end-of-options",
+            target,
+        ]);
+        checkout.stdout(std::process::Stdio::piped());
+        checkout.stderr(std::process::Stdio::piped());
+        let output = crate::command_output_with_timeout(&mut checkout, crate::COMMAND_TIMEOUT)
+            .map_err(|e| SourceError::GitError {
+                name: spec.name.clone(),
+                message: format!("failed to checkout '{}': {}", target, e),
+            })?;
+        if !output.status.success() {
+            return Err(SourceError::GitError {
+                name: spec.name.clone(),
+                message: format!(
+                    "checkout of '{}' failed: {}",
+                    target,
+                    crate::stderr_lossy_trimmed(&output)
+                ),
             }
             .into());
         }
-
         Ok(())
     }
 
@@ -660,6 +876,202 @@ fn normalize_semver_pin(pin: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+/// A `pinVersion` value resolved to a concrete git ref.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ResolvedRef {
+    /// A git tag and the highest semver it parsed to (for diagnostics/sorting).
+    Tag { tag: String, version: Version },
+    /// A commit SHA (7–40 hex chars).
+    Commit(String),
+}
+
+/// A `(sha, tag_name)` pair from `git ls-remote --tags`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct RemoteTag {
+    pub sha: String,
+    pub name: String,
+}
+
+/// List the remote's tags via `git ls-remote --tags`, parsed into `RemoteTag`s.
+/// Peeled-tag lines (`refs/tags/<name>^{}`) are ignored so annotated tags are
+/// not double-counted. Bounded by [`crate::GIT_NETWORK_TIMEOUT`].
+pub(super) fn list_remote_tags(name: &str, origin: &OriginSpec) -> Result<Vec<RemoteTag>> {
+    let mut cmd = crate::git_cmd_safe(Some(&origin.url), Some(origin.ssh_strict_host_key_checking));
+    cmd.args(["ls-remote", "--tags", &origin.url]);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let output =
+        crate::command_output_with_timeout(&mut cmd, crate::GIT_NETWORK_TIMEOUT).map_err(|e| {
+            SourceError::GitError {
+                name: name.to_string(),
+                message: format!("ls-remote failed: {}", e),
+            }
+        })?;
+    if !output.status.success() {
+        return Err(SourceError::GitError {
+            name: name.to_string(),
+            message: format!(
+                "ls-remote --tags failed: {}",
+                crate::stderr_lossy_trimmed(&output)
+            ),
+        }
+        .into());
+    }
+
+    Ok(parse_ls_remote_tags(&crate::stdout_lossy_trimmed(&output)))
+}
+
+/// Parse `git ls-remote --tags` stdout into `(sha, name)` pairs, dropping the
+/// `^{}` peeled-tag lines so annotated tags appear once.
+pub(super) fn parse_ls_remote_tags(stdout: &str) -> Vec<RemoteTag> {
+    let mut tags = Vec::new();
+    for line in stdout.lines() {
+        let mut parts = line.split('\t');
+        let (Some(sha), Some(refname)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let Some(name) = refname.strip_prefix("refs/tags/") else {
+            continue;
+        };
+        if name.ends_with("^{}") {
+            continue;
+        }
+        tags.push(RemoteTag {
+            sha: sha.trim().to_string(),
+            name: name.to_string(),
+        });
+    }
+    tags
+}
+
+/// Resolve a pin string against a tag list (the pure, network-free core).
+///
+/// Disambiguation order: a value that parses as a semver `VersionReq` (after
+/// [`normalize_semver_pin`]) is treated as a RANGE over tags; otherwise a 7–40
+/// hex value is a commit SHA; otherwise it is an exact tag name. No match for a
+/// range/tag yields [`SourceError::PinRefNotFound`].
+pub(super) fn resolve_ref_from_tags(
+    name: &str,
+    pin: &str,
+    tags: &[RemoteTag],
+) -> Result<ResolvedRef> {
+    let trimmed = pin.trim();
+
+    // Argument-injection guard: a `-`-leading pin (and, below, any `-`-leading
+    // resolved tag a malicious source might publish) would be parsed as a git
+    // flag by `git checkout`/`git fetch`. Reject before resolution; the git
+    // call sites additionally pass `--end-of-options` as defense in depth.
+    if trimmed.starts_with('-') {
+        return Err(SourceError::PinRefNotFound {
+            name: name.to_string(),
+            pin: pin.to_string(),
+            available: available_tags_hint(tags),
+        }
+        .into());
+    }
+    let pin_not_found = || -> crate::errors::CfgdError {
+        SourceError::PinRefNotFound {
+            name: name.to_string(),
+            pin: pin.to_string(),
+            available: available_tags_hint(tags),
+        }
+        .into()
+    };
+
+    // A bare, fully-specified `X.Y.Z` (no operator/shorthand) reads as "pin
+    // exactly this version" — but the `semver` crate parses `2.0.0` with caret
+    // semantics (matching 2.1.0 too). Rewrite it to `=X.Y.Z` so a full version
+    // selects that tag, not a higher one. Shorthand (`~2`, `^1`) and explicit
+    // operators (`>=1.0`, `=2.0.0`) keep their range semantics.
+    let normalized = match parse_bare_full_version(trimmed) {
+        Some(exact) => exact,
+        None => normalize_semver_pin(trimmed),
+    };
+    // VersionReq is tried first by design: an all-numeric value like `2` parses
+    // as a range (`^2`), not a commit SHA. This is intentional — a hex SHA that
+    // is also a valid bare version (all-decimal, ≤3 dotted parts) is vanishingly
+    // rare, and treating versions as ranges is the documented disambiguation.
+    if let Ok(req) = VersionReq::parse(&normalized) {
+        let mut best: Option<(Version, String)> = None;
+        for tag in tags {
+            let stripped = tag.name.strip_prefix('v').unwrap_or(&tag.name);
+            let Ok(version) = Version::parse(stripped) else {
+                continue;
+            };
+            if req.matches(&version) && best.as_ref().is_none_or(|(b, _)| version > *b) {
+                best = Some((version, tag.name.clone()));
+            }
+        }
+        return match best {
+            // A semver tag cannot be `-`-leading (it would not parse), but guard
+            // anyway so no `-`-prefixed name ever reaches a git positional.
+            Some((_, tag)) if tag.starts_with('-') => Err(pin_not_found()),
+            Some((version, tag)) => Ok(ResolvedRef::Tag { tag, version }),
+            None => Err(pin_not_found()),
+        };
+    }
+
+    if is_commit_sha(trimmed) {
+        return Ok(ResolvedRef::Commit(trimmed.to_lowercase()));
+    }
+
+    if tags.iter().any(|t| t.name == trimmed) {
+        // Re-parse to populate the version field; fall back to 0.0.0 for a
+        // non-semver tag name selected verbatim.
+        let version = Version::parse(trimmed.strip_prefix('v').unwrap_or(trimmed))
+            .unwrap_or_else(|_| Version::new(0, 0, 0));
+        return Ok(ResolvedRef::Tag {
+            tag: trimmed.to_string(),
+            version,
+        });
+    }
+
+    Err(pin_not_found())
+}
+
+/// If `pin` is a bare, fully-specified `X.Y.Z` semver with no operator or
+/// shorthand prefix, return the exact-match form `=X.Y.Z`; otherwise `None`.
+fn parse_bare_full_version(pin: &str) -> Option<String> {
+    let trimmed = pin.trim();
+    if trimmed.starts_with(['~', '^', '=', '>', '<', '*']) {
+        return None;
+    }
+    Version::parse(trimmed).ok().map(|_| format!("={trimmed}"))
+}
+
+/// True for a 7–40 char lowercase/uppercase hex string (a git commit SHA).
+fn is_commit_sha(s: &str) -> bool {
+    let s = s.trim();
+    (7..=40).contains(&s.len()) && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Bounded, comma-joined list of available tag names for error hints (max 10).
+/// Sorted semver-descending (newest first) so a mis-pin error surfaces the most
+/// relevant tags; non-semver names sort after all parseable versions, by name.
+fn available_tags_hint(tags: &[RemoteTag]) -> Option<String> {
+    if tags.is_empty() {
+        return None;
+    }
+    let mut sorted: Vec<&str> = tags.iter().map(|t| t.name.as_str()).collect();
+    sorted.sort_by(|a, b| {
+        let va = Version::parse(a.strip_prefix('v').unwrap_or(a)).ok();
+        let vb = Version::parse(b.strip_prefix('v').unwrap_or(b)).ok();
+        match (va, vb) {
+            (Some(x), Some(y)) => y.cmp(&x),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.cmp(b),
+        }
+    });
+    let shown_len = sorted.len().min(10);
+    let mut hint = sorted[..shown_len].join(", ");
+    if sorted.len() > shown_len {
+        hint.push_str(", …");
+    }
+    Some(hint)
 }
 
 /// Clone a git repo with git CLI (with live progress), falling back to libgit2.

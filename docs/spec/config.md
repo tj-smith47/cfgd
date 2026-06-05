@@ -397,7 +397,7 @@ that publishes profiles and modules. See `docs/sources.md` for the full multi-so
 |-------|------|----------|---------|-------------|
 | `interval` | string | No | `1h` | How often to pull updates from this source. Duration string: `30s`, `5m`, `1h`. |
 | `autoApply` | bool | No | `false` | Automatically apply changes from this source without user confirmation. |
-| `pinVersion` | string | No | | Pin this source to a specific git ref (tag or commit SHA). Branches are not allowed. |
+| `pinVersion` | string | No | | Pin this source to a git ref resolved against the repo's tags or commits. Accepts a semver range (`~2`, `^1.5`, `>=1.0.0`) selecting the highest matching tag, an exact tag name, or a commit SHA (7–40 hex, immutable). Mutually exclusive with `branch`; branches are not allowed as a pin. |
 
 ---
 

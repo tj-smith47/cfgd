@@ -342,16 +342,35 @@ But if acme-backend had EDITOR as "locked":
 
 ## Version Pinning
 
-The `pinVersion` field in your subscription restricts which source versions cfgd will accept. It uses semver range syntax:
+The `pinVersion` field pins a source to a concrete **git ref** — a tag selected from the source repository's tags, or an exact commit SHA. cfgd resolves the pin against the remote's git tags (via `git ls-remote --tags`), **not** the source's self-reported `metadata.version`. This is more secure: a source cannot bypass your pin by editing the version string in its own `cfgd-source.yaml`. A checked-out pin is always a detached HEAD on the resolved ref.
 
-| Syntax | Meaning | Accepts | Rejects |
+A `pinVersion` value is interpreted in this order:
+
+1. **Semver range** — list the source's git tags, strip a leading `v`, filter by the range, and check out the **highest** matching tag. If no tag matches, cfgd fails fast with an error (it never checks out a tag outside the range).
+2. **Commit SHA** (7–40 hex characters) — check out that exact commit. A SHA is an immutable pin: it always resolves to the same commit.
+3. **Exact tag name** (e.g. `release-2024`) — check out that tag verbatim.
+
+Semver range syntax for case 1:
+
+| Syntax | Meaning | Selects from tags `v1.0.0, v2.0.0, v2.1.0` | Rejects |
 |---|---|---|---|
-| `~2` | Compatible with 2.x | 2.0.0, 2.1.0, 2.9.9 | 3.0.0 |
-| `^1.5` | Compatible with 1.5+ | 1.5.0, 1.6.0, 1.99.0 | 2.0.0 |
-| `>=1.0.0` | At least 1.0.0 | 1.0.0, 2.0.0, 99.0.0 | 0.9.0 |
-| `~2.1` | Compatible with 2.1.x | 2.1.0, 2.1.5 | 2.2.0 |
+| `~2` | Highest 2.x | `v2.1.0` | 3.x |
+| `^1.5` | Highest 1.5+ within major 1 | `v1.x` ≥ 1.5 | 2.0.0 |
+| `>=1.0.0` | Highest at least 1.0.0 | `v2.1.0` | 0.9.0 |
+| `~2.1` | Highest 2.1.x | `v2.1.x` | 2.2.0 |
+| `2.0.0` | Exactly 2.0.0 (a bare full version pins exactly, not caret) | `v2.0.0` | v2.1.0 |
 
-When a source update pushes a version outside your pinned range, cfgd rejects the update with an error and keeps the previous version. The rejection appears in `cfgd status` and daemon notifications. To accept the new version, update your `pinVersion` range.
+`--branch` and `--pin-version` are mutually exclusive on `cfgd source add` — a pin selects its own ref, so a branch would be meaningless.
+
+```sh
+cfgd source add https://github.com/acme/config.git --pin-version "~2"
+cfgd source add https://github.com/acme/config.git --pin-version "v2.1.0"
+cfgd source add https://github.com/acme/config.git --pin-version "9f3c1ab2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9"
+```
+
+On `cfgd source update`, a semver-range pin is **re-resolved** so a newly-published higher matching tag is picked up; a tag or commit-SHA pin is immutable and stays put. When a source advances but no tag matches your range, cfgd fails fast and keeps the previously resolved ref. The error appears in `cfgd status` and daemon notifications. To move the pin, change your `pinVersion`.
+
+For commit-SHA pins, cfgd first tries a shallow fetch of the commit; if the server refuses (no `uploadpack.allowReachableSHA1InWant`), it deepens the fetch and prints a note so the depth relaxation is never silent.
 
 ## Source Removal
 
@@ -435,7 +454,7 @@ cfgd plan    # verify the composed result
 cfgd source add git@github.com:my-team/dev-config.git
 ```
 
-Bump `metadata.version` in `cfgd-source.yaml` when making changes. Subscribers with `pinVersion` ranges will only receive updates within their pinned range.
+Cut a git **tag** (e.g. `v2.1.0`) when releasing a new version of the source. Subscribers with semver-range `pinVersion` values resolve against your tags and will only check out tags within their pinned range. (`metadata.version` in `cfgd-source.yaml` is informational; pinning is enforced against signed git refs, not that field.)
 
 ## Security Model
 
@@ -446,7 +465,7 @@ Bump `metadata.version` in `cfgd-source.yaml` when making changes. Subscribers w
 | Arbitrary path writes | Sources must declare `allowedTargetPaths`; enforced at composition level |
 | Template data leak | Source templates can only access source-provided env vars, not your personal env vars |
 | MITM | Git SSH/HTTPS transport security; optional signature verification |
-| Version pinning bypass | `pinVersion` enforced — source v3.0.0 rejected if pinned to `~2` |
+| Version pinning bypass | `pinVersion` resolved against git tags/refs, not the source's self-reported `metadata.version` — a source cannot edit its manifest to escape the pin, and a tag outside `~2` is never checked out |
 | Privilege escalation | Sources cannot set `shell:` or install launchAgents/systemdUnits without `allowSystemChanges: true` |
 | Recursive trust | A ConfigSource cannot itself subscribe to other ConfigSources |
 
