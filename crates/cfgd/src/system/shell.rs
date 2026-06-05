@@ -219,6 +219,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[serial_test::serial]
     fn windows_terminal_settings_path_returns_none_on_linux() {
         let _la = EnvVarGuard::unset("LOCALAPPDATA");
         let _up = EnvVarGuard::unset("USERPROFILE");
@@ -226,6 +227,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn load_terminal_settings_returns_ok_none_on_linux() {
         let _la = EnvVarGuard::unset("LOCALAPPDATA");
         let result =
