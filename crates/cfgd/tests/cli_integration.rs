@@ -1254,6 +1254,39 @@ fn status_exit_code_renders_live_file_drift_not_no_drift() {
     );
 }
 
+/// `cfgd source update` exits 1 (ExitCode::Error) when every configured source
+/// fails to update. A scripted consumer must detect the failure from `$?`
+/// alone, and the per-source failure line must still render — the exit code can
+/// never silently contradict the output. Regression guard for the wiring that
+/// turns `run_source_update`'s error count into a nonzero exit.
+#[test]
+fn source_update_all_failed_exits_1() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: my-source\n      origin:\n        url: file:///nonexistent/repo.git\n        branch: main\n        type: Git\n      subscription:\n        priority: 300\n",
+    )
+    .unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("source")
+        .arg("update")
+        .arg("--no-color")
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(1);
+    let out = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        out.contains("Failed to update source 'my-source'"),
+        "stderr must name the failed source, got:\n{out}"
+    );
+}
+
 /// Plain `cfgd status` (no --exit-code) keeps the fast RECORDED-drift dashboard:
 /// with no recorded events it shows "No drift detected" and exits 0 even when a
 /// managed file is live-drifted. The live scan is `-e`-only by design.

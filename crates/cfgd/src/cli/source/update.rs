@@ -2,6 +2,28 @@ use super::*;
 use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_source_update(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow::Result<()> {
+    let error_count = run_source_update(cli, printer, name)?;
+
+    // A scripted consumer must be able to detect that a source failed to
+    // update from the exit code alone. `run_source_update` already emitted the
+    // summary Doc; exit nonzero directly here (mirroring cmd_status's
+    // --exit-code path) so the failure isn't re-rendered as a second error
+    // line by the central sink. Kept out of the core so the body above stays
+    // unit-testable in-process (process::exit would abort the test binary).
+    if error_count > 0 {
+        cfgd_core::exit::ExitCode::Error.exit();
+    }
+
+    Ok(())
+}
+
+/// Core of `source update`: fetches each configured source, emits the summary
+/// Doc, and returns the number of sources that failed to update.
+pub(crate) fn run_source_update(
+    cli: &Cli,
+    printer: &Printer,
+    name: Option<&str>,
+) -> anyhow::Result<usize> {
     printer.heading("Update Sources");
 
     let config_path = cli.config.clone();
@@ -13,7 +35,7 @@ pub fn cmd_source_update(cli: &Cli, printer: &Printer, name: Option<&str>) -> an
                 .status(Role::Info, "No sources configured")
                 .with_data(serde_json::json!({ "sources": [] })),
         );
-        return Ok(());
+        return Ok(0);
     }
 
     let cache_dir = source_cache_dir(cli)?;
@@ -194,5 +216,5 @@ pub fn cmd_source_update(cli: &Cli, printer: &Printer, name: Option<&str>) -> an
             })),
     );
 
-    Ok(())
+    Ok(error_count)
 }

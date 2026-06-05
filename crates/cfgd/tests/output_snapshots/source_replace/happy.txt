@@ -6,14 +6,13 @@ Remove Source: replace-old
 
 Add Config Source
 
-◐ Fetching source 'replace-old'
+◐ Cloning source 'replace-old'
 
-  From file://<BARE_ROOT>/replace-old-source
-   * branch            master     -> FETCH_HEAD
-✓ Fetching source 'replace-old'
+  Cloning into '<STATE_DIR>/sources/replace-old'...
+✓ Cloning source 'replace-old'
 
 Source Manifest
-  Name      replace-old
+  Name      replace-new
   Version   1.0.0
   Profiles  default
 

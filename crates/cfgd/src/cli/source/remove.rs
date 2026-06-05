@@ -113,15 +113,26 @@ pub fn cmd_source_remove(
     state.remove_config_source(name)?;
     state.remove_source_config_hash(name)?;
 
-    // Remove cached data
-    let cache_dir = source_cache_dir(cli)?;
-    let mut mgr = SourceManager::new(&cache_dir);
-    if let Err(e) = mgr.remove_source(name) {
-        // Best-effort cleanup: cache-removal failure is non-fatal because
-        // the config + state mutations already landed. Surface to tracing
-        // so operators can investigate stuck cache dirs without polluting
-        // the user-visible removal-success Doc.
-        tracing::debug!("source cache removal failed for '{}': {}", name, e);
+    // Remove the cached clone. It lives at `<cache_dir>/<name>` (see
+    // SourceManager::load_source). Delete the directory directly: the previous
+    // SourceManager::remove_source path keyed off an in-memory `sources` map
+    // that this command never populates, so it returned NotFound and the cache
+    // dir leaked on every removal.
+    let cached_dir = source_cache_dir(cli)?.join(name);
+    if cached_dir.exists()
+        && let Err(e) = std::fs::remove_dir_all(&cached_dir)
+    {
+        // Config + state mutations already landed, so a cache-removal failure
+        // is non-fatal — but surface it as a visible warning rather than a
+        // swallowed debug log, so a stuck cache dir doesn't go unnoticed.
+        printer.status_simple(
+            Role::Warn,
+            format!(
+                "Could not remove cached data for '{}': {}",
+                name,
+                cfgd_core::output::collapse_to_subject_line(&e)
+            ),
+        );
     }
 
     printer.emit(

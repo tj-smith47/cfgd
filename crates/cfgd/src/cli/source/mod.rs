@@ -27,6 +27,9 @@ pub use replace::cmd_source_replace;
 pub use show::cmd_source_show;
 pub use update::cmd_source_update;
 
+#[cfg(test)]
+pub(in crate::cli) use update::run_source_update;
+
 // --- Helpers consumed elsewhere in cli:: ---
 
 pub(in crate::cli) use helpers::{

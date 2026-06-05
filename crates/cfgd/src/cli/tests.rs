@@ -11317,6 +11317,56 @@ fn cmd_source_remove_nonexistent_fails() {
     );
 }
 
+#[test]
+fn cmd_source_remove_deletes_cached_clone() {
+    let (config_dir, state_dir) = setup_rich_test_env();
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let printer = test_printer();
+
+    // Seed a cached clone for the source, mirroring what `source add` leaves at
+    // `<state_dir>/sources/<name>`.
+    let cached_dir = state_dir.path().join("sources").join("team-config");
+    std::fs::create_dir_all(&cached_dir).unwrap();
+    std::fs::write(cached_dir.join("marker"), b"cached").unwrap();
+    assert!(cached_dir.exists());
+
+    super::source::cmd_source_remove(&cli, &printer, "team-config", false, true)
+        .expect("source remove should succeed");
+
+    assert!(
+        !cached_dir.exists(),
+        "cached clone dir must be deleted on source remove, still present at {}",
+        cached_dir.display()
+    );
+}
+
+#[test]
+fn cmd_source_replace_clears_stale_cache() {
+    let (config_dir, state_dir) = setup_rich_test_env();
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let printer = test_printer();
+
+    // Seed a stale cached clone for the existing source.
+    let cached_dir = state_dir.path().join("sources").join("team-config");
+    std::fs::create_dir_all(&cached_dir).unwrap();
+    std::fs::write(cached_dir.join("STALE"), b"old contents").unwrap();
+
+    // Replace fails at the add step (unreachable URL is rejected before clone),
+    // but the remove step must still have cleared the stale cache so a later
+    // successful add cannot inherit the previous source's contents.
+    let _ = super::source::cmd_source_replace(
+        &cli,
+        &printer,
+        "team-config",
+        "file:///nonexistent/new-config.git",
+    );
+
+    assert!(
+        !cached_dir.join("STALE").exists(),
+        "replace must clear the old source's stale cache; STALE marker survived"
+    );
+}
+
 // --- source::cmd_source_override ---
 
 #[test]
@@ -16190,69 +16240,13 @@ fn cmd_decide_accept_single_item_singular_message() {
 
 // -----------------------------------------------------------------------
 // Coverage: source::cmd_source_update error display path
+//
+// The all-sources-fail path calls `cfgd_core::exit::ExitCode::Error.exit()`
+// (process::exit), so it cannot be exercised in-process — terminating the
+// test binary would abort the whole run. The exit code + per-source failure
+// output are covered by the subprocess tests `source_update_*_exits_1` in
+// `tests/cli_integration.rs` instead.
 // -----------------------------------------------------------------------
-
-#[test]
-fn cmd_source_update_load_failure_displays_error() {
-    // Config has a source pointing to a non-existent git URL.
-    // load_source will fail, exercising the Err(e) branch that
-    // calls printer.error and state.update_config_source_status.
-    let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
-kind: Config
-metadata:
-  name: t
-spec:
-  profile: default
-  sources:
-    - name: my-source
-      origin:
-        url: file:///nonexistent/repo.git
-        branch: main
-        type: Git
-      subscription:
-        priority: 300
-"#;
-    let h = CliTestHarness::builder().config(config_with_source).build();
-    // The update should succeed overall (errors per source are printed, not propagated)
-    super::source::cmd_source_update(&h.cli(), h.printer(), None).unwrap();
-    h.assert_header("Update Sources");
-    h.assert_output_contains("Failed to update source 'my-source'");
-}
-
-#[test]
-fn cmd_source_update_named_load_failure_displays_error() {
-    let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
-kind: Config
-metadata:
-  name: t
-spec:
-  profile: default
-  sources:
-    - name: alpha
-      origin:
-        url: file:///nonexistent/alpha.git
-        branch: main
-        type: Git
-      subscription:
-        priority: 100
-    - name: beta
-      origin:
-        url: file:///nonexistent/beta.git
-        branch: main
-        type: Git
-      subscription:
-        priority: 200
-"#;
-    let h = CliTestHarness::builder().config(config_with_source).build();
-    // Update only 'alpha'; 'beta' should not appear in output
-    super::source::cmd_source_update(&h.cli(), h.printer(), Some("alpha")).unwrap();
-    h.assert_output_contains("Failed to update source 'alpha'");
-    let output = h.output();
-    assert!(
-        !output.contains("beta"),
-        "should not attempt to update 'beta' when 'alpha' was specified, got: {output}"
-    );
-}
 
 // -----------------------------------------------------------------------
 // Coverage: source::cmd_source_replace — replace removes old and adds new
@@ -16534,29 +16528,24 @@ fn execute_dispatch_checkin() {
 
 #[test]
 fn execute_dispatch_source_update() {
-    let config_with_source = r#"apiVersion: cfgd.io/v1alpha1
+    // No sources: proves execute() routes Source/Update to the update handler.
+    // A failing source would `process::exit(1)` and abort the test binary; that
+    // failure-exit wiring is covered by the subprocess test
+    // `source_update_all_failed_exits_1` in tests/cli_integration.rs.
+    let config_no_sources = r#"apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
   name: t
 spec:
   profile: default
-  sources:
-    - name: src1
-      origin:
-        url: file:///nonexistent/repo.git
-        branch: main
-        type: Git
-      subscription:
-        priority: 100
 "#;
-    let h = CliTestHarness::builder().config(config_with_source).build();
+    let h = CliTestHarness::builder().config(config_no_sources).build();
     let cli = h.cli_with_command(Command::Source {
         command: SourceCommand::Update { name: None },
     });
     super::execute(&cli, h.printer()).unwrap();
     h.assert_header("Update Sources");
-    // Source load fails, error is displayed but command succeeds
-    h.assert_output_contains("Failed to update source 'src1'");
+    h.assert_output_contains("No sources configured");
 }
 
 #[test]
@@ -17502,8 +17491,15 @@ mod cmd_source_add_local {
                 std::fs::remove_dir_all(&cache_dir).unwrap();
             }
 
-            super::source::cmd_source_update(&h.cli(), h.printer(), Some("doomed-src"))
-                .expect("cmd_source_update should not bubble up a fetch failure");
+            // Call the non-exiting core directly: `cmd_source_update` would
+            // `process::exit(1)` on this failure and abort the test binary.
+            let error_count =
+                super::source::run_source_update(&h.cli(), h.printer(), Some("doomed-src"))
+                    .expect("run_source_update should not bubble up a fetch failure");
+            assert_eq!(
+                error_count, 1,
+                "the single doomed source should count as 1 failure"
+            );
 
             h.assert_output_contains("Failed to update source 'doomed-src'");
 

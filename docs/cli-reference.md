@@ -453,7 +453,9 @@ Show source details, provided profiles, policy breakdown, conflicts.
 
 ### `cfgd source remove <name>`
 
-Remove a subscription.
+Remove a subscription. The source's cached clone (under
+`<state-dir>/sources/<name>`) is deleted as part of removal, so a later
+re-subscription clones fresh rather than reusing stale contents.
 
 ```sh
 cfgd source remove acme-corp --keep-all    # keep resources as local
@@ -462,7 +464,9 @@ cfgd source remove acme-corp --remove-all  # remove everything
 
 ### `cfgd source update [name]`
 
-Fetch latest from sources (all or specific).
+Fetch latest from sources (all or specific). Exits non-zero
+(`1`, `ExitCode::Error`) if any source fails to update, so CI can detect a
+failed refresh from `$?` alone; the per-source failure is also printed.
 
 ### `cfgd source override <source> <action> <path> [value]`
 
