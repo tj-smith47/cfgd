@@ -70,6 +70,25 @@ pub fn cmd_source_override(
     Ok(())
 }
 
+/// Fold a `snake_case` token to `camelCase`. Used to map an override path's
+/// leading ProfileSpec field name onto its serde wire name; a token with no
+/// underscores is returned unchanged.
+fn snake_to_camel(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut upper_next = false;
+    for ch in s.chars() {
+        if ch == '_' {
+            upper_next = true;
+        } else if upper_next {
+            out.extend(ch.to_uppercase());
+            upper_next = false;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 fn update_source_rejection(
     config_path: &Path,
     source_name: &str,
@@ -128,6 +147,20 @@ fn update_source_override(
             *overrides = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
         }
 
+        // The override map deserializes as a ProfileSpec, whose serde wire names
+        // are camelCase (`rename_all = "camelCase"`). The dotted path's FIRST
+        // segment is a ProfileSpec field, so a snake_case form must be folded to
+        // camelCase (`env_scope` -> `envScope`); stored verbatim it would be
+        // rejected cryptically by `deny_unknown_fields` at compose time. Deeper
+        // segments are map keys (env var / alias / package names) and stay
+        // verbatim — they are user data, not struct fields.
+        let mut segments: Vec<String> = path.split('.').map(str::to_string).collect();
+        if let Some(first) = segments.first_mut() {
+            *first = snake_to_camel(first);
+        }
+        let normalized_path = segments.join(".");
+        let first_segment = segments.first().map(String::as_str).unwrap_or("");
+
         // env/alias values are ALWAYS strings (ProfileSpec's EnvVar.value /
         // ShellAlias.command are `String`), so a literal like `true` or `8080`
         // must be stored verbatim — YAML-parsing it would yield a bool/number
@@ -135,14 +168,13 @@ fn update_source_override(
         // (packages/system/modules) is typed, so its value IS parsed as YAML
         // (`[prettier]` → a sequence, not the literal string `"[prettier]"`),
         // falling back to a plain string for a non-YAML token.
-        let first_segment = path.split('.').next().unwrap_or("");
         let parsed = if matches!(first_segment, "env" | "aliases") {
             serde_yaml::Value::String(value.to_string())
         } else {
             serde_yaml::from_str(value)
                 .unwrap_or_else(|_| serde_yaml::Value::String(value.to_string()))
         };
-        set_nested_yaml_value(overrides, path, &parsed)?;
+        set_nested_yaml_value(overrides, &normalized_path, &parsed)?;
         Ok(())
     })
 }

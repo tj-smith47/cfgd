@@ -96,9 +96,12 @@ pub(super) fn build_source_layers(
     // Subscriber overrides — the local consumer's per-source tweaks. Placed at
     // `priority + 1` so they beat this source's own recommended/standard items
     // (at `priority`) while staying below the source's required (`+1000`) and
-    // locked (`u32::MAX`) tiers and below local config (fixed 1000) — a
-    // subscriber may refine what a source recommends but never what it locked
-    // or required, and local config still wins.
+    // locked (`u32::MAX`) tiers — a subscriber may refine what a source
+    // recommends but never what it locked or required. Overrides ride one step
+    // above the source's own items, so they share the source's rank against
+    // local config (fixed 1000): below local at the default source priority
+    // (500), but above local if the consumer deliberately ranks the source at
+    // or above 1000 — the same "higher priority wins" rule every layer obeys.
     let has_overrides = input
         .subscription
         .overrides

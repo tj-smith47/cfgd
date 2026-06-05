@@ -11526,6 +11526,47 @@ fn cmd_source_override_set_env_value_always_string() {
     );
 }
 
+#[test]
+fn cmd_source_override_set_env_scope_snake_normalizes() {
+    // The override path's leading field is a ProfileSpec field (camelCase wire
+    // name). A user typing the snake_case `env_scope` must land as `envScope`,
+    // otherwise deny_unknown_fields rejects it cryptically at compose time.
+    let (config_dir, state_dir) = setup_rich_test_env();
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
+
+    super::source::cmd_source_override(
+        &cli,
+        &printer,
+        "team-config",
+        super::SourceOverrideAction::Set,
+        "env_scope",
+        Some("All"),
+    )
+    .unwrap();
+    drop(printer);
+
+    let written = std::fs::read_to_string(config_dir.path().join("cfgd.yaml")).unwrap();
+    let cfg: serde_yaml::Value = serde_yaml::from_str(&written).unwrap();
+    let overrides = cfg["spec"]["sources"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == serde_yaml::Value::String("team-config".into()))
+        .unwrap()["subscription"]["overrides"]
+        .clone();
+
+    assert_eq!(
+        overrides["envScope"],
+        serde_yaml::Value::String("All".into()),
+        "snake_case env_scope must be stored under the camelCase key envScope, got: {overrides:?}"
+    );
+    assert!(
+        overrides.get("env_scope").is_none(),
+        "the snake_case key must not be persisted verbatim, got: {overrides:?}"
+    );
+}
+
 // cmd_source_override_invalid_action_fails test removed —
 // SourceOverrideAction is a clap ValueEnum so invalid strings fail at
 // parse time.
