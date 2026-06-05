@@ -60,6 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **changelog**: Regenerate from conventional commits
 - **changelog**: Regenerate for persisted custom-manager uninstall
 - **changelog**: Regenerate for module spec.system apply fix
+- **changelog**: Regenerate for module description/error-code fix
 
 ### Fixed
 
@@ -87,6 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **release**: Build Linux deb/rpm/apk from a static musl binary
 - **reconciler**: Apply module-contributed spec.system settings
 - **module**: Omit null description + correct parse-vs-not-found error code
+- **cli**: Route every CLI error through one central renderer
 
 ### Miscellaneous
 
@@ -100,6 +102,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **upgrade**: Pin client to real release manifest (ground-truth contract test)
 - **cli**: Migrate upgrade CLI test fixtures to split/keyless contract
 - **e2e**: Path-scoped image-build skip + Lease-based setup serialization
+- **shell**: Serialize LOCALAPPDATA env tests to fix full-suite flake
 
 ### Build
 
