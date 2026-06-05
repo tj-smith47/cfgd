@@ -108,6 +108,18 @@ impl SourceManager {
             .into());
         }
 
+        // A URL beginning with '-' would be parsed by git as an option rather
+        // than the positional remote (clone/ls-remote take the URL positionally).
+        // Reject it; the trailing positionals are additionally guarded with
+        // --end-of-options as defense in depth.
+        if spec.origin.url.trim_start().starts_with('-') {
+            return Err(SourceError::GitError {
+                name: spec.name.clone(),
+                message: "source origin URL must not begin with '-'".to_string(),
+            }
+            .into());
+        }
+
         let source_dir = self.cache_dir.join(&spec.name);
 
         // A pin resolves to a concrete git ref (tag or commit SHA) rather than
@@ -260,6 +272,7 @@ impl SourceManager {
             "--no-recurse-submodules",
             "--branch",
             &spec.origin.branch,
+            "--end-of-options",
             &spec.origin.url,
             &source_dir.display().to_string(),
         ]);
@@ -388,6 +401,7 @@ impl SourceManager {
             "--depth=1",
             "--single-branch",
             "--no-recurse-submodules",
+            "--end-of-options",
             &spec.origin.url,
             &source_dir.display().to_string(),
         ]);
@@ -899,7 +913,7 @@ pub(super) struct RemoteTag {
 /// not double-counted. Bounded by [`crate::GIT_NETWORK_TIMEOUT`].
 pub(super) fn list_remote_tags(name: &str, origin: &OriginSpec) -> Result<Vec<RemoteTag>> {
     let mut cmd = crate::git_cmd_safe(Some(&origin.url), Some(origin.ssh_strict_host_key_checking));
-    cmd.args(["ls-remote", "--tags", &origin.url]);
+    cmd.args(["ls-remote", "--tags", "--end-of-options", &origin.url]);
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
@@ -1087,6 +1101,7 @@ pub fn git_clone_with_fallback(
         "clone",
         "--depth=1",
         "--no-recurse-submodules",
+        "--end-of-options",
         url,
         &target.display().to_string(),
     ]);

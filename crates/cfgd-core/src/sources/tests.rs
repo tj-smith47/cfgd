@@ -674,6 +674,34 @@ fn load_source_rejects_traversal_name() {
 }
 
 #[test]
+fn load_source_rejects_dash_leading_url() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut mgr = SourceManager::new(dir.path());
+    let printer = test_printer();
+
+    let spec = crate::config::SourceSpec {
+        name: "evil".into(),
+        origin: crate::config::OriginSpec {
+            origin_type: OriginType::Git,
+            url: "--upload-pack=touch /tmp/pwned".into(),
+            branch: "main".into(),
+            auth: None,
+            ssh_strict_host_key_checking: Default::default(),
+        },
+        subscription: Default::default(),
+        sync: Default::default(),
+    };
+
+    let result = mgr.load_source(&spec, &printer);
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("must not begin with '-'"),
+        "expected dash-leading URL rejection, got: {err}"
+    );
+}
+
+#[test]
 fn remove_source_success() {
     let dir = tempfile::tempdir().unwrap();
     let mut mgr = SourceManager::new(dir.path());
