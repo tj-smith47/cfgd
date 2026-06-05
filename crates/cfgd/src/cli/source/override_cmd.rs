@@ -128,11 +128,21 @@ fn update_source_override(
             *overrides = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
         }
 
-        set_nested_yaml_value(
-            overrides,
-            path,
-            &serde_yaml::Value::String(value.to_string()),
-        )?;
+        // env/alias values are ALWAYS strings (ProfileSpec's EnvVar.value /
+        // ShellAlias.command are `String`), so a literal like `true` or `8080`
+        // must be stored verbatim — YAML-parsing it would yield a bool/number
+        // that fails to deserialize at compose time. Every other field
+        // (packages/system/modules) is typed, so its value IS parsed as YAML
+        // (`[prettier]` → a sequence, not the literal string `"[prettier]"`),
+        // falling back to a plain string for a non-YAML token.
+        let first_segment = path.split('.').next().unwrap_or("");
+        let parsed = if matches!(first_segment, "env" | "aliases") {
+            serde_yaml::Value::String(value.to_string())
+        } else {
+            serde_yaml::from_str(value)
+                .unwrap_or_else(|_| serde_yaml::Value::String(value.to_string()))
+        };
+        set_nested_yaml_value(overrides, path, &parsed)?;
         Ok(())
     })
 }

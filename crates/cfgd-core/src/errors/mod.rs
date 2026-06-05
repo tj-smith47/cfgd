@@ -273,6 +273,12 @@ pub enum CompositionError {
     #[error("path '{path}' not in allowed paths for source '{source_name}'")]
     PathNotAllowed { source_name: String, path: String },
 
+    #[error("invalid overrides for source '{source_name}': {message}")]
+    InvalidOverrides {
+        source_name: String,
+        message: String,
+    },
+
     #[error("source '{source_name}' is not allowed to run scripts")]
     ScriptsNotAllowed { source_name: String },
 

@@ -11417,6 +11417,115 @@ fn cmd_source_override_set_succeeds() {
     );
 }
 
+#[test]
+fn cmd_source_override_set_stores_typed_list() {
+    let (config_dir, state_dir) = setup_rich_test_env();
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
+
+    super::source::cmd_source_override(
+        &cli,
+        &printer,
+        "team-config",
+        super::SourceOverrideAction::Set,
+        "packages.npm.global",
+        Some("[prettier]"),
+    )
+    .unwrap();
+    drop(printer);
+
+    let written = std::fs::read_to_string(config_dir.path().join("cfgd.yaml")).unwrap();
+    let cfg: serde_yaml::Value = serde_yaml::from_str(&written).unwrap();
+    let global = cfg["spec"]["sources"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == serde_yaml::Value::String("team-config".into()))
+        .unwrap()["subscription"]["overrides"]["packages"]["npm"]["global"]
+        .clone();
+
+    assert!(
+        global.is_sequence(),
+        "global should be a YAML list, not a string, got: {global:?}"
+    );
+    assert_eq!(
+        global.as_sequence().unwrap(),
+        &vec![serde_yaml::Value::String("prettier".into())],
+        "list override should store [prettier], got: {global:?}"
+    );
+}
+
+#[test]
+fn cmd_source_override_set_stores_plain_string() {
+    let (config_dir, state_dir) = setup_rich_test_env();
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
+
+    super::source::cmd_source_override(
+        &cli,
+        &printer,
+        "team-config",
+        super::SourceOverrideAction::Set,
+        "env.EDITOR",
+        Some("nvim"),
+    )
+    .unwrap();
+    drop(printer);
+
+    let written = std::fs::read_to_string(config_dir.path().join("cfgd.yaml")).unwrap();
+    let cfg: serde_yaml::Value = serde_yaml::from_str(&written).unwrap();
+    let editor = cfg["spec"]["sources"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == serde_yaml::Value::String("team-config".into()))
+        .unwrap()["subscription"]["overrides"]["env"]["EDITOR"]
+        .clone();
+
+    assert_eq!(
+        editor,
+        serde_yaml::Value::String("nvim".into()),
+        "string override should store the plain value, got: {editor:?}"
+    );
+}
+
+#[test]
+fn cmd_source_override_set_env_value_always_string() {
+    // env values are always strings; a `true`/`8080`-looking value must NOT be
+    // YAML-parsed into a bool/number (which would fail EnvVar deserialization at
+    // compose time).
+    let (config_dir, state_dir) = setup_rich_test_env();
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+    let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
+
+    super::source::cmd_source_override(
+        &cli,
+        &printer,
+        "team-config",
+        super::SourceOverrideAction::Set,
+        "env.DEBUG",
+        Some("true"),
+    )
+    .unwrap();
+    drop(printer);
+
+    let written = std::fs::read_to_string(config_dir.path().join("cfgd.yaml")).unwrap();
+    let cfg: serde_yaml::Value = serde_yaml::from_str(&written).unwrap();
+    let debug = cfg["spec"]["sources"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == serde_yaml::Value::String("team-config".into()))
+        .unwrap()["subscription"]["overrides"]["env"]["DEBUG"]
+        .clone();
+
+    assert_eq!(
+        debug,
+        serde_yaml::Value::String("true".into()),
+        "env value 'true' must be stored as the STRING \"true\", not a bool, got: {debug:?}"
+    );
+}
+
 // cmd_source_override_invalid_action_fails test removed —
 // SourceOverrideAction is a clap ValueEnum so invalid strings fail at
 // parse time.

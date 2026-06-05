@@ -83,8 +83,10 @@ spec:
         acceptRecommended: true
         overrides:
           env:
-            - name: EDITOR
-              value: "nvim"
+            EDITOR: nvim
+          packages:
+            npm:
+              global: [prettier]
         reject:
           packages:
             brew:
@@ -159,6 +161,7 @@ The full algorithm for each resource:
    - **Required**: packages union; files/env/system — source wins
    - **Recommended + not rejected**: source value as default, local override wins
    - **Recommended + rejected**: skip entirely
+   - **Subscriber `overrides`**: applied just above the source's own recommended/standard items (so they beat what the source recommends) but below its required/locked tiers and below local config. Scalar fields (env, aliases, system, files) replace the source's value by name; list fields (packages, modules) are added (union), not replaced.
    - **Multiple non-local sources conflict**: higher priority wins; equal priority — alphabetical source name
 
 ## CLI Commands

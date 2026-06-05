@@ -3083,3 +3083,171 @@ fn resolution_type_label_all_variants() {
     assert_eq!(ResolutionType::Rejected.label(), "REJECTED");
     assert_eq!(ResolutionType::Default.label(), "DEFAULT");
 }
+
+// --- subscriber overrides composition (Finding A) ---
+
+/// Build a source input whose recommended tier sets `EDITOR=vim` and an npm
+/// recommendation of `eslint`, with the given `overrides` YAML applied.
+fn override_test_input(priority: u32, overrides_yaml: &str) -> CompositionInput {
+    let overrides: serde_yaml::Value = serde_yaml::from_str(overrides_yaml).unwrap();
+    CompositionInput {
+        source_name: "team".into(),
+        priority,
+        policy: ConfigSourcePolicy {
+            recommended: PolicyItems {
+                env: vec![EnvVar {
+                    name: "EDITOR".into(),
+                    value: "vim".into(),
+                }],
+                packages: Some(PackagesSpec {
+                    npm: Some(NpmSpec {
+                        global: vec!["eslint".into()],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        constraints: SourceConstraints::default(),
+        layers: vec![],
+        subscription: SubscriptionConfig {
+            accept_recommended: true,
+            overrides,
+            ..Default::default()
+        },
+    }
+}
+
+#[test]
+fn override_env_beats_sources_own_recommendation() {
+    let local = ResolvedProfile {
+        layers: vec![],
+        merged: MergedProfile::default(),
+    };
+    let input = override_test_input(500, "env:\n  EDITOR: nvim");
+    let result = compose(&local, &[input]).unwrap();
+
+    assert_eq!(
+        result
+            .resolved
+            .merged
+            .env
+            .iter()
+            .find(|e| e.name == "EDITOR")
+            .map(|e| e.value.as_str()),
+        Some("nvim"),
+        "subscriber override should beat the source's own recommended EDITOR=vim"
+    );
+}
+
+#[test]
+fn override_env_stays_below_local_config() {
+    let local = ResolvedProfile {
+        layers: vec![ProfileLayer {
+            source: "local".into(),
+            profile_name: "default".into(),
+            priority: 1000,
+            policy: LayerPolicy::Local,
+            spec: ProfileSpec {
+                env: vec![EnvVar {
+                    name: "EDITOR".into(),
+                    value: "code".into(),
+                }],
+                ..Default::default()
+            },
+        }],
+        merged: MergedProfile::default(),
+    };
+    let input = override_test_input(500, "env:\n  EDITOR: nvim");
+    let result = compose(&local, &[input]).unwrap();
+
+    assert_eq!(
+        result
+            .resolved
+            .merged
+            .env
+            .iter()
+            .find(|e| e.name == "EDITOR")
+            .map(|e| e.value.as_str()),
+        Some("code"),
+        "local config (priority 1000) must beat the override layer at priority+1"
+    );
+}
+
+#[test]
+fn override_packages_union_does_not_replace_recommended() {
+    // packages merge via union: the override ADDS prettier, eslint survives.
+    let local = ResolvedProfile {
+        layers: vec![],
+        merged: MergedProfile::default(),
+    };
+    let input = override_test_input(500, "packages:\n  npm:\n    global: [prettier]");
+    let result = compose(&local, &[input]).unwrap();
+
+    let npm = result
+        .resolved
+        .merged
+        .packages
+        .npm
+        .as_ref()
+        .expect("npm packages present");
+    assert!(
+        npm.global.contains(&"eslint".to_string()),
+        "source-recommended eslint must survive the override (union, not replace)"
+    );
+    assert!(
+        npm.global.contains(&"prettier".to_string()),
+        "override prettier must be added"
+    );
+}
+
+#[test]
+fn override_unknown_field_errors() {
+    let local = ResolvedProfile {
+        layers: vec![],
+        merged: MergedProfile::default(),
+    };
+    let input = override_test_input(500, "bogusField: x");
+    let result = compose(&local, &[input]);
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("invalid overrides"),
+        "deny_unknown_fields should reject a typo'd override key, got: {err}"
+    );
+}
+
+#[test]
+fn override_empty_or_null_builds_no_layer() {
+    // An empty mapping or a null `overrides` must not produce an `…/overrides`
+    // layer (the guard at build_source_layers), leaving the source's own
+    // recommendation intact.
+    let local = ResolvedProfile {
+        layers: vec![],
+        merged: MergedProfile::default(),
+    };
+    for overrides_yaml in ["{}", "null"] {
+        let input = override_test_input(500, overrides_yaml);
+        let result = compose(&local, &[input]).unwrap();
+        assert!(
+            !result
+                .resolved
+                .layers
+                .iter()
+                .any(|l| l.profile_name == "team/overrides"),
+            "overrides '{overrides_yaml}' must build no override layer"
+        );
+        assert_eq!(
+            result
+                .resolved
+                .merged
+                .env
+                .iter()
+                .find(|e| e.name == "EDITOR")
+                .map(|e| e.value.as_str()),
+            Some("vim"),
+            "with no override, the source's own EDITOR=vim must remain"
+        );
+    }
+}
