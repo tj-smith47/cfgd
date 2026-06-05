@@ -14,13 +14,12 @@ pub fn cmd_source_override(
 
     // Verify source exists in config
     if !cfg.spec.sources.iter().any(|s| s.name == source_name) {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             source_name,
             "not_found",
             format!("Source '{}' not found", source_name),
-            serde_json::Value::Null,
+            serde_json::json!({}),
         ));
-        anyhow::bail!("Source '{}' not found", source_name);
     }
 
     match action {
@@ -43,13 +42,12 @@ pub fn cmd_source_override(
             let val = match value {
                 Some(v) => v,
                 None => {
-                    printer.emit(cfgd_core::output::error_doc(
+                    return Err(crate::cli::cli_error(
                         source_name,
                         "missing_value",
                         "'set' action requires a value",
                         serde_json::json!({ "path": path }),
                     ));
-                    anyhow::bail!("'set' action requires a value");
                 }
             };
             update_source_override(&config_path, source_name, path, val)?;

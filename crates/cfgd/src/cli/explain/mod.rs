@@ -223,18 +223,18 @@ pub fn build_explain_schema_doc(schema: &ResourceSchema, recursive: bool) -> Doc
         .with_data(output)
 }
 
-/// Doc emitted before the not-found error bubbles to `main.rs::printer.error`.
-/// Carries the structured payload for `-o json` consumers and a hint listing
-/// available resource types; the user-visible error string itself is rendered
-/// by `main.rs` so it appears exactly once.
-pub fn build_explain_not_found_doc(name: &str, available: &[&'static str]) -> Doc {
-    Doc::new()
-        .hint("Run 'cfgd explain' to see available resource types.")
-        .with_data(serde_json::json!({
-            "error": "not_found",
-            "name": name,
-            "available": available,
-        }))
+/// Build the unknown-resource-type error carrying `CliErrorMeta` so the central
+/// sink renders it once: the structured payload for `-o json` consumers
+/// (`error: not_found`, `name`, `available`) plus a human-mode hint listing
+/// available resource types. Callers `return Err(build_explain_not_found_error(...))`.
+pub fn build_explain_not_found_error(name: &str, available: &[&'static str]) -> anyhow::Error {
+    crate::cli::cli_error_with_hints(
+        name,
+        "not_found",
+        format!("Unknown resource type '{name}'. Run 'cfgd explain' to see available types."),
+        serde_json::json!({ "available": available }),
+        vec!["Run 'cfgd explain' to see available resource types.".to_string()],
+    )
 }
 
 /// Build the `cfgd explain <resource>.<field.path>` Doc — drill-in view.
@@ -289,11 +289,7 @@ pub(super) fn cmd_explain(
         Some(s) => s,
         None => {
             let available: Vec<&'static str> = ALL_SCHEMAS.iter().map(|s| s.name).collect();
-            printer.emit(build_explain_not_found_doc(resource_name, &available));
-            anyhow::bail!(
-                "Unknown resource type '{}'. Run 'cfgd explain' to see available types.",
-                resource_name
-            );
+            return Err(build_explain_not_found_error(resource_name, &available));
         }
     };
 

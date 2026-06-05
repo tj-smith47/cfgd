@@ -55,13 +55,14 @@ pub(super) fn cmd_daemon(
     });
     rt.shutdown_timeout(std::time::Duration::from_secs(2));
     if let Err(e) = result {
-        printer.emit(cfgd_core::output::error_doc(
+        let msg = format!("Daemon reconcile loop failed: {}", e);
+        return Err(crate::cli::cli_error_ctx(
+            e.into(),
             "cfgd",
             "runtime_failed",
-            format!("Daemon reconcile loop failed: {}", e),
+            msg,
             serde_json::Value::Null,
         ));
-        return Err(e.into());
     }
 
     Ok(())
@@ -71,16 +72,17 @@ pub fn cmd_daemon_status(printer: &Printer) -> anyhow::Result<()> {
     let status = match cfgd_core::daemon::query_daemon_status() {
         Ok(s) => s,
         Err(e) => {
-            printer.emit(cfgd_core::output::error_doc(
+            let msg = format!(
+                "Failed to query daemon status: {}",
+                cfgd_core::output::collapse_to_subject_line(&e),
+            );
+            return Err(crate::cli::cli_error_ctx(
+                e.into(),
                 "cfgd",
                 "status_unavailable",
-                format!(
-                    "Failed to query daemon status: {}",
-                    cfgd_core::output::collapse_to_subject_line(&e),
-                ),
+                msg,
                 serde_json::Value::Null,
             ));
-            return Err(e.into());
         }
     };
     printer.emit(build_daemon_status_doc(status.as_ref()));
@@ -174,16 +176,17 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
     };
 
     if let Err(e) = cfgd_core::daemon::install_service(&cli.config, cli.profile.as_deref()) {
-        printer.emit(cfgd_core::output::error_doc(
+        let msg = format!(
+            "Failed to install daemon service: {}",
+            cfgd_core::output::collapse_to_subject_line(&e),
+        );
+        return Err(crate::cli::cli_error_ctx(
+            e.into(),
             "cfgd",
             "install_failed",
-            format!(
-                "Failed to install daemon service: {}",
-                cfgd_core::output::collapse_to_subject_line(&e),
-            ),
+            msg,
             serde_json::json!({ "platform": platform, "service": service }),
         ));
-        return Err(e.into());
     }
 
     // Writing the unit/plist alone leaves the daemon down; enable and start it
@@ -295,16 +298,17 @@ pub(super) fn cmd_daemon_uninstall(printer: &Printer) -> anyhow::Result<()> {
     };
 
     if let Err(e) = cfgd_core::daemon::uninstall_service() {
-        printer.emit(cfgd_core::output::error_doc(
+        let msg = format!(
+            "Failed to uninstall daemon service: {}",
+            cfgd_core::output::collapse_to_subject_line(&e),
+        );
+        return Err(crate::cli::cli_error_ctx(
+            e.into(),
             "cfgd",
             "uninstall_failed",
-            format!(
-                "Failed to uninstall daemon service: {}",
-                cfgd_core::output::collapse_to_subject_line(&e),
-            ),
+            msg,
             serde_json::json!({ "platform": platform, "service": service }),
         ));
-        return Err(e.into());
     }
 
     let payload = DaemonUninstallOutput {

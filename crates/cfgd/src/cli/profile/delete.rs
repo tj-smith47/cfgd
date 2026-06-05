@@ -15,13 +15,12 @@ pub fn cmd_profile_delete(
     let profile_path = pdir.join(format!("{}.yaml", name));
 
     if !profile_path.exists() {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             name,
             "not_found",
             format!("Profile '{}' not found", name),
-            serde_json::Value::Null,
+            serde_json::json!({}),
         ));
-        anyhow::bail!("Profile '{}' not found", name);
     }
 
     // Safety: refuse if active profile
@@ -29,25 +28,21 @@ pub fn cmd_profile_delete(
         && let Ok(cfg) = config::load_config(&cli.config)
         && cfg.spec.profile.as_deref() == Some(name)
     {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             name,
             "active_profile",
             format!(
                 "Cannot delete '{}' — it is the active profile. Switch first with: cfgd profile switch <other>",
                 name
             ),
-            serde_json::Value::Null,
+            serde_json::json!({}),
         ));
-        anyhow::bail!(
-            "Cannot delete '{}' — it is the active profile. Switch first with: cfgd profile switch <other>",
-            name
-        );
     }
 
     // Safety: refuse if inherited by other profiles
     let inheritors = profiles_inheriting(&pdir, name)?;
     if !inheritors.is_empty() {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             name,
             "inherited",
             format!(
@@ -57,11 +52,6 @@ pub fn cmd_profile_delete(
             ),
             serde_json::json!({ "inheritors": inheritors }),
         ));
-        anyhow::bail!(
-            "Cannot delete '{}' — inherited by: {}",
-            name,
-            inheritors.join(", ")
-        );
     }
 
     if !yes && !printer.prompt_confirm(&format!("Delete profile '{}'?", name))? {

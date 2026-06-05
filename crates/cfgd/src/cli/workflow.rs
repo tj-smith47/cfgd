@@ -57,22 +57,20 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
     let yaml = generate_release_workflow_yaml(&module_names, &profile_names, &default_branch);
 
     std::fs::create_dir_all(&workflow_dir).map_err(|e| {
-        printer.emit(cfgd_core::output::error_doc(
-            &workflow_path.display().to_string(),
+        crate::cli::cli_error(
+            workflow_path.display().to_string(),
             "write_failed",
             format!("failed to create workflow directory: {}", e),
             serde_json::json!({ "path": cfgd_core::to_posix_string(&workflow_path) }),
-        ));
-        anyhow::anyhow!("failed to create workflow directory: {}", e)
+        )
     })?;
     cfgd_core::atomic_write_str(&workflow_path, &yaml).map_err(|e| {
-        printer.emit(cfgd_core::output::error_doc(
-            &workflow_path.display().to_string(),
+        crate::cli::cli_error(
+            workflow_path.display().to_string(),
             "write_failed",
             format!("failed to write workflow file: {}", e),
             serde_json::json!({ "path": cfgd_core::to_posix_string(&workflow_path) }),
-        ));
-        anyhow::anyhow!("failed to write workflow file: {}", e)
+        )
     })?;
 
     printer.emit(

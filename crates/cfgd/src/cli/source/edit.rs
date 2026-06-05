@@ -6,7 +6,7 @@ pub fn cmd_source_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
     let source_path = config_dir.join("cfgd-source.yaml");
     if !source_path.exists() {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             "cfgd-source.yaml",
             "no_config",
             format!(
@@ -15,10 +15,6 @@ pub fn cmd_source_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
             ),
             serde_json::json!({ "dir": cfgd_core::to_posix_string(&config_dir) }),
         ));
-        anyhow::bail!(
-            "No cfgd-source.yaml found in {} — run 'cfgd source create' to scaffold one",
-            config_dir.posix()
-        );
     }
 
     open_in_editor(&source_path, printer)?;

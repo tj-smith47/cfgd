@@ -2982,118 +2982,95 @@ mod enroll_mockito {
     }
 
     #[test]
-    fn build_enroll_error_doc_method_mismatch_carries_hint() {
-        // Pure builder — no HTTP, no state dir. Verify that the
-        // "method_mismatch" kind attaches the hint text and that the JSON
-        // payload carries an `error` field with the kind string.
-        use crate::cli::init::enroll::build_enroll_error_doc;
+    fn build_enroll_error_method_mismatch_carries_kind_and_hint() {
+        // Pure constructor — no HTTP, no state dir. The returned error carries the
+        // kind as error_kind, merges extras, and attaches the per-kind hint.
+        use crate::cli::CliErrorMeta;
+        use crate::cli::init::enroll::build_enroll_error;
 
-        let (printer, cap) = Printer::for_test_doc();
-        let doc = build_enroll_error_doc(
+        let err = build_enroll_error(
+            "https://example.com",
             "method_mismatch",
+            "server uses token enrollment",
             serde_json::json!({"serverUrl": "https://example.com", "serverMethod": "token"}),
         );
-        printer.emit(doc);
-        drop(printer);
-
-        let json = cap.json().expect("emit must produce JSON payload");
-        assert_eq!(
-            json["error"], "method_mismatch",
-            "error field must carry the kind: {json}"
-        );
-        assert_eq!(
-            json["serverMethod"], "token",
-            "extra payload fields must be merged in: {json}"
-        );
-        let human = cap.human();
+        let meta = err
+            .downcast_ref::<CliErrorMeta>()
+            .expect("build_enroll_error returns CliErrorMeta");
+        assert_eq!(meta.error_kind, "method_mismatch");
+        assert_eq!(meta.name, "https://example.com");
+        assert_eq!(meta.extras["serverMethod"], "token");
         assert!(
-            human.contains("bootstrap token"),
-            "method_mismatch hint must reference bootstrap token: {human}"
+            meta.hints.iter().any(|h| h.contains("bootstrap token")),
+            "method_mismatch hint must reference bootstrap token: {:?}",
+            meta.hints
         );
     }
 
     #[test]
-    fn build_enroll_error_doc_no_key_carries_hint() {
-        use crate::cli::init::enroll::build_enroll_error_doc;
+    fn build_enroll_error_no_key_carries_kind_and_hint() {
+        use crate::cli::CliErrorMeta;
+        use crate::cli::init::enroll::build_enroll_error;
 
-        let (printer, cap) = Printer::for_test_doc();
-        let doc = build_enroll_error_doc("no_key", serde_json::json!({"checked": ["ssh-agent"]}));
-        printer.emit(doc);
-        drop(printer);
-
-        let json = cap.json().expect("emit must produce JSON payload");
-        assert_eq!(
-            json["error"], "no_key",
-            "error field must be no_key: {json}"
+        let err = build_enroll_error(
+            "device-1",
+            "no_key",
+            "no SSH key found",
+            serde_json::json!({"checked": ["ssh-agent"]}),
         );
-        let human = cap.human();
+        let meta = err
+            .downcast_ref::<CliErrorMeta>()
+            .expect("build_enroll_error returns CliErrorMeta");
+        assert_eq!(meta.error_kind, "no_key");
+        assert_eq!(meta.extras["checked"], serde_json::json!(["ssh-agent"]));
         assert!(
-            human.contains("--ssh-key") || human.contains("--gpg-key"),
-            "no_key hint must name both flag forms: {human}"
+            meta.hints
+                .iter()
+                .any(|h| h.contains("--ssh-key") || h.contains("--gpg-key")),
+            "no_key hint must name both flag forms: {:?}",
+            meta.hints
         );
     }
 
     #[test]
-    fn build_enroll_error_doc_signing_failed_carries_hint() {
-        use crate::cli::init::enroll::build_enroll_error_doc;
+    fn build_enroll_error_signing_failed_carries_kind_and_hint() {
+        use crate::cli::CliErrorMeta;
+        use crate::cli::init::enroll::build_enroll_error;
 
-        let (printer, cap) = Printer::for_test_doc();
-        let doc = build_enroll_error_doc(
+        let err = build_enroll_error(
+            "/bad/key",
             "signing_failed",
-            serde_json::json!({"keyType": "ssh", "keyRef": "/bad/key", "message": "exit 1"}),
+            "signing failed",
+            serde_json::json!({"keyType": "ssh", "keyRef": "/bad/key"}),
         );
-        printer.emit(doc);
-        drop(printer);
-
-        let json = cap.json().expect("emit must produce JSON payload");
-        assert_eq!(
-            json["error"], "signing_failed",
-            "error field must be signing_failed: {json}"
-        );
-        assert_eq!(json["keyType"], "ssh", "keyType must be merged in: {json}");
-        let human = cap.human();
+        let meta = err
+            .downcast_ref::<CliErrorMeta>()
+            .expect("build_enroll_error returns CliErrorMeta");
+        assert_eq!(meta.error_kind, "signing_failed");
+        assert_eq!(meta.extras["keyType"], "ssh");
         assert!(
-            human.contains("signing key") || human.contains("signing tool"),
-            "signing_failed hint must advise on tool/key accessibility: {human}"
+            meta.hints
+                .iter()
+                .any(|h| h.contains("signing key") || h.contains("signing tool")),
+            "signing_failed hint must advise on tool/key accessibility: {:?}",
+            meta.hints
         );
     }
 
     #[test]
-    fn build_enroll_error_doc_unknown_kind_emits_no_hint() {
-        use crate::cli::init::enroll::build_enroll_error_doc;
+    fn build_enroll_error_unknown_kind_carries_no_hint() {
+        use crate::cli::CliErrorMeta;
+        use crate::cli::init::enroll::build_enroll_error;
 
-        let (printer, cap) = Printer::for_test_doc();
-        let doc = build_enroll_error_doc("some_other_error", serde_json::json!({}));
-        printer.emit(doc);
-        drop(printer);
-
-        let json = cap.json().expect("emit must produce JSON payload");
-        assert_eq!(
-            json["error"], "some_other_error",
-            "unknown kind must still appear in error field: {json}"
-        );
-    }
-
-    #[test]
-    fn build_enroll_error_doc_non_object_payload_is_ignored() {
-        // When payload is not a JSON Object (e.g. null), the `if let Object`
-        // arm is skipped. Only the `error` key appears in the output.
-        use crate::cli::init::enroll::build_enroll_error_doc;
-
-        let (printer, cap) = Printer::for_test_doc();
-        let doc = build_enroll_error_doc("no_key", serde_json::Value::Null);
-        printer.emit(doc);
-        drop(printer);
-
-        let json = cap.json().expect("emit must produce JSON payload");
-        assert_eq!(
-            json["error"], "no_key",
-            "error field must still appear: {json}"
-        );
-        assert_eq!(
-            json.as_object().map(|o| o.len()),
-            Some(1),
-            "only the error field must be present for non-Object payload: {json}"
+        let err = build_enroll_error("x", "some_other_error", "boom", serde_json::json!({}));
+        let meta = err
+            .downcast_ref::<CliErrorMeta>()
+            .expect("build_enroll_error returns CliErrorMeta");
+        assert_eq!(meta.error_kind, "some_other_error");
+        assert!(
+            meta.hints.is_empty(),
+            "an unknown kind must carry no hint: {:?}",
+            meta.hints
         );
     }
 
@@ -3325,7 +3302,7 @@ mod enroll_mockito {
                 )
                 .create();
 
-            let (printer, cap) = Printer::for_test_doc();
+            let (printer, _cap) = Printer::for_test_doc();
             let url = server.url();
             let result = cmd_enroll(
                 &printer,
@@ -3335,16 +3312,19 @@ mod enroll_mockito {
                 None,
                 Some("alice"),
             );
-            drop(printer);
-            let human = cap.human();
 
-            assert!(
-                result.is_err(),
-                "sign_with_ssh on a nonexistent key must fail: {result:?}"
+            let err = result.expect_err("sign_with_ssh on a nonexistent key must fail");
+            let meta = err
+                .downcast_ref::<crate::cli::CliErrorMeta>()
+                .expect("signing failure returns CliErrorMeta");
+            assert_eq!(
+                meta.error_kind, "signing_failed",
+                "signing failure must carry the signing_failed kind: {meta:?}"
             );
-            assert!(
-                human.contains("signing_failed") || human.contains("SSH"),
-                "signing_failed error doc must be emitted: {human}"
+            assert_eq!(
+                meta.extras["keyType"], "ssh",
+                "extras must record the SSH key type: {:?}",
+                meta.extras
             );
         });
     }
@@ -3373,7 +3353,7 @@ mod enroll_mockito {
                 )
                 .create();
 
-            let (printer, cap) = Printer::for_test_doc();
+            let (printer, _cap) = Printer::for_test_doc();
             let url = server.url();
             let result = cmd_enroll(
                 &printer,
@@ -3383,16 +3363,19 @@ mod enroll_mockito {
                 Some("DEADBEEFNONEXISTENTKEYID"),
                 Some("alice"),
             );
-            drop(printer);
-            let human = cap.human();
 
-            assert!(
-                result.is_err(),
-                "sign_with_gpg on a nonexistent key must fail: {result:?}"
+            let err = result.expect_err("sign_with_gpg on a nonexistent key must fail");
+            let meta = err
+                .downcast_ref::<crate::cli::CliErrorMeta>()
+                .expect("signing failure returns CliErrorMeta");
+            assert_eq!(
+                meta.error_kind, "signing_failed",
+                "signing failure must carry the signing_failed kind: {meta:?}"
             );
-            assert!(
-                human.contains("signing_failed") || human.contains("GPG") || human.contains("gpg"),
-                "signing_failed or gpg-related message must appear: {human}"
+            assert_eq!(
+                meta.extras["keyType"], "gpg",
+                "extras must record the GPG key type: {:?}",
+                meta.extras
             );
         });
     }
@@ -3485,10 +3468,11 @@ mod enroll_mockito {
     #[serial]
     fn cmd_enroll_key_based_auto_detects_ssh_key_in_home() {
         // When neither --ssh-key nor --gpg-key is provided and detect_ssh_key
-        // finds a key in $HOME/.ssh, the `Some(path)` arm at line 137 is
-        // taken. With a fake key file, sign_with_ssh fails → signing_failed
-        // Doc emitted and cmd_enroll returns Err. This pins the auto-detect
-        // branch alongside the explicit-flag tests.
+        // finds a key in $HOME/.ssh, the `Some(path)` arm is taken. With a fake
+        // key file, sign_with_ssh fails → cmd_enroll returns the signing_failed
+        // CliErrorMeta carrier. This pins the auto-detect branch alongside the
+        // explicit-flag tests. The "Using SSH key: <path>" info line is still
+        // emitted by detect_ssh_key, so the human surface names the key.
         let tmp = tempfile::tempdir().unwrap();
         let ssh_dir = tmp.path().join(".ssh");
         std::fs::create_dir_all(&ssh_dir).unwrap();
@@ -3518,13 +3502,17 @@ mod enroll_mockito {
             drop(printer);
             let human = cap.human();
 
-            assert!(
-                result.is_err(),
-                "sign_with_ssh on a fake key must fail: {result:?}"
+            let err = result.expect_err("sign_with_ssh on a fake key must fail");
+            assert_eq!(
+                err.downcast_ref::<crate::cli::CliErrorMeta>()
+                    .expect("signing failure returns CliErrorMeta")
+                    .error_kind,
+                "signing_failed",
+                "auto-detect signing failure must carry the signing_failed kind"
             );
             assert!(
-                human.contains("id_ed25519") || human.contains("SSH") || human.contains("signing"),
-                "output must reference the auto-detected key or signing error: {human}"
+                human.contains("id_ed25519") || human.contains("SSH"),
+                "auto-detect info line must reference the discovered key: {human}"
             );
         });
     }

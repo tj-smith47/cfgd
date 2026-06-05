@@ -85,20 +85,22 @@ pub fn build_module_list_doc(entries: &[ModuleListEntry], wide: bool, config_dir
     doc.table(table).with_data(entries)
 }
 
-/// Doc emitted before the not-found error bubbles to `main.rs::printer.error`.
-/// Carries the structured payload for `-o json` consumers and a hint listing
-/// available modules; the user-visible error string itself is rendered by
-/// `main.rs` so it appears exactly once.
-pub fn build_module_not_found_doc(name: &str, available: &[String]) -> Doc {
-    let mut doc = Doc::new();
+/// Build the not-found error returned to `main.rs::render_cli_error`, the sole
+/// error sink. Carries the structured `not_found` payload (the available-module
+/// list) for `-o json` consumers and a human-mode hint listing the available
+/// modules; the sink renders the `✗` line and the hint exactly once.
+pub fn build_module_not_found_error(name: &str, available: &[String]) -> anyhow::Error {
+    let mut hints = Vec::new();
     if !available.is_empty() {
-        doc = doc.hint(format!("Available modules: {}", available.join(", ")));
+        hints.push(format!("Available modules: {}", available.join(", ")));
     }
-    doc.with_data(serde_json::json!({
-        "error": "not_found",
-        "name": name,
-        "available": available,
-    }))
+    crate::cli::cli_error_with_hints(
+        name,
+        "not_found",
+        format!("Module '{}' not found", name),
+        serde_json::json!({ "available": available }),
+        hints,
+    )
 }
 
 /// Build the `cfgd module show` Doc from precomputed inputs.
@@ -277,8 +279,7 @@ pub(crate) fn cmd_module_show(
         None => {
             let mut available: Vec<String> = all_modules.keys().map(|s| s.to_string()).collect();
             available.sort();
-            printer.emit(build_module_not_found_doc(name, &available));
-            anyhow::bail!("Module '{}' not found", name);
+            return Err(build_module_not_found_error(name, &available));
         }
     };
 

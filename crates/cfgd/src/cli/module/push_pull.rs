@@ -25,7 +25,7 @@ pub fn cmd_module_push(
     } = opts;
     let dir_path = Path::new(dir);
     if !dir_path.join("module.yaml").exists() {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             dir,
             "module_yaml_missing",
             format!(
@@ -34,10 +34,6 @@ pub fn cmd_module_push(
             ),
             serde_json::json!({ "dir": dir }),
         ));
-        anyhow::bail!(
-            "Directory '{}' does not contain a module.yaml",
-            dir_path.posix()
-        );
     }
 
     printer.heading("Push Module");
@@ -52,26 +48,24 @@ pub fn cmd_module_push(
 
     let digest =
         cfgd_core::oci::push_module(dir_path, artifact, platform, Some(printer)).map_err(|e| {
-            printer.emit(cfgd_core::output::error_doc(
+            crate::cli::cli_error(
                 artifact,
                 "push_failed",
                 e.to_string(),
                 serde_json::json!({ "artifact": artifact, "dir": dir, "platform": platform }),
-            ));
-            anyhow::anyhow!("{e}")
+            )
         })?;
 
     printer.kv("Digest", &digest);
 
     if sign {
         cfgd_core::oci::sign_artifact(artifact, key).map_err(|e| {
-            printer.emit(cfgd_core::output::error_doc(
+            crate::cli::cli_error(
                 artifact,
                 "sign_failed",
                 e.to_string(),
                 serde_json::json!({ "artifact": artifact }),
-            ));
-            anyhow::anyhow!("{e}")
+            )
         })?;
         printer.status_simple(Role::Ok, "Signed artifact with cosign");
     }
@@ -86,25 +80,23 @@ pub fn cmd_module_push(
             artifact, &digest, &repo, &commit,
         )
         .map_err(|e| {
-            printer.emit(cfgd_core::output::error_doc(
+            crate::cli::cli_error(
                 artifact,
                 "attest_failed",
                 e.to_string(),
                 serde_json::json!({ "artifact": artifact, "digest": digest, "step": "provenance" }),
-            ));
-            anyhow::anyhow!("{e}")
+            )
         })?;
         let tmp = tempfile::NamedTempFile::new()?;
         std::fs::write(tmp.path(), &provenance)?;
         cfgd_core::oci::attach_attestation(artifact, &tmp.path().display().to_string(), key)
             .map_err(|e| {
-                printer.emit(cfgd_core::output::error_doc(
+                crate::cli::cli_error(
                     artifact,
                     "attest_failed",
                     e.to_string(),
                     serde_json::json!({ "artifact": artifact, "step": "attach" }),
-                ));
-                anyhow::anyhow!("{e}")
+                )
             })?;
         printer.status_simple(Role::Ok, "Attached SLSA provenance attestation");
         attestation_attached = true;
@@ -197,7 +189,7 @@ async fn apply_module_crd(
 
     let name = &module_doc.metadata.name;
     let client = Client::try_default().await.map_err(|e| {
-        printer.emit(cfgd_core::output::error_doc(
+        crate::cli::cli_error(
             name,
             "crd_connect_failed",
             format!(
@@ -205,8 +197,7 @@ async fn apply_module_crd(
                 cfgd_core::output::collapse_to_subject_line(&e),
             ),
             serde_json::json!({ "artifact": artifact }),
-        ));
-        anyhow::anyhow!("Failed to connect to cluster: {e}")
+        )
     })?;
 
     let module_json = build_module_crd_json(module_doc, artifact);
@@ -230,7 +221,7 @@ async fn apply_module_crd(
         )
         .await
         .map_err(|e| {
-            printer.emit(cfgd_core::output::error_doc(
+            crate::cli::cli_error(
                 name,
                 "crd_apply_failed",
                 format!(
@@ -238,8 +229,7 @@ async fn apply_module_crd(
                     cfgd_core::output::collapse_to_subject_line(&e),
                 ),
                 serde_json::json!({ "artifact": artifact }),
-            ));
-            anyhow::anyhow!("Failed to apply Module CRD: {e}")
+            )
         })?;
 
     printer.status_simple(Role::Ok, format!("Applied Module CRD '{name}' to cluster"));
@@ -261,13 +251,12 @@ pub fn cmd_module_pull(
 
     if require_signature {
         cfgd_core::oci::verify_signature(artifact_ref, &verify_opts).map_err(|e| {
-            printer.emit(cfgd_core::output::error_doc(
+            crate::cli::cli_error(
                 artifact_ref,
                 "verify_failed",
                 e.to_string(),
                 serde_json::json!({ "artifact": artifact_ref, "step": "signature" }),
-            ));
-            anyhow::anyhow!("{e}")
+            )
         })?;
         printer.status_simple(Role::Ok, "Signature verified");
     }
@@ -275,13 +264,12 @@ pub fn cmd_module_pull(
     if verify_attestation {
         cfgd_core::oci::verify_attestation(artifact_ref, "slsaprovenance", &verify_opts).map_err(
             |e| {
-                printer.emit(cfgd_core::output::error_doc(
+                crate::cli::cli_error(
                     artifact_ref,
                     "verify_failed",
                     e.to_string(),
                     serde_json::json!({ "artifact": artifact_ref, "step": "attestation" }),
-                ));
-                anyhow::anyhow!("{e}")
+                )
             },
         )?;
         printer.status_simple(Role::Ok, "SLSA provenance attestation verified");
@@ -294,13 +282,12 @@ pub fn cmd_module_pull(
         Some(printer),
     )
     .map_err(|e| {
-        printer.emit(cfgd_core::output::error_doc(
+        crate::cli::cli_error(
             artifact_ref,
             "pull_failed",
             e.to_string(),
             serde_json::json!({ "artifact": artifact_ref, "output": output }),
-        ));
-        anyhow::anyhow!("{e}")
+        )
     })?;
 
     printer.status_simple(Role::Ok, format!("Pulled {artifact_ref} to {output}"));
@@ -389,26 +376,30 @@ mod tests {
     }
 
     #[test]
-    fn push_error_doc_kind_is_module_yaml_missing() {
+    fn push_error_meta_kind_is_module_yaml_missing() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let (printer, cap) = Printer::for_test_doc();
+        let (printer, _cap) = Printer::for_test_doc();
 
-        let _ = cmd_module_push(
+        let err = cmd_module_push(
             &printer,
             dir.path().to_str().unwrap(),
             "localhost:5000/test/mod:v1",
             no_flags(),
-        );
+        )
+        .expect_err("missing module.yaml must return Err");
         drop(printer);
 
-        let doc = cap.json().expect("error_doc must be emitted");
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("handler returns CliErrorMeta");
         assert_eq!(
-            doc["error"], "module_yaml_missing",
-            "emitted doc error must be module_yaml_missing: {doc}"
+            meta.error_kind, "module_yaml_missing",
+            "error kind must be module_yaml_missing: {meta:?}"
         );
         assert!(
-            doc["dir"].is_string(),
-            "emitted doc must carry dir payload: {doc}"
+            meta.extras["dir"].is_string(),
+            "meta must carry dir payload: {:?}",
+            meta.extras
         );
     }
 
@@ -434,24 +425,27 @@ mod tests {
     }
 
     #[test]
-    fn push_error_doc_kind_is_push_failed() {
+    fn push_error_meta_kind_is_push_failed() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_module_yaml(dir.path());
         let artifact = unreachable_ref("test/push-doc");
-        let (printer, cap) = Printer::for_test_doc();
+        let (printer, _cap) = Printer::for_test_doc();
 
-        let _ = cmd_module_push(
+        let err = cmd_module_push(
             &printer,
             dir.path().to_str().unwrap(),
             &artifact,
             no_flags(),
-        );
+        )
+        .expect_err("unreachable registry must return Err");
         drop(printer);
 
-        let doc = cap.json().expect("error_doc must be emitted");
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("handler returns CliErrorMeta");
         assert_eq!(
-            doc["error"], "push_failed",
-            "emitted doc error must be push_failed: {doc}"
+            meta.error_kind, "push_failed",
+            "error kind must be push_failed: {meta:?}"
         );
     }
 
@@ -482,12 +476,12 @@ mod tests {
     }
 
     #[test]
-    fn pull_error_doc_kind_is_pull_failed() {
+    fn pull_error_meta_kind_is_pull_failed() {
         let dir = tempfile::tempdir().expect("tempdir");
         let artifact = unreachable_ref("test/pull-doc");
-        let (printer, cap) = Printer::for_test_doc();
+        let (printer, _cap) = Printer::for_test_doc();
 
-        let _ = cmd_module_pull(
+        let err = cmd_module_pull(
             &printer,
             &artifact,
             dir.path().to_str().unwrap(),
@@ -498,13 +492,16 @@ mod tests {
                 identity: None,
                 issuer: None,
             },
-        );
+        )
+        .expect_err("unreachable registry must return Err");
         drop(printer);
 
-        let doc = cap.json().expect("error_doc must be emitted");
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("handler returns CliErrorMeta");
         assert_eq!(
-            doc["error"], "pull_failed",
-            "emitted doc error must be pull_failed: {doc}"
+            meta.error_kind, "pull_failed",
+            "error kind must be pull_failed: {meta:?}"
         );
     }
 
@@ -566,8 +563,8 @@ mod tests {
                 .with_stderr("cosign sign failed: unauthorized")
                 .install();
 
-            let (printer, cap) = Printer::for_test_doc();
-            let _ = cmd_module_push(
+            let (printer, _cap) = Printer::for_test_doc();
+            let err = cmd_module_push(
                 &printer,
                 dir.path().to_str().unwrap(),
                 &artifact,
@@ -578,13 +575,16 @@ mod tests {
                     key: Some("cosign.key"),
                     attest: false,
                 },
-            );
+            )
+            .expect_err("cosign sign failure must return Err");
             drop(printer);
 
-            let doc = cap.json().expect("error_doc must be emitted");
+            let meta = err
+                .downcast_ref::<crate::cli::CliErrorMeta>()
+                .expect("handler returns CliErrorMeta");
             assert_eq!(
-                doc["error"], "sign_failed",
-                "emitted doc error must be sign_failed: {doc}"
+                meta.error_kind, "sign_failed",
+                "error kind must be sign_failed: {meta:?}"
             );
         }
 
@@ -600,8 +600,8 @@ mod tests {
                 .with_stderr("cosign verify failed")
                 .install();
 
-            let (printer, cap) = Printer::for_test_doc();
-            let _ = cmd_module_pull(
+            let (printer, _cap) = Printer::for_test_doc();
+            let err = cmd_module_pull(
                 &printer,
                 &artifact,
                 dir.path().to_str().unwrap(),
@@ -612,15 +612,22 @@ mod tests {
                     identity: None,
                     issuer: None,
                 },
-            );
+            )
+            .expect_err("cosign verify failure must return Err");
             drop(printer);
 
-            let doc = cap.json().expect("error_doc must be emitted");
+            let meta = err
+                .downcast_ref::<crate::cli::CliErrorMeta>()
+                .expect("handler returns CliErrorMeta");
             assert_eq!(
-                doc["error"], "verify_failed",
-                "emitted doc error must be verify_failed: {doc}"
+                meta.error_kind, "verify_failed",
+                "error kind must be verify_failed: {meta:?}"
             );
-            assert_eq!(doc["step"], "signature", "step must be 'signature': {doc}");
+            assert_eq!(
+                meta.extras["step"], "signature",
+                "step must be 'signature': {:?}",
+                meta.extras
+            );
         }
 
         // Helper: stand up a mock OCI registry that accepts blob uploads and
@@ -754,8 +761,8 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             let artifact = unreachable_ref("test/verify-success");
 
-            let (printer, cap) = Printer::for_test_doc();
-            let _ = cmd_module_pull(
+            let (printer, _cap) = Printer::for_test_doc();
+            let err = cmd_module_pull(
                 &printer,
                 &artifact,
                 dir.path().to_str().unwrap(),
@@ -766,15 +773,18 @@ mod tests {
                     identity: None,
                     issuer: None,
                 },
-            );
+            )
+            .expect_err("downstream pull failure must return Err");
             drop(printer);
 
-            let doc = cap.json().expect("doc must be emitted");
+            let meta = err
+                .downcast_ref::<crate::cli::CliErrorMeta>()
+                .expect("handler returns CliErrorMeta");
             // The signature verify succeeded; the subsequent pull failed,
-            // so the doc must carry pull_failed, not verify_failed.
+            // so the error must carry pull_failed, not verify_failed.
             assert_eq!(
-                doc["error"], "pull_failed",
-                "downstream failure must surface as pull_failed: {doc}"
+                meta.error_kind, "pull_failed",
+                "downstream failure must surface as pull_failed: {meta:?}"
             );
         }
 
@@ -790,8 +800,8 @@ mod tests {
                 .with_stderr("cosign verify-attestation failed")
                 .install();
 
-            let (printer, cap) = Printer::for_test_doc();
-            let _ = cmd_module_pull(
+            let (printer, _cap) = Printer::for_test_doc();
+            let err = cmd_module_pull(
                 &printer,
                 &artifact,
                 dir.path().to_str().unwrap(),
@@ -802,17 +812,21 @@ mod tests {
                     identity: None,
                     issuer: None,
                 },
-            );
+            )
+            .expect_err("cosign verify-attestation failure must return Err");
             drop(printer);
 
-            let doc = cap.json().expect("error_doc must be emitted");
+            let meta = err
+                .downcast_ref::<crate::cli::CliErrorMeta>()
+                .expect("handler returns CliErrorMeta");
             assert_eq!(
-                doc["error"], "verify_failed",
-                "emitted doc error must be verify_failed: {doc}"
+                meta.error_kind, "verify_failed",
+                "error kind must be verify_failed: {meta:?}"
             );
             assert_eq!(
-                doc["step"], "attestation",
-                "step must be 'attestation': {doc}"
+                meta.extras["step"], "attestation",
+                "step must be 'attestation': {:?}",
+                meta.extras
             );
         }
     }

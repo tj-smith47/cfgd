@@ -50,7 +50,7 @@ pub(crate) fn enforce_signature_policy(
 
     let Some(tag) = tag else {
         if require_signatures && !allow_unsigned {
-            printer.emit(cfgd_core::output::error_doc(
+            return Err(crate::cli::cli_error(
                 module_name,
                 "signature_required",
                 format!(
@@ -59,10 +59,6 @@ pub(crate) fn enforce_signature_policy(
                 ),
                 serde_json::json!({}),
             ));
-            anyhow::bail!(
-                "Module '{}' has no tag — your config has require-signatures enabled. Pass --allow-unsigned to override.",
-                module_name
-            );
         }
         return Ok(());
     };
@@ -77,19 +73,15 @@ pub(crate) fn enforce_signature_policy(
                     printer.status_simple(Role::Ok, format!("Tag '{}' signature verified", tag))
                 }
                 Ok(false) => {
-                    printer.emit(cfgd_core::output::error_doc(
+                    return Err(crate::cli::cli_error(
                         module_name,
                         "signature_failed",
                         format!(
-                            "Tag '{}' has an INVALID signature — refusing to proceed",
+                            "Signature verification failed for tag '{}' — the signature is present but invalid",
                             tag
                         ),
                         serde_json::json!({ "tag": tag }),
                     ));
-                    anyhow::bail!(
-                        "Signature verification failed for tag '{}' — the signature is present but invalid",
-                        tag
-                    );
                 }
                 Err(e) => {
                     printer.status_simple(
@@ -111,17 +103,15 @@ pub(crate) fn enforce_signature_policy(
                 _ => format!("Tag '{}' is unsigned", tag),
             };
             if require_signatures && !allow_unsigned {
-                printer.emit(cfgd_core::output::error_doc(
+                return Err(crate::cli::cli_error(
                     module_name,
                     "signature_required",
-                    label.clone(),
+                    format!(
+                        "Module '{}' tag '{}' is unsigned — your config has require-signatures enabled. Pass --allow-unsigned to override.",
+                        module_name, tag
+                    ),
                     serde_json::json!({ "tag": tag }),
                 ));
-                anyhow::bail!(
-                    "Module '{}' tag '{}' is unsigned — your config has require-signatures enabled. Pass --allow-unsigned to override.",
-                    module_name,
-                    tag
-                );
             }
             printer.status_simple(Role::Info, label);
         }

@@ -358,21 +358,23 @@ pub(in crate::cli) fn list_yaml_stems(dir: &Path) -> anyhow::Result<Vec<String>>
     Ok(names)
 }
 
-/// Emit the structured no-config error doc and return the typed `ConfigNotFound`
-/// error so every command's missing-config path exits with the same code (3) and
-/// names the path, matching plan/status/apply. `main.rs` downcasts the returned
-/// `CfgdError` to map it onto `ExitCode::NoConfig`.
-pub(in crate::cli) fn no_config_error(printer: &Printer, config_path: &Path) -> anyhow::Error {
-    printer.emit(cfgd_core::output::error_doc(
-        &config_path.display().to_string(),
+/// Build the no-config error so every command's missing-config path exits with
+/// the same code (3) and names the path, matching plan/status/apply. Wraps the
+/// typed `ConfigError::NotFound` with `CliErrorMeta` via `cli_error_ctx` so the
+/// central sink renders one consistent payload while `main.rs` still downcasts
+/// the inner `CfgdError` onto `ExitCode::NoConfig`. The returned error must be
+/// propagated (`return Err(no_config_error(printer, path))`); it emits nothing.
+pub(in crate::cli) fn no_config_error(_printer: &Printer, config_path: &Path) -> anyhow::Error {
+    crate::cli::cli_error_ctx(
+        cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::NotFound {
+            path: config_path.to_path_buf(),
+        })
+        .into(),
+        config_path.display().to_string(),
         "no_config",
         format!("config file not found: {}", config_path.display_posix()),
         serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
-    ));
-    cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::NotFound {
-        path: config_path.to_path_buf(),
-    })
-    .into()
+    )
 }
 
 /// Resolve profile name from explicit name or default to active profile.

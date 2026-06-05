@@ -24,19 +24,15 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
     if config_path.exists() {
         let cfg = config::load_config(&config_path)?;
         if cfg.spec.sources.iter().any(|s| s.name == source_name) {
-            printer.emit(cfgd_core::output::error_doc(
+            return Err(crate::cli::cli_error(
                 &source_name,
                 "already_exists",
                 format!(
                     "Source '{}' already exists. Use 'cfgd source update' to refresh.",
                     source_name
                 ),
-                serde_json::Value::Null,
+                serde_json::json!({}),
             ));
-            anyhow::bail!(
-                "Source '{}' already exists. Use 'cfgd source update' to refresh.",
-                source_name
-            );
         }
     }
 
@@ -55,30 +51,27 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
         );
     }
     let spec = SourceManager::build_source_spec(&source_name, url, profile);
-    // Surface lib-side load failure as a load_failed Doc so structured
-    // consumers see the same {"error": "load_failed", ...} shape as the
-    // "Ok-but-no-cache-entry" fallback below.
+    // Surface lib-side load failure with the same {"error": "load_failed", ...}
+    // structured shape as the "Ok-but-no-cache-entry" fallback below, so both
+    // load-failure paths look identical to structured consumers.
     if let Err(e) = mgr.load_source(&spec, printer) {
-        let collapsed = cfgd_core::output::collapse_to_subject_line(&e);
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             &source_name,
             "load_failed",
-            format!("Failed to load source '{}': {}", source_name, collapsed),
+            format!("Failed to load source '{}': {}", source_name, e),
             serde_json::json!({ "url": url }),
         ));
-        anyhow::bail!("Failed to load source '{}': {}", source_name, e);
     }
 
     let cached = match mgr.get(&source_name) {
         Some(c) => c,
         None => {
-            printer.emit(cfgd_core::output::error_doc(
+            return Err(crate::cli::cli_error(
                 &source_name,
                 "load_failed",
                 format!("Failed to load source '{}'", source_name),
                 serde_json::json!({ "url": url }),
             ));
-            anyhow::bail!("Failed to load source '{}'", source_name);
         }
     };
 

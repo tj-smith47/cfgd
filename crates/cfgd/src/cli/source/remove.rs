@@ -9,13 +9,12 @@ pub fn cmd_source_remove(
     remove_all: bool,
 ) -> anyhow::Result<()> {
     if keep_all && remove_all {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             name,
             "conflicting_flags",
             "cannot use --keep-all and --remove-all together",
-            serde_json::Value::Null,
+            serde_json::json!({}),
         ));
-        anyhow::bail!("cannot use --keep-all and --remove-all together");
     }
 
     printer.heading(format!("Remove Source: {}", name));
@@ -24,13 +23,12 @@ pub fn cmd_source_remove(
     let cfg = config::load_config(&config_path)?;
 
     if !cfg.spec.sources.iter().any(|s| s.name == name) {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             name,
             "not_found",
             format!("Source '{}' not found in config", name),
-            serde_json::Value::Null,
+            serde_json::json!({}),
         ));
-        anyhow::bail!("Source '{}' not found in config", name);
     }
 
     let state = open_state_store(cli.state_dir.as_deref())?;

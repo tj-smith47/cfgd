@@ -1,4 +1,4 @@
-use cfgd_core::output::{OutputFormat, Printer};
+use cfgd_core::output::Printer;
 use cfgd_core::test_helpers::{EnvVarGuard, test_printer};
 use serial_test::serial;
 
@@ -454,67 +454,53 @@ fn build_inject_patch_json_empty_input_emits_empty_annotation_value() {
 
 #[test]
 #[serial]
-fn cmd_debug_kube_connect_failed_emits_error_doc() {
+fn cmd_debug_kube_connect_failed_returns_error_meta() {
+    // The plugin no longer emits its own error Doc — it returns a CliErrorMeta-carrying
+    // error and the central sink (plugin_main -> render_cli_error) renders it once. Assert
+    // the structured payload the sink will emit, via the returned meta.
     let _kc = EnvVarGuard::set("KUBECONFIG", "/nonexistent-kubeconfig-cfgd-test");
-    let (printer, cap) = Printer::for_test_doc();
+    let (printer, _cap) = Printer::for_test_doc();
     let modules = vec!["nettools:1.0.0".to_string()];
 
-    let err = cmd_debug(&printer, "mypod", &modules, "prod", "ubuntu:22.04");
+    let err = cmd_debug(&printer, "mypod", &modules, "prod", "ubuntu:22.04").unwrap_err();
     drop(printer);
 
-    assert!(err.is_err(), "must fail when cluster is unreachable");
-    let err_msg = err.unwrap_err().to_string();
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("plugin returns CliErrorMeta, not a self-emitted doc");
+    assert_eq!(meta.error_kind, "kube_connect_failed");
+    assert_eq!(meta.name, "mypod");
+    assert_eq!(meta.extras["namespace"], "prod");
+    assert_eq!(meta.extras["pod"], "mypod");
     assert!(
-        err_msg.contains("connect") || err_msg.contains("cluster") || err_msg.contains("kube"),
-        "error must mention cluster connection, got: {err_msg}"
+        meta.message.contains("connect")
+            || meta.message.contains("cluster")
+            || meta.message.contains("kube"),
+        "message must mention cluster connection, got: {}",
+        meta.message
     );
-
-    let json = cap.json().expect("error_doc must carry with_data payload");
-    assert_eq!(
-        json["error"], "kube_connect_failed",
-        "error kind must be kube_connect_failed, got: {}",
-        json["error"]
-    );
-    assert_eq!(json["namespace"], "prod");
-    assert_eq!(json["pod"], "mypod");
 }
 
 #[test]
 #[serial]
-fn cmd_debug_kube_connect_failed_with_format_json() {
+fn cmd_status_kube_connect_failed_returns_error_meta() {
     let _kc = EnvVarGuard::set("KUBECONFIG", "/nonexistent-kubeconfig-cfgd-test");
-    let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
-    let modules = vec!["nettools:1.0.0".to_string()];
+    let (printer, _cap) = Printer::for_test_doc();
 
-    let err = cmd_debug(&printer, "mypod", &modules, "default", "ubuntu:22.04");
+    let err = cmd_status(&printer).unwrap_err();
     drop(printer);
 
-    assert!(err.is_err(), "must fail when cluster is unreachable");
-    let json = cap.json().expect("error_doc must carry with_data payload");
-    assert_eq!(json["error"], "kube_connect_failed");
-}
-
-#[test]
-#[serial]
-fn cmd_status_kube_connect_failed_emits_error_doc() {
-    let _kc = EnvVarGuard::set("KUBECONFIG", "/nonexistent-kubeconfig-cfgd-test");
-    let (printer, cap) = Printer::for_test_doc();
-
-    let err = cmd_status(&printer);
-    drop(printer);
-
-    assert!(err.is_err(), "must fail when cluster is unreachable");
-    let err_msg = err.unwrap_err().to_string();
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("plugin returns CliErrorMeta, not a self-emitted doc");
+    assert_eq!(meta.error_kind, "kube_connect_failed");
+    assert_eq!(meta.name, "cluster");
     assert!(
-        err_msg.contains("connect") || err_msg.contains("cluster") || err_msg.contains("kube"),
-        "error must mention cluster connection, got: {err_msg}"
-    );
-
-    let json = cap.json().expect("error_doc must carry with_data payload");
-    assert_eq!(
-        json["error"], "kube_connect_failed",
-        "error kind must be kube_connect_failed, got: {}",
-        json["error"]
+        meta.message.contains("connect")
+            || meta.message.contains("cluster")
+            || meta.message.contains("kube"),
+        "message must mention cluster connection, got: {}",
+        meta.message
     );
 }
 
@@ -994,9 +980,9 @@ mod kubectl_shim {
 
     #[test]
     #[serial]
-    fn cmd_inject_emits_error_doc_when_kubectl_exits_nonzero() {
+    fn cmd_inject_returns_error_meta_when_kubectl_exits_nonzero() {
         let _shim = KubectlPathShim::new(1);
-        let (printer, cap) = Printer::for_test_doc();
+        let (printer, _cap) = Printer::for_test_doc();
         let modules = vec!["nettools:1.0.0".to_string()];
 
         let err = cmd_inject(&printer, "statefulset/db", &modules, "staging")
@@ -1007,13 +993,16 @@ mod kubectl_shim {
             err.to_string().contains("kubectl patch failed"),
             "error must mention kubectl patch failure, got: {err}"
         );
-        let json = cap.json().expect("error_doc must carry data payload");
-        assert_eq!(json["error"], "inject_failed");
-        assert_eq!(json["namespace"], "staging");
-        assert_eq!(json["resource"], "statefulset/db");
-        assert_eq!(json["kind"], "statefulset");
-        assert_eq!(json["name"], "db");
-        assert_eq!(json["exitCode"], 1);
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("plugin returns CliErrorMeta, not a self-emitted doc");
+        assert_eq!(meta.error_kind, "inject_failed");
+        assert_eq!(meta.name, "statefulset/db");
+        assert_eq!(meta.extras["namespace"], "staging");
+        assert_eq!(meta.extras["resource"], "statefulset/db");
+        assert_eq!(meta.extras["kind"], "statefulset");
+        assert_eq!(meta.extras["name"], "db");
+        assert_eq!(meta.extras["exitCode"], 1);
     }
 
     #[test]

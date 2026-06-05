@@ -5,20 +5,22 @@ use cfgd_core::output::{Doc, Printer, Role, doc::SectionBuilder, renderer::Table
 
 const SHORT_COMMIT_LEN: usize = 12;
 
-/// Doc emitted before the not-found error bubbles to `main.rs::printer.error`.
-/// Carries the structured payload for `-o json` consumers and a hint listing
-/// available sources; the user-visible error string itself is rendered by
-/// `main.rs` so it appears exactly once.
-pub fn build_source_not_found_doc(name: &str, available: &[String]) -> Doc {
-    let mut doc = Doc::new();
+/// Build the not-found error returned by `cmd_source_show`. The central error
+/// sink (`main.rs::render_cli_error`) renders the structured `{error, name,
+/// available}` payload for `-o json` consumers and the user-visible `✗` line
+/// exactly once; the available-sources hint is carried as a human-mode hint.
+pub fn build_source_not_found_error(name: &str, available: &[String]) -> anyhow::Error {
+    let mut hints = Vec::new();
     if !available.is_empty() {
-        doc = doc.hint(format!("Available sources: {}", available.join(", ")));
+        hints.push(format!("Available sources: {}", available.join(", ")));
     }
-    doc.with_data(serde_json::json!({
-        "error": "not_found",
-        "name": name,
-        "available": available,
-    }))
+    crate::cli::cli_error_with_hints(
+        name,
+        "not_found",
+        format!("Source '{}' not found", name),
+        serde_json::json!({ "available": available }),
+        hints,
+    )
 }
 
 pub fn build_source_show_doc(
@@ -176,8 +178,7 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
         Some(spec) => spec,
         None => {
             let available: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
-            printer.emit(build_source_not_found_doc(name, &available));
-            anyhow::bail!("Source '{}' not found", name);
+            return Err(build_source_not_found_error(name, &available));
         }
     };
 

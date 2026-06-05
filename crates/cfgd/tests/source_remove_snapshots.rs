@@ -20,6 +20,7 @@ mod common;
 
 use std::path::Path;
 
+use cfgd::cli::error::render_cli_error;
 use cfgd::cli::source::cmd_source_remove;
 use cfgd_core::output::{Printer, PromptAnswer};
 use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
@@ -162,8 +163,9 @@ fn source_remove_not_found_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let result = cmd_source_remove(&cli, &printer, "missing", false, true);
-    assert!(result.is_err());
+    let err = cmd_source_remove(&cli, &printer, "missing", false, true)
+        .expect_err("missing source must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -173,9 +175,11 @@ fn source_remove_not_found_human() {
         &stripped,
     );
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "not_found");
-    assert_eq!(json["name"], "missing");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "not_found");
+    assert_eq!(meta.name, "missing");
 }
 
 #[test]
@@ -189,8 +193,9 @@ fn source_remove_conflicting_flags_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let result = cmd_source_remove(&cli, &printer, "team-config", true, true);
-    assert!(result.is_err());
+    let err = cmd_source_remove(&cli, &printer, "team-config", true, true)
+        .expect_err("conflicting flags must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -199,4 +204,8 @@ fn source_remove_conflicting_flags_human() {
         "source_remove/conflicting_flags.txt",
         &stripped,
     );
+
+    let _meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
 }

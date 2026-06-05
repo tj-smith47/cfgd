@@ -12,7 +12,7 @@ pub fn cmd_source_create(
     let config_dir = config_dir(cli);
     let source_path = config_dir.join("cfgd-source.yaml");
     if source_path.exists() {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             "cfgd-source.yaml",
             "already_exists",
             format!(
@@ -21,10 +21,6 @@ pub fn cmd_source_create(
             ),
             serde_json::json!({ "path": cfgd_core::to_posix_string(&source_path) }),
         ));
-        anyhow::bail!(
-            "cfgd-source.yaml already exists at {} — use 'cfgd source edit' to modify it",
-            source_path.posix()
-        );
     }
 
     // Interactive mode if no flags provided

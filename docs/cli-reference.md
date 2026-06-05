@@ -652,6 +652,27 @@ The `--exit-code` / `-e` flag on `diff`, `status`, and `verify` follows the `git
 
 External-process passthrough (e.g. `kubectl exec` invoked by the `kubectl cfgd` plugin) forwards the inner tool's exit code unchanged — those codes are not part of the cfgd taxonomy.
 
+### Error output
+
+Every failure renders exactly once, to `stderr` in human mode and to `stdout` in structured mode:
+
+- **Human (default):** a single `✗` line carrying the error message, followed by any
+  remediation hints (e.g. `Available modules: …`, or `run \`cfgd init\``). The same failure is
+  never printed twice.
+- **Structured (`-o json` / `yaml` / `jsonpath` / `template`):** exactly one error object,
+  always — even for an unclassified internal error, so a scripted consumer is never left with
+  empty output on failure. The shape is stable:
+
+  ```json
+  { "error": "not_found", "name": "web-server", "available": ["base", "dev"] }
+  ```
+
+  `error` is a machine-readable kind (`not_found`, `already_exists`, `parse_failed`,
+  `key_not_found`, …), `name` identifies the subject (module / source / profile / key), and any
+  command-specific fields follow. An error that carries no typed metadata falls back to
+  `{ "error": "error", "name": "", "message": "<text>" }`. Remediation hints are human-only and
+  never appear in the structured payload.
+
 ### Use in CI
 
 ```sh

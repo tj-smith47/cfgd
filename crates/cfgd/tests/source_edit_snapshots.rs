@@ -25,6 +25,7 @@ mod common;
 
 use std::path::Path;
 
+use cfgd::cli::error::render_cli_error;
 use cfgd::cli::source::cmd_source_edit;
 use cfgd_core::output::{Printer, PromptAnswer};
 #[cfg(unix)]
@@ -163,8 +164,8 @@ fn source_edit_no_config_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let result = cmd_source_edit(&cli, &printer);
-    assert!(result.is_err());
+    let err = cmd_source_edit(&cli, &printer).expect_err("missing manifest must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
@@ -174,6 +175,8 @@ fn source_edit_no_config_human() {
         &stripped,
     );
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "no_config");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "no_config");
 }

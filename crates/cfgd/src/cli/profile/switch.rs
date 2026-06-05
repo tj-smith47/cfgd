@@ -16,7 +16,11 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::R
     let profile_path = profiles_dir.join(format!("{}.yaml", name));
     if !profile_path.exists() {
         let available = super::list_yaml_stems(&profiles_dir).unwrap_or_default();
-        let mut doc = cfgd_core::output::error_doc(
+        let mut hints = Vec::new();
+        if !available.is_empty() {
+            hints.push(format!("Available profiles: {}", available.join(", ")));
+        }
+        return Err(crate::cli::cli_error_with_hints(
             name,
             "not_found",
             format!("Profile '{}' not found at {}", name, profile_path.posix()),
@@ -24,22 +28,8 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::R
                 "profilePath": profile_path.display().to_string(),
                 "available": available,
             }),
-        );
-        if !available.is_empty() {
-            doc = doc.hint(format!("Available profiles: {}", available.join(", ")));
-        }
-        printer.emit(doc);
-        let bail_hint = if available.is_empty() {
-            String::new()
-        } else {
-            format!("\nAvailable profiles: {}", available.join(", "))
-        };
-        anyhow::bail!(
-            "Profile '{}' not found at {}{}",
-            name,
-            profile_path.posix(),
-            bail_hint
-        );
+            hints,
+        ));
     }
 
     // Read current config, update profile field, write back

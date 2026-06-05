@@ -13,6 +13,7 @@ mod common;
 
 use std::path::Path;
 
+use cfgd::cli::error::render_cli_error;
 use cfgd::cli::profile::cmd_profile_switch;
 use cfgd_core::output::Printer;
 use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
@@ -80,6 +81,7 @@ fn profile_switch_not_found_human() {
     let err = cmd_profile_switch(&cli, "missing", &printer)
         .expect_err("switching to nonexistent profile must error");
     assert!(err.to_string().contains("not found"));
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());

@@ -8,6 +8,7 @@ mod common;
 
 use std::path::Path;
 
+use cfgd::cli::error::render_cli_error;
 use cfgd::cli::module;
 use cfgd_core::output::Printer;
 use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
@@ -37,7 +38,7 @@ fn module_push_missing_yaml_human() {
     let dir = tempfile::tempdir().unwrap();
     let (printer, cap) = Printer::for_test_doc();
 
-    let result = module::cmd_module_push(
+    let err = module::cmd_module_push(
         &printer,
         dir.path().to_str().unwrap(),
         "oci.example.com/test:v1",
@@ -48,8 +49,9 @@ fn module_push_missing_yaml_human() {
             key: None,
             attest: false,
         },
-    );
-    assert!(result.is_err());
+    )
+    .expect_err("missing module.yaml must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped =
@@ -60,6 +62,8 @@ fn module_push_missing_yaml_human() {
         &stripped,
     );
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "module_yaml_missing");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "module_yaml_missing");
 }

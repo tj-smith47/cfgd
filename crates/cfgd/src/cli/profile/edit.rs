@@ -5,13 +5,12 @@ pub fn cmd_profile_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Res
     validate_resource_name(name, "Profile")?;
     let profile_path = profiles_dir(cli).join(format!("{}.yaml", name));
     if !profile_path.exists() {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             name,
             "not_found",
             format!("Profile '{}' not found", name),
-            serde_json::Value::Null,
+            serde_json::json!({}),
         ));
-        anyhow::bail!("Profile '{}' not found", name);
     }
 
     open_in_editor(&profile_path, printer)?;

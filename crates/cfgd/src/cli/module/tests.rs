@@ -498,15 +498,26 @@ fn cmd_module_show_with_available_hint() {
     );
 
     let cli = test_cli(dir.path());
-    let (printer, buf) =
+    let (printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let err = cmd_module_show(&cli, &printer, "missing", false).unwrap_err();
     drop(printer);
-    let output = buf.lock().unwrap();
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "not_found");
     assert!(
-        output.contains("existing"),
-        "should hint available modules, got: {output}"
+        meta.hints.iter().any(|h| h.contains("existing")),
+        "should hint available modules, got: {:?}",
+        meta.hints
+    );
+    assert!(
+        meta.extras["available"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|v| v == "existing")),
+        "available list must include the existing module: {:?}",
+        meta.extras
     );
     assert!(
         err.to_string().contains("not found"),
@@ -887,16 +898,19 @@ fn cmd_module_update_json_absent_reports_not_found() {
     std::fs::create_dir_all(dir.path().join("modules")).unwrap();
 
     let cli = test_cli_json(dir.path());
-    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+    let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
 
     let args = make_module_update_args("ghost");
-    let _ = cmd_module_update_local(&cli, &printer, &args).unwrap_err();
+    let err = cmd_module_update_local(&cli, &printer, &args).unwrap_err();
     drop(printer);
 
-    let json = cap.json().expect("doc captured json");
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
     assert_eq!(
-        json["error"], "not_found",
-        "an absent module is genuinely not-found, got: {json}"
+        meta.error_kind, "not_found",
+        "an absent module is genuinely not-found, got: {}",
+        meta.error_kind
     );
 }
 
@@ -911,19 +925,28 @@ fn cmd_module_update_json_malformed_reports_parse_failed() {
     );
 
     let cli = test_cli_json(dir.path());
-    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+    let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
 
     let args = super::ModuleUpdateArgs {
         packages: vec!["ripgrep".to_string()],
         ..make_module_update_args("broken")
     };
-    let _ = cmd_module_update_local(&cli, &printer, &args).unwrap_err();
+    let err = cmd_module_update_local(&cli, &printer, &args).unwrap_err();
     drop(printer);
 
-    let json = cap.json().expect("doc captured json");
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
     assert_eq!(
-        json["error"], "parse_failed",
-        "a present-but-malformed module.yaml is a parse failure, got: {json}"
+        meta.error_kind, "parse_failed",
+        "a present-but-malformed module.yaml is a parse failure, got: {}",
+        meta.error_kind
+    );
+    // Exit-code survival: the inner typed CfgdError must remain downcastable
+    // through the context wrap so main.rs resolves the parse exit code (4).
+    assert!(
+        err.downcast_ref::<cfgd_core::errors::CfgdError>().is_some(),
+        "inner CfgdError must survive the cli_error_ctx wrap"
     );
 }
 

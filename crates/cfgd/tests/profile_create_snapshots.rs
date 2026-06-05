@@ -21,6 +21,7 @@ mod common;
 
 use std::path::Path;
 
+use cfgd::cli::error::render_cli_error;
 use cfgd::cli::profile::cmd_profile_create;
 use cfgd_core::output::{Printer, PromptAnswer};
 use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
@@ -141,6 +142,7 @@ fn profile_create_already_exists_human() {
     let err = cmd_profile_create(&cli, &printer, &args)
         .expect_err("creating an existing profile must error");
     assert!(err.to_string().contains("already exists"));
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
@@ -155,14 +157,17 @@ fn profile_create_already_exists_human() {
 fn profile_create_already_exists_json_payload() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (printer, cap) = Printer::for_test_doc();
+    let (printer, _cap0) = Printer::for_test_doc();
     let mut args = profile_create_args("default");
     args.env = vec!["FOO=bar".to_string()];
 
-    let _ = cmd_profile_create(&cli, &printer, &args);
+    let err = cmd_profile_create(&cli, &printer, &args)
+        .expect_err("creating an existing profile must error");
     drop(printer);
 
-    let json = cap.json().expect("error path emits a Doc with payload");
-    assert_eq!(json["error"], "already_exists");
-    assert_eq!(json["name"], "default");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "already_exists");
+    assert_eq!(meta.name, "default");
 }

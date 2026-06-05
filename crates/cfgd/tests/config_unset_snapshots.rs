@@ -11,6 +11,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::config_cmd;
+use cfgd::cli::error::render_cli_error;
 use cfgd_core::output::{OutputFormat, Printer};
 use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 
@@ -72,10 +73,11 @@ fn config_unset_happy_json() {
 fn config_unset_not_found_human() {
     let (config_dir, state_dir) = config_test_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
-    let (printer, cap) = Printer::for_test_doc();
 
-    let result = config_cmd::cmd_config_unset(&cli, &printer, "ghostKey");
-    assert!(result.is_err());
+    let (printer, cap) = Printer::for_test_doc();
+    let err = config_cmd::cmd_config_unset(&cli, &printer, "ghostKey")
+        .expect_err("missing key must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -85,7 +87,9 @@ fn config_unset_not_found_human() {
         &stripped,
     );
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "key_not_found");
-    assert_eq!(json["name"], "ghostKey");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "key_not_found");
+    assert_eq!(meta.name, "ghostKey");
 }

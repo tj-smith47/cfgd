@@ -14,7 +14,7 @@ pub fn cmd_module_build(
 ) -> anyhow::Result<()> {
     let dir_path = Path::new(dir);
     if !dir_path.join("module.yaml").exists() {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             dir,
             "module_yaml_missing",
             format!(
@@ -23,10 +23,6 @@ pub fn cmd_module_build(
             ),
             serde_json::json!({ "dir": dir }),
         ));
-        anyhow::bail!(
-            "Directory '{}' does not contain a module.yaml",
-            dir_path.posix()
-        );
     }
 
     printer.heading("Build Module");
@@ -50,13 +46,12 @@ pub fn cmd_module_build(
     if targets.len() == 1 {
         let output_dir = cfgd_core::oci::build_module(dir_path, Some(targets[0]), base_image)
             .map_err(|e| {
-                printer.emit(cfgd_core::output::error_doc(
+                crate::cli::cli_error(
                     dir,
                     "build_failed",
                     cfgd_core::output::collapse_to_subject_line(&e),
                     serde_json::json!({ "dir": dir, "target": targets[0] }),
-                ));
-                anyhow::anyhow!("{e}")
+                )
             })?;
         printer.status_simple(Role::Ok, format!("Built to {}", output_dir.posix()));
         output_artifacts.push(output_dir.display().to_string());
@@ -65,26 +60,24 @@ pub fn cmd_module_build(
             let digest =
                 cfgd_core::oci::push_module(&output_dir, art, Some(targets[0]), Some(printer))
                     .map_err(|e| {
-                        printer.emit(cfgd_core::output::error_doc(
+                        crate::cli::cli_error(
                             art,
                             "push_failed",
                             cfgd_core::output::collapse_to_subject_line(&e),
                             serde_json::json!({ "artifact": art, "target": targets[0] }),
-                        ));
-                        anyhow::anyhow!("{e}")
+                        )
                     })?;
             printer.kv("Digest", &digest);
             digest_value = Some(digest);
 
             if sign {
                 cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
-                    printer.emit(cfgd_core::output::error_doc(
+                    crate::cli::cli_error(
                         art,
                         "sign_failed",
                         cfgd_core::output::collapse_to_subject_line(&e),
                         serde_json::json!({ "artifact": art }),
-                    ));
-                    anyhow::anyhow!("{e}")
+                    )
                 })?;
                 printer.status_simple(Role::Ok, "Signed artifact");
             }
@@ -101,13 +94,12 @@ pub fn cmd_module_build(
                 Err(e) => {
                     sp.finish_fail(format!("Build failed for {t}"))
                         .detail(cfgd_core::output::collapse_to_subject_line(&e));
-                    printer.emit(cfgd_core::output::error_doc(
+                    return Err(crate::cli::cli_error(
                         dir,
                         "build_failed",
                         cfgd_core::output::collapse_to_subject_line(&e),
                         serde_json::json!({ "dir": dir, "target": *t }),
                     ));
-                    return Err(anyhow::anyhow!("{e}"));
                 }
             };
             output_artifacts.push(output_dir.display().to_string());
@@ -121,26 +113,24 @@ pub fn cmd_module_build(
                 .collect();
             let digest = cfgd_core::oci::push_module_multiplatform(&build_refs, art, Some(printer))
                 .map_err(|e| {
-                    printer.emit(cfgd_core::output::error_doc(
+                    crate::cli::cli_error(
                         art,
                         "push_failed",
                         cfgd_core::output::collapse_to_subject_line(&e),
                         serde_json::json!({ "artifact": art, "targets": &targets }),
-                    ));
-                    anyhow::anyhow!("{e}")
+                    )
                 })?;
             printer.kv("Digest", &digest);
             digest_value = Some(digest);
 
             if sign {
                 cfgd_core::oci::sign_artifact(art, key).map_err(|e| {
-                    printer.emit(cfgd_core::output::error_doc(
+                    crate::cli::cli_error(
                         art,
                         "sign_failed",
                         cfgd_core::output::collapse_to_subject_line(&e),
                         serde_json::json!({ "artifact": art }),
-                    ));
-                    anyhow::anyhow!("{e}")
+                    )
                 })?;
                 printer.status_simple(Role::Ok, "Signed artifact");
             }
@@ -193,9 +183,9 @@ mod tests {
     }
 
     #[test]
-    fn missing_module_yaml_emits_error_doc() {
+    fn missing_module_yaml_returns_error_meta() {
         let dir = tempfile::tempdir().unwrap();
-        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+        let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
 
         let err = cmd_module_build(
             &printer,
@@ -213,20 +203,26 @@ mod tests {
             err.to_string().contains("does not contain a module.yaml"),
             "error message must describe the problem: {err}"
         );
-        let json = cap.json().expect("error_doc must be emitted");
-        assert_eq!(json["error"], "module_yaml_missing", "error key: {json}");
-        assert!(json["dir"].is_string(), "payload must include dir: {json}");
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("handler returns CliErrorMeta");
+        assert_eq!(meta.error_kind, "module_yaml_missing");
+        assert!(
+            meta.extras["dir"].is_string(),
+            "payload must include dir: {:?}",
+            meta.extras
+        );
     }
 
     #[test]
-    fn build_fails_single_target_emits_build_failed_error_doc() {
+    fn build_fails_single_target_returns_build_failed_error_meta() {
         if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
         write_module_yaml(dir.path());
 
-        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+        let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
         let err = cmd_module_build(
             &printer,
             dir.path().to_str().unwrap(),
@@ -243,9 +239,15 @@ mod tests {
             !err.to_string().is_empty(),
             "error message must be non-empty: {err}"
         );
-        let json = cap.json().expect("build_failed error_doc must be emitted");
-        assert_eq!(json["error"], "build_failed", "error key: {json}");
-        assert!(json["dir"].is_string(), "payload must include dir: {json}");
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("handler returns CliErrorMeta");
+        assert_eq!(meta.error_kind, "build_failed");
+        assert!(
+            meta.extras["dir"].is_string(),
+            "payload must include dir: {:?}",
+            meta.extras
+        );
     }
 
     #[test]
@@ -281,14 +283,14 @@ mod tests {
     }
 
     #[test]
-    fn build_fails_multi_target_emits_build_failed_error_doc() {
+    fn build_fails_multi_target_returns_build_failed_error_meta() {
         if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
         write_module_yaml(dir.path());
 
-        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+        let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
         let err = cmd_module_build(
             &printer,
             dir.path().to_str().unwrap(),
@@ -305,11 +307,10 @@ mod tests {
             !err.to_string().is_empty(),
             "error message must be non-empty: {err}"
         );
-        let json = cap.json().expect("build_failed error_doc must be emitted");
-        assert_eq!(
-            json["error"], "build_failed",
-            "error key on multi-target: {json}"
-        );
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("handler returns CliErrorMeta");
+        assert_eq!(meta.error_kind, "build_failed");
     }
 
     #[test]
@@ -348,7 +349,7 @@ mod tests {
 
         #[test]
         #[serial]
-        fn sign_fails_when_cosign_exits_nonzero_emits_sign_failed_error_doc() {
+        fn sign_fails_when_cosign_exits_nonzero_returns_sign_failed_error_meta() {
             if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
                 return;
             }
@@ -361,7 +362,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             write_module_yaml(dir.path());
 
-            let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+            let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
             let err = cmd_module_build(
                 &printer,
                 dir.path().to_str().unwrap(),
@@ -378,10 +379,13 @@ mod tests {
                 !err.to_string().is_empty(),
                 "error must not be empty: {err}"
             );
-            let json = cap.json().expect("some error_doc must be emitted");
+            let meta = err
+                .downcast_ref::<crate::cli::CliErrorMeta>()
+                .expect("handler returns CliErrorMeta");
             assert!(
-                json["error"] == "build_failed" || json["error"] == "sign_failed",
-                "error must be build_failed or sign_failed: {json}"
+                meta.error_kind == "build_failed" || meta.error_kind == "sign_failed",
+                "error must be build_failed or sign_failed: {}",
+                meta.error_kind
             );
         }
     }
@@ -441,7 +445,7 @@ mod tests {
         // doesn't exist, falling through the same error branch as an empty
         // existing directory. Pin the error key + message so the branch is
         // covered without depending on filesystem state.
-        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+        let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
         let err = cmd_module_build(
             &printer,
             "/nonexistent/cfgd-test-module-build-path",
@@ -458,21 +462,26 @@ mod tests {
             err.to_string().contains("does not contain a module.yaml"),
             "error message must call out the missing module.yaml: {err}"
         );
-        let json = cap.json().expect("error_doc must be emitted");
-        assert_eq!(json["error"], "module_yaml_missing");
-        assert_eq!(json["dir"], "/nonexistent/cfgd-test-module-build-path");
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("handler returns CliErrorMeta");
+        assert_eq!(meta.error_kind, "module_yaml_missing");
+        assert_eq!(
+            meta.extras["dir"],
+            "/nonexistent/cfgd-test-module-build-path"
+        );
     }
 
     #[test]
-    fn build_single_target_failure_payload_includes_target_in_error_doc() {
+    fn build_single_target_failure_payload_includes_target_in_error_meta() {
         if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
             return;
         }
         let dir = tempfile::tempdir().unwrap();
         write_module_yaml(dir.path());
 
-        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
-        let _ = cmd_module_build(
+        let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
+        let err = cmd_module_build(
             &printer,
             dir.path().to_str().unwrap(),
             Some("linux/amd64"),
@@ -480,16 +489,19 @@ mod tests {
             None,
             false,
             None,
-        );
+        )
+        .expect_err("unreachable base image must cause build failure");
         drop(printer);
 
-        let json = cap.json().expect("build_failed error_doc must be emitted");
-        assert_eq!(json["error"], "build_failed");
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("handler returns CliErrorMeta");
+        assert_eq!(meta.error_kind, "build_failed");
         // The single-target branch puts `target` (singular) in the error
         // payload; the multi-target branch puts `target` per-spinner. Pin
         // this so the two branches stay distinguishable on the wire.
-        assert_eq!(json["target"], "linux/amd64");
-        assert_eq!(json["dir"], dir.path().to_str().unwrap());
+        assert_eq!(meta.extras["target"], "linux/amd64");
+        assert_eq!(meta.extras["dir"], dir.path().to_str().unwrap());
     }
 
     #[test]
@@ -500,7 +512,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_module_yaml(dir.path());
 
-        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+        let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
         let err = cmd_module_build(
             &printer,
             dir.path().to_str().unwrap(),
@@ -514,12 +526,14 @@ mod tests {
         drop(printer);
 
         assert!(!err.to_string().is_empty());
-        let json = cap.json().expect("error_doc emitted");
-        assert_eq!(json["error"], "build_failed");
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("handler returns CliErrorMeta");
+        assert_eq!(meta.error_kind, "build_failed");
         // Multi-target branch emits the per-target failure with the
         // singular `target` field corresponding to the target that failed
         // first (the iteration short-circuits on Err).
-        let failed_target = json["target"].as_str().expect("target string");
+        let failed_target = meta.extras["target"].as_str().expect("target string");
         assert!(
             failed_target == "linux/amd64" || failed_target == "linux/arm64",
             "failed target must be one of the requested targets: {failed_target}"
@@ -541,8 +555,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_module_yaml(dir.path());
 
-        let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
-        let _ = cmd_module_build(
+        let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
+        let err = cmd_module_build(
             &printer,
             dir.path().to_str().unwrap(),
             Some("linux/amd64,linux/arm64,linux/arm/v7"),
@@ -550,15 +564,18 @@ mod tests {
             None,
             false,
             None,
-        );
+        )
+        .expect_err("unreachable base image must cause build failure");
         drop(printer);
 
-        let json = cap.json().expect("some error_doc must be emitted");
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("handler returns CliErrorMeta");
         // build_failed emits "target" (singular) for the failing target.
-        assert_eq!(json["error"], "build_failed", "error key: {json}");
-        // Pin that the error_doc carries a string `target` field naming a
+        assert_eq!(meta.error_kind, "build_failed");
+        // Pin that the meta carries a string `target` field naming a
         // platform that was in the requested set.
-        let target = json["target"].as_str().expect("target field");
+        let target = meta.extras["target"].as_str().expect("target field");
         assert!(
             target.starts_with("linux/"),
             "failing target must be a linux/ platform: {target}"

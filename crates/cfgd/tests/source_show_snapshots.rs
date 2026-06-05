@@ -14,8 +14,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use cfgd::cli::error::render_cli_error;
 use cfgd::cli::output_types::{SourceResourceEntry, SourceShowOutput, SourceStateInfo};
-use cfgd::cli::source::show::{build_source_not_found_doc, build_source_show_doc};
+use cfgd::cli::source::show::{build_source_not_found_error, build_source_show_doc};
 use cfgd_core::config::{
     ConfigSourceDocument, ConfigSourceMetadata, ConfigSourcePolicy, ConfigSourceProvides,
     ConfigSourceSpec, EnvVar, ManagedFileSpec, PolicyItems, SourceConstraints,
@@ -159,9 +160,13 @@ fn source_show_empty_human() {
 
 #[test]
 fn source_show_not_found_human() {
+    // `source show` of a missing source returns a not-found error; the central sink
+    // (render_cli_error) renders the one ✗ line + the "Available sources" hint. Drive
+    // the real sink so this golden pins exactly what a user sees on the failure path.
     let available = vec!["alpha".to_string(), "beta".to_string()];
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_source_not_found_doc("missing", &available));
+    let err = build_source_not_found_error("missing", &available);
+    render_cli_error(&printer, &err);
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/not_found.txt");
 }

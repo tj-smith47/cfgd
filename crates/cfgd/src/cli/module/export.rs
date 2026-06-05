@@ -27,13 +27,12 @@ pub(super) fn export_devcontainer(
     let module = match all_modules.get(name) {
         Some(m) => m,
         None => {
-            printer.emit(cfgd_core::output::error_doc(
+            return Err(crate::cli::cli_error(
                 name,
                 "not_found",
                 format!("Module '{}' not found", name),
                 serde_json::json!({}),
             ));
-            anyhow::bail!("Module '{}' not found", name);
         }
     };
 

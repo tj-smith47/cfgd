@@ -11,21 +11,22 @@ pub fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
         Ok(b) => b,
         Err(e) => {
             let full = format!("{}", e);
-            printer.emit(cfgd_core::output::error_doc(
-                &file.display().to_string(),
+            return Err(crate::cli::cli_error_ctx(
+                e,
+                file.display().to_string(),
                 "backend_unavailable",
                 first_line(&full),
                 serde_json::json!({ "path": cfgd_core::to_posix_string(file), "detail": full }),
             ));
-            return Err(e);
         }
     };
     let backend_name = backend.name().to_string();
 
     if let Err(e) = backend.encrypt_file(file) {
         let full = format!("{}", e);
-        printer.emit(cfgd_core::output::error_doc(
-            &file.display().to_string(),
+        return Err(crate::cli::cli_error_ctx(
+            e.into(),
+            file.display().to_string(),
             "encryption_failed",
             first_line(&full),
             serde_json::json!({
@@ -34,7 +35,6 @@ pub fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
                 "detail": full,
             }),
         ));
-        return Err(e.into());
     }
 
     printer.emit(
@@ -57,13 +57,13 @@ pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
         Ok(b) => b,
         Err(e) => {
             let full = format!("{}", e);
-            printer.emit(cfgd_core::output::error_doc(
-                &file.display().to_string(),
+            return Err(crate::cli::cli_error_ctx(
+                e,
+                file.display().to_string(),
                 "backend_unavailable",
                 first_line(&full),
                 serde_json::json!({ "path": cfgd_core::to_posix_string(file), "detail": full }),
             ));
-            return Err(e);
         }
     };
     let backend_name = backend.name().to_string();
@@ -72,8 +72,9 @@ pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
         Ok(d) => d,
         Err(e) => {
             let full = format!("{}", e);
-            printer.emit(cfgd_core::output::error_doc(
-                &file.display().to_string(),
+            return Err(crate::cli::cli_error_ctx(
+                e.into(),
+                file.display().to_string(),
                 "decryption_failed",
                 first_line(&full),
                 serde_json::json!({
@@ -82,7 +83,6 @@ pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
                     "detail": full,
                 }),
             ));
-            return Err(e.into());
         }
     };
     let plaintext = secrecy::ExposeSecret::expose_secret(&decrypted);
@@ -124,21 +124,22 @@ pub fn cmd_secret_edit(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Res
         Ok(b) => b,
         Err(e) => {
             let full = format!("{}", e);
-            printer.emit(cfgd_core::output::error_doc(
-                &file.display().to_string(),
+            return Err(crate::cli::cli_error_ctx(
+                e,
+                file.display().to_string(),
                 "backend_unavailable",
                 first_line(&full),
                 serde_json::json!({ "path": cfgd_core::to_posix_string(file), "detail": full }),
             ));
-            return Err(e);
         }
     };
     let backend_name = backend.name().to_string();
 
     if let Err(e) = backend.edit_file(file) {
         let full = format!("{}", e);
-        printer.emit(cfgd_core::output::error_doc(
-            &file.display().to_string(),
+        return Err(crate::cli::cli_error_ctx(
+            e.into(),
+            file.display().to_string(),
             "edit_failed",
             first_line(&full),
             serde_json::json!({
@@ -147,7 +148,6 @@ pub fn cmd_secret_edit(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Res
                 "detail": full,
             }),
         ));
-        return Err(e.into());
     }
 
     printer.emit(
@@ -182,7 +182,8 @@ pub fn cmd_secret_init(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         Ok(p) => p,
         Err(e) => {
             let full = format!("{}", e);
-            printer.emit(cfgd_core::output::error_doc(
+            return Err(crate::cli::cli_error_ctx(
+                e.into(),
                 "age",
                 "backend_unavailable",
                 first_line(&full),
@@ -191,7 +192,6 @@ pub fn cmd_secret_init(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                     "detail": full,
                 }),
             ));
-            return Err(e.into());
         }
     };
 

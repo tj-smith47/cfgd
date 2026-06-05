@@ -10,17 +10,6 @@ const MCP_HELP_EXAMPLES: &str = "Examples:\n  \
     cfgd mcp tools    # list the tools the server exposes\n  \
     cfgd mcp stream   # stream events over the MCP transport";
 
-/// Map an [`anyhow::Error`] to an exit code by downcasting through the
-/// `CfgdError` boundary. Returns [`ExitCode::Error`] for errors that did
-/// not originate in cfgd's typed domain (e.g. `anyhow::anyhow!(...)` at
-/// a CLI callsite). Lives here (not cfgd-core) because Hard Rule #4
-/// forbids `anyhow` anywhere but the CLI boundary.
-fn exit_code_for_anyhow(err: &anyhow::Error) -> cfgd_core::exit::ExitCode {
-    err.downcast_ref::<cfgd_core::errors::CfgdError>()
-        .map(cfgd_core::exit::exit_code_for_error)
-        .unwrap_or(cfgd_core::exit::ExitCode::Error)
-}
-
 /// Map a raw `CFGD_YES` value to the canonical `"true"`/`"false"` that clap's
 /// `BoolishValueParser` accepts. Mirrors that parser's accept-set exactly
 /// (case-insensitive): TRUE = {1, y, yes, t, true, on}, FALSE = {0, n, no, f,
@@ -161,37 +150,15 @@ fn main() -> anyhow::Result<()> {
     }
 
     if let Err(e) = cli::execute(&cli, &printer) {
-        render_cli_error(&printer, &e).exit();
+        cli::error::render_cli_error(&printer, &e).exit();
     }
 
     Ok(())
 }
 
-/// Render a CLI-boundary error to stderr and return its exit code. For a missing-config
-/// failure it also emits a remediation hint: a bare "config file not found" otherwise leaves
-/// a first-run user with no path forward.
-fn render_cli_error(
-    printer: &cfgd_core::output::Printer,
-    err: &anyhow::Error,
-) -> cfgd_core::exit::ExitCode {
-    // Format with `{}` not `{:#}` — CfgdError templates already include `{0}` which expands
-    // the inner error, so `{:#}` would walk source() and duplicate the inner text. See
-    // errors/mod.rs::CfgdError for the paired contract.
-    printer.status_simple(
-        cfgd_core::output::Role::Fail,
-        cfgd_core::output::collapse_to_subject_line(err),
-    );
-    let code = exit_code_for_anyhow(err);
-    // The hint goes to the same stream (stderr) as the error above.
-    if code == cfgd_core::exit::ExitCode::NoConfig {
-        printer.hint("run `cfgd init` to create a config, or pass --config <path>");
-    }
-    code
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{canonical_bool_str, exit_code_for_anyhow};
+    use super::canonical_bool_str;
 
     #[test]
     fn canonical_bool_str_accepts_truthy_spellings() {
@@ -240,48 +207,5 @@ mod tests {
                 "{raw:?} should not be recognized as boolish"
             );
         }
-    }
-
-    #[test]
-    fn render_cli_error_hints_cfgd_init_on_missing_config() {
-        // A NoConfig failure must point the user at `cfgd init`, not just print "not found".
-        let (printer, buf) =
-            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        let err: anyhow::Error =
-            cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::NotFound {
-                path: "/home/u/.config/cfgd/cfgd.yaml".into(),
-            })
-            .into();
-        let code = super::render_cli_error(&printer, &err);
-        printer.flush();
-        assert_eq!(code, cfgd_core::exit::ExitCode::NoConfig);
-        let out = buf.lock().unwrap().clone();
-        assert!(
-            out.contains("cfgd init"),
-            "expected remediation naming `cfgd init`, got: {out:?}"
-        );
-    }
-
-    #[test]
-    fn exit_code_for_anyhow_falls_back_to_error_for_opaque_anyhow_errors() {
-        // anyhow::anyhow! produces an error that doesn't downcast to
-        // CfgdError; the helper must return ExitCode::Error.
-        let err = anyhow::anyhow!("an opaque CLI-boundary error");
-        let code = exit_code_for_anyhow(&err);
-        assert_eq!(code, cfgd_core::exit::ExitCode::Error);
-    }
-
-    #[test]
-    fn exit_code_for_anyhow_propagates_cfgd_error_exit_code_through_downcast() {
-        // Errors that downcast to CfgdError should be routed through
-        // exit_code_for_error so the typed-domain semantics are preserved.
-        let cfgd_err =
-            cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::Invalid {
-                message: "invalid config".to_string(),
-            });
-        let expected = cfgd_core::exit::exit_code_for_error(&cfgd_err);
-        let anyhow_err: anyhow::Error = cfgd_err.into();
-        let actual = exit_code_for_anyhow(&anyhow_err);
-        assert_eq!(actual, expected);
     }
 }

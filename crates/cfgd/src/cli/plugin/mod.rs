@@ -152,7 +152,7 @@ pub fn plugin_main() -> anyhow::Result<()> {
 
     let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Table);
 
-    match cli.command {
+    let result = match cli.command {
         PluginCommand::Debug {
             pod,
             module,
@@ -172,7 +172,17 @@ pub fn plugin_main() -> anyhow::Result<()> {
         } => cmd_inject(&printer, &resource, &module, &namespace),
         PluginCommand::Status => cmd_status(&printer),
         PluginCommand::Version => cmd_version(&printer),
+    };
+
+    // The plugin has its OWN entry (main.rs returns here directly, never reaching the
+    // normal-CLI dispatch), so it must route failures through the SAME central sink
+    // rather than letting Rust's Termination print an unstyled `Error: {:?}`. This
+    // renders exactly one failure representation (one ✗ / one structured payload) and
+    // exits with the resolved code — there is one error sink for the whole binary.
+    if let Err(e) = result {
+        crate::cli::error::render_cli_error(&printer, &e).exit();
     }
+    Ok(())
 }
 
 pub fn cmd_debug(
@@ -183,13 +193,12 @@ pub fn cmd_debug(
     image: &str,
 ) -> anyhow::Result<()> {
     if modules.is_empty() {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             pod,
             "module_required",
             MODULE_REQUIRED.to_string(),
             serde_json::json!({ "namespace": namespace, "pod": pod }),
         ));
-        anyhow::bail!(MODULE_REQUIRED);
     }
 
     let parsed: Vec<(&str, &str)> = modules
@@ -214,13 +223,12 @@ pub(crate) async fn cmd_debug_async(
     let client = match client {
         Some(c) => c,
         None => kube::Client::try_default().await.map_err(|e| {
-            printer.emit(cfgd_core::output::error_doc(
+            crate::cli::cli_error(
                 pod,
                 "kube_connect_failed",
                 format!("Failed to connect to cluster: {e}"),
                 serde_json::json!({ "namespace": namespace, "pod": pod }),
-            ));
-            anyhow::anyhow!("Failed to connect to cluster: {e}")
+            )
         })?,
     };
     let pods: kube::Api<k8s_openapi::api::core::v1::Pod> = kube::Api::namespaced(client, namespace);
@@ -263,13 +271,12 @@ pub(crate) async fn cmd_debug_async(
     )
     .await
     .map_err(|e| {
-        printer.emit(cfgd_core::output::error_doc(
+        crate::cli::cli_error(
             pod,
             "inject_failed",
             format!("failed to create ephemeral container: {e}"),
             serde_json::json!({ "namespace": namespace, "pod": pod }),
-        ));
-        anyhow::anyhow!("failed to create ephemeral container: {e}")
+        )
     })?;
 
     printer.emit(
@@ -302,22 +309,20 @@ pub fn cmd_exec(
     command: &[String],
 ) -> anyhow::Result<()> {
     if modules.is_empty() {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             pod,
             "module_required",
             MODULE_REQUIRED.to_string(),
             serde_json::json!({ "namespace": namespace, "pod": pod }),
         ));
-        anyhow::bail!(MODULE_REQUIRED);
     }
     if command.is_empty() {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             pod,
             "command_required",
             "command is required after --".to_string(),
             serde_json::json!({ "namespace": namespace, "pod": pod }),
         ));
-        anyhow::bail!("command is required after --");
     }
 
     let parsed: Vec<(&str, &str)> = modules
@@ -380,26 +385,22 @@ pub fn cmd_inject(
     namespace: &str,
 ) -> anyhow::Result<()> {
     if modules.is_empty() {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             resource,
             "module_required",
             MODULE_REQUIRED.to_string(),
             serde_json::json!({ "namespace": namespace, "resource": resource }),
         ));
-        anyhow::bail!(MODULE_REQUIRED);
     }
 
     let (kind, name) = resource.split_once('/').ok_or_else(|| {
-        printer.emit(cfgd_core::output::error_doc(
+        crate::cli::cli_error(
             resource,
             "invalid_resource",
             format!(
                 "invalid resource format '{resource}' — expected kind/name (e.g. deployment/myapp)"
             ),
             serde_json::json!({ "namespace": namespace, "resource": resource }),
-        ));
-        anyhow::anyhow!(
-            "invalid resource format '{resource}' — expected kind/name (e.g. deployment/myapp)"
         )
     })?;
 
@@ -425,7 +426,7 @@ pub fn cmd_inject(
         &patch_str,
     ])?;
     if code != 0 {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             resource,
             "inject_failed",
             "kubectl patch failed".to_string(),
@@ -437,7 +438,6 @@ pub fn cmd_inject(
                 "exitCode": code,
             }),
         ));
-        anyhow::bail!("kubectl patch failed");
     }
 
     printer.emit(
@@ -475,13 +475,12 @@ pub(crate) async fn cmd_status_async(
     let client = match client {
         Some(c) => c,
         None => kube::Client::try_default().await.map_err(|e| {
-            printer.emit(cfgd_core::output::error_doc(
+            crate::cli::cli_error(
                 "cluster",
                 "kube_connect_failed",
                 format!("Failed to connect to cluster: {e}"),
                 serde_json::json!({}),
-            ));
-            anyhow::anyhow!("Failed to connect to cluster: {e}")
+            )
         })?,
     };
 
@@ -500,13 +499,12 @@ pub(crate) async fn cmd_status_async(
         .list(&kube::api::ListParams::default())
         .await
         .map_err(|e| {
-            printer.emit(cfgd_core::output::error_doc(
+            crate::cli::cli_error(
                 "modules",
                 "list_failed",
                 format!("failed to list modules: {e}"),
                 serde_json::json!({}),
-            ));
-            anyhow::anyhow!("failed to list modules: {e}")
+            )
         })?;
 
     let entries: Vec<serde_json::Value> = list

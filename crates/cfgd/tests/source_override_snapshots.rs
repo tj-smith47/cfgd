@@ -14,6 +14,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::SourceOverrideAction;
+use cfgd::cli::error::render_cli_error;
 use cfgd::cli::source::cmd_source_override;
 use cfgd_core::output::Printer;
 use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
@@ -139,15 +140,16 @@ fn source_override_not_found_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let result = cmd_source_override(
+    let err = cmd_source_override(
         &cli,
         &printer,
         "missing",
         SourceOverrideAction::Reject,
         "packages.brew",
         None,
-    );
-    assert!(result.is_err());
+    )
+    .expect_err("missing source must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -157,7 +159,9 @@ fn source_override_not_found_human() {
         &stripped,
     );
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "not_found");
-    assert_eq!(json["name"], "missing");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "not_found");
+    assert_eq!(meta.name, "missing");
 }

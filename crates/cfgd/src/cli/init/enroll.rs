@@ -35,14 +35,11 @@ pub struct EnrollOutput {
     pub team: Option<String>,
 }
 
-/// Doc emitted before an enrollment error bubbles to `main.rs::printer.error`.
-/// `kind` tags the error class (e.g. `"method_mismatch"`, `"no_key"`,
-/// `"signing_failed"`) and `payload` carries any additional fields. The
-/// user-visible error string itself is rendered by `main.rs` so it appears
-/// exactly once.
-pub fn build_enroll_error_doc(kind: &'static str, payload: serde_json::Value) -> Doc {
-    let mut doc = Doc::new();
-    let hint = match kind {
+/// Remediation hint for an enrollment error `kind`, rendered in human mode.
+/// Shared by [`build_enroll_error`] and the `signing_failed` ctx carrier so the
+/// hint text stays in one place.
+fn enroll_error_hint(kind: &str) -> Option<&'static str> {
+    match kind {
         "method_mismatch" => Some(
             "This server uses bootstrap token enrollment. Re-run with: cfgd enroll --server-url <url> --token <token>",
         ),
@@ -53,18 +50,30 @@ pub fn build_enroll_error_doc(kind: &'static str, payload: serde_json::Value) ->
             Some("Verify the signing key is accessible and the signing tool is installed.")
         }
         _ => None,
-    };
-    if let Some(h) = hint {
-        doc = doc.hint(h);
     }
-    let mut obj = serde_json::Map::new();
-    obj.insert("error".into(), serde_json::Value::String(kind.into()));
-    if let serde_json::Value::Object(extra) = payload {
-        for (k, v) in extra {
-            obj.insert(k, v);
-        }
-    }
-    doc.with_data(serde_json::Value::Object(obj))
+}
+
+/// Hints for an enrollment error `kind` as a `Vec`, suitable for the
+/// `cli_error*_with_hints` carriers.
+fn enroll_error_hints(kind: &str) -> Vec<String> {
+    enroll_error_hint(kind)
+        .map(|h| vec![h.to_string()])
+        .into_iter()
+        .flatten()
+        .collect()
+}
+
+/// Build an enrollment error carrying the structured payload (`error: <kind>`,
+/// `name`, plus `extras` fields) and the kind's remediation hint, routed through
+/// the central sink. The single constructor for every `cmd_enroll` failure so the
+/// payload shape and the per-kind hint stay in one place.
+pub fn build_enroll_error(
+    name: &str,
+    kind: &'static str,
+    message: impl Into<String>,
+    extras: serde_json::Value,
+) -> anyhow::Error {
+    crate::cli::cli_error_with_hints(name, kind, message, extras, enroll_error_hints(kind))
 }
 
 // ─────────────────────────────────────────────────────
@@ -116,16 +125,15 @@ pub(crate) fn cmd_enroll(
     let info = client.enroll_info().map_err(|e| anyhow::anyhow!("{}", e))?;
 
     if info.method == "token" {
-        printer.emit(build_enroll_error_doc(
+        return Err(build_enroll_error(
+            server_url,
             "method_mismatch",
+            "This server uses bootstrap token enrollment. Run: cfgd enroll --server-url <url> --token <token>",
             serde_json::json!({
                 "serverUrl": server_url,
                 "serverMethod": info.method,
             }),
         ));
-        anyhow::bail!(
-            "This server uses bootstrap token enrollment. Run: cfgd enroll --server-url <url> --token <token>"
-        );
     }
 
     // Determine signing method
@@ -137,8 +145,11 @@ pub(crate) fn cmd_enroll(
         match detect_ssh_key(printer) {
             Some(path) => (KeyType::Ssh, path),
             None => {
-                printer.emit(build_enroll_error_doc(
+                return Err(build_enroll_error(
+                    &device_id,
                     "no_key",
+                    "no SSH key found — provide --ssh-key <path> or --gpg-key <id>\n\
+                     Checked: SSH agent, ~/.ssh/id_ed25519, ~/.ssh/id_rsa, ~/.ssh/id_ecdsa",
                     serde_json::json!({
                         "checked": [
                             "ssh-agent",
@@ -148,10 +159,6 @@ pub(crate) fn cmd_enroll(
                         ],
                     }),
                 ));
-                anyhow::bail!(
-                    "no SSH key found — provide --ssh-key <path> or --gpg-key <id>\n\
-                     Checked: SSH agent, ~/.ssh/id_ed25519, ~/.ssh/id_rsa, ~/.ssh/id_ecdsa"
-                );
             }
         }
     };
@@ -173,15 +180,20 @@ pub(crate) fn cmd_enroll(
         KeyType::Ssh => sign_with_ssh(&challenge.nonce, &key_ref),
         KeyType::Gpg => sign_with_gpg(&challenge.nonce, &key_ref),
     }
-    .inspect_err(|e| {
-        printer.emit(build_enroll_error_doc(
+    .map_err(|e| {
+        let message = e.to_string();
+        crate::cli::cli_error_ctx_with_hints(
+            e,
+            &key_ref,
             "signing_failed",
+            cfgd_core::output::collapse_to_subject_line(&message),
             serde_json::json!({
                 "keyType": key_type.as_str(),
                 "keyRef": key_ref,
-                "message": e.to_string(),
+                "message": message,
             }),
-        ));
+            enroll_error_hints("signing_failed"),
+        )
     })?;
 
     printer.status_simple(Role::Ok, "Challenge signed");

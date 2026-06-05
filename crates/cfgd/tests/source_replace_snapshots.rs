@@ -19,6 +19,7 @@ mod common;
 
 use std::path::Path;
 
+use cfgd::cli::error::render_cli_error;
 use cfgd::cli::source::{cmd_source_add, cmd_source_replace};
 use cfgd_core::output::Printer;
 use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
@@ -136,8 +137,9 @@ fn source_replace_not_found_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let result = cmd_source_replace(&cli, &printer, "missing", "https://github.com/team/new.git");
-    assert!(result.is_err());
+    let err = cmd_source_replace(&cli, &printer, "missing", "https://github.com/team/new.git")
+        .expect_err("missing old source must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -146,4 +148,8 @@ fn source_replace_not_found_human() {
         "source_replace/not_found.txt",
         &stripped,
     );
+
+    let _meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
 }

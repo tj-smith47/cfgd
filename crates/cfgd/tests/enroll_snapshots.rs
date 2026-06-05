@@ -12,7 +12,8 @@
 
 use std::path::Path;
 
-use cfgd::cli::init::{EnrollOutput, build_enroll_error_doc, build_enroll_final_doc};
+use cfgd::cli::error::render_cli_error;
+use cfgd::cli::init::{EnrollOutput, build_enroll_error, build_enroll_final_doc};
 use cfgd_core::output::Printer;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
@@ -70,18 +71,21 @@ fn enroll_next_steps_section_lists_four_commands() {
 
 #[test]
 fn enroll_not_found_method_human() {
-    // Pins the not-found Doc shape emitted when the server reports
-    // bootstrap-token enrollment but the CLI was invoked without --token.
-    // Mirrors the not-found pattern: hint + with_data envelope, no
-    // Role::Fail status (main.rs renders the error string).
-    let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_enroll_error_doc(
+    // Pins the human failure shown when the server reports bootstrap-token
+    // enrollment but the CLI was invoked without --token. Driven through the real
+    // central sink (render_cli_error) so the golden is exactly what a user sees:
+    // the one ✗ line plus the remediation hint.
+    let err = build_enroll_error(
+        "https://gateway.example.com",
         "method_mismatch",
+        "This server uses bootstrap token enrollment. Run: cfgd enroll --server-url <url> --token <token>",
         serde_json::json!({
             "serverUrl": "https://gateway.example.com",
             "serverMethod": "token",
         }),
-    ));
+    );
+    let (printer, cap) = Printer::for_test_doc();
+    render_cli_error(&printer, &err);
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "enroll/not_found_method.txt");
 }

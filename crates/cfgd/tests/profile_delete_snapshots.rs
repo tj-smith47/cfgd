@@ -20,6 +20,7 @@ mod common;
 
 use std::path::Path;
 
+use cfgd::cli::error::render_cli_error;
 use cfgd::cli::profile::cmd_profile_delete;
 use cfgd_core::output::{Printer, PromptAnswer};
 use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
@@ -124,6 +125,7 @@ fn profile_delete_active_profile_refused_human() {
     let err = cmd_profile_delete(&cli, &printer, "default", true)
         .expect_err("deleting the active profile must error");
     assert!(err.to_string().contains("active profile"));
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
@@ -152,6 +154,7 @@ fn profile_delete_inheritor_refused_human() {
     let err = cmd_profile_delete(&cli, &printer, "work", true)
         .expect_err("deleting an inherited profile must error");
     assert!(err.to_string().contains("inherited"));
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());

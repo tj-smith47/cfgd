@@ -24,6 +24,7 @@ mod common;
 
 use std::path::Path;
 
+use cfgd::cli::error::render_cli_error;
 use cfgd::cli::secret;
 use cfgd_core::output::Printer;
 use cfgd_core::test_helpers::EditorGuard;
@@ -235,17 +236,15 @@ fn secret_encrypt_already_encrypted_human() {
         secret::cmd_secret_encrypt(&cli, &printer, &secret_path).expect("first encrypt");
     }
 
-    // Re-encrypt: sops returns "file already encrypted" — expect an error
-    // Doc carrying the encryption_failed kind. The sops error body varies
+    // Re-encrypt: sops returns "file already encrypted" — expect a returned
+    // error carrying the encryption_failed kind. The sops error body varies
     // across versions, so assert the role + kind shape rather than snapshot
     // the verbose message verbatim.
     let (printer, cap) = Printer::for_test_doc();
-    let result = secret::cmd_secret_encrypt(&cli, &printer, &secret_path);
+    let err = secret::cmd_secret_encrypt(&cli, &printer, &secret_path)
+        .expect_err("re-encrypt should fail with already-encrypted");
+    render_cli_error(&printer, &err);
     drop(printer);
-    assert!(
-        result.is_err(),
-        "re-encrypt should fail with already-encrypted"
-    );
 
     let human = strip_ansi(&cap.human());
     assert!(
@@ -255,8 +254,10 @@ fn secret_encrypt_already_encrypted_human() {
         "expected Role::Fail status line in human output, got: {human}"
     );
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "encryption_failed");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "encryption_failed");
 }
 
 #[test]

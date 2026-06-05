@@ -9,6 +9,7 @@ mod common;
 
 use std::path::Path;
 
+use cfgd::cli::error::render_cli_error;
 use cfgd::cli::module;
 use cfgd_core::output::Printer;
 use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
@@ -130,14 +131,15 @@ fn module_export_not_found_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let result = module::cmd_module_export(
+    let err = module::cmd_module_export(
         &cli,
         &printer,
         "ghost",
         &cfgd::cli::ExportFormat::Devcontainer,
         Some(output_dir.path().to_str().unwrap()),
-    );
-    assert!(result.is_err());
+    )
+    .expect_err("missing module must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = normalize(
@@ -151,7 +153,9 @@ fn module_export_not_found_human() {
         &stripped,
     );
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "not_found");
-    assert_eq!(json["name"], "ghost");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "not_found");
+    assert_eq!(meta.name, "ghost");
 }

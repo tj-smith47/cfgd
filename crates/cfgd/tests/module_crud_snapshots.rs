@@ -18,6 +18,7 @@ mod common;
 
 use std::path::Path;
 
+use cfgd::cli::error::render_cli_error;
 use cfgd::cli::module;
 use cfgd_core::output::{Printer, PromptAnswer};
 #[cfg(unix)]
@@ -159,8 +160,9 @@ fn module_create_already_exists_human() {
         apply: false,
         yes: true,
     };
-    let result = module::cmd_module_create(&cli, &printer, &args);
-    assert!(result.is_err());
+    let err = module::cmd_module_create(&cli, &printer, &args)
+        .expect_err("duplicate module must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
@@ -170,9 +172,11 @@ fn module_create_already_exists_human() {
         &stripped,
     );
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "already_exists");
-    assert_eq!(json["name"], "dup-mod");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "already_exists");
+    assert_eq!(meta.name, "dup-mod");
 }
 
 #[test]
@@ -268,8 +272,9 @@ fn module_update_not_found_human() {
         description: None,
         sets: vec![],
     };
-    let result = module::cmd_module_update_local(&cli, &printer, &args);
-    assert!(result.is_err());
+    let err = module::cmd_module_update_local(&cli, &printer, &args)
+        .expect_err("missing module must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
@@ -279,9 +284,11 @@ fn module_update_not_found_human() {
         &stripped,
     );
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "not_found");
-    assert_eq!(json["name"], "ghost");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "not_found");
+    assert_eq!(meta.name, "ghost");
 }
 
 #[test]
@@ -342,8 +349,9 @@ fn module_delete_not_found_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let result = module::cmd_module_delete(&cli, &printer, "ghost", true, false);
-    assert!(result.is_err());
+    let err = module::cmd_module_delete(&cli, &printer, "ghost", true, false)
+        .expect_err("missing module must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
@@ -353,8 +361,10 @@ fn module_delete_not_found_human() {
         &stripped,
     );
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "not_found");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "not_found");
 }
 
 #[cfg(unix)]
@@ -384,8 +394,9 @@ fn module_edit_not_found_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let result = module::cmd_module_edit(&cli, &printer, "ghost");
-    assert!(result.is_err());
+    let err = module::cmd_module_edit(&cli, &printer, "ghost")
+        .expect_err("missing module must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
@@ -395,6 +406,8 @@ fn module_edit_not_found_human() {
         &stripped,
     );
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "not_found");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "not_found");
 }

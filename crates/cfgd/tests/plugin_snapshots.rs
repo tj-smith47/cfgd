@@ -19,8 +19,9 @@ mod common;
 
 use std::path::Path;
 
+use cfgd::cli::error::render_cli_error;
 use cfgd::cli::plugin;
-use cfgd_core::output::{OutputFormat, Printer};
+use cfgd_core::output::Printer;
 use cfgd_core::test_helpers::EnvVarGuard;
 use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use serial_test::serial;
@@ -51,8 +52,9 @@ fn strip_ansi(s: &str) -> String {
 fn plugin_debug_module_required_human() {
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = plugin::cmd_debug(&printer, "mypod", &[], "default", "ubuntu:22.04");
-    assert!(err.is_err());
+    let err = plugin::cmd_debug(&printer, "mypod", &[], "default", "ubuntu:22.04")
+        .expect_err("missing module must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -62,23 +64,27 @@ fn plugin_debug_module_required_human() {
         &stripped,
     );
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "module_required");
-    assert_eq!(json["pod"], "mypod");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "module_required");
+    assert_eq!(meta.extras["pod"], "mypod");
 }
 
 #[test]
 fn plugin_debug_module_required_json() {
-    let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
+    let (printer, _cap0) = Printer::for_test_doc();
 
-    let err = plugin::cmd_debug(&printer, "mypod", &[], "default", "ubuntu:22.04");
-    assert!(err.is_err());
+    let err = plugin::cmd_debug(&printer, "mypod", &[], "default", "ubuntu:22.04")
+        .expect_err("missing module must return Err");
     drop(printer);
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "module_required");
-    assert_eq!(json["pod"], "mypod");
-    assert_eq!(json["namespace"], "default");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "module_required");
+    assert_eq!(meta.extras["pod"], "mypod");
+    assert_eq!(meta.extras["namespace"], "default");
 }
 
 // --- cmd_exec error branches ---
@@ -87,8 +93,9 @@ fn plugin_debug_module_required_json() {
 fn plugin_exec_module_required_human() {
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = plugin::cmd_exec(&printer, "mypod", &[], "default", &["ls".into()]);
-    assert!(err.is_err());
+    let err = plugin::cmd_exec(&printer, "mypod", &[], "default", &["ls".into()])
+        .expect_err("missing module must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -98,8 +105,10 @@ fn plugin_exec_module_required_human() {
         &stripped,
     );
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "module_required");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "module_required");
 }
 
 #[test]
@@ -107,8 +116,9 @@ fn plugin_exec_command_required_human() {
     let (printer, cap) = Printer::for_test_doc();
 
     let modules = vec!["nettools:1.0.0".to_string()];
-    let err = plugin::cmd_exec(&printer, "mypod", &modules, "default", &[]);
-    assert!(err.is_err());
+    let err = plugin::cmd_exec(&printer, "mypod", &modules, "default", &[])
+        .expect_err("missing command must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -118,8 +128,10 @@ fn plugin_exec_command_required_human() {
         &stripped,
     );
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "command_required");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "command_required");
 }
 
 // --- cmd_inject error branches ---
@@ -128,8 +140,9 @@ fn plugin_exec_command_required_human() {
 fn plugin_inject_module_required_human() {
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = plugin::cmd_inject(&printer, "deployment/myapp", &[], "default");
-    assert!(err.is_err());
+    let err = plugin::cmd_inject(&printer, "deployment/myapp", &[], "default")
+        .expect_err("missing module must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -139,9 +152,11 @@ fn plugin_inject_module_required_human() {
         &stripped,
     );
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "module_required");
-    assert_eq!(json["resource"], "deployment/myapp");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "module_required");
+    assert_eq!(meta.extras["resource"], "deployment/myapp");
 }
 
 #[test]
@@ -149,8 +164,9 @@ fn plugin_inject_invalid_resource_human() {
     let (printer, cap) = Printer::for_test_doc();
 
     let modules = vec!["tool:1.0".to_string()];
-    let err = plugin::cmd_inject(&printer, "bad-format-no-slash", &modules, "default");
-    assert!(err.is_err());
+    let err = plugin::cmd_inject(&printer, "bad-format-no-slash", &modules, "default")
+        .expect_err("invalid resource must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -160,8 +176,10 @@ fn plugin_inject_invalid_resource_human() {
         &stripped,
     );
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "invalid_resource");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "invalid_resource");
 }
 
 // --- cmd_version disconnected branch ---

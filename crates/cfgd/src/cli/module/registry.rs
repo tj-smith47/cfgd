@@ -12,7 +12,7 @@ pub fn cmd_module_add_from_registry(
     let reg_ref = match modules::parse_registry_ref(reference) {
         Some(r) => r,
         None => {
-            printer.emit(cfgd_core::output::error_doc(
+            return Err(crate::cli::cli_error(
                 reference,
                 "invalid_reference",
                 format!(
@@ -21,10 +21,6 @@ pub fn cmd_module_add_from_registry(
                 ),
                 serde_json::json!({}),
             ));
-            anyhow::bail!(
-                "Invalid registry reference '{}' — expected registry/module[@tag]",
-                reference
-            );
         }
     };
 
@@ -43,7 +39,7 @@ pub fn cmd_module_add_from_registry(
     let registry_entry = match registries.iter().find(|s| s.name == reg_ref.registry) {
         Some(r) => r,
         None => {
-            printer.emit(cfgd_core::output::error_doc(
+            return Err(crate::cli::cli_error(
                 &reg_ref.registry,
                 "registry_not_found",
                 format!(
@@ -52,10 +48,6 @@ pub fn cmd_module_add_from_registry(
                 ),
                 serde_json::json!({}),
             ));
-            anyhow::bail!(
-                "Registry '{}' not configured — run 'cfgd module registry add <url>' first",
-                reg_ref.registry
-            );
         }
     };
 
@@ -80,7 +72,7 @@ pub fn cmd_module_add_from_registry(
             match modules::latest_module_version(registry_entry, &reg_ref.module, &cache_base)? {
                 Some(t) => t,
                 None => {
-                    printer.emit(cfgd_core::output::error_doc(
+                    return Err(crate::cli::cli_error(
                         &reg_ref.module,
                         "version_not_found",
                         format!(
@@ -89,11 +81,6 @@ pub fn cmd_module_add_from_registry(
                         ),
                         serde_json::json!({ "registry": &reg_ref.registry }),
                     ));
-                    anyhow::bail!(
-                        "No tags found for module '{}' in registry '{}'",
-                        reg_ref.module,
-                        reg_ref.registry
-                    );
                 }
             }
         }
@@ -145,13 +132,12 @@ pub fn cmd_module_add_remote(
         Err(e) => {
             sp.finish_fail(format!("Failed to fetch {}", url))
                 .detail(cfgd_core::output::collapse_to_subject_line(&e));
-            printer.emit(cfgd_core::output::error_doc(
+            return Err(crate::cli::cli_error(
                 url,
                 "clone_failed",
                 e.to_string(),
                 serde_json::json!({}),
             ));
-            return Err(anyhow::anyhow!(e));
         }
     };
     let module_name = fetched.module.name.clone();
@@ -182,7 +168,7 @@ pub fn cmd_module_add_remote(
     // Check if a local module with the same name exists
     let local_modules = modules::load_modules(&config_dir)?;
     if local_modules.contains_key(&module_name) {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             &module_name,
             "already_exists",
             format!(
@@ -192,11 +178,6 @@ pub fn cmd_module_add_remote(
             ),
             serde_json::json!({ "configDir": cfgd_core::to_posix_string(&config_dir) }),
         ));
-        anyhow::bail!(
-            "Local module '{}' already exists in {}/modules/ — local modules take precedence over remote",
-            module_name,
-            config_dir.posix()
-        );
     }
 
     print_module_review_summary(printer, &module_name, &module, &commit, &integrity);
@@ -319,7 +300,7 @@ pub fn cmd_module_upgrade(
         None => {
             let local_modules = modules::load_modules(&config_dir)?;
             if local_modules.contains_key(name) {
-                printer.emit(cfgd_core::output::error_doc(
+                return Err(crate::cli::cli_error(
                     name,
                     "local_module",
                     format!(
@@ -330,20 +311,13 @@ pub fn cmd_module_upgrade(
                     ),
                     serde_json::json!({}),
                 ));
-                anyhow::bail!(
-                    "Module '{}' is a local module — edit it directly in {}/modules/{}/",
-                    name,
-                    config_dir.posix(),
-                    name
-                );
             } else {
-                printer.emit(cfgd_core::output::error_doc(
+                return Err(crate::cli::cli_error(
                     name,
                     "not_found",
                     format!("Module '{}' not found", name),
                     serde_json::json!({}),
                 ));
-                anyhow::bail!("Module '{}' not found", name);
             }
         }
     };
@@ -665,13 +639,12 @@ pub fn cmd_module_registry_add(
         None => match modules::extract_registry_name(url) {
             Some(n) => n,
             None => {
-                printer.emit(cfgd_core::output::error_doc(
+                return Err(crate::cli::cli_error(
                     url,
                     "invalid_url",
                     "Cannot extract registry name from URL — use --name to specify one".to_string(),
                     serde_json::json!({}),
                 ));
-                anyhow::bail!("Cannot extract registry name from URL — use --name to specify one");
             }
         },
     };
@@ -871,22 +844,20 @@ pub fn cmd_module_registry_rename(
         .unwrap_or(&[]);
 
     if !registries.iter().any(|s| s.name == name) {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             name,
             "registry_not_found",
             format!("Registry '{}' not found", name),
             serde_json::json!({}),
         ));
-        anyhow::bail!("Registry '{}' not found", name);
     }
     if registries.iter().any(|s| s.name == new_name) {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             new_name,
             "already_exists",
             format!("A registry named '{}' already exists", new_name),
             serde_json::json!({}),
         ));
-        anyhow::bail!("A registry named '{}' already exists", new_name);
     }
 
     // Update registry name in cfgd.yaml via the shared mutate-write helper.

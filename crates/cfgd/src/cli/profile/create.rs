@@ -31,7 +31,7 @@ pub fn cmd_profile_create(
 
     let profile_path = pdir.join(format!("{}.yaml", name));
     if profile_path.exists() {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             name,
             "already_exists",
             format!(
@@ -41,24 +41,18 @@ pub fn cmd_profile_create(
             ),
             serde_json::json!({ "path": cfgd_core::to_posix_string(&profile_path) }),
         ));
-        anyhow::bail!(
-            "Profile '{}' already exists at {}",
-            name,
-            profile_path.posix()
-        );
     }
 
     // Verify inherited profiles exist
     for parent in inherits {
         let parent_path = pdir.join(format!("{}.yaml", parent));
         if !parent_path.exists() {
-            printer.emit(cfgd_core::output::error_doc(
+            return Err(crate::cli::cli_error(
                 name,
                 "parent_not_found",
                 format!("Parent profile '{}' not found", parent),
                 serde_json::json!({ "parent": parent }),
             ));
-            anyhow::bail!("Parent profile '{}' not found", parent);
         }
     }
 
@@ -88,13 +82,12 @@ pub fn cmd_profile_create(
         for parent in &inh {
             let parent_path = pdir.join(format!("{}.yaml", parent));
             if !parent_path.exists() {
-                printer.emit(cfgd_core::output::error_doc(
+                return Err(crate::cli::cli_error(
                     name,
                     "parent_not_found",
                     format!("Parent profile '{}' not found", parent),
                     serde_json::json!({ "parent": parent }),
                 ));
-                anyhow::bail!("Parent profile '{}' not found", parent);
             }
         }
 

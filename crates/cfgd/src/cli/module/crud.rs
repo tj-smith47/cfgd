@@ -23,13 +23,12 @@ pub fn cmd_module_create(
     let module_yaml_path = module_dir.join("module.yaml");
 
     if module_yaml_path.exists() {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             name,
             "already_exists",
             format!("Module '{}' already exists at {}", name, module_dir.posix()),
             serde_json::json!({ "path": cfgd_core::to_posix_string(&module_dir) }),
         ));
-        anyhow::bail!("Module '{}' already exists at {}", name, module_dir.posix());
     }
 
     std::fs::create_dir_all(&module_dir)?;
@@ -106,20 +105,15 @@ pub fn cmd_module_create(
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
             if !seen.insert(base.clone()) {
-                printer.emit(cfgd_core::output::error_doc(
+                return Err(crate::cli::cli_error(
                     name,
                     "duplicate_basename",
                     format!(
                         "Duplicate file basename '{}' — multiple files would overwrite each other in modules/{}/files/",
                         base, name
                     ),
-                    serde_json::json!({ "basename": base, "name": name }),
+                    serde_json::json!({ "basename": base }),
                 ));
-                anyhow::bail!(
-                    "Duplicate file basename '{}' — multiple files would overwrite each other in modules/{}/files/",
-                    base,
-                    name
-                );
             }
         }
     }
@@ -353,13 +347,15 @@ pub fn cmd_module_update_local(
     let (mut doc, module_yaml_path) = match load_module_document(&config_dir, name) {
         Ok(v) => v,
         Err(e) => {
-            printer.emit(cfgd_core::output::error_doc(
+            let error_kind = e.error_code();
+            let message = e.to_string();
+            return Err(crate::cli::cli_error_ctx(
+                e.into(),
                 name,
-                e.error_code(),
-                e.to_string(),
+                error_kind,
+                message,
                 serde_json::json!({}),
             ));
-            return Err(e.into());
         }
     };
     let module_dir = config_dir.join("modules").join(name);
@@ -627,13 +623,12 @@ pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
     let module_yaml = config_dir.join("modules").join(name).join("module.yaml");
 
     if !module_yaml.exists() {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             name,
             "not_found",
             format!("Module '{}' not found at {}", name, module_yaml.posix()),
             serde_json::json!({ "path": cfgd_core::to_posix_string(&module_yaml) }),
         ));
-        anyhow::bail!("Module '{}' not found at {}", name, module_yaml.posix());
     }
 
     open_in_editor(&module_yaml, printer)?;
@@ -705,19 +700,18 @@ pub fn cmd_module_delete(
     let module_dir = config_dir.join("modules").join(name);
 
     if !module_dir.exists() {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             name,
             "not_found",
             format!("Module '{}' not found at {}", name, module_dir.posix()),
             serde_json::json!({ "path": cfgd_core::to_posix_string(&module_dir) }),
         ));
-        anyhow::bail!("Module '{}' not found at {}", name, module_dir.posix());
     }
 
     // Safety: refuse if any profile references this module
     let referencing = profiles_using_module(&profiles_dir(cli), name)?;
     if !referencing.is_empty() {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             name,
             "in_use",
             format!(
@@ -727,11 +721,6 @@ pub fn cmd_module_delete(
             ),
             serde_json::json!({ "profiles": &referencing }),
         ));
-        anyhow::bail!(
-            "Cannot delete module '{}' — referenced by profile(s): {}. Remove it from those profiles first.",
-            name,
-            referencing.join(", ")
-        );
     }
 
     if !yes && !printer.prompt_confirm(&format!("Delete module '{}'?", name))? {

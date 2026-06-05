@@ -8,13 +8,12 @@ pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> 
         "cosign",
         Some("install it from https://docs.sigstore.dev/cosign/installation/"),
     ) {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             "cosign",
             "tool_missing",
-            msg.clone(),
+            msg,
             serde_json::json!({}),
         ));
-        anyhow::bail!(msg);
     }
 
     printer.heading("Generate Cosign Key Pair");
@@ -41,13 +40,12 @@ pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> 
         .map_err(|e| anyhow::anyhow!("failed to run cosign: {e}"))?;
 
     if !status.success() {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             "cosign",
             "keygen_failed",
             "cosign generate-key-pair failed".to_string(),
             serde_json::json!({ "dir": dir }),
         ));
-        anyhow::bail!("cosign generate-key-pair failed");
     }
 
     let key_dir = Path::new(dir);
@@ -142,13 +140,12 @@ pub fn cmd_module_keys_rotate(
         "cosign",
         Some("install it from https://docs.sigstore.dev/cosign/installation/"),
     ) {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             "cosign",
             "tool_missing",
-            msg.clone(),
+            msg,
             serde_json::json!({}),
         ));
-        anyhow::bail!(msg);
     }
 
     let key_dir = dir.unwrap_or(".");
@@ -156,7 +153,7 @@ pub fn cmd_module_keys_rotate(
     let old_pub = Path::new(key_dir).join("cosign.pub");
 
     if !old_key.exists() {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             key_dir,
             "key_not_found",
             format!(
@@ -165,10 +162,6 @@ pub fn cmd_module_keys_rotate(
             ),
             serde_json::json!({ "dir": key_dir }),
         ));
-        anyhow::bail!(
-            "No existing cosign.key found in {} — generate one first with: cfgd module keys generate",
-            key_dir
-        );
     }
 
     printer.heading("Rotate Cosign Key Pair");
@@ -268,13 +261,12 @@ pub fn cmd_module_keys_rotate(
             )
         };
 
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             key_dir,
             "keygen_failed",
-            bail_msg.clone(),
+            bail_msg,
             json_extra,
         ));
-        anyhow::bail!("{bail_msg}");
     }
 
     printer.status_simple(Role::Ok, "Generated new key pair");
@@ -292,7 +284,7 @@ pub fn cmd_module_keys_rotate(
             Err(e) => {
                 sp.finish_fail(format!("Failed to re-sign {artifact}"))
                     .detail(cfgd_core::output::collapse_to_subject_line(&e));
-                printer.emit(cfgd_core::output::error_doc(
+                return Err(crate::cli::cli_error(
                     "keys",
                     "resign_failed",
                     e.to_string(),
@@ -301,7 +293,6 @@ pub fn cmd_module_keys_rotate(
                         "newKeyPath": new_key_path.display().to_string(),
                     }),
                 ));
-                return Err(anyhow::anyhow!("{e}"));
             }
         }
     }
@@ -380,20 +371,19 @@ mod tests {
     #[cfg(unix)]
     #[test]
     #[serial]
-    fn generate_cosign_missing_emits_error_doc() {
+    fn generate_cosign_missing_returns_error_meta() {
         let _g = EnvVarGuard::set("CFGD_COSIGN_BIN", "/nonexistent/cosign");
-        let (printer, cap) = Printer::for_test_doc();
+        let (printer, _cap) = Printer::for_test_doc();
         let err = cmd_module_keys_generate(&printer, None).unwrap_err();
         assert!(
             err.to_string().to_lowercase().contains("cosign"),
             "error should mention cosign: {err}"
         );
-        let human = cap.human();
-        assert!(
-            human.to_lowercase().contains("tool_missing")
-                || human.to_lowercase().contains("cosign"),
-            "captured output should mention tool_missing or cosign: {human}"
-        );
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("handler returns CliErrorMeta");
+        assert_eq!(meta.error_kind, "tool_missing");
+        assert_eq!(meta.name, "cosign");
     }
 
     #[cfg(unix)]
@@ -528,7 +518,7 @@ mod tests {
         // Re-create cosign.key as a file so rotate can back it up first.
         std::fs::write(tmp.path().join("cosign.key"), "old-private-key").expect("rewrite old key");
 
-        let (printer, cap) = Printer::for_test_doc();
+        let (printer, _cap) = Printer::for_test_doc();
         let err = cmd_module_keys_rotate(&printer, Some(dir_str), &[]).unwrap_err();
         // The bail message should mention cosign failure (and may mention restore
         // status depending on whether restore actually failed).
@@ -537,10 +527,14 @@ mod tests {
                 || err.to_string().contains("key restore FAILED"),
             "unexpected error: {err}"
         );
-        let json = cap.json().expect("doc should have json payload");
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("handler returns CliErrorMeta");
+        assert_eq!(meta.error_kind, "keygen_failed");
         assert!(
-            json.get("restoreFailed").is_some(),
-            "payload must record restoreFailed status: {json}"
+            meta.extras.get("restoreFailed").is_some(),
+            "payload must record restoreFailed status: {:?}",
+            meta.extras
         );
     }
 
@@ -667,27 +661,26 @@ mod tests {
     #[cfg(unix)]
     #[test]
     #[serial]
-    fn rotate_cosign_missing_emits_error_doc_and_bails() {
-        // Drives the rotate-path tool_missing branch (lines L139-150): when
-        // require_tool_with_seam reports cosign is missing, rotate must emit
-        // a tool_missing error doc and bail BEFORE attempting any rename.
+    fn rotate_cosign_missing_returns_error_meta_and_bails() {
+        // Drives the rotate-path tool_missing branch: when
+        // require_tool_with_seam reports cosign is missing, rotate must return
+        // a tool_missing CliErrorMeta and bail BEFORE attempting any rename.
         let _g = EnvVarGuard::set("CFGD_COSIGN_BIN", "/nonexistent/cosign");
         let tmp = tempfile::tempdir().expect("tempdir");
         let dir_str = tmp.path().to_str().expect("utf8 path");
         // Write a key so the not-found check doesn't short-circuit first.
         std::fs::write(tmp.path().join("cosign.key"), "old-private-key").expect("write old key");
-        let (printer, cap) = Printer::for_test_doc();
+        let (printer, _cap) = Printer::for_test_doc();
         let err = cmd_module_keys_rotate(&printer, Some(dir_str), &[]).unwrap_err();
         assert!(
             err.to_string().to_lowercase().contains("cosign"),
             "rotate error should mention cosign: {err}"
         );
-        let human = cap.human();
-        assert!(
-            human.to_lowercase().contains("tool_missing")
-                || human.to_lowercase().contains("cosign"),
-            "captured output should mention tool_missing or cosign: {human}"
-        );
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("handler returns CliErrorMeta");
+        assert_eq!(meta.error_kind, "tool_missing");
+        assert_eq!(meta.name, "cosign");
         // Old key must remain — we bailed before any rename.
         assert!(
             tmp.path().join("cosign.key").exists(),

@@ -13,8 +13,9 @@
 
 use std::path::Path;
 
+use cfgd::cli::error::render_cli_error;
 use cfgd::cli::module::list_show::{
-    PackageDisplay, build_module_list_doc, build_module_not_found_doc, build_module_show_doc,
+    PackageDisplay, build_module_list_doc, build_module_not_found_error, build_module_show_doc,
 };
 use cfgd::cli::module::{ModuleListEntry, ModuleShowOutput};
 use cfgd_core::config::{EnvVar, ModuleFileEntry, ModuleLockEntry, ModuleSpec, ShellAlias};
@@ -235,9 +236,13 @@ fn module_show_happy_json() {
 
 #[test]
 fn module_show_not_found_human() {
+    // `module show` of a missing module returns a not-found error; the central sink
+    // (render_cli_error) renders the one ✗ line + the "Available modules" hint. Drive
+    // the real sink so this golden pins exactly what a user sees on the failure path.
     let available: Vec<String> = vec!["base".into(), "dev-tools".into(), "extras".into()];
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_module_not_found_doc("missing", &available));
+    let err = build_module_not_found_error("missing", &available);
+    render_cli_error(&printer, &err);
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "module_show/not_found.txt");
 }

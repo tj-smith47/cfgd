@@ -10,13 +10,14 @@ pub fn cmd_upgrade(
 
     if check_only {
         let check = upgrade::check_latest(None, Some(printer)).map_err(|e| {
-            printer.emit(cfgd_core::output::error_doc(
+            let msg = format!("Failed to check latest version: {e}");
+            crate::cli::cli_error_ctx(
+                e.into(),
                 env!("CARGO_PKG_VERSION"),
                 "check_failed",
-                format!("Failed to check latest version: {e}"),
+                msg,
                 serde_json::json!({ "currentVersion": env!("CARGO_PKG_VERSION") }),
-            ));
-            e
+            )
         })?;
 
         if check.update_available {
@@ -55,13 +56,14 @@ pub fn cmd_upgrade(
     printer.heading("Upgrade");
 
     let check = upgrade::check_latest(None, Some(printer)).map_err(|e| {
-        printer.emit(cfgd_core::output::error_doc(
+        let msg = format!("Failed to check latest version: {e}");
+        crate::cli::cli_error_ctx(
+            e.into(),
             env!("CARGO_PKG_VERSION"),
             "check_failed",
-            format!("Failed to check latest version: {e}"),
+            msg,
             serde_json::json!({ "currentVersion": env!("CARGO_PKG_VERSION") }),
-        ));
-        e
+        )
     })?;
 
     if !check.update_available {
@@ -88,29 +90,29 @@ pub fn cmd_upgrade(
     }
 
     let release = check.release.as_ref().ok_or_else(|| {
-        printer.emit(cfgd_core::output::error_doc(
-            &check.latest.to_string(),
+        crate::cli::cli_error(
+            check.latest.to_string(),
             "no_release",
             "release info not available".to_string(),
             serde_json::json!({
                 "currentVersion": check.current.to_string(),
                 "latestVersion": check.latest.to_string(),
             }),
-        ));
-        anyhow::anyhow!("release info not available")
+        )
     })?;
 
     let asset = upgrade::find_asset_for_platform(release).map_err(|e| {
-        printer.emit(cfgd_core::output::error_doc(
-            &check.latest.to_string(),
+        let msg = format!("no asset for platform: {e}");
+        crate::cli::cli_error_ctx(
+            e.into(),
+            check.latest.to_string(),
             "no_release",
-            format!("no asset for platform: {e}"),
+            msg,
             serde_json::json!({
                 "currentVersion": check.current.to_string(),
                 "latestVersion": check.latest.to_string(),
             }),
-        ));
-        e
+        )
     })?;
 
     {
@@ -139,17 +141,18 @@ pub fn cmd_upgrade(
             } else {
                 "install_failed"
             };
-            printer.emit(cfgd_core::output::error_doc(
-                &check.latest.to_string(),
+            let msg = format!("download/install failed: {e}");
+            crate::cli::cli_error_ctx(
+                e.into(),
+                check.latest.to_string(),
                 kind,
-                format!("download/install failed: {e}"),
+                msg,
                 serde_json::json!({
                     "currentVersion": check.current.to_string(),
                     "latestVersion": check.latest.to_string(),
                     "requireCosign": require_cosign,
                 }),
-            ));
-            e
+            )
         })?;
 
     // Invalidate version cache since we just upgraded
@@ -196,6 +199,14 @@ mod tests {
     use super::*;
 
     const GITHUB_API_BASE_ENV: &str = "CFGD_GITHUB_API_BASE";
+
+    /// Downcast a returned upgrade error to its `CliErrorMeta` so tests can pin
+    /// the `error_kind` / `extras` schema the central sink now renders (the
+    /// handler returns the carrier instead of emitting an error Doc).
+    fn upgrade_error_meta(err: &anyhow::Error) -> &crate::cli::CliErrorMeta {
+        err.downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("upgrade handler returns a CliErrorMeta carrier")
+    }
 
     fn current_version_tag() -> String {
         format!("v{}", env!("CARGO_PKG_VERSION"))
@@ -290,21 +301,19 @@ mod tests {
             .create();
         let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let (printer, cap) = Printer::for_test_doc();
+        let (printer, _cap) = Printer::for_test_doc();
         let result = cmd_upgrade(&printer, true, false);
 
-        assert!(result.is_err(), "API 500 must return Err");
-        let json = cap
-            .json()
-            .expect("error_doc must be emitted on API failure");
+        let err = result.expect_err("API 500 must return Err");
+        let meta = upgrade_error_meta(&err);
         assert_eq!(
-            json["error"].as_str(),
-            Some("check_failed"),
-            "error kind must be check_failed, got: {json}"
+            meta.error_kind, "check_failed",
+            "error kind must be check_failed, got: {meta:?}"
         );
         assert!(
-            json["currentVersion"].is_string(),
-            "currentVersion must be present in error payload: {json}"
+            meta.extras["currentVersion"].is_string(),
+            "currentVersion must be present in error payload: {:?}",
+            meta.extras
         );
     }
 
@@ -320,15 +329,14 @@ mod tests {
             .create();
         let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let (printer, cap) = Printer::for_test_doc();
+        let (printer, _cap) = Printer::for_test_doc();
         let result = cmd_upgrade(&printer, true, false);
 
-        assert!(result.is_err(), "API 404 must return Err");
-        let json = cap.json().expect("error_doc must be emitted");
+        let err = result.expect_err("API 404 must return Err");
         assert_eq!(
-            json["error"].as_str(),
-            Some("check_failed"),
-            "error kind must be check_failed: {json}"
+            upgrade_error_meta(&err).error_kind,
+            "check_failed",
+            "error kind must be check_failed"
         );
     }
 
@@ -438,18 +446,14 @@ mod tests {
             .create();
         let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let (printer, cap) = Printer::for_test_doc();
+        let (printer, _cap) = Printer::for_test_doc();
         let result = cmd_upgrade(&printer, false, false);
 
-        assert!(
-            result.is_err(),
-            "API 500 during full upgrade must return Err"
-        );
-        let json = cap.json().expect("error_doc must be emitted");
+        let err = result.expect_err("API 500 during full upgrade must return Err");
         assert_eq!(
-            json["error"].as_str(),
-            Some("check_failed"),
-            "error kind must be check_failed on API failure: {json}"
+            upgrade_error_meta(&err).error_kind,
+            "check_failed",
+            "error kind must be check_failed on API failure"
         );
     }
 
@@ -519,20 +523,14 @@ mod tests {
             .create();
         let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let (printer, cap) = Printer::for_test_doc();
+        let (printer, _cap) = Printer::for_test_doc();
         let result = cmd_upgrade(&printer, false, false);
 
-        assert!(
-            result.is_err(),
-            "missing platform asset must return Err: {result:?}"
-        );
-        let json = cap
-            .json()
-            .expect("error_doc must be emitted for missing platform asset");
+        let err = result.expect_err("missing platform asset must return Err");
         assert_eq!(
-            json["error"].as_str(),
-            Some("no_release"),
-            "error kind must be no_release: {json}"
+            upgrade_error_meta(&err).error_kind,
+            "no_release",
+            "error kind must be no_release"
         );
     }
 
@@ -583,25 +581,20 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let _home_guard = cfgd_core::with_test_home_guard(home.path());
 
-        let (printer, cap) = Printer::for_test_doc();
+        let (printer, _cap) = Printer::for_test_doc();
         let result = cmd_upgrade(&printer, false, false);
 
-        assert!(
-            result.is_err(),
-            "asset download 500 must return Err: {result:?}"
-        );
-        let json = cap
-            .json()
-            .expect("error_doc must be emitted on download failure");
+        let err = result.expect_err("asset download 500 must return Err");
+        let meta = upgrade_error_meta(&err);
         assert_eq!(
-            json["error"].as_str(),
-            Some("install_failed"),
-            "error kind must be install_failed: {json}"
+            meta.error_kind, "install_failed",
+            "error kind must be install_failed"
         );
         assert_eq!(
-            json["currentVersion"].as_str(),
+            meta.extras["currentVersion"].as_str(),
             Some(current_version_str()),
-            "currentVersion must be present in error payload: {json}"
+            "currentVersion must be present in error payload: {:?}",
+            meta.extras
         );
     }
 
@@ -680,25 +673,20 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let _home_guard = cfgd_core::with_test_home_guard(home.path());
 
-        let (printer, cap) = Printer::for_test_doc();
+        let (printer, _cap) = Printer::for_test_doc();
         let result = cmd_upgrade(&printer, false, true);
 
-        assert!(
-            result.is_err(),
-            "strict cosign + missing bundle must return Err: {result:?}"
-        );
-        let json = cap
-            .json()
-            .expect("error_doc must be emitted for strict cosign failure");
+        let err = result.expect_err("strict cosign + missing bundle must return Err");
+        let meta = upgrade_error_meta(&err);
         assert_eq!(
-            json["error"].as_str(),
-            Some("cosign_required"),
-            "error kind must be distinct from install_failed so alerting can route strict-mode failures: {json}"
+            meta.error_kind, "cosign_required",
+            "error kind must be distinct from install_failed so alerting can route strict-mode failures"
         );
         assert_eq!(
-            json["requireCosign"].as_bool(),
+            meta.extras["requireCosign"].as_bool(),
             Some(true),
-            "error payload must carry requireCosign=true for downstream consumers: {json}"
+            "error payload must carry requireCosign=true for downstream consumers: {:?}",
+            meta.extras
         );
     }
 }

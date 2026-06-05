@@ -13,13 +13,12 @@ pub fn cmd_source_priority(
     let source = match cfg.spec.sources.iter().find(|s| s.name == name) {
         Some(s) => s,
         None => {
-            printer.emit(cfgd_core::output::error_doc(
+            return Err(crate::cli::cli_error(
                 name,
                 "not_found",
                 format!("source '{}' not found", name),
-                serde_json::Value::Null,
+                serde_json::json!({}),
             ));
-            anyhow::bail!("source '{}' not found", name);
         }
     };
 

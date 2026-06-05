@@ -82,13 +82,14 @@ pub fn cmd_config_show(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let cfg = match config::load_config(config_path) {
         Ok(c) => c,
         Err(e) => {
-            printer.emit(cfgd_core::output::error_doc(
-                &config_path.display().to_string(),
+            let msg = format!("{}", e);
+            return Err(crate::cli::cli_error_ctx(
+                e.into(),
+                config_path.display().to_string(),
                 "parse_failed",
-                format!("{}", e),
+                msg,
                 serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
             ));
-            return Err(e.into());
         }
     };
     printer.emit(build_config_show_doc(&cfg, config_path));
@@ -257,39 +258,40 @@ pub fn cmd_config_get(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Result
     let raw: serde_yaml::Value = match serde_yaml::from_str(&contents) {
         Ok(v) => v,
         Err(e) => {
-            printer.emit(cfgd_core::output::error_doc(
+            let msg = format!("failed to parse config: {}", e);
+            return Err(crate::cli::cli_error_ctx(
+                e.into(),
                 key,
                 "parse_failed",
-                format!("failed to parse config: {}", e),
+                msg,
                 serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
             ));
-            return Err(e.into());
         }
     };
 
     let spec = match raw.get("spec") {
         Some(s) => s,
         None => {
-            printer.emit(cfgd_core::output::error_doc(
+            return Err(crate::cli::cli_error(
                 key,
                 "parse_failed",
                 "config has no 'spec' section",
                 serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
             ));
-            anyhow::bail!("config has no 'spec' section");
         }
     };
 
     let value = match walk_yaml_path(spec, key) {
         Ok(v) => v,
         Err(e) => {
-            printer.emit(cfgd_core::output::error_doc(
+            let msg = format!("{}", e);
+            return Err(crate::cli::cli_error_ctx(
+                e,
                 key,
                 "key_not_found",
-                format!("{}", e),
+                msg,
                 serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
             ));
-            return Err(e);
         }
     };
 
@@ -351,13 +353,14 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
 
     if let Err(e) = mutate_result {
         let kind = classify_mutate_error(&e);
-        printer.emit(cfgd_core::output::error_doc(
+        let msg = format!("{}", e);
+        return Err(crate::cli::cli_error_ctx(
+            e,
             key,
             kind,
-            format!("{}", e),
+            msg,
             serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
         ));
-        return Err(e);
     }
 
     let value_json: serde_json::Value =
@@ -401,13 +404,14 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
 
     if let Err(e) = mutate_result {
         let kind = classify_mutate_error(&e);
-        printer.emit(cfgd_core::output::error_doc(
+        let msg = format!("{}", e);
+        return Err(crate::cli::cli_error_ctx(
+            e,
             key,
             kind,
-            format!("{}", e),
+            msg,
             serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
         ));
-        return Err(e);
     }
 
     printer.emit(

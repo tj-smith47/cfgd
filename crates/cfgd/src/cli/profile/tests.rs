@@ -710,11 +710,15 @@ fn profile_switch_error_lists_available_profiles() {
     let printer = make_printer();
 
     let result = cmd_profile_switch(&cli, "nope", &printer);
-    let err = result.unwrap_err().to_string();
+    let err = result.unwrap_err();
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "not_found");
     assert!(
-        err.contains("Available profiles"),
-        "error should list available profiles: {}",
-        err
+        meta.hints.iter().any(|h| h.contains("Available profiles")),
+        "error hints should list available profiles: {:?}",
+        meta.hints
     );
 }
 
@@ -3297,13 +3301,15 @@ fn profile_update_remove_module_not_in_profile_warns() {
     );
 }
 
-// --- cmd_profile_update — nonexistent profile emits error via printer ---
+// --- cmd_profile_update — nonexistent profile returns a not-found error ---
 
 #[test]
-fn profile_update_nonexistent_emits_error_via_printer() {
+fn profile_update_nonexistent_returns_not_found_error() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (printer, buf) =
+    // The handler no longer emits its own error — it returns a CliErrorMeta and the
+    // central sink renders it. Assert the returned error, not the printer buffer.
+    let (printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let args = make_profile_update_args();
@@ -3314,11 +3320,11 @@ fn profile_update_nonexistent_emits_error_via_printer() {
         err.to_string().contains("not found"),
         "error must mention not found: {err}"
     );
-    let output = buf.lock().unwrap();
-    assert!(
-        output.contains("not found"),
-        "printer must emit the not-found message, got: {output}"
-    );
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "not_found");
+    assert_eq!(meta.name, "ghost");
 }
 
 // --- cmd_profile_update — file add with private flag ---

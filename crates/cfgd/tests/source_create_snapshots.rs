@@ -13,6 +13,7 @@ mod common;
 
 use std::path::Path;
 
+use cfgd::cli::error::render_cli_error;
 use cfgd::cli::source::cmd_source_create;
 use cfgd_core::output::Printer;
 use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
@@ -91,8 +92,9 @@ fn source_create_already_exists_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let result = cmd_source_create(&cli, &printer, Some("x"), Some("x"), Some("1.0"));
-    assert!(result.is_err());
+    let err = cmd_source_create(&cli, &printer, Some("x"), Some("x"), Some("1.0"))
+        .expect_err("existing manifest must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
@@ -102,6 +104,8 @@ fn source_create_already_exists_human() {
         &stripped,
     );
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "already_exists");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "already_exists");
 }

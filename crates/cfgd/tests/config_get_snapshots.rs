@@ -12,6 +12,7 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::config_cmd;
+use cfgd::cli::error::render_cli_error;
 use cfgd_core::output::{OutputFormat, Printer};
 use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 
@@ -68,12 +69,15 @@ fn config_get_happy_json() {
 fn config_get_not_found_human() {
     let (config_dir, state_dir) = config_test_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());
+
+    // The handler returns the error; the central sink (render_cli_error) renders the
+    // one ✗ line. Drive both through the SAME printer so the golden captures any handler
+    // pre-error output plus the central failure line — exactly what the user sees.
     let (printer, cap) = Printer::for_test_doc();
-
-    let result = config_cmd::cmd_config_get(&cli, &printer, "ghost.path");
-    assert!(result.is_err());
+    let err = config_cmd::cmd_config_get(&cli, &printer, "ghost.path")
+        .expect_err("missing key must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
-
     let stripped = strip_ansi(&cap.human());
     assert_snapshot(
         Path::new(SNAPSHOT_ROOT),
@@ -81,7 +85,9 @@ fn config_get_not_found_human() {
         &stripped,
     );
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "key_not_found");
-    assert_eq!(json["name"], "ghost.path");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "key_not_found");
+    assert_eq!(meta.name, "ghost.path");
 }

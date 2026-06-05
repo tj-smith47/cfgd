@@ -7,6 +7,7 @@ pub mod daemon;
 pub mod decide;
 pub mod diff;
 pub mod doctor;
+pub mod error;
 pub mod explain;
 pub mod generate;
 mod helpers;
@@ -31,6 +32,9 @@ pub mod upgrade;
 pub mod verify;
 pub mod workflow;
 
+pub use error::{
+    CliErrorMeta, cli_error, cli_error_ctx, cli_error_ctx_with_hints, cli_error_with_hints,
+};
 pub(in crate::cli) use helpers::*;
 pub(in crate::cli) use output_types::*;
 pub(in crate::cli) use plan_ops::*;

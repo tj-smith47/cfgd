@@ -19,6 +19,7 @@ mod common;
 
 use std::path::Path;
 
+use cfgd::cli::error::render_cli_error;
 use cfgd::cli::source::cmd_source_add;
 use cfgd_core::output::Printer;
 use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
@@ -134,8 +135,8 @@ fn source_add_already_exists_human() {
     let mut args = source_add_args("https://github.com/team/config");
     args.name = Some("team-config".into());
 
-    let result = cmd_source_add(&cli, &printer, &args);
-    assert!(result.is_err());
+    let err = cmd_source_add(&cli, &printer, &args).expect_err("duplicate source must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -145,9 +146,11 @@ fn source_add_already_exists_human() {
         &stripped,
     );
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "already_exists");
-    assert_eq!(json["name"], "team-config");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "already_exists");
+    assert_eq!(meta.name, "team-config");
 }
 
 #[test]
@@ -167,8 +170,9 @@ fn source_add_clone_failure_human() {
     let mut args = source_add_args(url);
     args.name = Some("doomed-src".into());
 
-    let result = cmd_source_add(&cli, &printer, &args);
-    assert!(result.is_err(), "cmd_source_add must fail on bogus URL");
+    let err =
+        cmd_source_add(&cli, &printer, &args).expect_err("cmd_source_add must fail on bogus URL");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = normalize_paths(
@@ -184,9 +188,11 @@ fn source_add_clone_failure_human() {
         &stripped,
     );
 
-    let json = cap.json().expect("error Doc carries with_data");
-    assert_eq!(json["error"], "load_failed");
-    assert_eq!(json["name"], "doomed-src");
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "load_failed");
+    assert_eq!(meta.name, "doomed-src");
 }
 
 #[test]

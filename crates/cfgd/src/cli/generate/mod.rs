@@ -80,15 +80,16 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
 
     // 2. Resolve API key
     let api_key = std::env::var(&ai_config.api_key_env).map_err(|_| {
-        printer.emit(cfgd_core::output::error_doc(
-            &ai_config.api_key_env,
+        crate::cli::cli_error_ctx(
+            cfgd_core::errors::GenerateError::ApiKeyNotFound {
+                env_var: ai_config.api_key_env.clone(),
+            }
+            .into(),
+            ai_config.api_key_env.clone(),
             "api_error",
             format!("API key env var '{}' not set", ai_config.api_key_env),
             serde_json::json!({ "envVar": ai_config.api_key_env }),
-        ));
-        cfgd_core::errors::GenerateError::ApiKeyNotFound {
-            env_var: ai_config.api_key_env.clone(),
-        }
+        )
     })?;
 
     // 3. Consent disclosure (unless --yes)

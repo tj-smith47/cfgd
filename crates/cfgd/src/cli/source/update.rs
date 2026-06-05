@@ -30,13 +30,12 @@ pub fn cmd_source_update(cli: &Cli, printer: &Printer, name: Option<&str>) -> an
     if sources_to_update.is_empty()
         && let Some(name) = name
     {
-        printer.emit(cfgd_core::output::error_doc(
+        return Err(crate::cli::cli_error(
             name,
             "not_found",
             format!("Source '{}' not found", name),
-            serde_json::Value::Null,
+            serde_json::json!({}),
         ));
-        anyhow::bail!("Source '{}' not found", name);
     }
 
     #[derive(serde::Serialize)]
