@@ -1,0 +1,3 @@
+# Changelog — cfgd-operator
+
+## [Unreleased]

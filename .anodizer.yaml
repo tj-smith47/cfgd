@@ -681,10 +681,12 @@ changelog:
   sort: asc
   abbrev: 12
   format: "* {{ .SHA }} {{ .Message }} ({{ .AuthorUsername }})"
-  paths:
-    - "crates/**"
-    - "Cargo.toml"
-    - "Cargo.lock"
+  # Per-crate CHANGELOG.md files, one per workspace crate, refreshed and promoted
+  # as part of `anodizer tag --changelog` in the release workflow. Each track's
+  # scope is derived from its crate path, so no `paths:` intersect filter is
+  # needed.
+  files:
+    per_crate: true
   filters:
     exclude:
       - "^docs:"

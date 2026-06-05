@@ -33,7 +33,7 @@
 
 ### Documentation
 - [ ] Help text updated (if adding/changing commands)
-- [ ] CHANGELOG.md updated (if user-facing change)
+- [ ] User-facing changes use a conventional-commit subject (feat/fix/…) so the per-crate CHANGELOG.md captures them at release
 
 ## Testing Done
 

@@ -67,7 +67,7 @@ jobs:
           from-artifact: anodizer-linux
           artifact-run-id: auto
           artifact-workflow: ci.yml
-          args: tag
+          args: tag --changelog
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
       - id: post_tag

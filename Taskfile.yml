@@ -344,11 +344,6 @@ tasks:
 
   # --- Release ---
 
-  changelog:
-    desc: Generate changelog from git history
-    cmds:
-      - git-cliff -o CHANGELOG.md
-
   release:local:
     desc: Build release archive locally
     deps: [_check:tmp-headroom]
