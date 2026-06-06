@@ -1287,6 +1287,46 @@ impl ToolShim {
         }
     }
 
+    /// Install a shim that exits non-zero (emitting `stderr`) **only** when its
+    /// joined argv contains `fail_substr`, and exits 0 otherwise. Records argv
+    /// like [`ToolShim::install`]. Use to exercise batch-then-per-package
+    /// fallbacks where one package in a batch is invalid but the rest are valid.
+    pub fn install_failing_on(env_var: &str, fail_substr: &str, stderr: &str) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let bin_path = tmp.path().join(format!("shim-{env_var}"));
+        let log_path = tmp.path().join("argv.log");
+
+        let stderr_lit = stderr.replace('\'', "'\\''");
+        let substr_lit = fail_substr.replace('\'', "'\\''");
+
+        let script = format!(
+            "#!/bin/sh\n\
+             printf '%s\\n' \"$*\" >> \"$CFGD_TOOL_SHIM_LOG\"\n\
+             case \"$*\" in\n\
+             *'{substr_lit}'*) printf '%s' '{stderr_lit}' 1>&2; exit 1 ;;\n\
+             esac\n\
+             exit 0\n",
+        );
+        std::fs::write(&bin_path, script).expect("write shim");
+        let mut perms = std::fs::metadata(&bin_path).expect("stat").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&bin_path, perms).expect("chmod");
+
+        // SAFETY: callers wrap with `serial_test::serial`, so no concurrent
+        // reader observes a mid-update env state.
+        unsafe {
+            std::env::set_var(env_var, &bin_path);
+            std::env::set_var("CFGD_TOOL_SHIM_LOG", &log_path);
+        }
+
+        Self {
+            _tmp: tmp,
+            env_var: env_var.to_string(),
+            log_path,
+        }
+    }
+
     /// Read the captured argv. Each line is the space-joined argv of one
     /// invocation, in order.
     pub fn argv_log(&self) -> String {

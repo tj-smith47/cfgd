@@ -398,6 +398,99 @@ mod brew_shim {
 
     #[test]
     #[serial]
+    fn brew_install_batch_failure_retries_each_package_and_installs_valid_ones() {
+        // The shim fails only when its argv mentions the invalid formula `jira`,
+        // mirroring `brew install jq jira yq` aborting the whole batch.
+        let shim = ToolShim::install_failing_on(
+            SHIM_ENV,
+            "jira",
+            "Error: No available formula with the name \"jira\".",
+        );
+        let p = test_printer();
+        let err = BrewManager
+            .install(&["jq".into(), "jira".into(), "yq".into()], &p)
+            .expect_err("a bad formula in the batch must surface as an error");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("jira"),
+            "error must name the failing package: {msg}"
+        );
+        assert!(
+            !msg.contains("jq") && !msg.contains("yq"),
+            "valid packages must not be reported as failed: {msg}"
+        );
+
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains("install jq jira yq"),
+            "batch install must be attempted first: {argv}"
+        );
+        // After the batch fails, each package is retried individually so the
+        // valid ones still install.
+        assert!(
+            argv.lines().any(|l| l == "install jq"),
+            "jq must be retried on its own: {argv}"
+        );
+        assert!(
+            argv.lines().any(|l| l == "install yq"),
+            "yq must be retried on its own: {argv}"
+        );
+        assert!(
+            argv.lines().any(|l| l == "install jira"),
+            "jira must be retried on its own: {argv}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn brew_install_single_invalid_package_surfaces_original_error_without_retry() {
+        let shim = ToolShim::install_failing_on(SHIM_ENV, "jira", "no such formula");
+        let p = test_printer();
+        let err = BrewManager
+            .install(&["jira".into()], &p)
+            .expect_err("single invalid package must fail");
+        assert!(
+            err.to_string().contains("no such formula"),
+            "single-package failure must surface the tool's real error: {err}"
+        );
+        assert_eq!(
+            shim.invocation_count(),
+            1,
+            "a single-package batch has nothing to isolate; it must not be retried: {}",
+            shim.argv_log()
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn brew_cask_install_batch_failure_retries_each_cask() {
+        let shim = ToolShim::install_failing_on(
+            SHIM_ENV,
+            "notacask",
+            "Error: Cask 'notacask' is unavailable.",
+        );
+        let p = test_printer();
+        let err = BrewCaskManager
+            .install(&["firefox".into(), "notacask".into()], &p)
+            .expect_err("a bad cask in the batch must surface as an error");
+        assert!(
+            err.to_string().contains("notacask"),
+            "error must name the failing cask: {err}"
+        );
+        let argv = shim.argv_log();
+        assert!(
+            argv.contains("install --cask firefox notacask"),
+            "batch cask install must be attempted first: {argv}"
+        );
+        assert!(
+            argv.lines().any(|l| l == "install --cask firefox"),
+            "firefox must be retried on its own: {argv}"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn brew_uninstall_passes_uninstall_subcommand_with_each_package() {
         let shim = ToolShim::install(SHIM_ENV, 0, "", "");
         let p = test_printer();

@@ -270,6 +270,64 @@ pub(super) fn run_pkg_cmd_live(
     Ok(output)
 }
 
+/// Install `packages` as a single batch; if the batch fails, retry each package
+/// on its own so one bad spec (e.g. a name that isn't a real formula) doesn't
+/// block the valid ones. `build_cmd` constructs the install `Command` for a
+/// given package subset, so the caller controls the exact argv (formula vs
+/// `--cask`, extra flags, etc.).
+///
+/// Returns `Ok(())` when everything installs. When some packages still fail
+/// after the per-package retry, the valid ones remain installed and the error
+/// names exactly the packages that failed. A single-package batch is not
+/// retried — there is nothing to isolate, so its original error is surfaced
+/// verbatim.
+pub(super) fn install_batch_then_per_package<F>(
+    printer: &Printer,
+    manager: &str,
+    packages: &[String],
+    build_cmd: F,
+) -> std::result::Result<(), PackageError>
+where
+    F: Fn(&[String]) -> Command,
+{
+    if packages.is_empty() {
+        return Ok(());
+    }
+
+    let batch_label = format!("{} install {}", manager, packages.join(" "));
+    let mut batch = build_cmd(packages);
+    match run_pkg_cmd_live(printer, manager, &mut batch, &batch_label, "install") {
+        Ok(_) => return Ok(()),
+        Err(e) => {
+            if packages.len() == 1 {
+                return Err(e);
+            }
+            printer.status_simple(
+                Role::Warn,
+                format!("{manager}: batch install failed; retrying each package individually"),
+            );
+        }
+    }
+
+    let mut failed: Vec<String> = Vec::new();
+    for pkg in packages {
+        let label = format!("{} install {}", manager, pkg);
+        let mut cmd = build_cmd(std::slice::from_ref(pkg));
+        if run_pkg_cmd_live(printer, manager, &mut cmd, &label, "install").is_err() {
+            failed.push(pkg.clone());
+        }
+    }
+
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(PackageError::InstallFailed {
+            manager: manager.into(),
+            message: format!("failed to install: {}", failed.join(", ")),
+        })
+    }
+}
+
 const LINUXBREW_PATH: &str = "/home/linuxbrew/.linuxbrew/bin/brew";
 
 /// Env-var seam for the `brew` binary path. Production reads no env var.

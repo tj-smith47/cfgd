@@ -11,7 +11,10 @@ use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::{Printer, Role};
 use cfgd_core::providers::PackageManager;
 
-use super::shared::{brew_available, brew_cmd, brew_path_dirs, run_pkg_cmd, run_pkg_cmd_live};
+use super::shared::{
+    brew_available, brew_cmd, brew_path_dirs, install_batch_then_per_package, run_pkg_cmd,
+    run_pkg_cmd_live,
+};
 
 pub struct BrewManager;
 
@@ -154,17 +157,11 @@ impl PackageManager for BrewCaskManager {
     }
 
     fn install(&self, casks: &[String], printer: &Printer) -> Result<()> {
-        if casks.is_empty() {
-            return Ok(());
-        }
-        let label = format!("brew install --cask {}", casks.join(" "));
-        run_pkg_cmd_live(
-            printer,
-            "brew-cask",
-            brew_cmd().arg("install").arg("--cask").args(casks),
-            &label,
-            "install",
-        )?;
+        install_batch_then_per_package(printer, "brew-cask", casks, |pkgs| {
+            let mut cmd = brew_cmd();
+            cmd.arg("install").arg("--cask").args(pkgs);
+            cmd
+        })?;
         Ok(())
     }
 
@@ -308,17 +305,11 @@ impl PackageManager for BrewManager {
     }
 
     fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
-        if packages.is_empty() {
-            return Ok(());
-        }
-        let label = format!("brew install {}", packages.join(" "));
-        run_pkg_cmd_live(
-            printer,
-            "brew",
-            brew_cmd().arg("install").args(packages),
-            &label,
-            "install",
-        )?;
+        install_batch_then_per_package(printer, "brew", packages, |pkgs| {
+            let mut cmd = brew_cmd();
+            cmd.arg("install").args(pkgs);
+            cmd
+        })?;
         Ok(())
     }
 
