@@ -1191,6 +1191,8 @@ fn empty_profile_update_args() -> ProfileUpdateArgs {
         on_change: vec![],
         on_drift: vec![],
         private: false,
+        yes: false,
+        allow_unsigned: false,
     }
 }
 

@@ -473,6 +473,8 @@ fn make_profile_update_args() -> super::super::ProfileUpdateArgs {
         on_change: vec![],
         on_drift: vec![],
         private: false,
+        yes: false,
+        allow_unsigned: false,
     }
 }
 
@@ -3513,4 +3515,141 @@ fn profile_update_add_registry_ref_module_errors_on_missing_registry() {
             || err.to_string().contains("Registry"),
         "should fail with registry-not-configured error, got: {err}"
     );
+}
+
+// --- cmd_profile_update — non-interactive remote-module install via --yes ─────
+//
+// `profile update --module <registry-ref>` is the only user-facing way to add a
+// remote module. The registry path delegates to `cmd_module_add_from_registry`,
+// which calls `prompt_confirm` unless `yes` is set. Under `cargo test` stdin is
+// not a TTY, so the prompt refuses with an error — meaning a remote module
+// cannot be installed non-interactively unless `--yes` threads through. These
+// tests pin that contract: `yes: true` installs without prompting, `yes: false`
+// surfaces the refusal.
+
+#[cfg(unix)]
+mod profile_update_remote_module_yes {
+    use super::*;
+    use serial_test::serial;
+    use std::path::{Path, PathBuf};
+
+    /// Init a non-bare git repo at `src_dir` with `modules/<mod>/module.yaml`
+    /// committed and HEAD tagged `<mod>/v<version>` (the registry tag
+    /// convention). Returns the source path so `file://<src>` serves as the
+    /// registry URL.
+    fn init_registry_source(src_dir: &Path, mod_name: &str, version: &str) -> PathBuf {
+        let src_repo = git2::Repository::init(src_dir).unwrap();
+        let module_rel = format!("modules/{mod_name}/module.yaml");
+        let module_yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {mod_name}\n  description: test mod\nspec: {{}}\n"
+        );
+        std::fs::create_dir_all(src_dir.join("modules").join(mod_name)).unwrap();
+        std::fs::write(src_dir.join(&module_rel), module_yaml).unwrap();
+        let mut index = src_repo.index().unwrap();
+        index.add_path(Path::new(&module_rel)).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        let commit_id = src_repo
+            .commit(Some("HEAD"), &sig, &sig, "add module", &tree, &[])
+            .unwrap();
+        drop(tree);
+        let commit_obj = src_repo.find_commit(commit_id).unwrap();
+        src_repo
+            .tag_lightweight(
+                &format!("{mod_name}/v{version}"),
+                commit_obj.as_object(),
+                false,
+            )
+            .unwrap();
+        src_dir.to_path_buf()
+    }
+
+    /// Build a `setup_config_dir`-shaped tempdir whose cfgd.yaml declares the
+    /// given registry so `cmd_module_add_from_registry` can resolve it.
+    fn setup_with_registry(reg_name: &str, reg_url: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let profiles_dir = dir.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules: []\n",
+        )
+        .unwrap();
+        let cfgd_yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  modules:\n    registries:\n      - name: {reg_name}\n        url: {reg_url}\n"
+        );
+        std::fs::write(dir.path().join("cfgd.yaml"), cfgd_yaml).unwrap();
+        std::fs::create_dir_all(dir.path().join("modules")).unwrap();
+        dir
+    }
+
+    #[test]
+    #[serial]
+    fn profile_update_remote_module_with_yes_installs_non_interactively() {
+        let src_root = tempfile::tempdir().unwrap();
+        let src = init_registry_source(src_root.path(), "tmux", "1.0.0");
+        let reg_url = cfgd_core::test_helpers::file_url(&src);
+
+        let work = setup_with_registry("myorg", &reg_url);
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        let cli = test_cli(work.path());
+        let printer = make_printer();
+
+        let mut args = make_profile_update_args();
+        args.modules = vec!["myorg/tmux@v1.0.0".to_string()];
+        args.yes = true;
+
+        cmd_profile_update(&cli, &printer, "default", &args)
+            .expect("remote-module install with --yes must succeed non-interactively");
+
+        // Lockfile records the installed module.
+        let lockfile = std::fs::read_to_string(work.path().join("modules.lock")).unwrap();
+        assert!(
+            lockfile.contains("tmux"),
+            "lockfile should list the installed module: {lockfile}"
+        );
+        assert!(
+            lockfile.contains("tmux/v1.0.0"),
+            "lockfile pinned_ref should record the per-module tag: {lockfile}"
+        );
+
+        // Profile now references the registry-qualified module.
+        let profile_yaml =
+            std::fs::read_to_string(work.path().join("profiles/default.yaml")).unwrap();
+        assert!(
+            profile_yaml.contains("myorg/tmux"),
+            "profile should reference the registry module after install: {profile_yaml}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn profile_update_remote_module_without_yes_refuses_in_non_interactive_context() {
+        let src_root = tempfile::tempdir().unwrap();
+        let src = init_registry_source(src_root.path(), "tmux", "1.0.0");
+        let reg_url = cfgd_core::test_helpers::file_url(&src);
+
+        let work = setup_with_registry("myorg", &reg_url);
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        let cli = test_cli(work.path());
+        let printer = make_printer();
+
+        let mut args = make_profile_update_args();
+        args.modules = vec!["myorg/tmux@v1.0.0".to_string()];
+        args.yes = false;
+
+        let err = cmd_profile_update(&cli, &printer, "default", &args)
+            .expect_err("without --yes the confirmation prompt must refuse non-interactively");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("non-interactive") || msg.contains("refusing to prompt"),
+            "error should be the non-interactive prompt refusal: {msg}"
+        );
+    }
 }

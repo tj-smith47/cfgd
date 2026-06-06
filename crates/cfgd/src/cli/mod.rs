@@ -1087,6 +1087,12 @@ pub struct ProfileUpdateArgs {
     /// Mark all --file entries as private (local-only, excluded from git).
     #[arg(long = "private-files")]
     pub private: bool,
+    /// Skip confirmation prompt (for non-interactive use)
+    #[arg(long, short, env = "CFGD_YES")]
+    pub yes: bool,
+    /// Allow unsigned modules even when require-signatures is enabled
+    #[arg(long)]
+    pub allow_unsigned: bool,
 }
 
 #[derive(Subcommand)]

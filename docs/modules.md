@@ -490,7 +490,23 @@ cfgd module create nvim                       # create a new local module
 cfgd profile update --module nvim              # add local module to active profile
 ```
 
-For registry or git-hosted modules, reference them in your profile YAML:
+For registry or git-hosted modules, pass the reference to `profile update --module` to fetch, lock, and add it in one step:
+
+```sh
+cfgd profile update --module community/tmux             # registry module, latest tag
+cfgd profile update --module community/tmux@tmux/v2.0   # registry module, pinned tag
+cfgd profile update --module https://github.com/jane/cfgd-tmux@v2.0   # git URL
+```
+
+The remote-module install prompts for confirmation before writing the lockfile. In non-interactive contexts (CI, Dockerfiles, scripts, `-o json`) pass `-y` / `--yes` (or set `CFGD_YES`) to skip the prompt, and `--allow-unsigned` to install a module without a valid signature when `requireSignatures` is enabled:
+
+```sh
+cfgd profile update --module community/tmux --yes
+CFGD_YES=1 cfgd profile update --module community/tmux
+cfgd profile update --module community/experimental-tool --yes --allow-unsigned
+```
+
+You can also reference remote modules directly in your profile YAML — cfgd resolves them on the next apply:
 
 ```yaml
 spec:
