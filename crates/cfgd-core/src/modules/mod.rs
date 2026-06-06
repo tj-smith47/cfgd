@@ -31,7 +31,7 @@ pub use lockfile::{
 pub use registry::{
     FetchedRemoteModule, RegistryModule, RegistryRef, extract_registry_name,
     fetch_registry_modules, fetch_remote_module, is_registry_ref, latest_module_version,
-    parse_registry_ref, resolve_profile_module_name,
+    latest_module_version_remote, parse_registry_ref, resolve_profile_module_name,
 };
 pub use resolve::{
     resolve_module_files, resolve_module_packages, resolve_modules, resolve_package,

@@ -4775,6 +4775,99 @@ mod cmd_module_add_remote_local_bare {
             .unwrap();
     }
 
+    /// Like `make_bare_with_module`, but tags the commit with the registry
+    /// `<module>/<version>` convention (e.g. `mymod/v1.0.0`) instead of a plain
+    /// version tag. This is what `cmd_module_upgrade`'s no-ref ("latest")
+    /// resolution looks for. Returns the bare path.
+    fn make_bare_with_prefixed_tag(tmp_root: &Path, module_name: &str, version: &str) -> PathBuf {
+        let bare = tmp_root.join("upstream.git");
+        let _bare_repo = git2::Repository::init_bare(&bare).unwrap();
+
+        let src = tmp_root.join("src");
+        let src_repo = git2::Repository::init(&src).unwrap();
+        let yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {module_name}\n  description: v{version}\nspec: {{}}\n"
+        );
+        std::fs::write(src.join("module.yaml"), yaml).unwrap();
+        let mut index = src_repo.index().unwrap();
+        index.add_path(Path::new("module.yaml")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        let commit_id = src_repo
+            .commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        drop(tree);
+        let commit_obj = src_repo.find_commit(commit_id).unwrap();
+        let tag = format!("{module_name}/v{version}");
+        src_repo
+            .tag(&tag, commit_obj.as_object(), &sig, "release", false)
+            .unwrap();
+
+        let bare_url = cfgd_core::test_helpers::file_url(&bare);
+        let mut remote = src_repo.remote("origin", &bare_url).unwrap();
+        let branch = src_repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        remote
+            .push(
+                &[
+                    &format!("refs/heads/{branch}:refs/heads/{branch}"),
+                    &format!("refs/tags/{tag}:refs/tags/{tag}"),
+                ],
+                None,
+            )
+            .unwrap();
+        bare
+    }
+
+    /// Add a second commit + `<module>/<version>` tag to an existing source repo
+    /// and push it. Companion to `make_bare_with_prefixed_tag`.
+    fn add_prefixed_tag_to_bare(src: &Path, bare: &Path, module_name: &str, version: &str) {
+        let src_repo = git2::Repository::open(src).unwrap();
+        let yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {module_name}\n  description: v{version}\nspec: {{}}\n"
+        );
+        std::fs::write(src.join("module.yaml"), yaml).unwrap();
+        let mut index = src_repo.index().unwrap();
+        index.add_path(Path::new("module.yaml")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = src_repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@example.com").unwrap();
+        let parent = src_repo.head().unwrap().peel_to_commit().unwrap();
+        let commit_id = src_repo
+            .commit(Some("HEAD"), &sig, &sig, "bump", &tree, &[&parent])
+            .unwrap();
+        drop(tree);
+        let commit_obj = src_repo.find_commit(commit_id).unwrap();
+        let tag = format!("{module_name}/v{version}");
+        src_repo
+            .tag(&tag, commit_obj.as_object(), &sig, "release", false)
+            .unwrap();
+        let bare_url = cfgd_core::test_helpers::file_url(bare);
+        let mut remote = src_repo.remote_anonymous(&bare_url).unwrap();
+        let branch = src_repo
+            .head()
+            .unwrap()
+            .shorthand()
+            .unwrap_or("master")
+            .to_string();
+        remote
+            .push(
+                &[
+                    &format!("+refs/heads/{branch}:refs/heads/{branch}"),
+                    &format!("refs/tags/{tag}:refs/tags/{tag}"),
+                ],
+                None,
+            )
+            .unwrap();
+    }
+
     /// RAII env-var helper: set on construction, remove on drop. Tests using
     /// this MUST be marked `#[serial]` — env mutation is process-wide.
     struct EnvGuard {
@@ -4950,19 +5043,79 @@ mod cmd_module_add_remote_local_bare {
 
     #[test]
     #[serial]
-    fn cmd_module_upgrade_with_no_new_ref_logs_latest_head_and_short_circuits() {
-        // Drives the `new_ref: None` arm of cmd_module_upgrade. The body
-        // calls fetch_git_source with `tag: None` (no checkout advance —
-        // checkout_ref short-circuits when both tag/git_ref are None),
-        // reads the cached HEAD commit, logs it via "Latest commit:", and
-        // then short-circuits at the same-commit guard because HEAD still
-        // points at the originally-pinned tag's commit. Pins both the
-        // "Latest commit:" log line shape AND the contract that bare
-        // `cfgd module upgrade <name>` is a no-op without an explicit tag.
+    fn cmd_module_upgrade_no_ref_resolves_highest_published_tag() {
+        // Regression for the no-ref "latest" arm. Module versions are git tags
+        // named `<module>/<version>`. Install pins `mymod/v1.0.0`; a newer
+        // `mymod/v2.0.0` tag is published. `cfgd module upgrade mymod` (no
+        // --ref) must resolve "latest" to the highest published tag
+        // (mymod/v2.0.0) and advance the lockfile — NOT resolve default-branch
+        // HEAD and short-circuit at "already at this version".
         let work = setup_config_dir();
         let _home = cfgd_core::with_test_home_guard(work.path());
         let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
 
+        let bare_root = tempfile::tempdir().unwrap();
+        let bare = make_bare_with_prefixed_tag(bare_root.path(), "mymod", "1.0.0");
+        let url_v1 = format!("{}@mymod/v1.0.0", cfgd_core::to_file_url(&bare));
+
+        let cli = test_cli(work.path());
+        let printer1 = make_printer();
+        cmd_module_add_remote(&cli, &printer1, &url_v1, None, true, true).unwrap();
+
+        // Capture the v1 commit the lockfile pinned, then publish v2.
+        let lockfile_v1 = modules::load_lockfile(&config_dir(&cli)).unwrap();
+        let entry_v1 = lockfile_v1
+            .modules
+            .iter()
+            .find(|e| e.name == "mymod")
+            .expect("mymod locked at v1");
+        let commit_v1 = entry_v1.commit.clone();
+        assert_eq!(entry_v1.pinned_ref, "mymod/v1.0.0");
+
+        let src = bare_root.path().join("src");
+        add_prefixed_tag_to_bare(&src, &bare, "mymod", "2.0.0");
+
+        // No --ref: must resolve and advance to mymod/v2.0.0.
+        let (printer2, buf2) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        cmd_module_upgrade(&cli, &printer2, "mymod", None, true, true)
+            .expect("no-ref upgrade should resolve and apply the latest tag");
+        drop(printer2);
+
+        let out = buf2.lock().unwrap();
+        assert!(
+            out.contains("Latest version: mymod/v2.0.0"),
+            "no-ref arm should resolve the highest published tag: {out}"
+        );
+
+        let lockfile_v2 = modules::load_lockfile(&config_dir(&cli)).unwrap();
+        let entry_v2 = lockfile_v2
+            .modules
+            .iter()
+            .find(|e| e.name == "mymod")
+            .expect("mymod still locked");
+        assert_eq!(
+            entry_v2.pinned_ref, "mymod/v2.0.0",
+            "lockfile pinned_ref should advance to the full v2 tag"
+        );
+        assert_ne!(
+            entry_v2.commit, commit_v1,
+            "lockfile commit should move off the v1 commit"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn cmd_module_upgrade_no_ref_errors_when_no_published_versions() {
+        // The registry model is tag-based: with no `<module>/v*` tags the
+        // no-ref upgrade must surface a clear error rather than silently
+        // falling back to a branch HEAD.
+        let work = setup_config_dir();
+        let _home = cfgd_core::with_test_home_guard(work.path());
+        let _env = EnvGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+
+        // `make_bare_with_module` tags the commit `v1.0.0` (no `mymod/` prefix),
+        // so there is no `mymod/v*` version tag for "latest" to resolve.
         let bare_root = tempfile::tempdir().unwrap();
         let bare = make_bare_with_module(bare_root.path(), "mymod", "v1.0.0");
         let url_v1 = format!("{}@v1.0.0", cfgd_core::to_file_url(&bare));
@@ -4971,29 +5124,22 @@ mod cmd_module_add_remote_local_bare {
         let printer1 = make_printer();
         cmd_module_add_remote(&cli, &printer1, &url_v1, None, true, true).unwrap();
 
-        let lock_v1 = std::fs::read_to_string(work.path().join("modules.lock")).unwrap();
+        let lock_before = std::fs::read_to_string(work.path().join("modules.lock")).unwrap();
 
-        let (printer2, buf2) =
-            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
-        cmd_module_upgrade(&cli, &printer2, "mymod", None, true, true)
-            .expect("upgrade with new_ref=None should succeed");
-        drop(printer2);
-
-        let out = buf2.lock().unwrap();
+        let printer2 = make_printer();
+        let err = cmd_module_upgrade(&cli, &printer2, "mymod", None, true, true)
+            .expect_err("no published versions should error, not no-op");
+        let msg = err.to_string();
         assert!(
-            out.contains("Latest commit:"),
-            "no-new_ref arm should log the resolved HEAD: {out}"
-        );
-        assert!(
-            out.contains("already at this version"),
-            "HEAD still points at the tagged commit, so same-commit short-circuit should fire: {out}"
+            msg.contains("No published versions") && msg.contains("mymod"),
+            "error should explain there are no published versions: {msg}"
         );
 
-        // Lockfile must be byte-identical — the short-circuit fires before save_lockfile.
+        // Lockfile untouched on the error path.
         let lock_after = std::fs::read_to_string(work.path().join("modules.lock")).unwrap();
         assert_eq!(
-            lock_v1, lock_after,
-            "lockfile must not change when upgrade resolves to the same commit"
+            lock_before, lock_after,
+            "lockfile must not change when no version can be resolved"
         );
     }
 

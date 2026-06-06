@@ -522,9 +522,17 @@ When cfgd encounters a registry reference during apply, it clones or fetches the
 Upgrade a locked remote module to a new version (re-fetches from git, updates lockfile):
 
 ```sh
-cfgd module upgrade tmux                     # latest available
-cfgd module upgrade tmux --ref tmux/v2.0     # specific version
+cfgd module upgrade tmux                     # latest published version
+cfgd module upgrade tmux --ref tmux/v2.0.0   # specific version
 ```
+
+Without `--ref`, "latest" is the **highest published version tag** for the
+module — module versions are git tags named `<module>/<version>` (e.g.
+`tmux/v2.0.0`), and cfgd queries the remote (`git ls-remote --tags`) so a newer
+tag is found even when the local cache holds only the installed version. The
+lockfile is re-pinned to the full resolved tag. If the repo exposes no
+`<module>/v*` tags, the upgrade fails with a clear error rather than tracking a
+branch — remote modules must always resolve to a pinned tag.
 
 ### Searching
 

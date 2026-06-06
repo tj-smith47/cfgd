@@ -297,3 +297,66 @@ pub fn latest_module_version(
     let tags = list_module_tags(&cache_dir, &registry.name)?;
     Ok(tags.get(module_name).and_then(|t| t.last()).cloned())
 }
+
+/// Resolve the latest published version tag for `module_name` directly against
+/// a remote repo, without relying on a local cache being fully populated.
+///
+/// Module versions are published as git tags named `<module>/<version>` (e.g.
+/// `tmux/v2.0.0`). The version part is sorted with [`group_module_tags`]
+/// (loose-semver), so the returned value is the highest version (e.g.
+/// `v2.0.0`). Returns `Ok(None)` when no `<module>/<version>` tag exists for
+/// the module.
+///
+/// Unlike [`latest_module_version`], this lists tags over the network via
+/// `git ls-remote --tags` and therefore sees every tag regardless of how the
+/// install-time cache was cloned (a shallow single-tag clone hides the rest).
+/// The `repo_url` is attacker-influenced (it comes from the lockfile, which
+/// records a remote source), so the call is hardened the same way the
+/// `pinVersion` resolver hardens its `ls-remote`: `git_cmd_safe`
+/// (`GIT_TERMINAL_PROMPT=0`, no system/global config, no credential helpers),
+/// `--end-of-options` before the URL, and a bounded timeout.
+pub fn latest_module_version_remote(repo_url: &str, module_name: &str) -> Result<Option<String>> {
+    let mut cmd = crate::git_cmd_safe(Some(repo_url), None);
+    cmd.args(["ls-remote", "--tags", "--end-of-options", repo_url]);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let output =
+        crate::command_output_with_timeout(&mut cmd, crate::GIT_NETWORK_TIMEOUT).map_err(|e| {
+            ModuleError::GitFetchFailed {
+                module: module_name.to_string(),
+                url: repo_url.to_string(),
+                message: format!("ls-remote --tags failed: {e}"),
+            }
+        })?;
+    if !output.status.success() {
+        return Err(ModuleError::GitFetchFailed {
+            module: module_name.to_string(),
+            url: repo_url.to_string(),
+            message: format!(
+                "ls-remote --tags failed: {}",
+                crate::stderr_lossy_trimmed(&output)
+            ),
+        }
+        .into());
+    }
+
+    let stdout = crate::stdout_lossy_trimmed(&output);
+    let grouped = group_module_tags(parse_ls_remote_tag_names(&stdout));
+    Ok(grouped.get(module_name).and_then(|t| t.last()).cloned())
+}
+
+/// Extract `<module>/<version>` tag names from `git ls-remote --tags` stdout.
+///
+/// Each line is `<sha>\t<refname>`. The `refs/tags/` prefix is stripped and the
+/// peeled-tag lines (`refs/tags/<name>^{}`) are dropped so an annotated tag is
+/// not double-counted. The returned names are fed to [`group_module_tags`],
+/// which keeps only those matching the `<module>/<version>` layout.
+pub(super) fn parse_ls_remote_tag_names(stdout: &str) -> Vec<&str> {
+    stdout
+        .lines()
+        .filter_map(|line| line.split('\t').nth(1))
+        .filter_map(|refname| refname.strip_prefix("refs/tags/"))
+        .filter(|name| !name.ends_with("^{}"))
+        .collect()
+}

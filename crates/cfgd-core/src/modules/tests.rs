@@ -1723,6 +1723,20 @@ fn group_module_tags_last_is_highest_version() {
 }
 
 #[test]
+fn parse_ls_remote_tag_names_strips_prefix_and_drops_peeled() {
+    use super::registry::parse_ls_remote_tag_names;
+    // `git ls-remote --tags` emits `<sha>\t<refname>`; annotated tags appear
+    // twice (the second peeled as `^{}`). Strip `refs/tags/` and drop the
+    // peeled line so each module tag is counted once.
+    let stdout = "abc123\trefs/tags/tmux/v1.0.0\n\
+                  def456\trefs/tags/tmux/v1.0.0^{}\n\
+                  789aaa\trefs/tags/tmux/v2.0.0\n\
+                  000bbb\trefs/heads/main\n";
+    let names = parse_ls_remote_tag_names(stdout);
+    assert_eq!(names, vec!["tmux/v1.0.0", "tmux/v2.0.0"]);
+}
+
+#[test]
 fn resolve_profile_module_name_bare() {
     assert_eq!(resolve_profile_module_name("tmux"), "tmux");
 }

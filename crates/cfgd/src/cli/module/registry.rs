@@ -340,18 +340,32 @@ pub fn cmd_module_upgrade(
     let new_ref = match new_ref {
         Some(r) => r.to_string(),
         None => {
-            // Fetch latest from remote and use HEAD
-            let git_src = modules::GitSource {
-                repo_url: old_git_src.repo_url.clone(),
-                tag: None,
-                git_ref: None,
-                subdir: None,
-            };
-            modules::fetch_git_source(&git_src, &cache_base, name, &lib_printer)?;
-            let repo_dir = modules::git_cache_dir(&cache_base, &old_git_src.repo_url);
-            let head = modules::get_head_commit_sha(&repo_dir)?;
-            printer.status_simple(Role::Info, format!("Latest commit: {}", head));
-            head
+            // "latest" means the highest published version tag, not the
+            // default-branch HEAD. Module versions are git tags named
+            // `<module>/<version>`; resolve the highest over the remote so a
+            // shallow install-time cache doesn't hide newer tags.
+            printer.status_simple(
+                Role::Info,
+                format!("Resolving latest published version for '{}'", name),
+            );
+            match modules::latest_module_version_remote(&old_git_src.repo_url, name)? {
+                Some(version) => {
+                    let tag = format!("{}/{}", name, version);
+                    printer.status_simple(Role::Info, format!("Latest version: {}", tag));
+                    tag
+                }
+                None => {
+                    return Err(crate::cli::cli_error(
+                        name,
+                        "no_versions",
+                        format!(
+                            "No published versions found for module '{}' — the registry exposes no '{}/v*' tags",
+                            name, name
+                        ),
+                        serde_json::json!({ "url": old_git_src.repo_url }),
+                    ));
+                }
+            }
         }
     };
 
