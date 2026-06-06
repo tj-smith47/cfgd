@@ -423,7 +423,7 @@ workspaces:
               email: "tj@jarvispro.io"
             update_existing_pr: true
         # Docker V2 image for the cfgd agent (CLI + daemon image).
-        docker_v2:
+        dockers_v2:
           - id: cfgd-agent
             dockerfile: Dockerfile.agent.release
             images:
@@ -449,7 +449,7 @@ workspaces:
             build_args:
               VERSION: "{{ Version }}"
             sbom: true
-        # No docker_manifests needed: multi-platform docker_v2 pushes a native
+        # No docker_manifests needed: multi-platform dockers_v2 pushes a native
         # multi-arch manifest per tag.
         docker_digest:
           name_template: "cfgd_{{ .Tag }}.digest"
@@ -572,7 +572,7 @@ workspaces:
               - x86_64-unknown-linux-gnu
               - aarch64-unknown-linux-gnu
         archives: false
-        docker_v2:
+        dockers_v2:
           - id: cfgd-operator
             dockerfile: Dockerfile.operator.release
             images:
@@ -592,7 +592,7 @@ workspaces:
             build_args:
               VERSION: "{{ Version }}"
             sbom: true
-        # No docker_manifests needed: multi-platform docker_v2 pushes a native
+        # No docker_manifests needed: multi-platform dockers_v2 pushes a native
         # multi-arch manifest per tag.
         docker_digest:
           name_template: "cfgd-operator_{{ .Tag }}.digest"
@@ -634,7 +634,7 @@ workspaces:
               - x86_64-unknown-linux-gnu
               - aarch64-unknown-linux-gnu
         archives: false
-        docker_v2:
+        dockers_v2:
           - id: cfgd-csi
             dockerfile: Dockerfile.csi.release
             images:
@@ -654,7 +654,7 @@ workspaces:
             build_args:
               VERSION: "{{ Version }}"
             sbom: true
-        # No docker_manifests needed: multi-platform docker_v2 pushes a native
+        # No docker_manifests needed: multi-platform dockers_v2 pushes a native
         # multi-arch manifest per tag.
         docker_digest:
           name_template: "cfgd-csi_{{ .Tag }}.digest"
@@ -787,7 +787,7 @@ signs:
       - "{{ Artifact }}"
     env:
       - "GPG_TTY={{ Env.GPG_TTY }}"
-    if_condition: "{{ not .IsSnapshot }}"
+    if: "{{ not .IsSnapshot }}"
   - id: checksum-cosign
     artifacts: checksum
     signature: "{{ .Artifact }}.cosign.bundle"
@@ -799,7 +799,7 @@ signs:
       - "--output-certificate={{ .Certificate }}"
       - "--yes"
       - "{{ Artifact }}"
-    if_condition: "{{ not .IsSnapshot }}"
+    if: "{{ not .IsSnapshot }}"
   - id: source
     artifacts: source
     cmd: gpg
@@ -813,7 +813,7 @@ signs:
       - "{{ Artifact }}"
     env:
       - "GPG_TTY={{ Env.GPG_TTY }}"
-    if_condition: "{{ not .IsSnapshot }}"
+    if: "{{ not .IsSnapshot }}"
 
 # Cosign-based binary signing for the cfgd CLI binary.
 binary_signs:
@@ -828,7 +828,7 @@ binary_signs:
       - "--output-certificate={{ .Certificate }}"
       - "--yes"
       - "{{ Artifact }}"
-    if_condition: "{{ not .IsSnapshot }}"
+    if: "{{ not .IsSnapshot }}"
 
 # Cosign-based Docker image signing for all 3 images.
 docker_signs:
@@ -839,7 +839,7 @@ docker_signs:
       - "sign"
       - "--yes"
       - "{{ Artifact }}"
-    if_condition: "{{ not .IsSnapshot }}"
+    if: "{{ not .IsSnapshot }}"
 
 source:
   enabled: true
@@ -855,7 +855,6 @@ source:
 
 sboms:
   - id: default
-    enabled: true
     cmd: syft
     args:
       - "$artifact"
@@ -869,7 +868,7 @@ sboms:
 
 # Public MCP registry entry. Auth uses the workflow's `id-token: write`
 # (github-oidc); the OCI package points at the multi-arch image already
-# pushed by `docker_v2`.
+# pushed by `dockers_v2`.
 mcp:
   name: io.github.tj-smith47/cfgd
   # description / homepage derived from the owning crate's (cfgd) metadata.
@@ -936,8 +935,7 @@ homebrew_casks:
     caveats: |
       Run `cfgd init` to scaffold a config in your repo.
     dependencies:
-      - name: git
-        type: required
+      - formula: git
     commit_msg_template: "cfgd {{ .Tag }}"
     commit_author:
       name: "TJ Smith"
