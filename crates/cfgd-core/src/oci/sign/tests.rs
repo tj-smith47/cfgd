@@ -199,7 +199,14 @@ fn apply_verify_args_with_key() {
     apply_verify_args(&mut cmd, &opts);
     // Extract the args from the command
     let args: Vec<_> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-    assert_eq!(args, vec!["--key", "/path/to/cosign.pub"]);
+    assert_eq!(
+        args,
+        vec![
+            "--key",
+            "/path/to/cosign.pub",
+            "--insecure-ignore-tlog=true"
+        ]
+    );
 }
 
 #[test]
@@ -277,8 +284,9 @@ fn apply_verify_args_key_takes_precedence_over_keyless() {
     };
     apply_verify_args(&mut cmd, &opts);
     let args: Vec<_> = cmd.get_args().map(|a| a.to_str().unwrap()).collect();
-    // When key is provided, only --key should be added (no certificate args)
-    assert_eq!(args, vec!["--key", "my.pub"]);
+    // When key is provided, only --key (+ offline tlog skip) should be added
+    // (no certificate args).
+    assert_eq!(args, vec!["--key", "my.pub", "--insecure-ignore-tlog=true"]);
 }
 
 // --- generate_slsa_provenance: digest prefix stripping ---
@@ -508,6 +516,10 @@ mod fake_cosign {
         assert!(argv.contains("sign"), "argv must include 'sign': {argv}");
         assert!(argv.contains("--yes"), "keyless sign passes --yes: {argv}");
         assert!(
+            !argv.contains("--tlog-upload=false"),
+            "keyless sign keeps Rekor (no --tlog-upload=false): {argv}"
+        );
+        assert!(
             argv.contains("ghcr.io/test/mod:v1"),
             "argv ends with artifact ref: {argv}"
         );
@@ -525,8 +537,12 @@ mod fake_cosign {
             "argv must include --key: {argv}"
         );
         assert!(
-            !argv.contains("--yes"),
-            "with-key sign must NOT pass --yes: {argv}"
+            argv.contains("--yes"),
+            "with-key sign passes --yes for non-interactive use: {argv}"
+        );
+        assert!(
+            argv.contains("--tlog-upload=false"),
+            "keyed sign is offline: must disable Rekor tlog upload: {argv}"
         );
     }
 
@@ -602,6 +618,10 @@ mod fake_cosign {
             "argv must include --key: {argv}"
         );
         assert!(
+            argv.contains("--insecure-ignore-tlog=true"),
+            "keyed verify skips the tlog (offline signatures): {argv}"
+        );
+        assert!(
             !argv.contains("--certificate-identity-regexp"),
             "--key path must NOT add identity-regexp: {argv}"
         );
@@ -664,6 +684,14 @@ mod fake_cosign {
             argv.contains("--key /keys/cosign.key"),
             "with-key attest passes --key: {argv}"
         );
+        assert!(
+            argv.contains("--yes"),
+            "with-key attest passes --yes for non-interactive use: {argv}"
+        );
+        assert!(
+            argv.contains("--tlog-upload=false"),
+            "keyed attest is offline: must disable Rekor tlog upload: {argv}"
+        );
     }
 
     #[test]
@@ -676,6 +704,10 @@ mod fake_cosign {
         assert!(
             argv.contains("--yes"),
             "keyless attest passes --yes: {argv}"
+        );
+        assert!(
+            !argv.contains("--tlog-upload=false"),
+            "keyless attest keeps Rekor (no --tlog-upload=false): {argv}"
         );
         assert!(
             !argv.contains("--key"),

@@ -18,9 +18,15 @@ pub fn sign_artifact(artifact_ref: &str, key_path: Option<&str>) -> Result<(), O
 
     if let Some(key) = key_path {
         cmd.arg("--key").arg(key);
-    } else {
-        cmd.arg("--yes");
+        // Keyed signing is offline PKI: never upload to the public Rekor
+        // transparency log (that would leak private module signatures to
+        // public infra and trigger an interactive consent prompt).
+        cmd.arg("--tlog-upload=false");
     }
+
+    // Always skip cosign's interactive consent prompt so signing works
+    // non-interactively on every path.
+    cmd.arg("--yes");
 
     cmd.arg(artifact_ref);
 
@@ -66,6 +72,9 @@ fn validate_verify_options(opts: &VerifyOptions<'_>) -> Result<(), OciError> {
 fn apply_verify_args(cmd: &mut std::process::Command, opts: &VerifyOptions<'_>) {
     if let Some(key) = opts.key {
         cmd.arg("--key").arg(key);
+        // Keyed signatures are offline (no Rekor entry), so skip the
+        // transparency-log lookup that keyless verification relies on.
+        cmd.arg("--insecure-ignore-tlog=true");
     } else {
         let identity = opts.identity.unwrap_or(".*");
         let issuer = opts.issuer.unwrap_or(".*");
@@ -171,9 +180,13 @@ pub fn attach_attestation(
 
     if let Some(key) = key_path {
         cmd.arg("--key").arg(key);
-    } else {
-        cmd.arg("--yes");
+        // Keyed attestation is offline PKI: keep predicates out of the
+        // public Rekor transparency log (mirrors keyed signing).
+        cmd.arg("--tlog-upload=false");
     }
+
+    // Always skip the interactive consent prompt for non-interactive use.
+    cmd.arg("--yes");
 
     cmd.arg("--predicate")
         .arg(attestation_path)

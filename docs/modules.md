@@ -564,18 +564,44 @@ Clones the repo, finds the module, resolves deps, detects platform, and applies 
 Remote modules can be signed with GPG or SSH keys. cfgd verifies signatures when present and supports three trust modes:
 
 - **Verify if present (default).** If a module has a signature, cfgd verifies it. If verification fails, the module is rejected. If no signature is present, the module is accepted with a warning.
-- **Require signatures.** All remote modules must have valid signatures. Unsigned modules are rejected. Enable this in `cfgd.yaml`:
+- **Require signatures.** All remote module tags must carry a valid GPG/SSH signature. Unsigned or lightweight tags are rejected. Enable this in `cfgd.yaml`:
   ```yaml
   spec:
-    module-sources:
-      - name: community
-        url: https://github.com/cfgd-community/modules.git
+    modules:
+      security:
         requireSignatures: true
   ```
 - **Skip verification.** Use `--allow-unsigned` on the CLI to bypass signature checks for a single operation. This is intended for development and testing, not production use.
   ```sh
   cfgd module upgrade community/experimental-tool --allow-unsigned
   ```
+
+### OCI Artifact Signing (cosign)
+
+Modules published to an OCI registry (`cfgd module push`/`pull`/`build`) are signed and verified
+with [cosign](https://github.com/sigstore/cosign). cfgd uses two distinct trust models:
+
+- **Keyed (offline PKI).** When you pass `--key`, signing is fully offline: cfgd does **not**
+  upload the signature to the public Rekor transparency log, and verification skips the tlog
+  lookup. This keeps private module signatures off public infrastructure and works
+  non-interactively (CI, headless hosts).
+  ```sh
+  cfgd module keys generate -d ./keys           # writes keys/cosign.key + keys/cosign.pub
+  cfgd module push ./mymod --artifact ghcr.io/org/mymod:v1 --sign --key ./keys/cosign.key
+  cfgd module pull ghcr.io/org/mymod:v1 --dir ./out --require-signature --key ./keys/cosign.pub
+  ```
+- **Keyless (Fulcio/Rekor).** Omit `--key` to sign with a short-lived certificate from the public
+  Sigstore infrastructure; the signature is recorded in the Rekor transparency log. Verify with
+  certificate identity/issuer constraints:
+  ```sh
+  cfgd module push ./mymod --artifact ghcr.io/org/mymod:v1 --sign
+  cfgd module pull ghcr.io/org/mymod:v1 --dir ./out --require-signature \
+    --certificate-identity ci@org.com --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  ```
+
+`cfgd module keys rotate` generates a fresh pair, backs up the old keys, and re-signs the artifacts
+named in `--artifacts`. SLSA provenance attestations follow the same keyed/keyless split via
+`--attest` (push) and `--verify-attest` (pull).
 
 ### Lockfile Integrity
 
