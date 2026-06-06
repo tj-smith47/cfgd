@@ -4,6 +4,28 @@ cfgd config files follow a structure inspired by the [Kubernetes Resource Model]
 
 For the complete field-by-field reference, see the [Config spec reference](spec/config.md).
 
+## Editor Support
+
+cfgd publishes JSON Schemas for each config document — `cfgd.yaml`, modules
+(`modules/<name>/module.yaml`), profiles (`profiles/*.yaml`), and config sources
+(`cfgd-source.yaml`) — so editors with a YAML language server (VS Code, Neovim,
+JetBrains, …) can offer completion and inline validation.
+
+The schemas are self-hosted at `https://cfgd.io/schemas/` and registered with
+[SchemaStore](https://www.schemastore.org/) on each release, so for the standard
+file names above no setup is needed once your editor's YAML extension picks up
+the SchemaStore catalog. To pin a schema explicitly (or for non-standard file
+names), add a modeline to the top of the file:
+
+```yaml
+# yaml-language-server: $schema=https://cfgd.io/schemas/cfgd-config.schema.json
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+# ...
+```
+
+Swap the URL for `cfgd-module`, `cfgd-profile`, or `cfgd-source` as appropriate.
+
 ## Root Config — `cfgd.yaml`
 
 The entry point. Tells cfgd which profile to activate, where config is stored, and how the daemon behaves.

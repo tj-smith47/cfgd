@@ -161,6 +161,13 @@ workspaces:
         version_sync:
           enabled: true
           mode: cargo
+        # Keep the user-facing download URLs and the Helm chart's appVersion in
+        # lockstep with the cfgd crate version at tag time. Plain old→new string
+        # rewrite of the cfgd version (0.4.0): the chart's own `version:` (0.1.0)
+        # has a separate cadence and never matches, so it is left untouched.
+        version_files:
+          - docs/installation.md
+          - chart/cfgd/Chart.yaml
         builds:
           # gnu build → tarballs / binstall / homebrew cask / makeself installer
           # (dynamic glibc, the native experience for direct downloads).
@@ -672,6 +679,39 @@ workspaces:
         # Inherits `publish.cargo: { index_timeout: 600 }` from defaults
         # (the CSI node plugin opts in to crates.io publishing through the
         # same slot).
+
+# Register cfgd's editor-config JSON schemas with SchemaStore so editors offer
+# completion/validation for cfgd.yaml, module, profile, and source files out of
+# the box. Vendor mode: anodizer copies each schema into the SchemaStore fork
+# and opens one upstream PR per release (file_match globs follow cfgd's real
+# on-disk layout — modules/<name>/module.yaml and profiles/<name>.yaml).
+# cfgd-module is draft-2020-12, so its catalog entry is added to the
+# highSchemaVersion list automatically.
+schemastore:
+  repository:
+    owner: tj-smith47
+    name: schemastore
+  schemas:
+    - name: cfgd Config
+      crate: cfgd
+      description: "cfgd root configuration file (cfgd.yaml)"
+      file_match: ["cfgd.yaml", "cfgd.yml"]
+      schema_file: schemas/cfgd-config.schema.json
+    - name: cfgd Module
+      crate: cfgd
+      description: "cfgd Module definition document"
+      file_match: ["**/modules/*/module.yaml"]
+      schema_file: schemas/cfgd-module.schema.json
+    - name: cfgd Profile
+      crate: cfgd
+      description: "cfgd Profile definition document"
+      file_match: ["**/profiles/*.yaml"]
+      schema_file: schemas/cfgd-profile.schema.json
+    - name: cfgd ConfigSource
+      crate: cfgd
+      description: "cfgd multi-source configuration manifest (cfgd-source.yaml)"
+      file_match: ["cfgd-source.yaml", "cfgd-source.yml"]
+      schema_file: schemas/cfgd-source.schema.json
 
 changelog:
   use: github-native
