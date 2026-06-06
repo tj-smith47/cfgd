@@ -35,6 +35,7 @@ pub use verify::{VerifyResult, verify};
 
 pub(crate) use scripts::{
     MODULE_SCRIPT_TIMEOUT, build_module_script_env, build_script_env, execute_script,
+    script_default_workdir,
 };
 
 // Re-export sibling submodule items at the parent level so the externalized

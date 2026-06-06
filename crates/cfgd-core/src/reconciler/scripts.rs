@@ -104,11 +104,41 @@ pub(crate) fn build_module_script_env(
         resolved.insert(k.clone(), v.clone());
     }
     for ev in module_env {
-        let value = crate::expand_env_vars(&ev.value, &|name| resolved.get(name).cloned());
+        // Expand a leading `~` to home BEFORE `$VAR`/`${VAR}`: like the managed
+        // env files, a literal `~/.local/bin` injected straight into the child
+        // process environment would never be expanded (no shell is present).
+        let tilded = crate::expand_env_value_tilde(&ev.value);
+        let value = crate::expand_env_vars(&tilded, &|name| resolved.get(name).cloned());
         resolved.insert(ev.name.clone(), value.clone());
         env.push((ev.name.clone(), value));
     }
     env
+}
+
+/// Default working directory for a lifecycle script: the user's home directory.
+///
+/// Scripts reach module-bundled assets and the config tree through the
+/// always-injected `$CFGD_MODULE_DIR` / `$CFGD_CONFIG_DIR` env vars, so the
+/// config *source* tree is never the implicit CWD — a relative write from a
+/// script lands in `$HOME`, not the user's version-controlled GitOps repo. A
+/// per-script `workdir:` overrides this (see `resolve_script_workdir`). Falls
+/// back to `config_dir` only when the home directory cannot be resolved.
+pub(crate) fn script_default_workdir(config_dir: &std::path::Path) -> std::path::PathBuf {
+    crate::home_dir_var()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| config_dir.to_path_buf())
+}
+
+/// Resolve a `workdir:` value: expand `$VAR`/`${VAR}` against the script
+/// environment, then a leading `~` to the user's home directory.
+fn resolve_script_workdir(raw: &str, env_vars: &[(String, String)]) -> std::path::PathBuf {
+    let expanded = crate::expand_env_vars(raw, &|name| {
+        env_vars
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+    });
+    crate::expand_tilde(std::path::Path::new(&expanded))
 }
 
 /// Unified script executor for all hook types at both profile and module level.
@@ -121,6 +151,7 @@ pub(crate) fn build_module_script_env(
 /// Returns (description, changed, captured_output). All scripts set changed=true.
 pub(crate) fn execute_script(
     entry: &ScriptEntry,
+    script_dir: &std::path::Path,
     working_dir: &std::path::Path,
     env_vars: &[(String, String)],
     default_timeout: std::time::Duration,
@@ -128,6 +159,21 @@ pub(crate) fn execute_script(
     shell_override: Option<ScriptShell>,
 ) -> Result<(String, bool, Option<String>)> {
     let run_str = entry.run_str();
+
+    // `script_dir` is where the script's bundled files live (the module / config
+    // source tree); a relative file-path `run:` resolves against it. `working_dir`
+    // is the directory the script *runs in* — the home default by default, so a
+    // relative write can't pollute the source tree. A per-script `workdir:`
+    // overrides the run directory only (not file resolution): authors target the
+    // deploy dir (`workdir: ~/.local/share/app`), the module source
+    // (`workdir: $CFGD_MODULE_DIR`), or any absolute path.
+    let workdir_override = match entry {
+        ScriptEntry::Full {
+            workdir: Some(w), ..
+        } => Some(resolve_script_workdir(w, env_vars)),
+        _ => None,
+    };
+    let working_dir = workdir_override.as_deref().unwrap_or(working_dir);
 
     // A stale `working_dir` (e.g. a tempdir from a prior `cfgd init` test that was
     // cleaned up off tmpfs) would otherwise surface as a cryptic `io error: No such
@@ -254,7 +300,7 @@ pub(crate) fn execute_script(
     let shell = shell_override.unwrap_or(entry_shell);
 
     let resolved = if std::path::Path::new(run_str).is_relative() {
-        working_dir.join(run_str)
+        script_dir.join(run_str)
     } else {
         std::path::PathBuf::from(run_str)
     };
@@ -806,6 +852,161 @@ mod tests {
         assert_eq!(lookup("BAZ"), Some("ab"));
     }
 
+    // build_module_script_env: a leading `~` in a declared value expands to the
+    // user's home BEFORE `$VAR` expansion. Without this, `CLIFT_DIR=~/.local/...`
+    // would be injected literally and every consumer of the path would break.
+    #[test]
+    #[serial_test::serial]
+    fn module_env_values_expand_leading_tilde() {
+        let home = tempfile::tempdir().unwrap();
+        crate::with_test_home(home.path(), || {
+            let module_env = vec![
+                fake_env_var("CLIFT_DIR", "~/.local/share/clift"),
+                // tilde after a `:` (PATH-style) also expands, leading segment too.
+                fake_env_var("MIXED", "~/bin:/usr/bin:~/x"),
+            ];
+            let env = build_module_script_env(
+                &fake_config_dir(),
+                "workstation",
+                ReconcileContext::Apply,
+                &ScriptPhase::PostApply,
+                Some("clift"),
+                None,
+                &module_env,
+            );
+            let lookup = |key: &str| env.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+            let h = home.path().display().to_string();
+            assert_eq!(
+                lookup("CLIFT_DIR"),
+                Some(format!("{h}/.local/share/clift").as_str())
+            );
+            assert_eq!(
+                lookup("MIXED"),
+                Some(format!("{h}/bin:/usr/bin:{h}/x").as_str())
+            );
+        });
+    }
+
+    // script_default_workdir: the home directory is the default CWD for every
+    // lifecycle script — NOT the config source tree — so a relative write can't
+    // pollute the user's GitOps repo (finding E).
+    #[test]
+    #[serial_test::serial]
+    fn script_default_workdir_is_home_not_config() {
+        let home = tempfile::tempdir().unwrap();
+        crate::with_test_home(home.path(), || {
+            let wd = script_default_workdir(&fake_config_dir());
+            assert_eq!(wd, home.path());
+            assert_ne!(wd, fake_config_dir());
+        });
+    }
+
+    // execute_script: a per-script `workdir:` overrides the caller-provided CWD;
+    // a relative write lands in the override dir, not the default.
+    #[cfg(unix)]
+    #[test]
+    fn execute_script_workdir_override_absolute() {
+        let printer = crate::test_helpers::test_printer();
+        let default_dir = tempfile::tempdir().unwrap();
+        let override_dir = tempfile::tempdir().unwrap();
+        let entry = ScriptEntry::Full {
+            run: "touch ran.marker".into(),
+            timeout: None,
+            idle_timeout: None,
+            continue_on_error: None,
+            shell: ScriptShell::Auto,
+            only_if: None,
+            unless: None,
+            creates: None,
+            interactive: false,
+            workdir: Some(override_dir.path().display().to_string()),
+        };
+        execute_script(
+            &entry,
+            default_dir.path(),
+            default_dir.path(),
+            &[],
+            std::time::Duration::from_secs(5),
+            &printer,
+            None,
+        )
+        .expect("script with workdir override must run");
+        assert!(
+            override_dir.path().join("ran.marker").exists(),
+            "relative write must land in the workdir override"
+        );
+        assert!(
+            !default_dir.path().join("ran.marker").exists(),
+            "relative write must NOT land in the caller-provided default dir"
+        );
+    }
+
+    // execute_script: `workdir:` expands a leading `~` and `$VAR`/`${VAR}` against
+    // the script environment (here `$CFGD_MODULE_DIR`).
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn execute_script_workdir_override_expands_tilde_and_vars() {
+        let printer = crate::test_helpers::test_printer();
+        let home = tempfile::tempdir().unwrap();
+        let module_dir = tempfile::tempdir().unwrap();
+        crate::with_test_home(home.path(), || {
+            // `~` form → home.
+            let entry_home = ScriptEntry::Full {
+                run: "touch from_tilde".into(),
+                timeout: None,
+                idle_timeout: None,
+                continue_on_error: None,
+                shell: ScriptShell::Auto,
+                only_if: None,
+                unless: None,
+                creates: None,
+                interactive: false,
+                workdir: Some("~".into()),
+            };
+            execute_script(
+                &entry_home,
+                module_dir.path(),
+                module_dir.path(),
+                &[],
+                std::time::Duration::from_secs(5),
+                &printer,
+                None,
+            )
+            .expect("workdir ~ must run");
+            assert!(home.path().join("from_tilde").exists());
+
+            // `$CFGD_MODULE_DIR` form → the module dir from the script env.
+            let entry_var = ScriptEntry::Full {
+                run: "touch from_var".into(),
+                timeout: None,
+                idle_timeout: None,
+                continue_on_error: None,
+                shell: ScriptShell::Auto,
+                only_if: None,
+                unless: None,
+                creates: None,
+                interactive: false,
+                workdir: Some("$CFGD_MODULE_DIR".into()),
+            };
+            let env = vec![(
+                "CFGD_MODULE_DIR".to_string(),
+                module_dir.path().display().to_string(),
+            )];
+            execute_script(
+                &entry_var,
+                home.path(),
+                home.path(),
+                &env,
+                std::time::Duration::from_secs(5),
+                &printer,
+                None,
+            )
+            .expect("workdir $CFGD_MODULE_DIR must run");
+            assert!(module_dir.path().join("from_var").exists());
+        });
+    }
+
     // CFGD_* env var names are rejected at parse time (EnvVar deserialization),
     // so they never reach build_module_script_env. This test verifies the
     // parse-time guard works via the validate_env_var_user_name function.
@@ -839,6 +1040,7 @@ mod tests {
 
         let err = execute_script(
             &entry,
+            &missing,
             &missing,
             &[],
             std::time::Duration::from_secs(5),
@@ -879,6 +1081,7 @@ mod tests {
         let err = execute_script(
             &entry,
             &file_path,
+            &file_path,
             &[],
             std::time::Duration::from_secs(5),
             &printer,
@@ -911,6 +1114,7 @@ mod tests {
 
         let (label, changed, _captured) = execute_script(
             &entry,
+            tmp.path(),
             tmp.path(),
             &[],
             std::time::Duration::from_secs(5),
@@ -958,6 +1162,7 @@ mod tests {
         let printer = crate::test_helpers::test_printer();
         let tmp = tempfile::tempdir().unwrap();
         let entry = ScriptEntry::Full {
+            workdir: None,
             run: "echo hello".into(),
             timeout: None,
             idle_timeout: None,
@@ -971,6 +1176,7 @@ mod tests {
 
         let (label, changed, captured) = execute_script(
             &entry,
+            tmp.path(),
             tmp.path(),
             &[],
             std::time::Duration::from_secs(5),
@@ -997,6 +1203,7 @@ mod tests {
         }
 
         let entry = ScriptEntry::Full {
+            workdir: None,
             run: "myscript.sh".into(),
             timeout: None,
             idle_timeout: None,
@@ -1010,6 +1217,7 @@ mod tests {
 
         let err = execute_script(
             &entry,
+            tmp.path(),
             tmp.path(),
             &[],
             std::time::Duration::from_secs(5),
@@ -1154,6 +1362,7 @@ mod tests {
         }
 
         let entry = ScriptEntry::Full {
+            workdir: None,
             run: "ok.sh".into(),
             timeout: None,
             idle_timeout: None,
@@ -1167,6 +1376,7 @@ mod tests {
 
         let result = execute_script(
             &entry,
+            tmp.path(),
             tmp.path(),
             &[],
             std::time::Duration::from_secs(5),
@@ -1190,6 +1400,7 @@ mod tests {
 
         let (_, _, captured) = execute_script(
             &entry,
+            tmp.path(),
             tmp.path(),
             &[],
             std::time::Duration::from_secs(5),
@@ -1225,6 +1436,7 @@ mod tests {
         let (_, _, captured) = execute_script(
             &entry,
             tmp.path(),
+            tmp.path(),
             &[],
             std::time::Duration::from_secs(5),
             &printer,
@@ -1253,6 +1465,7 @@ mod tests {
             std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let entry = ScriptEntry::Full {
+            workdir: None,
             run: "buggy.sh".into(),
             timeout: None,
             idle_timeout: None,
@@ -1266,6 +1479,7 @@ mod tests {
 
         let err = execute_script(
             &entry,
+            tmp.path(),
             tmp.path(),
             &[],
             std::time::Duration::from_secs(5),
@@ -1299,6 +1513,7 @@ mod tests {
         creates: Option<&str>,
     ) -> ScriptEntry {
         ScriptEntry::Full {
+            workdir: None,
             run: "touch ran.marker".into(),
             timeout: None,
             idle_timeout: None,
@@ -1316,6 +1531,7 @@ mod tests {
         let printer = crate::test_helpers::test_printer();
         let (_label, changed, _captured) = execute_script(
             entry,
+            working_dir,
             working_dir,
             &[],
             std::time::Duration::from_secs(5),
@@ -1490,6 +1706,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let sentinel = tmp.path().join("body-ran");
         let entry = ScriptEntry::Full {
+            workdir: None,
             run: format!("touch {}", sentinel.display()),
             timeout: None,
             idle_timeout: None,
@@ -1503,6 +1720,7 @@ mod tests {
 
         let result = execute_script(
             &entry,
+            tmp.path(),
             tmp.path(),
             &[],
             std::time::Duration::from_millis(100),
@@ -1559,6 +1777,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let sentinel = tmp.path().join("body-ran");
         let entry = ScriptEntry::Full {
+            workdir: None,
             run: format!("touch {}", sentinel.display()),
             timeout: None,
             idle_timeout: None,
@@ -1572,6 +1791,7 @@ mod tests {
 
         let (_label, changed, captured) = execute_script(
             &entry,
+            tmp.path(),
             tmp.path(),
             &[],
             std::time::Duration::from_secs(5),
@@ -1606,6 +1826,7 @@ mod tests {
         let entry = guarded_entry(None, Some("true"), None);
         let (_label, changed, _captured) = execute_script(
             &entry,
+            tmp.path(),
             tmp.path(),
             &[],
             std::time::Duration::from_secs(5),

@@ -5,7 +5,9 @@ use crate::expand_tilde;
 use crate::modules::ResolvedModule;
 use crate::output::{Printer, Role};
 
-use super::scripts::{MODULE_SCRIPT_TIMEOUT, build_module_script_env, execute_script};
+use super::scripts::{
+    MODULE_SCRIPT_TIMEOUT, build_module_script_env, execute_script, script_default_workdir,
+};
 use super::types::{ModuleAction, ModuleActionKind, ReconcileContext, ScriptPhase};
 
 impl<'a> super::Reconciler<'a> {
@@ -52,10 +54,12 @@ impl<'a> super::Reconciler<'a> {
                                     module_env,
                                 );
                                 let script_entry = ScriptEntry::Simple(script_content.clone());
-                                let working = module_dir.as_deref().unwrap_or(config_dir);
+                                let source = module_dir.as_deref().unwrap_or(config_dir);
+                                let working = script_default_workdir(config_dir);
                                 execute_script(
                                     &script_entry,
-                                    working,
+                                    source,
+                                    &working,
                                     &env_vars,
                                     MODULE_SCRIPT_TIMEOUT,
                                     printer,
@@ -259,10 +263,12 @@ impl<'a> super::Reconciler<'a> {
                     module_env,
                 );
 
-                let working = module_dir.as_deref().unwrap_or(config_dir);
+                let source = module_dir.as_deref().unwrap_or(config_dir);
+                let working = script_default_workdir(config_dir);
                 let (_label, changed, _captured) = execute_script(
                     script,
-                    working,
+                    source,
+                    &working,
                     &env_vars,
                     MODULE_SCRIPT_TIMEOUT,
                     printer,

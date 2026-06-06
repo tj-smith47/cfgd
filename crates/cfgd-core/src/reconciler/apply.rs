@@ -11,7 +11,7 @@ use super::format::{
 use super::restore::action_target_path;
 use super::scripts::{
     MODULE_SCRIPT_TIMEOUT, build_module_script_env, build_script_env, effective_continue_on_error,
-    execute_script,
+    execute_script, script_default_workdir,
 };
 use super::types::{
     Action, ActionResult, ApplyResult, ModuleAction, ModuleActionKind, PhaseName, Plan,
@@ -388,10 +388,12 @@ impl<'a> super::Reconciler<'a> {
                 None,
                 None,
             );
+            let working = script_default_workdir(config_dir);
             for entry in &resolved.merged.scripts.on_change {
                 match execute_script(
                     entry,
                     config_dir,
+                    &working,
                     &env_vars,
                     crate::PROFILE_SCRIPT_TIMEOUT,
                     printer,
@@ -451,11 +453,12 @@ impl<'a> super::Reconciler<'a> {
                     Some(&module.dir),
                     &module.env,
                 );
-                let working = &module.dir;
+                let working = script_default_workdir(config_dir);
                 for entry in &module.on_change_scripts {
                     match execute_script(
                         entry,
-                        working,
+                        &module.dir,
+                        &working,
                         &env_vars,
                         MODULE_SCRIPT_TIMEOUT,
                         printer,

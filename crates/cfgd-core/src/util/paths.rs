@@ -148,6 +148,29 @@ pub fn expand_tilde(path: &std::path::Path) -> std::path::PathBuf {
     path.to_path_buf()
 }
 
+/// Expand `~`/`~/` segments in a colon-separated environment value to the user's
+/// home directory.
+///
+/// Declared `spec.env` values are written into managed shell files inside double
+/// quotes (and injected directly into child process environments), where the
+/// shell performs no tilde expansion — a literal `~/.local/bin` would stay broken.
+/// This expands a leading `~`, and any `~` following a `:` (PATH-style, matching
+/// the unquoted shell-assignment semantics a user expects), while leaving every
+/// other segment byte-for-byte unchanged. `$VAR` references are NOT touched: in a
+/// double-quoted bash/zsh value the shell still expands those at source time, and
+/// pre-expanding `…:$PATH` would freeze a stale PATH into the file.
+pub fn expand_env_value_tilde(value: &str) -> String {
+    value
+        .split(':')
+        .map(|seg| {
+            expand_tilde(std::path::Path::new(seg))
+                .display()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
 /// Resolve the user's home directory, consulting the test override first.
 /// Unix production path: checks HOME.
 /// Windows production path: checks USERPROFILE first, then HOME (for WSL/Git Bash contexts).

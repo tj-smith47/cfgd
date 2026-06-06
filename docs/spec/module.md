@@ -47,15 +47,15 @@ spec:
 
   scripts:
     preApply:
-      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
+      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
     postApply:
-      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
+      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
     preReconcile:
-      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
+      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
     postReconcile:
-      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
+      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
     onChange:
-      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
+      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
 ```
 
 ---
@@ -317,7 +317,7 @@ Lifecycle scripts executed at different points during module apply and reconcili
 | `onChange` | list | No | `[]` | Run after apply/reconcile only if this module's resources changed. |
 | `onDrift` | list | No | `[]` | Run in the daemon when drift is detected in this module's own resources, before the drift policy decides how to respond. Observability, not remediation. Fires on both whole-profile and per-module reconcile ticks. |
 
-Each entry can be a simple string or a full object with `run`, `shell`, `timeout`, `continueOnError`, `interactive`, and the idempotency guards `onlyIf`, `unless`, and `creates`.
+Each entry can be a simple string or a full object with `run`, `shell`, `timeout`, `continueOnError`, `interactive`, `workdir`, and the idempotency guards `onlyIf`, `unless`, and `creates`.
 
 The `shell` field selects the interpreter for inline commands: `bash`, `zsh`, `sh`, `pwsh`, `cmd`, or `auto` (default). `auto` uses `sh` on Unix and `cmd.exe` on Windows. `shell` only applies to inline commands; file scripts use their shebang.
 
@@ -335,7 +335,21 @@ The guards make a script re-run-safe by construction, so authors no longer need 
 
 When more than one guard is set, **all** must permit running for the body to run. `onlyIf`/`unless` commands run with the same shell, working directory, and environment as the body, bounded by a timeout so a guard can never hang. A guard command that fails to spawn (e.g. a missing interpreter) is a hard error, distinct from a non-zero exit.
 
-`creates` path resolution: a leading `~` expands to the home directory; a relative path resolves against the script's working directory (the module directory for module scripts); an absolute path is used as-is. Existence follows symlinks.
+`creates` path resolution: a leading `~` expands to the home directory; a relative path resolves against the script's working directory (the home directory by default — see below); an absolute path is used as-is. Existence follows symlinks.
+
+### Working directory
+
+Scripts run in the user's **home directory** by default, never the module source tree, so a relative write can't pollute the config repo. Reach module assets via the injected `$CFGD_MODULE_DIR` / `$CFGD_CONFIG_DIR` variables. Set `workdir` to override — a leading `~` expands to home and `$VAR` / `${VAR}` expand against the script environment (including `$CFGD_MODULE_DIR`):
+
+```yaml
+postApply:
+  - run: touch .cfgd-managed
+    workdir: ~/.local/share/clift   # default would be $HOME
+  - run: ./install.sh
+    workdir: $CFGD_MODULE_DIR
+```
+
+See [Lifecycle Scripts](../lifecycle-scripts.md#working-directory) for the full contract and the injected-variable table.
 
 ### Interactive scripts
 

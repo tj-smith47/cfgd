@@ -143,17 +143,17 @@ spec:
 
   scripts:
     preApply:
-      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
     postApply:
-      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
     preReconcile:
-      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
     postReconcile:
-      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
     onDrift:
-      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
     onChange:
-      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
 ```
 
 ---
@@ -639,7 +639,7 @@ When `envs` has multiple entries and the source resolves to a single value, all 
 
 ### spec.scripts
 
-Lifecycle scripts run at different points during apply and reconciliation. Scripts are executed in the order listed. Each entry can be a simple string (command or file path) or an object with `run`, `shell`, `timeout`, `idleTimeout`, `continueOnError`, `interactive`, and the idempotency guards `onlyIf`, `unless`, and `creates`.
+Lifecycle scripts run at different points during apply and reconciliation. Scripts are executed in the order listed. Each entry can be a simple string (command or file path) or an object with `run`, `shell`, `timeout`, `idleTimeout`, `continueOnError`, `interactive`, `workdir`, and the idempotency guards `onlyIf`, `unless`, and `creates`.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
@@ -662,7 +662,20 @@ The idempotency guards `onlyIf`, `unless`, and `creates` make a script re-run-sa
 | `onlyIf` | string (command) | the command exits **non-zero** (the condition to run is not met) |
 | `unless` | string (command) | the command exits **zero** (the guarded state already holds) |
 
-When more than one guard is set, **all** must permit running for the body to run. `onlyIf`/`unless` commands run with the same shell, working directory, and environment as the body, bounded by a timeout so a guard can never hang; a guard command that fails to spawn (e.g. a missing interpreter) is a hard error. For `creates`, a leading `~` expands to the home directory and a relative path resolves against the script's working directory (the config root for profile scripts); existence follows symlinks.
+When more than one guard is set, **all** must permit running for the body to run. `onlyIf`/`unless` commands run with the same shell, working directory, and environment as the body, bounded by a timeout so a guard can never hang; a guard command that fails to spawn (e.g. a missing interpreter) is a hard error. For `creates`, a leading `~` expands to the home directory and a relative path resolves against the script's working directory (the home directory by default — see below); existence follows symlinks.
+
+### Working directory
+
+Scripts run in the user's **home directory** by default, never the config source tree, so a relative write can't pollute the config repo. Reach the config root via the injected `$CFGD_CONFIG_DIR` variable. Set `workdir` to override — a leading `~` expands to home and `$VAR` / `${VAR}` expand against the script environment:
+
+```yaml
+scripts:
+  postApply:
+    - run: ./bootstrap.sh
+      workdir: $CFGD_CONFIG_DIR
+```
+
+See [Lifecycle Scripts](../lifecycle-scripts.md#working-directory) for the full contract and the injected-variable table.
 
 ### Interactive scripts
 

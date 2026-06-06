@@ -1492,6 +1492,38 @@ fn generate_fish_env_splits_path() {
     assert!(content.contains("set -gx PATH '/usr/local/bin' '/home/user/.cargo/bin' '$PATH'"));
 }
 
+// A leading (or `:`-prefixed) `~` in an env value is expanded to the absolute
+// home by every shell generator: the managed file quotes values, so the shell
+// itself never expands tilde and a literal `~/...` would be a broken path.
+#[test]
+#[serial_test::serial]
+fn generate_env_files_expand_leading_tilde() {
+    let home = tempfile::tempdir().unwrap();
+    crate::with_test_home(home.path(), || {
+        let h = home.path().display().to_string();
+        let env = vec![
+            crate::config::EnvVar {
+                name: "CLIFT_DIR".into(),
+                value: "~/.local/share/clift".into(),
+            },
+            crate::config::EnvVar {
+                name: "PATH".into(),
+                value: "~/bin:/usr/bin".into(),
+            },
+        ];
+        let bash = super::generate_env_file_content(&env, &[]);
+        assert!(bash.contains(&format!("export CLIFT_DIR=\"{h}/.local/share/clift\"")));
+        assert!(bash.contains(&format!("export PATH=\"{h}/bin:/usr/bin\"")));
+
+        let fish = super::generate_fish_env_content(&env, &[]);
+        assert!(fish.contains(&format!("set -gx CLIFT_DIR '{h}/.local/share/clift'")));
+        assert!(fish.contains(&format!("set -gx PATH '{h}/bin' '/usr/bin'")));
+
+        let ps = super::generate_powershell_env_content(&env, &[]);
+        assert!(ps.contains(&format!("$env:CLIFT_DIR = '{h}/.local/share/clift'")));
+    });
+}
+
 #[test]
 fn plan_env_empty_when_no_env() {
     let tmp = tempfile::tempdir().unwrap();
@@ -3186,6 +3218,7 @@ fn continue_on_error_defaults_per_phase() {
 #[test]
 fn effective_continue_on_error_uses_explicit_value() {
     let entry = ScriptEntry::Full {
+        workdir: None,
         run: "echo test".to_string(),
         timeout: None,
         idle_timeout: None,
@@ -3203,6 +3236,7 @@ fn effective_continue_on_error_uses_explicit_value() {
     ));
 
     let entry_false = ScriptEntry::Full {
+        workdir: None,
         run: "echo test".to_string(),
         timeout: None,
         idle_timeout: None,
@@ -3233,6 +3267,7 @@ fn effective_continue_on_error_falls_back_to_default() {
     ));
 
     let full_no_override = ScriptEntry::Full {
+        workdir: None,
         run: "echo test".to_string(),
         timeout: None,
         idle_timeout: None,
@@ -3310,6 +3345,7 @@ fn plan_scripts_carries_full_entry() {
 
     let mut resolved = make_empty_resolved();
     resolved.merged.scripts.pre_apply = vec![ScriptEntry::Full {
+        workdir: None,
         run: "scripts/check.sh".to_string(),
         timeout: Some("10s".to_string()),
         idle_timeout: None,
@@ -3402,6 +3438,7 @@ fn execute_script_inline_command() {
     let (desc, changed, output) = super::execute_script(
         &entry,
         dir.path(),
+        dir.path(),
         &[],
         std::time::Duration::from_secs(10),
         &printer,
@@ -3421,6 +3458,7 @@ fn execute_script_failure_returns_error() {
     let result = super::execute_script(
         &entry,
         dir.path(),
+        dir.path(),
         &[],
         std::time::Duration::from_secs(10),
         &printer,
@@ -3438,6 +3476,7 @@ fn execute_script_failure_returns_error() {
 fn execute_script_with_timeout_override() {
     let printer = test_printer();
     let entry = ScriptEntry::Full {
+        workdir: None,
         run: "echo fast".to_string(),
         timeout: Some("5s".to_string()),
         idle_timeout: None,
@@ -3451,6 +3490,7 @@ fn execute_script_with_timeout_override() {
     let dir = tempfile::tempdir().unwrap();
     let (_, _, output) = super::execute_script(
         &entry,
+        dir.path(),
         dir.path(),
         &[],
         std::time::Duration::from_secs(300),
@@ -3470,6 +3510,7 @@ fn execute_script_injects_env_vars() {
     let env = vec![("MY_VAR".to_string(), "test_value".to_string())];
     let (_, _, output) = super::execute_script(
         &entry,
+        dir.path(),
         dir.path(),
         &env,
         std::time::Duration::from_secs(10),
@@ -3495,6 +3536,7 @@ fn execute_script_runs_executable_file() {
     let (_, _, output) = super::execute_script(
         &entry,
         dir.path(),
+        dir.path(),
         &[],
         std::time::Duration::from_secs(10),
         &printer,
@@ -3519,6 +3561,7 @@ fn execute_script_rejects_non_executable_file() {
     let result = super::execute_script(
         &entry,
         dir.path(),
+        dir.path(),
         &[],
         std::time::Duration::from_secs(10),
         &printer,
@@ -3538,6 +3581,7 @@ fn execute_script_idle_timeout_kills_idle_process() {
     let printer = test_printer();
     // Script prints once then sleeps forever — idle timeout should kill it
     let entry = ScriptEntry::Full {
+        workdir: None,
         run: "echo started; sleep 60".to_string(),
         timeout: Some("30s".to_string()),
         idle_timeout: Some("1s".to_string()),
@@ -3551,6 +3595,7 @@ fn execute_script_idle_timeout_kills_idle_process() {
     let dir = tempfile::tempdir().unwrap();
     let result = super::execute_script(
         &entry,
+        dir.path(),
         dir.path(),
         &[],
         std::time::Duration::from_secs(30),
@@ -3870,6 +3915,7 @@ fn apply_continue_on_error_post_script_continues() {
 
     // Post-apply script that fails but has continueOnError=true
     resolved.merged.scripts.post_apply = vec![ScriptEntry::Full {
+        workdir: None,
         run: "exit 42".to_string(),
         timeout: Some("5s".to_string()),
         idle_timeout: None,
@@ -3936,6 +3982,7 @@ fn apply_continue_on_error_false_pre_script_aborts() {
 
     let mut resolved = make_empty_resolved();
     resolved.merged.scripts.pre_apply = vec![ScriptEntry::Full {
+        workdir: None,
         run: "exit 1".to_string(),
         timeout: Some("5s".to_string()),
         idle_timeout: None,
@@ -4152,6 +4199,7 @@ fn apply_guard_skipped_profile_script_records_unchanged() {
     let sentinel = dir.path().join("body-ran");
     // `unless: true` always succeeds → the body is skipped.
     let entry = ScriptEntry::Full {
+        workdir: None,
         run: format!("touch {}", sentinel.display()),
         timeout: None,
         idle_timeout: None,
@@ -4219,6 +4267,7 @@ fn apply_guard_skipped_module_script_does_not_fire_on_change() {
 
     // `unless: true` → the module's RunScript body is skipped → changed=false.
     let guarded = ScriptEntry::Full {
+        workdir: None,
         run: format!("touch {}", sentinel.display()),
         timeout: None,
         idle_timeout: None,
@@ -4314,6 +4363,7 @@ fn apply_guard_permitted_module_script_fires_on_change() {
 
     // `unless: false` → condition does NOT hold → the body RUNS → changed=true.
     let guarded = ScriptEntry::Full {
+        workdir: None,
         run: format!("touch {}", sentinel.display()),
         timeout: None,
         idle_timeout: None,
@@ -9257,6 +9307,7 @@ mod bridge {
         // Post-apply script that fails with continueOnError=true → exercises
         // the Role::Warn branch in apply.rs (continueOnError-warning).
         resolved.merged.scripts.post_apply = vec![ScriptEntry::Full {
+            workdir: None,
             run: "exit 42".to_string(),
             timeout: Some("5s".to_string()),
             idle_timeout: None,
@@ -10881,6 +10932,7 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
         pre_reconcile_scripts: Vec::new(),
         post_reconcile_scripts: Vec::new(),
         on_change_scripts: vec![ScriptEntry::Full {
+            workdir: None,
             run: "exit 5".to_string(),
             timeout: None,
             idle_timeout: None,
@@ -11010,6 +11062,7 @@ fn apply_profile_on_change_failure_aborts_when_continue_on_error_false() {
     let reconciler = Reconciler::new(&registry, &state);
     let mut resolved = make_empty_resolved();
     resolved.merged.scripts.on_change = vec![ScriptEntry::Full {
+        workdir: None,
         run: "exit 11".to_string(),
         timeout: None,
         idle_timeout: None,

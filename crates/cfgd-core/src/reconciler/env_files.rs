@@ -41,7 +41,7 @@ pub(super) fn generate_env_file_content(
         lines.push(format!(
             "export {}=\"{}\"",
             ev.name,
-            crate::escape_double_quoted(&ev.value)
+            crate::escape_double_quoted(&crate::expand_env_value_tilde(&ev.value))
         ));
     }
     for alias in aliases {
@@ -70,11 +70,14 @@ pub(super) fn generate_fish_env_content(
             tracing::warn!("skipping env var with unsafe name: {}", ev.name);
             continue;
         }
+        // Expand a leading/`:`-prefixed `~` to home before single-quoting: fish
+        // single quotes suppress tilde expansion, so a literal `~` would break
+        // the path. (`$VAR` in a fish single-quoted value is a separate gap.)
+        let value = crate::expand_env_value_tilde(&ev.value);
         if ev.name == "PATH" {
             // Fish uses space-separated list for PATH, not colon-separated.
             // Each part is single-quoted to prevent expansion.
-            let parts: Vec<String> = ev
-                .value
+            let parts: Vec<String> = value
                 .split(':')
                 .map(|p| format!("'{}'", p.replace('\'', "\\'")))
                 .collect();
@@ -84,7 +87,7 @@ pub(super) fn generate_fish_env_content(
             lines.push(format!(
                 "set -gx {} '{}'",
                 ev.name,
-                ev.value.replace('\'', "\\'")
+                value.replace('\'', "\\'")
             ));
         }
     }
@@ -114,19 +117,22 @@ pub(super) fn generate_powershell_env_content(
             tracing::warn!("skipping env var with unsafe name: {}", ev.name);
             continue;
         }
-        if ev.value.contains("$env:") {
+        // Expand a leading/`:`-prefixed `~` to home before quoting (PowerShell
+        // does not perform Unix tilde expansion on env values).
+        let value = crate::expand_env_value_tilde(&ev.value);
+        if value.contains("$env:") {
             // Value references other env vars — double-quote with PS escaping
             lines.push(format!(
                 "$env:{} = \"{}\"",
                 ev.name,
-                ev.value.replace('"', "`\"")
+                value.replace('"', "`\"")
             ));
         } else {
             // Single-quote prevents all PS interpolation
             lines.push(format!(
                 "$env:{} = '{}'",
                 ev.name,
-                ev.value.replace('\'', "''")
+                value.replace('\'', "''")
             ));
         }
     }

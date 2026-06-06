@@ -14272,6 +14272,7 @@ fn action_path_script_run() {
 #[test]
 fn action_path_script_run_full_entry() {
     let entry = config::ScriptEntry::Full {
+        workdir: None,
         run: "echo hello".into(),
         timeout: None,
         idle_timeout: None,

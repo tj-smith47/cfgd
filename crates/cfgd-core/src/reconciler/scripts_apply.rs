@@ -2,7 +2,7 @@ use crate::config::{ResolvedProfile, ScriptShell};
 use crate::errors::Result;
 use crate::output::Printer;
 
-use super::scripts::{build_script_env, execute_script};
+use super::scripts::{build_script_env, execute_script, script_default_workdir};
 use super::types::{ReconcileContext, ScriptAction};
 
 impl<'a> super::Reconciler<'a> {
@@ -26,9 +26,11 @@ impl<'a> super::Reconciler<'a> {
                 let env_vars =
                     build_script_env(config_dir, profile_name, context, phase, None, None);
 
+                let working = script_default_workdir(config_dir);
                 let (_desc, changed, captured) = execute_script(
                     entry,
                     config_dir,
+                    &working,
                     &env_vars,
                     crate::PROFILE_SCRIPT_TIMEOUT,
                     printer,

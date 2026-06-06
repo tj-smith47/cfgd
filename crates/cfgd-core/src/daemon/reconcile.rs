@@ -411,10 +411,12 @@ pub(crate) fn handle_reconcile(
                 None,
             );
             let default_timeout = crate::PROFILE_SCRIPT_TIMEOUT;
+            let working = crate::reconciler::script_default_workdir(&config_dir);
             for entry in &scripts.on_drift {
                 match crate::reconciler::execute_script(
                     entry,
                     &config_dir,
+                    &working,
                     &script_env,
                     default_timeout,
                     printer,
@@ -452,10 +454,12 @@ pub(crate) fn handle_reconcile(
                 Some(&module.dir),
                 &module.env,
             );
+            let working = crate::reconciler::script_default_workdir(&config_dir);
             for entry in &module.on_drift_scripts {
                 match crate::reconciler::execute_script(
                     entry,
                     &module.dir,
+                    &working,
                     &script_env,
                     crate::reconciler::MODULE_SCRIPT_TIMEOUT,
                     printer,

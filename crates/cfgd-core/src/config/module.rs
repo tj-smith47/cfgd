@@ -170,6 +170,15 @@ pub enum ScriptEntry {
         /// script is skipped with a warning rather than hanging on instant EOF.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         interactive: bool,
+        /// Working directory for the script. By default every lifecycle script
+        /// runs in the user's home directory — never the config source tree — so
+        /// a relative write can't pollute the user's GitOps repo. Set `workdir`
+        /// to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand
+        /// against the script environment (which always carries `$CFGD_MODULE_DIR`
+        /// and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,
+        /// `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        workdir: Option<String>,
     },
 }
 
@@ -361,6 +370,7 @@ shell: ruby
     #[test]
     fn script_shell_roundtrip_serialization() {
         let entry = ScriptEntry::Full {
+            workdir: None,
             run: "make build".into(),
             timeout: None,
             idle_timeout: None,
@@ -384,6 +394,7 @@ shell: ruby
     #[test]
     fn script_shell_auto_not_serialized() {
         let entry = ScriptEntry::Full {
+            workdir: None,
             run: "echo hi".into(),
             timeout: None,
             idle_timeout: None,
@@ -399,6 +410,26 @@ shell: ruby
             !yaml.contains("shell"),
             "Auto shell should be skipped in serialization: {yaml}"
         );
+    }
+
+    #[test]
+    fn script_workdir_roundtrip() {
+        let yaml = r#"
+run: touch .marker
+workdir: ~/.local/share/clift
+"#;
+        let entry: ScriptEntry = serde_yaml::from_str(yaml).unwrap();
+        match &entry {
+            ScriptEntry::Full { workdir, .. } => {
+                assert_eq!(workdir.as_deref(), Some("~/.local/share/clift"));
+            }
+            other => panic!("expected Full variant, got {other:?}"),
+        }
+        // Round-trips and is omitted from output when unset.
+        let yaml_out = serde_yaml::to_string(&entry).unwrap();
+        assert!(yaml_out.contains("workdir: ~/.local/share/clift"));
+        let bare: ScriptEntry = serde_yaml::from_str("run: echo hi\n").unwrap();
+        assert!(!serde_yaml::to_string(&bare).unwrap().contains("workdir"));
     }
 
     #[test]
@@ -498,6 +529,7 @@ interactive: true
     #[test]
     fn script_interactive_roundtrip_serialization() {
         let entry = ScriptEntry::Full {
+            workdir: None,
             run: "echo hi; read".into(),
             timeout: None,
             idle_timeout: None,
