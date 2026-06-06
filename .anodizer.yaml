@@ -714,7 +714,7 @@ schemastore:
       schema_file: schemas/cfgd-source.schema.json
 
 changelog:
-  use: github-native
+  use: git
   title: "Changelog"
   header: "# Changelog for {{ ProjectName }}"
   divider: "---"
