@@ -9,6 +9,10 @@ use crate::config;
 /// sets `GIT_SSH_COMMAND` with `BatchMode=yes` and configurable `StrictHostKeyChecking`
 /// to prevent hangs in non-interactive contexts (piped install scripts, daemons).
 ///
+/// The user's git config is honored, so `url.<base>.insteadOf` rewrite rules,
+/// `http.proxy`, and similar settings apply to every remote operation. Only the
+/// credential-helper list is cleared (see below).
+///
 /// The `ssh_policy` parameter controls the `StrictHostKeyChecking` value:
 /// - `None` uses the default (`accept-new`)
 /// - `Some(policy)` uses the specified policy
@@ -18,21 +22,19 @@ pub fn git_cmd_safe(
 ) -> std::process::Command {
     let mut cmd = std::process::Command::new("git");
     // git spawns credential-helper grandchildren (osxkeychain on macOS,
-    // git-credential-manager-core on Windows) that inherit stdout/stderr
-    // pipes and outlive the watchdog's SIGKILL of the immediate `git`, leaving
-    // `wait_with_output` blocked on the still-open pipes. Disable every
-    // interactive helper at spawn so the grandchild never launches.
-    // `/dev/null` on unix, `NUL` on windows — git treats either as an empty
-    // config file when assigned to GIT_CONFIG_GLOBAL.
-    #[cfg(unix)]
-    let null_config = "/dev/null";
-    #[cfg(windows)]
-    let null_config = "NUL";
+    // git-credential-manager-core on Windows) that inherit stdout/stderr pipes
+    // and outlive the watchdog's SIGKILL of the immediate `git`, leaving
+    // `wait_with_output` blocked on the still-open pipes. `-c credential.helper=`
+    // resets the accumulated helper list (system + global + local) to empty so no
+    // such grandchild launches — without discarding the rest of the user's git
+    // config the way nulling GIT_CONFIG_GLOBAL/GIT_CONFIG_NOSYSTEM would, which
+    // also threw away `url.insteadOf` rewrites and proxy settings the remote op
+    // depends on. Prompt-free auth is still guaranteed by the askpass/terminal
+    // env below, so the helper is the only interactive surface left to suppress.
+    cmd.arg("-c").arg("credential.helper=");
     cmd.env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_ASKPASS", "true")
         .env("SSH_ASKPASS", "true")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", null_config)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
@@ -264,6 +266,43 @@ mod tests {
             !envs.contains_key(std::ffi::OsStr::new("GIT_SSH_COMMAND")),
             "git_cmd_local is for local-only ops and must not configure GIT_SSH_COMMAND"
         );
+    }
+
+    #[test]
+    fn git_cmd_safe_clears_credential_helper_but_keeps_user_config() {
+        let cmd = git_cmd_safe(None, None);
+
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        // The accumulated credential-helper list must be reset to empty so no
+        // osxkeychain / GCM grandchild can launch and outlive the watchdog.
+        let helper_pos = args.iter().position(|a| a == "credential.helper=");
+        assert!(
+            helper_pos.is_some_and(|p| p > 0 && args[p - 1] == "-c"),
+            "git_cmd_safe must pass `-c credential.helper=`; got args {args:?}"
+        );
+
+        // It must NOT discard the user's git config — honoring url.insteadOf /
+        // proxy settings is the whole point of the surgical credential-only reset.
+        let envs: std::collections::HashMap<&std::ffi::OsStr, Option<&std::ffi::OsStr>> =
+            cmd.get_envs().collect();
+        assert!(
+            !envs.contains_key(std::ffi::OsStr::new("GIT_CONFIG_GLOBAL")),
+            "git_cmd_safe must not null GIT_CONFIG_GLOBAL (would drop url.insteadOf)"
+        );
+        assert!(
+            !envs.contains_key(std::ffi::OsStr::new("GIT_CONFIG_NOSYSTEM")),
+            "git_cmd_safe must not set GIT_CONFIG_NOSYSTEM (would drop system config)"
+        );
+        // Prompt-free auth must still be guaranteed.
+        for key in ["GIT_TERMINAL_PROMPT", "GIT_ASKPASS", "SSH_ASKPASS"] {
+            assert!(
+                envs.contains_key(std::ffi::OsStr::new(key)),
+                "git_cmd_safe must still set {key} to stay non-interactive"
+            );
+        }
     }
 
     #[test]

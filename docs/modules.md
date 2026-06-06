@@ -317,6 +317,19 @@ files:
 
 Git sources are cached in `~/.local/share/cfgd/module-cache/` and updated on `cfgd apply` or daemon sync.
 
+cfgd honors your local git configuration when cloning and fetching, so
+`url.<base>.insteadOf` rewrite rules, `http.proxy`, and similar settings apply.
+For example, a global rule that rewrites SSH URLs to HTTPS will be respected:
+
+```sh
+git config --global url."https://github.com/".insteadOf git@github.com:
+```
+
+cfgd runs git non-interactively (no credential prompts) and clears the credential
+helper, so authentication relies on your SSH agent / keys for SSH URLs and an
+already-configured token for HTTPS. Pinned tags (`@v2.1.0`) and signature
+verification are unaffected by these rewrites.
+
 ## Module Directory Structure
 
 Modules live in the `modules/` directory of your config repo:
