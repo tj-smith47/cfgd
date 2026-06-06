@@ -56,6 +56,63 @@ pub fn validate_env_var_name(name: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
+/// Expand `$VAR` and `${VAR}` references in `value`, resolving each name via
+/// `lookup`. A name `lookup` returns `None` for expands to the empty string
+/// (shell-faithful for an unset variable). A `$` that does not introduce a valid
+/// reference (`$5`, a trailing `$`, an unterminated `${`) is preserved literally.
+///
+/// This is the non-shell equivalent of the expansion a login shell performs when
+/// it sources an `export FOO=...:$PATH` line. It exists because declared
+/// `spec.env` values are injected directly into a child process environment,
+/// where no shell is present to expand them — and a literal `$PATH` would corrupt
+/// the variable (e.g. break `PATH` so the interpreter itself can't be found).
+pub fn expand_env_vars(value: &str, lookup: &dyn Fn(&str) -> Option<String>) -> String {
+    let b = value.as_bytes();
+    let mut out = String::with_capacity(value.len());
+    let mut i = 0;
+    let mut literal_start = 0;
+    while i < b.len() {
+        if b[i] != b'$' {
+            i += 1;
+            continue;
+        }
+        // Resolve the name span and the index just past the whole reference.
+        let (name_start, name_end, next) = if b.get(i + 1) == Some(&b'{') {
+            let s = i + 2;
+            let mut e = s;
+            while e < b.len() && (b[e].is_ascii_alphanumeric() || b[e] == b'_') {
+                e += 1;
+            }
+            if e > s && b.get(e) == Some(&b'}') {
+                (s, e, e + 1)
+            } else {
+                i += 1; // not a valid `${...}` — keep the `$` literal
+                continue;
+            }
+        } else {
+            let s = i + 1;
+            if s < b.len() && (b[s].is_ascii_alphabetic() || b[s] == b'_') {
+                let mut e = s + 1;
+                while e < b.len() && (b[e].is_ascii_alphanumeric() || b[e] == b'_') {
+                    e += 1;
+                }
+                (s, e, e)
+            } else {
+                i += 1; // bare `$`, or `$` + non-name — keep literal
+                continue;
+            }
+        };
+        out.push_str(&value[literal_start..i]);
+        if let Some(v) = lookup(&value[name_start..name_end]) {
+            out.push_str(&v);
+        }
+        i = next;
+        literal_start = next;
+    }
+    out.push_str(&value[literal_start..]);
+    out
+}
+
 /// Validate that a shell alias name is safe for shell interpolation.
 /// Accepts names matching `[A-Za-z0-9_.-]+`.
 pub fn validate_alias_name(name: &str) -> std::result::Result<(), String> {
@@ -161,4 +218,40 @@ pub fn xml_escape(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_env_vars_basic_and_braced() {
+        let look = |n: &str| match n {
+            "HOME" => Some("/h".to_string()),
+            "X" => Some("v".to_string()),
+            _ => None,
+        };
+        // $NAME, ${NAME}, and an unset $PATH (→ empty) in one value.
+        assert_eq!(expand_env_vars("$HOME/bin:${X}:$PATH", &look), "/h/bin:v:");
+    }
+
+    #[test]
+    fn expand_env_vars_unknown_expands_to_empty() {
+        let look = |_: &str| None;
+        assert_eq!(expand_env_vars("x${NOPE}y", &look), "xy");
+    }
+
+    #[test]
+    fn expand_env_vars_preserves_non_references() {
+        let look = |_: &str| Some("SHOULD_NOT_APPEAR".to_string());
+        // `$5` (digit), a trailing `$`, and an unterminated `${` stay literal.
+        assert_eq!(expand_env_vars("$5 and $", &look), "$5 and $");
+        assert_eq!(expand_env_vars("a${UNCLOSED b", &look), "a${UNCLOSED b");
+    }
+
+    #[test]
+    fn expand_env_vars_preserves_utf8_literals() {
+        let look = |n: &str| (n == "V").then(|| "→".to_string());
+        assert_eq!(expand_env_vars("café $V θ", &look), "café → θ");
+    }
 }

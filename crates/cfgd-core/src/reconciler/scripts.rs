@@ -93,8 +93,20 @@ pub(crate) fn build_module_script_env(
         module_name,
         module_dir,
     );
+    // Expand `$VAR`/`${VAR}` in each declared value before injecting it into the
+    // process environment: no shell is present here to do it, so a literal
+    // `PATH: ...:$PATH` would overwrite PATH with garbage and the interpreter
+    // itself would fail to spawn (os error 2). Resolve against the current
+    // process env plus the metadata + already-expanded module vars, so a later
+    // var can reference an earlier one (fold-left, as a shell would).
+    let mut resolved: std::collections::HashMap<String, String> = std::env::vars().collect();
+    for (k, v) in &env {
+        resolved.insert(k.clone(), v.clone());
+    }
     for ev in module_env {
-        env.push((ev.name.clone(), ev.value.clone()));
+        let value = crate::expand_env_vars(&ev.value, &|name| resolved.get(name).cloned());
+        resolved.insert(ev.name.clone(), value.clone());
+        env.push((ev.name.clone(), value));
     }
     env
 }
@@ -344,7 +356,21 @@ pub(crate) fn execute_script(
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
 
-    let mut child = cmd.spawn()?;
+    // A spawn ENOENT here almost never means "the script is missing" — the
+    // interpreter couldn't be resolved, typically because a `spec.env` PATH
+    // entry overwrote PATH. Name the real cause instead of a bare os error 2.
+    let mut child = cmd.spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            CfgdError::Config(ConfigError::Invalid {
+                message: format!(
+                    "could not spawn the script interpreter ({e}) — \
+                     a spec.env PATH that drops the system bin dirs is the usual cause"
+                ),
+            })
+        } else {
+            CfgdError::from(e)
+        }
+    })?;
 
     // Spinner with live output display (same pattern as Printer::run_with_progress)
     let pb = printer.spinner(&label);
@@ -748,6 +774,36 @@ mod tests {
         assert_eq!(lookup("CFGD_MODULE_NAME"), Some("nvim"));
         assert_eq!(lookup("CFGD_PROFILE"), Some("workstation"));
         assert_eq!(lookup("CFGD_PHASE"), Some("postApply"));
+    }
+
+    // build_module_script_env: `$VAR`/`${VAR}` in declared values are expanded
+    // against the process env + earlier vars, so `PATH: ...:$PATH` resolves to a
+    // real PATH instead of landing literally and breaking interpreter spawn.
+    #[test]
+    #[serial_test::serial]
+    fn module_env_values_expand_dollar_refs() {
+        let _g = crate::test_helpers::EnvVarGuard::set("S84_EXPAND_BASE", "/opt/base");
+        let module_env = vec![
+            fake_env_var("PATH", "/custom/bin:$S84_EXPAND_BASE"),
+            // fold-left: a later var resolves one declared earlier in spec.env.
+            fake_env_var("FOO", "/x"),
+            fake_env_var("BAR", "$FOO/y"),
+            // an unset reference expands to empty, like a shell.
+            fake_env_var("BAZ", "a${S84_DEFINITELY_UNSET}b"),
+        ];
+        let env = build_module_script_env(
+            &fake_config_dir(),
+            "workstation",
+            ReconcileContext::Apply,
+            &ScriptPhase::PostApply,
+            Some("nvim"),
+            None,
+            &module_env,
+        );
+        let lookup = |key: &str| env.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+        assert_eq!(lookup("PATH"), Some("/custom/bin:/opt/base"));
+        assert_eq!(lookup("BAR"), Some("/x/y"));
+        assert_eq!(lookup("BAZ"), Some("ab"));
     }
 
     // CFGD_* env var names are rejected at parse time (EnvVar deserialization),
