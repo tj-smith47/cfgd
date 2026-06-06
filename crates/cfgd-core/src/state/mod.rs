@@ -80,7 +80,7 @@ const MIGRATIONS: &[&str] = &[
         source_id INTEGER NOT NULL,
         apply_id INTEGER NOT NULL,
         source_commit TEXT NOT NULL,
-        FOREIGN KEY (source_id) REFERENCES config_sources(id),
+        FOREIGN KEY (source_id) REFERENCES config_sources(id) ON DELETE CASCADE,
         FOREIGN KEY (apply_id) REFERENCES applies(id)
     );
 
@@ -197,6 +197,26 @@ const MIGRATIONS: &[&str] = &[
     // tracking row, so a custom/scripted manager's packages can still be pruned
     // after its definition leaves the config (the script vanishes with it).
     "ALTER TABLE managed_resources ADD COLUMN uninstall_cmd TEXT;",
+    // Migration 6: source_applies.source_id gains ON DELETE CASCADE. An apply
+    // records a source_applies row referencing config_sources(id); the bare
+    // DELETE on config_sources then violated the foreign key (foreign_keys=ON),
+    // so `source remove`/`source replace` failed after any apply — and the
+    // cfgd.yaml mutation had already landed, leaving config and state out of
+    // sync. SQLite cannot ALTER a constraint, so rebuild the child table (no
+    // other table references source_applies, so the drop/rename is safe inside
+    // the migration transaction; copied rows keep valid source_id references).
+    "CREATE TABLE source_applies_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id INTEGER NOT NULL,
+        apply_id INTEGER NOT NULL,
+        source_commit TEXT NOT NULL,
+        FOREIGN KEY (source_id) REFERENCES config_sources(id) ON DELETE CASCADE,
+        FOREIGN KEY (apply_id) REFERENCES applies(id)
+    );
+    INSERT INTO source_applies_new (id, source_id, apply_id, source_commit)
+        SELECT id, source_id, apply_id, source_commit FROM source_applies;
+    DROP TABLE source_applies;
+    ALTER TABLE source_applies_new RENAME TO source_applies;",
 ];
 
 /// SQLite-backed state store for cfgd.

@@ -1294,6 +1294,124 @@ fn record_source_apply_nonexistent_source_is_noop() {
     assert!(source.is_none(), "nonexistent source should not be created");
 }
 
+#[test]
+fn remove_config_source_after_apply_cascades_source_applies() {
+    // An apply records a source_applies row referencing the source. Removing the
+    // source must succeed and cascade-delete that row. Before source_id gained
+    // ON DELETE CASCADE the bare DELETE on config_sources failed the foreign-key
+    // check (foreign_keys=ON), so `source remove`/`source replace` died after any
+    // apply — and the cfgd.yaml mutation had already landed, leaving config and
+    // state inconsistent.
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .upsert_config_source(
+            "acme",
+            "https://example.invalid/acme",
+            "master",
+            Some("abc123"),
+            Some("1.0.0"),
+            None,
+        )
+        .unwrap();
+    let apply_id = store
+        .record_apply("default", "plan-hash-1", ApplyStatus::Success, None)
+        .unwrap();
+    store
+        .record_source_apply("acme", apply_id, "abc123")
+        .unwrap();
+
+    let before: i64 = store
+        .conn
+        .query_row("SELECT COUNT(*) FROM source_applies", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        before, 1,
+        "the apply should have linked a source_applies row"
+    );
+
+    // Previously returned a FOREIGN KEY constraint error.
+    store.remove_config_source("acme").unwrap();
+
+    assert!(
+        store.config_source_by_name("acme").unwrap().is_none(),
+        "the source row must be gone"
+    );
+    let after: i64 = store
+        .conn
+        .query_row("SELECT COUNT(*) FROM source_applies", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        after, 0,
+        "source_applies rows must cascade-delete when their source is removed"
+    );
+}
+
+#[test]
+fn migration_6_rebuilds_source_applies_preserving_rows_and_enabling_cascade() {
+    // The upgrade path: an existing pre-fix DB (schema_version 5) has a
+    // source_applies row whose FK lacks ON DELETE CASCADE. Reopening runs
+    // migration 6, which must (a) preserve the existing row through the table
+    // rebuild and (b) leave the FK with ON DELETE CASCADE so removal works.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys=ON;
+             CREATE TABLE applies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL, profile TEXT NOT NULL,
+                plan_hash TEXT NOT NULL, status TEXT NOT NULL, summary TEXT);
+             CREATE TABLE config_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE, origin_url TEXT NOT NULL,
+                origin_branch TEXT NOT NULL DEFAULT 'main', last_fetched TEXT,
+                last_commit TEXT, source_version TEXT, pinned_version TEXT,
+                status TEXT NOT NULL DEFAULT 'active');
+             CREATE TABLE source_applies (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL, apply_id INTEGER NOT NULL,
+                source_commit TEXT NOT NULL,
+                FOREIGN KEY (source_id) REFERENCES config_sources(id),
+                FOREIGN KEY (apply_id) REFERENCES applies(id));
+             CREATE TABLE schema_version (version INTEGER NOT NULL);
+             INSERT INTO schema_version (version) VALUES (5);
+             INSERT INTO config_sources (id, name, origin_url) VALUES (1, 'acme', 'u');
+             INSERT INTO applies (id, timestamp, profile, plan_hash, status)
+                VALUES (1, 't', 'default', 'h', 'success');
+             INSERT INTO source_applies (id, source_id, apply_id, source_commit)
+                VALUES (7, 1, 1, 'abc123');",
+        )
+        .unwrap();
+    }
+
+    // Reopen — runs migration 6 (the rebuild).
+    let store = StateStore::open(&path).unwrap();
+
+    // (a) the existing row survived, identity intact.
+    let row: (i64, i64, String) = store
+        .conn
+        .query_row(
+            "SELECT id, source_id, source_commit FROM source_applies",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        (7, 1, "abc123".to_string()),
+        "row must survive rebuild"
+    );
+
+    // (b) the FK now cascades: removing the source drops its source_applies row.
+    store.remove_config_source("acme").unwrap();
+    let after: i64 = store
+        .conn
+        .query_row("SELECT COUNT(*) FROM source_applies", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(after, 0, "migration 6 must enable ON DELETE CASCADE");
+}
+
 // --- file_backups_after_apply ---
 
 #[test]
