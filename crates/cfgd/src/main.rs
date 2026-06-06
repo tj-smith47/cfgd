@@ -119,10 +119,13 @@ fn main() -> anyhow::Result<()> {
             _ => "trace",
         }
     };
+    // Route tracing to stderr: stdout is reserved for `-o` machine output
+    // (the `-o json` purity contract), mirroring Printer human-on-stderr.
     tracing_subscriber::fmt()
         .with_env_filter(cfgd_core::tracing_env_filter(filter))
         .with_target(false)
         .without_time()
+        .with_writer(std::io::stderr)
         .init();
 
     // Handle --no-color flag. NO_COLOR / TERM=dumb are handled inside
