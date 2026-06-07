@@ -1775,6 +1775,66 @@ fn sign_with_gpg_requires_gpg() {
     assert!(result.is_err(), "should fail with nonexistent GPG key");
 }
 
+#[test]
+#[serial_test::serial]
+#[cfg(unix)]
+fn sign_with_gpg_signs_with_a_key_in_the_users_keyring() {
+    // sign_with_gpg must sign against the user's real GnuPG keyring (GNUPGHOME),
+    // where the secret key actually lives. The historical bug redirected gpg to a
+    // fresh empty --homedir that never held the key, so every signature failed with
+    // "no secret key". Point GNUPGHOME at a throwaway keyring holding an unprotected
+    // key, then assert a real armored signature comes back. Never touches the real
+    // ~/.gnupg.
+    if !cfgd_core::command_available("gpg") {
+        return; // gpg not installed on this runner — covered by the negative test
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let gnupghome = tmp.path().join("gnupghome");
+    std::fs::create_dir_all(&gnupghome).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&gnupghome, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let home_str = gnupghome.to_str().unwrap();
+    let _gnupg_guard = cfgd_core::test_helpers::EnvVarGuard::set("GNUPGHOME", home_str);
+
+    // Generate an unprotected signing key directly in the throwaway keyring.
+    let keygen = std::process::Command::new("gpg")
+        .args([
+            "--batch",
+            "--pinentry-mode",
+            "loopback",
+            "--passphrase",
+            "",
+            "--quick-generate-key",
+            "cfgd-enroll-test <test@cfgd.invalid>",
+            "ed25519",
+            "sign",
+            "0",
+        ])
+        .output()
+        .expect("gpg key generation must spawn");
+    assert!(
+        keygen.status.success(),
+        "gpg key generation failed: {}",
+        String::from_utf8_lossy(&keygen.stderr)
+    );
+
+    let signature = sign_with_gpg("enroll-challenge-nonce", "test@cfgd.invalid")
+        .expect("signing must succeed with the key present in GNUPGHOME");
+    assert!(
+        signature.contains("BEGIN PGP SIGNATURE"),
+        "expected an armored PGP signature, got: {signature}"
+    );
+
+    // Shut down the gpg-agent bound to the throwaway keyring so the test leaves no
+    // background process behind (gpg auto-starts one in the isolated GNUPGHOME).
+    let _ = std::process::Command::new("gpgconf")
+        .args(["--homedir", home_str, "--kill", "all"])
+        .status();
+}
+
 // --- detect_ssh_key tests ---
 
 #[test]

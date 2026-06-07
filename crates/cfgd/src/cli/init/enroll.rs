@@ -421,31 +421,17 @@ pub(super) fn sign_with_gpg(nonce: &str, gpg_key_id: &str) -> anyhow::Result<Str
     let tmp_dir = tempfile::tempdir()?;
     let data_path = tmp_dir.path().join("challenge.txt");
     let sig_path = tmp_dir.path().join("challenge.txt.asc");
-    // Isolated GNUPGHOME for this signing operation. Any `gpg-agent` that gpg
-    // auto-starts is bound to this dir, so the matching `gpgconf --kill all`
-    // below shuts it down deterministically. Without this, gpg-agent persists
-    // as a background daemon (especially on Windows, where it doesn't die
-    // when the spawning process exits), and test runners flag the leftover
-    // process as leaky.
-    let gnupg_home = tmp_dir.path().join("gnupghome");
-    std::fs::create_dir_all(&gnupg_home)?;
-    // GnuPG complains loudly about world-readable homedirs on Unix; tighten
-    // perms before any gpg invocation reads them.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&gnupg_home)?.permissions();
-        perms.set_mode(0o700);
-        std::fs::set_permissions(&gnupg_home, perms)?;
-    }
 
     std::fs::write(&data_path, nonce)?;
 
-    let homedir_str = gnupg_home.to_str().unwrap_or("");
-    let sign_status = std::process::Command::new("gpg")
+    // Sign with the user's own GnuPG keyring (default GNUPGHOME, or ~/.gnupg) — that
+    // is where the requested secret key actually lives. We must NOT redirect --homedir
+    // to a private dir: a fresh homedir holds no secret key, so signing always failed
+    // with "no secret key". gpg reuses the user's running gpg-agent for any passphrase
+    // pinentry, and we deliberately do not kill that agent afterward — it belongs to
+    // the user's session, not to this process.
+    let sign_output = std::process::Command::new("gpg")
         .args([
-            "--homedir",
-            homedir_str,
             "--batch",
             "--yes",
             "--detach-sign",
@@ -458,25 +444,16 @@ pub(super) fn sign_with_gpg(nonce: &str, gpg_key_id: &str) -> anyhow::Result<Str
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
-        .status()
-        .map_err(|e| anyhow::anyhow!("gpg not found: {e} — is GPG installed?"));
+        .output()
+        .map_err(|e| anyhow::anyhow!("gpg not found: {e} — is GPG installed?"))?;
 
-    // Always shut down the gpg-agent scoped to our isolated homedir, whether
-    // the sign succeeded or failed — leaving it running orphans a child
-    // process. Best-effort; ignore any failure (gpgconf may not be present
-    // on minimal GnuPG installs, in which case the agent will exit when the
-    // tempdir is removed).
-    let _ = std::process::Command::new("gpgconf")
-        .args(["--homedir", homedir_str, "--kill", "all"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-
-    let status = sign_status?;
-    if !status.success() {
+    if !sign_output.status.success() {
+        // Surface gpg's own stderr — it carries the actionable reason ("No secret key",
+        // "no passphrase supplied in batch mode", …) that the user needs.
         anyhow::bail!(
-            "gpg --detach-sign failed — check that key '{}' is available",
-            gpg_key_id
+            "gpg --detach-sign failed for secret key '{}': {}",
+            gpg_key_id,
+            cfgd_core::stderr_lossy_trimmed(&sign_output)
         );
     }
 
