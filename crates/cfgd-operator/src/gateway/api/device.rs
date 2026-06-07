@@ -138,10 +138,12 @@ pub(super) async fn set_device_config(
             "only admin can push config to devices".to_string(),
         ));
     }
-    // Enforce a 10MB size limit on config payloads
+    // Authoritative config-size policy. The route's DefaultBodyLimit sits
+    // above this (see MAX_REQUEST_BODY_BYTES) so an over-policy config reaches
+    // this check and gets the specific 400 below, rather than a generic 413.
     let json_str = serde_json::to_string(&req.config)
         .map_err(|e| GatewayError::InvalidRequest(e.to_string()))?;
-    if json_str.len() > 10 * 1024 * 1024 {
+    if json_str.len() > super::MAX_CONFIG_BYTES {
         return Err(GatewayError::InvalidRequest(
             "config exceeds 10MB size limit".to_string(),
         ));

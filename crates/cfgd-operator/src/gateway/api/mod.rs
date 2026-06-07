@@ -254,16 +254,25 @@ pub struct VerifyRequest {
 }
 
 const CHALLENGE_TTL_SECS: u64 = 300; // 5 minutes
+
+/// Maximum serialized size of a device's desired config. This is the
+/// authoritative policy: the `set_device_config` handler rejects any config
+/// over this with a specific, actionable 400.
+pub(super) const MAX_CONFIG_BYTES: usize = 10 * 1024 * 1024;
+
+/// Hard upper bound on the wrapping `{"config": ...}` request body for the
+/// set-config route, enforced by `DefaultBodyLimit` as a coarse memory/DoS
+/// backstop. It MUST exceed `MAX_CONFIG_BYTES` by enough to cover the JSON
+/// wrapper overhead, because the body is always a strict superset of the
+/// config it carries — if the two were equal, an over-policy config would
+/// trip the body limit (generic 413) before ever reaching the handler's
+/// specific 400. The margin lets the policy check govern: an over-policy
+/// config (under this bound) → 400; a truly enormous body → 413.
+pub(super) const MAX_REQUEST_BODY_BYTES: usize = MAX_CONFIG_BYTES + 2 * 1024 * 1024;
+
 // --- Router ---
 
 pub fn router(state: SharedState) -> Router<SharedState> {
-    // Config payloads can legitimately be large (module trees, policy docs).
-    // Relax the gateway-wide 1 MiB cap for this one route only — the `Json`
-    // extractor enforces this limit *before* deserialization, so the
-    // previously-in-handler `.len() > 10 MiB` check at the bottom of
-    // `set_device_config` never fires except as a belt-and-braces fallback.
-    const SET_DEVICE_CONFIG_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
-
     // Routes that require admin or device auth
     let authenticated_routes = Router::new()
         .route("/api/v1/checkin", post(checkin))
@@ -271,9 +280,8 @@ pub fn router(state: SharedState) -> Router<SharedState> {
         .route("/api/v1/devices/{id}", get(get_device))
         .route(
             "/api/v1/devices/{id}/config",
-            put(set_device_config).layer(axum::extract::DefaultBodyLimit::max(
-                SET_DEVICE_CONFIG_MAX_BODY_BYTES,
-            )),
+            put(set_device_config)
+                .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES)),
         )
         .route(
             "/api/v1/devices/{id}/drift",
