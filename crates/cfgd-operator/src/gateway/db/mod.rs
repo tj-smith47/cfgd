@@ -328,6 +328,15 @@ fn schema_version_inner(conn: &Connection) -> std::result::Result<usize, rusqlit
     })
 }
 
+fn table_exists(conn: &Connection, name: &str) -> Result<bool, GatewayError> {
+    let count: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        params![name],
+        |row| row.get(0),
+    )?;
+    Ok(count > 0)
+}
+
 /// Run schema migrations against a writer connection. Called at open time
 /// before the reader pool is built so the schema is in place for readers.
 fn run_migrations_on_conn(conn: &mut Connection) -> Result<(), GatewayError> {
@@ -341,26 +350,42 @@ fn run_migrations_on_conn(conn: &mut Connection) -> Result<(), GatewayError> {
         }
     };
 
+    // Distinguish an expected fresh-bootstrap duplicate from genuine schema
+    // drift. The `devices` table must be probed before the migration loop runs,
+    // because the initial CREATE batch creates it inside this same transaction.
+    // A clean bootstrap (version 0 and the table absent beforehand) will trip
+    // "duplicate column name" on the `desired_config` ALTER because the CREATE
+    // batch already declares that column — that is benign and shouldn't WARN.
+    let fresh_bootstrap = match table_exists(conn, "devices") {
+        Ok(exists) => current_version == 0 && !exists,
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(e);
+        }
+    };
+
     for (i, migration) in MIGRATIONS.iter().enumerate() {
         if i >= current_version {
             if let Err(e) = conn.execute_batch(migration) {
                 // Why "duplicate column name" is treated as success:
                 //
-                // Migration 0 (the initial CREATE TABLE batch) was extended
-                // over time to declare every column that later ALTER TABLE
-                // migrations add — so on a clean bootstrap the
-                // `ALTER TABLE … ADD COLUMN desired_config TEXT` (Migration 1)
-                // unconditionally trips the duplicate-column error against
-                // a freshly-created `devices` table that already has the
-                // column. The swallow exists so bootstrap completes and
-                // schema_version is bumped past the ALTER. Removing it
-                // breaks every fresh install.
+                // The initial CREATE TABLE batch was extended over time to
+                // declare `desired_config`, a column a later ALTER TABLE
+                // migration also adds — so on a clean bootstrap that ALTER
+                // unconditionally trips the duplicate-column error against a
+                // freshly-created `devices` table that already has the column.
+                // The swallow exists so bootstrap completes and schema_version
+                // is bumped past the ALTER. Removing it breaks every fresh
+                // install.
                 //
-                // The original audit concern (a swallow could hide genuine
-                // schema drift from pre-tracking v0.3.x upgrades) is now
-                // surfaced at WARN with the migration index + current
-                // version — production operators will see the line on each
-                // unexpected fire, and CI grep can fail on it.
+                // The log level encodes whether the duplicate is benign:
+                // - Fresh bootstrap (version 0, table created in this same
+                //   transaction): the dup is expected, so DEBUG keeps clean
+                //   starts quiet.
+                // - An already-existing schema (table present, or version > 0):
+                //   a dup means the version row understates the real schema —
+                //   the genuine drift a pre-tracking v0.3.x upgrade could leave
+                //   behind — so WARN surfaces it for operators and CI greps.
                 let is_dup_column = matches!(
                     &e,
                     rusqlite::Error::SqliteFailure(_, Some(msg))
@@ -370,12 +395,19 @@ fn run_migrations_on_conn(conn: &mut Connection) -> Result<(), GatewayError> {
                     let _ = conn.execute_batch("ROLLBACK");
                     return Err(e.into());
                 }
-                tracing::warn!(
-                    migration_index = i,
-                    current_version,
-                    error = %e,
-                    "gateway/db: ALTER TABLE skipped — column already present (expected on fresh bootstrap; surface for any other observed case)",
-                );
+                if fresh_bootstrap {
+                    tracing::debug!(
+                        migration_index = i,
+                        "gateway/db: ALTER TABLE column already present on fresh bootstrap (expected — Migration 0 declares it)",
+                    );
+                } else {
+                    tracing::warn!(
+                        migration_index = i,
+                        current_version,
+                        error = %e,
+                        "gateway/db: ALTER TABLE skipped — column already present on an existing schema (unexpected schema drift; investigate)",
+                    );
+                }
             }
             let new_version = (i + 1) as i64;
             if let Err(e) = conn.execute(

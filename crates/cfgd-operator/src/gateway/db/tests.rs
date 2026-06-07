@@ -928,24 +928,120 @@ async fn pool_timeout_surfaces_as_pool_exhausted() {
 
 // ---- migration: duplicate-column swallow is bootstrap-load-bearing ----
 //
-// Regression guard for INVESTIGATE #2: the migration runner swallows
-// "duplicate column name" errors because Migration 0 (the initial CREATE
-// TABLE batch) declares every column that later ALTER TABLE migrations add.
-// Bootstrap therefore always trips the duplicate-column error on Migration
-// 1+ and must continue past it; removing the swallow breaks every fresh
-// install. This test pins that contract so future refactors don't reintroduce
-// the silent-failure bug under a different name.
+// The migration runner swallows "duplicate column name" errors because the
+// initial CREATE TABLE batch declares `devices.desired_config`, which the
+// first ALTER TABLE migration also adds. A fresh bootstrap therefore always
+// trips the duplicate-column error on that ALTER and must continue past it;
+// removing the swallow breaks every fresh install. These tests pin that
+// contract so future refactors don't reintroduce the silent-failure bug under
+// a different name, and pin the log-level split: a fresh-bootstrap dup is
+// expected (DEBUG, no noise) while a dup against an already-existing schema is
+// genuine drift (WARN).
+
+// WARN-capturing subscriber so the fresh-bootstrap log-level contract is
+// asserted directly (the user-facing symptom is spurious WARN noise).
+#[derive(Clone)]
+struct CaptureWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+impl std::io::Write for CaptureWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("lock").extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureWriter {
+    type Writer = CaptureWriter;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+// Thread-local subscriber: only events emitted on THIS thread inside `f` are
+// captured. Sound because `ServerDb::open` runs migrations inline (no
+// `spawn_blocking`), so the migration logs fire on the calling thread. Do not
+// convert callers to `#[tokio::test]` or wrap the open in `spawn_blocking` —
+// that would hop the work off-thread and silently drop the captured logs.
+fn capture_warn_logs<F: FnOnce()>(f: F) -> String {
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let writer = CaptureWriter(buf.clone());
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(writer)
+        .with_max_level(tracing::Level::WARN) // WARN+ only; DEBUG is filtered out
+        .finish();
+    tracing::subscriber::with_default(subscriber, f);
+    let bytes = buf.lock().expect("lock").clone();
+    String::from_utf8(bytes).expect("utf8 logs")
+}
+
+#[test]
+fn fresh_bootstrap_migration_emits_no_warn() {
+    let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+    let path = tmp.path().to_str().expect("path").to_string();
+
+    let logs = capture_warn_logs(|| {
+        let _db = super::ServerDb::open(&path).expect("clean bootstrap open");
+    });
+    assert!(
+        !logs.contains("ALTER TABLE"),
+        "fresh bootstrap must not WARN about expected duplicate columns; captured: {logs:?}"
+    );
+}
+
+#[test]
+fn existing_schema_dup_emits_warn() {
+    // Bootstrap cleanly so the devices table + both ALTER columns exist, then
+    // rewind schema_version to 1 to simulate a pre-tracking upgrade whose
+    // version row understates the real schema. Re-opening replays the ALTER
+    // against an already-existing schema — genuine drift, which must WARN.
+    let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+    let path = tmp.path().to_str().expect("path").to_string();
+
+    let _db = super::ServerDb::open(&path).expect("clean open");
+    drop(_db);
+
+    {
+        let conn = Connection::open(&path).expect("rusqlite open");
+        conn.execute("UPDATE schema_version SET version = 1", [])
+            .expect("rewind version");
+    }
+
+    let logs = capture_warn_logs(|| {
+        let _db2 = super::ServerDb::open(&path).expect("replay open must succeed");
+    });
+    assert!(
+        logs.contains("WARN") && logs.contains("ALTER TABLE") && logs.contains("drift"),
+        "existing-schema dup must WARN about schema drift; captured: {logs:?}"
+    );
+}
+
+#[test]
+fn table_exists_helper() {
+    let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+    let conn = Connection::open(tmp.path()).expect("open");
+    assert!(
+        !super::table_exists(&conn, "devices").expect("probe missing table"),
+        "table_exists must be false before the table is created"
+    );
+    conn.execute_batch("CREATE TABLE devices (id TEXT);")
+        .expect("create devices");
+    assert!(
+        super::table_exists(&conn, "devices").expect("probe existing table"),
+        "table_exists must be true after the table is created"
+    );
+}
 
 #[tokio::test]
 async fn migration_bootstrap_swallows_duplicate_column_on_fresh_db() {
     let tmp = tempfile::NamedTempFile::new().expect("tempfile");
     let path = tmp.path().to_str().expect("path").to_string();
 
-    // A fresh open against a brand-new tempfile drives Migration 0 (which already
-    // declares `devices.desired_config` and `devices.compliance_summary`),
-    // then Migrations 1 + 2 (which both ALTER TABLE ADD COLUMN against the
-    // already-populated columns). The swallow must let both pass so
-    // schema_version reaches the max and the DB is usable.
+    // A fresh open against a brand-new tempfile drives the initial CREATE
+    // batch (which already declares `devices.desired_config`), then the ALTER
+    // migrations. The `desired_config` ALTER hits a duplicate column against
+    // the freshly-created table; the swallow must let it pass so schema_version
+    // reaches the max and the DB is usable.
     let db = super::ServerDb::open(&path).expect("clean bootstrap open");
     db.register_device("d1", "h", "linux", "x86_64", "x", None)
         .await
