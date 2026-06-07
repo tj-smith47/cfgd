@@ -1,4 +1,7 @@
 use super::*;
+// Drift helpers are reached via fully-qualified `super::drift::` paths in
+// production; tests use the bare names (e.g. `record_file_drift_to`).
+use super::drift::*;
 use crate::test_helpers::{test_printer, test_state};
 
 fn quiet_reconcile_ctx<'a>(
@@ -4622,6 +4625,55 @@ fn install_service_then_uninstall_service_round_trips_via_dispatcher() {
     crate::daemon::service::uninstall_service(&test_printer()).expect("uninstall_service ok");
 }
 
+// --- managed-target drift gating (#97) ---
+
+#[test]
+fn path_is_managed_target_true_for_exact_member() {
+    let managed = vec![PathBuf::from("/home/user/.zshrc")];
+    assert!(
+        super::drift::path_is_managed_target(Path::new("/home/user/.zshrc"), &managed),
+        "a path exactly in managed_paths must count as a managed target"
+    );
+}
+
+#[test]
+fn path_is_managed_target_false_for_git_internals() {
+    let managed = vec![PathBuf::from("/home/user/.config/cfgd/profiles/dev.yaml")];
+    assert!(
+        !super::drift::path_is_managed_target(
+            Path::new("/home/user/.config/cfgd/.git/index"),
+            &managed
+        ),
+        "a .git source path must NOT count as a managed target"
+    );
+}
+
+#[test]
+fn path_is_managed_target_false_for_config_source() {
+    let managed = vec![PathBuf::from("/home/user/.zshrc")];
+    assert!(
+        !super::drift::path_is_managed_target(
+            Path::new("/home/user/.config/cfgd/cfgd.yaml"),
+            &managed
+        ),
+        "a config source file must NOT count as a managed target"
+    );
+}
+
+#[test]
+fn path_is_managed_target_false_for_sibling_in_watched_parent() {
+    // The watcher also watches the PARENT of a not-yet-existing managed file,
+    // so sibling files fire events. Exact membership must exclude them.
+    let managed = vec![PathBuf::from("/home/user/.config/app/managed.conf")];
+    assert!(
+        !super::drift::path_is_managed_target(
+            Path::new("/home/user/.config/app/other.conf"),
+            &managed
+        ),
+        "a sibling in a watched parent dir must NOT count as a managed target"
+    );
+}
+
 // --- record_file_drift_to tests ---
 
 #[test]
@@ -5524,6 +5576,118 @@ async fn handle_reconcile_no_drift_when_no_actions() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn handle_reconcile_clean_tick_clears_outstanding_drift() {
+    // A previously-recorded drift row that no longer diverges must be resolved
+    // by the no-drift branch's snapshot reset, driving both the DB and the
+    // in-memory drift_count back to 0.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("config.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n",
+    )
+    .unwrap();
+
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    // Seed an outstanding unresolved drift row, and prime the in-memory count
+    // to match — the prior reconcile that recorded it would have set this.
+    {
+        let store = StateStore::open_in_dir(&state_dir).unwrap();
+        store
+            .record_drift(
+                "file",
+                "/home/user/.zshrc",
+                None,
+                Some("drift detected"),
+                "local",
+            )
+            .unwrap();
+        assert_eq!(store.unresolved_drift().unwrap().len(), 1);
+    }
+
+    struct NoDriftHooks;
+    impl DaemonHooks for NoDriftHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            ProviderRegistry::new()
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+            _: &std::collections::HashSet<String>,
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            Ok(vec![])
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    {
+        let mut st = state.lock().await;
+        st.drift_count = 1;
+        if let Some(source) = st.sources.first_mut() {
+            source.drift_count = 1;
+        }
+    }
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &NoDriftHooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    // The clean tick resolved the seeded row end-to-end.
+    let store = StateStore::open_in_dir(&state_dir).unwrap();
+    assert!(
+        store.unresolved_drift().unwrap().is_empty(),
+        "clean reconcile tick must resolve the previously-outstanding drift row"
+    );
+
+    let guard = state.lock().await;
+    assert!(guard.last_reconcile.is_some());
+    assert_eq!(
+        guard.drift_count, 0,
+        "clean reconcile tick must reset in-memory drift_count to 0"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn handle_reconcile_with_profile_override() {
     // Test that profile_override is used instead of config's profile field.
     let tmp = tempfile::tempdir().unwrap();
@@ -5794,9 +5958,17 @@ async fn handle_reconcile_auto_policy_with_drift_invokes_apply_success() {
     );
     let guard = state.lock().await;
     assert!(guard.last_reconcile.is_some());
+    // Auto policy healed the drift in this same tick, so the in-memory count
+    // must reflect the resolved state — not the old append-only accumulator.
+    assert_eq!(
+        guard.drift_count, 0,
+        "successful auto-apply must drive drift_count back to 0"
+    );
+    drop(guard);
+    let store = StateStore::open_in_dir(&state_dir).unwrap();
     assert!(
-        guard.drift_count > 0,
-        "drift_count should have been incremented before resolve_drift"
+        store.unresolved_drift().unwrap().is_empty(),
+        "successful auto-apply must leave no outstanding drift rows"
     );
 }
 
@@ -7176,6 +7348,7 @@ mod harness {
             compliance_config: compliance,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            managed_paths: Vec::new(),
         };
         (ctx, state, buf)
     }
@@ -7439,6 +7612,57 @@ mod harness {
         // No real reconcile occurred (config is missing) — last_reconcile stays None.
         let st = state.lock().await;
         assert!(st.last_reconcile.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn file_change_tick_records_drift_only_for_managed_target() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let managed = tmp.path().join("managed.conf");
+        let (mut ctx, state, _buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.managed_paths = vec![managed.clone()];
+        let mut last_change: HashMap<PathBuf, Instant> = HashMap::new();
+
+        // A source/config path (NOT a managed target) must record no drift.
+        let source_path = tmp.path().join(".git").join("index");
+        runner::handle_file_change_tick(
+            &ctx,
+            &mut last_change,
+            StdDuration::from_millis(0),
+            source_path,
+        )
+        .await
+        .unwrap();
+        {
+            let store = StateStore::open_in_dir(tmp.path()).unwrap();
+            assert!(
+                store.unresolved_drift().unwrap().is_empty(),
+                "a .git source change must NOT record drift (BUG1)"
+            );
+            let st = state.lock().await;
+            assert_eq!(st.drift_count, 0, "source change must not bump drift_count");
+        }
+
+        // A managed target change DOES record drift.
+        runner::handle_file_change_tick(
+            &ctx,
+            &mut last_change,
+            StdDuration::from_millis(0),
+            managed.clone(),
+        )
+        .await
+        .unwrap();
+        {
+            let store = StateStore::open_in_dir(tmp.path()).unwrap();
+            let events = store.unresolved_drift().unwrap();
+            assert_eq!(events.len(), 1, "managed target change must record drift");
+            assert_eq!(events[0].resource_id, crate::to_posix_string(&managed));
+            let st = state.lock().await;
+            assert_eq!(
+                st.drift_count, 1,
+                "drift_count must reflect the outstanding row count"
+            );
+        }
     }
 
     // ----- handle_reconcile_tick tests -----
@@ -7824,6 +8048,7 @@ mod harness {
             compliance_config: None,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            managed_paths: Vec::new(),
         };
         (ctx, state)
     }
@@ -7896,6 +8121,7 @@ mod harness {
             compliance_config: Some(compliance_cfg),
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            managed_paths: Vec::new(),
         };
         let (triggers, senders) = make_triggers();
         let reconcile_secs = Arc::new(AtomicU64::new(300));
@@ -8141,6 +8367,7 @@ mod harness {
             compliance_config: None,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            managed_paths: Vec::new(),
         };
         let mut tasks = vec![
             ReconcileTask {
@@ -8212,6 +8439,7 @@ mod harness {
             compliance_config: None,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            managed_paths: Vec::new(),
         };
         let mut tasks = vec![ReconcileTask {
             entity: "monitoring".to_string(),
@@ -8268,6 +8496,7 @@ mod harness {
             compliance_config: None,
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
+            managed_paths: Vec::new(),
         };
         let mut tasks = vec![ReconcileTask {
             entity: "vault".to_string(),

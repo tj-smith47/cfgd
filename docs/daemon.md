@@ -100,6 +100,17 @@ scripts:
 
 Environment variables available to onDrift scripts: `CFGD_CONFIG_DIR`, `CFGD_PROFILE`, `CFGD_CONTEXT=reconcile`, `CFGD_PHASE=onDrift`. See the [Profile spec reference](spec/profile.md#specscripts) for the full script entry schema, timeout defaults, and `continueOnError` behaviour.
 
+## Drift Accounting
+
+The `driftCount` reported by `cfgd daemon status` is the **current** number of managed targets diverging from desired state — not a lifetime total. It rises when targets drift and returns to `0` once everything is healed or clean:
+
+- A reconcile tick that finds **no drift** resets the count to `0`.
+- With `driftPolicy: Auto`, a successful heal applies the fix and drives the count back to `0` in the same tick. A partial-failure heal leaves only the still-diverging targets counted.
+
+Only a managed target diverging **out-of-band** (edited or removed outside cfgd) counts as drift. Changes to your config **sources** — the git-synced config directory (`.git/`, `profiles/`, `files/`, `cfgd.yaml`) — are desired-state updates: they *trigger* a reconcile (the GitOps pull→apply path) but are never counted as drift themselves.
+
+The `/status` endpoint's `driftCount` and the `/drift` endpoint's events list always reflect the same current set of unresolved drift, so the count and the event detail stay consistent.
+
 ## Reconcile Patches
 
 Override reconcile settings for specific modules or profiles. Patches live in your `cfgd.yaml` — you control your machine's sync behavior regardless of what upstream profiles or modules recommend.

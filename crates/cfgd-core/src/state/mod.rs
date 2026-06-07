@@ -217,6 +217,13 @@ const MIGRATIONS: &[&str] = &[
         SELECT id, source_id, apply_id, source_commit FROM source_applies;
     DROP TABLE source_applies;
     ALTER TABLE source_applies_new RENAME TO source_applies;",
+    // Migration 7: daemon-snapshot drift resolution. `resolved_by` is a foreign
+    // key into applies(id), so it cannot mark a row resolved when no apply ran
+    // (the no-drift / healed-complement reconcile snapshots). A nullable
+    // timestamp column — mirroring pending_decisions.resolved_at — carries that
+    // marker without a synthetic apply row. "resolved" is now
+    // `resolved_by IS NOT NULL OR resolved_at IS NOT NULL`.
+    "ALTER TABLE drift_events ADD COLUMN resolved_at TEXT;",
 ];
 
 /// SQLite-backed state store for cfgd.

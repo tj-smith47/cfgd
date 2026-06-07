@@ -377,10 +377,26 @@ pub(crate) fn handle_reconcile(
 
     if effective_total == 0 {
         tracing::debug!("reconcile: no drift detected");
+
+        // This reconcile is the ground-truth snapshot: nothing drifts now, so
+        // every outstanding drift row has healed. Clear them and reset the
+        // in-memory count so `/status` and `/drift` both return to 0.
+        if let Err(e) = store.resolve_all_drift() {
+            tracing::warn!(error = %e, "failed to resolve outstanding drift on clean tick");
+        }
+        rt.block_on(async {
+            let mut st = state.lock().await;
+            st.drift_count = 0;
+            if let Some(source) = st.sources.first_mut() {
+                source.drift_count = 0;
+            }
+        });
     } else {
         tracing::info!(actions = effective_total, "reconcile: drift detected");
 
-        // Record drift events
+        // The plan's action set is the exact current drift set. Record each
+        // diverging resource (UPSERT — no duplicate rows across ticks)...
+        let mut current_drift: Vec<(String, String)> = Vec::new();
         for phase in &plan.phases {
             for action in &phase.actions {
                 let (rtype, rid) = action_resource_info(action);
@@ -393,7 +409,13 @@ pub(crate) fn handle_reconcile(
                 {
                     tracing::warn!(error = %e, "failed to record drift");
                 }
+                current_drift.push((rtype, rid));
             }
+        }
+        // ...then resolve any still-unresolved rows NOT in the current set:
+        // they healed since the last tick.
+        if let Err(e) = store.resolve_drift_not_in(&current_drift) {
+            tracing::warn!(error = %e, "failed to resolve healed drift rows");
         }
 
         // Execute onDrift scripts from resolved profile. Profile-level scripts
@@ -475,14 +497,18 @@ pub(crate) fn handle_reconcile(
             }
         }
 
-        // Update drift count
-        rt.block_on(async {
-            let mut st = state.lock().await;
-            st.drift_count += effective_total as u32;
-            if let Some(source) = st.sources.first_mut() {
-                source.drift_count += effective_total as u32;
-            }
-        });
+        // Set the in-memory count from the actual outstanding rows, not an
+        // append-only accumulator, so `/status` tracks `/drift`. A read failure
+        // leaves the prior count untouched rather than forcing a misleading 0.
+        if let Some(outstanding) = super::drift::current_drift_count(&store) {
+            rt.block_on(async {
+                let mut st = state.lock().await;
+                st.drift_count = outstanding;
+                if let Some(source) = st.sources.first_mut() {
+                    source.drift_count = outstanding;
+                }
+            });
+        }
 
         // Check drift policy to decide whether to auto-apply or just notify.
         // Per-module ticks may override the global value via their patch entry.
@@ -578,6 +604,21 @@ pub(crate) fn handle_reconcile(
                                 "cfgd: auto-apply succeeded",
                                 &format!("{} action(s) applied successfully.", succeeded),
                             );
+                        }
+
+                        // `apply` resolves each applied resource's drift row, so
+                        // the outstanding count now reflects the heal in this
+                        // same tick: 0 on full success, the remainder on a
+                        // partial failure (those rows stay recorded). A read
+                        // failure leaves the prior count untouched.
+                        if let Some(outstanding) = super::drift::current_drift_count(&store) {
+                            rt.block_on(async {
+                                let mut st = state.lock().await;
+                                st.drift_count = outstanding;
+                                if let Some(source) = st.sources.first_mut() {
+                                    source.drift_count = outstanding;
+                                }
+                            });
                         }
                     }
                     Err(e) => {

@@ -101,6 +101,117 @@ fn resolve_drift_links_to_apply() {
 }
 
 #[test]
+fn record_drift_upserts_same_resource() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_drift("file", "/etc/hosts", None, Some("drift detected"), "local")
+        .unwrap();
+    store
+        .record_drift("file", "/etc/hosts", None, Some("drift detected"), "local")
+        .unwrap();
+
+    let events = store.unresolved_drift().unwrap();
+    assert_eq!(
+        events.len(),
+        1,
+        "recording the same resource twice must yield ONE unresolved row, not two"
+    );
+    assert_eq!(events[0].resource_type, "file");
+    assert_eq!(events[0].resource_id, "/etc/hosts");
+}
+
+#[test]
+fn record_drift_distinct_resources_stay_separate() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_drift("file", "/etc/hosts", None, Some("x"), "local")
+        .unwrap();
+    store
+        .record_drift("file", "/etc/resolv.conf", None, Some("x"), "local")
+        .unwrap();
+
+    let events = store.unresolved_drift().unwrap();
+    assert_eq!(events.len(), 2, "distinct resources keep distinct rows");
+}
+
+#[test]
+fn resolve_drift_not_in_resolves_complement() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_drift("file", "/keep", None, Some("x"), "local")
+        .unwrap();
+    store
+        .record_drift("file", "/heal", None, Some("x"), "local")
+        .unwrap();
+
+    // Only /keep is still drifting this tick; /heal healed.
+    let current = vec![("file".to_string(), "/keep".to_string())];
+    store.resolve_drift_not_in(&current).unwrap();
+
+    let events = store.unresolved_drift().unwrap();
+    assert_eq!(events.len(), 1, "the healed row must be resolved");
+    assert_eq!(events[0].resource_id, "/keep");
+}
+
+#[test]
+fn resolve_drift_not_in_matches_on_full_tuple_not_id_alone() {
+    // Two rows share resource_id "/etc/x" but differ by resource_type. Keeping
+    // only the (file, /etc/x) pair must resolve the (secret, /etc/x) row — the
+    // composite-key match must not treat the shared id as "still drifting".
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_drift("file", "/etc/x", None, Some("x"), "local")
+        .unwrap();
+    store
+        .record_drift("secret", "/etc/x", None, Some("x"), "local")
+        .unwrap();
+
+    let current = vec![("file".to_string(), "/etc/x".to_string())];
+    store.resolve_drift_not_in(&current).unwrap();
+
+    let events = store.unresolved_drift().unwrap();
+    assert_eq!(events.len(), 1, "only the matching tuple survives");
+    assert_eq!(events[0].resource_type, "file");
+    assert_eq!(events[0].resource_id, "/etc/x");
+}
+
+#[test]
+fn resolve_all_drift_clears_everything() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_drift("file", "/a", None, Some("x"), "local")
+        .unwrap();
+    store
+        .record_drift("file", "/b", None, Some("x"), "local")
+        .unwrap();
+
+    store.resolve_all_drift().unwrap();
+
+    assert!(
+        store.unresolved_drift().unwrap().is_empty(),
+        "resolve_all_drift must clear every unresolved row"
+    );
+}
+
+#[test]
+fn snapshot_reset_resolves_healed_resource() {
+    let store = StateStore::open_in_memory().unwrap();
+    store
+        .record_drift("file", "/x", None, Some("drift detected"), "local")
+        .unwrap();
+    assert_eq!(store.unresolved_drift().unwrap().len(), 1);
+
+    // Next reconcile tick: X no longer drifts (current set is empty).
+    let current: Vec<(String, String)> = Vec::new();
+    store.resolve_drift_not_in(&current).unwrap();
+
+    assert!(
+        store.unresolved_drift().unwrap().is_empty(),
+        "a clean reconcile snapshot must drive the unresolved count back to 0"
+    );
+}
+
+#[test]
 fn upsert_managed_resource() {
     let store = StateStore::open_in_memory().unwrap();
     store
@@ -1374,6 +1485,12 @@ fn migration_6_rebuilds_source_applies_preserving_rows_and_enabling_cascade() {
                 source_commit TEXT NOT NULL,
                 FOREIGN KEY (source_id) REFERENCES config_sources(id),
                 FOREIGN KEY (apply_id) REFERENCES applies(id));
+             CREATE TABLE drift_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL, resource_type TEXT NOT NULL,
+                resource_id TEXT NOT NULL, expected TEXT, actual TEXT,
+                source TEXT NOT NULL DEFAULT 'local', resolved_by INTEGER,
+                FOREIGN KEY (resolved_by) REFERENCES applies(id));
              CREATE TABLE schema_version (version INTEGER NOT NULL);
              INSERT INTO schema_version (version) VALUES (5);
              INSERT INTO config_sources (id, name, origin_url) VALUES (1, 'acme', 'u');

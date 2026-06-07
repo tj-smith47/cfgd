@@ -23,6 +23,7 @@ use crate::PathDisplayExt;
 use crate::config::{self, CfgdConfig};
 use crate::errors::{DaemonError, Result};
 use crate::output::{Printer, Role};
+use crate::state::StateStore;
 
 pub(super) struct DaemonLoopContext {
     pub state: Arc<Mutex<DaemonState>>,
@@ -38,6 +39,10 @@ pub(super) struct DaemonLoopContext {
     /// platform default state dir. Tests pass a tempdir here so the loop
     /// never touches `~/.local/share/cfgd/`.
     pub state_dir_override: Option<PathBuf>,
+    /// Managed file targets the profile declares. A file-watch event records
+    /// drift only when its path is one of these; config/source/`.git` paths
+    /// trigger a reconcile but are not drift.
+    pub managed_paths: Vec<PathBuf>,
 }
 
 pub(super) struct DaemonTriggers {
@@ -135,21 +140,37 @@ pub(super) async fn handle_file_change_tick(
 
     tracing::info!(path = %path.posix(), "file changed");
 
-    let drift_recorded = super::drift::record_file_drift(&path);
-    if drift_recorded {
-        {
-            let mut st = ctx.state.lock().await;
-            st.drift_count += 1;
-            if let Some(source) = st.sources.first_mut() {
-                source.drift_count += 1;
-            }
-        }
+    // A change to a config/source/`.git` path is a desired-state UPDATE that
+    // triggers a reconcile below — it is NOT drift. Only a change to a managed
+    // TARGET diverging from desired state counts.
+    let is_managed = super::drift::path_is_managed_target(&path, &ctx.managed_paths);
+    if is_managed {
+        let store = match ctx.state_dir_override.as_deref() {
+            Some(dir) => StateStore::open_in_dir(dir),
+            None => StateStore::open_default(),
+        };
+        match store {
+            Ok(store) => {
+                if super::drift::record_file_drift_to(&store, &path) {
+                    if let Some(count) = super::drift::current_drift_count(&store) {
+                        let mut st = ctx.state.lock().await;
+                        st.drift_count = count;
+                        if let Some(source) = st.sources.first_mut() {
+                            source.drift_count = count;
+                        }
+                    }
 
-        if ctx.notify_on_drift {
-            ctx.notifier.notify(
-                "cfgd: drift detected",
-                &format!("File changed: {}", path.posix()),
-            );
+                    if ctx.notify_on_drift {
+                        ctx.notifier.notify(
+                            "cfgd: drift detected",
+                            &format!("File changed: {}", path.posix()),
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "cannot open state store for drift recording");
+            }
         }
     }
 

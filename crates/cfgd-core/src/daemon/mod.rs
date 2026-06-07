@@ -404,12 +404,6 @@ mod tests;
 
 use checkin::*;
 use daemon_config::*;
-// drift::* exposes record_file_drift{,_to} — the wildcard re-exports them
-// for future tick handlers; today only direct `super::record_file_drift`
-// call-sites in reconcile.rs use them, so the parent-scope wildcard
-// appears unused under -D warnings.
-#[allow(unused_imports)]
-use drift::*;
 use git::*;
 use health_ipc::*;
 use reconcile::*;
@@ -801,6 +795,7 @@ pub(super) async fn run_daemon_with(
         compliance_config: setup.compliance_config.clone(),
         printer: Arc::clone(&printer),
         state_dir_override: overrides.state_dir_override.clone(),
+        managed_paths: setup.managed_paths.clone(),
     };
 
     let loop_result = run_daemon_loop(
