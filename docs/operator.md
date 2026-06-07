@@ -165,6 +165,8 @@ Challenge-response enrollment using pre-registered public keys. The device signs
 2. User runs `cfgd enroll --server-url <url>`
 3. Server issues nonce, client signs it, server verifies against stored keys
 
+Key verification runs `ssh-keygen -Y verify` (SSH) and `gpg --verify` (GPG) as subprocesses on the server, so `openssh-client` and `gnupg` must be present in the gateway's environment. The published `cfgd-operator` image bundles both; a custom image or bare-metal deployment serving key enrollment must install them.
+
 ```sh
 cfgd enroll --server-url https://cfgd.acme.com --token <bootstrap-token>
 cfgd enroll --server-url https://cfgd.acme.com

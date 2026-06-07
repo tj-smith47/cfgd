@@ -1,7 +1,13 @@
 FROM debian:bookworm-slim
 
+# openssh-client (ssh-keygen) and gnupg (gpg) are runtime deps of key-based device
+# enrollment: the gateway shells out to `ssh-keygen -Y verify` / `gpg --verify` to check a
+# device's signed challenge (gateway/api/enroll.rs). Without them, verification fails at the
+# subprocess even though the HTTP surface accepts the request.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    openssh-client \
+    gnupg \
     && rm -rf /var/lib/apt/lists/*
 
 RUN adduser --disabled-password --gecos "" --uid 1000 cfgd
