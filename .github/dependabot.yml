@@ -1,29 +1,35 @@
 version: 2
 updates:
-  - package-ecosystem: "cargo"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 10
-    groups:
-      cargo-minor-patch:
-        patterns: ["*"]
-        update-types: ["minor", "patch"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
     groups:
       github-actions:
         patterns: ["*"]
+    ignore:
+      # Self-managed: the floating @v1 is moved by anodizer-action's own
+      # release (semantic-release + update-major-tag). Don't let Dependabot
+      # track it; a v2 cutover is a deliberate manual bump.
+      - dependency-name: "tj-smith47/anodizer-action"
   - package-ecosystem: "docker"
+    # DOCKER_REGEXP is a substring match, so the Dockerfile.<suffix> /
+    # <prefix>.Dockerfile variants are detected — but only at the configured
+    # directory level (not recursively), so each dir holding a Dockerfile is
+    # listed explicitly.
     directories:
       - "/"
       - "/function-cfgd"
       - "/tests/e2e/cli"
+      - "/ecosystem/olm"
     schedule:
       interval: "weekly"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
     groups:
       docker:
         patterns: ["*"]
-        update-types: ["minor", "patch"]
