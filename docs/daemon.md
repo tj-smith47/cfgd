@@ -184,8 +184,16 @@ cfgd daemon                # run in foreground (default)
 cfgd daemon run            # run in foreground (explicit)
 cfgd daemon install        # install as launchd (macOS), systemd (Linux), or Windows Service
 cfgd daemon status         # check running state, last reconcile, drift count
-cfgd daemon uninstall      # remove the service
+cfgd daemon uninstall      # stop the running daemon and remove the service
 ```
+
+`uninstall` is the exact inverse of `install`: it stops and disables the
+running service (`systemctl --user disable --now` on Linux, `launchctl bootout`
+on macOS, `sc stop` on Windows) **before** removing the unit/plist/registration,
+so no orphaned daemon process is left running. The stop step is best-effort — if
+the session can't reach its service manager (e.g. a headless SSH login with no
+user systemd), `uninstall` still removes the file and prints a warning plus the
+manual stop command rather than aborting.
 
 ## Live config reload (SIGHUP)
 

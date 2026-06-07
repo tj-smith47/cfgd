@@ -4554,7 +4554,7 @@ fn install_then_uninstall_launchd_service_round_trips_plist() {
     assert!(body.contains("com.cfgd.daemon"));
     assert!(body.contains("--profile"));
 
-    uninstall_launchd_service().expect("uninstall ok");
+    uninstall_launchd_service(&test_printer()).expect("uninstall ok");
     assert!(!plist.exists(), "plist should be removed after uninstall");
 }
 
@@ -4565,7 +4565,7 @@ fn uninstall_launchd_service_is_noop_when_absent() {
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
     // No prior install — uninstall must succeed without error.
-    uninstall_launchd_service().expect("uninstall on clean home is a no-op");
+    uninstall_launchd_service(&test_printer()).expect("uninstall on clean home is a no-op");
 }
 
 #[cfg(unix)]
@@ -4588,7 +4588,7 @@ fn install_then_uninstall_systemd_service_round_trips_unit() {
     assert!(body.contains("--quiet daemon"));
     assert!(!body.contains("--profile"));
 
-    uninstall_systemd_service().expect("uninstall ok");
+    uninstall_systemd_service(&test_printer()).expect("uninstall ok");
     assert!(
         !unit_path.exists(),
         "unit should be removed after uninstall"
@@ -4601,7 +4601,7 @@ fn install_then_uninstall_systemd_service_round_trips_unit() {
 fn uninstall_systemd_service_is_noop_when_absent() {
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
-    uninstall_systemd_service().expect("uninstall on clean home is a no-op");
+    uninstall_systemd_service(&test_printer()).expect("uninstall on clean home is a no-op");
 }
 
 // Cross-platform dispatcher: install_service uses current_exe() + cfg(macos)/else
@@ -4619,7 +4619,7 @@ fn install_service_then_uninstall_service_round_trips_via_dispatcher() {
     // Whether macOS (plist) or Linux (unit), uninstall must round-trip without
     // panic. Skip exists() assertions — the dispatcher branch depends on
     // target_os and we just want both arms exercised.
-    crate::daemon::service::uninstall_service().expect("uninstall_service ok");
+    crate::daemon::service::uninstall_service(&test_printer()).expect("uninstall_service ok");
 }
 
 // --- record_file_drift_to tests ---

@@ -297,7 +297,7 @@ pub(super) fn cmd_daemon_uninstall(printer: &Printer) -> anyhow::Result<()> {
         ("linux", "cfgd.service")
     };
 
-    if let Err(e) = cfgd_core::daemon::uninstall_service() {
+    if let Err(e) = cfgd_core::daemon::uninstall_service(printer) {
         let msg = format!(
             "Failed to uninstall daemon service: {}",
             cfgd_core::output::collapse_to_subject_line(&e),
@@ -326,7 +326,7 @@ pub fn build_daemon_uninstall_doc(payload: &DaemonUninstallOutput) -> Doc {
     let detail = match payload.platform.as_str() {
         "windows" => format!("Stopping and removing Windows Service: {}", payload.service),
         "macos" => format!(
-            "Unloading: launchctl unload ~/Library/LaunchAgents/{}.plist",
+            "Unloading: launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/{}.plist",
             payload.service
         ),
         _ => format!(

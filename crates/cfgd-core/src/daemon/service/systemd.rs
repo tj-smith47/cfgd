@@ -135,16 +135,105 @@ pub(crate) fn start_systemd_service(printer: &Printer) -> Result<bool> {
     Ok(true)
 }
 
+/// Build the `systemctl --user` argv vectors that uninstall mirrors against
+/// install: stop+disable the unit, then (after the file is gone) reload the unit
+/// cache. Returned together so command construction is testable without a
+/// running user systemd bus; the caller invokes them at the correct points
+/// around the file removal (disable BEFORE the rm, daemon-reload AFTER).
 #[cfg(unix)]
-pub(crate) fn uninstall_systemd_service() -> Result<()> {
+pub(crate) fn systemd_stop_argv() -> [Vec<&'static str>; 2] {
+    [
+        vec!["--user", "disable", "--now", "cfgd.service"],
+        vec!["--user", "daemon-reload"],
+    ]
+}
+
+/// Stop and disable the running systemd user unit so `uninstall` leaves no
+/// orphan daemon process behind — the inverse of `start_systemd_service`.
+/// Best-effort: a missing `systemctl` or a session with no user systemd is
+/// surfaced as a warning plus an actionable hint rather than aborting the
+/// uninstall flow. Must run while the unit file still exists (before removal).
+#[cfg(unix)]
+pub(crate) fn stop_systemd_service(printer: &Printer) {
+    // A test with a scoped HOME override must never run a real
+    // `systemctl --user` against the runner's session manager. The argv builder
+    // (`systemd_stop_argv`) carries command-construction coverage; skip the
+    // side-effecting call here.
+    if crate::test_home_override().is_some() {
+        return;
+    }
+    if !crate::command_available("systemctl") {
+        printer.status_simple(
+            Role::Warn,
+            "systemctl not found — unit file removed but daemon may still be running",
+        );
+        printer.hint("Stop it manually with: systemctl --user disable --now cfgd.service");
+        return;
+    }
+
+    let [disable, _reload] = systemd_stop_argv();
+    let mut cmd = std::process::Command::new("systemctl");
+    cmd.args(&disable);
+    match crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT) {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => {
+            let detail = crate::stderr_lossy_trimmed(&output);
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "systemctl {} failed: {}",
+                    disable.join(" "),
+                    crate::output::collapse_to_subject_line(&detail)
+                ),
+            );
+        }
+        Err(e) => {
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "systemctl {} failed: {}",
+                    disable.join(" "),
+                    crate::output::collapse_to_subject_line(&e)
+                ),
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn uninstall_systemd_service(printer: &Printer) -> Result<()> {
     let home = crate::expand_tilde(Path::new("~"));
     let unit_path = home.join(SYSTEMD_USER_DIR).join("cfgd.service");
+
+    // Stop+disable BEFORE removing the unit file so systemd can act on a unit it
+    // still knows about — otherwise the running daemon is orphaned.
+    stop_systemd_service(printer);
 
     if unit_path.exists() {
         std::fs::remove_file(&unit_path).map_err(|e| DaemonError::ServiceInstallFailed {
             message: format!("remove unit file: {}", e),
         })?;
         tracing::info!(path = %unit_path.posix(), "removed systemd user service");
+    }
+
+    // Reload AFTER removal so systemd drops the now-deleted unit from its view.
+    if crate::test_home_override().is_none() && crate::command_available("systemctl") {
+        let [_disable, reload] = systemd_stop_argv();
+        let mut cmd = std::process::Command::new("systemctl");
+        cmd.args(&reload);
+        if let Ok(output) = crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT)
+            && !output.status.success()
+        {
+            let detail = crate::stderr_lossy_trimmed(&output);
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "systemctl {} failed: {}",
+                    reload.join(" "),
+                    crate::output::collapse_to_subject_line(&detail)
+                ),
+            );
+        }
     }
 
     Ok(())
@@ -154,7 +243,6 @@ pub(crate) fn uninstall_systemd_service() -> Result<()> {
 #[cfg(unix)]
 mod tests {
     use super::*;
-    use crate::test_helpers::EnvVarGuard;
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -162,7 +250,7 @@ mod tests {
     #[serial_test::serial]
     fn install_then_uninstall_systemd_service_writes_and_removes_unit() {
         let home_dir = TempDir::new().expect("tempdir");
-        let _home_g = EnvVarGuard::set("HOME", home_dir.path().to_str().expect("utf8"));
+        let _home_g = crate::with_test_home_guard(home_dir.path());
 
         let config = home_dir.path().join("cfgd.yaml");
         std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\n").expect("write config");
@@ -175,10 +263,11 @@ mod tests {
         assert!(unit.contains("ExecStart=/usr/local/bin/cfgd"));
         assert!(unit.contains("--profile ws"));
 
-        uninstall_systemd_service().expect("uninstall");
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        uninstall_systemd_service(&printer).expect("uninstall");
         assert!(!unit_path.exists());
 
-        uninstall_systemd_service().expect("idempotent uninstall");
+        uninstall_systemd_service(&printer).expect("idempotent uninstall");
     }
 
     #[test]
@@ -203,6 +292,13 @@ mod tests {
         let [reload, enable] = systemd_start_argv();
         assert_eq!(reload, ["--user", "daemon-reload"]);
         assert_eq!(enable, ["--user", "enable", "--now", "cfgd.service"]);
+    }
+
+    #[test]
+    fn systemd_stop_argv_disables_now_then_reloads() {
+        let [disable, reload] = systemd_stop_argv();
+        assert_eq!(disable, ["--user", "disable", "--now", "cfgd.service"]);
+        assert_eq!(reload, ["--user", "daemon-reload"]);
     }
 
     #[test]

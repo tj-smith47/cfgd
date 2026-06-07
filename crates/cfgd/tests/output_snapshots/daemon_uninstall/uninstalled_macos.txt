@@ -1,5 +1,5 @@
 Uninstall Daemon Service
 
-Unloading: launchctl unload ~/Library/LaunchAgents/com.cfgd.daemon.plist
+Unloading: launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.cfgd.daemon.plist
 
 ✓ Daemon service removed

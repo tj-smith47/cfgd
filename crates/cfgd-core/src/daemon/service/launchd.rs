@@ -184,12 +184,84 @@ pub(crate) fn start_launchd_service(printer: &Printer) -> Result<bool> {
     Ok(true)
 }
 
+/// Build the `launchctl bootout` argv that unloads and stops the LaunchAgent
+/// from the user's GUI domain — the inverse of `launchd_bootstrap_argv`. Split
+/// out so the command construction is testable without invoking `launchctl`.
+/// `bootout gui/<uid> <plist>` mirrors the `bootstrap gui/<uid> <plist>` form.
 #[cfg(unix)]
-pub(crate) fn uninstall_launchd_service() -> Result<()> {
+pub(crate) fn launchd_bootout_argv(uid: u32, plist_path: &Path) -> Vec<String> {
+    vec![
+        "bootout".to_string(),
+        format!("gui/{uid}"),
+        plist_path.display().to_string(),
+    ]
+}
+
+/// Unload and stop the running LaunchAgent so `uninstall` leaves no orphan
+/// daemon process behind — the inverse of `start_launchd_service`. Best-effort:
+/// a missing `launchctl` or a headless session (no `gui/<uid>` domain, nothing
+/// was ever loaded) is surfaced as a warning rather than aborting the uninstall
+/// flow. Must run while the plist still exists (before removal).
+#[cfg(unix)]
+pub(crate) fn stop_launchd_service(printer: &Printer) {
+    // A test with a scoped HOME override must never run a real `launchctl`
+    // against the runner's session. The argv builder (`launchd_bootout_argv`)
+    // carries command-construction coverage; skip the side-effecting call here.
+    if crate::test_home_override().is_some() {
+        return;
+    }
+    if !crate::command_available("launchctl") {
+        printer.status_simple(
+            Role::Warn,
+            "launchctl not found — plist removed but daemon may still be running",
+        );
+        printer.hint("Stop it later from a GUI login session with: launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.cfgd.daemon.plist");
+        return;
+    }
+
     let home = crate::expand_tilde(Path::new("~"));
     let plist_path = home
         .join(LAUNCHD_AGENTS_DIR)
         .join(format!("{}.plist", LAUNCHD_LABEL));
+    let uid = nix::unistd::getuid().as_raw();
+
+    let bootout = launchd_bootout_argv(uid, &plist_path);
+    let mut cmd = std::process::Command::new("launchctl");
+    cmd.args(&bootout);
+    match crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT) {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => {
+            let detail = crate::stderr_lossy_trimmed(&output);
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "launchctl bootout failed: {}",
+                    crate::output::collapse_to_subject_line(&detail)
+                ),
+            );
+        }
+        Err(e) => {
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "launchctl bootout failed: {}",
+                    crate::output::collapse_to_subject_line(&e)
+                ),
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn uninstall_launchd_service(printer: &Printer) -> Result<()> {
+    let home = crate::expand_tilde(Path::new("~"));
+    let plist_path = home
+        .join(LAUNCHD_AGENTS_DIR)
+        .join(format!("{}.plist", LAUNCHD_LABEL));
+
+    // Bootout BEFORE removing the plist so launchd can unload the agent it still
+    // knows about — otherwise the running daemon is orphaned.
+    stop_launchd_service(printer);
 
     if plist_path.exists() {
         std::fs::remove_file(&plist_path).map_err(|e| DaemonError::ServiceInstallFailed {
@@ -205,7 +277,6 @@ pub(crate) fn uninstall_launchd_service() -> Result<()> {
 #[cfg(unix)]
 mod tests {
     use super::*;
-    use crate::test_helpers::EnvVarGuard;
     use std::path::PathBuf;
     use tempfile::TempDir;
 
@@ -213,7 +284,7 @@ mod tests {
     #[serial_test::serial]
     fn install_then_uninstall_launchd_service_writes_and_removes_plist() {
         let home_dir = TempDir::new().expect("tempdir");
-        let _home_g = EnvVarGuard::set("HOME", home_dir.path().to_str().expect("utf8"));
+        let _home_g = crate::with_test_home_guard(home_dir.path());
 
         let config = home_dir.path().join("cfgd.yaml");
         std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\n").expect("write config");
@@ -230,11 +301,12 @@ mod tests {
         assert!(plist.contains("<string>--profile</string>"));
         assert!(plist.contains("<string>ws</string>"));
 
-        uninstall_launchd_service().expect("uninstall");
+        let printer = Printer::new(crate::output::Verbosity::Quiet);
+        uninstall_launchd_service(&printer).expect("uninstall");
         assert!(!plist_path.exists());
 
         // Second uninstall is a no-op (file absent).
-        uninstall_launchd_service().expect("idempotent uninstall");
+        uninstall_launchd_service(&printer).expect("idempotent uninstall");
     }
 
     #[test]
@@ -276,6 +348,22 @@ mod tests {
             argv,
             [
                 "bootstrap",
+                "gui/501",
+                "/Users/tj/Library/LaunchAgents/x.plist",
+            ]
+        );
+    }
+
+    #[test]
+    fn launchd_bootout_argv_targets_gui_domain_with_plist() {
+        let argv = launchd_bootout_argv(
+            501,
+            &PathBuf::from("/Users/tj/Library/LaunchAgents/x.plist"),
+        );
+        assert_eq!(
+            argv,
+            [
+                "bootout",
                 "gui/501",
                 "/Users/tj/Library/LaunchAgents/x.plist",
             ]

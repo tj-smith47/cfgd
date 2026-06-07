@@ -94,17 +94,24 @@ pub fn start_service(printer: &crate::output::Printer) -> Result<bool> {
     }
 }
 
-pub fn uninstall_service() -> Result<()> {
+/// Stop and remove the installed service — the inverse of `install_service`
+/// followed by `start_service`. The running daemon is stopped BEFORE the
+/// unit/plist is removed so no orphan process is left behind. Stop is
+/// best-effort (warn+hint via `printer`); only the file removal can hard-fail.
+pub fn uninstall_service(printer: &crate::output::Printer) -> Result<()> {
     #[cfg(windows)]
     {
+        // `uninstall_windows_service` already issues `sc stop` before delete and
+        // reports through tracing, so the printer is unused on this platform.
+        let _ = printer;
         uninstall_windows_service()
     }
     #[cfg(unix)]
     {
         if cfg!(target_os = "macos") {
-            uninstall_launchd_service()
+            uninstall_launchd_service(printer)
         } else {
-            uninstall_systemd_service()
+            uninstall_systemd_service(printer)
         }
     }
 }

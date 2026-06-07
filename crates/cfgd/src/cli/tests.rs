@@ -12698,6 +12698,11 @@ fn render_daemon_status_json_emits_placeholder_when_none() {
 
 #[test]
 fn daemon_uninstall_prints_platform_info_and_succeeds() {
+    // Isolate HOME so the best-effort service stop is skipped (the thread-local
+    // override short-circuits the real systemctl/launchctl shell-out) and the
+    // file-removal path runs against the temp dir, never the runner's session.
+    let tmp_home = tempfile::tempdir().unwrap();
+    let _home = cfgd_core::with_test_home_guard(tmp_home.path());
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
     // On Linux (CI/test env), uninstall_service just removes the unit file
     // if present; in a clean test env there is nothing to remove, so it succeeds.

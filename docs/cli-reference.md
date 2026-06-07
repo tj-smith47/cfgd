@@ -509,7 +509,7 @@ cfgd daemon                # run in foreground (default)
 cfgd daemon run            # run in foreground (explicit)
 cfgd daemon install        # install as system service
 cfgd daemon status         # check running state
-cfgd daemon uninstall      # remove service
+cfgd daemon uninstall      # stop the daemon and remove the service
 ```
 
 ## Decision Commands
