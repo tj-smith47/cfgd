@@ -126,6 +126,19 @@ Validates CRD specs on create/update. Catches invalid configurations (missing re
 
 Optional component, toggled via Helm values (`deviceGateway.enabled: true`). Provides the bridge between the cluster control plane and managed devices.
 
+### Standalone (off-cluster) mode
+
+Set `DEVICE_GATEWAY_STANDALONE=true` to run the operator as a device gateway with no Kubernetes client. The gateway serves the checkin, enrollment, and fleet APIs while controllers, the admission webhook, and leader election are all disabled (each requires a cluster connection). This is the off-cluster CLI fleet path, where the gateway is the only component that needs to run.
+
+```sh
+DEVICE_GATEWAY_STANDALONE=true \
+DEVICE_GATEWAY_PORT=8080 \
+CFGD_SERVER_DB_PATH=/data/cfgd-gateway.db \
+  cfgd-operator
+```
+
+`DEVICE_GATEWAY_STANDALONE` implies the gateway is enabled — there is no need to also set `DEVICE_GATEWAY_ENABLED`. Standalone is an explicit opt-in: there is intentionally no silent fallback to it when a cluster connection fails, so a real cluster outage in the normal path surfaces as an error rather than being masked.
+
 ### Checkin API
 
 Devices running `cfgd daemon` periodically check in to report their current applied profile, packages, drift events, module status, and system information (OS, arch, hostname).

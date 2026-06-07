@@ -22,6 +22,15 @@ pub fn is_gateway_enabled() -> bool {
     env::parse_bool_env("DEVICE_GATEWAY_ENABLED")
 }
 
+/// Read the `DEVICE_GATEWAY_STANDALONE` env flag. Returns `false` when unset
+/// or when the value is anything other than a truthy form
+/// (see `env::parse_bool_env`). When `true`, the operator runs ONLY the device
+/// gateway with no Kubernetes client — no controllers, webhook, or leader
+/// election (all of which require a cluster). Standalone implies gateway-enabled.
+pub fn is_gateway_standalone() -> bool {
+    env::parse_bool_env("DEVICE_GATEWAY_STANDALONE")
+}
+
 /// Read the `LEADER_ELECTION_ENABLED` env flag.
 pub fn is_leader_election_enabled() -> bool {
     env::parse_bool_env("LEADER_ELECTION_ENABLED")
@@ -50,12 +59,13 @@ pub fn webhook_certs_present(cert_dir: &Path) -> bool {
 
 /// Build a `GatewayConfig` from env + the passed-in `client` and `metrics`.
 /// Centralises the env-var → config mapping so the schema is testable and
-/// the main loop is reduced to wiring.
-pub fn build_gateway_config(client: Client, metrics: metrics::Metrics) -> GatewayConfig {
+/// the main loop is reduced to wiring. `client` is `None` in standalone
+/// (off-cluster) mode and `Some(_)` in the normal cluster-backed path.
+pub fn build_gateway_config(client: Option<Client>, metrics: metrics::Metrics) -> GatewayConfig {
     GatewayConfig {
         port: env::parse_port_env("DEVICE_GATEWAY_PORT", 8080),
         db_path: env::env_or("CFGD_SERVER_DB_PATH", "/data/cfgd-gateway.db"),
-        kube_client: Some(client),
+        kube_client: client,
         retention_days: env::parse_u32_env("CFGD_RETENTION_DAYS", 90),
         metrics: Some(metrics),
     }
@@ -88,6 +98,22 @@ mod tests {
     fn is_gateway_enabled_returns_true_for_1() {
         with_test_env_var("DEVICE_GATEWAY_ENABLED", Some("1"), || {
             assert!(is_gateway_enabled());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn is_gateway_standalone_returns_false_when_unset() {
+        with_test_env_var("DEVICE_GATEWAY_STANDALONE", None, || {
+            assert!(!is_gateway_standalone());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn is_gateway_standalone_returns_true_when_truthy() {
+        with_test_env_var("DEVICE_GATEWAY_STANDALONE", Some("true"), || {
+            assert!(is_gateway_standalone());
         });
     }
 

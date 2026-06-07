@@ -131,11 +131,52 @@ fn log_crd_info() {
     );
 }
 
+/// Spawn the health-probe server on `HEALTH_PORT` (default 8081) and return its
+/// task handle plus the shared `HealthState`. The caller marks ready via
+/// `HealthState::set_ready` once dependents are up.
+fn spawn_health_server() -> (tokio::task::JoinHandle<()>, health::HealthState) {
+    let health_state = health::HealthState::new();
+    let health_port = env::parse_port_env("HEALTH_PORT", 8081);
+
+    let handle = tokio::spawn({
+        let hs = health_state.clone();
+        async move {
+            if let Err(e) = health::run_probe_server(health_port, hs).await {
+                tracing::error!(error = %e, "health server failed");
+            }
+        }
+    });
+
+    (handle, health_state)
+}
+
+/// Spawn the Prometheus metrics server on `METRICS_PORT` (default 8443) and
+/// return its task handle plus the `Metrics` recorder wired to the served
+/// registry.
+fn spawn_metrics_server() -> (tokio::task::JoinHandle<()>, metrics::Metrics) {
+    let mut registry = prometheus_client::registry::Registry::default();
+    let metrics = metrics::Metrics::new(&mut registry);
+    let registry = Arc::new(Mutex::new(registry));
+
+    let metrics_port = env::parse_port_env("METRICS_PORT", 8443);
+
+    let handle = tokio::spawn({
+        let reg = registry.clone();
+        async move {
+            if let Err(e) = metrics::run_metrics_server(metrics_port, reg).await {
+                tracing::error!(error = %e, "metrics server failed");
+            }
+        }
+    });
+
+    (handle, metrics)
+}
+
 async fn run_operator(client: Client, metrics: metrics::Metrics) -> Result<()> {
     let gateway_enabled = runtime::is_gateway_enabled();
 
     if gateway_enabled {
-        let gateway_config = runtime::build_gateway_config(client.clone(), metrics.clone());
+        let gateway_config = runtime::build_gateway_config(Some(client.clone()), metrics.clone());
 
         tracing::info!("device gateway enabled");
 
@@ -182,36 +223,17 @@ pub async fn run() -> Result<()> {
     init_tracing();
 
     tracing::info!("starting cfgd-operator");
+
+    if runtime::is_gateway_standalone() {
+        return run_standalone_gateway().await;
+    }
+
     log_crd_info();
 
     let client = Client::try_default().await?;
 
-    let health_state = health::HealthState::new();
-    let health_port = env::parse_port_env("HEALTH_PORT", 8081);
-
-    let mut health_handle = tokio::spawn({
-        let hs = health_state.clone();
-        async move {
-            if let Err(e) = health::run_probe_server(health_port, hs).await {
-                tracing::error!(error = %e, "health server failed");
-            }
-        }
-    });
-
-    let mut registry = prometheus_client::registry::Registry::default();
-    let metrics = metrics::Metrics::new(&mut registry);
-    let registry = Arc::new(Mutex::new(registry));
-
-    let metrics_port = env::parse_port_env("METRICS_PORT", 8443);
-
-    let mut metrics_handle = tokio::spawn({
-        let reg = registry.clone();
-        async move {
-            if let Err(e) = metrics::run_metrics_server(metrics_port, reg).await {
-                tracing::error!(error = %e, "metrics server failed");
-            }
-        }
-    });
+    let (mut health_handle, health_state) = spawn_health_server();
+    let (mut metrics_handle, metrics) = spawn_metrics_server();
 
     let cert_dir = env::env_or("WEBHOOK_CERT_DIR", "/tmp/k8s-webhook-server/serving-certs");
     let webhook_port = env::parse_port_env("WEBHOOK_PORT", 9443);
@@ -345,6 +367,62 @@ pub async fn run() -> Result<()> {
     }
 
     if let Some(e) = webhook_exit_err {
+        return Err(e);
+    }
+
+    Ok(())
+}
+
+/// Run ONLY the device gateway with no Kubernetes client (off-cluster mode).
+///
+/// Entered when `DEVICE_GATEWAY_STANDALONE` is truthy. Controllers, the
+/// admission webhook, and leader election are all disabled because each
+/// requires a cluster connection — `Client::try_default()` is never called.
+/// Used by the off-cluster CLI fleet path where the gateway is the only
+/// component that needs to run.
+async fn run_standalone_gateway() -> Result<()> {
+    tracing::info!(
+        "running device gateway in standalone (no-Kubernetes) mode; \
+         controllers, webhook, and leader election are disabled"
+    );
+
+    let (mut health_handle, health_state) = spawn_health_server();
+    let (mut metrics_handle, metrics) = spawn_metrics_server();
+
+    let gateway_config = runtime::build_gateway_config(None, metrics);
+
+    health_state.set_ready();
+
+    let mut gateway_err: Option<anyhow::Error> = None;
+    tokio::select! {
+        result = gateway::start_gateway(gateway_config) => {
+            if let Err(e) = result {
+                tracing::error!(error = %e, "device gateway exited with error");
+                gateway_err = Some(anyhow::anyhow!("{}", e));
+            }
+        },
+        result = &mut health_handle => {
+            if let Err(e) = result {
+                tracing::error!(error = %e, "health server task panicked");
+            }
+        },
+        result = &mut metrics_handle => {
+            if let Err(e) = result {
+                tracing::error!(error = %e, "metrics server task panicked");
+            }
+        },
+        result = shutdown_signal() => {
+            if let Err(e) = result {
+                tracing::warn!(error = %e, "signal handler setup failed; proceeding with shutdown");
+            }
+            shutdown_drain().await;
+        },
+    }
+
+    health_handle.abort();
+    metrics_handle.abort();
+
+    if let Some(e) = gateway_err {
         return Err(e);
     }
 
@@ -609,5 +687,45 @@ mod tests {
             Ok(Err(_)) => {}
             Err(_elapsed) => {}
         }
+    }
+
+    /// Standalone gateway mode must NEVER call `Client::try_default()`.
+    ///
+    /// KUBECONFIG points at a non-existent file, so any `try_default()` call
+    /// fails fast and `run()` returns `Ok(Err(_))` well within the timeout —
+    /// that is exactly what the CURRENT (pre-fix) code does, because it ignores
+    /// `DEVICE_GATEWAY_STANDALONE` and connects unconditionally. With the fix,
+    /// `run()` skips `try_default()` entirely and enters the gateway serving
+    /// loop, which blocks on `axum::serve` (port 0 binds but never returns).
+    /// So a TIMEOUT (`Err(Elapsed)`) is the success condition here: it proves
+    /// the standalone path got PAST the cluster connection into the gateway.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[serial]
+    async fn run_standalone_gateway_never_connects_to_cluster() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bogus_kubeconfig = tmp.path().join("no-such-kubeconfig.yaml");
+        let _g_kc = EnvVarGuard::set("KUBECONFIG", bogus_kubeconfig.to_str().expect("valid utf8"));
+
+        let _g_hp = EnvVarGuard::set("HEALTH_PORT", "0");
+        let _g_mp = EnvVarGuard::set("METRICS_PORT", "0");
+        let _g_gp = EnvVarGuard::set("DEVICE_GATEWAY_PORT", "0");
+
+        let db_path = tmp.path().join("standalone-gateway.db");
+        let _g_db = EnvVarGuard::set("CFGD_SERVER_DB_PATH", db_path.to_str().expect("valid utf8"));
+
+        let _g_sa = EnvVarGuard::set("DEVICE_GATEWAY_STANDALONE", "true");
+        let _g_le = EnvVarGuard::unset("LEADER_ELECTION_ENABLED");
+        let _g_otel = EnvVarGuard::unset("OTEL_EXPORTER_OTLP_ENDPOINT");
+
+        let result = tokio::time::timeout(Duration::from_millis(400), run()).await;
+
+        // Timeout = success: standalone skipped try_default and is now blocking
+        // in the gateway serving loop. Any `Ok(_)` means run() returned before
+        // the timeout — pre-fix, that is the fast `try_default()` Err.
+        assert!(
+            result.is_err(),
+            "standalone mode must skip try_default and block in the gateway loop; \
+             got {result:?} (run() returned instead of timing out)"
+        );
     }
 }
