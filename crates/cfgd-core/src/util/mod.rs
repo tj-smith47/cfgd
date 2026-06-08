@@ -36,4 +36,4 @@ pub use yaml_merge::*;
 // use bare names via `use super::*;`, so we expose them at this level (and again at
 // the crate root in lib.rs) under #[cfg(test)] only.
 #[cfg(test)]
-pub(crate) use paths::{home_dir_var, test_home_override};
+pub(crate) use paths::{home_dir_var, resolve_macos_config_dir, test_home_override};

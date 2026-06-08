@@ -168,19 +168,52 @@ override the config file and state directory explicitly.
 | **State** (`state.db`, history, drift, apply journal) | platform-native data dir — Linux `$XDG_DATA_HOME/cfgd` or `~/.local/share/cfgd`, macOS `~/Library/Application Support/cfgd`, Windows `%LOCALAPPDATA%\cfgd` |
 | **Runtime** (daemon socket, pid files) | Linux `$XDG_RUNTIME_DIR/cfgd` (else `~/.cache/cfgd`), macOS `~/Library/Application Support/cfgd`, Windows `%LOCALAPPDATA%\cfgd` |
 
-The **config** platform default per OS:
+The **config** platform default per OS (used only when `XDG_CONFIG_HOME` is
+unset):
 
 | Platform | Config default | Notes |
 |---|---|---|
 | Linux | `~/.config/cfgd` | the XDG config base |
-| macOS | `~/Library/Application Support/cfgd` | the OS-native location — shares one root with state and runtime, so all cfgd data lives together |
+| macOS | `~/Library/Application Support/cfgd` | the native macOS location — shares one root with state and runtime (see migration below) |
 | Windows | `%APPDATA%\cfgd` | the roaming app-data base |
 
 `XDG_CONFIG_HOME` is honored on **every** platform (including macOS and Windows)
 when it is set to a non-empty, absolute path; an empty or relative value is
-ignored per the XDG Base Directory spec. Setting `XDG_CONFIG_HOME` is the
-supported way to relocate the config dir on macOS — for example, to keep it under
-`~/.config` instead of `~/Library/Application Support`.
+ignored per the XDG Base Directory spec. Setting `XDG_CONFIG_HOME` relocates the
+config dir on any platform — and is the supported way to keep config under
+`~/.config` on macOS.
+
+### macOS: legacy `~/.config/cfgd` migration
+
+Earlier builds stored macOS config at `~/.config/cfgd`. A config dir already
+there is **always preferred and read in place**, so upgrading never strands it.
+On the first interactive run after the default changed, cfgd prompts once:
+
+```text
+Your cfgd config is at ~/.config/cfgd, but the native macOS location is now
+~/Library/Application Support/cfgd. How would you like to proceed?
+> Move it to ~/Library/Application Support/cfgd
+  Keep it at ~/.config (set XDG_CONFIG_HOME in your shell config)
+```
+
+- **Move** relocates the directory to the native location (symlinked entries are
+  preserved; cfgd refuses if the destination already exists).
+- **Keep** sets `XDG_CONFIG_HOME` for the current session and persists it so all
+  future shells resolve there. The export is written to the file your shell
+  sources for **every** invocation (not just interactive ones): `~/.zshenv` for
+  zsh, `~/.profile` for bash, `~/.config/fish/conf.d/cfgd-xdg.fish` for fish. A
+  symlinked rc (e.g. into a dotfiles repo) is followed and edited in place, and
+  an existing `XDG_CONFIG_HOME` assignment is left untouched. Unrecognized shells
+  get printed instructions instead of a guessed file.
+
+The prompt is suppressed when `XDG_CONFIG_HOME` or `--config`/`CFGD_CONFIG`
+already pins the location, after you've chosen **Keep** once, for `cfgd daemon`,
+and in non-interactive sessions (`--yes`/`CFGD_YES`, no TTY, or structured `-o`
+output) — there cfgd silently keeps reading the legacy dir in place. Only the
+config dir is affected; **state** and **runtime** data stay under
+`~/Library/Application Support/cfgd`. That split is intentional: managed-file
+symlink targets are declared explicitly in each file entry, so they don't depend
+on where the config dir resides.
 
 ## Linux
 

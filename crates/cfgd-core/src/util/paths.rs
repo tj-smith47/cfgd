@@ -61,12 +61,16 @@ pub(crate) fn test_home_override() -> Option<std::path::PathBuf> {
 ///    relative values be treated as unset (joining a relative value would yield
 ///    a CWD-dependent config path). Honored on every platform, so an explicit
 ///    `XDG_CONFIG_HOME` relocates the config dir on macOS and Windows too.
-/// 2. the platform-native config base joined with `cfgd`:
+/// 2. the platform-native config location:
 ///    - Linux: `~/.config/cfgd`
-///    - macOS: `~/Library/Application Support/cfgd` — the same native root the
-///      state ([`crate::state::default_state_dir`]) and runtime
-///      ([`default_runtime_dir`]) directories use, so all per-user cfgd data
-///      shares one location instead of splitting config under `~/.config`.
+///    - macOS: `~/Library/Application Support/cfgd` for a fresh install — the
+///      same native root the state ([`crate::state::default_state_dir`]) and
+///      runtime ([`default_runtime_dir`]) directories use, so all per-user cfgd
+///      data shares one location. An existing `~/.config/cfgd` (from a build
+///      that used it) is always preferred and read in place so an upgrade never
+///      strands config; the CLI offers a one-time prompt to move it or pin
+///      `XDG_CONFIG_HOME` (see [`resolve_macos_config_dir`] and
+///      [`macos_legacy_config_migration`]).
 ///    - Windows: `%APPDATA%\cfgd`
 ///
 /// The home directory is resolved from `HOME`/`USERPROFILE` only, never the
@@ -84,13 +88,12 @@ pub fn default_config_dir() -> std::path::PathBuf {
     }
     #[cfg(target_os = "macos")]
     {
-        if let Some(home) = home_dir_var() {
-            return std::path::PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join("cfgd");
+        match home_dir_var() {
+            Some(home) => resolve_macos_config_dir(std::path::Path::new(&home), |p| p.is_dir()),
+            // HOME unresolved: keep the literal `~/.config/cfgd` so the caller
+            // fails cleanly instead of writing to a passwd-derived home.
+            None => expand_tilde(std::path::Path::new("~/.config/cfgd")),
         }
-        expand_tilde(std::path::Path::new("~/.config/cfgd"))
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
@@ -117,6 +120,120 @@ fn xdg_config_home_cfgd() -> Option<std::path::PathBuf> {
         return None;
     }
     Some(path.join("cfgd"))
+}
+
+/// Resolve the macOS config directory.
+///
+/// The native macOS location for a fresh install is
+/// `~/Library/Application Support/cfgd` — the same root as state and runtime, so
+/// all per-user cfgd data shares one place. An existing `~/.config/cfgd` is
+/// always preferred (read in place) so an upgrade from a build that used
+/// `~/.config` never strands a user's config; the CLI separately offers a
+/// one-time prompt to move it or pin `XDG_CONFIG_HOME` (see
+/// [`macos_legacy_config_migration`]). Discovery itself is read-only — it never
+/// moves files.
+///
+/// `exists` is injected (rather than calling [`std::path::Path::is_dir`]
+/// directly) so the resolution order is unit-testable on every platform, not
+/// only macOS.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn resolve_macos_config_dir(
+    home: &std::path::Path,
+    exists: impl Fn(&std::path::Path) -> bool,
+) -> std::path::PathBuf {
+    let dotconfig = home.join(".config").join("cfgd");
+    if exists(&dotconfig) {
+        return dotconfig;
+    }
+    home.join("Library")
+        .join("Application Support")
+        .join("cfgd")
+}
+
+/// When a legacy `~/.config/cfgd` config dir exists on macOS while the native
+/// `~/Library/Application Support/cfgd` location does not, return the
+/// `(legacy, native)` pair so the CLI can offer a one-time migration. Returns
+/// `None` when there is nothing to migrate (no legacy dir, or the native
+/// location already exists).
+///
+/// Compiled on every platform so the CLI migration entry point type-checks in
+/// CI; callers gate the *behavior* to macOS (the native `~/Library` layout is
+/// meaningless elsewhere).
+pub fn macos_legacy_config_migration(
+    home: &std::path::Path,
+) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let legacy = home.join(".config").join("cfgd");
+    let native = home
+        .join("Library")
+        .join("Application Support")
+        .join("cfgd");
+    if legacy.is_dir() && !native.exists() {
+        Some((legacy, native))
+    } else {
+        None
+    }
+}
+
+/// Move a directory tree from `src` to `dst`, creating `dst`'s parent first.
+///
+/// Refuses when `dst` already exists (so a racing creation during a caller's
+/// interactive pause can't be clobbered). Tries an atomic `rename` (the
+/// same-filesystem fast path) and falls back to a symlink-preserving recursive
+/// copy + remove when the paths live on different filesystems (`rename` then
+/// fails with `EXDEV`). On a partial copy the destination is rolled back so a
+/// failed move never strands two divergent copies.
+pub fn move_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    if dst.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("destination already exists: {}", dst.posix()),
+        ));
+    }
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match std::fs::rename(src, dst) {
+        Ok(()) => Ok(()),
+        // EXDEV (errno 18 on Linux/macOS): cross-filesystem rename is rejected;
+        // fall back to copy-then-remove. Other errors (permissions, missing
+        // source) surface unchanged.
+        Err(e) if e.raw_os_error() == Some(18) => {
+            if let Err(copy_err) = copy_tree_preserving_symlinks(src, dst) {
+                let _ = std::fs::remove_dir_all(dst);
+                return Err(copy_err);
+            }
+            if let Err(rm_err) = std::fs::remove_dir_all(src) {
+                let _ = std::fs::remove_dir_all(dst);
+                return Err(rm_err);
+            }
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Recursively copy a directory tree, recreating symlinks as symlinks (unlike
+/// [`copy_dir_recursive`], which skips them). Used only by [`move_dir`]'s
+/// cross-filesystem fallback, where the whole tree is owned by the mover and
+/// dropping symlinked entries would silently lose data.
+fn copy_tree_preserving_symlinks(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let to = dst.join(entry.file_name());
+        if file_type.is_symlink() {
+            crate::create_symlink(&std::fs::read_link(entry.path())?, &to)?;
+        } else if file_type.is_dir() {
+            copy_tree_preserving_symlinks(&entry.path(), &to)?;
+        } else {
+            std::fs::copy(entry.path(), &to)?;
+        }
+    }
+    Ok(())
 }
 
 /// Per-user runtime directory for short-lived sockets and pid files.

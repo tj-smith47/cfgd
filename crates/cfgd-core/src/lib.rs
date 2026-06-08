@@ -26,7 +26,7 @@ mod util;
 pub use util::*;
 
 #[cfg(test)]
-pub(crate) use util::{home_dir_var, test_home_override};
+pub(crate) use util::{home_dir_var, resolve_macos_config_dir, test_home_override};
 
 #[cfg(test)]
 mod tests;

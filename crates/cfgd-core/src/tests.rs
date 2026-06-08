@@ -788,6 +788,102 @@ fn default_config_dir_ignores_relative_xdg_config_home() {
 }
 
 #[test]
+fn macos_config_dir_prefers_existing_dotconfig() {
+    // Non-breaking: an existing ~/.config/cfgd always wins, even when an
+    // Application Support config dir is also present — an upgrade must not
+    // strand the config a current macOS user already has at ~/.config.
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let dotconfig = home.join(".config").join("cfgd");
+    let app_support = home
+        .join("Library")
+        .join("Application Support")
+        .join("cfgd");
+    std::fs::create_dir_all(&dotconfig).unwrap();
+    std::fs::create_dir_all(&app_support).unwrap();
+    assert_eq!(resolve_macos_config_dir(home, |p| p.is_dir()), dotconfig);
+}
+
+#[test]
+fn macos_config_dir_uses_dotconfig_when_only_it_exists() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let dotconfig = home.join(".config").join("cfgd");
+    std::fs::create_dir_all(&dotconfig).unwrap();
+    assert_eq!(resolve_macos_config_dir(home, |p| p.is_dir()), dotconfig);
+}
+
+#[test]
+fn macos_config_dir_fresh_install_defaults_to_application_support() {
+    // Neither location exists: a fresh install lands at the native macOS
+    // location, sharing one root with state and runtime.
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    assert_eq!(
+        resolve_macos_config_dir(home, |p| p.is_dir()),
+        home.join("Library")
+            .join("Application Support")
+            .join("cfgd")
+    );
+}
+
+#[test]
+fn macos_legacy_migration_detected_when_only_legacy_exists() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let legacy = home.join(".config").join("cfgd");
+    std::fs::create_dir_all(&legacy).unwrap();
+    let (got_legacy, got_native) = macos_legacy_config_migration(home).unwrap();
+    assert_eq!(got_legacy, legacy);
+    assert_eq!(
+        got_native,
+        home.join("Library")
+            .join("Application Support")
+            .join("cfgd")
+    );
+}
+
+#[test]
+fn macos_legacy_migration_none_when_native_exists() {
+    // Native location present: nothing to migrate, even if legacy also exists.
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    std::fs::create_dir_all(home.join(".config").join("cfgd")).unwrap();
+    std::fs::create_dir_all(
+        home.join("Library")
+            .join("Application Support")
+            .join("cfgd"),
+    )
+    .unwrap();
+    assert!(macos_legacy_config_migration(home).is_none());
+}
+
+#[test]
+fn macos_legacy_migration_none_when_no_legacy() {
+    let tmp = tempfile::tempdir().unwrap();
+    assert!(macos_legacy_config_migration(tmp.path()).is_none());
+}
+
+#[test]
+fn move_dir_relocates_tree_and_removes_source() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src");
+    let dst = tmp.path().join("nested").join("dst");
+    std::fs::create_dir_all(src.join("sub")).unwrap();
+    std::fs::write(src.join("a.txt"), b"top").unwrap();
+    std::fs::write(src.join("sub").join("b.txt"), b"deep").unwrap();
+
+    move_dir(&src, &dst).unwrap();
+
+    assert!(!src.exists(), "source dir should be gone after move");
+    assert_eq!(std::fs::read_to_string(dst.join("a.txt")).unwrap(), "top");
+    assert_eq!(
+        std::fs::read_to_string(dst.join("sub").join("b.txt")).unwrap(),
+        "deep"
+    );
+}
+
+#[test]
 fn acquire_apply_lock_and_release() {
     let dir = tempfile::tempdir().unwrap();
     let guard = acquire_apply_lock(dir.path()).unwrap();

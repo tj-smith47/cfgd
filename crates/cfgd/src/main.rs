@@ -84,6 +84,18 @@ fn main() -> anyhow::Result<()> {
     let raw_args: Vec<String> = std::env::args().collect();
     let expanded = cli::expand_aliases(raw_args);
 
+    // Gates for the macOS config-location migration prompt (evaluated below,
+    // after the Printer exists). An explicit `--config`/`CFGD_CONFIG` pins the
+    // location, and `--yes`/`CFGD_YES` means "don't prompt".
+    let explicit_config = std::env::var_os("CFGD_CONFIG").is_some()
+        || expanded
+            .iter()
+            .any(|a| a == "--config" || a.starts_with("--config="));
+    let assume_yes = std::env::var("CFGD_YES")
+        .map(|v| v == "true")
+        .unwrap_or(false)
+        || expanded.iter().any(|a| a == "--yes");
+
     let brontes_cfg = brontes::Config::default().tool_name_prefix("cfgd");
     let mcp_command = brontes::command(Some(&brontes_cfg)).after_help(MCP_HELP_EXAMPLES);
     let augmented = cli::Cli::command().subcommand(mcp_command);
@@ -179,6 +191,18 @@ fn main() -> anyhow::Result<()> {
         printer.deprecation(
             "--jsonpath is deprecated and will be removed in a future release; use --output jsonpath=EXPR instead",
         );
+    }
+
+    // One-time macOS prompt to migrate a legacy ~/.config/cfgd to the native
+    // location (or pin XDG_CONFIG_HOME). No-op off macOS and in non-interactive
+    // sessions; re-resolve the config path when the dir was moved. Skipped for
+    // the daemon, which must never block on a prompt when run in the foreground.
+    let is_daemon = matches!(cli.command, Some(cli::Command::Daemon { .. }));
+    if !is_daemon
+        && let Some(new_config) =
+            cli::config_migration::maybe_migrate_macos_config(&printer, explicit_config, assume_yes)
+    {
+        cli.config = cfgd_core::config::resolve_config_path(&new_config);
     }
 
     if let Err(e) = cli::execute(&cli, &printer) {
