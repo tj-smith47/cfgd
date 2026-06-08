@@ -258,6 +258,9 @@ mod tests {
             manager: manager.to_string(),
             version: None,
             script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
         }
     }
 

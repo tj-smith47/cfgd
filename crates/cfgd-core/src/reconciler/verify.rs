@@ -51,8 +51,13 @@ pub fn verify(
     let available_managers = registry.available_package_managers();
     let mut installed_cache: HashMap<String, HashSet<String>> = HashMap::new();
     for ep in crate::effective::effective_desired_packages(&resolved.merged, modules) {
-        // Script-based packages can't be verified via installed_packages() —
-        // trust the apply log (if the script succeeded, it's installed).
+        // A `prefer: [script]` package has no queryable installed-state: a custom
+        // install script can put anything anywhere, so there is no
+        // installed_packages() set to diff it against. It is therefore invisible
+        // to drift detection by design. Idempotency for these installs is the
+        // script's responsibility, expressed via the package entry's
+        // creates/onlyIf/unless guards (honored on the apply path in
+        // reconciler::modules) — not something verify can re-derive here.
         if ep.manager == "script" {
             continue;
         }

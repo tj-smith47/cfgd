@@ -151,6 +151,7 @@ pub fn cmd_module_create(
                 aliases: std::collections::HashMap::new(),
                 script: None,
                 platforms: Vec::new(),
+                ..Default::default()
             }
         })
         .collect();
@@ -412,6 +413,7 @@ pub fn cmd_module_update_local(
             aliases: std::collections::HashMap::new(),
             script: None,
             platforms: Vec::new(),
+            ..Default::default()
         });
         printer.status_simple(Role::Ok, format!("Added package: {}", pkg));
         changes += 1;

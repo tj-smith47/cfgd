@@ -1174,6 +1174,9 @@ fn collect_package_checks_includes_module_only_package() {
         manager: "pipx".into(),
         version: None,
         script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
     }];
 
     let mut registry = ProviderRegistry::new();
@@ -1203,6 +1206,9 @@ fn collect_package_checks_skips_unavailable_manager() {
         manager: "brew".into(),
         version: None,
         script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
     }];
 
     let registry = ProviderRegistry::new();
@@ -1277,6 +1283,9 @@ fn collect_snapshot_includes_module_resources_and_content_check() {
         manager: "pipx".into(),
         version: None,
         script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
     }];
     m.system.insert(
         "sysctl".to_string(),

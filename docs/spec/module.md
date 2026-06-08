@@ -26,6 +26,9 @@ spec:
       aliases:
         manager-name: package-name
       script: string
+      creates: string
+      onlyIf: string
+      unless: string
       deny:
         - string
       platforms:
@@ -152,6 +155,9 @@ based on `prefer` order and platform availability.
 | `prefer` | list of string | No | | Ordered list of package managers to try. cfgd tries each in order and uses the first available. The special value `"script"` directs cfgd to run the `script` field. When omitted, the platform's default manager is used. |
 | `aliases` | map | No | `{}` | Per-manager name overrides. Key is the manager name, value is the package name to use with that manager. Use when a package has different names across managers. |
 | `script` | string | No | | Inline shell script or path to a script. Executed when `"script"` appears in `prefer`. |
+| `creates` | string (path) | No | | Idempotency guard for a `prefer: [script]` install: skip the script if this path already exists. `~` expands to home; a relative path resolves against the script's working directory. Ignored for manager-backed installs. |
+| `onlyIf` | string (command) | No | | Idempotency guard for a `prefer: [script]` install: run the script only if this command exits **zero**. Ignored for manager-backed installs. |
+| `unless` | string (command) | No | | Idempotency guard for a `prefer: [script]` install: run the script only if this command exits **non-zero**. Ignored for manager-backed installs. |
 | `deny` | list of string | No | `[]` | Package manager names that must not be used for this package, even if available. |
 | `platforms` | list of string | No | `[]` | Platform filter. When set, this entry is skipped on non-matching platforms. Values: OS (`linux`, `macos`), distro (`ubuntu`, `fedora`, `arch`), or architecture (`x86_64`, `aarch64`). Omit to match all platforms. |
 
@@ -190,6 +196,26 @@ packages:
     prefer: [script]
     script: |
       curl -fsSL https://example.com/install.sh | sh
+```
+
+A `prefer: [script]` install has no installed-package set to query, so cfgd
+cannot tell whether the tool is already present. **Without a guard the script
+runs on every apply** (reported as changed) and is invisible to drift
+detection — making the script idempotent is the author's responsibility. Add a
+`creates`, `onlyIf`, or `unless` guard to make the install re-run-safe: the
+guards are evaluated before the script (`creates` → `onlyIf` → `unless`, all
+must permit running) and any guard that says "skip" turns the install into a
+no-op reported as unchanged. They share the semantics of the
+[lifecycle-script guards](#specscripts).
+
+**Example — idempotent install via `creates`:**
+```yaml
+packages:
+  - name: rustup
+    prefer: [script]
+    creates: ~/.cargo/bin/rustc
+    script: |
+      curl -fsSL https://sh.rustup.rs | sh -s -- -y
 ```
 
 ---

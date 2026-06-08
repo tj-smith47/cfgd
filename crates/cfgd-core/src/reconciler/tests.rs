@@ -687,6 +687,9 @@ fn plan_multiple_modules_in_dependency_order() {
                 manager: "apt".to_string(),
                 version: Some("18.19.0".to_string()),
                 script: None,
+                creates: None,
+                only_if: None,
+                unless: None,
             }],
             files: vec![],
             env: vec![],
@@ -711,6 +714,9 @@ fn plan_multiple_modules_in_dependency_order() {
                 manager: "brew".to_string(),
                 version: Some("0.10.2".to_string()),
                 script: None,
+                creates: None,
+                only_if: None,
+                unless: None,
             }],
             files: vec![],
             env: vec![],
@@ -773,6 +779,9 @@ fn format_module_plan_items_packages() {
                         manager: "brew".to_string(),
                         version: Some("0.10.2".to_string()),
                         script: None,
+                        creates: None,
+                        only_if: None,
+                        unless: None,
                     },
                     ResolvedPackage {
                         canonical_name: "fd".to_string(),
@@ -780,6 +789,9 @@ fn format_module_plan_items_packages() {
                         manager: "apt".to_string(),
                         version: Some("8.7.0".to_string()),
                         script: None,
+                        creates: None,
+                        only_if: None,
+                        unless: None,
                     },
                 ],
             },
@@ -849,6 +861,9 @@ fn format_module_action_description() {
                 manager: "brew".to_string(),
                 version: Some("0.10.2".to_string()),
                 script: None,
+                creates: None,
+                only_if: None,
+                unless: None,
             }],
         },
     });
@@ -1011,6 +1026,9 @@ fn plan_hash_includes_module_actions() {
                         manager: "brew".to_string(),
                         version: Some("0.10.2".to_string()),
                         script: None,
+                        creates: None,
+                        only_if: None,
+                        unless: None,
                     }],
                 },
             })],
@@ -1085,6 +1103,9 @@ fn verify_module_script_packages_not_false_drift() {
             manager: "script".to_string(),
             version: None,
             script: Some("curl -sSf https://sh.rustup.rs | sh".into()),
+            creates: None,
+            only_if: None,
+            unless: None,
         }],
         files: vec![],
         env: vec![],
@@ -1125,6 +1146,9 @@ fn module_one_pkg(name: &str, manager: &str, pkg: &str) -> ResolvedModule {
         manager: manager.to_string(),
         version: None,
         script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
     }];
     m
 }
@@ -1307,6 +1331,9 @@ fn plan_module_with_script_packages() {
             manager: "script".to_string(),
             version: None,
             script: Some("curl -sSf https://sh.rustup.rs | sh".into()),
+            creates: None,
+            only_if: None,
+            unless: None,
         }],
         files: vec![],
         env: vec![],
@@ -1370,6 +1397,9 @@ fn format_module_plan_script_packages() {
                     manager: "script".to_string(),
                     version: None,
                     script: Some("install-rustup.sh".into()),
+                    creates: None,
+                    only_if: None,
+                    unless: None,
                 }],
             },
         })],
@@ -7030,6 +7060,9 @@ fn apply_module_install_packages_calls_manager() {
             manager: "brew".to_string(),
             version: None,
             script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
         }],
         files: vec![],
         env: vec![],
@@ -7059,6 +7092,9 @@ fn apply_module_install_packages_calls_manager() {
                         manager: "brew".to_string(),
                         version: None,
                         script: None,
+                        creates: None,
+                        only_if: None,
+                        unless: None,
                     }],
                 },
             })],
@@ -7335,6 +7371,9 @@ fn apply_module_install_packages_bootstraps_when_needed() {
             manager: "brew".to_string(),
             version: None,
             script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
         }],
         files: vec![],
         env: vec![],
@@ -7364,6 +7403,9 @@ fn apply_module_install_packages_bootstraps_when_needed() {
                         manager: "brew".to_string(),
                         version: None,
                         script: None,
+                        creates: None,
+                        only_if: None,
+                        unless: None,
                     }],
                 },
             })],
@@ -7532,6 +7574,9 @@ fn plan_modules_platform_skipped_emits_single_skip_and_no_other_actions() {
             manager: "brew".to_string(),
             version: None,
             script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
         }],
         files: vec![],
         env: vec![],
@@ -8349,6 +8394,9 @@ fn format_action_description_module_install_multiple_packages() {
                     manager: "brew".to_string(),
                     version: None,
                     script: None,
+                    creates: None,
+                    only_if: None,
+                    unless: None,
                 },
                 ResolvedPackage {
                     canonical_name: "ripgrep".to_string(),
@@ -8356,6 +8404,9 @@ fn format_action_description_module_install_multiple_packages() {
                     manager: "brew".to_string(),
                     version: None,
                     script: None,
+                    creates: None,
+                    only_if: None,
+                    unless: None,
                 },
             ],
         },
@@ -10034,6 +10085,9 @@ fn format_action_description_module_alias_canonical_mismatch() {
                 manager: "apt".into(),
                 version: None,
                 script: None,
+                creates: None,
+                only_if: None,
+                unless: None,
             }],
         },
     });
@@ -10394,6 +10448,9 @@ fn apply_module_install_packages_bootstraps_unavailable_manager_and_writes_env()
             manager: "brew".to_string(),
             version: None,
             script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
         }],
         files: vec![],
         env: vec![],
@@ -10423,6 +10480,9 @@ fn apply_module_install_packages_bootstraps_unavailable_manager_and_writes_env()
                         manager: "brew".to_string(),
                         version: None,
                         script: None,
+                        creates: None,
+                        only_if: None,
+                        unless: None,
                     }],
                 },
             })],
@@ -10497,6 +10557,9 @@ fn apply_module_install_packages_with_existing_env_appends_new_dirs() {
             manager: "brew".to_string(),
             version: None,
             script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
         }],
         files: vec![],
         env: vec![],
@@ -10526,6 +10589,9 @@ fn apply_module_install_packages_with_existing_env_appends_new_dirs() {
                         manager: "brew".to_string(),
                         version: None,
                         script: None,
+                        creates: None,
+                        only_if: None,
+                        unless: None,
                     }],
                 },
             })],
@@ -10583,6 +10649,9 @@ fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
             manager: "no-such-manager".to_string(),
             version: None,
             script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
         }],
         files: vec![],
         env: vec![],
@@ -10612,6 +10681,9 @@ fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
                         manager: "no-such-manager".to_string(),
                         version: None,
                         script: None,
+                        creates: None,
+                        only_if: None,
+                        unless: None,
                     }],
                 },
             })],
@@ -10690,6 +10762,9 @@ fn apply_module_install_packages_script_manager_runs_per_package_script() {
                             manager: "script".to_string(),
                             version: None,
                             script: Some(format!("touch {}", marker_a.display())),
+                            creates: None,
+                            only_if: None,
+                            unless: None,
                         },
                         ResolvedPackage {
                             canonical_name: "pkg-b".to_string(),
@@ -10697,6 +10772,9 @@ fn apply_module_install_packages_script_manager_runs_per_package_script() {
                             manager: "script".to_string(),
                             version: None,
                             script: Some(format!("touch {}", marker_b.display())),
+                            creates: None,
+                            only_if: None,
+                            unless: None,
                         },
                     ],
                 },
@@ -10766,6 +10844,9 @@ fn apply_module_install_packages_script_manager_failure_returns_err() {
                         manager: "script".to_string(),
                         version: None,
                         script: Some("exit 3".to_string()),
+                        creates: None,
+                        only_if: None,
+                        unless: None,
                     }],
                 },
             })],
@@ -10793,6 +10874,185 @@ fn apply_module_install_packages_script_manager_failure_returns_err() {
     assert!(
         !result.action_results[0].success,
         "script failure must surface as action failure"
+    );
+}
+
+/// Build a single-package script-install plan with the given guards, run apply,
+/// and return the resulting `ApplyResult` plus whether the marker was created.
+#[cfg(unix)]
+fn run_guarded_script_install(
+    dir: &std::path::Path,
+    marker: &std::path::Path,
+    creates: Option<String>,
+    only_if: Option<String>,
+    unless: Option<String>,
+) -> crate::reconciler::ApplyResult {
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let modules = vec![ResolvedModule {
+        name: "guarded".to_string(),
+        packages: vec![],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        system: HashMap::new(),
+        depends: vec![],
+        dir: dir.to_path_buf(),
+        origin: None,
+        platform_skip_reason: None,
+    }];
+
+    let plan = Plan {
+        phases: vec![Phase {
+            name: PhaseName::Modules,
+            actions: vec![Action::Module(ModuleAction {
+                module_name: "guarded".to_string(),
+                kind: ModuleActionKind::InstallPackages {
+                    resolved: vec![ResolvedPackage {
+                        canonical_name: "guarded-pkg".to_string(),
+                        resolved_name: "guarded-pkg".to_string(),
+                        manager: "script".to_string(),
+                        version: None,
+                        script: Some(format!("touch {}", marker.display())),
+                        creates,
+                        only_if,
+                        unless,
+                    }],
+                },
+            })],
+        }],
+        warnings: vec![],
+    };
+
+    let printer = test_printer();
+    reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir,
+            &printer,
+            Some(&PhaseName::Modules),
+            &modules,
+            ReconcileContext::Apply,
+            false,
+            None,
+            &crate::AbortFlag::new(),
+        )
+        .unwrap()
+}
+
+#[test]
+#[cfg(unix)]
+fn script_install_creates_existing_path_skips_and_reports_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("ran");
+    // The `creates` path already exists, so the install must be skipped.
+    let creates_path = dir.path().join("already-there");
+    std::fs::write(&creates_path, "x").unwrap();
+
+    let result = run_guarded_script_install(
+        dir.path(),
+        &marker,
+        Some(creates_path.display().to_string()),
+        None,
+        None,
+    );
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(
+        !marker.exists(),
+        "creates guard satisfied: install script must NOT run"
+    );
+    assert!(
+        !result.action_results[0].changed,
+        "skipped install must report changed=false"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn script_install_creates_missing_path_runs_and_reports_changed() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("ran");
+    let creates_path = dir.path().join("not-there-yet");
+
+    let result = run_guarded_script_install(
+        dir.path(),
+        &marker,
+        Some(creates_path.display().to_string()),
+        None,
+        None,
+    );
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(
+        marker.exists(),
+        "creates path missing: install script must run"
+    );
+    assert!(
+        result.action_results[0].changed,
+        "executed install must report changed=true"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn script_install_unless_holds_skips_and_reports_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("ran");
+
+    // `unless: true` exits zero → the guarded state already holds → skip.
+    let result =
+        run_guarded_script_install(dir.path(), &marker, None, None, Some("true".to_string()));
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(!marker.exists(), "unless holds: install must NOT run");
+    assert!(
+        !result.action_results[0].changed,
+        "skipped install must report changed=false"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn script_install_only_if_fails_skips_and_reports_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("ran");
+
+    // `onlyIf: false` exits non-zero → condition not met → skip.
+    let result =
+        run_guarded_script_install(dir.path(), &marker, None, Some("false".to_string()), None);
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(!marker.exists(), "onlyIf failed: install must NOT run");
+    assert!(
+        !result.action_results[0].changed,
+        "skipped install must report changed=false"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn script_install_no_guards_still_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("ran");
+
+    let result = run_guarded_script_install(dir.path(), &marker, None, None, None);
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert!(marker.exists(), "no guards: install must run every apply");
+    assert!(
+        result.action_results[0].changed,
+        "ungated install must report changed=true"
     );
 }
 
@@ -11130,6 +11390,9 @@ fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
                 manager: "unknown-mgr".to_string(),
                 version: None,
                 script: None,
+                creates: None,
+                only_if: None,
+                unless: None,
             },
             crate::modules::ResolvedPackage {
                 canonical_name: "p2".to_string(),
@@ -11137,6 +11400,9 @@ fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
                 manager: "brew".to_string(),
                 version: None,
                 script: None,
+                creates: None,
+                only_if: None,
+                unless: None,
             },
             crate::modules::ResolvedPackage {
                 canonical_name: "p3".to_string(),
@@ -11144,6 +11410,9 @@ fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
                 manager: "apt".to_string(),
                 version: None,
                 script: None,
+                creates: None,
+                only_if: None,
+                unless: None,
             },
         ],
         files: vec![],
@@ -12421,6 +12690,9 @@ fn dedup_rp(name: &str, manager: &str) -> ResolvedPackage {
         manager: manager.to_string(),
         version: None,
         script: None,
+        creates: None,
+        only_if: None,
+        unless: None,
     }
 }
 

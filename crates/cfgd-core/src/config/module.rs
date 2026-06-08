@@ -80,6 +80,26 @@ pub struct ModulePackageEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub script: Option<String>,
 
+    /// Run the install script only if this command exits zero. A non-zero exit
+    /// skips the install (the condition for installing was not met). Only
+    /// meaningful for a `prefer: [script]` install; ignored for manager-backed
+    /// installs (those are idempotent via the manager's installed-package query).
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "onlyIf")]
+    pub only_if: Option<String>,
+
+    /// Run the install script only if this command exits NON-zero. A zero exit
+    /// (success) skips the install (the package already appears present). Only
+    /// meaningful for a `prefer: [script]` install; ignored otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unless: Option<String>,
+
+    /// Skip the install script if this path already exists. A leading `~`
+    /// expands to the home directory; a relative path resolves against the
+    /// script's working directory. Existence follows symlinks. Only meaningful
+    /// for a `prefer: [script]` install; ignored otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creates: Option<String>,
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub deny: Vec<String>,
 
@@ -488,6 +508,65 @@ creates: ~/.local/bin/thing
         assert!(!out.contains("onlyIf"), "onlyIf should be absent: {out}");
         assert!(!out.contains("unless"), "unless should be absent: {out}");
         assert!(!out.contains("creates"), "creates should be absent: {out}");
+    }
+
+    #[test]
+    fn module_package_entry_parses_script_guards() {
+        let yaml = r#"
+name: rustup
+prefer: [script]
+script: curl -sSf https://sh.rustup.rs | sh
+creates: ~/.cargo/bin/rustc
+onlyIf: test -d /opt
+unless: command -v rustc
+"#;
+        let entry: ModulePackageEntry = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(entry.prefer, vec!["script".to_string()]);
+        assert_eq!(entry.creates.as_deref(), Some("~/.cargo/bin/rustc"));
+        assert_eq!(entry.only_if.as_deref(), Some("test -d /opt"));
+        assert_eq!(entry.unless.as_deref(), Some("command -v rustc"));
+    }
+
+    #[test]
+    fn module_package_entry_guards_default_absent() {
+        let yaml = "name: ripgrep\n";
+        let entry: ModulePackageEntry = serde_yaml::from_str(yaml).unwrap();
+        assert!(entry.creates.is_none());
+        assert!(entry.only_if.is_none());
+        assert!(entry.unless.is_none());
+
+        // Absent guards must not serialize.
+        let out = serde_yaml::to_string(&entry).unwrap();
+        assert!(!out.contains("creates"), "creates should be absent: {out}");
+        assert!(!out.contains("onlyIf"), "onlyIf should be absent: {out}");
+        assert!(!out.contains("unless"), "unless should be absent: {out}");
+    }
+
+    #[test]
+    fn module_package_entry_guards_roundtrip_camelcase() {
+        let entry = ModulePackageEntry {
+            name: "thing".into(),
+            prefer: vec!["script".into()],
+            script: Some("install-thing".into()),
+            creates: Some("~/.local/bin/thing".into()),
+            only_if: Some("test -d /opt".into()),
+            unless: Some("command -v thing".into()),
+            ..Default::default()
+        };
+        let out = serde_yaml::to_string(&entry).unwrap();
+        assert!(out.contains("onlyIf: test -d /opt"), "onlyIf: {out}");
+        let roundtripped: ModulePackageEntry = serde_yaml::from_str(&out).unwrap();
+        assert_eq!(roundtripped.creates, entry.creates);
+        assert_eq!(roundtripped.only_if, entry.only_if);
+        assert_eq!(roundtripped.unless, entry.unless);
+    }
+
+    #[test]
+    fn module_package_entry_rejects_unknown_field() {
+        let yaml = "name: x\nbogusGuard: nope\n";
+        let err = serde_yaml::from_str::<ModulePackageEntry>(yaml)
+            .expect_err("deny_unknown_fields must reject bogusGuard");
+        assert!(format!("{err}").contains("unknown field"));
     }
 
     #[test]

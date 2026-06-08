@@ -54,6 +54,15 @@ pub struct ResolvedPackage {
     pub version: Option<String>,
     /// Install script content (inline or file path). Only set when `manager == "script"`.
     pub script: Option<String>,
+    /// Idempotency guard: skip the install script if this path already exists.
+    /// Only carried for a `prefer: [script]` install (`manager == "script"`).
+    pub creates: Option<String>,
+    /// Idempotency guard: run the install script only if this command exits zero.
+    /// Only carried for a `prefer: [script]` install (`manager == "script"`).
+    pub only_if: Option<String>,
+    /// Idempotency guard: run the install script only if this command exits
+    /// NON-zero. Only carried for a `prefer: [script]` install.
+    pub unless: Option<String>,
 }
 
 /// A file resolved to a concrete local path.

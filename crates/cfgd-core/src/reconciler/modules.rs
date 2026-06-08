@@ -34,6 +34,18 @@ impl<'a> super::Reconciler<'a> {
                 // manager in plan_modules(), so just collect names and install.
                 let pkg_names: Vec<String> = pkgs.iter().map(|p| p.resolved_name.clone()).collect();
 
+                // A `prefer: [script]` install has no queryable installed-state, so
+                // idempotency is the script's own responsibility. When all of a
+                // package's guards (creates/onlyIf/unless) say "skip", the install
+                // is a clean no-op — `changed` stays false so apply reports it as
+                // unchanged rather than a re-run. Without guards the script runs
+                // every apply (changed=true), which is the author's responsibility.
+                let mut script_changed = false;
+                // A manager-backed install always counts as changed (the package
+                // managers own their own idempotency at the package level, but the
+                // action having reached the install call means work was attempted).
+                let mut manager_changed = false;
+
                 if let Some(first) = pkgs.first() {
                     if first.manager == "script" {
                         // Script-based install: run each package's script via execute_script
@@ -53,10 +65,25 @@ impl<'a> super::Reconciler<'a> {
                                     module_dir.as_deref(),
                                     module_env,
                                 );
-                                let script_entry = ScriptEntry::Simple(script_content.clone());
+                                // Build a Full entry so the package's idempotency
+                                // guards run through the same guard-evaluation path
+                                // as lifecycle scripts (creates → onlyIf → unless);
+                                // a guard that says "skip" yields changed=false.
+                                let script_entry = ScriptEntry::Full {
+                                    run: script_content.clone(),
+                                    timeout: None,
+                                    idle_timeout: None,
+                                    continue_on_error: None,
+                                    shell: ScriptShell::Auto,
+                                    only_if: pkg.only_if.clone(),
+                                    unless: pkg.unless.clone(),
+                                    creates: pkg.creates.clone(),
+                                    interactive: false,
+                                    workdir: None,
+                                };
                                 let source = module_dir.as_deref().unwrap_or(config_dir);
                                 let working = script_default_workdir(config_dir);
-                                execute_script(
+                                let (_label, changed, _captured) = execute_script(
                                     &script_entry,
                                     source,
                                     &working,
@@ -73,6 +100,7 @@ impl<'a> super::Reconciler<'a> {
                                         ),
                                     })
                                 })?;
+                                script_changed |= changed;
                             }
                         }
                     } else {
@@ -128,6 +156,7 @@ impl<'a> super::Reconciler<'a> {
                             }
 
                             pm.install(&pkg_names, printer)?;
+                            manager_changed = true;
                         }
                     }
                 }
@@ -138,7 +167,7 @@ impl<'a> super::Reconciler<'a> {
                         action.module_name,
                         pkg_names.join(",")
                     ),
-                    true,
+                    script_changed || manager_changed,
                 ))
             }
             ModuleActionKind::DeployFiles { files } => {

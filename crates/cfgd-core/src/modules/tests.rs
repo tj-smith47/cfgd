@@ -213,6 +213,7 @@ fn resolve_package_simple_native() {
         script: None,
         deny: vec![],
         platforms: vec![],
+        ..Default::default()
     };
 
     let result = resolve_package(&entry, "test", &platform, &managers)
@@ -242,6 +243,7 @@ fn resolve_package_with_prefer_list() {
         script: None,
         deny: vec![],
         platforms: vec![],
+        ..Default::default()
     };
 
     // brew is unavailable, so snap should be tried next
@@ -270,6 +272,7 @@ fn resolve_package_min_version_check() {
         script: None,
         deny: vec![],
         platforms: vec![],
+        ..Default::default()
     };
 
     // apt has 0.6.1 which is < 0.9, so snap (0.10.2) should be chosen
@@ -294,6 +297,7 @@ fn resolve_package_unresolvable() {
         script: None,
         deny: vec![],
         platforms: vec![],
+        ..Default::default()
     };
 
     let result = resolve_package(&entry, "nvim", &platform, &managers);
@@ -322,6 +326,7 @@ fn resolve_package_alias_applied() {
         script: None,
         deny: vec![],
         platforms: vec![],
+        ..Default::default()
     };
 
     let result = resolve_package(&entry, "test", &platform, &managers)
@@ -351,6 +356,7 @@ fn resolve_package_alias_winget() {
         script: None,
         deny: vec![],
         platforms: vec![],
+        ..Default::default()
     };
 
     let result = resolve_package(&entry, "editor", &platform, &managers)
@@ -377,6 +383,7 @@ fn resolve_package_alias_chocolatey() {
         script: None,
         deny: vec![],
         platforms: vec![],
+        ..Default::default()
     };
 
     let result = resolve_package(&entry, "runtime", &platform, &managers)
@@ -403,6 +410,7 @@ fn resolve_package_alias_scoop() {
         script: None,
         deny: vec![],
         platforms: vec![],
+        ..Default::default()
     };
 
     let result = resolve_package(&entry, "tools", &platform, &managers)
@@ -426,6 +434,7 @@ fn resolve_package_manager_not_registered() {
         script: None,
         deny: vec![],
         platforms: vec![],
+        ..Default::default()
     };
 
     // brew not in managers map → unresolvable
@@ -1012,6 +1021,7 @@ fn resolve_package_script_manager() {
         ),
         deny: vec![],
         platforms: vec![],
+        ..Default::default()
     };
 
     let result = resolve_package(&entry, "test", &platform, &managers)
@@ -1040,6 +1050,7 @@ fn resolve_package_script_fallback() {
         script: Some("scripts/install-neovim.sh".into()),
         deny: vec![],
         platforms: vec![],
+        ..Default::default()
     };
 
     let result = resolve_package(&entry, "nvim", &platform, &managers)
@@ -1064,6 +1075,7 @@ fn resolve_package_script_preferred_over_manager() {
         script: Some("build-from-source.sh".into()),
         deny: vec![],
         platforms: vec![],
+        ..Default::default()
     };
 
     let result = resolve_package(&entry, "nvim", &platform, &managers)
@@ -1085,6 +1097,7 @@ fn resolve_package_script_missing_errors() {
         script: None, // script field missing!
         deny: vec![],
         platforms: vec![],
+        ..Default::default()
     };
 
     let result = resolve_package(&entry, "test", &platform, &managers);
@@ -1113,6 +1126,7 @@ fn resolve_package_platform_match_os() {
         script: None,
         deny: vec![],
         platforms: vec!["linux".into()],
+        ..Default::default()
     };
 
     let result = resolve_package(&entry, "test", &platform, &managers).unwrap();
@@ -1134,6 +1148,7 @@ fn resolve_package_platform_skip_wrong_os() {
         script: None,
         deny: vec![],
         platforms: vec!["macos".into()], // macos only
+        ..Default::default()
     };
 
     // On Linux, this should be skipped (None), not an error
@@ -1155,6 +1170,7 @@ fn resolve_package_platform_match_distro() {
         script: None,
         deny: vec![],
         platforms: vec!["ubuntu".into()],
+        ..Default::default()
     };
 
     let result = resolve_package(&entry, "test", &platform, &managers).unwrap();
@@ -1178,6 +1194,7 @@ fn resolve_package_platform_match_arch() {
         script: None,
         deny: vec![],
         platforms: vec!["aarch64".into()],
+        ..Default::default()
     };
 
     let result = resolve_package(&entry, "test", &platform, &managers).unwrap();
@@ -1198,6 +1215,7 @@ fn resolve_package_platform_empty_matches_all() {
         script: None,
         deny: vec![],
         platforms: vec![], // empty = all platforms
+        ..Default::default()
     };
 
     let result = resolve_package(&entry, "test", &platform, &managers).unwrap();
@@ -1222,6 +1240,7 @@ fn resolve_module_packages_skips_filtered() {
                     script: None,
                     deny: vec![],
                     platforms: vec![], // all platforms
+                    ..Default::default()
                 },
                 ModulePackageEntry {
                     name: "apt-only-tool".into(),
@@ -1231,6 +1250,7 @@ fn resolve_module_packages_skips_filtered() {
                     script: None,
                     deny: vec![],
                     platforms: vec!["linux".into()], // linux only
+                    ..Default::default()
                 },
             ],
             ..Default::default()
@@ -1464,6 +1484,7 @@ fn diff_module_specs_no_changes() {
                 script: None,
                 deny: vec![],
                 platforms: vec![],
+                ..Default::default()
             }],
             files: vec![],
             env: vec![],
@@ -1495,6 +1516,7 @@ fn diff_module_specs_detects_changes() {
                     script: None,
                     deny: vec![],
                     platforms: vec![],
+                    ..Default::default()
                 },
                 ModulePackageEntry {
                     name: "pkg2".into(),
@@ -1504,6 +1526,7 @@ fn diff_module_specs_detects_changes() {
                     script: None,
                     deny: vec![],
                     platforms: vec![],
+                    ..Default::default()
                 },
             ],
             files: vec![ModuleFileEntry {
@@ -1537,6 +1560,7 @@ fn diff_module_specs_detects_changes() {
                     script: None,
                     deny: vec![],
                     platforms: vec![],
+                    ..Default::default()
                 },
                 ModulePackageEntry {
                     name: "pkg3".into(),
@@ -1546,6 +1570,7 @@ fn diff_module_specs_detects_changes() {
                     script: None,
                     deny: vec![],
                     platforms: vec![],
+                    ..Default::default()
                 },
             ],
             files: vec![ModuleFileEntry {
@@ -1962,6 +1987,7 @@ fn resolve_package_deny_excludes_manager() {
         script: None,
         deny: vec!["brew".into()],
         platforms: vec![],
+        ..Default::default()
     };
 
     let result = resolve_package(&entry, "test", &platform, &managers);
@@ -2460,6 +2486,7 @@ fn resolve_package_deny_skips_manager() {
         script: None,
         deny: vec!["brew".into()],
         platforms: vec![],
+        ..Default::default()
     };
 
     let result = resolve_package(&entry, "test", &platform, &managers)
@@ -2483,6 +2510,7 @@ fn resolve_package_platform_filter_skips() {
         script: None,
         deny: vec![],
         platforms: vec!["macos".to_string()], // only macOS
+        ..Default::default()
     };
 
     // Linux platform should be filtered out
@@ -2503,6 +2531,7 @@ fn resolve_package_script_manager_with_deny() {
         script: Some("curl -sSf https://sh.rustup.rs | sh".into()),
         deny: vec![],
         platforms: vec![],
+        ..Default::default()
     };
 
     let result = resolve_package(&entry, "test", &platform, &managers)
@@ -2526,6 +2555,7 @@ fn resolve_package_script_no_script_field_errors() {
         script: None, // missing!
         deny: vec![],
         platforms: vec![],
+        ..Default::default()
     };
 
     let result = resolve_package(&entry, "test", &platform, &managers);

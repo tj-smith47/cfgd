@@ -98,6 +98,9 @@ spec:
 | `prefer` | no | list | Ordered list of managers to try. `"script"` uses the `script` field as a custom installer. If omitted, uses platform's native manager. |
 | `aliases` | no | map | Per-manager name overrides when the package name differs |
 | `script` | no | string | Inline shell script or path. Used when `prefer` includes `"script"` |
+| `creates` | no | string | Idempotency guard for a `prefer: [script]` install: skip the script if this path exists. Ignored for manager-backed installs |
+| `onlyIf` | no | string | Idempotency guard for a `prefer: [script]` install: run only if this command exits zero. Ignored for manager-backed installs |
+| `unless` | no | string | Idempotency guard for a `prefer: [script]` install: run only if this command exits non-zero. Ignored for manager-backed installs |
 | `platforms` | no | list | Platform filter — skip on non-matching platforms. Values: OS (`linux`, `macos`), distro (`ubuntu`, `fedora`, `arch`), or arch (`x86_64`, `aarch64`) |
 
 ### File Entry Fields
@@ -194,7 +197,7 @@ A package declared in more than one scope — the profile and a module, or two m
 - **Same manager + same name across scopes** → installed once; the duplicates are dropped.
 - **Different managers** → both install. `ripgrep` via `brew` in the profile and via `cargo` in a module are two distinct installs.
 - **Module installs win** over profile duplicates, and an **earlier module wins** over a later one. The Modules phase runs before the Packages phase, so a module's own `postApply` script can rely on the package already being present.
-- **`prefer: [script]` entries are never deduped.** A custom install script is not package-manager-idempotent — two same-named scripts may differ, so both always run.
+- **`prefer: [script]` entries are never deduped.** A custom install script is not package-manager-idempotent — two same-named scripts may differ, so both always run (subject to each entry's own `creates`/`onlyIf`/`unless` guards).
 - Dedup is **silent**: no warning is emitted for a dropped duplicate.
 
 ```yaml
@@ -231,6 +234,25 @@ packages:
     prefer: [script]
     script: |
       curl -fsSL https://example.com/install.sh | sh
+```
+
+**Idempotency.** A `prefer: [script]` install has no installed-package set to
+query, so cfgd cannot detect whether the tool is already present: it is
+invisible to drift/`verify`, and **without a guard the script runs on every
+apply** (reported as changed). Make the script idempotent — either internally,
+or by attaching a `creates`/`onlyIf`/`unless` guard to the package entry. The
+guards share the [lifecycle-script semantics](#script-lifecycle): they are
+evaluated before the script (`creates` → `onlyIf` → `unless`, all must permit
+running), and any guard that says "skip" turns the install into a no-op
+reported as unchanged.
+
+```yaml
+packages:
+  - name: rustup
+    prefer: [script]
+    creates: ~/.cargo/bin/rustc   # skip if rustc already installed
+    script: |
+      curl -fsSL https://sh.rustup.rs | sh -s -- -y
 ```
 
 ### Platform Detection

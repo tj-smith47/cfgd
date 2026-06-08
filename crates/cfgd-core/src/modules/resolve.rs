@@ -74,6 +74,9 @@ pub fn resolve_package(
                 manager: "script".to_string(),
                 version: None,
                 script: Some(script.clone()),
+                creates: entry.creates.clone(),
+                only_if: entry.only_if.clone(),
+                unless: entry.unless.clone(),
             }));
         }
 
@@ -102,6 +105,9 @@ pub fn resolve_package(
                 manager: candidate.clone(),
                 version: None,
                 script: None,
+                creates: None,
+                only_if: None,
+                unless: None,
             }));
         }
 
@@ -117,6 +123,9 @@ pub fn resolve_package(
                         manager: candidate.clone(),
                         version: Some(ver),
                         script: None,
+                        creates: None,
+                        only_if: None,
+                        unless: None,
                     }));
                 }
                 Ok(None) => continue,
@@ -131,6 +140,9 @@ pub fn resolve_package(
                 manager: candidate.clone(),
                 version,
                 script: None,
+                creates: None,
+                only_if: None,
+                unless: None,
             }));
         }
     }
