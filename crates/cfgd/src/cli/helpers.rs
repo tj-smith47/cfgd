@@ -454,6 +454,23 @@ pub(in crate::cli) fn compose_with_sources(
 
     let result = mgr.compose(&cfg.spec.sources, local_resolved)?;
     display_and_persist_conflicts(cli, &result, printer);
+
+    // Surface the documented "scripts are shown in cfgd plan" promise: when a
+    // subscriber opted in (`allowScripts: true`) to a source whose
+    // `constraints.no_scripts` would otherwise block scripts, the script
+    // execution must be visible. Non-fatal — the opt-in already permitted it.
+    for spec in &cfg.spec.sources {
+        if spec.subscription.allow_scripts
+            && let Some(cached) = mgr.get(&spec.name)
+            && cached.manifest.spec.policy.constraints.no_scripts
+        {
+            printer.note(format!(
+                "source '{}' scripts will run because allowScripts is set (constraints.no_scripts is overridden by your subscription)",
+                spec.name
+            ));
+        }
+    }
+
     Ok(result)
 }
 

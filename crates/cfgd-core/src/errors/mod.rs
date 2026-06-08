@@ -419,6 +419,15 @@ pub enum ModuleError {
     InvalidSpec { name: String, message: String },
 
     #[error(
+        "module '{module}' delivered by source '{source_name}' carries {kind}, but that source is not allowed to run scripts (set subscription.allowScripts: true to opt in, or relax the source's constraints.no_scripts)"
+    )]
+    ScriptsNotAllowed {
+        source_name: String,
+        module: String,
+        kind: String,
+    },
+
+    #[error(
         "lockfile integrity check failed for module '{name}': expected {expected}, got {actual}"
     )]
     IntegrityMismatch {

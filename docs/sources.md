@@ -275,7 +275,20 @@ If the source tries to deploy a file to `~/.bashrc` (not in the allowed list), c
 
 ### `noScripts`
 
-When `true` (the default), the source cannot include `preReconcile` or `postReconcile` scripts. If a source manifest declares scripts while `noScripts: true`, cfgd rejects those scripts at composition time. Subscribers can relax this by setting `allowScripts: true` in their subscription — the scripts are then shown in `cfgd plan` before execution.
+When `true` (the default), the source cannot deliver lifecycle scripts. This covers both **profile-layer** scripts (`preApply`/`postApply`/`preReconcile`/`postReconcile`/`onChange`/`onDrift` on the source's profiles and policy tiers) and **module-body** scripts (the same hooks, plus `prefer: [script]` package installs, on any module the source delivers via `provides.modules`). If a source declares any of these while `noScripts: true`, cfgd rejects them as a fatal error — at composition time for profile-layer scripts and at module-load time for module bodies.
+
+Subscribers can relax this by setting `allowScripts: true` in their subscription:
+
+```yaml
+spec:
+  sources:
+    - name: acme
+      subscription:
+        profile: acme-backend
+        allowScripts: true   # opt in to this source's scripts
+```
+
+With `allowScripts: true`, the source's scripts are permitted and `cfgd plan` surfaces a note that they will run, so the execution is visible before any apply.
 
 ### `allowSystemChanges`
 

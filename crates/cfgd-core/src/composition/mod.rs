@@ -70,6 +70,11 @@ pub struct CompositionInput {
     pub constraints: SourceConstraints,
     pub layers: Vec<ProfileLayer>,
     pub subscription: SubscriptionConfig,
+    /// Subscriber opt-in (`subscription.allowScripts`) to permit this source's
+    /// lifecycle scripts even when `constraints.no_scripts` would otherwise
+    /// reject them. Threaded into [`validate_constraints`] so the profile-layer
+    /// no-scripts check honors the same opt-in as the module-delivery path.
+    pub allow_scripts: bool,
 }
 
 /// Subscription config extracted from the user's cfgd.yaml for this source.

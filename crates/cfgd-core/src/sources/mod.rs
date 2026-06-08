@@ -827,6 +827,7 @@ impl SourceManager {
                 constraints: cached.manifest.spec.policy.constraints.clone(),
                 layers,
                 subscription: SubscriptionConfig::from_spec(spec),
+                allow_scripts: spec.subscription.allow_scripts,
             });
         }
 
@@ -857,9 +858,15 @@ impl SourceManager {
         }
 
         for spec in cfg_sources {
-            if self.get(&spec.name).is_some() {
+            if let Some(cached) = self.get(&spec.name) {
                 let modules_dir = self.source_modules_dir(&spec.name)?;
                 let offered = self.available_source_modules(&spec.name)?;
+                // A source's scripts are permitted iff the subscriber opted in or
+                // the source does not constrain scripts. This is the same decision
+                // the profile-layer enforcement applies (see compose), carried onto
+                // the module-resolution path which lives in a different code path.
+                let scripts_permitted = spec.subscription.allow_scripts
+                    || !cached.manifest.spec.policy.constraints.no_scripts;
                 result
                     .source_module_roots
                     .push(crate::modules::SourceModuleRoot {
@@ -867,6 +874,7 @@ impl SourceManager {
                         priority: spec.subscription.priority,
                         modules_dir,
                         offered,
+                        scripts_permitted,
                     });
             }
         }

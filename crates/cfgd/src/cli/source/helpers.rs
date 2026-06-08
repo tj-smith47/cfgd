@@ -28,6 +28,7 @@ pub(crate) fn build_permission_input(
         constraints: policy.constraints.clone(),
         layers: Vec::new(),
         subscription: SubscriptionConfig::default(),
+        allow_scripts: false,
     }
 }
 
@@ -381,6 +382,7 @@ pub(crate) fn build_subscription_preview_input(
             opt_in: opt_in.to_vec(),
             ..Default::default()
         },
+        allow_scripts: false,
     }
 }
 

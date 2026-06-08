@@ -29,6 +29,12 @@ pub struct SubscriptionSpec {
     pub accept_recommended: bool,
     #[serde(default)]
     pub opt_in: Vec<String>,
+    /// Subscriber opt-in to run lifecycle scripts (profile-layer and
+    /// source-delivered module bodies) from this source even when the source's
+    /// `constraints.no_scripts` would otherwise reject them. Default `false`:
+    /// the source's own `no_scripts` constraint governs.
+    #[serde(default)]
+    pub allow_scripts: bool,
     #[serde(default)]
     pub overrides: serde_yaml::Value,
     #[serde(default)]
@@ -42,6 +48,7 @@ impl Default for SubscriptionSpec {
             priority: default_source_priority(),
             accept_recommended: false,
             opt_in: Vec::new(),
+            allow_scripts: false,
             overrides: serde_yaml::Value::Null,
             reject: serde_yaml::Value::Null,
         }
@@ -289,6 +296,22 @@ bogusField: 1
         let err = serde_yaml::from_str::<SubscriptionSpec>(yaml)
             .expect_err("expected deny_unknown_fields to reject autoApply (belongs on sync)");
         assert!(format!("{}", err).contains("unknown field"));
+    }
+
+    #[test]
+    fn subscription_spec_parses_allow_scripts() {
+        let yaml = "priority: 100\nallowScripts: true\n";
+        let spec: SubscriptionSpec = serde_yaml::from_str(yaml).unwrap();
+        assert!(spec.allow_scripts);
+        assert_eq!(spec.priority, 100);
+    }
+
+    #[test]
+    fn subscription_spec_allow_scripts_defaults_false() {
+        let yaml = "priority: 100\n";
+        let spec: SubscriptionSpec = serde_yaml::from_str(yaml).unwrap();
+        assert!(!spec.allow_scripts);
+        assert!(!SubscriptionSpec::default().allow_scripts);
     }
 
     #[test]

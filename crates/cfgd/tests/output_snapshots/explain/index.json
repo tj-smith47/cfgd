@@ -858,6 +858,12 @@
                 "type": "[]string"
               },
               {
+                "description": "Permit this source's lifecycle scripts and prefer:[script] installs even when its constraints.no_scripts is set (default: false)",
+                "name": "allowScripts",
+                "required": false,
+                "type": "bool"
+              },
+              {
                 "description": "Override values from the source",
                 "name": "overrides",
                 "required": false,

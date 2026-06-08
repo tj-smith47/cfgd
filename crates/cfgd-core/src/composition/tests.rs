@@ -89,6 +89,7 @@ fn make_source_input(name: &str, priority: u32) -> CompositionInput {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     }
 }
 
@@ -215,7 +216,7 @@ fn validate_constraints_scripts_blocked() {
         }),
         ..Default::default()
     };
-    let err = validate_constraints("acme", &constraints, &spec).unwrap_err();
+    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("acme") && msg.contains("scripts"),
@@ -263,7 +264,7 @@ fn validate_constraints_scripts_blocked_all_hooks() {
         ),
     ] {
         assert!(
-            validate_constraints("src", &constraints, &spec).is_err(),
+            validate_constraints("src", &constraints, &spec, false).is_err(),
             "no_scripts should block {label} hooks"
         );
     }
@@ -281,7 +282,7 @@ fn validate_constraints_scripts_empty_allowed() {
         ..Default::default()
     };
     assert!(
-        validate_constraints("acme", &constraints, &spec).is_ok(),
+        validate_constraints("acme", &constraints, &spec, false).is_ok(),
         "no_scripts with empty script lists should pass"
     );
 }
@@ -299,7 +300,30 @@ fn validate_constraints_scripts_allowed() {
         }),
         ..Default::default()
     };
-    assert!(validate_constraints("acme", &constraints, &spec).is_ok());
+    assert!(validate_constraints("acme", &constraints, &spec, false).is_ok());
+}
+
+#[test]
+fn validate_constraints_scripts_permitted_by_subscriber_opt_in() {
+    // no_scripts=true would normally reject, but allowScripts opt-in (the 4th
+    // arg = true) permits profile-layer scripts.
+    let constraints = SourceConstraints {
+        no_scripts: true,
+        ..Default::default()
+    };
+    let spec = ProfileSpec {
+        scripts: Some(ScriptSpec {
+            pre_reconcile: vec![ScriptEntry::Simple("setup.sh".to_string())],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    // Blocked without opt-in, permitted with it.
+    assert!(validate_constraints("acme", &constraints, &spec, false).is_err());
+    assert!(
+        validate_constraints("acme", &constraints, &spec, true).is_ok(),
+        "allowScripts opt-in must permit profile-layer scripts under no_scripts"
+    );
 }
 
 #[test]
@@ -323,7 +347,7 @@ fn validate_constraints_path_containment() {
         }),
         ..Default::default()
     };
-    let err = validate_constraints("acme", &constraints, &spec).unwrap_err();
+    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("/etc/sudoers") && msg.contains("acme"),
@@ -352,7 +376,7 @@ fn validate_constraints_path_allowed() {
         }),
         ..Default::default()
     };
-    assert!(validate_constraints("acme", &constraints, &spec).is_ok());
+    assert!(validate_constraints("acme", &constraints, &spec, false).is_ok());
 }
 
 #[test]
@@ -365,7 +389,7 @@ fn validate_constraints_system_changes_blocked() {
         system: HashMap::from([("shell".into(), serde_yaml::Value::String("/bin/zsh".into()))]),
         ..Default::default()
     };
-    let err = validate_constraints("acme", &constraints, &spec).unwrap_err();
+    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("acme") && msg.contains("system setting") && msg.contains("shell"),
@@ -384,7 +408,7 @@ fn validate_constraints_system_changes_allowed() {
         system: HashMap::from([("shell".into(), serde_yaml::Value::String("/bin/zsh".into()))]),
         ..Default::default()
     };
-    assert!(validate_constraints("acme", &constraints, &spec).is_ok());
+    assert!(validate_constraints("acme", &constraints, &spec, false).is_ok());
 }
 
 #[test]
@@ -481,6 +505,7 @@ fn multiple_sources_priority_ordering() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
     let source_b = CompositionInput {
         source_name: "beta".into(),
@@ -501,6 +526,7 @@ fn multiple_sources_priority_ordering() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
 
     let result = compose(&local, &[source_a, source_b]).unwrap();
@@ -558,6 +584,7 @@ fn required_resource_cannot_be_overridden() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
     // Second source tries to override the same file
     let source_b = CompositionInput {
@@ -584,6 +611,7 @@ fn required_resource_cannot_be_overridden() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
 
     let result = compose(&local, &[source, source_b]);
@@ -620,6 +648,7 @@ fn file_conflict_between_sources_records_resolution() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
     let source_b = CompositionInput {
         source_name: "beta".into(),
@@ -645,6 +674,7 @@ fn file_conflict_between_sources_records_resolution() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
 
     let result = compose(&local, &[source_a, source_b]).unwrap();
@@ -694,6 +724,7 @@ fn equal_priority_file_conflict_is_unresolvable() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
     let source_b = CompositionInput {
         source_name: "team-b".into(),
@@ -719,6 +750,7 @@ fn equal_priority_file_conflict_is_unresolvable() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
 
     let result = compose(&local, &[source_a, source_b]);
@@ -867,7 +899,7 @@ fn make_file_spec_with_encryption(target: &str, backend: Option<&str>) -> Profil
 fn encryption_required_target_without_encryption_is_error() {
     let constraints = make_encryption_constraint(&["~/.ssh/*"], None);
     let spec = make_file_spec_with_encryption("~/.ssh/id_rsa", None);
-    let result = validate_constraints("corp", &constraints, &spec);
+    let result = validate_constraints("corp", &constraints, &spec, false);
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(msg.contains("~/.ssh/id_rsa"), "msg: {msg}");
@@ -879,7 +911,7 @@ fn encryption_required_target_without_encryption_is_error() {
 fn encryption_required_target_with_encryption_passes() {
     let constraints = make_encryption_constraint(&["~/.ssh/*"], None);
     let spec = make_file_spec_with_encryption("~/.ssh/id_rsa", Some("sops"));
-    assert!(validate_constraints("corp", &constraints, &spec).is_ok());
+    assert!(validate_constraints("corp", &constraints, &spec, false).is_ok());
 }
 
 #[test]
@@ -887,7 +919,7 @@ fn encryption_non_matching_target_without_encryption_passes() {
     let constraints = make_encryption_constraint(&["~/.ssh/*"], None);
     // ~/.zshrc does not match ~/.ssh/* — no enforcement
     let spec = make_file_spec_with_encryption("~/.zshrc", None);
-    assert!(validate_constraints("corp", &constraints, &spec).is_ok());
+    assert!(validate_constraints("corp", &constraints, &spec, false).is_ok());
 }
 
 #[test]
@@ -902,7 +934,7 @@ fn encryption_empty_required_targets_no_enforcement() {
     };
     // Even though a backend is specified, empty requiredTargets means no enforcement
     let spec = make_file_spec_with_encryption("~/.ssh/id_rsa", None);
-    assert!(validate_constraints("corp", &constraints, &spec).is_ok());
+    assert!(validate_constraints("corp", &constraints, &spec, false).is_ok());
 }
 
 #[test]
@@ -910,14 +942,14 @@ fn encryption_no_constraint_field_no_enforcement() {
     let constraints = SourceConstraints::default();
     // No encryption constraint at all
     let spec = make_file_spec_with_encryption("~/.ssh/id_rsa", None);
-    assert!(validate_constraints("corp", &constraints, &spec).is_ok());
+    assert!(validate_constraints("corp", &constraints, &spec, false).is_ok());
 }
 
 #[test]
 fn encryption_wrong_backend_is_error() {
     let constraints = make_encryption_constraint(&["~/.aws/*"], Some("sops"));
     let spec = make_file_spec_with_encryption("~/.aws/credentials", Some("age"));
-    let result = validate_constraints("corp", &constraints, &spec);
+    let result = validate_constraints("corp", &constraints, &spec, false);
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(msg.contains("~/.aws/credentials"), "msg: {msg}");
@@ -929,7 +961,7 @@ fn encryption_wrong_backend_is_error() {
 fn encryption_correct_backend_passes() {
     let constraints = make_encryption_constraint(&["~/.aws/*"], Some("sops"));
     let spec = make_file_spec_with_encryption("~/.aws/credentials", Some("sops"));
-    assert!(validate_constraints("corp", &constraints, &spec).is_ok());
+    assert!(validate_constraints("corp", &constraints, &spec, false).is_ok());
 }
 
 #[test]
@@ -937,7 +969,7 @@ fn encryption_constraint_matches_exact_path() {
     let constraints = make_encryption_constraint(&["~/.gnupg/secring.gpg"], None);
     // Exact path match
     let spec = make_file_spec_with_encryption("~/.gnupg/secring.gpg", None);
-    let result = validate_constraints("corp", &constraints, &spec);
+    let result = validate_constraints("corp", &constraints, &spec, false);
     assert!(result.is_err());
     assert!(
         result
@@ -1007,6 +1039,7 @@ fn compose_deterministic_with_multiple_sources() {
                     accept_recommended: true,
                     ..Default::default()
                 },
+                allow_scripts: false,
             },
             CompositionInput {
                 source_name: "beta".into(),
@@ -1034,6 +1067,7 @@ fn compose_deterministic_with_multiple_sources() {
                     accept_recommended: true,
                     ..Default::default()
                 },
+                allow_scripts: false,
             },
         ]
     };
@@ -1078,6 +1112,7 @@ fn higher_priority_source_wins_env_var() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
     let high = CompositionInput {
         source_name: "high".into(),
@@ -1098,6 +1133,7 @@ fn higher_priority_source_wins_env_var() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
 
     let result = compose(&local, &[low, high]).unwrap();
@@ -1155,6 +1191,7 @@ fn local_env_wins_over_source_env_at_same_name() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
 
     let result = compose(&local, &[source]).unwrap();
@@ -1207,6 +1244,7 @@ fn higher_priority_source_wins_file_content() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
     let high = CompositionInput {
         source_name: "high-src".into(),
@@ -1232,6 +1270,7 @@ fn higher_priority_source_wins_file_content() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
 
     let result = compose(&local, &[low, high]).unwrap();
@@ -1261,6 +1300,7 @@ fn merging_with_empty_source_does_not_affect_result() {
         constraints: Default::default(),
         layers: vec![],
         subscription: SubscriptionConfig::default(),
+        allow_scripts: false,
     };
     let result_with_empty = compose(&local, &[empty_source]).unwrap();
 
@@ -1330,6 +1370,7 @@ fn single_source_merges_correctly() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
 
     let result = compose(&local, &[source]).unwrap();
@@ -1403,6 +1444,7 @@ fn overlapping_packages_are_unioned_not_duplicated() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
     let source_b = CompositionInput {
         source_name: "beta".into(),
@@ -1426,6 +1468,7 @@ fn overlapping_packages_are_unioned_not_duplicated() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
 
     let result = compose(&local, &[source_a, source_b]).unwrap();
@@ -1496,6 +1539,7 @@ fn source_env_tracks_per_source_env_vars() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
 
     let result = compose(&local, &[source]).unwrap();
@@ -1564,6 +1608,7 @@ fn higher_priority_source_wins_alias() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
 
     let result = compose(&local, &[source]).unwrap();
@@ -1788,6 +1833,7 @@ fn detect_permission_changes_new_source() {
         constraints: Default::default(),
         layers: vec![],
         subscription: SubscriptionConfig::default(),
+        allow_scripts: false,
     }];
     let changes = detect_permission_changes(&old, &new);
     assert_eq!(changes.len(), 1);
@@ -1807,6 +1853,7 @@ fn detect_permission_changes_locked_items_increased() {
         constraints: Default::default(),
         layers: vec![],
         subscription: SubscriptionConfig::default(),
+        allow_scripts: false,
     }];
     let new = vec![CompositionInput {
         source_name: "corp".into(),
@@ -1829,6 +1876,7 @@ fn detect_permission_changes_locked_items_increased() {
         constraints: Default::default(),
         layers: vec![],
         subscription: SubscriptionConfig::default(),
+        allow_scripts: false,
     }];
     let changes = detect_permission_changes(&old, &new);
     assert!(
@@ -1850,6 +1898,7 @@ fn detect_permission_changes_scripts_enabled() {
         },
         layers: vec![],
         subscription: SubscriptionConfig::default(),
+        allow_scripts: false,
     }];
     let new = vec![CompositionInput {
         source_name: "corp".into(),
@@ -1861,6 +1910,7 @@ fn detect_permission_changes_scripts_enabled() {
         },
         layers: vec![],
         subscription: SubscriptionConfig::default(),
+        allow_scripts: false,
     }];
     let changes = detect_permission_changes(&old, &new);
     assert!(
@@ -1882,6 +1932,7 @@ fn detect_permission_changes_paths_expanded() {
         },
         layers: vec![],
         subscription: SubscriptionConfig::default(),
+        allow_scripts: false,
     }];
     let new = vec![CompositionInput {
         source_name: "corp".into(),
@@ -1893,6 +1944,7 @@ fn detect_permission_changes_paths_expanded() {
         },
         layers: vec![],
         subscription: SubscriptionConfig::default(),
+        allow_scripts: false,
     }];
     let changes = detect_permission_changes(&old, &new);
     assert!(
@@ -1911,6 +1963,7 @@ fn detect_permission_changes_no_changes() {
         constraints: Default::default(),
         layers: vec![],
         subscription: SubscriptionConfig::default(),
+        allow_scripts: false,
     };
     // Same old and new - no changes
     let changes = detect_permission_changes(&[mk()], &[mk()]);
@@ -2196,6 +2249,7 @@ fn compose_scripts_appended_in_order() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
 
     let result = compose(&local, &[source]).unwrap();
@@ -2261,6 +2315,7 @@ fn compose_secrets_deduplicated_by_source() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
 
     let result = compose(&local, &[source]).unwrap();
@@ -2325,6 +2380,7 @@ fn compose_system_deep_merges() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
 
     let result = compose(&local, &[source]).unwrap();
@@ -2361,7 +2417,7 @@ fn validate_constraints_encryption_mode_mismatch() {
         }),
         ..Default::default()
     };
-    let result = validate_constraints("corp", &constraints, &spec);
+    let result = validate_constraints("corp", &constraints, &spec, false);
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(
@@ -2427,6 +2483,7 @@ fn compose_file_origins_tagged_for_source_files() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
 
     let result = compose(&local, &[source]).unwrap();
@@ -2593,6 +2650,7 @@ fn build_source_layers_optional_opt_in() {
             opt_in: vec!["extra".into()],
             ..Default::default()
         },
+        allow_scripts: false,
     };
     let mut conflicts = Vec::new();
     let layers = build_source_layers(&input, &mut conflicts).unwrap();
@@ -2662,7 +2720,7 @@ fn encryption_module_file_matching_required_target_without_encryption_is_error()
         }),
         ..Default::default()
     };
-    let result = validate_constraints("corp", &constraints, &spec);
+    let result = validate_constraints("corp", &constraints, &spec, false);
     assert!(result.is_err());
     let msg = result.unwrap_err().to_string();
     assert!(msg.contains("~/.config/secrets/api-key"), "msg: {msg}");
@@ -2743,6 +2801,7 @@ fn composition_error_variant_required_resource() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
     let source_overrider = CompositionInput {
         source_name: "rogue".into(),
@@ -2768,6 +2827,7 @@ fn composition_error_variant_required_resource() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
 
     let err = compose(&local, &[source_required, source_overrider]).unwrap_err();
@@ -2799,7 +2859,7 @@ fn composition_error_variant_path_not_allowed() {
         }),
         ..Default::default()
     };
-    let err = validate_constraints("acme", &constraints, &spec).unwrap_err();
+    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
     let inner = unwrap_composition_err(err);
     assert!(matches!(
         inner,
@@ -2820,7 +2880,7 @@ fn composition_error_variant_scripts_not_allowed() {
         }),
         ..Default::default()
     };
-    let err = validate_constraints("acme", &constraints, &spec).unwrap_err();
+    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
     let inner = unwrap_composition_err(err);
     assert!(matches!(
         inner,
@@ -2838,7 +2898,7 @@ fn composition_error_variant_system_change_not_allowed() {
         system: HashMap::from([("shell".into(), serde_yaml::Value::String("/bin/zsh".into()))]),
         ..Default::default()
     };
-    let err = validate_constraints("acme", &constraints, &spec).unwrap_err();
+    let err = validate_constraints("acme", &constraints, &spec, false).unwrap_err();
     let inner = unwrap_composition_err(err);
     assert!(matches!(
         inner,
@@ -2873,6 +2933,7 @@ fn composition_error_variant_unresolvable_conflict() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
     let source_b = CompositionInput {
         source_name: "team-b".into(),
@@ -2898,6 +2959,7 @@ fn composition_error_variant_unresolvable_conflict() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
 
     let err = compose(&local, &[source_a, source_b]).unwrap_err();
@@ -2912,7 +2974,7 @@ fn composition_error_variant_unresolvable_conflict() {
 fn composition_error_variant_encryption_required() {
     let constraints = make_encryption_constraint(&["~/.ssh/*"], None);
     let spec = make_file_spec_with_encryption("~/.ssh/id_rsa", None);
-    let err = validate_constraints("corp", &constraints, &spec).unwrap_err();
+    let err = validate_constraints("corp", &constraints, &spec, false).unwrap_err();
     let inner = unwrap_composition_err(err);
     assert!(matches!(
         inner,
@@ -2924,7 +2986,7 @@ fn composition_error_variant_encryption_required() {
 fn composition_error_variant_encryption_backend_mismatch() {
     let constraints = make_encryption_constraint(&["~/.aws/*"], Some("sops"));
     let spec = make_file_spec_with_encryption("~/.aws/credentials", Some("age"));
-    let err = validate_constraints("corp", &constraints, &spec).unwrap_err();
+    let err = validate_constraints("corp", &constraints, &spec, false).unwrap_err();
     let inner = unwrap_composition_err(err);
     assert!(matches!(
         inner,
@@ -2960,7 +3022,7 @@ fn composition_error_variant_encryption_mode_mismatch() {
         }),
         ..Default::default()
     };
-    let err = validate_constraints("corp", &constraints, &spec).unwrap_err();
+    let err = validate_constraints("corp", &constraints, &spec, false).unwrap_err();
     let inner = unwrap_composition_err(err);
     assert!(matches!(
         inner,
@@ -3120,6 +3182,7 @@ fn override_test_input(priority: u32, overrides_yaml: &str) -> CompositionInput 
             overrides,
             ..Default::default()
         },
+        allow_scripts: false,
     }
 }
 
@@ -3289,6 +3352,7 @@ fn compose_rejects_source_scripts_when_no_scripts() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
     let err = compose(&local, &[source]).unwrap_err();
     let msg = err.to_string();
@@ -3330,6 +3394,7 @@ fn compose_rejects_policy_tier_file_outside_allowed_paths() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
     let err = compose(&local, &[source]).unwrap_err();
     let msg = err.to_string();
@@ -3368,6 +3433,7 @@ fn compose_rejects_required_tier_file_outside_allowed_paths() {
         },
         layers: vec![],
         subscription: SubscriptionConfig::default(),
+        allow_scripts: false,
     };
     let err = compose(&local, &[source]).unwrap_err();
     let msg = err.to_string();
@@ -3425,6 +3491,7 @@ fn compose_rejects_local_override_of_locked_resource() {
         constraints: SourceConstraints::default(),
         layers: vec![],
         subscription: SubscriptionConfig::default(),
+        allow_scripts: false,
     };
     let err = compose(&local, &[source]).unwrap_err();
     let msg = err.to_string();
@@ -3519,6 +3586,7 @@ fn compose_accepts_compliant_source() {
             accept_recommended: true,
             ..Default::default()
         },
+        allow_scripts: false,
     };
     let result = compose(&local, &[source]).unwrap();
     assert!(

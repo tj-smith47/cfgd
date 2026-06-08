@@ -615,6 +615,7 @@ fn subscription_config_from_spec() {
             priority: 500,
             accept_recommended: true,
             opt_in: vec!["extra".into()],
+            allow_scripts: false,
             overrides: serde_yaml::Value::Null,
             reject: serde_yaml::Value::Null,
         },

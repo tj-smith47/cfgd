@@ -73,6 +73,7 @@
         },
         "subscription": {
           "acceptRecommended": false,
+          "allowScripts": false,
           "optIn": [],
           "overrides": null,
           "priority": 500,
@@ -93,6 +94,7 @@
         },
         "subscription": {
           "acceptRecommended": false,
+          "allowScripts": false,
           "optIn": [],
           "overrides": null,
           "priority": 500,

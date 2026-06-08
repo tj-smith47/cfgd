@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::config::{
     ModuleFileEntry, ModuleLockEntry, ModuleLockfile, ModulePackageEntry, ModuleSpec, parse_module,
 };
+use crate::errors::{CfgdError, ModuleError};
 use crate::platform::Platform;
 use crate::providers::{PackageManager, StubPackageManager as MockManager};
 use crate::test_helpers::{
@@ -2972,6 +2973,7 @@ fn resolve_modules_loads_source_delivered_body_and_tags_origin() {
         priority: 500,
         modules_dir,
         offered: vec!["dev-tools".into()],
+        scripts_permitted: true,
     };
 
     let brew = MockManager::new("brew").with_package("ripgrep", "14.1.0");
@@ -3019,6 +3021,7 @@ fn resolve_modules_consumer_local_shadows_source_offered() {
         priority: 999,
         modules_dir,
         offered: vec!["dev-tools".into()],
+        scripts_permitted: true,
     };
 
     let brew = MockManager::new("brew")
@@ -3062,12 +3065,14 @@ fn resolve_modules_higher_priority_source_wins() {
             priority: 100,
             modules_dir: low_dir,
             offered: vec!["dev-tools".into()],
+            scripts_permitted: true,
         },
         SourceModuleRoot {
             source_name: "high".into(),
             priority: 900,
             modules_dir: high_dir,
             offered: vec!["dev-tools".into()],
+            scripts_permitted: true,
         },
     ];
 
@@ -3111,6 +3116,7 @@ fn resolve_modules_offered_but_body_missing_names_source() {
         priority: 500,
         modules_dir,
         offered: vec!["dev-tools".into()],
+        scripts_permitted: true,
     };
 
     let managers = make_manager_map(&[]);
@@ -3144,6 +3150,7 @@ fn resolve_modules_unknown_module_is_plain_not_found() {
         priority: 500,
         modules_dir,
         offered: vec!["dev-tools".into()],
+        scripts_permitted: true,
     };
 
     let managers = make_manager_map(&[]);
@@ -3179,6 +3186,7 @@ fn resolve_modules_body_present_but_not_offered_is_gated_out() {
         priority: 500,
         modules_dir,
         offered: Vec::new(), // publisher did not declare it
+        scripts_permitted: true,
     };
 
     let managers = make_manager_map(&[]);
@@ -3214,6 +3222,7 @@ fn load_source_modules_respects_allow_list_and_precedence() {
         priority: 500,
         modules_dir,
         offered: vec!["offered-mod".into()],
+        scripts_permitted: true,
     };
 
     let mut modules = std::collections::HashMap::new();
@@ -3228,6 +3237,160 @@ fn load_source_modules_respects_allow_list_and_precedence() {
         "undeclared body must not load even though it exists on disk"
     );
     assert_eq!(modules["offered-mod"].origin.as_deref(), Some("team"));
+}
+
+/// Write a source module body carrying a `preApply` lifecycle script; returns
+/// the `modules/` directory path.
+fn write_source_module_with_script(root: &Path, name: &str) -> std::path::PathBuf {
+    let modules_dir = root.join("modules");
+    let mod_dir = modules_dir.join(name);
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n  scripts:\n    preApply:\n      - run: \"echo hi\"\n"
+        ),
+    )
+    .unwrap();
+    modules_dir
+}
+
+/// Write a source module body whose package is installed via `prefer: [script]`;
+/// returns the `modules/` directory path.
+fn write_source_module_with_prefer_script(root: &Path, name: &str) -> std::path::PathBuf {
+    let modules_dir = root.join("modules");
+    let mod_dir = modules_dir.join(name);
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n  packages:\n    - name: customtool\n      prefer: [script]\n      script: \"curl -fsSL https://example.com/install.sh | sh\"\n"
+        ),
+    )
+    .unwrap();
+    modules_dir
+}
+
+#[test]
+fn load_source_modules_rejects_script_body_when_not_permitted() {
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module_with_script(source.path(), "dev-tools");
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["dev-tools".into()],
+        scripts_permitted: false,
+    };
+
+    let mut modules = std::collections::HashMap::new();
+    let err = load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        matches!(
+            err,
+            CfgdError::Module(ModuleError::ScriptsNotAllowed { .. })
+        ),
+        "expected ScriptsNotAllowed, got: {msg}"
+    );
+    assert!(
+        msg.contains("team") && msg.contains("dev-tools") && msg.contains("preApply"),
+        "error must name source + module + script kind: {msg}"
+    );
+    assert!(
+        !modules.contains_key("dev-tools"),
+        "rejected body must not be inserted"
+    );
+}
+
+#[test]
+fn load_source_modules_allows_script_body_when_subscriber_opted_in() {
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module_with_script(source.path(), "dev-tools");
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["dev-tools".into()],
+        // allowScripts: true OR source no_scripts=false both set this true.
+        scripts_permitted: true,
+    };
+
+    let mut modules = std::collections::HashMap::new();
+    load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap();
+    assert!(
+        modules.contains_key("dev-tools"),
+        "permitted script body must load"
+    );
+}
+
+#[test]
+fn load_source_modules_rejects_prefer_script_package_when_not_permitted() {
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module_with_prefer_script(source.path(), "dev-tools");
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["dev-tools".into()],
+        scripts_permitted: false,
+    };
+
+    let mut modules = std::collections::HashMap::new();
+    let err = load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        matches!(
+            err,
+            CfgdError::Module(ModuleError::ScriptsNotAllowed { .. })
+        ),
+        "expected ScriptsNotAllowed for prefer:[script] package, got: {msg}"
+    );
+    assert!(
+        msg.contains("customtool"),
+        "error must name the prefer:[script] package: {msg}"
+    );
+}
+
+#[test]
+fn load_source_modules_script_gating_does_not_touch_local_modules() {
+    // A consumer-local module (origin None) is loaded by `load_modules`, never
+    // by `load_source_modules`, so source `scripts_permitted` cannot gate it.
+    // Pre-seed the map with a script-bearing "local" module and confirm a
+    // not-permitted source root leaves it untouched (and loads nothing else).
+    let source = tempfile::tempdir().unwrap();
+    // Source offers a module name that already exists locally — must be skipped.
+    let modules_dir = write_source_module_with_script(source.path(), "shared");
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["shared".into()],
+        scripts_permitted: false,
+    };
+
+    let mut modules = std::collections::HashMap::new();
+    modules.insert(
+        "shared".to_string(),
+        LoadedModule {
+            name: "shared".into(),
+            spec: crate::config::ModuleSpec::default(),
+            dir: source.path().to_path_buf(),
+            origin: None,
+        },
+    );
+
+    // Local module already present → source body skipped before any script check.
+    load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap();
+    assert!(modules.contains_key("shared"));
+    assert_eq!(
+        modules["shared"].origin, None,
+        "local module must be untouched"
+    );
 }
 
 /// Write `<root>/modules/<name>/module.yaml` for a module with one package and a
@@ -3270,12 +3433,14 @@ fn load_source_modules_equal_priority_ties_break_on_source_name() {
         priority: 500,
         modules_dir: alpha_dir,
         offered: vec!["dev-tools".into()],
+        scripts_permitted: true,
     };
     let beta_root = SourceModuleRoot {
         source_name: "beta".into(),
         priority: 500,
         modules_dir: beta_dir,
         offered: vec!["dev-tools".into()],
+        scripts_permitted: true,
     };
 
     // beta listed first to prove slice order does not decide the winner.
@@ -3309,12 +3474,14 @@ fn enrich_not_found_names_highest_priority_offering_source() {
             priority: 100,
             modules_dir: low_dir,
             offered: vec!["dev-tools".into()],
+            scripts_permitted: true,
         },
         SourceModuleRoot {
             source_name: "high".into(),
             priority: 900,
             modules_dir: high_dir,
             offered: vec!["dev-tools".into()],
+            scripts_permitted: true,
         },
     ];
 
@@ -3353,6 +3520,7 @@ fn resolve_modules_source_module_depends_on_source_module() {
         priority: 500,
         modules_dir,
         offered: vec!["app".into(), "base".into()],
+        scripts_permitted: true,
     };
 
     let brew = MockManager::new("brew")
@@ -3403,6 +3571,7 @@ fn resolve_modules_source_module_depends_on_consumer_local_module() {
         priority: 500,
         modules_dir,
         offered: vec!["app".into()],
+        scripts_permitted: true,
     };
 
     let brew = MockManager::new("brew")
@@ -3450,6 +3619,7 @@ fn resolve_modules_source_module_with_unoffered_transitive_dep_is_missing_depend
         priority: 500,
         modules_dir,
         offered: vec!["app".into()], // base deliberately omitted
+        scripts_permitted: true,
     };
 
     let managers = make_manager_map(&[]);

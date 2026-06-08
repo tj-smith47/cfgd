@@ -84,7 +84,16 @@ pub fn exit_code_for_error(err: &CfgdError) -> ExitCode {
         CfgdError::Module(ModuleError::RegistryNotFound { .. }) => ExitCode::NotFound,
         CfgdError::Source(SourceError::NotFound { .. }) => ExitCode::NotFound,
         CfgdError::Source(SourceError::ProfileNotFound { .. }) => ExitCode::NotFound,
+        // A source-delivered module carrying disallowed scripts is a policy
+        // violation in the resolved config, not a missing resource — it maps to
+        // ConfigInvalid (4), matching how composition constraint violations are
+        // a config-validation failure rather than a generic runtime error.
+        CfgdError::Module(ModuleError::ScriptsNotAllowed { .. }) => ExitCode::ConfigInvalid,
         CfgdError::Config(_) => ExitCode::ConfigInvalid,
+        // Composition constraint violations are resolved-config policy failures
+        // (same class as Config(_)): path/script/system/encryption/locked all mean
+        // "your resolved config violates a source constraint".
+        CfgdError::Composition(_) => ExitCode::ConfigInvalid,
         _ => ExitCode::Error,
     }
 }
@@ -172,6 +181,39 @@ mod tests {
             source_name: "team".into(),
         });
         assert_eq!(exit_code_for_error(&err), ExitCode::NotFound);
+    }
+
+    #[test]
+    fn module_scripts_not_allowed_maps_to_config_invalid() {
+        let err = CfgdError::Module(crate::errors::ModuleError::ScriptsNotAllowed {
+            source_name: "team".into(),
+            module: "dev-tools".into(),
+            kind: "a preApply script".into(),
+        });
+        assert_eq!(exit_code_for_error(&err), ExitCode::ConfigInvalid);
+    }
+
+    #[test]
+    fn composition_scripts_not_allowed_maps_to_config_invalid() {
+        // The profile-layer ScriptsNotAllowed must exit with the SAME code as
+        // the module-body ScriptsNotAllowed (4) — same violation, one code.
+        let err = CfgdError::Composition(Box::new(
+            crate::errors::CompositionError::ScriptsNotAllowed {
+                source_name: "team".into(),
+            },
+        ));
+        assert_eq!(exit_code_for_error(&err), ExitCode::ConfigInvalid);
+    }
+
+    #[test]
+    fn composition_path_not_allowed_maps_to_config_invalid() {
+        // The whole CompositionError family is config-validation in nature.
+        let err =
+            CfgdError::Composition(Box::new(crate::errors::CompositionError::PathNotAllowed {
+                source_name: "team".into(),
+                path: "~/.bashrc".into(),
+            }));
+        assert_eq!(exit_code_for_error(&err), ExitCode::ConfigInvalid);
     }
 
     #[test]

@@ -109,7 +109,12 @@ fn enforce_source_constraints(input: &CompositionInput, local: &ResolvedProfile)
 
     // Every profile-layer spec the source ships must satisfy its constraints.
     for layer in &input.layers {
-        validate_constraints(&input.source_name, &input.constraints, &layer.spec)?;
+        validate_constraints(
+            &input.source_name,
+            &input.constraints,
+            &layer.spec,
+            input.allow_scripts,
+        )?;
     }
 
     // Policy-tier files/scripts/system were never path/script-checked before.
@@ -120,7 +125,12 @@ fn enforce_source_constraints(input: &CompositionInput, local: &ResolvedProfile)
     ] {
         if has_content(tier) {
             let spec = policy_items_to_spec(tier);
-            validate_constraints(&input.source_name, &input.constraints, &spec)?;
+            validate_constraints(
+                &input.source_name,
+                &input.constraints,
+                &spec,
+                input.allow_scripts,
+            )?;
         }
     }
 

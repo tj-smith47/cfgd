@@ -2,13 +2,20 @@ use crate::config::{MergedProfile, PolicyItems, ProfileSpec, SourceConstraints};
 use crate::errors::{CompositionError, Result};
 
 /// Validate security constraints for a source's contribution to the composed profile.
+///
+/// `allow_scripts` is the subscriber's `subscription.allowScripts` opt-in: when
+/// `true` the source's `constraints.no_scripts` no longer rejects scripts (the
+/// subscriber has accepted the risk), matching the source-delivered module-body
+/// enforcement. Path/system/encryption constraints are unaffected.
 pub fn validate_constraints(
     source_name: &str,
     constraints: &SourceConstraints,
     spec: &ProfileSpec,
+    allow_scripts: bool,
 ) -> Result<()> {
     // Check script constraint
     if constraints.no_scripts
+        && !allow_scripts
         && let Some(ref scripts) = spec.scripts
         && (!scripts.pre_apply.is_empty()
             || !scripts.post_apply.is_empty()

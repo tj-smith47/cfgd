@@ -195,12 +195,61 @@ pub fn load_source_modules(
             if !module_yaml.exists() {
                 continue;
             }
+            // Body integrity rides the source's HEAD commit-signature verification
+            // (`sources::verify_commit_signature`), which covers the whole source
+            // repo including delivered module bodies — there is no separate
+            // per-module signature to check here.
             let mut module = load_module(&root.modules_dir.join(name))?;
             module.origin = Some(root.source_name.clone());
+            // Fail-closed: a source not permitted to run scripts may not deliver a
+            // module body carrying lifecycle scripts or `prefer: [script]` package
+            // installs. This mirrors the profile-layer no_scripts enforcement in
+            // composition::validate_constraints, applied at the module-delivery
+            // boundary where the per-root `scripts_permitted` decision is known.
+            if !root.scripts_permitted
+                && let Some(kind) = module_script_kind(&module)
+            {
+                return Err(ModuleError::ScriptsNotAllowed {
+                    source_name: root.source_name.clone(),
+                    module: name.clone(),
+                    kind,
+                }
+                .into());
+            }
             modules.insert(name.clone(), module);
         }
     }
     Ok(())
+}
+
+/// Describe the first script-bearing element of a module body, or `None` if the
+/// body carries no lifecycle scripts and no `prefer: [script]` package installs.
+/// Used to enforce a source's `no_scripts` constraint over delivered bodies.
+fn module_script_kind(module: &LoadedModule) -> Option<String> {
+    if let Some(ref scripts) = module.spec.scripts {
+        let lifecycle = [
+            ("preApply", &scripts.pre_apply),
+            ("postApply", &scripts.post_apply),
+            ("preReconcile", &scripts.pre_reconcile),
+            ("postReconcile", &scripts.post_reconcile),
+            ("onChange", &scripts.on_change),
+            ("onDrift", &scripts.on_drift),
+        ];
+        for (label, entries) in lifecycle {
+            if !entries.is_empty() {
+                return Some(format!("a {label} script"));
+            }
+        }
+    }
+    for pkg in &module.spec.packages {
+        if pkg.prefer.iter().any(|p| p == "script") {
+            return Some(format!(
+                "a 'prefer: [script]' install for package '{}'",
+                pkg.name
+            ));
+        }
+    }
+    None
 }
 
 /// Load all modules: local modules from disk + remote locked modules +

@@ -313,6 +313,13 @@ pub(super) static SCHEMA_CONFIG: ResourceSchema = ResourceSchema {
                             children: &[],
                         },
                         SchemaField {
+                            name: "allowScripts",
+                            type_desc: "bool",
+                            required: false,
+                            description: "Permit this source's lifecycle scripts and prefer:[script] installs even when its constraints.no_scripts is set (default: false)",
+                            children: &[],
+                        },
+                        SchemaField {
                             name: "overrides",
                             type_desc: "object",
                             required: false,
