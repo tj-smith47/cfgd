@@ -94,7 +94,14 @@ pub fn build_module_not_found_error(name: &str, available: &[String]) -> anyhow:
     if !available.is_empty() {
         hints.push(format!("Available modules: {}", available.join(", ")));
     }
-    crate::cli::cli_error_with_hints(
+    // Carry the typed `ModuleError::NotFound` in the chain so the exit-code
+    // downcast in `main.rs` resolves to ExitCode::NotFound (6); the attached
+    // CliErrorMeta still drives the rich `not_found` payload + hints.
+    crate::cli::cli_error_ctx_with_hints(
+        cfgd_core::errors::CfgdError::Module(cfgd_core::errors::ModuleError::NotFound {
+            name: name.to_string(),
+        })
+        .into(),
         name,
         "not_found",
         format!("Module '{}' not found", name),

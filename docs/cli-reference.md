@@ -649,8 +649,10 @@ Scripted consumers rely on distinct exit codes to decide follow-up actions witho
 | `1` | Generic failure (network, IO, unclassified internal error). | Any command whose `Result` resolves to a non-config error. |
 | `2` | An upgrade is available but not installed. | `cfgd upgrade --check` only. |
 | `3` | No cfgd config file at the resolved path. | Any command when `--config` points to a missing file. |
-| `4` | Config file exists but failed parse or validation. | Any command when `--config` is malformed, schema-invalid, or references a missing profile. |
+| `4` | Config file exists but failed parse or validation. | Any command when `--config` is malformed or schema-invalid. |
 | `5` | Drift detected between actual and desired state. | `cfgd diff --exit-code`, `cfgd status --exit-code`, `cfgd verify --exit-code`. |
+| `6` | A named resource was not found. | Any command naming a missing resource — e.g. `cfgd module show/delete/edit/export <missing>`, `cfgd profile show/switch/delete/edit/update <missing>`, `cfgd source show/update/remove/priority/override <missing>`, `cfgd module registry remove/rename <missing>`. |
+| `7` | `apply` ran but at least one action failed (partial or total). | `cfgd apply` when one or more actions fail. |
 
 The `--exit-code` / `-e` flag on `diff`, `status`, and `verify` follows the `git diff --exit-code` convention: without the flag these commands always exit `0`; with the flag they exit `5` whenever drift is present.
 
@@ -671,8 +673,9 @@ Every failure renders exactly once, to `stderr` in human mode and to `stdout` in
   { "error": "not_found", "name": "web-server", "available": ["base", "dev"] }
   ```
 
-  `error` is a machine-readable kind (`not_found`, `already_exists`, `parse_failed`,
-  `key_not_found`, …), `name` identifies the subject (module / source / profile / key), and any
+  `error` is a machine-readable kind (`not_found`, `registry_not_found`, `already_exists`,
+  `parse_failed`, `key_not_found`, `target_not_writable`, …), `name` identifies the subject
+  (module / source / profile / registry / key), and any
   command-specific fields follow. An error that carries no typed metadata falls back to
   `{ "error": "error", "name": "", "message": "<text>" }`. Remediation hints are human-only and
   never appear in the structured payload.

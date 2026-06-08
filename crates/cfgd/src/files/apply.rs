@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use cfgd_core::config::FileStrategy;
 use cfgd_core::errors::{FileError, Result};
@@ -334,39 +332,19 @@ pub(super) fn ensure_target_writable(target: &Path) -> Result<()> {
     probe_dir_writable(parent, target)
 }
 
-/// Probe whether an entry can be created in `dir` by actually creating and
-/// removing a uniquely-named transient file — the same mutation every apply
-/// strategy performs. A permission / read-only-filesystem failure maps to the
-/// friendly [`FileError::TargetNotWritable`] for `target`; any other failure
-/// surfaces as IO against `dir`.
+/// Probe whether an entry can be created in `dir`, mapping the outcome to this
+/// module's typed errors: a permission / read-only-filesystem failure becomes
+/// the friendly [`FileError::TargetNotWritable`] for `target`; any other failure
+/// surfaces as IO against `dir`. The real-access probe itself is the shared
+/// [`cfgd_core::probe_dir_writable`] so every "can I write here?" site agrees.
 fn probe_dir_writable(dir: &Path, target: &Path) -> Result<()> {
-    static PROBE_SEQ: AtomicU64 = AtomicU64::new(0);
-    let probe = dir.join(format!(
-        ".cfgd-write-probe-{}-{}",
-        std::process::id(),
-        PROBE_SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&probe)
-    {
-        Ok(_) => {
-            let _ = fs::remove_file(&probe);
-            Ok(())
+    match cfgd_core::probe_dir_writable(dir) {
+        cfgd_core::DirWritable::Writable => Ok(()),
+        cfgd_core::DirWritable::NotWritable => Err(FileError::TargetNotWritable {
+            path: target.to_path_buf(),
         }
-        Err(e)
-            if matches!(
-                e.kind(),
-                io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
-            ) =>
-        {
-            Err(FileError::TargetNotWritable {
-                path: target.to_path_buf(),
-            }
-            .into())
-        }
-        Err(e) => Err(FileError::Io {
+        .into()),
+        cfgd_core::DirWritable::Io(e) => Err(FileError::Io {
             path: dir.to_path_buf(),
             source: e,
         }

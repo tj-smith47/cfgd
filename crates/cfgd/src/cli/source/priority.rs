@@ -13,7 +13,13 @@ pub fn cmd_source_priority(
     let source = match cfg.spec.sources.iter().find(|s| s.name == name) {
         Some(s) => s,
         None => {
-            return Err(crate::cli::cli_error(
+            // Carry the typed SourceError::NotFound so the exit-code downcast
+            // resolves to ExitCode::NotFound (6), uniform with other misses.
+            return Err(crate::cli::cli_error_ctx(
+                cfgd_core::errors::CfgdError::Source(cfgd_core::errors::SourceError::NotFound {
+                    name: name.to_string(),
+                })
+                .into(),
                 name,
                 "not_found",
                 format!("source '{}' not found", name),

@@ -251,6 +251,16 @@ impl StateStore {
         std::fs::create_dir_all(dir).map_err(|_| StateError::DirectoryNotWritable {
             path: dir.to_path_buf(),
         })?;
+        // create_dir_all is a no-op when the dir already exists, so an existing
+        // read-only state dir would otherwise reach Connection::open and fail with
+        // a generic "state database error" that names no path. Probe real write
+        // access first so a read-only dir surfaces the typed DirectoryNotWritable.
+        if let crate::DirWritable::NotWritable = crate::probe_dir_writable(dir) {
+            return Err(StateError::DirectoryNotWritable {
+                path: dir.to_path_buf(),
+            }
+            .into());
+        }
         Self::open(&dir.join(STATE_DB_FILENAME))
     }
 

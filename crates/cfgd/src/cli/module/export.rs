@@ -27,7 +27,13 @@ pub(super) fn export_devcontainer(
     let module = match all_modules.get(name) {
         Some(m) => m,
         None => {
-            return Err(crate::cli::cli_error(
+            // Carry the typed ModuleError::NotFound so the exit-code downcast
+            // resolves to ExitCode::NotFound (6), uniform with other misses.
+            return Err(crate::cli::cli_error_ctx(
+                cfgd_core::errors::CfgdError::Module(cfgd_core::errors::ModuleError::NotFound {
+                    name: name.to_string(),
+                })
+                .into(),
                 name,
                 "not_found",
                 format!("Module '{}' not found", name),

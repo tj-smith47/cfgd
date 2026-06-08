@@ -1,7 +1,61 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use super::constants::MAX_BACKUP_FILE_SIZE;
 use super::fs_perms::file_permissions_mode;
 use super::hashing::sha256_hex;
 use super::paths::PathDisplayExt;
+
+/// Outcome of [`probe_dir_writable`]: a real-access writability check that asks
+/// the kernel whether an entry can be created in a directory, rather than
+/// inferring from mode bits. Mode bits are a poor proxy: `readonly()` rejects
+/// writes root can perform into a 0550 dir (e.g. Fedora's `/root`) and accepts
+/// writes a non-owner cannot. Probing honors uid, root-override, ACLs, and
+/// read-only mounts.
+#[derive(Debug)]
+pub enum DirWritable {
+    /// An entry could be created and removed — the directory is writable.
+    Writable,
+    /// Creation failed with a permission / read-only-filesystem error.
+    NotWritable,
+    /// Creation failed for some other reason (carries the underlying error).
+    Io(std::io::Error),
+}
+
+/// Probe whether a new entry can be created in `dir` by actually creating and
+/// removing a uniquely-named transient file — the same mutation atomic writes
+/// perform. This is the single real-access directory-writability probe; both
+/// the file-apply path and the state store route through it so the "can I write
+/// here?" question is answered identically everywhere.
+///
+/// The directory must already exist; callers that need it created first should
+/// `create_dir_all` before probing.
+pub fn probe_dir_writable(dir: &std::path::Path) -> DirWritable {
+    static PROBE_SEQ: AtomicU64 = AtomicU64::new(0);
+    let probe = dir.join(format!(
+        ".cfgd-write-probe-{}-{}",
+        std::process::id(),
+        PROBE_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            DirWritable::Writable
+        }
+        Err(e)
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::ReadOnlyFilesystem
+            ) =>
+        {
+            DirWritable::NotWritable
+        }
+        Err(e) => DirWritable::Io(e),
+    }
+}
 
 /// Captured state of a file for backup purposes.
 #[derive(Debug, Clone)]
@@ -286,5 +340,31 @@ mod tests {
     fn capture_file_resolved_state_nonexistent_returns_none() {
         let path = std::path::Path::new("/no/such/file/xyz");
         assert!(capture_file_resolved_state(path).unwrap().is_none());
+    }
+
+    #[test]
+    fn probe_dir_writable_reports_writable_for_normal_dir() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        assert!(matches!(
+            probe_dir_writable(tmp.path()),
+            DirWritable::Writable
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn probe_dir_writable_reports_not_writable_for_readonly_dir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Root bypasses mode bits, so a 0o500 dir is still writable to uid 0.
+        if crate::is_root() {
+            return;
+        }
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().join("ro");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+        assert!(matches!(probe_dir_writable(&dir), DirWritable::NotWritable));
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
     }
 }

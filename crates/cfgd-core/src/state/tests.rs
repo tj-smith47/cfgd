@@ -462,6 +462,51 @@ fn open_file_based_store() {
     assert_eq!(last.profile, "test");
 }
 
+#[cfg(unix)]
+#[test]
+fn open_in_dir_readonly_dir_yields_directory_not_writable_naming_path() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Skip under root: a 0o500 dir is still writable to uid 0, so the probe
+    // (correctly) reports it writable and this case cannot be exercised.
+    if crate::is_root() {
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = dir.path().join("state");
+    std::fs::create_dir(&state_dir).unwrap();
+    std::fs::set_permissions(&state_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+    let err = match StateStore::open_in_dir(&state_dir) {
+        Ok(_) => panic!("read-only state dir must error"),
+        Err(e) => e,
+    };
+    match &err {
+        crate::errors::CfgdError::State(StateError::DirectoryNotWritable { path }) => {
+            assert_eq!(path, &state_dir, "error must name the unwritable state dir");
+        }
+        other => panic!("expected DirectoryNotWritable, got: {other}"),
+    }
+    assert!(
+        err.to_string().contains(&state_dir.display().to_string()),
+        "rendered error must name the path: {err}"
+    );
+
+    // Calling twice yields the same typed error — no partial DB / crash loop.
+    let err2 = match StateStore::open_in_dir(&state_dir) {
+        Ok(_) => panic!("second open also errors"),
+        Err(e) => e,
+    };
+    assert!(matches!(
+        &err2,
+        crate::errors::CfgdError::State(StateError::DirectoryNotWritable { .. })
+    ));
+
+    // Restore perms so tempdir cleanup can remove the directory.
+    std::fs::set_permissions(&state_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
 // --- Config source state tests ---
 
 #[test]

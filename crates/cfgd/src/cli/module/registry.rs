@@ -312,7 +312,15 @@ pub fn cmd_module_upgrade(
                     serde_json::json!({}),
                 ));
             } else {
-                return Err(crate::cli::cli_error(
+                // Carry the typed ModuleError::NotFound so the exit-code downcast
+                // resolves to ExitCode::NotFound (6), uniform with other misses.
+                return Err(crate::cli::cli_error_ctx(
+                    cfgd_core::errors::CfgdError::Module(
+                        cfgd_core::errors::ModuleError::NotFound {
+                            name: name.to_string(),
+                        },
+                    )
+                    .into(),
                     name,
                     "not_found",
                     format!("Module '{}' not found", name),
@@ -810,27 +818,33 @@ pub fn cmd_module_registry_remove(cli: &Cli, printer: &Printer, name: &str) -> a
                     })),
             );
         }
-        RegistryRemoveOutcome::NotFound => {
-            printer.emit(
-                Doc::new()
-                    .status(Role::Info, format!("Registry '{}' not found", name))
-                    .with_data(serde_json::json!({
-                        "name": name,
-                        "outcome": "not_found",
-                    })),
-            );
-        }
-        RegistryRemoveOutcome::NoRegistries => {
-            printer.emit(Doc::new().status(Role::Info, NO_REGISTRIES_MSG).with_data(
-                serde_json::json!({
-                    "name": name,
-                    "outcome": "no_registries",
-                }),
-            ));
+        // Removing a registry that is not present is a strict not-found error,
+        // uniform with every other named-resource miss (no idempotent exit-0
+        // no-op). The retain above was a no-op, so the rewritten config is
+        // byte-identical — nothing was actually removed.
+        RegistryRemoveOutcome::NotFound | RegistryRemoveOutcome::NoRegistries => {
+            return Err(registry_not_found_error(name));
         }
     }
 
     Ok(())
+}
+
+/// Build the registry not-found error. Carries the typed
+/// [`cfgd_core::errors::ModuleError::RegistryNotFound`] so the exit-code downcast
+/// in `main.rs` resolves to `ExitCode::NotFound` (6); the attached `CliErrorMeta`
+/// drives the stable `{"error":"registry_not_found",...}` payload.
+fn registry_not_found_error(name: &str) -> anyhow::Error {
+    crate::cli::cli_error_ctx(
+        cfgd_core::errors::CfgdError::Module(cfgd_core::errors::ModuleError::RegistryNotFound {
+            name: name.to_string(),
+        })
+        .into(),
+        name,
+        "registry_not_found",
+        format!("Registry '{}' not found", name),
+        serde_json::json!({}),
+    )
 }
 
 enum RegistryRemoveOutcome {
@@ -858,7 +872,15 @@ pub fn cmd_module_registry_rename(
         .unwrap_or(&[]);
 
     if !registries.iter().any(|s| s.name == name) {
-        return Err(crate::cli::cli_error(
+        // Carry the typed RegistryNotFound so the exit-code downcast resolves to
+        // ExitCode::NotFound (6), uniform with every other named-resource miss.
+        return Err(crate::cli::cli_error_ctx(
+            cfgd_core::errors::CfgdError::Module(
+                cfgd_core::errors::ModuleError::RegistryNotFound {
+                    name: name.to_string(),
+                },
+            )
+            .into(),
             name,
             "registry_not_found",
             format!("Registry '{}' not found", name),

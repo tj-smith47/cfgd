@@ -1188,18 +1188,23 @@ fn cmd_module_registry_remove_existing() {
 
 #[test]
 fn cmd_module_registry_remove_not_found() {
+    // Removing an absent registry is now a strict not-found error (exit 6),
+    // uniform with every other named-resource miss — not an idempotent no-op.
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
-    let (printer, buf) =
+    let (printer, _buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    cmd_module_registry_remove(&cli, &printer, "nonexistent").unwrap();
+    let err = cmd_module_registry_remove(&cli, &printer, "nonexistent").unwrap_err();
     drop(printer);
 
-    let output = buf.lock().unwrap();
-    assert!(
-        output.contains("No module registries") || output.contains("not found"),
-        "should report not found or no registries, got: {output}"
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "registry_not_found");
+    assert_eq!(
+        crate::cli::exit_code_for_anyhow(&err),
+        cfgd_core::exit::ExitCode::NotFound,
     );
 }
 
@@ -1490,6 +1495,12 @@ fn cmd_module_export_not_found() {
     assert!(
         err.to_string().contains("not found"),
         "should report not found, got: {err}"
+    );
+    // Exit-6 uniformity: the inner ModuleError::NotFound must survive the wrap so
+    // main.rs resolves ExitCode::NotFound (6), matching every other missing-module site.
+    assert_eq!(
+        crate::cli::exit_code_for_anyhow(&err),
+        cfgd_core::exit::ExitCode::NotFound,
     );
 }
 

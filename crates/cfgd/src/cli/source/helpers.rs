@@ -315,6 +315,23 @@ where
         config::parse_config(&output, config_path)
             .map_err(|e| anyhow::anyhow!("config would become invalid: {}", e))?;
     }
+    // Pre-flight the config dir for real write access so a read-only dir surfaces
+    // the typed TargetNotWritable (naming the path) instead of a bare
+    // `Permission denied (os error 13)` from the atomic write below.
+    if let Some(parent) = config_path.parent()
+        && parent.exists()
+        && matches!(
+            cfgd_core::probe_dir_writable(parent),
+            cfgd_core::DirWritable::NotWritable
+        )
+    {
+        return Err(cfgd_core::errors::CfgdError::File(
+            cfgd_core::errors::FileError::TargetNotWritable {
+                path: config_path.to_path_buf(),
+            },
+        )
+        .into());
+    }
     cfgd_core::atomic_write_str(config_path, &output)?;
     Ok(())
 }

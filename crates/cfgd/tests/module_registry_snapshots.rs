@@ -29,6 +29,7 @@ mod common;
 
 use std::path::Path;
 
+use cfgd::cli::error::render_cli_error;
 use cfgd::cli::module;
 use cfgd_core::output::{Printer, PromptAnswer};
 use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
@@ -210,11 +211,15 @@ fn module_registry_remove_happy_human() {
 
 #[test]
 fn module_registry_remove_not_found_human() {
+    // Removing an absent registry is now a strict not-found error (exit 6); the
+    // central sink renders the ✗ line — not an idempotent Info no-op.
     let (config_dir, _state_dir) = registry_test_setup();
     let cli = cli_for(config_dir.path(), config_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    module::cmd_module_registry_remove(&cli, &printer, "ghost").unwrap();
+    let err = module::cmd_module_registry_remove(&cli, &printer, "ghost")
+        .expect_err("missing registry must return Err");
+    render_cli_error(&printer, &err);
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
@@ -223,6 +228,11 @@ fn module_registry_remove_not_found_human() {
         "module_registry_remove/not_found.txt",
         &stripped,
     );
+
+    let meta = err
+        .downcast_ref::<cfgd::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "registry_not_found");
 }
 
 // ─── registry rename ────────────────────────────────────────────────

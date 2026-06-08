@@ -354,12 +354,14 @@ pub fn cmd_config_set(cli: &Cli, printer: &Printer, key: &str, value: &str) -> a
     if let Err(e) = mutate_result {
         let kind = classify_mutate_error(&e);
         let msg = format!("{}", e);
-        return Err(crate::cli::cli_error_ctx(
+        let hints = writability_hint(kind, config_path);
+        return Err(crate::cli::cli_error_ctx_with_hints(
             e,
             key,
             kind,
             msg,
             serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
+            hints,
         ));
     }
 
@@ -405,12 +407,14 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
     if let Err(e) = mutate_result {
         let kind = classify_mutate_error(&e);
         let msg = format!("{}", e);
-        return Err(crate::cli::cli_error_ctx(
+        let hints = writability_hint(kind, config_path);
+        return Err(crate::cli::cli_error_ctx_with_hints(
             e,
             key,
             kind,
             msg,
             serde_json::json!({ "path": cfgd_core::to_posix_string(config_path) }),
+            hints,
         ));
     }
 
@@ -431,6 +435,15 @@ pub fn cmd_config_unset(cli: &Cli, printer: &Printer, key: &str) -> anyhow::Resu
 /// emit-then-bail Doc payload. Falls back to `invalid_value` for shapes that
 /// don't match the known buckets (parse-fail / not-found / no-spec).
 fn classify_mutate_error(e: &anyhow::Error) -> &'static str {
+    // A read-only config dir is a distinct, scriptable failure: the pre-flight in
+    // mutate_config_yaml surfaces a typed TargetNotWritable. Match the typed error
+    // first so its kind survives regardless of message phrasing.
+    if let Some(cfgd_core::errors::CfgdError::File(
+        cfgd_core::errors::FileError::TargetNotWritable { .. },
+    )) = e.downcast_ref::<cfgd_core::errors::CfgdError>()
+    {
+        return "target_not_writable";
+    }
     let msg = e.to_string();
     if msg.contains("not found") {
         "key_not_found"
@@ -442,6 +455,21 @@ fn classify_mutate_error(e: &anyhow::Error) -> &'static str {
     } else {
         "invalid_value"
     }
+}
+
+/// Remediation hint for a `target_not_writable` mutate failure naming the config
+/// directory, or none for other failure kinds. Centralized so `config set` and
+/// `config unset` attach the identical chmod guidance.
+fn writability_hint(kind: &str, config_path: &Path) -> Vec<String> {
+    if kind == "target_not_writable"
+        && let Some(parent) = config_path.parent()
+    {
+        return vec![format!(
+            "check directory permissions: chmod u+w {}",
+            cfgd_core::to_posix_string(parent)
+        )];
+    }
+    Vec::new()
 }
 
 #[cfg(test)]
@@ -504,6 +532,48 @@ spec:
         let path = dir.join("cfgd.yaml");
         std::fs::write(&path, SAMPLE_CONFIG).unwrap();
         path
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cmd_config_set_readonly_dir_yields_target_not_writable_with_path_and_hint() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Root bypasses mode bits; the probe (correctly) reports a 0o500 dir
+        // writable to uid 0, so this case cannot be exercised under root.
+        if cfgd_core::is_root() {
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = write_sample_config(dir.path());
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let cli = test_cli_for(config_path.clone());
+        let printer = test_printer();
+        let err = cmd_config_set(&cli, &printer, "theme.name", "dark")
+            .expect_err("read-only config dir must reject the mutation");
+
+        let cfgd_err = err
+            .downcast_ref::<cfgd_core::errors::CfgdError>()
+            .expect("typed CfgdError in chain");
+        assert!(matches!(
+            cfgd_err,
+            cfgd_core::errors::CfgdError::File(
+                cfgd_core::errors::FileError::TargetNotWritable { .. }
+            )
+        ));
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("CliErrorMeta carrier");
+        assert_eq!(meta.error_kind, "target_not_writable");
+        assert!(
+            meta.hints.iter().any(|h| h.contains("chmod u+w")),
+            "expected a chmod remediation hint, got: {:?}",
+            meta.hints
+        );
+
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     // --- parse_yaml_value ---

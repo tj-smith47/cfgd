@@ -30,7 +30,13 @@ pub fn cmd_profile_update(
     let config_dir = config_dir(cli);
     let profile_path = config_dir.join("profiles").join(format!("{}.yaml", name));
     if !profile_path.exists() {
-        return Err(crate::cli::cli_error(
+        // Carry the typed ProfileNotFound so the exit-code downcast resolves to
+        // ExitCode::NotFound (6), uniform with every other named-resource miss.
+        return Err(crate::cli::cli_error_ctx(
+            cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::ProfileNotFound {
+                name: name.to_string(),
+            })
+            .into(),
             name,
             "not_found",
             format!("Profile '{}' not found", name),

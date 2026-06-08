@@ -15,7 +15,14 @@ pub fn cmd_profile_delete(
     let profile_path = pdir.join(format!("{}.yaml", name));
 
     if !profile_path.exists() {
-        return Err(crate::cli::cli_error(
+        // Carry the typed ProfileNotFound so the exit-code downcast resolves to
+        // ExitCode::NotFound (6). The active-profile guard below stays exit 1 —
+        // it is a precondition failure, not a not-found.
+        return Err(crate::cli::cli_error_ctx(
+            cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::ProfileNotFound {
+                name: name.to_string(),
+            })
+            .into(),
             name,
             "not_found",
             format!("Profile '{}' not found", name),

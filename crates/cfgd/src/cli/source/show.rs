@@ -14,7 +14,14 @@ pub fn build_source_not_found_error(name: &str, available: &[String]) -> anyhow:
     if !available.is_empty() {
         hints.push(format!("Available sources: {}", available.join(", ")));
     }
-    crate::cli::cli_error_with_hints(
+    // Carry the typed `SourceError::NotFound` in the chain so the exit-code
+    // downcast in `main.rs` resolves to ExitCode::NotFound (6); the attached
+    // CliErrorMeta still drives the rich `not_found` payload + hints.
+    crate::cli::cli_error_ctx_with_hints(
+        cfgd_core::errors::CfgdError::Source(cfgd_core::errors::SourceError::NotFound {
+            name: name.to_string(),
+        })
+        .into(),
         name,
         "not_found",
         format!("Source '{}' not found", name),

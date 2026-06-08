@@ -371,6 +371,9 @@ pub enum ModuleError {
     #[error("module not found: {name}")]
     NotFound { name: String },
 
+    #[error("module registry not found: {name}")]
+    RegistryNotFound { name: String },
+
     #[error("module dependency cycle: {chain:?}")]
     DependencyCycle { chain: Vec<String> },
 

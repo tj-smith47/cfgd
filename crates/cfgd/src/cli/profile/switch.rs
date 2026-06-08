@@ -20,7 +20,14 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::R
         if !available.is_empty() {
             hints.push(format!("Available profiles: {}", available.join(", ")));
         }
-        return Err(crate::cli::cli_error_with_hints(
+        // Carry the typed `ConfigError::ProfileNotFound` in the chain so the
+        // exit-code downcast in `main.rs` resolves to ExitCode::NotFound (6);
+        // the attached CliErrorMeta still drives the rich `not_found` payload.
+        return Err(crate::cli::cli_error_ctx_with_hints(
+            cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::ProfileNotFound {
+                name: name.to_string(),
+            })
+            .into(),
             name,
             "not_found",
             format!("Profile '{}' not found at {}", name, profile_path.posix()),

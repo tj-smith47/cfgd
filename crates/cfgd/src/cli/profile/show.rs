@@ -114,7 +114,36 @@ pub fn cmd_profile_show(cli: &Cli, printer: &Printer, name: Option<&str>) -> any
     let (profile_name, resolved) = match name {
         Some(n) => {
             config::load_config(&cli.config)?;
-            let resolved = config::resolve_profile(n, &profiles_dir(cli))?;
+            let dir = profiles_dir(cli);
+            // resolve_profile already returns a typed ProfileNotFound (→ exit 6);
+            // wrap the missing case with a `not_found` CliErrorMeta so structured
+            // consumers get the stable `{"error":"not_found",...}` payload instead
+            // of the generic synthesized fallback. The typed error stays in the
+            // chain, so the exit code is unaffected.
+            let resolved = config::resolve_profile(n, &dir).map_err(|e| {
+                if matches!(
+                    &e,
+                    cfgd_core::errors::CfgdError::Config(
+                        cfgd_core::errors::ConfigError::ProfileNotFound { .. }
+                    )
+                ) {
+                    let available = super::list_yaml_stems(&dir).unwrap_or_default();
+                    let mut hints = Vec::new();
+                    if !available.is_empty() {
+                        hints.push(format!("Available profiles: {}", available.join(", ")));
+                    }
+                    crate::cli::cli_error_ctx_with_hints(
+                        e.into(),
+                        n,
+                        "not_found",
+                        format!("Profile '{}' not found", n),
+                        serde_json::json!({ "available": available }),
+                        hints,
+                    )
+                } else {
+                    e.into()
+                }
+            })?;
             (n.to_string(), resolved)
         }
         None => {

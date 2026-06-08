@@ -104,6 +104,52 @@ fn scaffold_creates_structure() {
     assert!(contents.contains("name: test-config"));
 }
 
+#[cfg(unix)]
+#[test]
+fn scaffold_readonly_dir_yields_target_not_writable_with_path_and_hint() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Root bypasses mode bits; the 0o500 dir is writable to uid 0, so the probe
+    // (correctly) reports it writable and this case cannot be exercised.
+    if cfgd_core::is_root() {
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    let printer = quiet_printer();
+
+    let err = scaffold(dir.path(), Some("ro"), None, &printer)
+        .expect_err("read-only dir must reject scaffolding");
+
+    // The exit code resolves to the typed TargetNotWritable in the chain.
+    let cfgd_err = err
+        .downcast_ref::<cfgd_core::errors::CfgdError>()
+        .expect("typed CfgdError in chain");
+    assert!(matches!(
+        cfgd_err,
+        cfgd_core::errors::CfgdError::File(cfgd_core::errors::FileError::TargetNotWritable { .. })
+    ));
+
+    // The CliErrorMeta carries the path + chmod remediation hint.
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("CliErrorMeta carrier");
+    assert_eq!(meta.error_kind, "target_not_writable");
+    assert!(
+        meta.message.contains(&dir.path().display().to_string()),
+        "message must name the path: {}",
+        meta.message
+    );
+    assert!(
+        meta.hints.iter().any(|h| h.contains("chmod u+w")),
+        "expected a chmod remediation hint, got: {:?}",
+        meta.hints
+    );
+
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
 #[test]
 fn scaffold_with_theme() {
     let dir = tempfile::tempdir().unwrap();

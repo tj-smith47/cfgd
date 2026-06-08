@@ -7705,10 +7705,9 @@ spec:
 }
 
 #[test]
-fn module_registry_remove_with_registries_but_missing_name_emits_not_found_doc() {
-    // Drives RegistryRemoveOutcome::NotFound (L849-858 in registry.rs): a
-    // config that DOES have registries but none match the requested name
-    // must emit the not_found Doc rather than NoRegistries.
+fn module_registry_remove_with_registries_but_missing_name_errs_not_found() {
+    // A config that DOES have registries but none match the requested name is a
+    // strict not-found error (exit 6) — not an idempotent no-op.
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("cfgd.yaml"),
@@ -7727,18 +7726,21 @@ spec:
     .unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = test_printer_capture();
+    let (printer, _buf) = test_printer_capture();
 
-    module::cmd_module_registry_remove(&cli, &printer, "nonexistent").unwrap();
+    let err = module::cmd_module_registry_remove(&cli, &printer, "nonexistent").unwrap_err();
     drop(printer);
 
-    let output = buf.lock().unwrap();
-    assert!(
-        output.contains("not found") || output.contains("nonexistent"),
-        "registry removal with missing name must emit not-found doc, got: {output}"
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "registry_not_found");
+    assert_eq!(
+        crate::cli::exit_code_for_anyhow(&err),
+        cfgd_core::exit::ExitCode::NotFound,
     );
 
-    // Config must remain unchanged — the matching registry is still there.
+    // Config must remain unchanged — the existing registry is still there.
     let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
     let registries = cfg.spec.modules.unwrap().registries;
     assert_eq!(registries.len(), 1, "no entry was removed");
@@ -7751,17 +7753,18 @@ fn module_registry_remove_not_found() {
     std::fs::write(dir.path().join("cfgd.yaml"), TEST_CONFIG_YAML).unwrap();
 
     let cli = test_cli(dir.path());
-    let (printer, buf) = test_printer_capture();
+    let (printer, _buf) = test_printer_capture();
 
-    module::cmd_module_registry_remove(&cli, &printer, "nonexistent").unwrap();
+    let err = module::cmd_module_registry_remove(&cli, &printer, "nonexistent").unwrap_err();
     drop(printer);
 
-    let output = buf.lock().unwrap();
-    assert!(
-        output.contains("not found")
-            || output.contains("nonexistent")
-            || output.contains("No module registries"),
-        "removing non-existent registry should note it, got: {output}"
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "registry_not_found");
+    assert_eq!(
+        crate::cli::exit_code_for_anyhow(&err),
+        cfgd_core::exit::ExitCode::NotFound,
     );
 }
 
@@ -18027,8 +18030,10 @@ fn execute_module_registry_remove_dispatch() {
             },
         },
     });
-    // Removing a nonexistent registry returns Ok (info message, not error).
-    super::execute(&cli, h.printer()).expect("Module Registry Remove dispatch must succeed");
+    // Removing a nonexistent registry is now a strict not-found error (exit 6),
+    // uniform with every other named-resource miss — not an idempotent no-op.
+    let result = super::execute(&cli, h.printer());
+    assert!(result.is_err(), "removing nonexistent registry should fail");
 }
 
 #[test]

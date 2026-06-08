@@ -31,7 +31,7 @@
 //! [`NotFound`]: ExitCode::NotFound
 //! [`ApplyFailed`]: ExitCode::ApplyFailed
 
-use crate::errors::{CfgdError, ConfigError};
+use crate::errors::{CfgdError, ConfigError, ModuleError, SourceError};
 
 #[repr(i32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +74,15 @@ pub fn exit_code_for_error(err: &CfgdError) -> ExitCode {
     match err {
         CfgdError::Config(ConfigError::NotFound { .. }) => ExitCode::NoConfig,
         CfgdError::Config(ConfigError::HomeUnresolved { .. }) => ExitCode::NoConfig,
+        // A named-but-missing resource is a distinct, scriptable condition from a
+        // malformed config: it must resolve to the dedicated NotFound code (6),
+        // not ConfigInvalid (4). These arms precede the `Config(_)` catch-all so
+        // ProfileNotFound is routed here rather than collapsing to ConfigInvalid.
+        CfgdError::Config(ConfigError::ProfileNotFound { .. }) => ExitCode::NotFound,
+        CfgdError::Module(ModuleError::NotFound { .. }) => ExitCode::NotFound,
+        CfgdError::Module(ModuleError::RegistryNotFound { .. }) => ExitCode::NotFound,
+        CfgdError::Source(SourceError::NotFound { .. }) => ExitCode::NotFound,
+        CfgdError::Source(SourceError::ProfileNotFound { .. }) => ExitCode::NotFound,
         CfgdError::Config(_) => ExitCode::ConfigInvalid,
         _ => ExitCode::Error,
     }
@@ -131,8 +140,45 @@ mod tests {
             message: "missing apiVersion".into(),
         });
         assert_eq!(exit_code_for_error(&err), ExitCode::ConfigInvalid);
+    }
+
+    #[test]
+    fn profile_not_found_maps_to_not_found() {
         let err = CfgdError::Config(ConfigError::ProfileNotFound { name: "dev".into() });
-        assert_eq!(exit_code_for_error(&err), ExitCode::ConfigInvalid);
+        assert_eq!(exit_code_for_error(&err), ExitCode::NotFound);
+    }
+
+    #[test]
+    fn module_not_found_maps_to_not_found() {
+        let err = CfgdError::Module(crate::errors::ModuleError::NotFound {
+            name: "nvim".into(),
+        });
+        assert_eq!(exit_code_for_error(&err), ExitCode::NotFound);
+    }
+
+    #[test]
+    fn registry_not_found_maps_to_not_found() {
+        let err = CfgdError::Module(crate::errors::ModuleError::RegistryNotFound {
+            name: "acme-registry".into(),
+        });
+        assert_eq!(exit_code_for_error(&err), ExitCode::NotFound);
+    }
+
+    #[test]
+    fn source_not_found_maps_to_not_found() {
+        let err = CfgdError::Source(crate::errors::SourceError::NotFound {
+            name: "acme".into(),
+        });
+        assert_eq!(exit_code_for_error(&err), ExitCode::NotFound);
+    }
+
+    #[test]
+    fn source_profile_not_found_maps_to_not_found() {
+        let err = CfgdError::Source(crate::errors::SourceError::ProfileNotFound {
+            name: "acme".into(),
+            profile: "dev".into(),
+        });
+        assert_eq!(exit_code_for_error(&err), ExitCode::NotFound);
     }
 
     #[test]

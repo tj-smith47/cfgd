@@ -1,6 +1,23 @@
 use super::*;
 use cfgd_core::output::{Doc, Printer, Role};
 
+/// Build the `source update <name>` not-found error. Carries the typed
+/// `SourceError::NotFound` in the chain so the exit-code downcast in `main.rs`
+/// resolves to ExitCode::NotFound (6); the attached CliErrorMeta drives the
+/// stable `{"error":"not_found",...}` payload.
+fn source_not_found_error(name: &str) -> anyhow::Error {
+    crate::cli::cli_error_ctx(
+        cfgd_core::errors::CfgdError::Source(cfgd_core::errors::SourceError::NotFound {
+            name: name.to_string(),
+        })
+        .into(),
+        name,
+        "not_found",
+        format!("Source '{}' not found", name),
+        serde_json::json!({}),
+    )
+}
+
 pub fn cmd_source_update(cli: &Cli, printer: &Printer, name: Option<&str>) -> anyhow::Result<()> {
     let error_count = run_source_update(cli, printer, name)?;
 
@@ -30,6 +47,12 @@ pub(crate) fn run_source_update(
     let cfg = config::load_config(&config_path)?;
 
     if cfg.spec.sources.is_empty() {
+        // A specific source was requested but the config has no sources: that is
+        // a NotFound, not a success. Only the update-ALL form (name == None) is
+        // an informational no-op here.
+        if let Some(name) = name {
+            return Err(source_not_found_error(name));
+        }
         printer.emit(
             Doc::new()
                 .status(Role::Info, "No sources configured")
@@ -52,12 +75,7 @@ pub(crate) fn run_source_update(
     if sources_to_update.is_empty()
         && let Some(name) = name
     {
-        return Err(crate::cli::cli_error(
-            name,
-            "not_found",
-            format!("Source '{}' not found", name),
-            serde_json::json!({}),
-        ));
+        return Err(source_not_found_error(name));
     }
 
     #[derive(serde::Serialize)]

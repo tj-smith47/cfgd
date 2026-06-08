@@ -518,6 +518,43 @@ pub(super) fn pick_profile(profiles_dir: &Path, printer: &Printer) -> anyhow::Re
 }
 
 /// Create the cfgd directory structure from scratch.
+/// Ensure `dir` is writable for real (not by mode-bit inference), returning a
+/// typed [`cfgd_core::errors::FileError::TargetNotWritable`] carrier with a
+/// chmod remediation hint when it is not. Used as a pre-flight before scaffolding
+/// so a read-only config dir fails with a path-naming error, not a bare
+/// `Permission denied (os error 13)`.
+pub(super) fn ensure_dir_writable(dir: &Path) -> anyhow::Result<()> {
+    // Probe only if the directory already exists; a not-yet-created target dir
+    // is handled by the earlier create_dir_all (its parent governs writability).
+    if !dir.exists() {
+        return Ok(());
+    }
+    match cfgd_core::probe_dir_writable(dir) {
+        cfgd_core::DirWritable::Writable => Ok(()),
+        cfgd_core::DirWritable::NotWritable => Err(crate::cli::cli_error_ctx_with_hints(
+            cfgd_core::errors::CfgdError::File(cfgd_core::errors::FileError::TargetNotWritable {
+                path: dir.to_path_buf(),
+            })
+            .into(),
+            cfgd_core::to_posix_string(dir),
+            "target_not_writable",
+            format!("target path not writable: {}", dir.posix()),
+            serde_json::json!({ "path": cfgd_core::to_posix_string(dir) }),
+            vec![format!(
+                "check directory permissions: chmod u+w {}",
+                dir.posix()
+            )],
+        )),
+        cfgd_core::DirWritable::Io(e) => Err(cfgd_core::errors::CfgdError::File(
+            cfgd_core::errors::FileError::Io {
+                path: dir.to_path_buf(),
+                source: e,
+            },
+        )
+        .into()),
+    }
+}
+
 pub(super) fn scaffold(
     dir: &Path,
     name: Option<&str>,
@@ -527,6 +564,12 @@ pub(super) fn scaffold(
     let config_name = name
         .or_else(|| dir.file_name().and_then(|n| n.to_str()))
         .unwrap_or("my-config");
+
+    // Pre-flight the target dir for real write access before scaffolding. A
+    // read-only config dir otherwise surfaces a bare `Permission denied (os
+    // error 13)` from create_dir_all that names no path and offers no
+    // remediation; convert it to the typed TargetNotWritable + a chmod hint.
+    ensure_dir_writable(dir)?;
 
     // Create directories
     std::fs::create_dir_all(dir.join("profiles"))?;

@@ -1287,6 +1287,306 @@ fn source_update_all_failed_exits_1() {
     );
 }
 
+/// ExitCode::NotFound = 6 — `cfgd module show <missing>` against a valid config.
+/// The dedicated not-found code must reach the process, and the structured
+/// payload must keep the stable `not_found` kind for acceptance oracles.
+#[test]
+fn exit_code_module_show_missing_is_6() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["-o", "json", "module", "show", "nosuchmod"])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(6);
+    let out = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(v["error"], "not_found");
+    assert_eq!(v["name"], "nosuchmod");
+}
+
+/// ExitCode::NotFound = 6 — `cfgd profile show <missing>`.
+#[test]
+fn exit_code_profile_show_missing_is_6() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["-o", "json", "profile", "show", "nosuchprof"])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(6);
+    let out = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(v["error"], "not_found");
+}
+
+/// ExitCode::NotFound = 6 — `cfgd profile switch <missing>`.
+#[test]
+fn exit_code_profile_switch_missing_is_6() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["-o", "json", "profile", "switch", "nosuchprof"])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(6);
+    let out = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(v["error"], "not_found");
+}
+
+/// ExitCode::NotFound = 6 — `cfgd source show <missing>`.
+#[test]
+fn exit_code_source_show_missing_is_6() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["-o", "json", "source", "show", "nosuchsrc"])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(6);
+    let out = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(v["error"], "not_found");
+}
+
+/// `cfgd source update <missing>` against a ZERO-source config must NOT report a
+/// false success (exit 0, `{"sources":[]}`) — a named-but-absent source is a
+/// NotFound: exit 6 + `not_found` payload. Regression guard for S15-D.
+#[test]
+fn source_update_missing_name_zero_sources_is_6_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["-o", "json", "source", "update", "nosuchsrc"])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(6);
+    let out = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(v["error"], "not_found");
+    assert_eq!(v["name"], "nosuchsrc");
+}
+
+/// `cfgd source update <missing>` against a config that HAS other sources is also
+/// a NotFound (exit 6) for the named-but-absent source.
+#[test]
+fn source_update_missing_name_with_other_sources_is_6_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
+    std::fs::write(
+        dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: base\n  sources:\n    - name: other\n      origin:\n        url: https://example.com/foo.git\n        branch: main\n        type: Git\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("profiles/base.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec: {}\n",
+    )
+    .unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["-o", "json", "source", "update", "nosuchsrc"])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(6);
+    let out = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(v["error"], "not_found");
+    assert_eq!(v["name"], "nosuchsrc");
+}
+
+/// ExitCode::NotFound = 6 — `cfgd source remove <missing>`. Mutating commands
+/// must share the not-found exit code with the read-only `show` commands.
+#[test]
+fn exit_code_source_remove_missing_is_6() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["-o", "json", "source", "remove", "nosuchsrc"])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(6);
+    let out = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(v["error"], "not_found");
+}
+
+/// ExitCode::NotFound = 6 — `cfgd profile delete <missing>`.
+#[test]
+fn exit_code_profile_delete_missing_is_6() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["-o", "json", "profile", "delete", "--yes", "nosuchprof"])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(6);
+    let out = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(v["error"], "not_found");
+}
+
+/// GUARD must NOT move: `cfgd profile delete <ACTIVE>` is a precondition failure
+/// (`active_profile`), not a not-found — it stays ExitCode::Error (1). `base` is
+/// the active profile in `create_valid_config`. Regression guard for S8.
+#[test]
+fn exit_code_profile_delete_active_stays_1() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["-o", "json", "profile", "delete", "--yes", "base"])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(1);
+    let out = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(
+        v["error"], "active_profile",
+        "guard kind must not become not_found"
+    );
+}
+
+/// ExitCode::NotFound = 6 — `cfgd module delete <missing>`.
+#[test]
+fn exit_code_module_delete_missing_is_6() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["-o", "json", "module", "delete", "--yes", "nosuchmod"])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(6);
+    let out = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(v["error"], "not_found");
+}
+
+/// ExitCode::NotFound = 6 — `cfgd module registry remove <missing>`. Removing an
+/// absent registry is a strict not-found (json kind `registry_not_found`), NOT an
+/// idempotent exit-0 no-op — uniform with every other named-resource miss.
+#[test]
+fn exit_code_module_registry_remove_missing_is_6() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
+    std::fs::write(
+        dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: base\n  modules:\n    registries:\n      - name: community\n        url: https://github.com/cfgd-community/modules.git\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("profiles/base.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec: {}\n",
+    )
+    .unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["-o", "json", "module", "registry", "remove", "nosuchreg"])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .assert()
+        .code(6);
+    let out = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(v["error"], "registry_not_found");
+}
+
+/// ExitCode::NotFound = 6 — `cfgd module registry rename <missing> <new>`.
+#[test]
+fn exit_code_module_registry_rename_missing_is_6() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
+    std::fs::write(
+        dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: base\n  modules:\n    registries:\n      - name: community\n        url: https://github.com/cfgd-community/modules.git\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("profiles/base.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec: {}\n",
+    )
+    .unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args([
+            "-o",
+            "json",
+            "module",
+            "registry",
+            "rename",
+            "nosuchreg",
+            "fresh",
+        ])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .assert()
+        .code(6);
+    let out = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(v["error"], "registry_not_found");
+}
+
 /// Plain `cfgd status` (no --exit-code) keeps the fast RECORDED-drift dashboard:
 /// with no recorded events it shows "No drift detected" and exits 0 even when a
 /// managed file is live-drifted. The live scan is `-e`-only by design.

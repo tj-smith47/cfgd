@@ -623,7 +623,13 @@ pub fn cmd_module_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
     let module_yaml = config_dir.join("modules").join(name).join("module.yaml");
 
     if !module_yaml.exists() {
-        return Err(crate::cli::cli_error(
+        // Carry the typed ModuleError::NotFound so the exit-code downcast resolves
+        // to ExitCode::NotFound (6), uniform with every other named-resource miss.
+        return Err(crate::cli::cli_error_ctx(
+            cfgd_core::errors::CfgdError::Module(cfgd_core::errors::ModuleError::NotFound {
+                name: name.to_string(),
+            })
+            .into(),
             name,
             "not_found",
             format!("Module '{}' not found at {}", name, module_yaml.posix()),
@@ -700,7 +706,13 @@ pub fn cmd_module_delete(
     let module_dir = config_dir.join("modules").join(name);
 
     if !module_dir.exists() {
-        return Err(crate::cli::cli_error(
+        // Carry the typed ModuleError::NotFound so the exit-code downcast resolves
+        // to ExitCode::NotFound (6), uniform with every other named-resource miss.
+        return Err(crate::cli::cli_error_ctx(
+            cfgd_core::errors::CfgdError::Module(cfgd_core::errors::ModuleError::NotFound {
+                name: name.to_string(),
+            })
+            .into(),
             name,
             "not_found",
             format!("Module '{}' not found at {}", name, module_dir.posix()),

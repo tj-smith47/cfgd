@@ -34,6 +34,7 @@ pub mod workflow;
 
 pub use error::{
     CliErrorMeta, cli_error, cli_error_ctx, cli_error_ctx_with_hints, cli_error_with_hints,
+    exit_code_for_anyhow,
 };
 pub(in crate::cli) use helpers::*;
 pub(in crate::cli) use output_types::*;

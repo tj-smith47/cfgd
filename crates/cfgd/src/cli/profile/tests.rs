@@ -791,6 +791,11 @@ fn profile_switch_error_lists_available_profiles() {
         "error hints should list available profiles: {:?}",
         meta.hints
     );
+    // Exit-6 uniformity across every missing-profile site.
+    assert_eq!(
+        crate::cli::exit_code_for_anyhow(&err),
+        cfgd_core::exit::ExitCode::NotFound,
+    );
 }
 
 // --- cmd_profile_create ---
@@ -3395,6 +3400,11 @@ fn profile_update_nonexistent_returns_not_found_error() {
         .expect("handler returns CliErrorMeta");
     assert_eq!(meta.error_kind, "not_found");
     assert_eq!(meta.name, "ghost");
+    // Exit-6 uniformity across every missing-profile site.
+    assert_eq!(
+        crate::cli::exit_code_for_anyhow(&err),
+        cfgd_core::exit::ExitCode::NotFound,
+    );
 }
 
 // --- cmd_profile_update — file add with private flag ---

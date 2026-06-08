@@ -14,7 +14,13 @@ pub fn cmd_source_override(
 
     // Verify source exists in config
     if !cfg.spec.sources.iter().any(|s| s.name == source_name) {
-        return Err(crate::cli::cli_error(
+        // Carry the typed SourceError::NotFound so the exit-code downcast resolves
+        // to ExitCode::NotFound (6), uniform with every other named-resource miss.
+        return Err(crate::cli::cli_error_ctx(
+            cfgd_core::errors::CfgdError::Source(cfgd_core::errors::SourceError::NotFound {
+                name: source_name.to_string(),
+            })
+            .into(),
             source_name,
             "not_found",
             format!("Source '{}' not found", source_name),
