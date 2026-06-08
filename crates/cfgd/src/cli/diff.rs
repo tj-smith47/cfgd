@@ -17,11 +17,18 @@ pub fn cmd_diff(
         return cmd_diff_module(cli, printer, mod_name, &config_dir, exit_code);
     }
 
-    let (_cfg, profile_name, mut resolved) = load_config_and_profile(cli)?;
+    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli)?;
     printer.kv_block([
         ("Config".to_string(), cli.config.display_posix()),
         ("Profile".to_string(), profile_name),
     ]);
+
+    // Compose with sources (cache-only — read paths stay offline) and resolve the
+    // effective module set through the one shared resolver, so `diff` sees the
+    // same source-composed desired state that `apply` writes.
+    let desired = resolve_desired_state(cli, &cfg, &local_resolved, None, printer, false)?;
+    let mut resolved = desired.resolved;
+    let resolved_modules = desired.modules;
 
     packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
 
@@ -29,10 +36,6 @@ pub fn cmd_diff(
 
     let mut diff_payload = DiffOutput::default();
     let mut has_system_drift = false;
-
-    // Resolve the profile's own modules so module-deployed files are content-aware
-    // here too — keeping `diff`, `status -e`, and `verify` consistent.
-    let resolved_modules = resolve_profile_modules(&config_dir, &resolved, printer);
 
     let has_file_drift = {
         printer.status_simple(Role::Info, "Files");

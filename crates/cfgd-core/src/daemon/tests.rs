@@ -10967,6 +10967,246 @@ async fn handle_reconcile_auto_apply_with_sources_processes_decisions_and_resolv
 }
 
 // ---------------------------------------------------------------------------
+// Fail-closed source composition in the pruning reconcile loop
+// ---------------------------------------------------------------------------
+//
+// If `compose_daemon_desired_state` failed OPEN (substituted the local profile
+// on a compose error), the pruning reconcile would see a source-delivered
+// package as no-longer-desired and, under autoApply, UNINSTALL it. These tests
+// pin the fail-closed contract: a broken/constraint-violating cached manifest
+// SKIPS the tick (no prune, no uninstall, last_reconcile untouched, alert
+// raised), while a benign never-synced cache-miss still reconciles local-only.
+
+/// Stage a cached source under `<xdg_data>/cfgd/sources/<name>` whose `team`
+/// profile carries a `preApply` script. The source's policy keeps the default
+/// `noScripts: true` constraint, so composition of the subscribed `team` profile
+/// fails with `ScriptsNotAllowed` — a realistic "cached manifest went bad"
+/// error. Returns nothing; the cache dir is derived from `XDG_DATA_HOME`.
+fn stage_constraint_violating_cached_source(xdg_data: &Path, name: &str) {
+    let src_dir = xdg_data.join("cfgd").join("sources").join(name);
+    std::fs::create_dir_all(src_dir.join("profiles")).unwrap();
+    // Default policy → constraints.noScripts = true.
+    std::fs::write(
+        src_dir.join("cfgd-source.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: test-src\nspec:\n  provides:\n    profiles:\n      - team\n",
+    )
+    .unwrap();
+    // The subscribed profile ships a script → violates noScripts → compose Err.
+    std::fs::write(
+        src_dir.join("profiles").join("team.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: team\nspec:\n  scripts:\n    preApply:\n      - run: echo hi\n",
+    )
+    .unwrap();
+    // Make it a git repo with a commit so head_commit resolves like a real cache.
+    crate::test_helpers::init_test_git_repo(&src_dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn handle_reconcile_compose_error_skips_tick_and_preserves_source_package() {
+    // RED before the fail-closed fix: a constraint-violating cached source made
+    // compose fall back to local-only, so the pruning reconcile uninstalled the
+    // tracked source-delivered package. GREEN after: the tick is skipped, the
+    // package survives, last_reconcile is NOT advanced, and an alert is raised.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    // The daemon's source cache resolves via XDG_DATA_HOME on Linux; point it at
+    // the tmp dir so we control the cache contents deterministically.
+    let xdg_data = tmp.path().join("xdg-data");
+    let _xdg = crate::test_helpers::EnvVarGuard::set("XDG_DATA_HOME", xdg_data.to_str().unwrap());
+    stage_constraint_violating_cached_source(&xdg_data, "test-src");
+
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    // cfgd previously installed the source-delivered package (tracked in state).
+    {
+        let seed = StateStore::open_in_dir(&state_dir).unwrap();
+        seed.upsert_managed_resource("package", "cargo/source-pkg", "test-src", None, None)
+            .unwrap();
+    }
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n  sources:\n    - name: test-src\n      origin:\n        type: Git\n        url: https://example.test/team.git\n      subscription:\n        profile: team\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    let uninstalled = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    // A hook that WOULD prune `cargo/source-pkg` if reconcile ever reached
+    // package planning with a local-only desired set. The fail-closed skip must
+    // prevent that — so this Uninstall must NOT fire.
+    struct PrunePkgHooks {
+        uninstalled: Arc<Mutex<Vec<String>>>,
+    }
+    impl DaemonHooks for PrunePkgHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            let mut reg = ProviderRegistry::new();
+            reg.package_managers
+                .push(Box::new(RecordingUninstallManager {
+                    uninstalled: Arc::clone(&self.uninstalled),
+                    installed: ["source-pkg".to_string()].into_iter().collect(),
+                }));
+            reg
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+            cfgd_installed: &std::collections::HashSet<String>,
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            let mut actions = Vec::new();
+            if cfgd_installed.contains("cargo/source-pkg") {
+                actions.push(PackageAction::Uninstall {
+                    manager: "cargo".into(),
+                    packages: vec!["source-pkg".into()],
+                    origin: "test-src".into(),
+                });
+            }
+            Ok(actions)
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    let hooks = PrunePkgHooks {
+        uninstalled: Arc::clone(&uninstalled),
+    };
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            // notify_on_drift = true so the fail-closed alert path is exercised.
+            quiet_reconcile_ctx(&st, &not, true, &hooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    // SAFETY: the tracked source package must NOT have been uninstalled.
+    let uninstalled = uninstalled.lock().await;
+    assert!(
+        uninstalled.is_empty(),
+        "fail-closed skip must prevent pruning the source package; got: {uninstalled:?}"
+    );
+
+    // Its tracking row must survive (not pruned).
+    let after = StateStore::open_in_dir(&state_dir).unwrap();
+    assert!(
+        after
+            .is_resource_managed("package", "cargo/source-pkg")
+            .unwrap(),
+        "source package's tracking row must survive a skipped tick"
+    );
+
+    // The tick was skipped: last_reconcile was never advanced.
+    {
+        let guard = state.lock().await;
+        assert!(
+            guard.last_reconcile.is_none(),
+            "a fail-closed compose error must SKIP the tick (no last_reconcile update)"
+        );
+    }
+
+    // Alert raised: the notifier captured a fail-closed skip notification whose
+    // body explains the broken source config (so an operator knows WHY and what
+    // to do). The title flags the skipped reconcile.
+    let alerts = notifier.captured();
+    assert!(
+        alerts
+            .iter()
+            .any(|(title, body)| title.contains("reconcile skipped")
+                && body.contains("source's cached config is broken")),
+        "a fail-closed compose error must raise an alert naming the failure; got: {alerts:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn handle_reconcile_never_synced_source_reconciles_local_only() {
+    // The benign cache-miss case must NOT trip the fail-closed skip: a configured
+    // source with no on-disk cache is warn+skip inside the resolver (not an Err),
+    // so reconcile proceeds local-only and completes (last_reconcile advances).
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    // Point the source cache at an EMPTY xdg-data dir → the source is never-synced.
+    let xdg_data = tmp.path().join("xdg-data-empty");
+    std::fs::create_dir_all(&xdg_data).unwrap();
+    let _xdg = crate::test_helpers::EnvVarGuard::set("XDG_DATA_HOME", xdg_data.to_str().unwrap());
+
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: false\n      driftPolicy: NotifyOnly\n  sources:\n    - name: never-synced\n      origin:\n        type: Git\n        url: https://example.test/x.git\n      subscription:\n        profile: team\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, false, &EmptyPlanHooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    // Cache-miss is a happy path: reconcile completed local-only.
+    let guard = state.lock().await;
+    assert!(
+        guard.last_reconcile.is_some(),
+        "a never-synced source (cache-miss) must NOT skip the tick — reconcile proceeds local-only"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // IPC socket security — v0.4.0 release-blocker coverage
 // ---------------------------------------------------------------------------
 //

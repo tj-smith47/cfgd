@@ -195,10 +195,46 @@ pub(crate) fn handle_reconcile(
         }
     };
 
-    let resolved = match config::resolve_profile(profile_name, &profiles_dir) {
+    let local_resolved = match config::resolve_profile(profile_name, &profiles_dir) {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "reconcile: profile resolution failed");
+            return;
+        }
+    };
+
+    // Compose with sources CACHE-ONLY so reconcile sees the same source-composed
+    // desired state every other command does, without touching the network in the
+    // tight tick (the sync task owns fetch cadence). `resolved` is the effective
+    // (local ⊕ sources) profile used for package/file/module planning;
+    // `local_resolved` is kept for the source-decision workflow and profile-level
+    // onDrift scripts, which are local-config concerns.
+    //
+    // FAIL-CLOSED: on a real compose error (malformed/constraint-violating cached
+    // manifest, failed signature) we must SKIP this tick — never reconcile against
+    // a substituted local-only desired state, because this is a pruning reconcile
+    // and a dropped source-delivered package/module would be UNINSTALLED under
+    // autoApply. Mirror the `resolve_profile` failure above: error + alert +
+    // early-return, leaving the prior desired state (and last_reconcile) intact.
+    // A benign never-synced cache-miss is warn+skip inside the resolver, not an
+    // Err, so cache-miss still reconciles local-only.
+    let (resolved, source_module_roots) = match super::compose_daemon_desired_state(
+        &cfg,
+        &local_resolved,
+        printer,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                "reconcile: source composition failed — SKIPPING tick to avoid pruning source-delivered state against a degraded desired set"
+            );
+            notifier.notify(
+                    "cfgd: reconcile skipped — source composition failed",
+                    &format!(
+                        "A configured source's cached config is broken ({e}). Reconcile was skipped to avoid uninstalling source-delivered packages. Run `cfgd sync` then `cfgd status` to inspect."
+                    ),
+                );
             return;
         }
     };
@@ -252,7 +288,7 @@ pub(crate) fn handle_reconcile(
                 let excluded = process_source_decisions(
                     &store,
                     &source_spec.name,
-                    &resolved.merged,
+                    &local_resolved.merged,
                     policy,
                     notifier,
                 );
@@ -310,9 +346,14 @@ pub(crate) fn handle_reconcile(
         }
     };
 
-    // Resolve modules from profile + lockfile
-    let resolved_modules =
-        super::resolve_daemon_modules(&registry, &resolved, &config_dir, printer);
+    // Resolve modules from profile + lockfile + source-delivered roots
+    let resolved_modules = super::resolve_daemon_modules(
+        &registry,
+        &resolved,
+        &config_dir,
+        &source_module_roots,
+        printer,
+    );
     let resolved_modules_ref = resolved_modules.clone();
     let mut plan = match reconciler.plan(
         &resolved,

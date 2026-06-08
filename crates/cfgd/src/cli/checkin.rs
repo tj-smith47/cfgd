@@ -14,14 +14,17 @@ pub fn cmd_checkin(
 ) -> anyhow::Result<()> {
     printer.heading("Checkin");
 
-    let (cfg, _profile_name, resolved) = load_config_and_profile(cli)?;
+    let (cfg, _profile_name, local_resolved) = load_config_and_profile(cli)?;
     let config_dir = config_dir(cli);
-    let mut registry = build_registry_with_profile(&resolved.merged.packages);
 
-    // Resolve modules + wire a content-aware file manager so the checkin payload's
-    // compliance summary reflects module resources and real content drift — same
-    // as the `compliance snapshot` surface.
-    let resolved_modules = resolve_profile_modules(&config_dir, &resolved, printer);
+    // Compose with sources (cache-only — read paths stay offline) and resolve the
+    // effective module set through the one shared resolver, so the checkin
+    // payload reflects the same source-composed desired state that `apply` writes.
+    let desired = resolve_desired_state(cli, &cfg, &local_resolved, None, printer, false)?;
+    let resolved = desired.resolved;
+    let resolved_modules = desired.modules;
+
+    let mut registry = build_registry_with_profile(&resolved.merged.packages);
     registry.file_manager = Some(Box::new(build_compliance_file_manager(
         &config_dir,
         &resolved,

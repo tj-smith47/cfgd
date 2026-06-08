@@ -248,7 +248,7 @@ pub(super) fn cmd_status(
         return cmd_status_module(cli, printer, mod_name);
     }
 
-    let (cfg, profile_name, mut resolved) = load_config_and_profile(cli)?;
+    let (cfg, profile_name, local_resolved) = load_config_and_profile(cli)?;
     let state = open_state_store(cli.state_dir.as_deref())?;
 
     let last_apply = state.last_apply()?;
@@ -262,32 +262,26 @@ pub(super) fn cmd_status(
     let resources = state.managed_resources()?;
 
     let config_dir = config_dir(cli);
-    // default_module_cache_dir() can fail only if $HOME is unset; fall back to
-    // empty PathBuf so the status display degrades gracefully instead of erroring.
-    let cache_base = modules::default_module_cache_dir().unwrap_or_default();
-    // load_all_modules failure (e.g., malformed module YAML) should not abort a
-    // read-only status query; degrade to an empty map so the rest still renders.
-    let all_modules =
-        modules::load_all_modules(&config_dir, &cache_base, &[], printer).unwrap_or_default();
+
+    // Compose with sources (cache-only — read paths stay offline) and resolve the
+    // effective module set once, so the module dashboard and the `-e` live scan
+    // both reflect the same source-composed desired state that `apply` writes.
+    let desired = resolve_desired_state(cli, &cfg, &local_resolved, None, printer, false)?;
+    let mut resolved = desired.resolved;
+    let resolved_modules = desired.modules;
+
     let state_map = module_state_map(&state);
-    let module_entries: Vec<ModuleStatusEntry> = resolved
-        .merged
-        .modules
+    let module_entries: Vec<ModuleStatusEntry> = resolved_modules
         .iter()
-        .map(|mod_ref| {
-            let mod_name = modules::resolve_profile_module_name(mod_ref);
-            let (pkg_count, file_count) = all_modules
-                .get(mod_name)
-                .map(|m| (m.spec.packages.len(), m.spec.files.len()))
-                .unwrap_or((0, 0));
+        .map(|module| {
             let status = state_map
-                .get(mod_name)
+                .get(&module.name)
                 .map(|s| s.status.clone())
                 .unwrap_or_else(|| "not applied".into());
             ModuleStatusEntry {
-                name: mod_ref.clone(),
-                packages: pkg_count,
-                files: file_count,
+                name: module.name.clone(),
+                packages: module.packages.len(),
+                files: module.files.len(),
                 status,
             }
         })
@@ -317,7 +311,6 @@ pub(super) fn cmd_status(
         packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
         let mut registry = build_registry_with_profile(&resolved.merged.packages);
         registry.set_system_config_dir(&config_dir);
-        let resolved_modules = resolve_profile_modules(&config_dir, &resolved, printer);
         let cfgd_installed = cfgd_installed_packages(&state)?;
         let drift = super::live_drift::live_drift_results(
             &config_dir,

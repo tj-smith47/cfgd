@@ -78,18 +78,12 @@ pub fn cmd_plan(
     // `ApplyPhase` (clap ValueEnum) is already validated at parse time.
     let phase_filter: Option<PhaseName> = args.phase.map(apply_phase_to_phase_name);
 
-    // Compose with sources if configured
-    let (composed_resolved, source_env, source_module_roots) = if !cfg.spec.sources.is_empty() {
-        let composition_result = compose_with_sources(cli, &cfg, &resolved, printer)?;
-        (
-            Some(composition_result.resolved),
-            composition_result.source_env,
-            composition_result.source_module_roots,
-        )
-    } else {
-        (None, std::collections::HashMap::new(), Vec::new())
-    };
-    let mut effective_resolved = composed_resolved.unwrap_or(resolved);
+    // Compose with sources (network refresh) and resolve modules through the one
+    // shared desired-state resolver — same path apply takes.
+    let desired = resolve_desired_state(cli, &cfg, &resolved, module_filter, printer, true)?;
+    let source_env = desired.source_env;
+    let resolved_modules = desired.modules;
+    let mut effective_resolved = desired.resolved;
 
     // Resolve manifest files (Brewfile, package.json, etc.) into package lists
     packages::resolve_manifest_packages(&mut effective_resolved.merged.packages, &config_dir)?;
@@ -98,37 +92,6 @@ pub fn cmd_plan(
     registry.package_managers.extend(packages::custom_managers(
         &effective_resolved.merged.packages.custom,
     ));
-
-    // Resolve modules
-    let module_names = if let Some(mod_name) = module_filter {
-        vec![mod_name.to_string()]
-    } else {
-        effective_resolved.merged.modules.clone()
-    };
-
-    let resolved_modules = if !module_names.is_empty() {
-        let platform = Platform::detect();
-        let mgr_map = managers_map(&registry);
-        let cache_base = modules::default_module_cache_dir()?;
-        match modules::resolve_modules(
-            &module_names,
-            &config_dir,
-            &cache_base,
-            &source_module_roots,
-            &platform,
-            &mgr_map,
-            printer,
-        ) {
-            Ok(mods) => mods,
-            Err(e) if module_filter.is_some() => {
-                tracing::debug!("module filter '{}' not found: {}", module_names[0], e);
-                Vec::new()
-            }
-            Err(e) => return Err(e.into()),
-        }
-    } else {
-        Vec::new()
-    };
 
     let module_only = module_filter.is_some();
 

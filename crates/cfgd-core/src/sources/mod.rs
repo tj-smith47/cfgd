@@ -1,7 +1,9 @@
 // Sources — multi-source config management
-// Manages fetching, caching, and tracking external config sources (git repos).
-// Dependency rules: depends only on config/, output/, errors/. Must NOT import
-// files/, packages/, secrets/, reconciler/, providers/.
+// Manages fetching, caching, and tracking external config sources (git repos),
+// and is the single composition entry point (`SourceManager::compose`) shared by
+// every command's desired-state resolution.
+// Dependency rules: depends only on config/, output/, errors/, composition/,
+// modules/. Must NOT import files/, packages/, secrets/, reconciler/, providers/.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -10,7 +12,8 @@ use git2::{FetchOptions, RemoteCallbacks, Repository};
 use semver::{Version, VersionReq};
 
 use crate::config::{
-    ConfigSourceDocument, OriginSpec, OriginType, ProfileDocument, SourceSpec, parse_config_source,
+    ConfigSourceDocument, OriginSpec, OriginType, ProfileDocument, ResolvedProfile, SourceSpec,
+    parse_config_source,
 };
 use crate::errors::{Result, SourceError};
 use crate::output::{Printer, Role};
@@ -83,6 +86,70 @@ impl SourceManager {
             }
             .into());
         }
+        Ok(())
+    }
+
+    /// Load all sources from their existing on-disk cache WITHOUT touching the
+    /// network. A source whose cache directory does not yet exist (never synced)
+    /// is warned about and skipped, leaving local-only state intact. This is the
+    /// read-path loader: `diff`/`status`/`verify`/`compliance`/`checkin` and the
+    /// daemon reconcile loop compose the desired state offline and fast, relying
+    /// on the daemon's repo-sync (or an explicit `cfgd sync`) for fetch cadence.
+    ///
+    /// Unlike [`load_sources`](Self::load_sources), a cache miss is not a fatal
+    /// "all sources failed" condition — it degrades to local-only for that
+    /// source. A source that IS cached but whose manifest is malformed or whose
+    /// signature fails still surfaces as an error (a broken desired-state config
+    /// must be reported, not silently dropped).
+    pub fn load_sources_cached(&mut self, sources: &[SourceSpec], printer: &Printer) -> Result<()> {
+        for spec in sources {
+            self.load_source_cached(spec, printer)?;
+        }
+        Ok(())
+    }
+
+    /// Load a single source from its on-disk cache without fetching. A
+    /// never-synced source (no cache dir) is warned about and skipped; a cached
+    /// source with a broken manifest or failed signature is a hard error.
+    pub fn load_source_cached(&mut self, spec: &SourceSpec, printer: &Printer) -> Result<()> {
+        crate::validate_no_traversal(std::path::Path::new(&spec.name)).map_err(|e| {
+            SourceError::GitError {
+                name: spec.name.clone(),
+                message: format!("invalid source name: {e}"),
+            }
+        })?;
+
+        let source_dir = self.cache_dir.join(&spec.name);
+        if !source_dir.exists() {
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "Source '{}' has no local cache yet — run 'cfgd sync' to fetch it; using local state only",
+                    spec.name
+                ),
+            );
+            return Ok(());
+        }
+
+        let manifest = self.parse_manifest(&spec.name, &source_dir)?;
+
+        // A cached source still gets its signature verified — a tampered cache
+        // must not silently feed a read path.
+        self.verify_commit_signature(&spec.name, &source_dir, &manifest.spec.policy.constraints)?;
+
+        let last_commit = Self::head_commit(&source_dir);
+
+        let cached = CachedSource {
+            name: spec.name.clone(),
+            origin_url: spec.origin.url.clone(),
+            origin_branch: spec.origin.branch.clone(),
+            local_path: source_dir,
+            manifest,
+            last_commit,
+            last_fetched: None,
+        };
+
+        self.sources.insert(spec.name.clone(), cached);
         Ok(())
     }
 
@@ -714,6 +781,97 @@ impl SourceManager {
         }
 
         Ok(())
+    }
+
+    /// Compose this manager's already-loaded sources with a local resolved
+    /// profile into the effective desired state.
+    ///
+    /// This is the single composition code path shared by every command (CLI
+    /// read/write paths and the daemon reconcile loop): build a
+    /// [`CompositionInput`](crate::composition::CompositionInput) per loaded
+    /// source, run [`compose`](crate::composition::compose) (fatal on constraint
+    /// violations — the sole fail-closed chokepoint), then populate the
+    /// `source_commits` and `source_module_roots` that only a `SourceManager`
+    /// can supply. Sources listed in `cfg_sources` but not currently loaded
+    /// (e.g. cache-miss on a read path) are skipped here.
+    ///
+    /// Conflict *display* and *persistence* are left to the caller (it owns the
+    /// printer-section style and the state store); the returned
+    /// [`CompositionResult::conflicts`](crate::composition::CompositionResult)
+    /// carries them.
+    pub fn compose(
+        &self,
+        cfg_sources: &[SourceSpec],
+        local: &ResolvedProfile,
+    ) -> Result<crate::composition::CompositionResult> {
+        use crate::composition::{CompositionInput, SubscriptionConfig};
+
+        let mut inputs = Vec::new();
+        for spec in cfg_sources {
+            let Some(cached) = self.get(&spec.name) else {
+                continue;
+            };
+
+            let mut layers = Vec::new();
+            if let Some(ref profile_name) = spec.subscription.profile {
+                let profiles_dir = self.source_profiles_dir(&spec.name)?;
+                if profiles_dir.exists() {
+                    layers = crate::config::resolve_profile(profile_name, &profiles_dir)?.layers;
+                }
+            }
+
+            inputs.push(CompositionInput {
+                source_name: spec.name.clone(),
+                priority: spec.subscription.priority,
+                policy: cached.manifest.spec.policy.clone(),
+                constraints: cached.manifest.spec.policy.constraints.clone(),
+                layers,
+                subscription: SubscriptionConfig::from_spec(spec),
+            });
+        }
+
+        // No source actually loaded (e.g. every source cache-missed on a read
+        // path): return the local profile UNCHANGED. Re-composing with zero
+        // inputs would rebuild `merged` from `local.layers` alone, discarding any
+        // pre-merged state a caller passed in.
+        if inputs.is_empty() {
+            return Ok(crate::composition::CompositionResult {
+                resolved: local.clone(),
+                conflicts: Vec::new(),
+                source_env: HashMap::new(),
+                source_commits: HashMap::new(),
+                source_module_roots: Vec::new(),
+            });
+        }
+
+        let mut result = crate::composition::compose(local, &inputs)?;
+
+        for spec in cfg_sources {
+            if let Some(cached) = self.get(&spec.name)
+                && let Some(ref commit) = cached.last_commit
+            {
+                result
+                    .source_commits
+                    .insert(spec.name.clone(), commit.clone());
+            }
+        }
+
+        for spec in cfg_sources {
+            if self.get(&spec.name).is_some() {
+                let modules_dir = self.source_modules_dir(&spec.name)?;
+                let offered = self.available_source_modules(&spec.name)?;
+                result
+                    .source_module_roots
+                    .push(crate::modules::SourceModuleRoot {
+                        source_name: spec.name.clone(),
+                        priority: spec.subscription.priority,
+                        modules_dir,
+                        offered,
+                    });
+            }
+        }
+
+        Ok(result)
     }
 
     /// Build a SourceSpec for adding a new source.

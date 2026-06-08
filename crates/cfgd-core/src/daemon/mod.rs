@@ -102,6 +102,7 @@ pub(crate) fn resolve_daemon_modules(
     registry: &ProviderRegistry,
     resolved: &ResolvedProfile,
     config_dir: &Path,
+    source_roots: &[crate::modules::SourceModuleRoot],
     printer: &Printer,
 ) -> Vec<crate::modules::ResolvedModule> {
     if resolved.merged.modules.is_empty() {
@@ -119,7 +120,7 @@ pub(crate) fn resolve_daemon_modules(
         &resolved.merged.modules,
         config_dir,
         &cache_base,
-        &[],
+        source_roots,
         &platform,
         &mgr_map,
         printer,
@@ -130,6 +131,43 @@ pub(crate) fn resolve_daemon_modules(
             Vec::new()
         }
     }
+}
+
+/// Compose the daemon's local profile with configured sources, CACHE-ONLY.
+///
+/// The reconcile loop must see the same source-composed desired state every
+/// other command does, but the tight tick must never touch the network — the
+/// daemon's own repo-sync task handles fetch cadence. So this loads each source
+/// from its on-disk cache ([`SourceManager::load_sources_cached`]), warns+skips
+/// never-synced sources, then runs the shared [`SourceManager::compose`] path.
+/// With no sources configured it returns the local profile unchanged and empty
+/// module roots.
+///
+/// FAIL-CLOSED: a real compose error — a cached manifest that is malformed,
+/// whose signature fails, or whose contribution violates a source constraint —
+/// is propagated as an `Err`, NOT swallowed. The caller MUST skip the tick.
+/// Substituting the LOCAL profile here would be catastrophic: the reconcile is a
+/// PRUNING reconcile, so a source-delivered package/module that drops out of the
+/// (now local-only) desired set looks like phantom drift and, under
+/// `autoApply`, gets UNINSTALLED. A transient cache corruption must never tear
+/// down working state. A benign never-synced cache-miss is NOT an error — it is
+/// handled inside `load_sources_cached` as warn+skip, so it stays a happy path
+/// and reconcile proceeds local-only.
+pub(crate) fn compose_daemon_desired_state(
+    cfg: &config::CfgdConfig,
+    local: &ResolvedProfile,
+    printer: &Printer,
+) -> Result<(ResolvedProfile, Vec<crate::modules::SourceModuleRoot>)> {
+    if cfg.spec.sources.is_empty() {
+        return Ok((local.clone(), Vec::new()));
+    }
+    let cache_dir = crate::sources::SourceManager::default_cache_dir()
+        .unwrap_or_else(|_| PathBuf::from(".cfgd-sources"));
+    let mut mgr = crate::sources::SourceManager::new(&cache_dir);
+    mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
+    mgr.load_sources_cached(&cfg.spec.sources, printer)?;
+    let result = mgr.compose(&cfg.spec.sources, local)?;
+    Ok((result.resolved, result.source_module_roots))
 }
 
 const DEBOUNCE_MS: u64 = 500;
@@ -315,6 +353,12 @@ impl DaemonState {
 pub(super) struct Notifier {
     method: NotifyMethod,
     webhook_url: Option<String>,
+    /// Test-only sink capturing every `(title, message)` dispatched. Lets tests
+    /// assert an alert was raised without scraping tracing output across the
+    /// `spawn_blocking` thread boundary (where a thread-local log subscriber
+    /// cannot see it). Absent from release builds — zero production cost.
+    #[cfg(test)]
+    captured: std::sync::Mutex<Vec<(String, String)>>,
 }
 
 impl Notifier {
@@ -322,10 +366,22 @@ impl Notifier {
         Self {
             method,
             webhook_url,
+            #[cfg(test)]
+            captured: std::sync::Mutex::new(Vec::new()),
         }
     }
 
+    /// Drain the captured `(title, message)` notifications (test-only).
+    #[cfg(test)]
+    fn captured(&self) -> Vec<(String, String)> {
+        self.captured.lock().map(|c| c.clone()).unwrap_or_default()
+    }
+
     fn notify(&self, title: &str, message: &str) {
+        #[cfg(test)]
+        if let Ok(mut c) = self.captured.lock() {
+            c.push((title.to_string(), message.to_string()));
+        }
         match self.method {
             NotifyMethod::Desktop => self.notify_desktop(title, message),
             NotifyMethod::Stdout => self.notify_stdout(title, message),

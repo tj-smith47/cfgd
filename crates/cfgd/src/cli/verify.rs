@@ -36,13 +36,15 @@ pub(super) fn cmd_verify(
         .unwrap_or_default();
         (resolved, mods, registry)
     } else {
-        let (_cfg, _profile_name, mut resolved) = load_config_and_profile(cli)?;
+        let (cfg, _profile_name, local_resolved) = load_config_and_profile(cli)?;
+        // Compose with sources (cache-only — read paths stay offline) and resolve
+        // the effective module set through the one shared resolver, so `verify`
+        // checks the same source-composed desired state that `apply` writes.
+        let desired = resolve_desired_state(cli, &cfg, &local_resolved, None, printer, false)?;
+        let mut resolved = desired.resolved;
+        let mods = desired.modules;
         packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
         let registry = build_registry_with_profile(&resolved.merged.packages);
-        // Resolve the profile's own modules so `reconciler::verify` checks their
-        // packages and the file fold below checks their files. Without this the
-        // full path would ignore a modules-only profile entirely.
-        let mods = resolve_profile_modules(&config_dir, &resolved, printer);
         (resolved, mods, registry)
     };
     registry.set_system_config_dir(&config_dir);

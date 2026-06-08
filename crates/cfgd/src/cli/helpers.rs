@@ -271,36 +271,6 @@ pub(in crate::cli) fn managers_map(
         .collect()
 }
 
-/// Resolve a profile's own modules for a read-only scan (`status -e`, `diff`,
-/// full `verify`). Builds a default registry, detects the platform, and resolves
-/// `resolved.merged.modules` against the module cache. Every failure mode
-/// (missing cache dir, malformed module YAML, unresolvable reference) degrades to
-/// an empty set rather than aborting — all three callers are read-only scans, so
-/// an unresolvable module surface just goes unverified instead of erroring.
-pub(in crate::cli) fn resolve_profile_modules(
-    config_dir: &Path,
-    resolved: &ResolvedProfile,
-    printer: &Printer,
-) -> Vec<cfgd_core::modules::ResolvedModule> {
-    let registry = build_registry();
-    let platform = Platform::detect();
-    let mgr_map = managers_map(&registry);
-    let cache_base = match modules::default_module_cache_dir() {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    modules::resolve_modules(
-        &resolved.merged.modules,
-        config_dir,
-        &cache_base,
-        &[],
-        &platform,
-        &mgr_map,
-        printer,
-    )
-    .unwrap_or_default()
-}
-
 pub(in crate::cli) fn module_state_map(
     state: &cfgd_core::state::StateStore,
 ) -> std::collections::HashMap<String, cfgd_core::state::ModuleStateRecord> {
@@ -434,11 +404,32 @@ pub(in crate::cli) fn set_nested_yaml_value(
 
 // --- Plan integration with sources (Phase 9) ---
 
+/// Effective desired state every command resolves through.
+///
+/// `resolved` is the effective profile (local ⊕ sources), `modules` are resolved
+/// against both the local module cache and source-delivered module roots, and
+/// the two source maps carry per-source env (for template sandboxing) and commit
+/// hashes (for apply provenance). Built by [`resolve_desired_state`].
+pub(in crate::cli) struct DesiredState {
+    pub resolved: ResolvedProfile,
+    pub modules: Vec<cfgd_core::modules::ResolvedModule>,
+    pub source_env: std::collections::HashMap<String, Vec<cfgd_core::config::EnvVar>>,
+    pub source_commits: std::collections::HashMap<String, String>,
+}
+
+/// Compose the local profile with configured sources into an effective profile.
+///
+/// `refresh = true` fetches each source over the network (write paths:
+/// `apply`/`plan`); `refresh = false` loads sources from their on-disk cache and
+/// never touches the network (read paths). Delegates the actual merge to the
+/// single composition code path in [`SourceManager::compose`], then displays and
+/// persists any conflicts.
 pub(in crate::cli) fn compose_with_sources(
     cli: &Cli,
     cfg: &config::CfgdConfig,
     local_resolved: &ResolvedProfile,
     printer: &Printer,
+    refresh: bool,
 ) -> anyhow::Result<composition::CompositionResult> {
     if cfg.spec.sources.is_empty() {
         // No sources, return local profile as-is
@@ -454,121 +445,145 @@ pub(in crate::cli) fn compose_with_sources(
     let cache_dir = source_cache_dir(cli)?;
     let mut mgr = SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
-    mgr.load_sources(&cfg.spec.sources, printer)?;
-
-    let mut inputs = Vec::new();
-    for source_spec in &cfg.spec.sources {
-        if let Some(cached) = mgr.get(&source_spec.name) {
-            // Load source profile layers
-            let mut layers = Vec::new();
-            if let Some(ref profile_name) = source_spec.subscription.profile {
-                let profiles_dir = mgr.source_profiles_dir(&source_spec.name)?;
-                if profiles_dir.exists() {
-                    match config::resolve_profile(profile_name, &profiles_dir) {
-                        Ok(resolved) => {
-                            layers = resolved.layers;
-                        }
-                        Err(e) => {
-                            printer.status_simple(
-                                Role::Warn,
-                                format!(
-                                    "Failed to resolve profile '{}' from source '{}': {}",
-                                    profile_name, source_spec.name, e
-                                ),
-                            );
-                        }
-                    }
-                }
-            }
-
-            // Security constraints (no-scripts, allowed paths, system changes,
-            // encryption) and locked-resource overrides are enforced fatally by
-            // `composition::compose` below — the sole fail-closed chokepoint.
-            inputs.push(CompositionInput {
-                source_name: source_spec.name.clone(),
-                priority: source_spec.subscription.priority,
-                policy: cached.manifest.spec.policy.clone(),
-                constraints: cached.manifest.spec.policy.constraints.clone(),
-                layers,
-                subscription: SubscriptionConfig::from_spec(source_spec),
-            });
-        }
+    if refresh {
+        mgr.load_sources(&cfg.spec.sources, printer)?;
+    } else {
+        // Read paths stay offline: load from cache, warn+skip never-synced sources.
+        mgr.load_sources_cached(&cfg.spec.sources, printer)?;
     }
 
-    let mut result = composition::compose(local_resolved, &inputs)?;
-
-    // Collect source commit hashes for record_source_apply linkage
-    for source_spec in &cfg.spec.sources {
-        if let Some(cached) = mgr.get(&source_spec.name)
-            && let Some(ref commit) = cached.last_commit
-        {
-            result
-                .source_commits
-                .insert(source_spec.name.clone(), commit.clone());
-        }
-    }
-
-    // Build module roots so a subscribed profile's module references resolve to
-    // bodies the source ships (modules_dir + provides.modules allow-list).
-    for source_spec in &cfg.spec.sources {
-        if mgr.get(&source_spec.name).is_some() {
-            let modules_dir = mgr.source_modules_dir(&source_spec.name)?;
-            let offered = mgr.available_source_modules(&source_spec.name)?;
-            result
-                .source_module_roots
-                .push(cfgd_core::modules::SourceModuleRoot {
-                    source_name: source_spec.name.clone(),
-                    priority: source_spec.subscription.priority,
-                    modules_dir,
-                    offered,
-                });
-        }
-    }
-
-    // Display conflicts
-    if !result.conflicts.is_empty() {
-        let guard = printer.section("Source Conflicts");
-        for conflict in &result.conflicts {
-            match conflict.resolution_type {
-                composition::ResolutionType::Locked => {
-                    guard.status_simple(Role::Warn, &conflict.details);
-                }
-                composition::ResolutionType::Required => {
-                    guard.status_simple(Role::Info, &conflict.details);
-                }
-                composition::ResolutionType::Rejected => {
-                    guard.status_simple(Role::Info, &conflict.details);
-                }
-                composition::ResolutionType::Override => {
-                    guard.status_simple(Role::Info, &conflict.details);
-                }
-                composition::ResolutionType::Default => {}
-            }
-        }
-        drop(guard);
-
-        // Persist conflicts to state
-        if let Ok(state) = open_state_store(cli.state_dir.as_deref()) {
-            for conflict in &result.conflicts {
-                if let Err(e) = state.record_source_conflict(
-                    &conflict.winning_source,
-                    "composition",
-                    &conflict.resource_id,
-                    conflict.resolution_type.label(),
-                    Some(&conflict.details),
-                ) {
-                    tracing::warn!(
-                        error = %e,
-                        winning_source = %conflict.winning_source,
-                        resource_id = %conflict.resource_id,
-                        "failed to persist source conflict to state store; conflict history may be incomplete",
-                    );
-                }
-            }
-        }
-    }
-
+    let result = mgr.compose(&cfg.spec.sources, local_resolved)?;
+    display_and_persist_conflicts(cli, &result, printer);
     Ok(result)
+}
+
+/// Render composition conflicts under a section and persist them to the state
+/// store for `status`/history. Best-effort persistence: a state error is logged,
+/// not fatal, so a read-only filesystem never blocks a compose.
+fn display_and_persist_conflicts(
+    cli: &Cli,
+    result: &composition::CompositionResult,
+    printer: &Printer,
+) {
+    if result.conflicts.is_empty() {
+        return;
+    }
+    let guard = printer.section("Source Conflicts");
+    for conflict in &result.conflicts {
+        match conflict.resolution_type {
+            composition::ResolutionType::Locked => {
+                guard.status_simple(Role::Warn, &conflict.details);
+            }
+            composition::ResolutionType::Required
+            | composition::ResolutionType::Rejected
+            | composition::ResolutionType::Override => {
+                guard.status_simple(Role::Info, &conflict.details);
+            }
+            composition::ResolutionType::Default => {}
+        }
+    }
+    drop(guard);
+
+    if let Ok(state) = open_state_store(cli.state_dir.as_deref()) {
+        for conflict in &result.conflicts {
+            if let Err(e) = state.record_source_conflict(
+                &conflict.winning_source,
+                "composition",
+                &conflict.resource_id,
+                conflict.resolution_type.label(),
+                Some(&conflict.details),
+            ) {
+                tracing::warn!(
+                    error = %e,
+                    winning_source = %conflict.winning_source,
+                    resource_id = %conflict.resource_id,
+                    "failed to persist source conflict to state store; conflict history may be incomplete",
+                );
+            }
+        }
+    }
+}
+
+/// The single desired-state resolver every command flows through.
+///
+/// Composes the local profile with configured sources (network fetch when
+/// `refresh = true`, cache-only otherwise), then resolves the effective
+/// module set against both the local module cache and the source-delivered
+/// module roots. With no sources configured this collapses to resolving the
+/// local profile's own modules with empty source maps — identical to the old
+/// per-command path, so the no-sources case is a pure regression.
+///
+/// `module_filter` scopes module resolution to a single module (apply/diff
+/// `--module`); `None` resolves the whole effective profile.
+///
+/// Errors from `compose` (constraint violations, malformed cached manifest,
+/// failed signature) propagate so an invalid source config fails every command
+/// consistently — a command that reports state must not silently report empty
+/// when the desired state is broken.
+pub(in crate::cli) fn resolve_desired_state(
+    cli: &Cli,
+    cfg: &config::CfgdConfig,
+    local_resolved: &ResolvedProfile,
+    module_filter: Option<&str>,
+    printer: &Printer,
+    refresh: bool,
+) -> anyhow::Result<DesiredState> {
+    let composition = compose_with_sources(cli, cfg, local_resolved, printer, refresh)?;
+    let composition::CompositionResult {
+        resolved,
+        source_env,
+        source_commits,
+        source_module_roots,
+        ..
+    } = composition;
+
+    let config_dir = config_dir(cli);
+    let module_names = match module_filter {
+        Some(name) => vec![name.to_string()],
+        None => resolved.merged.modules.clone(),
+    };
+
+    let modules = if module_names.is_empty() {
+        Vec::new()
+    } else {
+        // Config-aware registry so a module that references a custom package
+        // manager (declared in cfg / composed packages) resolves identically on
+        // every command — matching the apply path's registry.
+        let mut registry =
+            build_registry_with_config_and_packages(Some(cfg), Some(&resolved.merged.packages));
+        registry
+            .package_managers
+            .extend(packages::custom_managers(&resolved.merged.packages.custom));
+        let platform = Platform::detect();
+        let mgr_map = managers_map(&registry);
+        let cache_base = modules::default_module_cache_dir()?;
+        match modules::resolve_modules(
+            &module_names,
+            &config_dir,
+            &cache_base,
+            &source_module_roots,
+            &platform,
+            &mgr_map,
+            printer,
+        ) {
+            Ok(mods) => mods,
+            // A `--module` filter naming a module that does not resolve degrades
+            // to empty (the command reports "module not found"), matching apply's
+            // module-filter behavior. A full-profile resolution error propagates.
+            Err(e) if module_filter.is_some() => {
+                tracing::debug!("module filter '{}' not found: {}", module_names[0], e);
+                Vec::new()
+            }
+            Err(e) => return Err(e.into()),
+        }
+    };
+
+    Ok(DesiredState {
+        resolved,
+        modules,
+        source_env,
+        source_commits,
+    })
 }
 
 #[cfg(test)]
@@ -1192,7 +1207,7 @@ mod tests {
         let local = empty_resolved_profile("my-module");
         let printer = quiet_printer();
 
-        let result = compose_with_sources(&cli, &cfg, &local, &printer).unwrap();
+        let result = compose_with_sources(&cli, &cfg, &local, &printer, true).unwrap();
 
         // No sources → resolved must equal the local profile we passed in.
         assert_eq!(result.resolved.merged.modules, local.merged.modules);
@@ -1202,9 +1217,12 @@ mod tests {
     }
 
     /// Build a minimal local git repo that acts as a cfgd source.
+    ///
     /// The source's `<profile_name>.yaml` profile declares a module named
-    /// `source-module` so the composition can be asserted on a non-empty
-    /// contribution from the source layer.
+    /// `source-module` AND a `cargo` package `source-pkg`, and the source ships a
+    /// body for `source-module` (in `modules/`, allow-listed via
+    /// `provides.modules`). This lets composition + module resolution be asserted
+    /// on a non-empty contribution of BOTH a package and a module from the source.
     fn create_local_source_repo(root: &std::path::Path, profile_name: &str) -> PathBuf {
         let repo_dir = root.join("source-repo");
         std::fs::create_dir_all(&repo_dir).unwrap();
@@ -1226,12 +1244,12 @@ mod tests {
             .unwrap();
 
         let manifest = format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: test-src\nspec:\n  provides:\n    profiles:\n      - {profile_name}\n"
+            "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: test-src\nspec:\n  provides:\n    profiles:\n      - {profile_name}\n    modules:\n      - source-module\n"
         );
         std::fs::write(repo_dir.join("cfgd-source.yaml"), &manifest).unwrap();
 
         let profile_yaml = format!(
-            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: {profile_name}\nspec:\n  modules:\n    - source-module\n"
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: {profile_name}\nspec:\n  modules:\n    - source-module\n  packages:\n    cargo:\n      - source-pkg\n"
         );
         std::fs::create_dir_all(repo_dir.join("profiles")).unwrap();
         std::fs::write(
@@ -1239,6 +1257,15 @@ mod tests {
                 .join("profiles")
                 .join(format!("{profile_name}.yaml")),
             &profile_yaml,
+        )
+        .unwrap();
+
+        // Source-delivered module body, allow-listed by the manifest above.
+        let module_dir = repo_dir.join("modules").join("source-module");
+        std::fs::create_dir_all(&module_dir).unwrap();
+        std::fs::write(
+            module_dir.join("module.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: source-module\nspec:\n  packages:\n    - name: module-pkg\n      prefer: [cargo]\n",
         )
         .unwrap();
 
@@ -1254,6 +1281,27 @@ mod tests {
             .unwrap();
 
         repo_dir
+    }
+
+    /// Build a cfgd.yaml that subscribes to a single local source selecting
+    /// `profile`, plus a local `default.yaml` profile, under `tmp`. Returns the
+    /// config path. Mirrors the layout the existing source tests build.
+    fn write_config_with_local_source(
+        tmp: &std::path::Path,
+        source_repo: &std::path::Path,
+        source_profile: &str,
+    ) -> PathBuf {
+        let config_yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: test-src\n      origin:\n        type: Git\n        url: {}\n        branch: master\n      subscription:\n        profile: {}\n",
+            source_repo.display(),
+            source_profile,
+        );
+        let config_path = tmp.join("cfgd.yaml");
+        std::fs::write(&config_path, &config_yaml).unwrap();
+        let profiles_dir = tmp.join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(profiles_dir.join("default.yaml"), PROFILE_YAML).unwrap();
+        config_path
     }
 
     #[test]
@@ -1283,7 +1331,7 @@ mod tests {
         let local = empty_resolved_profile("my-module");
         let printer = quiet_printer();
 
-        let result = compose_with_sources(&cli, &cfg, &local, &printer).unwrap();
+        let result = compose_with_sources(&cli, &cfg, &local, &printer, true).unwrap();
 
         // Source-commit field must be populated — proves the source was
         // cloned, parsed, and tracked by the composition.
@@ -1310,6 +1358,187 @@ mod tests {
                 .contains(&"source-module".to_string()),
             "merged modules missing source contribution: {:?}",
             result.resolved.merged.modules
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // resolve_desired_state — the one resolver every command flows through
+    // ---------------------------------------------------------------------------
+
+    /// A consumer subscribed to a source whose profile contributes a PACKAGE and
+    /// a MODULE: the read path (`refresh = false`) sees both the source package
+    /// and the source-delivered module body as desired state. This is the
+    /// coherence fix — before it, read paths resolved the local-only profile with
+    /// no source roots, so this would be empty.
+    #[test]
+    #[serial]
+    fn resolve_desired_state_read_path_sees_source_package_and_module() {
+        let tmp = tempdir().unwrap();
+        let source_repo = create_local_source_repo(tmp.path(), "team");
+        let config_path = write_config_with_local_source(tmp.path(), &source_repo, "team");
+
+        let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let mut cli = make_cli(config_path.clone());
+        cli.state_dir = Some(tmp.path().join("state"));
+        let cfg = config::load_config(&config_path).unwrap();
+        let local = empty_resolved_profile("my-module");
+        let printer = quiet_printer();
+
+        // Prime the cache with a refresh so the cache-only read path has a cache
+        // dir to read (the daemon's sync task plays this role in production).
+        compose_with_sources(&cli, &cfg, &local, &printer, true).unwrap();
+
+        // Read path: cache-only, no network.
+        let desired = resolve_desired_state(&cli, &cfg, &local, None, &printer, false).unwrap();
+
+        // The source profile's cargo package must be in the effective desired state.
+        let cargo_pkgs: Vec<String> = desired
+            .resolved
+            .merged
+            .packages
+            .cargo
+            .as_ref()
+            .map(|c| c.packages.clone())
+            .unwrap_or_default();
+        assert!(
+            cargo_pkgs.iter().any(|p| p == "source-pkg"),
+            "read path missing source package: {cargo_pkgs:?}"
+        );
+
+        // The source-delivered module body must resolve (origin tagged to the source).
+        let sm = desired
+            .modules
+            .iter()
+            .find(|m| m.name == "source-module")
+            .expect("read path must resolve source-delivered module body");
+        assert_eq!(
+            sm.origin.as_deref(),
+            Some("test-src"),
+            "source-delivered module must be tagged with its source origin"
+        );
+    }
+
+    /// Cache-miss on a read path (source configured but never synced) → warn +
+    /// skip; the command still succeeds with local-only state.
+    #[test]
+    #[serial]
+    fn resolve_desired_state_read_path_cache_miss_falls_back_to_local() {
+        let tmp = tempdir().unwrap();
+        let source_repo = create_local_source_repo(tmp.path(), "team");
+        let config_path = write_config_with_local_source(tmp.path(), &source_repo, "team");
+
+        let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let mut cli = make_cli(config_path.clone());
+        // Point the source cache at a fresh, empty dir so the source is "never
+        // synced" — no refresh primes it.
+        cli.state_dir = Some(tmp.path().join("never-synced-state"));
+        let cfg = config::load_config(&config_path).unwrap();
+        // Local profile carries a local package but no modules, so module
+        // resolution is trivially empty and the assertion focuses on the
+        // cache-miss fallback (source contribution absent, local survives).
+        let mut local = ResolvedProfile {
+            layers: Vec::new(),
+            merged: MergedProfile::default(),
+        };
+        local.merged.packages.cargo = Some(cfgd_core::config::CargoSpec {
+            file: None,
+            packages: vec!["local-pkg".to_string()],
+        });
+        let printer = quiet_printer();
+
+        // No prime: cache dir for 'test-src' does not exist.
+        let desired = resolve_desired_state(&cli, &cfg, &local, None, &printer, false).unwrap();
+
+        // Falls back to local: source package absent, local package survives.
+        let cargo_pkgs: Vec<String> = desired
+            .resolved
+            .merged
+            .packages
+            .cargo
+            .as_ref()
+            .map(|c| c.packages.clone())
+            .unwrap_or_default();
+        assert!(
+            !cargo_pkgs.iter().any(|p| p == "source-pkg"),
+            "cache-miss must NOT include source package: {cargo_pkgs:?}"
+        );
+        assert!(
+            cargo_pkgs.iter().any(|p| p == "local-pkg"),
+            "local package must survive cache-miss fallback: {cargo_pkgs:?}"
+        );
+        assert!(
+            desired.modules.is_empty(),
+            "no local modules → empty module set on cache-miss fallback"
+        );
+    }
+
+    /// The coherence invariant: apply (`refresh = true`) and a read path
+    /// (`refresh = false`) compute the SAME effective module set for the same
+    /// config + primed cache.
+    #[test]
+    #[serial]
+    fn resolve_desired_state_apply_and_read_compute_same_module_set() {
+        let tmp = tempdir().unwrap();
+        let source_repo = create_local_source_repo(tmp.path(), "team");
+        let config_path = write_config_with_local_source(tmp.path(), &source_repo, "team");
+
+        let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let mut cli = make_cli(config_path.clone());
+        cli.state_dir = Some(tmp.path().join("state"));
+        let cfg = config::load_config(&config_path).unwrap();
+        let local = empty_resolved_profile("my-module");
+        let printer = quiet_printer();
+
+        // refresh = true (apply/plan path) primes the cache AND resolves.
+        let apply_side = resolve_desired_state(&cli, &cfg, &local, None, &printer, true).unwrap();
+        // refresh = false (read path) on the now-primed cache.
+        let read_side = resolve_desired_state(&cli, &cfg, &local, None, &printer, false).unwrap();
+
+        let mut apply_modules: Vec<String> =
+            apply_side.modules.iter().map(|m| m.name.clone()).collect();
+        let mut read_modules: Vec<String> =
+            read_side.modules.iter().map(|m| m.name.clone()).collect();
+        apply_modules.sort();
+        read_modules.sort();
+        assert_eq!(
+            apply_modules, read_modules,
+            "apply and read paths must compute an identical effective module set"
+        );
+        assert!(
+            apply_modules.contains(&"source-module".to_string()),
+            "expected source-module in the shared effective set: {apply_modules:?}"
+        );
+    }
+
+    /// No-sources regression: with no sources configured, `resolve_desired_state`
+    /// collapses to resolving the local profile's own modules with empty source
+    /// maps — identical to the old per-command path.
+    #[test]
+    #[serial]
+    fn resolve_desired_state_no_sources_resolves_local_only() {
+        let tmp = tempdir().unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, CONFIG_YAML).unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(profiles_dir.join("default.yaml"), PROFILE_YAML).unwrap();
+
+        let cli = make_cli(config_path.clone());
+        let cfg = config::load_config(&config_path).unwrap();
+        // Local profile declares no modules → empty module set, empty source maps.
+        let local = ResolvedProfile {
+            layers: Vec::new(),
+            merged: MergedProfile::default(),
+        };
+        let printer = quiet_printer();
+
+        let desired = resolve_desired_state(&cli, &cfg, &local, None, &printer, false).unwrap();
+        assert!(desired.modules.is_empty());
+        assert!(desired.source_env.is_empty());
+        assert!(desired.source_commits.is_empty());
+        assert_eq!(
+            desired.resolved.merged.modules, local.merged.modules,
+            "no-sources resolved must equal the local profile"
         );
     }
 }

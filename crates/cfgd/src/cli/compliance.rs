@@ -9,16 +9,19 @@ use cfgd_core::state::ComplianceHistoryRow;
 pub(super) fn collect_and_store_compliance_snapshot(
     cli: &Cli,
 ) -> anyhow::Result<(CfgdConfig, ComplianceSnapshot)> {
-    let (cfg, _profile_name, mut resolved) = helpers::load_config_and_profile(cli)?;
+    let (cfg, _profile_name, local_resolved) = helpers::load_config_and_profile(cli)?;
     let config_dir = config_dir(cli);
+
+    // Compose with sources (cache-only — read paths stay offline) and resolve the
+    // effective module set through the one shared resolver, so the compliance
+    // snapshot reflects the same source-composed desired state that `apply` writes.
+    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
+    let desired = resolve_desired_state(cli, &cfg, &local_resolved, None, &printer, false)?;
+    let mut resolved = desired.resolved;
+    let resolved_modules = desired.modules;
+
     packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;
     let mut registry = build_registry_with_profile(&resolved.merged.packages);
-
-    // Resolve the profile's modules so module files/packages/system are first-class
-    // in the snapshot, and wire a content-aware file manager so file checks compare
-    // bytes (not just existence) — matching the live drift paths.
-    let printer = Printer::new(cfgd_core::output::Verbosity::Quiet);
-    let resolved_modules = resolve_profile_modules(&config_dir, &resolved, &printer);
     registry.file_manager = Some(Box::new(build_compliance_file_manager(
         &config_dir,
         &resolved,

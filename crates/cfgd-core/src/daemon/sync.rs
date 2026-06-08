@@ -186,7 +186,7 @@ pub(crate) fn handle_compliance_snapshot(
         }
     };
 
-    let resolved = match config::resolve_profile(profile_name, &profiles_dir) {
+    let local_resolved = match config::resolve_profile(profile_name, &profiles_dir) {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "compliance: profile resolution failed");
@@ -194,16 +194,45 @@ pub(crate) fn handle_compliance_snapshot(
         }
     };
 
+    // Compose with sources CACHE-ONLY so the daemon-stored snapshot reflects the
+    // same source-composed desired state every other surface does, without
+    // touching the network in the compliance tick.
+    //
+    // FAIL-CLOSED: a real compose error (malformed/constraint-violating cached
+    // manifest, failed signature) skips this snapshot rather than recording a
+    // degraded local-only compliance picture that would falsely report
+    // source-delivered resources as missing. Mirrors the resolve_profile arm
+    // above (error + return). A benign never-synced cache-miss is warn+skip inside
+    // the resolver, not an Err, so it still snapshots local-only.
+    let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
+    let (resolved, source_module_roots) = match super::compose_daemon_desired_state(
+        &cfg,
+        &local_resolved,
+        &printer,
+    ) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                "compliance: source composition failed — skipping snapshot to avoid recording a degraded desired state"
+            );
+            return;
+        }
+    };
+
     let mut registry = hooks.build_registry(&cfg);
     hooks.extend_registry_custom_managers(&mut registry, &resolved.merged.packages);
 
-    // Resolve the profile's modules so module files/packages/system appear in the
-    // daemon-stored snapshot, matching the CLI compliance surface. A quiet printer
-    // keeps module resolution diagnostics off the daemon's stdout (the reconcile
-    // tick passes its live printer instead, to show module-clone progress).
-    let printer = crate::output::Printer::new(crate::output::Verbosity::Quiet);
-    let resolved_modules =
-        super::resolve_daemon_modules(&registry, &resolved, &config_dir, &printer);
+    // Resolve the profile's modules (incl. source-delivered roots) so module
+    // files/packages/system appear in the daemon-stored snapshot, matching the CLI
+    // compliance surface.
+    let resolved_modules = super::resolve_daemon_modules(
+        &registry,
+        &resolved,
+        &config_dir,
+        &source_module_roots,
+        &printer,
+    );
 
     // Wire a content-aware file manager when this binary provides one. The
     // workstation agent does; absent it (default hook), daemon file checks stay
