@@ -2222,3 +2222,156 @@ fn status_help_documents_exit_code_flag() {
         .stdout(predicate::str::contains("--exit-code"))
         .stdout(predicate::str::contains("drift"));
 }
+
+/// `CFGD_QUIET` accepts shell-truthy spellings (like `CFGD_YES`/`CFGD_VERBOSE`),
+/// not just the bare `true`/`false` clap's bool parser would otherwise demand.
+/// Before the normalization fix this exited 2 with "[possible values: true,
+/// false]".
+///
+/// `plan` renders a multi-line "Plan" status block to stderr at Normal
+/// verbosity; `-q` suppresses it entirely. The test proves engagement (not just
+/// a clean exit) by asserting `CFGD_QUIET=1` stderr matches `-q` stderr AND
+/// differs from a loud (no-flag) run — i.e. the status block was actually
+/// suppressed, not merely that the process exited 0.
+#[test]
+fn cfgd_quiet_boolish_engages_quiet() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+
+    let stderr_of = |env_quiet: Option<&str>, flag: bool| -> Vec<u8> {
+        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        cmd.arg("plan").arg("--config").arg(dir.path());
+        if flag {
+            cmd.arg("-q");
+        }
+        if let Some(v) = env_quiet {
+            cmd.env("CFGD_QUIET", v);
+        }
+        cmd.assert().success().get_output().stderr.clone()
+    };
+
+    let loud = stderr_of(None, false);
+    let quiet_env = stderr_of(Some("1"), false);
+    let quiet_flag = stderr_of(None, true);
+
+    // Loud run must actually emit the status block (otherwise the contrast
+    // below would be vacuous).
+    assert!(
+        String::from_utf8_lossy(&loud).contains("Plan"),
+        "loud `plan` must emit the Plan status block on stderr; got: {:?}",
+        String::from_utf8_lossy(&loud)
+    );
+    assert_eq!(
+        quiet_env, quiet_flag,
+        "CFGD_QUIET=1 stderr must match -q stderr"
+    );
+    assert_ne!(
+        quiet_env, loud,
+        "CFGD_QUIET=1 must suppress the status block a loud run emits"
+    );
+}
+
+/// `CFGD_VERBOSE` accepts boolish on/off spellings (documented as "an on/off
+/// flag") in addition to bare integers. Before the fix `CFGD_VERBOSE=on` exited
+/// 2 with "invalid digit found in string".
+///
+/// `plan --module nope` logs a `DEBUG module filter 'nope' not found` line on
+/// stderr — visible only when the verbosity-driven tracing filter is at `debug`.
+/// The test proves engagement: the line appears under `CFGD_VERBOSE=on` (and
+/// under the `-v` flag) but is absent in a plain run.
+#[test]
+fn cfgd_verbose_boolish_on_engages_verbose() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+
+    let stderr_of = |env_verbose: Option<&str>, flag: bool| -> Vec<u8> {
+        let mut cmd = Command::cargo_bin("cfgd").unwrap();
+        cmd.args(["plan", "--module", "nope"])
+            .arg("--config")
+            .arg(dir.path());
+        if flag {
+            cmd.arg("-v");
+        }
+        if let Some(v) = env_verbose {
+            cmd.env("CFGD_VERBOSE", v);
+        }
+        cmd.assert().success().get_output().stderr.clone()
+    };
+
+    let plain = stderr_of(None, false);
+    let verbose_env = stderr_of(Some("on"), false);
+    let verbose_flag = stderr_of(None, true);
+
+    let has_debug = |bytes: &[u8]| String::from_utf8_lossy(bytes).contains("module filter 'nope'");
+    assert!(
+        !has_debug(&plain),
+        "plain run must not emit the debug line; got: {:?}",
+        String::from_utf8_lossy(&plain)
+    );
+    assert!(
+        has_debug(&verbose_flag),
+        "-v must emit the debug line; got: {:?}",
+        String::from_utf8_lossy(&verbose_flag)
+    );
+    assert!(
+        has_debug(&verbose_env),
+        "CFGD_VERBOSE=on must engage verbose (debug tracing); got: {:?}",
+        String::from_utf8_lossy(&verbose_env)
+    );
+}
+
+/// Deprecated `--jsonpath` emits its deprecation notice on stderr even though it
+/// forces a structured (Jsonpath) format that auto-quiets non-Fail statuses.
+/// The stdout data channel stays pure (the jsonpath result only).
+#[test]
+fn jsonpath_flag_warns_on_stderr_pure_stdout() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+
+    let out = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["profile", "list", "--jsonpath", "{[0].name}"])
+        .arg("--config")
+        .arg(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "base",
+        "stdout must be the pure jsonpath result"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("deprecated"),
+        "stderr must carry the deprecation notice; got: {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The canonical `-o jsonpath=EXPR` form is NOT deprecated, so it must not emit
+/// the deprecation notice — guards against a false-positive warning leaking onto
+/// every structured invocation.
+#[test]
+fn canonical_jsonpath_output_no_deprecation_warning() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+
+    let out = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["profile", "list", "-o", "jsonpath={[0].name}"])
+        .arg("--config")
+        .arg(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "base");
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains("deprecated"),
+        "canonical -o jsonpath must not warn; got: {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

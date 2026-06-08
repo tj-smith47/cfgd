@@ -192,6 +192,18 @@ impl Printer {
             .render_note(self.sink_stderr.as_ref(), depth, &text.into());
     }
 
+    /// Emit a deprecation notice on stderr, shown regardless of verbosity or
+    /// output format. Unlike `status_simple(Role::Warn, …)`, this survives the
+    /// structured-output auto-quiet (which drops every non-`Fail` role), so a
+    /// deprecation diagnostic reaches the user even under `-o json` / `--jsonpath`.
+    /// It writes only to `sink_stderr`, never to `sink_stdout`, keeping the
+    /// `-o` data channel pure.
+    pub fn deprecation(&self, msg: impl Into<String>) {
+        let depth = self.renderer.enforce_top_level_emit(0);
+        self.renderer
+            .render_deprecation(self.sink_stderr.as_ref(), depth, &msg.into());
+    }
+
     pub fn table(&self, table: Table) {
         let depth = self.renderer.enforce_top_level_emit(0);
         self.renderer
@@ -457,6 +469,30 @@ mod tests {
         assert!(
             console::colors_enabled_stderr(),
             "Table format must not implicitly disable stderr colors"
+        );
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn deprecation_shows_under_structured_quiet() {
+        // for_test_with_format(Json) builds the Printer at Verbosity::Quiet,
+        // matching production's structured-output auto-quiet. A normal
+        // Role::Warn status is dropped there; the deprecation path must not be.
+        let (p, buf) = Printer::for_test_with_format(OutputFormat::Json);
+        assert_eq!(p.verbosity(), Verbosity::Quiet);
+
+        p.status_simple(Role::Warn, "ordinary warning");
+        p.deprecation("--jsonpath is deprecated");
+        p.flush();
+
+        let out = strip_ansi(&buf.lock().unwrap_or_else(|e| e.into_inner()));
+        assert!(
+            !out.contains("ordinary warning"),
+            "Role::Warn must stay suppressed under structured/Quiet; got: {out:?}"
+        );
+        assert!(
+            out.contains("--jsonpath is deprecated"),
+            "deprecation must be force-shown under structured/Quiet; got: {out:?}"
         );
     }
 

@@ -23,25 +23,51 @@ fn canonical_bool_str(raw: &str) -> Option<&'static str> {
     }
 }
 
-/// Normalize `CFGD_YES` in the process environment to a spelling clap accepts.
-/// clap parses the env value with a bool value-parser, which rejects shell-truthy
-/// spellings like `1`/`yes`/`on` that users and scripts naturally set. Rewriting
-/// the var before any parsing keeps the env binding ergonomic without touching the
-/// ten `#[arg(env = "CFGD_YES")]` sites individually.
-fn normalize_cfgd_yes_env() {
-    if let Ok(raw) = std::env::var("CFGD_YES")
+/// Global env vars bound to a `bool` clap arg. Their value-parser rejects
+/// shell-truthy spellings (`1`/`yes`/`on`/…), so each is rewritten to the
+/// canonical `true`/`false` before parsing — keeping `CFGD_QUIET=1` ergonomic
+/// without touching the per-arg `#[arg(env = …)]` sites.
+const BOOL_ENV_VARS: &[&str] = &["CFGD_YES", "CFGD_QUIET", "CFGD_REQUIRE_COSIGN"];
+
+/// Rewrite a boolish env var to the canonical `true`/`false` spelling clap's
+/// bool value-parser accepts. No-op when the var is unset or holds a value
+/// `canonical_bool_str` doesn't recognize (so genuinely-invalid values still
+/// surface clap's validation error).
+fn normalize_boolish_env(var: &str) {
+    if let Ok(raw) = std::env::var(var)
         && let Some(canonical) = canonical_bool_str(&raw)
     {
         // Safe here: runs at the very start of main(), before any threads spawn.
         unsafe {
-            std::env::set_var("CFGD_YES", canonical);
+            std::env::set_var(var, canonical);
+        }
+    }
+}
+
+/// Normalize `CFGD_VERBOSE` so the documented "on/off flag" behavior holds.
+/// `--verbose` is an `ArgAction::Count` (`u8`), so its value-parser accepts bare
+/// integers but rejects boolish spellings. Map boolish ON (`y`/`yes`/`on`/…) to
+/// `1` and boolish OFF (`n`/`no`/`off`/…) to `0`; leave bare integers untouched
+/// (`canonical_bool_str` returns `None` for `2`, so `CFGD_VERBOSE=2` still means
+/// trace) and leave unrecognized values for clap to reject.
+fn normalize_cfgd_verbose_env() {
+    if let Ok(raw) = std::env::var("CFGD_VERBOSE")
+        && let Some(canonical) = canonical_bool_str(&raw)
+    {
+        let count = if canonical == "true" { "1" } else { "0" };
+        // Safe here: runs at the very start of main(), before any threads spawn.
+        unsafe {
+            std::env::set_var("CFGD_VERBOSE", count);
         }
     }
 }
 
 fn main() -> anyhow::Result<()> {
-    // Normalize CFGD_YES before clap reads it (see fn doc).
-    normalize_cfgd_yes_env();
+    // Normalize boolish env vars before clap reads them (see fn docs).
+    for var in BOOL_ENV_VARS {
+        normalize_boolish_env(var);
+    }
+    normalize_cfgd_verbose_env();
 
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -146,8 +172,11 @@ fn main() -> anyhow::Result<()> {
         cfgd_core::output::Printer::with_format(verbosity, theme_name.as_deref(), output_format);
 
     if jsonpath_deprecated {
-        printer.status_simple(
-            cfgd_core::output::Role::Warn,
+        // A deprecation notice is a stderr diagnostic, not `-o` data — and
+        // `--jsonpath` always forces a structured format, under which the
+        // Printer auto-quiets every non-Fail status. `deprecation` force-shows
+        // on stderr regardless, keeping the stdout data channel pure.
+        printer.deprecation(
             "--jsonpath is deprecated and will be removed in a future release; use --output jsonpath=EXPR instead",
         );
     }
@@ -171,7 +200,9 @@ fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::canonical_bool_str;
+    use super::{canonical_bool_str, normalize_boolish_env, normalize_cfgd_verbose_env};
+    use cfgd_core::test_helpers::EnvVarGuard;
+    use serial_test::serial;
 
     #[test]
     fn canonical_bool_str_accepts_truthy_spellings() {
@@ -218,6 +249,92 @@ mod tests {
                 canonical_bool_str(raw),
                 None,
                 "{raw:?} should not be recognized as boolish"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn normalize_boolish_env_rewrites_truthy_to_true() {
+        for raw in ["1", "yes", "on", "Y", "True"] {
+            let _g = EnvVarGuard::set("CFGD_QUIET", raw);
+            normalize_boolish_env("CFGD_QUIET");
+            assert_eq!(
+                std::env::var("CFGD_QUIET").as_deref(),
+                Ok("true"),
+                "{raw:?} should normalize to true"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn normalize_boolish_env_rewrites_falsey_to_false() {
+        for raw in ["0", "no", "off", "N", "False"] {
+            let _g = EnvVarGuard::set("CFGD_QUIET", raw);
+            normalize_boolish_env("CFGD_QUIET");
+            assert_eq!(
+                std::env::var("CFGD_QUIET").as_deref(),
+                Ok("false"),
+                "{raw:?} should normalize to false"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn normalize_boolish_env_leaves_invalid_untouched() {
+        let _g = EnvVarGuard::set("CFGD_QUIET", "garbage");
+        normalize_boolish_env("CFGD_QUIET");
+        assert_eq!(std::env::var("CFGD_QUIET").as_deref(), Ok("garbage"));
+    }
+
+    #[test]
+    #[serial]
+    fn normalize_boolish_env_noop_when_unset() {
+        let _g = EnvVarGuard::unset("CFGD_QUIET");
+        normalize_boolish_env("CFGD_QUIET");
+        assert!(std::env::var("CFGD_QUIET").is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn normalize_cfgd_verbose_env_maps_boolish_on_to_one() {
+        for raw in ["on", "yes", "true", "y"] {
+            let _g = EnvVarGuard::set("CFGD_VERBOSE", raw);
+            normalize_cfgd_verbose_env();
+            assert_eq!(
+                std::env::var("CFGD_VERBOSE").as_deref(),
+                Ok("1"),
+                "{raw:?} should map to count 1"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn normalize_cfgd_verbose_env_maps_boolish_off_to_zero() {
+        for raw in ["off", "no", "false", "n"] {
+            let _g = EnvVarGuard::set("CFGD_VERBOSE", raw);
+            normalize_cfgd_verbose_env();
+            assert_eq!(
+                std::env::var("CFGD_VERBOSE").as_deref(),
+                Ok("0"),
+                "{raw:?} should map to count 0"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn normalize_cfgd_verbose_env_leaves_integers_untouched() {
+        for raw in ["1", "2", "10"] {
+            let _g = EnvVarGuard::set("CFGD_VERBOSE", raw);
+            normalize_cfgd_verbose_env();
+            assert_eq!(
+                std::env::var("CFGD_VERBOSE").as_deref(),
+                Ok(raw),
+                "{raw:?} (bare integer) must pass through unchanged"
             );
         }
     }

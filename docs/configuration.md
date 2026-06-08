@@ -222,10 +222,19 @@ These flags work with any subcommand:
 |---|---|---|---|
 | `--config <path>` | | `CFGD_CONFIG` | Path to `cfgd.yaml` (or a directory — cfgd infers `cfgd.yaml`, then `cfgd.toml`, inside it) |
 | `--profile <name>` | | `CFGD_PROFILE` | Override the active profile |
-| `--verbose` | `-v` | `CFGD_VERBOSE` | Show debug output |
+| `--verbose` | `-v` | `CFGD_VERBOSE` | Show debug output (`-vv` = trace) |
 | `--quiet` | `-q` | `CFGD_QUIET` | Suppress all non-error output |
 | `--no-color` | | `NO_COLOR` | Disable colored terminal output |
 | `--output <format>` | `-o` | | Output format: `table` (default), `wide`, `json`, `yaml`, `name`, `jsonpath=EXPR`, `template=TMPL`, `template-file=PATH` |
+
+Boolean env vars accept shell-truthy spellings, not just `true`/`false`. The
+accept-set matches `CFGD_YES`: `1`/`y`/`yes`/`t`/`true`/`on` (case-insensitive)
+enable, `0`/`n`/`no`/`f`/`false`/`off` disable.
+
+```sh
+CFGD_QUIET=1   cfgd profile list -o name   # same as -q
+CFGD_VERBOSE=on cfgd plan                  # same as -v; bare integers still work (CFGD_VERBOSE=2 = trace)
+```
 
 #### Structured output shapes (`jsonpath` / `template`)
 
@@ -251,3 +260,12 @@ usage error (exit `2`); a template that fails to render against the data, or a
 `template-file` that cannot be read, writes the error to `stderr` and exits non-zero
 (exit `1`) — the structured data channel on `stdout` is never polluted with an error
 message, and a failure never reports exit `0`.
+
+The standalone `--jsonpath EXPR` flag is **deprecated** in favor of
+`-o jsonpath=EXPR`. It still works but prints a deprecation notice to `stderr`
+(the `stdout` data channel stays pure), so scripts piping `stdout` are unaffected:
+
+```sh
+cfgd profile list --jsonpath '{[0].name}'   # stdout: base; stderr: deprecation notice
+cfgd profile list -o 'jsonpath={[0].name}'  # canonical — no notice
+```
