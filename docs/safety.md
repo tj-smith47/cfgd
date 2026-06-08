@@ -58,6 +58,35 @@ cfgd uses `flock()` to prevent concurrent applies. Only one `cfgd apply` can run
 
 **Resolving a stuck lock**: If a cfgd process crashes without releasing the lock, `flock()` releases it automatically on file descriptor close. If the lock file contains a stale PID (process no longer running), simply delete `~/.local/share/cfgd/apply.lock` or kill the PID shown in the error message.
 
+## Graceful Interruption (SIGINT / SIGTERM)
+
+`cfgd apply` handles `SIGINT` (Ctrl-C) and `SIGTERM` as a **cooperative abort** rather than an abrupt kill:
+
+- The action currently in flight finishes first — actions are atomic (atomic file writes; a package install or script completes), so the abort never leaves a torn or partially-written file.
+- The reconciler then stops **before** starting the next action and unwinds normally.
+- The apply lock is released via its normal RAII drop (the guard drops as `cfgd apply` returns, *before* the process exits), so a subsequent `cfgd apply` runs immediately (no stuck lock).
+- The run is journaled with status `Aborted` (visible in `cfgd status` / `cfgd log`), distinct from `success` / `partial` / `failed`.
+- The process exits with the signal-conventional code: **130** for SIGINT, **143** for SIGTERM (128 + signal number).
+
+**Second signal force-quits.** A second `SIGINT`/`SIGTERM` while the first abort is being processed takes the OS default disposition (immediate termination), so a user hammering Ctrl-C is never stuck waiting on cleanup. The first signal is the graceful path; the second is the escape hatch.
+
+The reported "{applied} of {total}" count is **filter-aware**: under `--phase` / `--skip` / `--only` / `--skip-scripts`, `total` is the number of actions actually in scope for the run, not the whole plan. A one-line message is printed, and `-o json` carries a structured payload:
+
+```console
+$ cfgd apply --yes
+...
+⚠ apply aborted by signal — 3 of 7 action(s) applied; no partial writes, rerun to converge
+$ echo $?
+130
+```
+
+```console
+$ cfgd apply --yes --phase files -o json   # 2 file actions in scope, interrupted with Ctrl-C
+{"aborted":true,"signal":"SIGINT","applied":1,"total":2}
+```
+
+Already-applied actions are real and recorded; rerun `cfgd apply` to converge the rest. On Windows, cooperative abort is not available and Ctrl-C falls back to the OS default disposition.
+
 ## Path Safety
 
 cfgd validates all file paths to prevent directory traversal and symlink attacks:

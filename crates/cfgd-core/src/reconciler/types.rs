@@ -244,6 +244,17 @@ pub struct ApplyResult {
     pub status: ApplyStatus,
     /// The apply_id in the state store — used for rollback.
     pub apply_id: i64,
+    /// The intended process exit code when the apply was cooperatively aborted
+    /// by a signal (`130` SIGINT / `143` SIGTERM), else `None`. Drives the
+    /// CLI's signal-conventional exit; `status == Aborted` whenever this is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aborted: Option<u8>,
+    /// Number of actions this run intended to execute under the active phase
+    /// filter (`--phase`/`--skip`/`--only`/`--skip-scripts`). Equals the global
+    /// plan size when unfiltered. Lets an aborted run honestly report
+    /// "{applied} of {planned_total}" rather than counting phases that were
+    /// never in scope.
+    pub planned_total: usize,
 }
 
 /// Result of a rollback operation.

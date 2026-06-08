@@ -1,3 +1,4 @@
+use crate::AbortFlag;
 use crate::PathDisplayExt;
 use crate::config::{ResolvedProfile, ScriptShell};
 use crate::errors::{ConfigError, Result};
@@ -168,6 +169,7 @@ impl<'a> super::Reconciler<'a> {
         context: ReconcileContext,
         skip_scripts: bool,
         shell_override: Option<ScriptShell>,
+        abort: &AbortFlag,
     ) -> Result<ApplyResult> {
         // Record apply up front as "in-progress" so the journal can reference it
         let plan_hash = crate::state::plan_hash(&plan.to_hash_string());
@@ -180,11 +182,32 @@ impl<'a> super::Reconciler<'a> {
             self.state
                 .record_apply(profile_name, &plan_hash, ApplyStatus::InProgress, None)?;
 
+        // Filter-aware count of the actions this run intends to execute, using
+        // the SAME predicate as the loop below — so an aborted run reports
+        // "{applied} of {planned_total}" against only the in-scope actions, not
+        // the whole plan.
+        let planned_total: usize = plan
+            .phases
+            .iter()
+            .map(|phase| match phase_filter {
+                Some(filter) => phase
+                    .actions
+                    .iter()
+                    .filter(|a| action_matches_phase_filter(&phase.name, a, filter))
+                    .count(),
+                None => phase.actions.len(),
+            })
+            .sum();
+
         let mut results = Vec::new();
         let mut action_index: usize = 0;
         let mut secret_env_collector: Vec<(String, String)> = Vec::new();
+        // Set when a signal requested cooperative cancellation. We stop BEFORE
+        // the next action — the previous one already completed atomically, so no
+        // file is left torn.
+        let mut aborted_code: Option<u8> = None;
 
-        for phase in &plan.phases {
+        'phases: for phase in &plan.phases {
             // Pre-filter to the actions in this phase that survive `phase_filter`.
             // Restricting the indexed loop below to the surviving subset keeps
             // the `[i/total]` status headers honest about what actually runs.
@@ -204,6 +227,13 @@ impl<'a> super::Reconciler<'a> {
 
             let total = filtered.len();
             for (action_idx, action) in filtered.iter().copied().enumerate() {
+                // Cooperative cancellation: a signal flips the abort flag, and
+                // we stop before beginning the next atomic action.
+                if let Some(code) = abort.aborted() {
+                    aborted_code = Some(code);
+                    break 'phases;
+                }
+
                 let desc_for_journal = format_action_description(action);
                 let (action_type, resource_id) = parse_resource_from_description(&desc_for_journal);
 
@@ -350,6 +380,33 @@ impl<'a> super::Reconciler<'a> {
                     }));
                 }
             }
+        }
+
+        // Cooperative abort: a signal stopped us between actions. Skip the
+        // follow-up hooks (secret-env regen, onChange) — those represent a
+        // completed apply — but still persist the managed-resource bookkeeping
+        // for the actions that did run, then record an `Aborted` marker and
+        // return the signal exit code. The lock releases via the caller's Drop.
+        if let Some(code) = aborted_code {
+            self.record_managed_resources(apply_id, &results)?;
+            self.update_module_state(module_actions, apply_id, &results)?;
+            let succeeded = results.iter().filter(|r| r.success).count();
+            let summary = serde_json::json!({
+                "total": results.len(),
+                "succeeded": succeeded,
+                "failed": results.len() - succeeded,
+                "aborted": true,
+            })
+            .to_string();
+            self.state
+                .update_apply_status(apply_id, ApplyStatus::Aborted, Some(&summary))?;
+            return Ok(ApplyResult {
+                action_results: results,
+                status: ApplyStatus::Aborted,
+                apply_id,
+                aborted: Some(code),
+                planned_total,
+            });
         }
 
         // --- Secret env injection: re-generate env files with resolved secret env vars ---
@@ -542,8 +599,60 @@ impl<'a> super::Reconciler<'a> {
         self.state
             .update_apply_status(apply_id, status.clone(), Some(&summary))?;
 
-        // Update managed resources
-        for result in &results {
+        self.record_managed_resources(apply_id, &results)?;
+
+        // Update module state and file manifests for successfully applied modules
+        self.update_module_state(module_actions, apply_id, &results)?;
+
+        // Post-apply snapshot: capture the resolved content of all managed file
+        // targets (following symlinks). This ensures rollback can restore the
+        // exact content visible at this point, even for symlink-deployed files
+        // where the source may be modified in-place between applies.
+        let mut snapshot_paths = std::collections::HashSet::new();
+        for managed in &resolved.merged.files.managed {
+            let target = crate::expand_tilde(&managed.target);
+            let key = target.display().to_string();
+            if snapshot_paths.contains(&key) {
+                continue;
+            }
+            snapshot_paths.insert(key.clone());
+            if let Ok(Some(state)) = crate::capture_file_resolved_state(&target)
+                && let Err(e) = self.state.store_file_backup(apply_id, &key, &state)
+            {
+                tracing::debug!("post-apply snapshot for {}: {}", key, e);
+            }
+        }
+        for module in module_actions {
+            for file in &module.files {
+                let target = crate::expand_tilde(&file.target);
+                let key = target.display().to_string();
+                if snapshot_paths.contains(&key) {
+                    continue;
+                }
+                snapshot_paths.insert(key.clone());
+                if let Ok(Some(state)) = crate::capture_file_resolved_state(&target)
+                    && let Err(e) = self.state.store_file_backup(apply_id, &key, &state)
+                {
+                    tracing::debug!("post-apply snapshot for {}: {}", key, e);
+                }
+            }
+        }
+
+        Ok(ApplyResult {
+            action_results: results,
+            status,
+            apply_id,
+            aborted: None,
+            planned_total,
+        })
+    }
+
+    /// Persist managed-resource tracking rows for the successfully-applied
+    /// actions in `results`. Shared by the normal completion path and the
+    /// cooperative-abort path, which both need state to reflect exactly the
+    /// resources that actually changed.
+    fn record_managed_resources(&self, apply_id: i64, results: &[ActionResult]) -> Result<()> {
+        for result in results {
             if !result.success {
                 continue;
             }
@@ -590,49 +699,7 @@ impl<'a> super::Reconciler<'a> {
                 .upsert_managed_resource(&rtype, &rid, "local", None, Some(apply_id))?;
             self.state.resolve_drift(apply_id, &rtype, &rid)?;
         }
-
-        // Update module state and file manifests for successfully applied modules
-        self.update_module_state(module_actions, apply_id, &results)?;
-
-        // Post-apply snapshot: capture the resolved content of all managed file
-        // targets (following symlinks). This ensures rollback can restore the
-        // exact content visible at this point, even for symlink-deployed files
-        // where the source may be modified in-place between applies.
-        let mut snapshot_paths = std::collections::HashSet::new();
-        for managed in &resolved.merged.files.managed {
-            let target = crate::expand_tilde(&managed.target);
-            let key = target.display().to_string();
-            if snapshot_paths.contains(&key) {
-                continue;
-            }
-            snapshot_paths.insert(key.clone());
-            if let Ok(Some(state)) = crate::capture_file_resolved_state(&target)
-                && let Err(e) = self.state.store_file_backup(apply_id, &key, &state)
-            {
-                tracing::debug!("post-apply snapshot for {}: {}", key, e);
-            }
-        }
-        for module in module_actions {
-            for file in &module.files {
-                let target = crate::expand_tilde(&file.target);
-                let key = target.display().to_string();
-                if snapshot_paths.contains(&key) {
-                    continue;
-                }
-                snapshot_paths.insert(key.clone());
-                if let Ok(Some(state)) = crate::capture_file_resolved_state(&target)
-                    && let Err(e) = self.state.store_file_backup(apply_id, &key, &state)
-                {
-                    tracing::debug!("post-apply snapshot for {}: {}", key, e);
-                }
-            }
-        }
-
-        Ok(ApplyResult {
-            action_results: results,
-            status,
-            apply_id,
-        })
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]

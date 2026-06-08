@@ -156,12 +156,230 @@ fn apply_empty_plan_records_success() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
     // Empty plan — no actions means success with 0 results
     assert_eq!(result.status, ApplyStatus::Success);
     assert_eq!(result.action_results.len(), 0);
+}
+
+/// Build a two-file Create plan plus the source files, returning the dir guard,
+/// the two targets, and the planned `Plan`.
+fn two_file_create_plan(
+    reconciler: &Reconciler<'_>,
+    resolved: &ResolvedProfile,
+) -> (tempfile::TempDir, PathBuf, PathBuf, Plan) {
+    let dir = tempfile::tempdir().unwrap();
+    let src_a = dir.path().join("a.src");
+    let src_b = dir.path().join("b.src");
+    let tgt_a = dir.path().join("a.txt");
+    let tgt_b = dir.path().join("b.txt");
+    std::fs::write(&src_a, "alpha").unwrap();
+    std::fs::write(&src_b, "beta").unwrap();
+
+    let file_actions = vec![
+        FileAction::Create {
+            source: src_a,
+            target: tgt_a.clone(),
+            origin: "local".to_string(),
+            strategy: crate::config::FileStrategy::Copy,
+            source_hash: None,
+        },
+        FileAction::Create {
+            source: src_b,
+            target: tgt_b.clone(),
+            origin: "local".to_string(),
+            strategy: crate::config::FileStrategy::Copy,
+            source_hash: None,
+        },
+    ];
+
+    let plan = reconciler
+        .plan(
+            resolved,
+            file_actions,
+            Vec::new(),
+            Vec::new(),
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+    (dir, tgt_a, tgt_b, plan)
+}
+
+#[test]
+fn apply_aborts_before_first_action_when_flag_preset() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Copy;
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let (dir, tgt_a, tgt_b, plan) = two_file_create_plan(&reconciler, &resolved);
+
+    // Abort requested BEFORE apply begins → zero actions run.
+    let abort = crate::AbortFlag::new();
+    abort.set(130);
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            true,
+            None,
+            &abort,
+        )
+        .unwrap();
+
+    assert_eq!(result.status, ApplyStatus::Aborted);
+    assert_eq!(result.aborted, Some(130));
+    assert_eq!(result.succeeded(), 0, "no action should have run");
+    // Unfiltered: planned_total equals the whole plan.
+    assert_eq!(result.planned_total, 2);
+    // Neither target written, and no temp/torn file left behind.
+    assert!(
+        !tgt_a.exists(),
+        "first target must be untouched on pre-abort"
+    );
+    assert!(
+        !tgt_b.exists(),
+        "second target must be untouched on pre-abort"
+    );
+    let leftover: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.contains(".tmp") || n.ends_with('~'))
+        .collect();
+    assert!(leftover.is_empty(), "no torn temp files, got: {leftover:?}");
+
+    // The applies row reflects the abort.
+    let record = state.last_apply().unwrap().unwrap();
+    assert_eq!(record.status, ApplyStatus::Aborted);
+}
+
+#[test]
+fn apply_not_aborted_applies_everything_and_records_success() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Copy;
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let (dir, tgt_a, tgt_b, plan) = two_file_create_plan(&reconciler, &resolved);
+
+    // Flag never set → regression: full apply, Success.
+    let abort = crate::AbortFlag::new();
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            None,
+            &[],
+            ReconcileContext::Apply,
+            true,
+            None,
+            &abort,
+        )
+        .unwrap();
+
+    assert_eq!(result.status, ApplyStatus::Success);
+    assert_eq!(result.aborted, None);
+    assert_eq!(result.succeeded(), 2);
+    assert!(tgt_a.exists(), "first target must be written");
+    assert!(tgt_b.exists(), "second target must be written");
+
+    let record = state.last_apply().unwrap().unwrap();
+    assert_eq!(record.status, ApplyStatus::Success);
+}
+
+#[test]
+fn aborted_planned_total_counts_only_filtered_actions() {
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.default_file_strategy = crate::config::FileStrategy::Copy;
+    let reconciler = Reconciler::new(&registry, &state);
+    let resolved = make_empty_resolved();
+
+    let dir = tempfile::tempdir().unwrap();
+    let src_a = dir.path().join("a.src");
+    let src_b = dir.path().join("b.src");
+    std::fs::write(&src_a, "alpha").unwrap();
+    std::fs::write(&src_b, "beta").unwrap();
+
+    // A 3-action plan across two phases: 2 file actions + 1 package action. A
+    // `--phase files` filter keeps only the 2 file actions in scope.
+    let plan = Plan {
+        phases: vec![
+            Phase {
+                name: PhaseName::Files,
+                actions: vec![
+                    Action::File(FileAction::Create {
+                        source: src_a,
+                        target: dir.path().join("a.txt"),
+                        origin: "local".to_string(),
+                        strategy: crate::config::FileStrategy::Copy,
+                        source_hash: None,
+                    }),
+                    Action::File(FileAction::Create {
+                        source: src_b,
+                        target: dir.path().join("b.txt"),
+                        origin: "local".to_string(),
+                        strategy: crate::config::FileStrategy::Copy,
+                        source_hash: None,
+                    }),
+                ],
+            },
+            Phase {
+                name: PhaseName::Packages,
+                actions: vec![Action::Package(PackageAction::Install {
+                    manager: "brew".to_string(),
+                    packages: vec!["ripgrep".to_string()],
+                    origin: "local".to_string(),
+                })],
+            },
+        ],
+        warnings: vec![],
+    };
+
+    // Abort before any action runs; filter scopes to the Files phase only.
+    let abort = crate::AbortFlag::new();
+    abort.set(130);
+
+    let printer = test_printer();
+    let result = reconciler
+        .apply(
+            &plan,
+            &resolved,
+            dir.path(),
+            &printer,
+            Some(&PhaseName::Files),
+            &[],
+            ReconcileContext::Apply,
+            true,
+            None,
+            &abort,
+        )
+        .unwrap();
+
+    assert_eq!(result.status, ApplyStatus::Aborted);
+    assert_eq!(result.succeeded(), 0);
+    // Honest total: the 2 in-scope file actions, NOT the global plan size of 3.
+    assert_eq!(
+        result.planned_total, 2,
+        "planned_total must count only filter-surviving actions"
+    );
 }
 
 #[test]
@@ -281,6 +499,8 @@ fn apply_result_counts() {
         ],
         status: ApplyStatus::Partial,
         apply_id: 0,
+        aborted: None,
+        planned_total: 2,
     };
 
     assert_eq!(result.succeeded(), 1);
@@ -669,6 +889,7 @@ fn module_state_stored_after_apply() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -2181,6 +2402,7 @@ fn apply_package_install_tracks_under_identity_for_go_like_manager() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -2235,6 +2457,7 @@ fn apply_package_install_calls_mock_and_records_state() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -2343,6 +2566,7 @@ fn apply_scripted_install_persists_uninstall_cmd_and_builtin_leaves_null() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -2408,6 +2632,7 @@ fn apply_package_uninstall_calls_mock() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -2460,6 +2685,7 @@ fn apply_package_install_tracks_per_package_managed_resource() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -2525,6 +2751,7 @@ fn apply_package_uninstall_untracks_managed_resource() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -2570,6 +2797,7 @@ fn apply_empty_plan_records_success_in_state_store() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -2615,6 +2843,7 @@ fn apply_records_correct_apply_id() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -2630,6 +2859,7 @@ fn apply_records_correct_apply_id() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -2807,6 +3037,7 @@ fn apply_full_flow_plan_apply_verify_consistent() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -2866,6 +3097,7 @@ fn apply_records_summary_json() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -2921,6 +3153,7 @@ fn apply_with_phase_filter_only_runs_matching_phase() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -2970,6 +3203,7 @@ fn apply_with_phase_filter_runs_only_packages() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -3022,6 +3256,7 @@ fn apply_file_create_action_writes_file() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -3084,6 +3319,7 @@ fn apply_multiple_package_actions_all_succeed() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -3134,6 +3370,7 @@ fn apply_package_skip_action_succeeds() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -3942,6 +4179,7 @@ fn apply_partial_when_some_actions_fail() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -3994,6 +4232,7 @@ fn apply_failed_when_all_actions_fail() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -4063,6 +4302,7 @@ fn apply_continue_on_error_post_script_continues() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -4123,6 +4363,7 @@ fn apply_continue_on_error_false_pre_script_aborts() {
         ReconcileContext::Apply,
         false,
         None,
+        &crate::AbortFlag::new(),
     );
 
     // Pre-script failure with continueOnError=false should return an error
@@ -4168,6 +4409,7 @@ fn apply_continue_on_error_default_post_script_continues() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -4229,6 +4471,7 @@ fn apply_on_change_script_runs_when_changes_occur() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -4282,6 +4525,7 @@ fn apply_on_change_script_does_not_run_when_no_changes() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -4347,6 +4591,7 @@ fn apply_guard_skipped_profile_script_records_unchanged() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -4439,6 +4684,7 @@ fn apply_guard_skipped_module_script_does_not_fire_on_change() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -4535,6 +4781,7 @@ fn apply_guard_permitted_module_script_fires_on_change() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -4618,6 +4865,7 @@ fn apply_skipped_module_does_not_fire_on_change() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -5542,6 +5790,7 @@ fn apply_on_change_skipped_when_skip_scripts_true() {
             ReconcileContext::Apply,
             true, // skip_scripts
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -5648,6 +5897,7 @@ fn apply_package_bootstrap_makes_manager_available() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -5695,6 +5945,7 @@ fn apply_package_bootstrap_unknown_manager_errors() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -5735,6 +5986,7 @@ fn apply_package_install_unknown_manager_errors() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -5773,6 +6025,7 @@ fn apply_package_uninstall_unknown_manager_errors() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -5845,6 +6098,7 @@ fn apply_secret_decrypt_writes_decrypted_file() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -5933,6 +6187,7 @@ fn apply_secret_decrypt_no_backend_errors() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -5979,6 +6234,7 @@ fn apply_secret_resolve_writes_provider_value_to_file() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -6030,6 +6286,7 @@ fn apply_secret_resolve_unknown_provider_errors() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -6108,6 +6365,7 @@ fn apply_secret_resolve_env_unknown_provider_errors() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -6146,6 +6404,7 @@ fn apply_secret_skip_succeeds() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -6193,6 +6452,7 @@ fn apply_file_delete_action_removes_file() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -6241,6 +6501,7 @@ fn apply_file_set_permissions_action() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -6289,6 +6550,7 @@ fn apply_file_skip_action_succeeds() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -6339,6 +6601,7 @@ fn apply_file_update_action_overwrites_target() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -6402,6 +6665,7 @@ fn apply_system_set_value_calls_configurator() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -6471,6 +6735,7 @@ fn apply_system_set_value_applies_module_contributed_system() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -6517,6 +6782,7 @@ fn apply_system_skip_logs_warning() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -6792,6 +7058,7 @@ fn apply_module_install_packages_calls_manager() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -6881,6 +7148,7 @@ fn apply_module_deploy_files_creates_target() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -6965,6 +7233,7 @@ fn apply_module_deploy_files_symlink_strategy() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -7008,6 +7277,7 @@ fn apply_module_skip_reports_skipped() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -7090,6 +7360,7 @@ fn apply_module_install_packages_bootstraps_when_needed() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -7555,6 +7826,7 @@ fn apply_script_action_executes_and_records_output() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -7625,6 +7897,7 @@ fn apply_module_run_script_executes_in_module_dir() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -8408,6 +8681,7 @@ fn apply_module_deploy_files_hardlink_strategy() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -8503,6 +8777,7 @@ fn apply_module_deploy_files_copy_strategy() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -8593,6 +8868,7 @@ fn apply_module_deploy_files_applies_permissions() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -8681,6 +8957,7 @@ fn apply_module_deploy_files_directory_copy_strategy() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -8764,6 +9041,7 @@ fn apply_module_deploy_files_overwrites_existing_file() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -8846,6 +9124,7 @@ fn apply_module_on_change_script_runs_when_module_has_changes() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -8906,6 +9185,7 @@ fn apply_module_on_change_script_does_not_run_when_no_changes() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -9466,6 +9746,7 @@ mod bridge {
                 ReconcileContext::Apply,
                 false,
                 None,
+                &crate::AbortFlag::new(),
             )
             .unwrap();
 
@@ -9512,6 +9793,7 @@ mod bridge {
                 ReconcileContext::Apply,
                 false,
                 None,
+                &crate::AbortFlag::new(),
             )
             .unwrap();
 
@@ -10119,6 +10401,7 @@ fn apply_module_install_packages_bootstraps_unavailable_manager_and_writes_env()
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -10220,6 +10503,7 @@ fn apply_module_install_packages_with_existing_env_appends_new_dirs() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -10304,6 +10588,7 @@ fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -10388,6 +10673,7 @@ fn apply_module_install_packages_script_manager_runs_per_package_script() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -10454,6 +10740,7 @@ fn apply_module_install_packages_script_manager_failure_returns_err() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -10535,6 +10822,7 @@ fn apply_module_on_change_script_runs_when_module_changed() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -10592,6 +10880,7 @@ fn apply_module_on_change_script_does_not_run_when_module_unchanged() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -10667,6 +10956,7 @@ fn apply_module_on_change_skip_scripts_flag_bypasses_module_on_change() {
             ReconcileContext::Apply,
             true,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -10735,6 +11025,7 @@ fn apply_resolve_env_action_collects_secret_into_env_actions() {
             ReconcileContext::Apply,
             true, // skip_scripts to keep the test deterministic
             None,
+            &crate::AbortFlag::new(),
         )
         .expect("apply must succeed");
 
@@ -10922,6 +11213,7 @@ fn apply_module_with_git_source_file_serializes_into_module_state() {
             ReconcileContext::Apply,
             true,
             None,
+            &crate::AbortFlag::new(),
         )
         .expect("apply must succeed");
 
@@ -11009,6 +11301,7 @@ fn apply_module_on_change_failure_continues_with_default_continue_on_error() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .expect("apply must succeed when continueOnError defaults true");
 
@@ -11095,6 +11388,7 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .expect_err("explicit continueOnError=false must return Err");
     let _ = err.to_string();
@@ -11150,6 +11444,7 @@ fn apply_profile_on_change_failure_continues_with_default_continue_on_error() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .expect("apply must succeed when default continueOnError is true");
 
@@ -11217,6 +11512,7 @@ fn apply_profile_on_change_failure_aborts_when_continue_on_error_false() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .expect_err("profile onChange continueOnError=false must propagate err");
     let _ = err.to_string();
@@ -11402,6 +11698,7 @@ fn apply_post_scripts_filter_runs_module_post_scripts() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -11497,6 +11794,7 @@ fn apply_pre_scripts_filter_runs_module_pre_scripts() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -11589,6 +11887,7 @@ fn apply_modules_phase_filter_runs_all_module_actions() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 
@@ -11686,6 +11985,7 @@ fn apply_post_scripts_filter_skips_other_phases() {
             ReconcileContext::Apply,
             false,
             None,
+            &crate::AbortFlag::new(),
         )
         .unwrap();
 

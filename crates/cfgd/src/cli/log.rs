@@ -103,6 +103,7 @@ pub fn build_log_doc(output: &LogOutput) -> Doc {
                         cfgd_core::state::ApplyStatus::Partial => "partial".into(),
                         cfgd_core::state::ApplyStatus::Failed => "failed".into(),
                         cfgd_core::state::ApplyStatus::InProgress => "in_progress".into(),
+                        cfgd_core::state::ApplyStatus::Aborted => "aborted".into(),
                     },
                     record.summary.clone().unwrap_or_else(|| "-".into()),
                 ]

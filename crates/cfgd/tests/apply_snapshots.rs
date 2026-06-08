@@ -192,13 +192,17 @@ fn apply_with_failures_human() {
     // `process::exit` that `cmd_apply` performs on a partial apply — that exit
     // would abort the in-process snapshot capture (it is covered by the
     // subprocess test in `apply_exit_code.rs`).
-    let status = run_apply(&cli, &printer, &args).unwrap();
+    let outcome = run_apply(&cli, &printer, &args).unwrap();
     drop(printer);
 
     assert_eq!(
-        status,
+        outcome.status,
         cfgd_core::state::ApplyStatus::Partial,
         "one action succeeds and one fails — a partial apply"
+    );
+    assert_eq!(
+        outcome.aborted_code, None,
+        "a partial apply is not a signal abort"
     );
     assert!(target_ok.exists(), "first file action must succeed");
     assert!(

@@ -39,6 +39,7 @@ fn apply_status_str(s: &cfgd_core::state::ApplyStatus) -> &'static str {
         cfgd_core::state::ApplyStatus::Partial => "partial",
         cfgd_core::state::ApplyStatus::Failed => "failed",
         cfgd_core::state::ApplyStatus::InProgress => "in_progress",
+        cfgd_core::state::ApplyStatus::Aborted => "aborted",
     }
 }
 

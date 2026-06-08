@@ -3,19 +3,46 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Role};
 
+/// Terminal outcome of an apply run: the final status plus, when a signal
+/// cooperatively aborted the apply, the conventional exit code (`130` SIGINT /
+/// `143` SIGTERM) so `cmd_apply` can exit with it.
+#[derive(Debug)]
+pub struct ApplyOutcome {
+    pub status: cfgd_core::state::ApplyStatus,
+    pub aborted_code: Option<u8>,
+}
+
+impl ApplyOutcome {
+    /// A non-action terminal path (dry-run, nothing-to-do, declined-confirm):
+    /// success, no abort.
+    fn success() -> Self {
+        Self {
+            status: cfgd_core::state::ApplyStatus::Success,
+            aborted_code: None,
+        }
+    }
+}
+
 pub fn cmd_apply(
     cli: &Cli,
     printer: &cfgd_core::output::Printer,
     args: &ApplyArgs,
 ) -> anyhow::Result<()> {
-    let status = run_apply(cli, printer, args)?;
+    let outcome = run_apply(cli, printer, args)?;
+
+    // A graceful signal abort is NOT an error, but it must NOT exit 0: exit with
+    // the signal-conventional code so wrappers see the interruption. The abort
+    // message + structured payload are already flushed by `run_apply`.
+    if let Some(code) = outcome.aborted_code {
+        std::process::exit(code as i32);
+    }
 
     // A partial or total apply failure must surface as a nonzero exit so CI `&&`
     // chains and the daemon don't treat a broken apply as success. The structured
     // payload is already flushed by `run_apply`; exit directly (mirrors
     // status/diff/upgrade) so render_cli_error doesn't double-print a failure line.
     if matches!(
-        status,
+        outcome.status,
         cfgd_core::state::ApplyStatus::Partial | cfgd_core::state::ApplyStatus::Failed
     ) {
         cfgd_core::exit::ExitCode::ApplyFailed.exit();
@@ -24,19 +51,20 @@ pub fn cmd_apply(
     Ok(())
 }
 
-/// Drive a full apply (or dry-run) and return the resulting [`ApplyStatus`]
-/// so the caller can map a partial/total failure to a nonzero process exit.
+/// Drive a full apply (or dry-run) and return the resulting [`ApplyOutcome`]
+/// so the caller can map a partial/total failure to a nonzero process exit and
+/// a signal abort to its conventional exit code.
 ///
-/// Non-apply terminal paths (dry-run, aborted, nothing-to-do) report
-/// [`ApplyStatus::Success`] — they did not run actions, so they never warrant
-/// a failure exit. Keeping the exit decision in `cmd_apply` lets in-process
-/// tests capture the rendered failure shape without `process::exit` aborting
-/// the harness.
+/// Non-apply terminal paths (dry-run, aborted-confirmation, nothing-to-do)
+/// report [`ApplyStatus::Success`] with no abort code — they did not run
+/// actions, so they never warrant a failure exit. Keeping the exit decision in
+/// `cmd_apply` lets in-process tests capture the rendered failure shape without
+/// `process::exit` aborting the harness.
 pub fn run_apply(
     cli: &Cli,
     printer: &cfgd_core::output::Printer,
     args: &ApplyArgs,
-) -> anyhow::Result<cfgd_core::state::ApplyStatus> {
+) -> anyhow::Result<ApplyOutcome> {
     // Parse --context (mirrors PlanArgs::context).
     let reconcile_context = match args.context.as_str() {
         "apply" => ReconcileContext::Apply,
@@ -285,7 +313,7 @@ pub fn run_apply(
         if prune_eligible {
             preview_orphaned_custom_packages(&state, &registry, printer);
         }
-        return Ok(cfgd_core::state::ApplyStatus::Success);
+        return Ok(ApplyOutcome::success());
     }
 
     // --- Apply mode ---
@@ -322,7 +350,7 @@ pub fn run_apply(
     if !has_actions {
         report_no_in_scope_actions(printer, &scope, phase_filter.as_ref());
         printer.emit(Doc::new().with_data(ApplyOutput::nothing_to_do()));
-        return Ok(cfgd_core::state::ApplyStatus::Success);
+        return Ok(ApplyOutcome::success());
     }
 
     let start = std::time::Instant::now();
@@ -371,7 +399,7 @@ pub fn run_apply(
         if !confirmed {
             printer.status_simple(Role::Info, "Aborted");
             printer.emit(Doc::new().with_data(ApplyOutput::aborted()));
-            return Ok(cfgd_core::state::ApplyStatus::Success);
+            return Ok(ApplyOutcome::success());
         }
     }
 
@@ -386,6 +414,12 @@ pub fn run_apply(
     };
     let _apply_lock = cfgd_core::acquire_apply_lock(apply_lock_dir)?;
 
+    // Register cooperative-cancellation handlers for the duration of the apply.
+    // SIGINT/SIGTERM flip the shared flag (the reconciler checks it between
+    // atomic actions); the in-flight action still finishes, so no file is torn.
+    let abort = cfgd_core::AbortFlag::new();
+    register_abort_handlers(&abort);
+
     // Apply
     let shell_override = args.shell.map(super::apply_shell_to_script_shell);
     let result = reconciler.apply(
@@ -398,7 +432,37 @@ pub fn run_apply(
         reconcile_context,
         args.skip_scripts,
         shell_override,
+        &abort,
     )?;
+
+    if let Some(code) = result.aborted {
+        let signal = if code == 143 { "SIGTERM" } else { "SIGINT" };
+        let applied = result.succeeded();
+        // Filter-aware planned count (computed by the reconciler with the same
+        // predicate the apply loop uses), so "{applied} of {total}" reflects
+        // only the in-scope actions under --phase/--skip/--only, not the whole
+        // plan.
+        let total = result.planned_total;
+        printer.emit(
+            Doc::new()
+                .status(
+                    Role::Warn,
+                    format!(
+                        "apply aborted by signal — {applied} of {total} action(s) applied; no partial writes, rerun to converge"
+                    ),
+                )
+                .with_data(AbortOutput {
+                    aborted: true,
+                    signal: signal.to_string(),
+                    applied,
+                    total,
+                }),
+        );
+        return Ok(ApplyOutcome {
+            status: result.status,
+            aborted_code: Some(code),
+        });
+    }
 
     let status = print_apply_result(&result, printer, Some(start.elapsed()));
 
@@ -433,7 +497,70 @@ pub fn run_apply(
     };
     printer.emit(Doc::new().with_data(&output));
 
-    Ok(status)
+    Ok(ApplyOutcome {
+        status,
+        aborted_code: None,
+    })
+}
+
+/// Structured `-o json` payload emitted when an apply is cooperatively aborted
+/// by a signal.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AbortOutput {
+    aborted: bool,
+    signal: String,
+    applied: usize,
+    total: usize,
+}
+
+/// Register SIGINT (→130) / SIGTERM (→143) handlers for the running apply.
+///
+/// The FIRST delivery of a signal flips `abort` (the reconciler stops
+/// cooperatively between atomic actions). A SECOND delivery of the same signal
+/// force-quits via the OS default disposition, so a user hammering Ctrl-C is
+/// never stuck waiting on cleanup.
+///
+/// Both the flag store and the default-disposition emulation are async-signal-
+/// safe (`AtomicUsize::store` / `signal_hook::low_level::emulate_default_handler`).
+/// Best-effort — a registration failure is logged and the apply proceeds
+/// without cooperative cancellation (the OS default still terminates on signal).
+#[cfg(unix)]
+fn register_abort_handlers(abort: &cfgd_core::AbortFlag) {
+    use std::sync::atomic::Ordering;
+
+    use signal_hook::consts::{SIGINT, SIGTERM};
+    use signal_hook::low_level;
+
+    // 128 + signum, the POSIX shell convention for signal-terminated processes.
+    for (sig, code) in [(SIGINT, 130usize), (SIGTERM, 143usize)] {
+        let flag = abort.raw();
+        // SAFETY: the action only performs async-signal-safe operations — an
+        // atomic load/store and `emulate_default_handler` (documented
+        // async-signal-safe). No allocation, locking, or reentrant I/O.
+        let res = unsafe {
+            low_level::register(sig, move || {
+                if flag.load(Ordering::SeqCst) == 0 {
+                    // First delivery: request cooperative cancellation.
+                    flag.store(code, Ordering::SeqCst);
+                } else {
+                    // Second delivery: force-quit with the default disposition.
+                    let _ = low_level::emulate_default_handler(sig);
+                }
+            })
+        };
+        if let Err(e) = res {
+            tracing::warn!(signal = sig, error = %e, "failed to register apply abort handler");
+        }
+    }
+}
+
+/// Windows lacks `signal_hook`'s POSIX flag API; cooperative abort is a no-op
+/// here and Ctrl-C falls back to the OS default disposition. Logged so the
+/// degraded behavior is observable.
+#[cfg(windows)]
+fn register_abort_handlers(_abort: &cfgd_core::AbortFlag) {
+    tracing::debug!("cooperative apply abort handler not available on this platform");
 }
 
 /// Remove package-tracking rows whose package is no longer installed (stale
@@ -533,6 +660,7 @@ fn apply_status_str(status: &cfgd_core::state::ApplyStatus) -> &'static str {
         cfgd_core::state::ApplyStatus::Partial => "partial",
         cfgd_core::state::ApplyStatus::Failed => "failed",
         cfgd_core::state::ApplyStatus::InProgress => "inProgress",
+        cfgd_core::state::ApplyStatus::Aborted => "aborted",
     }
 }
 

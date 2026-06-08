@@ -537,6 +537,7 @@ pub(crate) fn handle_reconcile(
                     crate::reconciler::ReconcileContext::Reconcile,
                     false,
                     None,
+                    &crate::AbortFlag::new(),
                 ) {
                     Ok(result) => {
                         let succeeded = result.succeeded();

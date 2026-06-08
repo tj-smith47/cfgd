@@ -309,6 +309,7 @@ pub fn cmd_module_create(
                 cfgd_core::reconciler::ReconcileContext::Apply,
                 false,
                 None,
+                &cfgd_core::AbortFlag::new(),
             )?;
             super::print_apply_result(&result, printer, None);
             applied = true;

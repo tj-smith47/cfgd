@@ -45,6 +45,13 @@ pub(in crate::cli) fn print_apply_result(
             Role::Warn,
             "Apply still in progress (unexpected state)".to_string(),
         ),
+        cfgd_core::state::ApplyStatus::Aborted => (
+            Role::Warn,
+            format!(
+                "Apply aborted by signal — {} action(s) applied",
+                result.succeeded()
+            ),
+        ),
     };
     match elapsed {
         Some(d) => {
@@ -998,6 +1005,8 @@ mod tests {
             action_results: results,
             status,
             apply_id: 0,
+            aborted: None,
+            planned_total: succeeded + failed,
         }
     }
 

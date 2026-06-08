@@ -461,6 +461,7 @@ pub(super) fn apply_plan(
         cfgd_core::reconciler::ReconcileContext::Apply,
         false,
         None,
+        &cfgd_core::AbortFlag::new(),
     )?;
     super::print_apply_result(&result, printer, None);
     Ok(())

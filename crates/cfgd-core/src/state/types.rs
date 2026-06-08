@@ -21,6 +21,9 @@ pub enum ApplyStatus {
     Failed,
     /// Apply is currently in progress (not yet finished).
     InProgress,
+    /// Apply was cooperatively stopped by a signal (SIGINT/SIGTERM) after
+    /// finishing the in-flight atomic action — no partial writes.
+    Aborted,
 }
 
 impl ApplyStatus {
@@ -30,6 +33,7 @@ impl ApplyStatus {
             ApplyStatus::Partial => "partial",
             ApplyStatus::Failed => "failed",
             ApplyStatus::InProgress => "in_progress",
+            ApplyStatus::Aborted => "aborted",
         }
     }
 
@@ -38,6 +42,7 @@ impl ApplyStatus {
             "success" => ApplyStatus::Success,
             "partial" => ApplyStatus::Partial,
             "in_progress" => ApplyStatus::InProgress,
+            "aborted" => ApplyStatus::Aborted,
             "failed" => ApplyStatus::Failed,
             _ => ApplyStatus::Failed,
         }
