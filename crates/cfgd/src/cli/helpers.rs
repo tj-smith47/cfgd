@@ -479,36 +479,9 @@ pub(in crate::cli) fn compose_with_sources(
                 }
             }
 
-            // Validate security constraints
-            for layer in &layers {
-                if let Err(e) = composition::validate_constraints(
-                    &source_spec.name,
-                    &cached.manifest.spec.policy.constraints,
-                    &layer.spec,
-                ) {
-                    printer.status_simple(
-                        Role::Fail,
-                        format!("Security violation in source '{}': {}", source_spec.name, e),
-                    );
-                    continue;
-                }
-            }
-
-            // Check if local config overrides any locked resources from this source
-            if let Err(e) = composition::check_locked_violations(
-                &source_spec.name,
-                &cached.manifest.spec.policy.locked,
-                &local_resolved.merged,
-            ) {
-                printer.status_simple(
-                    Role::Warn,
-                    format!(
-                        "Locked resource conflict with source '{}': {}",
-                        source_spec.name, e
-                    ),
-                );
-            }
-
+            // Security constraints (no-scripts, allowed paths, system changes,
+            // encryption) and locked-resource overrides are enforced fatally by
+            // `composition::compose` below — the sole fail-closed chokepoint.
             inputs.push(CompositionInput {
                 source_name: source_spec.name.clone(),
                 priority: source_spec.subscription.priority,

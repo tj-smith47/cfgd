@@ -279,6 +279,11 @@ pub enum CompositionError {
         message: String,
     },
 
+    #[error(
+        "unknown reject key '{key}' for source '{source_name}' (allowed: packages, env, aliases, modules)"
+    )]
+    InvalidReject { source_name: String, key: String },
+
     #[error("source '{source_name}' is not allowed to run scripts")]
     ScriptsNotAllowed { source_name: String },
 

@@ -1,5 +1,37 @@
 use crate::config::{PackagesSpec, PolicyItems};
+use crate::errors::{CompositionError, Result};
 use crate::union_extend;
+
+/// Top-level keys honored by [`filter_rejected`] (and `record::record_rejections`).
+/// Any other top-level key in a `reject:` mapping is a typo that would silently
+/// fail to reject — so it is rejected at composition time.
+const ALLOWED_REJECT_KEYS: [&str; 4] = ["packages", "env", "aliases", "modules"];
+
+/// Validate a subscriber's `reject` value. A non-null mapping must use only the
+/// keys [`filter_rejected`] understands; anything else is a typo that would let
+/// the unwanted item through unnoticed.
+pub(super) fn validate_reject_keys(source_name: &str, reject: &serde_yaml::Value) -> Result<()> {
+    let Some(map) = reject.as_mapping() else {
+        return Ok(());
+    };
+    for key in map.keys() {
+        let Some(key_str) = key.as_str() else {
+            return Err(CompositionError::InvalidReject {
+                source_name: source_name.to_string(),
+                key: format!("{key:?}"),
+            }
+            .into());
+        };
+        if !ALLOWED_REJECT_KEYS.contains(&key_str) {
+            return Err(CompositionError::InvalidReject {
+                source_name: source_name.to_string(),
+                key: key_str.to_string(),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
 
 /// Merge packages from `source` into `target`, unioning lists and applying
 /// later-wins for scalar fields (file paths, remotes, custom manager commands).

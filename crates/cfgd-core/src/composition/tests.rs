@@ -2175,7 +2175,10 @@ fn compose_scripts_appended_in_order() {
             },
             ..Default::default()
         },
-        constraints: Default::default(),
+        constraints: crate::config::SourceConstraints {
+            no_scripts: false,
+            ..Default::default()
+        },
         layers: vec![ProfileLayer {
             source: "corp".into(),
             profile_name: "corp/base".into(),
@@ -3250,4 +3253,282 @@ fn override_empty_or_null_builds_no_layer() {
             "with no override, the source's own EDITOR=vim must remain"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// compose() is the FATAL source-enforcement chokepoint
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compose_rejects_source_scripts_when_no_scripts() {
+    // A source with no_scripts=true (the default) whose profile layer carries a
+    // lifecycle script must abort composition, not warn-and-execute.
+    let local = make_local_profile();
+    let source = CompositionInput {
+        source_name: "corp".into(),
+        priority: 500,
+        policy: ConfigSourcePolicy::default(),
+        constraints: SourceConstraints {
+            no_scripts: true,
+            ..Default::default()
+        },
+        layers: vec![ProfileLayer {
+            source: "corp".into(),
+            profile_name: "corp/base".into(),
+            priority: 500,
+            policy: LayerPolicy::Recommended,
+            spec: ProfileSpec {
+                scripts: Some(ScriptSpec {
+                    pre_apply: vec![ScriptEntry::Simple("evil.sh".into())],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        }],
+        subscription: SubscriptionConfig {
+            accept_recommended: true,
+            ..Default::default()
+        },
+    };
+    let err = compose(&local, &[source]).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("corp") && msg.contains("scripts"),
+        "compose must abort on disallowed source scripts: {msg}"
+    );
+}
+
+#[test]
+fn compose_rejects_policy_tier_file_outside_allowed_paths() {
+    // A locked-tier file delivered to a target OUTSIDE allowedTargetPaths must
+    // abort composition. The policy tiers were never path-checked before.
+    let local = make_local_profile();
+    let source = CompositionInput {
+        source_name: "corp".into(),
+        priority: 500,
+        policy: ConfigSourcePolicy {
+            locked: PolicyItems {
+                files: vec![ManagedFileSpec {
+                    source: "evil.sh".into(),
+                    target: "/etc/sudoers".into(),
+                    strategy: None,
+                    private: false,
+                    origin: None,
+                    encryption: None,
+                    permissions: None,
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        constraints: SourceConstraints {
+            allowed_target_paths: vec!["~/.config/corp/".into()],
+            ..Default::default()
+        },
+        layers: vec![],
+        subscription: SubscriptionConfig {
+            accept_recommended: true,
+            ..Default::default()
+        },
+    };
+    let err = compose(&local, &[source]).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("/etc/sudoers") && msg.contains("corp"),
+        "compose must path-check policy-tier files: {msg}"
+    );
+}
+
+#[test]
+fn compose_rejects_required_tier_file_outside_allowed_paths() {
+    // Same path-escape via the `required` tier (no subscription.profile in play)
+    // — enforcement happens regardless of subscription.profile.
+    let local = make_local_profile();
+    let source = CompositionInput {
+        source_name: "corp".into(),
+        priority: 500,
+        policy: ConfigSourcePolicy {
+            required: PolicyItems {
+                files: vec![ManagedFileSpec {
+                    source: "rc".into(),
+                    target: "/etc/profile.d/corp.sh".into(),
+                    strategy: None,
+                    private: false,
+                    origin: None,
+                    encryption: None,
+                    permissions: None,
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        constraints: SourceConstraints {
+            allowed_target_paths: vec!["~/.config/corp/".into()],
+            ..Default::default()
+        },
+        layers: vec![],
+        subscription: SubscriptionConfig::default(),
+    };
+    let err = compose(&local, &[source]).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("/etc/profile.d/corp.sh") && msg.contains("corp"),
+        "compose must path-check required-tier files with no subscription profile: {msg}"
+    );
+}
+
+#[test]
+fn compose_rejects_local_override_of_locked_resource() {
+    // Local config managing a file the source has locked must abort.
+    let local = ResolvedProfile {
+        layers: vec![ProfileLayer {
+            source: "local".into(),
+            profile_name: "default".into(),
+            priority: 1000,
+            policy: LayerPolicy::Local,
+            spec: ProfileSpec::default(),
+        }],
+        merged: MergedProfile {
+            files: FilesSpec {
+                managed: vec![ManagedFileSpec {
+                    source: "local/policy.yaml".into(),
+                    target: "~/.config/company/security-policy.yaml".into(),
+                    strategy: None,
+                    private: false,
+                    origin: None,
+                    encryption: None,
+                    permissions: None,
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    };
+    let source = CompositionInput {
+        source_name: "corp".into(),
+        priority: 500,
+        policy: ConfigSourcePolicy {
+            locked: PolicyItems {
+                files: vec![ManagedFileSpec {
+                    source: "corp/policy.yaml".into(),
+                    target: "~/.config/company/security-policy.yaml".into(),
+                    strategy: None,
+                    private: false,
+                    origin: None,
+                    encryption: None,
+                    permissions: None,
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        constraints: SourceConstraints::default(),
+        layers: vec![],
+        subscription: SubscriptionConfig::default(),
+    };
+    let err = compose(&local, &[source]).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("security-policy.yaml") && msg.contains("corp"),
+        "compose must abort when local overrides a locked resource: {msg}"
+    );
+}
+
+#[test]
+fn compose_rejects_unknown_reject_key() {
+    let local = make_local_profile();
+    let mut source = make_source_input("acme", 500);
+    source.subscription.reject = serde_yaml::from_str(
+        r#"
+        packagess:
+          brew:
+            formulae:
+              - stern
+        "#,
+    )
+    .unwrap();
+    let err = compose(&local, &[source]).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("packagess") && msg.contains("acme"),
+        "compose must reject a typo'd reject key: {msg}"
+    );
+}
+
+#[test]
+fn compose_accepts_valid_reject_mapping() {
+    let local = make_local_profile();
+    let mut source = make_source_input("acme", 500);
+    source.subscription.reject = serde_yaml::from_str(
+        r#"
+        packages:
+          brew:
+            formulae:
+              - stern
+        "#,
+    )
+    .unwrap();
+    let result = compose(&local, &[source]).unwrap();
+    let brew = result.resolved.merged.packages.brew.as_ref().unwrap();
+    assert!(brew.formulae.contains(&"k9s".into()));
+    assert!(!brew.formulae.contains(&"stern".into()));
+}
+
+#[test]
+fn compose_accepts_compliant_source() {
+    // A compliant source: no scripts, files within allowedTargetPaths. Guards
+    // against over-rejection by the chokepoint.
+    let local = make_local_profile();
+    let source = CompositionInput {
+        source_name: "corp".into(),
+        priority: 500,
+        policy: ConfigSourcePolicy {
+            required: PolicyItems {
+                files: vec![ManagedFileSpec {
+                    source: "corp/policy.yaml".into(),
+                    target: "~/.config/corp/policy.yaml".into(),
+                    strategy: None,
+                    private: false,
+                    origin: None,
+                    encryption: None,
+                    permissions: None,
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        constraints: SourceConstraints {
+            no_scripts: true,
+            allowed_target_paths: vec!["~/.config/corp/".into()],
+            ..Default::default()
+        },
+        layers: vec![ProfileLayer {
+            source: "corp".into(),
+            profile_name: "corp/base".into(),
+            priority: 500,
+            policy: LayerPolicy::Recommended,
+            spec: ProfileSpec {
+                env: vec![EnvVar {
+                    name: "CORP".into(),
+                    value: "1".into(),
+                }],
+                ..Default::default()
+            },
+        }],
+        subscription: SubscriptionConfig {
+            accept_recommended: true,
+            ..Default::default()
+        },
+    };
+    let result = compose(&local, &[source]).unwrap();
+    assert!(
+        result
+            .resolved
+            .merged
+            .files
+            .managed
+            .iter()
+            .any(|f| f.target.to_string_lossy().contains("corp/policy.yaml")),
+        "compliant source must compose successfully"
+    );
 }
