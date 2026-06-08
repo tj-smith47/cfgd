@@ -3664,6 +3664,114 @@ fn rollback_restores_file_content() {
 }
 
 #[test]
+fn rollback_removes_files_created_by_later_apply() {
+    // Contract: apply A creates F (v1). Apply B updates F->v2 AND creates G.
+    // rollback(A) must restore F to v1 AND remove G (G did not exist when A
+    // completed). This mirrors the exact backup mechanics apply.rs performs:
+    // pre-action backups (existed=1 for an existing target, an absent marker
+    // for a CREATE), plus post-apply resolved-content snapshots.
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("f.txt");
+    let g = dir.path().join("g.txt");
+    let f_path = f.display().to_string();
+    let g_path = g.display().to_string();
+
+    let state = test_state();
+
+    // Apply A: creates F with v1. No prior state -> absent marker for F.
+    let apply_a = state
+        .record_apply("test", "hashA", ApplyStatus::Success, None)
+        .unwrap();
+    state.store_absent_backup(apply_a, &f_path).unwrap();
+    let ja = state
+        .journal_begin(
+            apply_a,
+            0,
+            "files",
+            "file",
+            &format!("file:create:{}", f.display()),
+            None,
+        )
+        .unwrap();
+    state.journal_complete(ja, None, None).unwrap();
+    std::fs::write(&f, "v1").unwrap();
+    // Post-apply snapshot for A captures F at v1.
+    let f_snap_a = crate::capture_file_resolved_state(&f).unwrap().unwrap();
+    state
+        .store_file_backup(apply_a, &f_path, &f_snap_a)
+        .unwrap();
+
+    // Apply B: updates F->v2 (pre-action backup of existing F=v1) and creates G
+    // (absent marker). Post-apply snapshots capture F=v2 and G content.
+    let apply_b = state
+        .record_apply("test", "hashB", ApplyStatus::Success, None)
+        .unwrap();
+    let f_pre_b = crate::capture_file_state(&f).unwrap().unwrap();
+    state.store_file_backup(apply_b, &f_path, &f_pre_b).unwrap();
+    let jb_f = state
+        .journal_begin(
+            apply_b,
+            0,
+            "files",
+            "file",
+            &format!("file:update:{}", f.display()),
+            None,
+        )
+        .unwrap();
+    state.journal_complete(jb_f, None, None).unwrap();
+    std::fs::write(&f, "v2").unwrap();
+
+    state.store_absent_backup(apply_b, &g_path).unwrap();
+    let jb_g = state
+        .journal_begin(
+            apply_b,
+            1,
+            "files",
+            "file",
+            &format!("file:create:{}", g.display()),
+            None,
+        )
+        .unwrap();
+    state.journal_complete(jb_g, None, None).unwrap();
+    std::fs::write(&g, "g-content").unwrap();
+
+    // Post-apply snapshots for B.
+    let f_snap_b = crate::capture_file_resolved_state(&f).unwrap().unwrap();
+    state
+        .store_file_backup(apply_b, &f_path, &f_snap_b)
+        .unwrap();
+    let g_snap_b = crate::capture_file_resolved_state(&g).unwrap().unwrap();
+    state
+        .store_file_backup(apply_b, &g_path, &g_snap_b)
+        .unwrap();
+
+    // Rollback to A.
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state);
+    let printer = test_printer();
+    let result = reconciler.rollback_apply(apply_a, &printer).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(&f).unwrap(),
+        "v1",
+        "F must be restored to v1"
+    );
+    assert!(
+        !g.exists(),
+        "G must be removed (did not exist when A completed)"
+    );
+    assert!(
+        result.files_removed >= 1,
+        "files_removed must count G's removal, got {}",
+        result.files_removed
+    );
+
+    // A new rollback apply row must be recorded.
+    let last = state.last_apply().unwrap().unwrap();
+    assert_eq!(last.profile, "rollback");
+}
+
+#[test]
 fn rollback_no_changes_when_at_latest_apply() {
     // Rollback to the most recent apply with no subsequent applies
     // should produce no changes (system is already at that state).
@@ -8893,9 +9001,14 @@ fn rollback_removes_file_created_after_target_apply() {
         .update_apply_status(apply_id_1, ApplyStatus::Success, None)
         .unwrap();
 
-    // Apply 2: creates new-file.txt (file didn't exist before)
+    // Apply 2: creates new-file.txt (file didn't exist before). Apply records
+    // an absent marker as the pre-action backup of the CREATE — the durable
+    // fact rollback uses to remove the file.
     let apply_id_2 = state
         .record_apply("default", "hash-2", ApplyStatus::InProgress, None)
+        .unwrap();
+    state
+        .store_absent_backup(apply_id_2, &created_file.display().to_string())
         .unwrap();
     let j_id = state
         .journal_begin(

@@ -363,6 +363,75 @@ fn prompt_restore_backups_removes_existing_target_before_renaming_backup() {
 }
 
 #[test]
+fn restore_or_remove_deployed_files_uses_shared_existed_semantics() {
+    // The module-cleanup loop must route through the shared reconciler restore
+    // path: a content backup is restored, an absent marker (existed=false)
+    // removes the file, and a path with no backup is removed.
+    use cfgd_core::state::StateStore;
+
+    let dir = tempfile::tempdir().unwrap();
+    let restored = dir.path().join("restored.conf");
+    let absent = dir.path().join("created-later.conf");
+    let no_backup = dir.path().join("orphan.conf");
+
+    // Current on-disk state before cleanup.
+    std::fs::write(&restored, b"modified").unwrap();
+    std::fs::write(&absent, b"created-by-later-apply").unwrap();
+    std::fs::write(&no_backup, b"orphaned-deploy").unwrap();
+
+    let state = StateStore::open_in_memory().unwrap();
+    let apply_id = state
+        .record_apply("test", "h", cfgd_core::state::ApplyStatus::Success, None)
+        .unwrap();
+
+    // `restored.conf`: content backup → must be restored to "original".
+    let backup_state = cfgd_core::FileState {
+        content: b"original".to_vec(),
+        content_hash: cfgd_core::sha256_hex(b"original"),
+        permissions: None,
+        is_symlink: false,
+        symlink_target: None,
+        oversized: false,
+    };
+    state
+        .store_file_backup(apply_id, &restored.display().to_string(), &backup_state)
+        .unwrap();
+    // `created-later.conf`: absent marker → must be removed.
+    state
+        .store_absent_backup(apply_id, &absent.display().to_string())
+        .unwrap();
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let paths = [
+        restored.display().to_string(),
+        absent.display().to_string(),
+        no_backup.display().to_string(),
+    ];
+    let path_refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+    {
+        let section = printer.section("Rollback");
+        restore_or_remove_deployed_files(&path_refs, &state, &section, &printer);
+    }
+    drop(printer);
+
+    assert_eq!(
+        std::fs::read(&restored).unwrap(),
+        b"original",
+        "content backup must be restored"
+    );
+    assert!(
+        !absent.exists(),
+        "absent-marked file must be removed (undo a later CREATE)"
+    );
+    assert!(!no_backup.exists(), "file with no backup must be removed");
+
+    let out = buf.lock().unwrap();
+    assert!(out.contains("Restored"), "must announce restore: {out}");
+    assert!(out.contains("Removed"), "must announce removal: {out}");
+}
+
+#[test]
 fn collect_module_file_targets_local_module() {
     let dir = tempfile::tempdir().unwrap();
     let module_dir = dir.path().join("modules").join("test-mod");
@@ -2907,9 +2976,8 @@ mod profile_update_module_cleanup {
     #[test]
     #[serial]
     fn remove_module_with_prompt_yes_and_no_backup_removes_deployed_file() {
-        // Branch C of update.rs:184-193 — `latest_backup_for_path` returns
-        // Ok(None) → fall through to the `path.exists()` arm → file is
-        // physically removed.
+        // No backup recorded: `latest_backup_for_path` returns Ok(None) → the
+        // cleanup falls through to the `path.exists()` arm and removes the file.
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());
 
@@ -2943,11 +3011,10 @@ mod profile_update_module_cleanup {
     #[test]
     #[serial]
     fn remove_module_with_prompt_yes_restores_content_from_backup() {
-        // Branch B of update.rs:172-183 — backup exists with non-empty,
-        // not-oversized content; the restore loop atomic_writes the backup
-        // content back to the deployed path. The post-removal file content
-        // must match the staged backup content (not the prior deployed
-        // content).
+        // Backup exists with non-empty, not-oversized content (existed=true):
+        // the shared restore path writes the backup content back to the
+        // deployed path. The post-removal file content must match the staged
+        // backup content (not the prior deployed content).
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());
 
@@ -3000,9 +3067,10 @@ mod profile_update_module_cleanup {
     #[test]
     #[serial]
     fn remove_module_with_prompt_yes_restores_symlink_from_backup() {
-        // Branch A of update.rs:152-171 — backup has was_symlink=true with
-        // a symlink_target. The restore loop removes whatever is at the
-        // deployed path and create_symlinks the original target back.
+        // Backup has was_symlink=true with a symlink_target and empty content
+        // (a legacy symlink backup): the shared restore path removes whatever
+        // is at the deployed path and recreates the symlink to the original
+        // target.
         let tmp = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp.path());
 
@@ -3055,7 +3123,7 @@ mod profile_update_module_cleanup {
         );
         let out = buf.lock().unwrap().clone();
         assert!(
-            out.contains("Restored symlink:") && out.contains("deployed-symlink"),
+            out.contains("Restored:") && out.contains("deployed-symlink"),
             "should announce the symlink restore: {out}"
         );
     }

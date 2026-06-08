@@ -37,11 +37,13 @@ This enables rollback of partially failed applies.
 
 ## Rollback
 
-If an apply fails partway through, cfgd can restore files to their state before apply:
+`cfgd rollback <apply-id>` restores files to the state that existed immediately
+after the target apply — whether to recover a partially failed apply or to undo
+a later one:
 
-- File actions are rolled back in reverse order
-- Backed-up content is restored via atomic write
-- Newly created files (no backup) are removed
+- Backed-up content is restored via atomic write (an empty managed file is
+  restored as empty, not removed)
+- Files created by a later apply — absent when the target apply completed — are removed
 - Package installs and system changes require manual review (listed in output)
 
 Rollback is available for any apply that has backups in the state store.

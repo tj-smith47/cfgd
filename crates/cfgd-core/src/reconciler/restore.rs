@@ -6,22 +6,55 @@ use super::types::{Action, EnvAction};
 
 /// Outcome of a single file restoration during rollback.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum RestoreOutcome {
+pub enum RestoreOutcome {
+    /// The backup content (or symlink) was written to the target.
     Restored,
+    /// The target was deleted because the backup marks it as not-yet-existing.
     Removed,
+    /// No change: the target already matched, or the record can't be restored
+    /// (oversized content) and the target is absent.
     Skipped,
+    /// Restore was attempted but failed; a warning was already emitted.
     Failed,
 }
 
-/// Restore a single file from a backup record. Used by `rollback_apply`.
-pub(super) fn restore_file_from_backup(
+/// Restore a single file from a backup record.
+///
+/// Drives both the `rollback` command and the profile-update module cleanup
+/// path. An `existed=false` backup removes the target (undoing a later CREATE);
+/// otherwise the recorded content, symlink, and permissions are restored.
+/// Warnings are emitted via `printer`; the caller maps the returned
+/// [`RestoreOutcome`] onto its own status lines.
+pub fn restore_file_from_backup(
     target: &std::path::Path,
     bk: &crate::state::FileBackupRecord,
     printer: &crate::output::Printer,
 ) -> RestoreOutcome {
-    // Backup has content — write it (works for both regular files and symlink snapshots
-    // where the resolved content was captured)
-    if !bk.oversized && !bk.content.is_empty() {
+    // The file did not exist at backup time (an absent marker) — remove it so
+    // rollback undoes a later apply's CREATE rather than restoring stale
+    // content. This is the durable replacement for the old empty-content
+    // heuristic, which both missed real CREATEs and wrongly removed genuinely
+    // empty managed files.
+    if !bk.existed {
+        if target.exists() {
+            if let Err(e) = std::fs::remove_file(target) {
+                printer.status_simple(
+                    Role::Warn,
+                    format!("rollback: failed to remove {}: {}", target.posix(), e),
+                );
+                return RestoreOutcome::Failed;
+            }
+            return RestoreOutcome::Removed;
+        }
+        return RestoreOutcome::Skipped;
+    }
+
+    // Backup has restorable content — write it (works for both regular files
+    // and symlink snapshots where the resolved content was captured). Empty
+    // content for an existed file is a genuine 0-byte managed file and must be
+    // written, not removed. Excluded: oversized rows (content not captured) and
+    // content-less legacy symlink backups (handled by the symlink branch below).
+    if !(bk.oversized || bk.was_symlink && bk.content.is_empty()) {
         // Check if the current resolved content already matches the backup — skip if so
         if let Ok(Some(current)) = crate::capture_file_resolved_state(target)
             && current.content == bk.content
@@ -116,18 +149,6 @@ pub(super) fn restore_file_from_backup(
         return RestoreOutcome::Restored;
     }
 
-    // Empty content, not symlink, not oversized — file didn't exist before
-    if bk.content.is_empty() && !bk.was_symlink && !bk.oversized && target.exists() {
-        if let Err(e) = std::fs::remove_file(target) {
-            printer.status_simple(
-                Role::Warn,
-                format!("rollback: failed to remove {}: {}", target.posix(), e),
-            );
-            return RestoreOutcome::Failed;
-        }
-        return RestoreOutcome::Removed;
-    }
-
     RestoreOutcome::Skipped
 }
 
@@ -169,6 +190,7 @@ mod tests {
             symlink_target: None,
             oversized: false,
             backed_up_at: crate::utc_now_iso8601(),
+            existed: true,
         }
     }
 
@@ -213,6 +235,46 @@ mod tests {
         );
         let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "restore must apply requested permission bits");
+    }
+
+    #[test]
+    fn restore_removes_target_when_backup_marked_absent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let target = tmp.path().join("created-later.txt");
+        std::fs::write(&target, b"some content").unwrap();
+
+        let mut bk = record(&target, b"", None);
+        bk.existed = false;
+        let printer = quiet_printer();
+
+        assert_eq!(
+            restore_file_from_backup(&target, &bk, &printer),
+            RestoreOutcome::Removed
+        );
+        assert!(
+            !target.exists(),
+            "absent-marked backup must remove the file"
+        );
+    }
+
+    #[test]
+    fn restore_writes_empty_file_for_existed_empty_backup() {
+        // A genuinely empty managed file (existed=true, content empty) must be
+        // written as a 0-byte file, NOT removed — guards the latent bug where
+        // empty content was treated as "did not exist".
+        let tmp = tempfile::TempDir::new().unwrap();
+        let target = tmp.path().join("empty-managed.txt");
+        std::fs::write(&target, b"stale content").unwrap();
+
+        let bk = record(&target, b"", None);
+        let printer = quiet_printer();
+
+        assert_eq!(
+            restore_file_from_backup(&target, &bk, &printer),
+            RestoreOutcome::Restored
+        );
+        assert!(target.exists(), "existed empty backup must write a file");
+        assert_eq!(std::fs::read(&target).unwrap(), b"");
     }
 
     #[test]

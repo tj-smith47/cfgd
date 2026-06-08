@@ -171,74 +171,9 @@ pub fn cmd_profile_update(
 
                         if should_clean {
                             let cleanup_sec = printer.section("Rollback");
-                            for f in &manifest {
-                                let path = std::path::Path::new(&f.file_path);
-                                // Try to restore from backup store
-                                if let Ok(Some(backup)) = state.latest_backup_for_path(&f.file_path)
-                                {
-                                    if backup.was_symlink {
-                                        if let Err(e) = std::fs::remove_file(path) {
-                                            cleanup_sec.status_simple(
-                                                Role::Warn,
-                                                format!(
-                                                    "rollback: failed to remove {}: {}",
-                                                    f.file_path, e
-                                                ),
-                                            );
-                                        }
-                                        if let Some(ref link_target) = backup.symlink_target
-                                            && let Err(e) = cfgd_core::create_symlink(
-                                                std::path::Path::new(link_target),
-                                                path,
-                                            )
-                                        {
-                                            cleanup_sec.status_simple(
-                                                Role::Warn,
-                                                format!(
-                                                    "rollback: failed to restore symlink {}: {}",
-                                                    f.file_path, e
-                                                ),
-                                            );
-                                        }
-                                        cleanup_sec.status_simple(
-                                            Role::Ok,
-                                            format!("Restored symlink: {}", f.file_path),
-                                        );
-                                    } else if !backup.oversized && !backup.content.is_empty() {
-                                        if let Err(e) =
-                                            cfgd_core::atomic_write(path, &backup.content)
-                                        {
-                                            cleanup_sec.status_simple(
-                                                Role::Warn,
-                                                format!(
-                                                    "rollback: failed to restore {}: {}",
-                                                    f.file_path, e
-                                                ),
-                                            );
-                                        } else {
-                                            cleanup_sec.status_simple(
-                                                Role::Ok,
-                                                format!("Restored: {}", f.file_path),
-                                            );
-                                        }
-                                    }
-                                } else if path.exists() || path.symlink_metadata().is_ok() {
-                                    if let Err(e) = std::fs::remove_file(path) {
-                                        cleanup_sec.status_simple(
-                                            Role::Warn,
-                                            format!(
-                                                "rollback: failed to remove {}: {}",
-                                                f.file_path, e
-                                            ),
-                                        );
-                                    } else {
-                                        cleanup_sec.status_simple(
-                                            Role::Ok,
-                                            format!("Removed: {}", f.file_path),
-                                        );
-                                    }
-                                }
-                            }
+                            let paths: Vec<&str> =
+                                manifest.iter().map(|f| f.file_path.as_str()).collect();
+                            restore_or_remove_deployed_files(&paths, &state, &cleanup_sec, printer);
                         }
                     }
                     if let Err(e) = state.delete_module_files(m) {

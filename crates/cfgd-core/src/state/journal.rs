@@ -49,14 +49,34 @@ impl StateStore {
         Ok(())
     }
 
-    /// Get completed actions for an apply (for rollback).
-    pub fn journal_completed_actions(&self, apply_id: i64) -> Result<Vec<JournalEntry>> {
-        self.query_journal(apply_id, Some("completed"))
-    }
-
     /// Get all journal entries for an apply (all statuses).
     pub fn journal_entries(&self, apply_id: i64) -> Result<Vec<JournalEntry>> {
-        self.query_journal(apply_id, None)
+        let mut stmt = self.conn.prepare(
+            "SELECT id, apply_id, action_index, phase, action_type, resource_id, pre_state, post_state, status, error, started_at, completed_at, script_output
+             FROM apply_journal WHERE apply_id = ?1 ORDER BY action_index",
+        )?;
+
+        let records = stmt
+            .query_map(params![apply_id], |row| {
+                Ok(JournalEntry {
+                    id: row.get(0)?,
+                    apply_id: row.get(1)?,
+                    action_index: row.get(2)?,
+                    phase: row.get(3)?,
+                    action_type: row.get(4)?,
+                    resource_id: row.get(5)?,
+                    pre_state: row.get(6)?,
+                    post_state: row.get(7)?,
+                    status: row.get(8)?,
+                    error: row.get(9)?,
+                    started_at: row.get(10)?,
+                    completed_at: row.get(11)?,
+                    script_output: row.get(12)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        Ok(records)
     }
 
     /// Get all journal entries from applies after the given ID, for rollback tracking.
@@ -87,49 +107,5 @@ impl StateStore {
             .collect::<std::result::Result<Vec<_>, _>>()?;
 
         Ok(records)
-    }
-
-    fn query_journal(
-        &self,
-        apply_id: i64,
-        status_filter: Option<&str>,
-    ) -> Result<Vec<JournalEntry>> {
-        let base_sql = if status_filter.is_some() {
-            "SELECT id, apply_id, action_index, phase, action_type, resource_id, pre_state, post_state, status, error, started_at, completed_at, script_output
-             FROM apply_journal WHERE apply_id = ?1 AND status = ?2 ORDER BY action_index"
-        } else {
-            "SELECT id, apply_id, action_index, phase, action_type, resource_id, pre_state, post_state, status, error, started_at, completed_at, script_output
-             FROM apply_journal WHERE apply_id = ?1 ORDER BY action_index"
-        };
-
-        let mut stmt = self.conn.prepare(base_sql)?;
-
-        let map_row = |row: &rusqlite::Row| -> rusqlite::Result<JournalEntry> {
-            Ok(JournalEntry {
-                id: row.get(0)?,
-                apply_id: row.get(1)?,
-                action_index: row.get(2)?,
-                phase: row.get(3)?,
-                action_type: row.get(4)?,
-                resource_id: row.get(5)?,
-                pre_state: row.get(6)?,
-                post_state: row.get(7)?,
-                status: row.get(8)?,
-                error: row.get(9)?,
-                started_at: row.get(10)?,
-                completed_at: row.get(11)?,
-                script_output: row.get(12)?,
-            })
-        };
-
-        let entries: Vec<JournalEntry> = if let Some(status) = status_filter {
-            stmt.query_map(params![apply_id, status], map_row)?
-                .collect::<std::result::Result<Vec<_>, _>>()?
-        } else {
-            stmt.query_map(params![apply_id], map_row)?
-                .collect::<std::result::Result<Vec<_>, _>>()?
-        };
-
-        Ok(entries)
     }
 }

@@ -37,6 +37,48 @@ pub(crate) fn collect_module_file_targets(module_name: &str, config_dir: &Path) 
     Vec::new()
 }
 
+/// Restore (or remove) each deployed file during module cleanup, routing
+/// through the shared reconciler restore path so `existed`/content/symlink
+/// semantics stay identical to the `rollback` command.
+///
+/// For a path with a recorded backup, the restore outcome drives the status
+/// line; with no backup, the deployed file is simply removed. Status lines
+/// render inside `section`; restore-path warnings go through `printer`.
+pub(crate) fn restore_or_remove_deployed_files(
+    paths: &[&str],
+    state: &cfgd_core::state::StateStore,
+    section: &cfgd_core::output::section_guard::SectionGuard<'_>,
+    printer: &cfgd_core::output::Printer,
+) {
+    for file_path in paths {
+        let path = Path::new(file_path);
+        if let Ok(Some(backup)) = state.latest_backup_for_path(file_path) {
+            match cfgd_core::reconciler::restore_file_from_backup(path, &backup, printer) {
+                cfgd_core::reconciler::RestoreOutcome::Restored => {
+                    section.status_simple(Role::Ok, format!("Restored: {file_path}"));
+                }
+                cfgd_core::reconciler::RestoreOutcome::Removed => {
+                    section.status_simple(Role::Ok, format!("Removed: {file_path}"));
+                }
+                // Skipped: target already matched, nothing to report.
+                // Failed: a warning was already emitted by the restore path.
+                cfgd_core::reconciler::RestoreOutcome::Skipped
+                | cfgd_core::reconciler::RestoreOutcome::Failed => {}
+            }
+        } else if path.exists() || path.symlink_metadata().is_ok() {
+            // No backup recorded — just remove the deployed file.
+            if let Err(e) = std::fs::remove_file(path) {
+                section.status_simple(
+                    Role::Warn,
+                    format!("rollback: failed to remove {file_path}: {e}"),
+                );
+            } else {
+                section.status_simple(Role::Ok, format!("Removed: {file_path}"));
+            }
+        }
+    }
+}
+
 /// After removing a module, check if any of its file targets have `.cfgd-backup` files
 /// and prompt the user to restore them.
 pub(crate) fn prompt_restore_backups(

@@ -160,6 +160,10 @@ pub struct FileBackupRecord {
     pub symlink_target: Option<String>,
     pub oversized: bool,
     pub backed_up_at: String,
+    /// Whether the file existed at backup time. `false` marks a pre-action
+    /// backup of a CREATE action; rollback removes such files rather than
+    /// restoring their (empty) content.
+    pub existed: bool,
 }
 
 /// A journal entry for a single action within an apply. Internal-only DAO;

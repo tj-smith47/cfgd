@@ -207,16 +207,42 @@ impl<'a> super::Reconciler<'a> {
                 let desc_for_journal = format_action_description(action);
                 let (action_type, resource_id) = parse_resource_from_description(&desc_for_journal);
 
-                // Capture file state before overwrite (for backup)
-                if let Some(ref path) = action_target_path(action)
-                    && let Ok(Some(file_state)) = crate::capture_file_state(path)
-                    && let Err(e) = self.state.store_file_backup(
-                        apply_id,
-                        &path.display().to_string(),
-                        &file_state,
-                    )
-                {
-                    tracing::warn!("failed to store file backup for {}: {}", path.posix(), e);
+                // Capture file state before overwrite (for backup). A target
+                // that does not yet exist (a CREATE) gets an absent marker so
+                // rollback removes it rather than restoring a later apply's
+                // post-apply snapshot.
+                if let Some(ref path) = action_target_path(action) {
+                    let path_str = path.display().to_string();
+                    match crate::capture_file_state(path) {
+                        Ok(Some(file_state)) => {
+                            if let Err(e) =
+                                self.state
+                                    .store_file_backup(apply_id, &path_str, &file_state)
+                            {
+                                tracing::warn!(
+                                    "failed to store file backup for {}: {}",
+                                    path.posix(),
+                                    e
+                                );
+                            }
+                        }
+                        Ok(None) => {
+                            if let Err(e) = self.state.store_absent_backup(apply_id, &path_str) {
+                                tracing::warn!(
+                                    "failed to store absent marker for {}: {}",
+                                    path.posix(),
+                                    e
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "failed to capture file state for backup of {}: {}",
+                                path.posix(),
+                                e
+                            );
+                        }
+                    }
                 }
 
                 // Journal: record action start

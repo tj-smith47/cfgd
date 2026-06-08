@@ -14,8 +14,8 @@ impl StateStore {
     ) -> Result<()> {
         let timestamp = crate::utc_now_iso8601();
         self.conn.execute(
-            "INSERT INTO file_backups (apply_id, file_path, content_hash, content, permissions, was_symlink, symlink_target, oversized, backed_up_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO file_backups (apply_id, file_path, content_hash, content, permissions, was_symlink, symlink_target, oversized, backed_up_at, existed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1)",
             params![
                 apply_id,
                 file_path,
@@ -31,6 +31,28 @@ impl StateStore {
         Ok(())
     }
 
+    /// Record that a file did not exist at backup time (an absent marker).
+    ///
+    /// Used as the pre-action backup of a CREATE action: there is no prior
+    /// content to capture, so rollback must remove the file rather than
+    /// restore it. Stores `existed=0` with empty content and a `sha256("")`
+    /// hash so the row is self-consistent with the regular backup shape.
+    pub fn store_absent_backup(&self, apply_id: i64, file_path: &str) -> Result<()> {
+        let timestamp = crate::utc_now_iso8601();
+        self.conn.execute(
+            "INSERT INTO file_backups (apply_id, file_path, content_hash, content, permissions, was_symlink, symlink_target, oversized, backed_up_at, existed)
+             VALUES (?1, ?2, ?3, ?4, NULL, 0, NULL, 0, ?5, 0)",
+            params![
+                apply_id,
+                file_path,
+                crate::sha256_hex(b""),
+                Vec::<u8>::new(),
+                timestamp,
+            ],
+        )?;
+        Ok(())
+    }
+
     /// Get a file backup by apply_id and path.
     pub fn get_file_backup(
         &self,
@@ -38,7 +60,7 @@ impl StateStore {
         file_path: &str,
     ) -> Result<Option<FileBackupRecord>> {
         let result = self.conn.query_row(
-            "SELECT id, apply_id, file_path, content_hash, content, permissions, was_symlink, symlink_target, oversized, backed_up_at
+            "SELECT id, apply_id, file_path, content_hash, content, permissions, was_symlink, symlink_target, oversized, backed_up_at, existed
              FROM file_backups WHERE apply_id = ?1 AND file_path = ?2",
             params![apply_id, file_path],
             |row| {
@@ -53,6 +75,7 @@ impl StateStore {
                     symlink_target: row.get(7)?,
                     oversized: row.get::<_, i64>(8)? != 0,
                     backed_up_at: row.get(9)?,
+                    existed: row.get::<_, i64>(10)? != 0,
                 })
             },
         );
@@ -67,7 +90,7 @@ impl StateStore {
     /// Get all file backups for a specific apply (for full rollback).
     pub fn get_apply_backups(&self, apply_id: i64) -> Result<Vec<FileBackupRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, apply_id, file_path, content_hash, content, permissions, was_symlink, symlink_target, oversized, backed_up_at
+            "SELECT id, apply_id, file_path, content_hash, content, permissions, was_symlink, symlink_target, oversized, backed_up_at, existed
              FROM file_backups WHERE apply_id = ?1 ORDER BY id",
         )?;
 
@@ -84,6 +107,7 @@ impl StateStore {
                     symlink_target: row.get(7)?,
                     oversized: row.get::<_, i64>(8)? != 0,
                     backed_up_at: row.get(9)?,
+                    existed: row.get::<_, i64>(10)? != 0,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -94,7 +118,7 @@ impl StateStore {
     /// Get the most recent backup for a file path (for restore after removal).
     pub fn latest_backup_for_path(&self, file_path: &str) -> Result<Option<FileBackupRecord>> {
         let result = self.conn.query_row(
-            "SELECT id, apply_id, file_path, content_hash, content, permissions, was_symlink, symlink_target, oversized, backed_up_at
+            "SELECT id, apply_id, file_path, content_hash, content, permissions, was_symlink, symlink_target, oversized, backed_up_at, existed
              FROM file_backups WHERE file_path = ?1 ORDER BY id DESC LIMIT 1",
             params![file_path],
             |row| {
@@ -109,6 +133,7 @@ impl StateStore {
                     symlink_target: row.get(7)?,
                     oversized: row.get::<_, i64>(8)? != 0,
                     backed_up_at: row.get(9)?,
+                    existed: row.get::<_, i64>(10)? != 0,
                 })
             },
         );
@@ -128,7 +153,7 @@ impl StateStore {
         // pick the backup with the smallest apply_id (earliest apply after target).
         let mut stmt = self.conn.prepare(
             "SELECT b.id, b.apply_id, b.file_path, b.content_hash, b.content, b.permissions,
-                    b.was_symlink, b.symlink_target, b.oversized, b.backed_up_at
+                    b.was_symlink, b.symlink_target, b.oversized, b.backed_up_at, b.existed
              FROM file_backups b
              INNER JOIN (
                  SELECT file_path, MIN(apply_id) AS min_apply_id
@@ -152,6 +177,7 @@ impl StateStore {
                     symlink_target: row.get(7)?,
                     oversized: row.get::<_, i64>(8)? != 0,
                     backed_up_at: row.get(9)?,
+                    existed: row.get::<_, i64>(10)? != 0,
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;

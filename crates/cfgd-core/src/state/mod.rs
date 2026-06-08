@@ -224,6 +224,12 @@ const MIGRATIONS: &[&str] = &[
     // marker without a synthetic apply row. "resolved" is now
     // `resolved_by IS NOT NULL OR resolved_at IS NOT NULL`.
     "ALTER TABLE drift_events ADD COLUMN resolved_at TEXT;",
+    // Migration 8: durably record whether a file existed at backup time. A
+    // pre-action backup of a CREATE action records existed=0 (an absent
+    // marker); rollback then removes such files instead of restoring stale
+    // content. DEFAULT 1 keeps every legacy row at today's content-restore
+    // behavior.
+    "ALTER TABLE file_backups ADD COLUMN existed INTEGER NOT NULL DEFAULT 1;",
 ];
 
 /// SQLite-backed state store for cfgd.

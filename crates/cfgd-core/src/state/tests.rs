@@ -925,21 +925,20 @@ fn journal_lifecycle() {
         .journal_complete(j3, None, Some("installed deps\nall good"))
         .unwrap();
 
-    let completed = store.journal_completed_actions(apply_id).unwrap();
-    assert_eq!(completed.len(), 2);
-    assert_eq!(completed[0].resource_id, "/home/user/.bashrc");
-    assert_eq!(completed[0].status, "completed");
-    assert!(completed[0].script_output.is_none());
-    assert_eq!(completed[1].resource_id, "setup.sh");
-    assert_eq!(
-        completed[1].script_output.as_deref(),
-        Some("installed deps\nall good")
-    );
-
-    // journal_entries returns all entries including failed ones
+    // journal_entries returns all entries (ordered by action_index), including
+    // failed ones, and preserves per-action status + captured script output.
     let all = store.journal_entries(apply_id).unwrap();
     assert_eq!(all.len(), 3);
+    assert_eq!(all[0].resource_id, "/home/user/.bashrc");
+    assert_eq!(all[0].status, "completed");
+    assert!(all[0].script_output.is_none());
     assert_eq!(all[1].status, "failed");
+    assert_eq!(all[2].resource_id, "setup.sh");
+    assert_eq!(all[2].status, "completed");
+    assert_eq!(
+        all[2].script_output.as_deref(),
+        Some("installed deps\nall good")
+    );
 }
 
 #[test]
@@ -1491,6 +1490,14 @@ fn migration_6_rebuilds_source_applies_preserving_rows_and_enabling_cascade() {
                 resource_id TEXT NOT NULL, expected TEXT, actual TEXT,
                 source TEXT NOT NULL DEFAULT 'local', resolved_by INTEGER,
                 FOREIGN KEY (resolved_by) REFERENCES applies(id));
+             CREATE TABLE file_backups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                apply_id INTEGER NOT NULL, file_path TEXT NOT NULL,
+                content_hash TEXT NOT NULL, content BLOB NOT NULL,
+                permissions INTEGER, was_symlink INTEGER NOT NULL DEFAULT 0,
+                symlink_target TEXT, oversized INTEGER NOT NULL DEFAULT 0,
+                backed_up_at TEXT NOT NULL,
+                FOREIGN KEY (apply_id) REFERENCES applies(id));
              CREATE TABLE schema_version (version INTEGER NOT NULL);
              INSERT INTO schema_version (version) VALUES (5);
              INSERT INTO config_sources (id, name, origin_url) VALUES (1, 'acme', 'u');
@@ -1586,6 +1593,131 @@ fn file_backups_after_apply_returns_earliest_per_path() {
     // Backups after apply3 should be empty
     let backups_after_3 = store.file_backups_after_apply(apply3).unwrap();
     assert!(backups_after_3.is_empty());
+}
+
+#[test]
+fn store_absent_backup_round_trips_with_existed_false() {
+    let store = StateStore::open_in_memory().unwrap();
+    let apply_id = store
+        .record_apply("test", "hash", ApplyStatus::Success, None)
+        .unwrap();
+
+    store
+        .store_absent_backup(apply_id, "/home/user/new-file")
+        .unwrap();
+
+    let backup = store
+        .get_file_backup(apply_id, "/home/user/new-file")
+        .unwrap()
+        .unwrap();
+    assert!(
+        !backup.existed,
+        "absent marker must record existed=false so rollback removes the file"
+    );
+    assert!(backup.content.is_empty());
+    assert_eq!(backup.content_hash, crate::sha256_hex(b""));
+    assert_eq!(backup.permissions, None);
+    assert!(!backup.was_symlink);
+    assert!(!backup.oversized);
+}
+
+#[test]
+fn store_file_backup_records_existed_true() {
+    let store = StateStore::open_in_memory().unwrap();
+    let apply_id = store
+        .record_apply("test", "hash", ApplyStatus::Success, None)
+        .unwrap();
+
+    let state = crate::FileState {
+        content: b"present".to_vec(),
+        content_hash: "h".into(),
+        permissions: Some(0o644),
+        is_symlink: false,
+        symlink_target: None,
+        oversized: false,
+    };
+    store
+        .store_file_backup(apply_id, "/home/user/present", &state)
+        .unwrap();
+
+    let backup = store
+        .get_file_backup(apply_id, "/home/user/present")
+        .unwrap()
+        .unwrap();
+    assert!(backup.existed, "real backups must record existed=true");
+}
+
+#[test]
+fn get_apply_backups_surfaces_existed_field() {
+    let store = StateStore::open_in_memory().unwrap();
+    let apply_id = store
+        .record_apply("test", "hash", ApplyStatus::Success, None)
+        .unwrap();
+
+    let present = crate::FileState {
+        content: b"x".to_vec(),
+        content_hash: "h".into(),
+        permissions: None,
+        is_symlink: false,
+        symlink_target: None,
+        oversized: false,
+    };
+    store
+        .store_file_backup(apply_id, "/present", &present)
+        .unwrap();
+    store.store_absent_backup(apply_id, "/absent").unwrap();
+
+    let backups = store.get_apply_backups(apply_id).unwrap();
+    let present_rec = backups.iter().find(|b| b.file_path == "/present").unwrap();
+    let absent_rec = backups.iter().find(|b| b.file_path == "/absent").unwrap();
+    assert!(present_rec.existed);
+    assert!(!absent_rec.existed);
+}
+
+#[test]
+fn file_backups_after_apply_surfaces_existed_field() {
+    let store = StateStore::open_in_memory().unwrap();
+    let apply1 = store
+        .record_apply("test", "h1", ApplyStatus::Success, None)
+        .unwrap();
+    let apply2 = store
+        .record_apply("test", "h2", ApplyStatus::Success, None)
+        .unwrap();
+
+    store.store_absent_backup(apply2, "/created-later").unwrap();
+
+    let backups = store.file_backups_after_apply(apply1).unwrap();
+    assert_eq!(backups.len(), 1);
+    assert_eq!(backups[0].file_path, "/created-later");
+    assert!(
+        !backups[0].existed,
+        "absent marker must surface existed=false through the rollback fallback query"
+    );
+}
+
+#[test]
+fn migration_8_defaults_existed_to_one_for_legacy_rows() {
+    // Legacy-shaped INSERTs that omit the `existed` column must default to 1
+    // so every pre-migration backup keeps today's content-restore behavior.
+    let store = StateStore::open_in_memory().unwrap();
+    let apply_id = store
+        .record_apply("test", "hash", ApplyStatus::Success, None)
+        .unwrap();
+
+    store
+        .conn
+        .execute(
+            "INSERT INTO file_backups (apply_id, file_path, content_hash, content, was_symlink, oversized, backed_up_at)
+             VALUES (?1, ?2, ?3, ?4, 0, 0, ?5)",
+            rusqlite::params![apply_id, "/legacy", "h", b"data".to_vec(), crate::utc_now_iso8601()],
+        )
+        .unwrap();
+
+    let backup = store.get_file_backup(apply_id, "/legacy").unwrap().unwrap();
+    assert!(
+        backup.existed,
+        "migration 8 default must keep legacy rows at existed=1"
+    );
 }
 
 // --- journal_entries_after_apply ---

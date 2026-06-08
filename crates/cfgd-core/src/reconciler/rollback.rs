@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
-use crate::PathDisplayExt;
 use crate::errors::Result;
-use crate::output::{Printer, Role};
+use crate::output::Printer;
 use crate::state::ApplyStatus;
 
 use super::restore::{RestoreOutcome, restore_file_from_backup};
@@ -11,9 +10,10 @@ use super::types::RollbackResult;
 impl<'a> super::Reconciler<'a> {
     /// Roll back completed file actions from a previous apply.
     ///
-    /// Restores files from backups in reverse order. Newly created files (no backup)
-    /// are deleted. Package installs and system changes are NOT rolled back — they
-    /// are listed in the output as requiring manual review.
+    /// Restores files to the state immediately after the target apply. Files
+    /// created by a later apply (recorded as absent markers) are deleted.
+    /// Package installs and system changes are NOT rolled back — they are
+    /// listed in the output as requiring manual review.
     pub fn rollback_apply(&self, apply_id: i64, printer: &Printer) -> Result<RollbackResult> {
         // Rollback restores the system to the state that existed AFTER the target apply.
         //
@@ -65,7 +65,9 @@ impl<'a> super::Reconciler<'a> {
             }
         }
 
-        // Fall back to earliest backup after target for remaining paths.
+        // Fall back to earliest backup after target for remaining paths. Files
+        // created by a later apply surface here as absent markers (existed=0),
+        // which restore_file_from_backup removes — undoing the CREATE.
         for bk in &after_backups {
             if restored_paths.contains(&bk.file_path) {
                 continue;
@@ -77,60 +79,6 @@ impl<'a> super::Reconciler<'a> {
                 RestoreOutcome::Restored => files_restored += 1,
                 RestoreOutcome::Removed => files_removed += 1,
                 RestoreOutcome::Skipped | RestoreOutcome::Failed => {}
-            }
-        }
-
-        // Handle files created by subsequent applies but not in target's snapshot.
-        for entry in &after_entries {
-            let is_file = entry.phase == "files"
-                || entry.action_type == "file"
-                || entry.resource_id.starts_with("file:");
-            if !is_file {
-                continue;
-            }
-
-            let actual_path = entry
-                .resource_id
-                .strip_prefix("file:create:")
-                .or_else(|| entry.resource_id.strip_prefix("file:update:"))
-                .or_else(|| entry.resource_id.strip_prefix("file:delete:"))
-                .unwrap_or(&entry.resource_id);
-
-            if restored_paths.contains(actual_path) {
-                continue;
-            }
-            restored_paths.insert(actual_path.to_string());
-
-            // If the file is in the target apply's snapshot, it was already handled by the
-            // earlier snapshot-restore pass. If not, check the journal to see if it existed
-            // at the target apply.
-            let target_entries = self.state.journal_completed_actions(apply_id)?;
-            let target_had_file = target_entries.iter().any(|e| {
-                let target_path = e
-                    .resource_id
-                    .strip_prefix("file:create:")
-                    .or_else(|| e.resource_id.strip_prefix("file:update:"))
-                    .or_else(|| e.resource_id.strip_prefix("file:delete:"))
-                    .unwrap_or(&e.resource_id);
-                target_path == actual_path
-            });
-
-            if !target_had_file && entry.resource_id.starts_with("file:create:") {
-                let target = std::path::Path::new(actual_path);
-                if target.exists() {
-                    if let Err(e) = std::fs::remove_file(target) {
-                        printer.status_simple(
-                            Role::Warn,
-                            format!(
-                                "rollback: failed to remove {}: {}",
-                                target.posix(),
-                                crate::output::collapse_to_subject_line(&e)
-                            ),
-                        );
-                    } else {
-                        files_removed += 1;
-                    }
-                }
             }
         }
 
