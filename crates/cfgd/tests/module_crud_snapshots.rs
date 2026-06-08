@@ -302,7 +302,7 @@ fn module_delete_happy_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    module::cmd_module_delete(&cli, &printer, "del-mod", true, false).unwrap();
+    module::cmd_module_delete(&cli, &printer, "del-mod", true, false, false).unwrap();
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
@@ -329,7 +329,7 @@ fn module_delete_cancelled_human() {
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(false)]);
 
-    module::cmd_module_delete(&cli, &printer, "cancel-mod", false, false).unwrap();
+    module::cmd_module_delete(&cli, &printer, "cancel-mod", false, false, false).unwrap();
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
@@ -349,7 +349,7 @@ fn module_delete_not_found_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = module::cmd_module_delete(&cli, &printer, "ghost", true, false)
+    let err = module::cmd_module_delete(&cli, &printer, "ghost", true, false, false)
         .expect_err("missing module must return Err");
     render_cli_error(&printer, &err);
     drop(printer);

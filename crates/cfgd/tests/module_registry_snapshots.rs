@@ -194,7 +194,7 @@ fn module_registry_remove_happy_human() {
         .unwrap();
 
     let (printer, cap) = Printer::for_test_doc();
-    module::cmd_module_registry_remove(&cli, &printer, "team").unwrap();
+    module::cmd_module_registry_remove(&cli, &printer, "team", false).unwrap();
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
@@ -217,7 +217,7 @@ fn module_registry_remove_not_found_human() {
     let cli = cli_for(config_dir.path(), config_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = module::cmd_module_registry_remove(&cli, &printer, "ghost")
+    let err = module::cmd_module_registry_remove(&cli, &printer, "ghost", false)
         .expect_err("missing registry must return Err");
     render_cli_error(&printer, &err);
     drop(printer);

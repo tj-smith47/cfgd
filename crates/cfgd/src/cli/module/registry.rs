@@ -745,7 +745,12 @@ pub fn cmd_module_registry_add(
     Ok(())
 }
 
-pub fn cmd_module_registry_remove(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<()> {
+pub fn cmd_module_registry_remove(
+    cli: &Cli,
+    printer: &Printer,
+    name: &str,
+    ignore_not_found: bool,
+) -> anyhow::Result<()> {
     printer.heading("Remove Module Registry");
 
     if !cli.config.exists() {
@@ -823,6 +828,9 @@ pub fn cmd_module_registry_remove(cli: &Cli, printer: &Printer, name: &str) -> a
         // no-op). The retain above was a no-op, so the rewritten config is
         // byte-identical — nothing was actually removed.
         RegistryRemoveOutcome::NotFound | RegistryRemoveOutcome::NoRegistries => {
+            if ignore_not_found {
+                return crate::cli::emit_not_found_ignored(printer, "registry", name);
+            }
             return Err(registry_not_found_error(name));
         }
     }

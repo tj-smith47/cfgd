@@ -97,6 +97,37 @@ pub fn cli_error_ctx_with_hints(
     source.context(meta(name, error_kind, message, extras, hints))
 }
 
+/// Emit the idempotent no-op success Doc for a `--ignore-not-found` removal of a
+/// resource that does not exist. The caller has already established that the
+/// named resource is absent AND the flag is set; this renders one success line
+/// (exit 0) instead of the strict not-found error.
+///
+/// Output shape is identical across every destructive verb — only `kind`
+/// (`"module"` / `"registry"` / `"source"` / `"profile"`) and `name` differ:
+/// - Human: `✓ {kind} '{name}' not found; nothing to remove (--ignore-not-found)`
+/// - Structured: `{"name": ..., "kind": ..., "removed": false, "reason": "not_found"}`
+pub fn emit_not_found_ignored(
+    printer: &cfgd_core::output::Printer,
+    kind: &str,
+    name: &str,
+) -> anyhow::Result<()> {
+    use cfgd_core::output::{Doc, Role};
+    printer.emit(
+        Doc::new()
+            .status(
+                Role::Ok,
+                format!("{kind} '{name}' not found; nothing to remove (--ignore-not-found)"),
+            )
+            .with_data(serde_json::json!({
+                "name": name,
+                "kind": kind,
+                "removed": false,
+                "reason": "not_found",
+            })),
+    );
+    Ok(())
+}
+
 /// Map an [`anyhow::Error`] to an exit code by downcasting through the `CfgdError`
 /// boundary. The downcast walks the whole error chain, so a `CfgdError` buried
 /// under a [`CliErrorMeta`] context layer (attached by [`cli_error_ctx`]) still

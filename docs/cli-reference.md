@@ -308,8 +308,14 @@ Open profile in `$EDITOR` with post-save validation.
 Delete a profile. Refuses if it's the active profile or inherited by others.
 
 ```sh
-cfgd profile delete dev --yes   # skip confirmation
+cfgd profile delete dev --yes               # skip confirmation
+cfgd profile delete dev --ignore-not-found  # exit 0 if dev doesn't exist
 ```
+
+`--ignore-not-found` makes removal of a missing profile a no-op that exits `0`
+(kubectl-style idempotent delete) instead of the strict not-found error
+(exit `6`). It only affects the not-found case — deleting the active profile
+still fails (exit `1`).
 
 ## Module Commands
 
@@ -392,15 +398,17 @@ Open module.yaml in `$EDITOR`.
 Delete a local module. Any files that were adopted (moved into the module and symlinked back) are automatically restored to their original locations before the module directory is removed.
 
 ```sh
-cfgd module delete nvim            # restores symlinked files, then deletes modules/nvim/
-cfgd module delete nvim -y         # skip confirmation
-cfgd module delete nvim --purge    # remove deployed target files instead of restoring them
+cfgd module delete nvim                   # restores symlinked files, then deletes modules/nvim/
+cfgd module delete nvim -y                 # skip confirmation
+cfgd module delete nvim --purge            # remove deployed target files instead of restoring them
+cfgd module delete nvim --ignore-not-found # exit 0 if nvim doesn't exist
 ```
 
 | Flag | Description |
 |---|---|
 | `--yes`, `-y` | Skip confirmation prompt |
 | `--purge` | Remove files deployed by this module to target locations instead of restoring symlinks |
+| `--ignore-not-found` | Exit `0` with a no-op message instead of erroring (exit `6`) when the module doesn't exist; the in-use guard (referenced by a profile) still applies |
 
 ### `cfgd module upgrade <name>`
 
@@ -426,8 +434,12 @@ cfgd module registry add https://github.com/cfgd-community/modules.git
 cfgd module registry add https://github.com/myorg/modules.git --name myorg
 cfgd module registry list
 cfgd module registry remove community
+cfgd module registry remove community --ignore-not-found  # exit 0 if absent
 cfgd module registry rename community cfgd-community
 ```
+
+`module registry remove --ignore-not-found` exits `0` with a no-op message
+instead of the strict not-found error (exit `6`) when the registry is absent.
 
 ## Source Commands
 
@@ -458,9 +470,13 @@ Remove a subscription. The source's cached clone (under
 re-subscription clones fresh rather than reusing stale contents.
 
 ```sh
-cfgd source remove acme-corp --keep-all    # keep resources as local
-cfgd source remove acme-corp --remove-all  # remove everything
+cfgd source remove acme-corp --keep-all          # keep resources as local
+cfgd source remove acme-corp --remove-all        # remove everything
+cfgd source remove acme-corp --ignore-not-found  # exit 0 if acme-corp isn't subscribed
 ```
+
+`--ignore-not-found` exits `0` with a no-op message instead of the strict
+not-found error (exit `6`) when no source by that name is subscribed.
 
 ### `cfgd source update [name]`
 
@@ -651,7 +667,7 @@ Scripted consumers rely on distinct exit codes to decide follow-up actions witho
 | `3` | No cfgd config file at the resolved path. | Any command when `--config` points to a missing file. |
 | `4` | Config file exists but failed parse or validation. | Any command when `--config` is malformed or schema-invalid. |
 | `5` | Drift detected between actual and desired state. | `cfgd diff --exit-code`, `cfgd status --exit-code`, `cfgd verify --exit-code`. |
-| `6` | A named resource was not found. | Any command naming a missing resource — e.g. `cfgd module show/delete/edit/export <missing>`, `cfgd profile show/switch/delete/edit/update <missing>`, `cfgd source show/update/remove/priority/override <missing>`, `cfgd module registry remove/rename <missing>`. |
+| `6` | A named resource was not found. | Any command naming a missing resource — e.g. `cfgd module show/delete/edit/export <missing>`, `cfgd profile show/switch/delete/edit/update <missing>`, `cfgd source show/update/remove/priority/override <missing>`, `cfgd module registry remove/rename <missing>`. The destructive verbs `module delete`, `module registry remove`, `source remove`, and `profile delete` accept `--ignore-not-found` to exit `0` instead when the target is absent. |
 | `7` | `apply` ran but at least one action failed (partial or total). | `cfgd apply` when one or more actions fail. |
 
 The `--exit-code` / `-e` flag on `diff`, `status`, and `verify` follows the `git diff --exit-code` convention: without the flag these commands always exit `0`; with the flag they exit `5` whenever drift is present.

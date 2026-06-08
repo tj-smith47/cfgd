@@ -58,7 +58,7 @@ fn source_remove_happy_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_remove(&cli, &printer, "team-config", false, true).unwrap();
+    cmd_source_remove(&cli, &printer, "team-config", false, true, false).unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -80,7 +80,7 @@ fn source_remove_happy_json() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_remove(&cli, &printer, "team-config", false, true).unwrap();
+    cmd_source_remove(&cli, &printer, "team-config", false, true, false).unwrap();
     drop(printer);
 
     let json = cap.json().expect("doc captured json");
@@ -100,7 +100,7 @@ fn source_remove_keep_all_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_source_remove(&cli, &printer, "team-config", true, false).unwrap();
+    cmd_source_remove(&cli, &printer, "team-config", true, false, false).unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -133,7 +133,7 @@ fn source_remove_cancelled_human() {
         "Cancel (abort remove)".into(),
     )]);
 
-    cmd_source_remove(&cli, &printer, "team-config", false, false).unwrap();
+    cmd_source_remove(&cli, &printer, "team-config", false, false, false).unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
@@ -163,7 +163,7 @@ fn source_remove_not_found_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_source_remove(&cli, &printer, "missing", false, true)
+    let err = cmd_source_remove(&cli, &printer, "missing", false, true, false)
         .expect_err("missing source must return Err");
     render_cli_error(&printer, &err);
     drop(printer);
@@ -193,7 +193,7 @@ fn source_remove_conflicting_flags_human() {
     let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) = Printer::for_test_doc();
 
-    let err = cmd_source_remove(&cli, &printer, "team-config", true, true)
+    let err = cmd_source_remove(&cli, &printer, "team-config", true, true, false)
         .expect_err("conflicting flags must return Err");
     render_cli_error(&printer, &err);
     drop(printer);

@@ -698,6 +698,7 @@ pub fn cmd_module_delete(
     name: &str,
     yes: bool,
     purge: bool,
+    ignore_not_found: bool,
 ) -> anyhow::Result<()> {
     validate_resource_name(name, "Module")?;
     printer.heading(format!("Delete Module: {}", name));
@@ -706,6 +707,9 @@ pub fn cmd_module_delete(
     let module_dir = config_dir.join("modules").join(name);
 
     if !module_dir.exists() {
+        if ignore_not_found {
+            return crate::cli::emit_not_found_ignored(printer, "module", name);
+        }
         // Carry the typed ModuleError::NotFound so the exit-code downcast resolves
         // to ExitCode::NotFound (6), uniform with every other named-resource miss.
         return Err(crate::cli::cli_error_ctx(

@@ -17,7 +17,7 @@ pub fn cmd_source_replace(
     let old_priority = old_source.map(|s| s.subscription.priority).unwrap_or(500);
 
     // Remove old source (keeping resources)
-    cmd_source_remove(cli, printer, old_name, true, false)?;
+    cmd_source_remove(cli, printer, old_name, true, false, false)?;
 
     // Add new source with same name, carrying over profile and priority
     cmd_source_add(

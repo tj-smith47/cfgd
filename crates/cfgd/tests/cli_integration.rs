@@ -1587,6 +1587,456 @@ fn exit_code_module_registry_rename_missing_is_6() {
     assert_eq!(v["error"], "registry_not_found");
 }
 
+// --- `--ignore-not-found` (kubectl-style idempotent delete opt-in) ---
+//
+// For each of the four destructive verbs, an absent named resource + the flag
+// is an exit-0 no-op carrying `{"removed":false,"reason":"not_found"}`; without
+// the flag the strict exit-6 not-found behavior is unchanged.
+
+/// Config WITH a registry so `module registry remove` exercises the
+/// NotFound (not NoRegistries) branch.
+fn config_with_registry(dir: &std::path::Path) {
+    std::fs::create_dir_all(dir.join("profiles")).unwrap();
+    std::fs::write(
+        dir.join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: base\n  modules:\n    registries:\n      - name: community\n        url: https://github.com/cfgd-community/modules.git\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("profiles/base.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec: {}\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn module_delete_missing_ignore_not_found_is_0() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+
+    // Human: exit 0, success line on stderr.
+    let human = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args([
+            "module",
+            "delete",
+            "--yes",
+            "--ignore-not-found",
+            "nosuchmod",
+        ])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(0);
+    let err = String::from_utf8_lossy(&human.get_output().stderr).to_string();
+    assert!(
+        err.contains("module 'nosuchmod' not found; nothing to remove (--ignore-not-found)"),
+        "human no-op line, got:\n{err}"
+    );
+
+    // JSON: exit 0, structured no-op payload on stdout.
+    let json = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args([
+            "-o",
+            "json",
+            "module",
+            "delete",
+            "--yes",
+            "--ignore-not-found",
+            "nosuchmod",
+        ])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(0);
+    let out = String::from_utf8_lossy(&json.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(v["removed"], false);
+    assert_eq!(v["reason"], "not_found");
+    assert_eq!(v["kind"], "module");
+    assert_eq!(v["name"], "nosuchmod");
+}
+
+#[test]
+fn module_delete_missing_without_flag_still_6() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["-o", "json", "module", "delete", "--yes", "nosuchmod"])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(6);
+    let out = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(v["error"], "not_found");
+}
+
+#[test]
+fn module_registry_remove_missing_ignore_not_found_is_0() {
+    let dir = tempfile::tempdir().unwrap();
+    config_with_registry(dir.path());
+
+    let human = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args([
+            "module",
+            "registry",
+            "remove",
+            "--ignore-not-found",
+            "nosuchreg",
+        ])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .assert()
+        .code(0);
+    let err = String::from_utf8_lossy(&human.get_output().stderr).to_string();
+    assert!(
+        err.contains("registry 'nosuchreg' not found; nothing to remove (--ignore-not-found)"),
+        "human no-op line, got:\n{err}"
+    );
+
+    let json = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args([
+            "-o",
+            "json",
+            "module",
+            "registry",
+            "remove",
+            "--ignore-not-found",
+            "nosuchreg",
+        ])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .assert()
+        .code(0);
+    let out = String::from_utf8_lossy(&json.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(v["removed"], false);
+    assert_eq!(v["reason"], "not_found");
+    assert_eq!(v["kind"], "registry");
+    assert_eq!(v["name"], "nosuchreg");
+}
+
+#[test]
+fn module_registry_remove_missing_without_flag_still_6() {
+    let dir = tempfile::tempdir().unwrap();
+    config_with_registry(dir.path());
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["-o", "json", "module", "registry", "remove", "nosuchreg"])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .assert()
+        .code(6);
+    let out = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(v["error"], "registry_not_found");
+}
+
+#[test]
+fn source_remove_missing_ignore_not_found_is_0() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let human = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["source", "remove", "--ignore-not-found", "nosuchsrc"])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(0);
+    let err = String::from_utf8_lossy(&human.get_output().stderr).to_string();
+    assert!(
+        err.contains("source 'nosuchsrc' not found; nothing to remove (--ignore-not-found)"),
+        "human no-op line, got:\n{err}"
+    );
+
+    let json = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args([
+            "-o",
+            "json",
+            "source",
+            "remove",
+            "--ignore-not-found",
+            "nosuchsrc",
+        ])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(0);
+    let out = String::from_utf8_lossy(&json.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(v["removed"], false);
+    assert_eq!(v["reason"], "not_found");
+    assert_eq!(v["kind"], "source");
+    assert_eq!(v["name"], "nosuchsrc");
+}
+
+#[test]
+fn source_remove_missing_without_flag_still_6() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["-o", "json", "source", "remove", "nosuchsrc"])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(6);
+    let out = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(v["error"], "not_found");
+}
+
+#[test]
+fn profile_delete_missing_ignore_not_found_is_0() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let human = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args([
+            "profile",
+            "delete",
+            "--yes",
+            "--ignore-not-found",
+            "nosuchprof",
+        ])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(0);
+    let err = String::from_utf8_lossy(&human.get_output().stderr).to_string();
+    assert!(
+        err.contains("profile 'nosuchprof' not found; nothing to remove (--ignore-not-found)"),
+        "human no-op line, got:\n{err}"
+    );
+
+    let json = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args([
+            "-o",
+            "json",
+            "profile",
+            "delete",
+            "--yes",
+            "--ignore-not-found",
+            "nosuchprof",
+        ])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(0);
+    let out = String::from_utf8_lossy(&json.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(v["removed"], false);
+    assert_eq!(v["reason"], "not_found");
+    assert_eq!(v["kind"], "profile");
+    assert_eq!(v["name"], "nosuchprof");
+}
+
+#[test]
+fn profile_delete_missing_without_flag_still_6() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["-o", "json", "profile", "delete", "--yes", "nosuchprof"])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(6);
+    let out = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(v["error"], "not_found");
+}
+
+/// CRITICAL invariant: `--ignore-not-found` must ONLY silence the not-found
+/// branch. Deleting the ACTIVE profile is a precondition failure that MUST still
+/// exit 1 even with the flag set — `base` is active in `create_valid_config`.
+#[test]
+fn profile_delete_active_with_ignore_not_found_still_1() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args([
+            "-o",
+            "json",
+            "profile",
+            "delete",
+            "--yes",
+            "--ignore-not-found",
+            "base",
+        ])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(1);
+    let out = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(
+        v["error"], "active_profile",
+        "active-profile guard must not be silenced by --ignore-not-found"
+    );
+}
+
+/// CRITICAL invariant (symmetric with the active-profile case): the module
+/// in-use guard MUST still fire with `--ignore-not-found` set — the flag only
+/// silences the pure not-found branch, never a precondition failure. A profile
+/// references the module, so deletion is refused (exit 1, `in_use`), NOT the
+/// idempotent no-op.
+#[test]
+fn module_delete_in_use_with_ignore_not_found_still_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("modules/used")).unwrap();
+    std::fs::write(
+        dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: base\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("modules/used/module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: used\nspec:\n  packages: []\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
+    // The active profile references the module, tripping the in-use guard.
+    std::fs::write(
+        dir.path().join("profiles/base.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  modules:\n    - used\n",
+    )
+    .unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args([
+            "-o",
+            "json",
+            "module",
+            "delete",
+            "--yes",
+            "--ignore-not-found",
+            "used",
+        ])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(1);
+    let out = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(
+        v["error"], "in_use",
+        "in-use guard must not be silenced by --ignore-not-found"
+    );
+    assert_ne!(
+        v["reason"], "not_found",
+        "must NOT emit the not-found no-op payload"
+    );
+}
+
+/// CRITICAL invariant (symmetric with the active-profile case): the profile
+/// inherited-by-others guard MUST still fire with `--ignore-not-found` set. A
+/// child profile inherits the target, so deletion is refused (exit 1,
+/// `inherited`), NOT the idempotent no-op. `shared` is deletable-by-existence
+/// (not the active profile) so only the inherited guard is exercised.
+#[test]
+fn profile_delete_inherited_with_ignore_not_found_still_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("profiles")).unwrap();
+    // `base` is active so the active-profile guard doesn't shadow this case.
+    std::fs::write(
+        dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: base\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("profiles/base.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec: {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("profiles/shared.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: shared\nspec: {}\n",
+    )
+    .unwrap();
+    // `child` inherits `shared`, tripping the inherited guard on `shared` delete.
+    std::fs::write(
+        dir.path().join("profiles/child.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: child\nspec:\n  inherits:\n    - shared\n",
+    )
+    .unwrap();
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args([
+            "-o",
+            "json",
+            "profile",
+            "delete",
+            "--yes",
+            "--ignore-not-found",
+            "shared",
+        ])
+        .arg("--config")
+        .arg(dir.path().join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .assert()
+        .code(1);
+    let out = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("one json payload");
+    assert_eq!(
+        v["error"], "inherited",
+        "inherited guard must not be silenced by --ignore-not-found"
+    );
+    assert_ne!(
+        v["reason"], "not_found",
+        "must NOT emit the not-found no-op payload"
+    );
+}
+
 /// Plain `cfgd status` (no --exit-code) keeps the fast RECORDED-drift dashboard:
 /// with no recorded events it shows "No drift detected" and exits 0 even when a
 /// managed file is live-drifted. The live scan is `-e`-only by design.

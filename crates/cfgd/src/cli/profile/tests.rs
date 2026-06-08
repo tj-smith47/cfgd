@@ -1518,7 +1518,7 @@ fn profile_delete_with_yes_flag() {
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     // Delete 'work' (not active, not inherited by others)
-    cmd_profile_delete(&cli, &printer, "work", true).unwrap();
+    cmd_profile_delete(&cli, &printer, "work", true, false).unwrap();
     drop(printer);
 
     let profile_path = dir.path().join("profiles").join("work.yaml");
@@ -1536,7 +1536,7 @@ fn profile_delete_nonexistent_fails() {
     let cli = test_cli(dir.path());
     let printer = make_printer();
 
-    let result = cmd_profile_delete(&cli, &printer, "nonexistent", true);
+    let result = cmd_profile_delete(&cli, &printer, "nonexistent", true, false);
     assert!(result.is_err(), "deleting nonexistent profile should fail");
     let err = result.unwrap_err().to_string();
     assert!(
@@ -1553,7 +1553,7 @@ fn profile_delete_active_profile_fails() {
     let printer = make_printer();
 
     // 'default' is the active profile in cfgd.yaml
-    let result = cmd_profile_delete(&cli, &printer, "default", true);
+    let result = cmd_profile_delete(&cli, &printer, "default", true, false);
     assert!(result.is_err(), "deleting active profile should fail");
     let err = result.unwrap_err().to_string();
     assert!(
@@ -1571,7 +1571,7 @@ fn profile_delete_inherited_profile_fails() {
     let printer = make_printer();
     cmd_profile_switch(&cli, "work", &printer).unwrap();
 
-    let result = cmd_profile_delete(&cli, &printer, "default", true);
+    let result = cmd_profile_delete(&cli, &printer, "default", true, false);
     assert!(result.is_err(), "deleting inherited profile should fail");
     let err = result.unwrap_err().to_string();
     assert!(
@@ -1600,7 +1600,7 @@ fn profile_delete_cleans_files_dir() {
     )
     .unwrap();
 
-    cmd_profile_delete(&cli, &printer, "ephemeral", true).unwrap();
+    cmd_profile_delete(&cli, &printer, "ephemeral", true, false).unwrap();
 
     assert!(!files_dir.exists(), "files directory should be cleaned up");
 }
@@ -1611,7 +1611,7 @@ fn profile_delete_invalid_name_fails() {
     let cli = test_cli(dir.path());
     let printer = make_printer();
 
-    let err = cmd_profile_delete(&cli, &printer, "-bad", true).unwrap_err();
+    let err = cmd_profile_delete(&cli, &printer, "-bad", true, false).unwrap_err();
     assert!(
         err.to_string().contains("cannot start with '.' or '-'"),
         "should reject leading dash in name, got: {err}"
@@ -1665,7 +1665,7 @@ fn profile_delete_without_yes_and_prompt_confirmed_proceeds() {
         cfgd_core::output::Verbosity::Normal,
     );
 
-    cmd_profile_delete(&cli, &printer, "work", false).unwrap();
+    cmd_profile_delete(&cli, &printer, "work", false, false).unwrap();
     drop(printer);
 
     let profile_path = dir.path().join("profiles").join("work.yaml");
@@ -1692,7 +1692,7 @@ fn profile_delete_without_yes_and_prompt_declined_returns_cancelled() {
         cfgd_core::output::Verbosity::Normal,
     );
 
-    cmd_profile_delete(&cli, &printer, "work", false).unwrap();
+    cmd_profile_delete(&cli, &printer, "work", false, false).unwrap();
     drop(printer);
 
     let profile_path = dir.path().join("profiles").join("work.yaml");

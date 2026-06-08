@@ -34,7 +34,7 @@ pub mod workflow;
 
 pub use error::{
     CliErrorMeta, cli_error, cli_error_ctx, cli_error_ctx_with_hints, cli_error_with_hints,
-    exit_code_for_anyhow,
+    emit_not_found_ignored, exit_code_for_anyhow,
 };
 pub(in crate::cli) use helpers::*;
 pub(in crate::cli) use output_types::*;
@@ -515,7 +515,7 @@ pub enum Command {
 
     /// Manage profiles
     #[command(
-        long_about = "List, inspect, and switch between profiles.\n\nExamples:\n  cfgd profile list\n  cfgd profile use laptop\n  cfgd profile show server"
+        long_about = "List, inspect, and switch between profiles.\n\nExamples:\n  cfgd profile list\n  cfgd profile use laptop\n  cfgd profile show server\n  cfgd profile delete old --ignore-not-found"
     )]
     Profile {
         #[command(subcommand)]
@@ -543,7 +543,7 @@ pub enum Command {
 
     /// Manage modules
     #[command(
-        long_about = "Create, inspect, push, and manage modules.\n\nExamples:\n  cfgd module list\n  cfgd module push ./my-module --artifact ghcr.io/me/my-module:1.0.0\n  cfgd module registry add https://github.com/my-org/cfgd-modules --name my-org"
+        long_about = "Create, inspect, push, and manage modules.\n\nExamples:\n  cfgd module list\n  cfgd module push ./my-module --artifact ghcr.io/me/my-module:1.0.0\n  cfgd module registry add https://github.com/my-org/cfgd-modules --name my-org\n  cfgd module delete old --ignore-not-found"
     )]
     Module {
         #[command(subcommand)]
@@ -552,7 +552,7 @@ pub enum Command {
 
     /// Manage config sources
     #[command(
-        long_about = "Subscribe to, override, or remove upstream config sources.\n\nExamples:\n  cfgd source add https://github.com/team/config --priority 700\n  cfgd source list\n  cfgd source override team set env.EDITOR vim\n  cfgd source remove team --keep-all"
+        long_about = "Subscribe to, override, or remove upstream config sources.\n\nExamples:\n  cfgd source add https://github.com/team/config --priority 700\n  cfgd source list\n  cfgd source override team set env.EDITOR vim\n  cfgd source remove team --keep-all\n  cfgd source remove team --ignore-not-found"
     )]
     Source {
         #[command(subcommand)]
@@ -829,6 +829,10 @@ pub enum SourceCommand {
         /// Skip confirmation prompt (defaults to --keep-all behavior)
         #[arg(long, short, env = "CFGD_YES")]
         yes: bool,
+
+        /// Exit 0 instead of erroring when the source does not exist
+        #[arg(long)]
+        ignore_not_found: bool,
     },
 
     /// Update sources (fetch latest)
@@ -1129,6 +1133,9 @@ pub enum ProfileCommand {
         /// Skip confirmation prompt
         #[arg(long, short, env = "CFGD_YES")]
         yes: bool,
+        /// Exit 0 instead of erroring when the profile does not exist
+        #[arg(long)]
+        ignore_not_found: bool,
     },
 }
 
@@ -1237,6 +1244,9 @@ pub enum ModuleCommand {
         /// Also remove files deployed by this module to target locations
         #[arg(long)]
         purge: bool,
+        /// Exit 0 instead of erroring when the module does not exist
+        #[arg(long)]
+        ignore_not_found: bool,
     },
     /// Upgrade a remote module to a new version
     Upgrade {
@@ -1487,6 +1497,9 @@ pub enum ModuleRegistryCommand {
     Remove {
         /// Registry name
         name: String,
+        /// Exit 0 instead of erroring when the registry does not exist
+        #[arg(long)]
+        ignore_not_found: bool,
     },
     /// Rename a module registry (updates config references)
     Rename {
@@ -1542,9 +1555,11 @@ pub fn execute(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resul
                 profile::cmd_profile_update(cli, printer, &profile_name, args)
             }
             ProfileCommand::Edit { name } => profile::cmd_profile_edit(cli, printer, name),
-            ProfileCommand::Delete { name, yes } => {
-                profile::cmd_profile_delete(cli, printer, name, *yes)
-            }
+            ProfileCommand::Delete {
+                name,
+                yes,
+                ignore_not_found,
+            } => profile::cmd_profile_delete(cli, printer, name, *yes, *ignore_not_found),
         },
         Command::Doctor => doctor::cmd_doctor(cli, printer),
         Command::Init {
@@ -1583,9 +1598,12 @@ pub fn execute(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resul
             ModuleCommand::Create(args) => module::cmd_module_create(cli, printer, args),
             ModuleCommand::Update(args) => module::cmd_module_update_local(cli, printer, args),
             ModuleCommand::Edit { name } => module::cmd_module_edit(cli, printer, name),
-            ModuleCommand::Delete { name, yes, purge } => {
-                module::cmd_module_delete(cli, printer, name, *yes, *purge)
-            }
+            ModuleCommand::Delete {
+                name,
+                yes,
+                purge,
+                ignore_not_found,
+            } => module::cmd_module_delete(cli, printer, name, *yes, *purge, *ignore_not_found),
             ModuleCommand::Upgrade {
                 name,
                 ref_,
@@ -1604,9 +1622,10 @@ pub fn execute(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resul
                 ModuleRegistryCommand::Add { url, name } => {
                     module::cmd_module_registry_add(cli, printer, url, name.as_deref())
                 }
-                ModuleRegistryCommand::Remove { name } => {
-                    module::cmd_module_registry_remove(cli, printer, name)
-                }
+                ModuleRegistryCommand::Remove {
+                    name,
+                    ignore_not_found,
+                } => module::cmd_module_registry_remove(cli, printer, name, *ignore_not_found),
                 ModuleRegistryCommand::Rename { name, new_name } => {
                     module::cmd_module_registry_rename(cli, printer, name, new_name)
                 }
@@ -1704,12 +1723,14 @@ pub fn execute(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resul
                 keep_all,
                 remove_all,
                 yes,
+                ignore_not_found,
             } => source::cmd_source_remove(
                 cli,
                 printer,
                 name,
                 *keep_all || (*yes && !*remove_all),
                 *remove_all,
+                *ignore_not_found,
             ),
             SourceCommand::Update { name } => {
                 source::cmd_source_update(cli, printer, name.as_deref())

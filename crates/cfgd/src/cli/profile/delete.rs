@@ -6,6 +6,7 @@ pub fn cmd_profile_delete(
     printer: &Printer,
     name: &str,
     yes: bool,
+    ignore_not_found: bool,
 ) -> anyhow::Result<()> {
     validate_resource_name(name, "Profile")?;
     printer.heading(format!("Delete Profile: {}", name));
@@ -15,6 +16,9 @@ pub fn cmd_profile_delete(
     let profile_path = pdir.join(format!("{}.yaml", name));
 
     if !profile_path.exists() {
+        if ignore_not_found {
+            return crate::cli::emit_not_found_ignored(printer, "profile", name);
+        }
         // Carry the typed ProfileNotFound so the exit-code downcast resolves to
         // ExitCode::NotFound (6). The active-profile guard below stays exit 1 —
         // it is a precondition failure, not a not-found.

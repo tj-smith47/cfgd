@@ -7,6 +7,7 @@ pub fn cmd_source_remove(
     name: &str,
     keep_all: bool,
     remove_all: bool,
+    ignore_not_found: bool,
 ) -> anyhow::Result<()> {
     if keep_all && remove_all {
         return Err(crate::cli::cli_error(
@@ -23,6 +24,9 @@ pub fn cmd_source_remove(
     let cfg = config::load_config(&config_path)?;
 
     if !cfg.spec.sources.iter().any(|s| s.name == name) {
+        if ignore_not_found {
+            return crate::cli::emit_not_found_ignored(printer, "source", name);
+        }
         // Carry the typed SourceError::NotFound so the exit-code downcast resolves
         // to ExitCode::NotFound (6), uniform with every other named-resource miss.
         return Err(crate::cli::cli_error_ctx(

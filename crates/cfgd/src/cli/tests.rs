@@ -1386,7 +1386,7 @@ fn module_delete_refuses_when_referenced() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = module::cmd_module_delete(&cli, &printer, "used-mod", true, false);
+    let result = module::cmd_module_delete(&cli, &printer, "used-mod", true, false, false);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("referenced by"));
 }
@@ -1403,7 +1403,7 @@ fn module_delete_succeeds_when_unreferenced() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    module::cmd_module_delete(&cli, &printer, "orphan-mod", true, false).unwrap();
+    module::cmd_module_delete(&cli, &printer, "orphan-mod", true, false, false).unwrap();
     assert!(!dir.path().join("modules").join("orphan-mod").exists());
 }
 
@@ -1438,7 +1438,7 @@ fn module_delete_purge_removes_target_files() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    module::cmd_module_delete(&cli, &printer, "purge-mod", true, true).unwrap();
+    module::cmd_module_delete(&cli, &printer, "purge-mod", true, true, false).unwrap();
     assert!(!dir.path().join("modules").join("purge-mod").exists());
     assert!(!target_file.exists(), "purge should remove target file");
 }
@@ -1462,7 +1462,7 @@ fn module_delete_no_purge_preserves_target_files() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    module::cmd_module_delete(&cli, &printer, "keep-mod", true, false).unwrap();
+    module::cmd_module_delete(&cli, &printer, "keep-mod", true, false, false).unwrap();
     assert!(!dir.path().join("modules").join("keep-mod").exists());
     assert!(
         target_file.exists(),
@@ -1609,7 +1609,7 @@ fn profile_delete_refuses_active() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = profile::cmd_profile_delete(&cli, &printer, "default", true);
+    let result = profile::cmd_profile_delete(&cli, &printer, "default", true, false);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("active profile"));
 }
@@ -1620,7 +1620,7 @@ fn profile_delete_refuses_when_inherited() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = profile::cmd_profile_delete(&cli, &printer, "default", true);
+    let result = profile::cmd_profile_delete(&cli, &printer, "default", true, false);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("inherited by"));
 }
@@ -1631,7 +1631,7 @@ fn profile_delete_succeeds() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    profile::cmd_profile_delete(&cli, &printer, "work", true).unwrap();
+    profile::cmd_profile_delete(&cli, &printer, "work", true, false).unwrap();
     assert!(!dir.path().join("profiles").join("work.yaml").exists());
 }
 
@@ -7231,7 +7231,7 @@ fn module_delete_nonexistent() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = module::cmd_module_delete(&cli, &printer, "nonexistent", true, false);
+    let result = module::cmd_module_delete(&cli, &printer, "nonexistent", true, false, false);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -7258,7 +7258,7 @@ fn module_delete_cleans_lockfile() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    module::cmd_module_delete(&cli, &printer, "remote-mod", true, false).unwrap();
+    module::cmd_module_delete(&cli, &printer, "remote-mod", true, false, false).unwrap();
 
     // Module directory should be gone
     assert!(
@@ -7302,7 +7302,7 @@ fn module_delete_restores_symlinked_files() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    module::cmd_module_delete(&cli, &printer, "link-mod", true, false).unwrap();
+    module::cmd_module_delete(&cli, &printer, "link-mod", true, false, false).unwrap();
 
     // Module dir gone
     assert!(!module_dir.exists());
@@ -7663,7 +7663,7 @@ fn module_registry_remove_no_config() {
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    let result = module::cmd_module_registry_remove(&cli, &printer, "community");
+    let result = module::cmd_module_registry_remove(&cli, &printer, "community", false);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -7696,7 +7696,7 @@ spec:
     let cli = test_cli(dir.path());
     let printer = test_printer();
 
-    module::cmd_module_registry_remove(&cli, &printer, "community").unwrap();
+    module::cmd_module_registry_remove(&cli, &printer, "community", false).unwrap();
 
     let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
     let registries = cfg.spec.modules.unwrap().registries;
@@ -7728,7 +7728,7 @@ spec:
     let cli = test_cli(dir.path());
     let (printer, _buf) = test_printer_capture();
 
-    let err = module::cmd_module_registry_remove(&cli, &printer, "nonexistent").unwrap_err();
+    let err = module::cmd_module_registry_remove(&cli, &printer, "nonexistent", false).unwrap_err();
     drop(printer);
 
     let meta = err
@@ -7755,7 +7755,7 @@ fn module_registry_remove_not_found() {
     let cli = test_cli(dir.path());
     let (printer, _buf) = test_printer_capture();
 
-    let err = module::cmd_module_registry_remove(&cli, &printer, "nonexistent").unwrap_err();
+    let err = module::cmd_module_registry_remove(&cli, &printer, "nonexistent", false).unwrap_err();
     drop(printer);
 
     let meta = err
@@ -7806,7 +7806,7 @@ spec:
     let cli = test_cli(dir.path());
     let (printer, buf) = test_printer_capture();
 
-    module::cmd_module_registry_remove(&cli, &printer, "community").unwrap();
+    module::cmd_module_registry_remove(&cli, &printer, "community", false).unwrap();
     drop(printer);
 
     let output = buf.lock().unwrap();
@@ -8953,7 +8953,8 @@ fn cmd_source_remove_not_found() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::source::cmd_source_remove(&cli, &printer, "nonexistent", true, false);
+    let result =
+        super::source::cmd_source_remove(&cli, &printer, "nonexistent", true, false, false);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
@@ -8965,7 +8966,7 @@ fn cmd_source_remove_keep_all_and_remove_all_conflict() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::source::cmd_source_remove(&cli, &printer, "anything", true, true);
+    let result = super::source::cmd_source_remove(&cli, &printer, "anything", true, true, false);
     assert!(result.is_err());
     assert!(
         result
@@ -11248,7 +11249,8 @@ fn cmd_source_remove_existing_removes_from_config() {
     let cfg = config::load_config(&config_dir.path().join("cfgd.yaml")).unwrap();
     assert_eq!(cfg.spec.sources.len(), 1);
 
-    let result = super::source::cmd_source_remove(&cli, &printer, "team-config", false, true);
+    let result =
+        super::source::cmd_source_remove(&cli, &printer, "team-config", false, true, false);
     assert!(
         result.is_ok(),
         "source remove should succeed: {:?}",
@@ -11281,7 +11283,7 @@ fn cmd_source_remove_with_keep_all_transfers_resources_to_local_management() {
         .unwrap();
     drop(store);
 
-    super::source::cmd_source_remove(&cli, &printer, "team-config", true, false)
+    super::source::cmd_source_remove(&cli, &printer, "team-config", true, false, false)
         .expect("source remove --keep-all should succeed");
 
     // Source dropped from cfgd.yaml.
@@ -11313,7 +11315,8 @@ fn cmd_source_remove_nonexistent_fails() {
     let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
     let printer = test_printer();
 
-    let result = super::source::cmd_source_remove(&cli, &printer, "nonexistent", false, true);
+    let result =
+        super::source::cmd_source_remove(&cli, &printer, "nonexistent", false, true, false);
     let err = result.unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -11335,7 +11338,7 @@ fn cmd_source_remove_deletes_cached_clone() {
     std::fs::write(cached_dir.join("marker"), b"cached").unwrap();
     assert!(cached_dir.exists());
 
-    super::source::cmd_source_remove(&cli, &printer, "team-config", false, true)
+    super::source::cmd_source_remove(&cli, &printer, "team-config", false, true, false)
         .expect("source remove should succeed");
 
     assert!(
@@ -14848,7 +14851,7 @@ fn cmd_source_remove_keep_all_reassigns_resources_to_local() {
         .unwrap();
 
     let result =
-        super::source::cmd_source_remove(&h.cli(), h.printer(), "team-config", true, false);
+        super::source::cmd_source_remove(&h.cli(), h.printer(), "team-config", true, false, false);
     assert!(result.is_ok(), "remove with keep_all: {:?}", result.err());
 
     // Source should be gone from config
@@ -14883,7 +14886,7 @@ fn cmd_source_remove_remove_all_does_not_reassign() {
         .unwrap();
 
     let result =
-        super::source::cmd_source_remove(&h.cli(), h.printer(), "team-config", false, true);
+        super::source::cmd_source_remove(&h.cli(), h.printer(), "team-config", false, true, false);
     assert!(result.is_ok(), "remove with remove_all: {:?}", result.err());
 
     // Source should be gone from config
@@ -14905,7 +14908,8 @@ fn cmd_source_remove_remove_all_does_not_reassign() {
 fn cmd_source_remove_prints_success_message() {
     let h = CliTestHarness::builder().rich_config().build();
 
-    super::source::cmd_source_remove(&h.cli(), h.printer(), "team-config", false, true).unwrap();
+    super::source::cmd_source_remove(&h.cli(), h.printer(), "team-config", false, true, false)
+        .unwrap();
 
     h.assert_output_contains("Source 'team-config' removed");
 }
@@ -17915,6 +17919,7 @@ fn execute_profile_delete_dispatch() {
         command: ProfileCommand::Delete {
             name: "work".to_string(),
             yes: true,
+            ignore_not_found: false,
         },
     });
     super::execute(&cli, h.printer()).expect("Profile Delete dispatch must succeed");
@@ -17977,6 +17982,7 @@ fn execute_module_delete_dispatch() {
             name: "test-mod".to_string(),
             yes: true,
             purge: false,
+            ignore_not_found: false,
         },
     });
     super::execute(&cli, h.printer()).expect("Module Delete dispatch must succeed");
@@ -18027,6 +18033,7 @@ fn execute_module_registry_remove_dispatch() {
         command: ModuleCommand::Registry {
             command: ModuleRegistryCommand::Remove {
                 name: "nonexistent".to_string(),
+                ignore_not_found: false,
             },
         },
     });
@@ -18265,6 +18272,7 @@ spec:
             keep_all: true,
             remove_all: false,
             yes: true,
+            ignore_not_found: false,
         },
     });
     super::execute(&cli, h.printer()).expect("Source Remove dispatch must succeed");
