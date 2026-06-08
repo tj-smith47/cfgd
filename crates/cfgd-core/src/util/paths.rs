@@ -53,19 +53,49 @@ pub(crate) fn test_home_override() -> Option<std::path::PathBuf> {
     TEST_HOME_OVERRIDE.with(|o| o.borrow().clone())
 }
 
-/// Default config directory: `~/.config/cfgd` on Unix (respects XDG_CONFIG_HOME),
-/// `AppData\Roaming\cfgd` on Windows.
+/// Default config directory.
+///
+/// Resolution order:
+/// 1. `$XDG_CONFIG_HOME/cfgd` when `XDG_CONFIG_HOME` is set to a **non-empty,
+///    absolute** path. The XDG Base Directory spec mandates that empty or
+///    relative values be treated as unset (joining a relative value would yield
+///    a CWD-dependent config path). Honored on every platform, so an explicit
+///    `XDG_CONFIG_HOME` relocates the config dir on macOS and Windows too.
+/// 2. the platform-native config base joined with `cfgd`:
+///    - Linux: `~/.config/cfgd`
+///    - macOS: `~/Library/Application Support/cfgd` — the same native root the
+///      state ([`crate::state::default_state_dir`]) and runtime
+///      ([`default_runtime_dir`]) directories use, so all per-user cfgd data
+///      shares one location instead of splitting config under `~/.config`.
+///    - Windows: `%APPDATA%\cfgd`
+///
+/// The home directory is resolved from `HOME`/`USERPROFILE` only, never the
+/// passwd database: when home cannot be resolved the path stays a literal
+/// `~/.config/cfgd` so the caller surfaces a clean error and writes nothing,
+/// instead of silently resolving to the account's real home.
 pub fn default_config_dir() -> std::path::PathBuf {
     // Thread-local test override always wins. Lets tests redirect config
     // lookup to a tempdir without mutating global env state.
     if let Some(home) = test_home_override() {
         return home.join(".config").join("cfgd");
     }
-    #[cfg(unix)]
+    if let Some(dir) = xdg_config_home_cfgd() {
+        return dir;
+    }
+    #[cfg(target_os = "macos")]
     {
-        if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-            return std::path::PathBuf::from(xdg).join("cfgd");
+        if let Some(home) = home_dir_var() {
+            return std::path::PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("cfgd");
         }
+        expand_tilde(std::path::Path::new("~/.config/cfgd"))
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        // `expand_tilde` resolves from HOME only and leaves `~` literal when
+        // HOME is unset — the clean-failure guarantee above.
         expand_tilde(std::path::Path::new("~/.config/cfgd"))
     }
     #[cfg(windows)]
@@ -74,6 +104,19 @@ pub fn default_config_dir() -> std::path::PathBuf {
             .map(|b| b.config_dir().join("cfgd"))
             .unwrap_or_else(|| std::path::PathBuf::from(r"C:\ProgramData\cfgd"))
     }
+}
+
+/// `$XDG_CONFIG_HOME/cfgd` when the variable is a non-empty, absolute path;
+/// `None` otherwise (the spec treats empty/relative values as unset). Honored on
+/// every platform so an explicit `XDG_CONFIG_HOME` works on macOS and Windows
+/// too, not only Linux.
+fn xdg_config_home_cfgd() -> Option<std::path::PathBuf> {
+    let raw = std::env::var_os("XDG_CONFIG_HOME")?;
+    let path = std::path::PathBuf::from(raw);
+    if path.as_os_str().is_empty() || !path.is_absolute() {
+        return None;
+    }
+    Some(path.join("cfgd"))
 }
 
 /// Per-user runtime directory for short-lived sockets and pid files.

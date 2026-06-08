@@ -156,6 +156,32 @@ files:
 
 Files can be marked `private: true` to exclude them from git (added to `.gitignore`).
 
+## File locations
+
+cfgd stores three kinds of per-user data, each resolved independently. Pass
+`--config <path>` / `CFGD_CONFIG` and `--state-dir <dir>` / `CFGD_STATE_DIR` to
+override the config file and state directory explicitly.
+
+| Data | Default location |
+|---|---|
+| **Config** (`cfgd.yaml`, `profiles/`, `files/`, `modules.lock`) | `$XDG_CONFIG_HOME/cfgd` if set, else the platform default below |
+| **State** (`state.db`, history, drift, apply journal) | platform-native data dir — Linux `$XDG_DATA_HOME/cfgd` or `~/.local/share/cfgd`, macOS `~/Library/Application Support/cfgd`, Windows `%LOCALAPPDATA%\cfgd` |
+| **Runtime** (daemon socket, pid files) | Linux `$XDG_RUNTIME_DIR/cfgd` (else `~/.cache/cfgd`), macOS `~/Library/Application Support/cfgd`, Windows `%LOCALAPPDATA%\cfgd` |
+
+The **config** platform default per OS:
+
+| Platform | Config default | Notes |
+|---|---|---|
+| Linux | `~/.config/cfgd` | the XDG config base |
+| macOS | `~/Library/Application Support/cfgd` | the OS-native location — shares one root with state and runtime, so all cfgd data lives together |
+| Windows | `%APPDATA%\cfgd` | the roaming app-data base |
+
+`XDG_CONFIG_HOME` is honored on **every** platform (including macOS and Windows)
+when it is set to a non-empty, absolute path; an empty or relative value is
+ignored per the XDG Base Directory spec. Setting `XDG_CONFIG_HOME` is the
+supported way to relocate the config dir on macOS — for example, to keep it under
+`~/.config` instead of `~/Library/Application Support`.
+
 ## Linux
 
 On Linux, cfgd supports desktop environment-specific system configurators in addition to the cross-platform features:

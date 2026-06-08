@@ -750,6 +750,44 @@ fn default_config_dir_follows_override() {
 }
 
 #[test]
+#[serial_test::serial]
+fn default_config_dir_honors_absolute_xdg_config_home() {
+    let tmp = tempfile::tempdir().unwrap();
+    let xdg = tmp.path().join("xdg-config");
+    crate::test_helpers::with_test_env_var("XDG_CONFIG_HOME", Some(&xdg.to_string_lossy()), || {
+        assert_eq!(default_config_dir(), xdg.join("cfgd"));
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn default_config_dir_ignores_empty_xdg_config_home() {
+    // XDG spec: an empty XDG_CONFIG_HOME is treated as unset, never as the
+    // current directory — a relative `cfgd` path would corrupt discovery.
+    crate::test_helpers::with_test_env_var("XDG_CONFIG_HOME", Some(""), || {
+        let dir = default_config_dir();
+        assert_ne!(dir, std::path::PathBuf::from("cfgd"));
+        assert!(
+            dir.ends_with("cfgd"),
+            "fell back to a platform default ending in cfgd, got {}",
+            dir.display()
+        );
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn default_config_dir_ignores_relative_xdg_config_home() {
+    // A relative XDG_CONFIG_HOME is non-conforming and must be ignored, not
+    // joined (which would yield a relative, CWD-dependent config path).
+    crate::test_helpers::with_test_env_var("XDG_CONFIG_HOME", Some("relative/cfg"), || {
+        let dir = default_config_dir();
+        assert_ne!(dir, std::path::PathBuf::from("relative/cfg").join("cfgd"));
+        assert!(dir.ends_with("cfgd"));
+    });
+}
+
+#[test]
 fn acquire_apply_lock_and_release() {
     let dir = tempfile::tempdir().unwrap();
     let guard = acquire_apply_lock(dir.path()).unwrap();
