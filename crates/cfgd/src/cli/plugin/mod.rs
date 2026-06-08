@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
 
-use cfgd_core::output::{Doc, OutputFormat, Printer, Role, Verbosity};
+use cfgd_core::output::{Doc, Printer, Role, Verbosity};
+
+use crate::cli::OutputFormatArg;
 
 #[derive(Parser)]
 #[command(
@@ -18,6 +20,10 @@ use cfgd_core::output::{Doc, OutputFormat, Printer, Role, Verbosity};
                   kubectl cfgd version"
 )]
 struct PluginCli {
+    /// Output format: table, wide, json, yaml, name, jsonpath=EXPR, template=TMPL, template-file=PATH
+    #[arg(long, short = 'o', global = true, default_value = "table")]
+    output: OutputFormatArg,
+
     #[command(subcommand)]
     command: PluginCommand,
 }
@@ -89,13 +95,24 @@ enum PluginCommand {
                       kubectl cfgd status"
     )]
     Status,
-    /// Show client and server version
+    /// Show client, server, operator, and CSI versions
     #[command(
-        long_about = "Print the client plugin version plus the deployed operator/CSI driver versions detected from the cluster.\n\n\
+        long_about = "Print the client plugin version, the Kubernetes apiserver version, and the \
+                      deployed cfgd operator + CSI driver versions detected from the cluster.\n\n\
+                      Operator/CSI versions are read from the running images' tags in the cfgd \
+                      namespace. When the cluster is unreachable, a component is not deployed, or \
+                      RBAC forbids the lookup, that field degrades gracefully (the command still \
+                      exits 0).\n\n\
                       Examples:\n  \
-                      kubectl cfgd version"
+                      kubectl cfgd version\n  \
+                      kubectl cfgd version --namespace cfgd-system\n  \
+                      kubectl cfgd -o json version"
     )]
-    Version,
+    Version {
+        /// Namespace the operator + CSI driver are deployed into
+        #[arg(long, short, default_value = cfgd_core::CFGD_SYSTEM_NAMESPACE)]
+        namespace: String,
+    },
 }
 
 const MODULE_REQUIRED: &str = "at least one --module is required";
@@ -152,7 +169,7 @@ pub fn plugin_main() -> anyhow::Result<()> {
         Printer::disable_colors();
     }
 
-    let printer = Printer::with_format(Verbosity::Normal, None, OutputFormat::Table);
+    let printer = Printer::with_format(Verbosity::Normal, None, cli.output.0);
 
     let result = match cli.command {
         PluginCommand::Debug {
@@ -173,7 +190,7 @@ pub fn plugin_main() -> anyhow::Result<()> {
             namespace,
         } => cmd_inject(&printer, &resource, &module, &namespace),
         PluginCommand::Status => cmd_status(&printer),
-        PluginCommand::Version => cmd_version(&printer),
+        PluginCommand::Version { namespace } => cmd_version(&printer, &namespace),
     };
 
     // The plugin has its OWN entry (main.rs returns here directly, never reaching the
@@ -564,37 +581,234 @@ pub(crate) async fn cmd_status_async(
     Ok(())
 }
 
-pub fn cmd_version(printer: &Printer) -> anyhow::Result<()> {
+pub fn cmd_version(printer: &Printer, namespace: &str) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(cmd_version_async(printer, None))
+    rt.block_on(cmd_version_async(printer, None, namespace))
+}
+
+/// Extract the version (image tag) from a container image reference.
+///
+/// The tag is the segment after the LAST `:` within the final path component,
+/// so a registry host with an explicit port (`host:5000/repo:1.2.3`) is parsed
+/// correctly. Any `@sha256:...` digest suffix is stripped first. Returns `None`
+/// when the image carries no tag (digest-only or bare repo).
+fn image_tag_version(image: &str) -> Option<String> {
+    // Strip a digest suffix (`@sha256:...`) — it is not a human version.
+    let without_digest = image.split('@').next().unwrap_or(image);
+    // The tag lives in the last path component; the host:port colon is in an
+    // earlier component, so scope the colon search to after the last `/`.
+    let last_component = without_digest.rsplit('/').next().unwrap_or(without_digest);
+    last_component
+        .rsplit_once(':')
+        .map(|(_, tag)| tag.to_string())
+        .filter(|tag| !tag.is_empty())
+}
+
+/// Resolve a cfgd component version from the container images of a workload's
+/// pod template. Prefers the container whose image repository contains
+/// `repo_hint` (e.g. `cfgd-operator`); falls back to the first container that
+/// carries a parseable tag. Returns `None` when no container has a tag.
+fn version_from_containers(images: &[String], repo_hint: &str) -> Option<String> {
+    images
+        .iter()
+        .find(|img| img.contains(repo_hint))
+        .and_then(|img| image_tag_version(img))
+        .or_else(|| images.iter().find_map(|img| image_tag_version(img)))
+}
+
+/// Result of probing a single cluster component (operator Deployment / CSI
+/// DaemonSet) for its deployed version. Each variant maps to a stable label so
+/// the command degrades to an exit-0, never-panic outcome regardless of cluster
+/// state or RBAC.
+enum ComponentVersion {
+    NotConnected,
+    NotDeployed,
+    Forbidden,
+    Version(String),
+}
+
+impl ComponentVersion {
+    fn label(&self) -> String {
+        match self {
+            Self::NotConnected => "not connected".to_string(),
+            Self::NotDeployed => "not deployed".to_string(),
+            Self::Forbidden => "unknown (forbidden)".to_string(),
+            Self::Version(v) => v.clone(),
+        }
+    }
+}
+
+/// Per-probe deadline for `kubectl cfgd version`. This is the connectivity-check
+/// command, so a stalled apiserver (TCP accepted, response withheld) must not
+/// hang it. Deliberately short — this is an interactive info command, not the
+/// crate-wide `COMMAND_TIMEOUT` (2 min) used for real work.
+const VERSION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Run a `ComponentVersion` probe under `VERSION_PROBE_TIMEOUT`. On timeout the
+/// component degrades to `NotConnected` ("not connected"), keeping the command
+/// at exit 0.
+async fn probe_with_timeout<F>(fut: F) -> ComponentVersion
+where
+    F: std::future::Future<Output = ComponentVersion>,
+{
+    probe_with_deadline(VERSION_PROBE_TIMEOUT, fut).await
+}
+
+/// Inner timeout wrapper parameterized on the deadline so tests can drive the
+/// timeout path with a tiny duration (no real-clock wait, no `test-util`).
+async fn probe_with_deadline<F>(deadline: std::time::Duration, fut: F) -> ComponentVersion
+where
+    F: std::future::Future<Output = ComponentVersion>,
+{
+    match tokio::time::timeout(deadline, fut).await {
+        Ok(v) => v,
+        Err(_) => ComponentVersion::NotConnected,
+    }
+}
+
+/// Map a kube API error to a degraded component label. A 403 becomes
+/// `Forbidden`; everything else (connection refused, timeout, 5xx) becomes
+/// `NotConnected` — the command never fails because the cluster is unhealthy.
+fn degrade_kube_error(err: &kube::Error) -> ComponentVersion {
+    match err {
+        kube::Error::Api(resp) if resp.code == 403 => ComponentVersion::Forbidden,
+        _ => ComponentVersion::NotConnected,
+    }
+}
+
+async fn operator_version(client: kube::Client, namespace: &str) -> ComponentVersion {
+    use k8s_openapi::api::apps::v1::Deployment;
+    let api: kube::Api<Deployment> = kube::Api::namespaced(client, namespace);
+    match api.list(&kube::api::ListParams::default()).await {
+        Ok(list) => {
+            let images = deployment_images(&list, "cfgd-operator");
+            match images.and_then(|imgs| version_from_containers(&imgs, "cfgd-operator")) {
+                Some(v) => ComponentVersion::Version(v),
+                None => ComponentVersion::NotDeployed,
+            }
+        }
+        Err(e) => degrade_kube_error(&e),
+    }
+}
+
+async fn csi_version(client: kube::Client, namespace: &str) -> ComponentVersion {
+    use k8s_openapi::api::apps::v1::DaemonSet;
+    let api: kube::Api<DaemonSet> = kube::Api::namespaced(client, namespace);
+    match api.list(&kube::api::ListParams::default()).await {
+        Ok(list) => {
+            let images = list
+                .items
+                .iter()
+                .find_map(|ds| {
+                    let imgs = pod_template_images(
+                        ds.spec.as_ref().and_then(|s| s.template.spec.as_ref()),
+                    );
+                    imgs.iter().any(|i| i.contains("cfgd-csi")).then_some(imgs)
+                })
+                .or_else(|| {
+                    list.items.first().map(|ds| {
+                        pod_template_images(ds.spec.as_ref().and_then(|s| s.template.spec.as_ref()))
+                    })
+                });
+            match images.and_then(|imgs| version_from_containers(&imgs, "cfgd-csi")) {
+                Some(v) => ComponentVersion::Version(v),
+                None => ComponentVersion::NotDeployed,
+            }
+        }
+        Err(e) => degrade_kube_error(&e),
+    }
+}
+
+/// Collect container images from the Deployment whose pod template references
+/// `repo_hint` (falling back to the first Deployment), so a namespace with
+/// unrelated Deployments does not shadow the operator.
+fn deployment_images(
+    list: &kube::core::ObjectList<k8s_openapi::api::apps::v1::Deployment>,
+    repo_hint: &str,
+) -> Option<Vec<String>> {
+    list.items
+        .iter()
+        .find_map(|dep| {
+            let imgs =
+                pod_template_images(dep.spec.as_ref().and_then(|s| s.template.spec.as_ref()));
+            imgs.iter().any(|i| i.contains(repo_hint)).then_some(imgs)
+        })
+        .or_else(|| {
+            list.items.first().map(|dep| {
+                pod_template_images(dep.spec.as_ref().and_then(|s| s.template.spec.as_ref()))
+            })
+        })
+}
+
+fn pod_template_images(spec: Option<&k8s_openapi::api::core::v1::PodSpec>) -> Vec<String> {
+    spec.map(|s| {
+        s.containers
+            .iter()
+            .filter_map(|c| c.image.clone())
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 pub(crate) async fn cmd_version_async(
     printer: &Printer,
     client: Option<kube::Client>,
+    namespace: &str,
 ) -> anyhow::Result<()> {
-    let server_version = async {
-        let client = match client {
-            Some(c) => c,
-            None => kube::Client::try_default().await.ok()?,
-        };
-        let version = client.apiserver_version().await.ok()?;
-        Some(format!("{}.{}", version.major, version.minor))
-    }
-    .await;
+    // Resolve a client once; reuse it for every cluster probe. A missing client
+    // means every cluster-derived field degrades to "not connected".
+    let client = match client {
+        Some(c) => Some(c),
+        None => kube::Client::try_default().await.ok(),
+    };
 
-    let server_label = server_version
-        .clone()
-        .unwrap_or_else(|| "not connected".to_string());
+    // Every cluster probe runs under a short deadline so a stalled apiserver
+    // cannot hang this connectivity-check command — on timeout the field
+    // degrades to "not connected" and the command still exits 0.
+    let server_label = match &client {
+        Some(c) => {
+            let probe = async {
+                c.apiserver_version()
+                    .await
+                    .ok()
+                    .map(|v| format!("{}.{}", v.major, v.minor))
+            };
+            tokio::time::timeout(VERSION_PROBE_TIMEOUT, probe)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "not connected".to_string())
+        }
+        None => "not connected".to_string(),
+    };
+
+    let (operator_label, csi_label) = match &client {
+        Some(c) => (
+            probe_with_timeout(operator_version(c.clone(), namespace))
+                .await
+                .label(),
+            probe_with_timeout(csi_version(c.clone(), namespace))
+                .await
+                .label(),
+        ),
+        None => (
+            ComponentVersion::NotConnected.label(),
+            ComponentVersion::NotConnected.label(),
+        ),
+    };
 
     printer.emit(
         Doc::new()
             .kv("Client", env!("CARGO_PKG_VERSION"))
             .kv("Server (k8s)", &server_label)
+            .kv("Operator", &operator_label)
+            .kv("CSI", &csi_label)
             .with_data(serde_json::json!({
                 "version": env!("CARGO_PKG_VERSION"),
                 "kubectl": server_label,
                 "cfgd": env!("CARGO_PKG_VERSION"),
+                "operator": operator_label,
+                "csi": csi_label,
             })),
     );
 

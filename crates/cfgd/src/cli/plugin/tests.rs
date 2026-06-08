@@ -113,6 +113,177 @@ fn build_volume_mount_with_dots_in_name() {
     assert_eq!(mount["name"], "cfgd-module-orgexampletool");
 }
 
+// --- image_tag_version helper ---
+
+#[test]
+fn image_tag_version_plain_tag() {
+    assert_eq!(
+        image_tag_version("ghcr.io/tj-smith47/cfgd-operator:0.4.0"),
+        Some("0.4.0".to_string())
+    );
+}
+
+#[test]
+fn image_tag_version_registry_with_port() {
+    // A registry host with an explicit port (host:5000) has a colon BEFORE the
+    // tag — the version is the segment after the LAST colon, scoped to the
+    // final path component so the host port is never mistaken for a tag.
+    assert_eq!(
+        image_tag_version("registry.jarvispro.io:5000/cfgd-operator:1.2.3"),
+        Some("1.2.3".to_string())
+    );
+}
+
+#[test]
+fn image_tag_version_strips_digest() {
+    assert_eq!(
+        image_tag_version("ghcr.io/x/cfgd-csi:0.4.0@sha256:abc123"),
+        Some("0.4.0".to_string())
+    );
+}
+
+#[test]
+fn image_tag_version_tag_plus_digest_pinned_pull() {
+    // Pull-by-digest WITH a tag retained (the kubelet's typical resolved ref):
+    // the tag is still the human version; the digest is stripped.
+    assert_eq!(
+        image_tag_version("ghcr.io/tj-smith47/cfgd-operator:0.4.0@sha256:deadbeef"),
+        Some("0.4.0".to_string())
+    );
+}
+
+#[test]
+fn image_tag_version_empty_string() {
+    assert_eq!(image_tag_version(""), None);
+}
+
+// --- version_from_containers: repo-hint match over sidecars ---
+
+#[test]
+fn version_from_containers_prefers_repo_hint_over_leading_sidecar() {
+    // Sidecar listed FIRST; the cfgd-operator container is second. The hint
+    // must win, not the leading container.
+    let images = vec![
+        "gcr.io/kubebuilder/kube-rbac-proxy:v0.16.0".to_string(),
+        "ghcr.io/tj-smith47/cfgd-operator:0.4.0".to_string(),
+    ];
+    assert_eq!(
+        version_from_containers(&images, "cfgd-operator"),
+        Some("0.4.0".to_string())
+    );
+}
+
+#[test]
+fn version_from_containers_csi_hint_over_registrar_sidecar() {
+    let images = vec![
+        "registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.10.0".to_string(),
+        "ghcr.io/tj-smith47/cfgd-csi:0.4.1".to_string(),
+        "registry.k8s.io/sig-storage/livenessprobe:v2.12.0".to_string(),
+    ];
+    assert_eq!(
+        version_from_containers(&images, "cfgd-csi"),
+        Some("0.4.1".to_string())
+    );
+}
+
+#[test]
+fn version_from_containers_falls_back_to_first_tagged_when_no_hint_match() {
+    // No container matches the hint → first parseable tag is used.
+    let images = vec![
+        "gcr.io/kubebuilder/kube-rbac-proxy:v0.16.0".to_string(),
+        "ghcr.io/other/thing:9.9.0".to_string(),
+    ];
+    assert_eq!(
+        version_from_containers(&images, "cfgd-operator"),
+        Some("v0.16.0".to_string())
+    );
+}
+
+#[test]
+fn version_from_containers_none_when_no_tags() {
+    let images = vec!["ghcr.io/x/cfgd-operator".to_string()];
+    assert_eq!(version_from_containers(&images, "cfgd-operator"), None);
+}
+
+// --- timeout wrapper: stalled probe degrades to NotConnected ---
+
+#[tokio::test(flavor = "current_thread")]
+async fn probe_with_deadline_degrades_on_stall() {
+    // A probe that outlasts a tiny deadline must degrade to NotConnected
+    // ("not connected"). A 10ms deadline keeps the test fast and deterministic.
+    let deadline = std::time::Duration::from_millis(10);
+    let stalled = async {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        ComponentVersion::Version("0.4.0".to_string())
+    };
+    let result = probe_with_deadline(deadline, stalled).await;
+    assert_eq!(result.label(), "not connected");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn probe_with_deadline_passes_through_when_fast() {
+    let deadline = std::time::Duration::from_secs(5);
+    let fast = async { ComponentVersion::Version("0.4.0".to_string()) };
+    let result = probe_with_deadline(deadline, fast).await;
+    assert_eq!(result.label(), "0.4.0");
+}
+
+#[test]
+fn image_tag_version_digest_only_no_tag() {
+    // No tag, digest only → no human version to show.
+    assert_eq!(image_tag_version("ghcr.io/x/cfgd-csi@sha256:abc123"), None);
+}
+
+#[test]
+fn image_tag_version_no_tag() {
+    assert_eq!(image_tag_version("ghcr.io/x/cfgd-operator"), None);
+}
+
+#[test]
+fn image_tag_version_host_port_no_tag() {
+    // host:5000/repo — the colon is in the host segment, not a tag.
+    assert_eq!(image_tag_version("registry.local:5000/cfgd-operator"), None);
+}
+
+// --- global -o output format resolution ---
+
+#[test]
+fn plugin_output_default_is_table() {
+    let cli = PluginCli::try_parse_from(["kubectl-cfgd", "version"]).unwrap();
+    assert!(matches!(
+        cli.output.0,
+        cfgd_core::output::OutputFormat::Table
+    ));
+}
+
+#[test]
+fn plugin_output_before_subcommand_parses_json() {
+    let cli = PluginCli::try_parse_from(["kubectl-cfgd", "-o", "json", "version"]).unwrap();
+    assert!(matches!(
+        cli.output.0,
+        cfgd_core::output::OutputFormat::Json
+    ));
+}
+
+#[test]
+fn plugin_output_after_subcommand_parses_yaml() {
+    // global=true means -o is accepted after the subcommand too.
+    let cli = PluginCli::try_parse_from(["kubectl-cfgd", "status", "-o", "yaml"]).unwrap();
+    assert!(matches!(
+        cli.output.0,
+        cfgd_core::output::OutputFormat::Yaml
+    ));
+}
+
+#[test]
+fn plugin_output_name_format() {
+    let cli = PluginCli::try_parse_from(["kubectl-cfgd", "-o", "name", "version"]).unwrap();
+    assert!(matches!(
+        cli.output.0,
+        cfgd_core::output::OutputFormat::Name
+    ));
+}
+
 // --- PluginCli parsing tests ---
 
 #[test]
@@ -251,7 +422,7 @@ fn plugin_cli_parse_status_command() {
 #[test]
 fn plugin_cli_parse_version_command() {
     let cli = PluginCli::try_parse_from(["kubectl-cfgd", "version"]).unwrap();
-    assert!(matches!(cli.command, PluginCommand::Version));
+    assert!(matches!(cli.command, PluginCommand::Version { .. }));
 }
 
 #[test]
@@ -510,7 +681,7 @@ fn cmd_version_no_cluster_succeeds_with_not_connected_label() {
     let _kc = EnvVarGuard::set("KUBECONFIG", "/nonexistent-kubeconfig-cfgd-test");
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_version(&printer).expect("cmd_version must succeed even without cluster");
+    cmd_version(&printer, "cfgd-system").expect("cmd_version must succeed even without cluster");
     drop(printer);
 
     let json = cap
@@ -526,6 +697,16 @@ fn cmd_version_no_cluster_succeeds_with_not_connected_label() {
         "version field must be a string"
     );
     assert_eq!(
+        json["operator"], "not connected",
+        "operator must degrade to 'not connected' without a cluster, got: {}",
+        json["operator"]
+    );
+    assert_eq!(
+        json["csi"], "not connected",
+        "csi must degrade to 'not connected' without a cluster, got: {}",
+        json["csi"]
+    );
+    assert_eq!(
         json["version"], json["cfgd"],
         "version and cfgd fields must match"
     );
@@ -537,7 +718,7 @@ fn cmd_version_emits_client_version_string() {
     let _kc = EnvVarGuard::set("KUBECONFIG", "/nonexistent-kubeconfig-cfgd-test");
     let (printer, cap) = Printer::for_test_doc();
 
-    cmd_version(&printer).expect("cmd_version must succeed");
+    cmd_version(&printer, "cfgd-system").expect("cmd_version must succeed");
     drop(printer);
 
     let json = cap.json().expect("doc must carry json payload");
@@ -874,7 +1055,7 @@ mod mock_kube {
 
         let (printer, cap) = Printer::for_test_doc();
 
-        let result = cmd_version_async(&printer, Some(client)).await;
+        let result = cmd_version_async(&printer, Some(client), "cfgd-system").await;
         drop(printer);
 
         assert!(
@@ -901,7 +1082,7 @@ mod mock_kube {
 
         let (printer, cap) = Printer::for_test_doc();
 
-        let result = cmd_version_async(&printer, Some(client)).await;
+        let result = cmd_version_async(&printer, Some(client), "cfgd-system").await;
         drop(printer);
 
         assert!(
@@ -913,6 +1094,145 @@ mod mock_kube {
             json["kubectl"], "not connected",
             "should show 'not connected' when server returns error"
         );
+    }
+
+    fn deployment_list_json(image: &str) -> serde_json::Value {
+        // Sidecar FIRST (kube-rbac-proxy), cfgd-operator SECOND: exercises the
+        // repo-hint match, not just the first-container fallback. The sidecar
+        // carries a different tag so a wrong match would surface as the wrong
+        // version.
+        serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "DeploymentList",
+            "metadata": {"resourceVersion": "1"},
+            "items": [{
+                "apiVersion": "apps/v1",
+                "kind": "Deployment",
+                "metadata": {"name": "cfgd-operator", "namespace": "cfgd-system"},
+                "spec": {"template": {"spec": {"containers": [
+                    {"name": "kube-rbac-proxy", "image": "gcr.io/kubebuilder/kube-rbac-proxy:v0.16.0"},
+                    {"name": "operator", "image": image}
+                ]}}}
+            }]
+        })
+    }
+
+    fn daemonset_list_json(image: &str) -> serde_json::Value {
+        serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "DaemonSetList",
+            "metadata": {"resourceVersion": "1"},
+            "items": [{
+                "apiVersion": "apps/v1",
+                "kind": "DaemonSet",
+                "metadata": {"name": "cfgd-csi", "namespace": "cfgd-system"},
+                "spec": {"template": {"spec": {"containers": [
+                    {"name": "node-driver-registrar", "image": "registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.10.0"},
+                    {"name": "cfgd-csi", "image": image}
+                ]}}}
+            }]
+        })
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cmd_version_reports_operator_and_csi_from_image_tags() {
+        let client = mock_client(|req| {
+            let path = req.uri().path().to_string();
+            if path == "/version" || path == "/version/" {
+                json_response(200, &serde_json::json!({"major": "1", "minor": "31"}))
+            } else if path.contains("/deployments") {
+                json_response(
+                    200,
+                    &deployment_list_json("ghcr.io/tj-smith47/cfgd-operator:0.4.0"),
+                )
+            } else if path.contains("/daemonsets") {
+                json_response(
+                    200,
+                    &daemonset_list_json("ghcr.io/tj-smith47/cfgd-csi:0.4.1"),
+                )
+            } else {
+                json_response(404, &serde_json::json!({"message": "not found"}))
+            }
+        });
+
+        let (printer, cap) = Printer::for_test_doc();
+        let result = cmd_version_async(&printer, Some(client), "cfgd-system").await;
+        drop(printer);
+
+        assert!(
+            result.is_ok(),
+            "cmd_version should succeed, got: {result:?}"
+        );
+        let json = cap.json().expect("version doc must carry data payload");
+        assert_eq!(json["kubectl"], "1.31");
+        assert_eq!(json["operator"], "0.4.0", "operator version from image tag");
+        assert_eq!(
+            json["csi"], "0.4.1",
+            "csi version from cfgd-csi container tag"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cmd_version_operator_not_deployed_degrades() {
+        let client = mock_client(|req| {
+            let path = req.uri().path().to_string();
+            if path == "/version" || path == "/version/" {
+                json_response(200, &serde_json::json!({"major": "1", "minor": "31"}))
+            } else if path.contains("/deployments") {
+                // Empty list: operator not deployed in this namespace.
+                json_response(
+                    200,
+                    &serde_json::json!({
+                        "apiVersion": "apps/v1",
+                        "kind": "DeploymentList",
+                        "metadata": {"resourceVersion": "1"},
+                        "items": []
+                    }),
+                )
+            } else if path.contains("/daemonsets") {
+                json_response(200, &daemonset_list_json("ghcr.io/x/cfgd-csi:0.4.0"))
+            } else {
+                json_response(404, &serde_json::json!({"message": "not found"}))
+            }
+        });
+
+        let (printer, cap) = Printer::for_test_doc();
+        let result = cmd_version_async(&printer, Some(client), "cfgd-system").await;
+        drop(printer);
+
+        assert!(result.is_ok(), "must not fail when operator is absent");
+        let json = cap.json().unwrap();
+        assert_eq!(json["operator"], "not deployed");
+        assert_eq!(json["csi"], "0.4.0");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cmd_version_forbidden_degrades_gracefully() {
+        let client = mock_client(|req| {
+            let path = req.uri().path().to_string();
+            if path == "/version" || path == "/version/" {
+                json_response(200, &serde_json::json!({"major": "1", "minor": "31"}))
+            } else {
+                // Both deployments + daemonsets forbidden.
+                json_response(
+                    403,
+                    &serde_json::json!({
+                        "kind": "Status", "apiVersion": "v1", "status": "Failure",
+                        "reason": "Forbidden", "code": 403,
+                        "message": "forbidden"
+                    }),
+                )
+            }
+        });
+
+        let (printer, cap) = Printer::for_test_doc();
+        let result = cmd_version_async(&printer, Some(client), "cfgd-system").await;
+        drop(printer);
+
+        assert!(result.is_ok(), "must not fail on RBAC denial");
+        let json = cap.json().unwrap();
+        assert_eq!(json["operator"], "unknown (forbidden)");
+        assert_eq!(json["csi"], "unknown (forbidden)");
     }
 }
 

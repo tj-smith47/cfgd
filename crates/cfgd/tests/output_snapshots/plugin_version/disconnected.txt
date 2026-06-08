@@ -1,2 +1,4 @@
 Client        <VERSION>
 Server (k8s)  not connected
+Operator      not connected
+CSI           not connected

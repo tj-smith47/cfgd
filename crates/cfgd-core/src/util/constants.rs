@@ -3,6 +3,11 @@ pub const API_VERSION: &str = "cfgd.io/v1alpha1";
 pub const CSI_DRIVER_NAME: &str = "csi.cfgd.io";
 pub const MODULES_ANNOTATION: &str = "cfgd.io/modules";
 
+/// Default namespace the cfgd operator + CSI driver are deployed into. Used by
+/// `kubectl cfgd version` to locate the operator Deployment and CSI DaemonSet
+/// when no explicit `--namespace` is given.
+pub const CFGD_SYSTEM_NAMESPACE: &str = "cfgd-system";
+
 /// Kubernetes label key pointing at the `MachineConfig` resource an object
 /// was derived from (e.g. DriftAlert -> MachineConfig).
 pub const LABEL_MACHINE_CONFIG: &str = "cfgd.io/machine-config";

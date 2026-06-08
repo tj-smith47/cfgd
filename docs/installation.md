@@ -289,6 +289,52 @@ ln -s "$(command -v cfgd)" "$HOME/.local/bin/kubectl-cfgd"
 kubectl cfgd version
 ```
 
+### Plugin commands
+
+| Command                            | Purpose                                                   |
+|------------------------------------|----------------------------------------------------------|
+| `kubectl cfgd debug <pod>`         | Attach an ephemeral debug container with modules mounted  |
+| `kubectl cfgd exec <pod> -- <cmd>` | Run a command in a pod with module `PATH` extended        |
+| `kubectl cfgd inject <kind>/<name>`| Patch a workload to mount modules on every replica        |
+| `kubectl cfgd status`              | Per-node module status across the cluster                 |
+| `kubectl cfgd version`             | Client, apiserver, operator, and CSI driver versions      |
+
+Every plugin command accepts the global `-o`/`--output` flag (it mirrors the
+workstation CLI), so output can be rendered as `table` (default), `wide`,
+`json`, `yaml`, `name`, `jsonpath=EXPR`, `template=TMPL`, or
+`template-file=PATH`. The flag is global, so it works before or after the
+subcommand:
+
+```sh
+kubectl cfgd -o json version
+kubectl cfgd status -o yaml
+```
+
+`kubectl cfgd version` reports four versions: the client plugin, the
+Kubernetes apiserver, and the deployed cfgd **operator** and **CSI driver**.
+The operator/CSI versions are read from the running images' tags in the cfgd
+namespace (`cfgd-system` by default; override with `--namespace`). When the
+cluster is unreachable, a component isn't deployed, or RBAC forbids the
+lookup, that field degrades gracefully (`not connected` / `not deployed` /
+`unknown (forbidden)`) and the command still exits 0:
+
+```sh
+$ kubectl cfgd version
+Client        0.4.0
+Server (k8s)  1.31
+Operator      0.4.0
+CSI           0.4.0
+
+$ kubectl cfgd version --namespace cfgd-system -o json
+{
+  "version": "0.4.0",
+  "kubectl": "1.31",
+  "operator": "0.4.0",
+  "csi": "0.4.0",
+  "cfgd": "0.4.0"
+}
+```
+
 ## Next steps
 
 - [Bootstrap a config](bootstrap.md) — `cfgd init` against a git repo or a

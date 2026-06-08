@@ -194,7 +194,7 @@ fn plugin_version_disconnected_human() {
     let _kubeconfig = EnvVarGuard::set("KUBECONFIG", "/tmp/nonexistent-kubeconfig");
     let (printer, cap) = Printer::for_test_doc();
 
-    plugin::cmd_version(&printer).unwrap();
+    plugin::cmd_version(&printer, "cfgd-system").unwrap();
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
