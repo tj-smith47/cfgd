@@ -7,6 +7,7 @@
 //! helpers (gated on the `test-helpers` feature).
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use console::Term;
@@ -54,6 +55,11 @@ pub struct Printer {
     pub(crate) test_doc_capture: Option<DocCapture>,
     /// Set under `test-helpers` when prompt responses are seeded.
     pub(crate) prompt_queue: Option<Arc<Mutex<VecDeque<PromptAnswer>>>>,
+    /// Flipped by `emit` when a data-dependent structured-output failure
+    /// (template render/context error, template-file read error) is routed to
+    /// stderr. The CLI entrypoint reads it via `had_output_error` after dispatch
+    /// to exit non-zero — the failure has already been reported on stderr.
+    pub(crate) output_error: AtomicBool,
 }
 
 impl Printer {
@@ -100,6 +106,7 @@ impl Printer {
             theme_set: syntect::highlighting::ThemeSet::load_defaults(),
             test_doc_capture: None,
             prompt_queue: None,
+            output_error: AtomicBool::new(false),
         }
     }
 
@@ -319,12 +326,23 @@ impl Printer {
         }
         let handled = super::structured::emit_structured(
             self.sink_stdout.as_ref(),
+            self.sink_stderr.as_ref(),
+            &self.output_error,
             &doc,
             &self.output_format,
         );
         if !handled {
             self.render(doc);
         }
+    }
+
+    /// True if any `emit` produced a data-dependent structured-output failure
+    /// (template render/context error, or a template-file that could not be
+    /// read). The error was already reported on stderr; the CLI entrypoint reads
+    /// this after dispatch to exit non-zero rather than falsely reporting
+    /// success on a polluted/empty data channel.
+    pub fn had_output_error(&self) -> bool {
+        self.output_error.load(Ordering::Relaxed)
     }
 
     // ----- Section entry points -----

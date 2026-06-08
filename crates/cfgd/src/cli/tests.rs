@@ -5194,6 +5194,53 @@ fn output_format_arg_parse_error() {
     assert!(err.contains("unknown output format"));
 }
 
+#[test]
+fn output_format_arg_rejects_malformed_jsonpath() {
+    use super::OutputFormatArg;
+    // `jsonpath={.items[` must be rejected at parse time so clap surfaces a
+    // usage error rather than letting the walker run (it once panicked here).
+    let result: Result<OutputFormatArg, _> = "jsonpath={.items[".parse();
+    assert!(result.is_err(), "malformed jsonpath must error, not Ok");
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("jsonpath"),
+        "error should name jsonpath, got: {err:?}"
+    );
+}
+
+#[test]
+fn output_format_arg_accepts_wellformed_jsonpath() {
+    use super::OutputFormatArg;
+    for expr in [
+        "jsonpath={[0].name}",
+        "jsonpath={.items[*].name}",
+        "jsonpath={.drift}",
+    ] {
+        assert!(
+            expr.parse::<OutputFormatArg>().is_ok(),
+            "expected {expr:?} to parse"
+        );
+    }
+}
+
+#[test]
+fn output_format_arg_rejects_malformed_template() {
+    use super::OutputFormatArg;
+    let result: Result<OutputFormatArg, _> = "template={{range}".parse();
+    assert!(result.is_err(), "malformed template must error, not Ok");
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("template"),
+        "error should name template, got: {err:?}"
+    );
+}
+
+#[test]
+fn output_format_arg_accepts_wellformed_template() {
+    use super::OutputFormatArg;
+    assert!("template={{ name }}".parse::<OutputFormatArg>().is_ok());
+}
+
 // --- cmd_plan tests ---
 
 #[test]

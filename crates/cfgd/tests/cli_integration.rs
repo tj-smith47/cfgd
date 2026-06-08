@@ -1129,6 +1129,127 @@ fn invalid_output_format_shows_error() {
         .failure();
 }
 
+// --- malformed -o jsonpath/template must not panic or report false success ---
+
+/// `-o 'jsonpath={.items['` must be rejected by clap's value parser (exit 2),
+/// never reach the walker and panic (exit 101). stdout stays empty; the error
+/// is on stderr.
+#[test]
+fn jsonpath_malformed_expr_is_clap_usage_error_no_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["profile", "list", "-o", "jsonpath={.items["])
+        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .assert()
+        .code(2)
+        .stdout(predicate::str::is_empty());
+    let out = assert.get_output();
+    assert!(!out.stderr.is_empty(), "stderr must carry the usage error");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("panicked"),
+        "must not panic, stderr: {stderr}"
+    );
+}
+
+/// `-o 'template={{range}'` is a malformed Tera template → clap usage error
+/// (exit 2), stdout empty, message on stderr.
+#[test]
+fn template_malformed_is_clap_usage_error() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["profile", "list", "-o", "template={{range}"])
+        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .assert()
+        .code(2)
+        .stdout(predicate::str::is_empty());
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(!stderr.is_empty(), "stderr must carry the usage error");
+}
+
+/// `-o template-file=<missing>` is a runtime (emit-time) failure: file read
+/// fails → non-zero exit (1), error on stderr, NOT on the stdout data channel.
+#[test]
+fn template_file_missing_is_runtime_error_on_stderr() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+    let missing = dir.path().join("does-not-exist.tera");
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args([
+            "profile",
+            "list",
+            "-o",
+            &format!("template-file={}", missing.display()),
+        ])
+        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty());
+    let out = assert.get_output();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "runtime render failure → exit 1"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("template file") || stderr.contains("template-file"),
+        "stderr must explain the missing template file, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("no such file"),
+        "stderr should carry the cleaned NotFound reason, got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("os error"),
+        "stderr must not leak '(os error N)', got: {stderr}"
+    );
+}
+
+/// Regression guard: a valid `-o json` list still emits a bare top-level array
+/// (the shape CI + acceptance oracles consume) and exits 0.
+#[test]
+fn json_list_emits_bare_array_and_exits_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+
+    let assert = Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["profile", "list", "-o", "json"])
+        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout is one JSON value");
+    assert!(v.is_array(), "list -o json must be a bare array, got: {v}");
+    assert_eq!(v[0]["name"], "base", "fixture profile name");
+}
+
+/// A valid bare-array jsonpath against the known fixture prints the expected
+/// scalar and exits 0.
+#[test]
+fn jsonpath_bare_array_index_prints_scalar() {
+    let dir = tempfile::tempdir().unwrap();
+    create_valid_config(dir.path());
+
+    Command::cargo_bin("cfgd")
+        .unwrap()
+        .args(["profile", "list", "-o", "jsonpath={[0].name}"])
+        .env("CFGD_CONFIG", dir.path().join("cfgd.yaml"))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("base"));
+}
+
 // ─── Exit-code taxonomy (cfgd_core::exit::ExitCode) ─────────────────────
 //
 // These tests lock the wire-level exit codes scripted consumers depend on.

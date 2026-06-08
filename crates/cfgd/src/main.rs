@@ -156,6 +156,16 @@ fn main() -> anyhow::Result<()> {
         cli::error::render_cli_error(&printer, &e).exit();
     }
 
+    // A data-dependent structured-output failure (template render/context error,
+    // or an unreadable template-file) is reported on stderr by `emit` but cannot
+    // make `execute` return `Err` without rippling through 175 `emit` call
+    // sites. The Printer records it; surface it as a non-zero exit so a `-o`
+    // consumer never sees exit 0 over a polluted/empty data channel. The message
+    // already went to stderr — do not print again.
+    if printer.had_output_error() {
+        cfgd_core::exit::ExitCode::Error.exit();
+    }
+
     Ok(())
 }
 

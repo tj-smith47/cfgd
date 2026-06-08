@@ -123,6 +123,7 @@ pub fn error_doc(
 pub mod render_doc;
 
 pub mod structured;
+pub use structured::validate_jsonpath_expr;
 
 #[cfg(feature = "test-helpers")]
 pub mod test_capture;

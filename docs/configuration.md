@@ -226,3 +226,28 @@ These flags work with any subcommand:
 | `--quiet` | `-q` | `CFGD_QUIET` | Suppress all non-error output |
 | `--no-color` | | `NO_COLOR` | Disable colored terminal output |
 | `--output <format>` | `-o` | | Output format: `table` (default), `wide`, `json`, `yaml`, `name`, `jsonpath=EXPR`, `template=TMPL`, `template-file=PATH` |
+
+#### Structured output shapes (`jsonpath` / `template`)
+
+List commands emit a **bare top-level array**, not a kubectl-style `{"items": [...]}`
+envelope. Index into it directly — `[0]`, not `.items[0]`:
+
+```sh
+cfgd profile list -o json                       # [ { "name": "base", ... }, ... ]
+cfgd profile list -o 'jsonpath={[0].name}'      # base
+cfgd profile list -o 'jsonpath={[*].name}'      # one name per line
+cfgd profile list -o 'jsonpath={.items[0]}'     # empty — no `items` key on a bare array
+```
+
+Single-object commands (e.g. `cfgd status`) expose their fields directly, so
+`jsonpath={.field}` works against them:
+
+```sh
+cfgd status -o 'jsonpath={.drift}'              # extract drift events
+```
+
+A malformed `jsonpath` or `template` expression is rejected at parse time with a
+usage error (exit `2`); a template that fails to render against the data, or a
+`template-file` that cannot be read, writes the error to `stderr` and exits non-zero
+(exit `1`) — the structured data channel on `stdout` is never polluted with an error
+message, and a failure never reports exit `0`.

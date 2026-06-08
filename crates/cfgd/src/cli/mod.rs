@@ -226,8 +226,19 @@ impl std::str::FromStr for OutputFormatArg {
             "name" => Ok(Self(OutputFormat::Name)),
             other => {
                 if let Some(expr) = other.strip_prefix("jsonpath=") {
+                    // Reject a malformed jsonpath at parse time so clap surfaces
+                    // a usage error (exit 2) rather than the walker panicking or
+                    // a runtime emit silently producing nothing.
+                    cfgd_core::output::validate_jsonpath_expr(expr)
+                        .map_err(|e| format!("invalid jsonpath: {e}"))?;
                     Ok(Self(OutputFormat::Jsonpath(expr.to_string())))
                 } else if let Some(tmpl) = other.strip_prefix("template=") {
+                    // Reject a template that does not compile at parse time so a
+                    // syntax error is a clap usage error (exit 2), never an
+                    // exit-0 message printed to the stdout data channel.
+                    tera::Tera::default()
+                        .add_raw_template("__probe__", tmpl)
+                        .map_err(|e| format!("invalid template: {e}"))?;
                     Ok(Self(OutputFormat::Template(tmpl.to_string())))
                 } else if let Some(path) = other.strip_prefix("template-file=") {
                     Ok(Self(OutputFormat::TemplateFile(std::path::PathBuf::from(
