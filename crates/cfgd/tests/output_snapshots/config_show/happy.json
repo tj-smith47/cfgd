@@ -81,7 +81,8 @@
         },
         "sync": {
           "autoApply": false,
-          "interval": "1h"
+          "interval": "1h",
+          "required": false
         }
       },
       {
@@ -102,7 +103,8 @@
         },
         "sync": {
           "autoApply": false,
-          "interval": "1h"
+          "interval": "1h",
+          "required": false
         }
       }
     ],

@@ -956,6 +956,121 @@ fn load_sources_succeeds_with_empty_list() {
 }
 
 #[test]
+fn load_sources_fails_when_required_source_fails() {
+    // A `sync.required: true` source that cannot load is fatal even when other
+    // sources succeed — fail-closed for security/team baselines.
+    let dir = tempfile::tempdir().unwrap();
+    let mut mgr = SourceManager::new(dir.path());
+    let printer = test_printer();
+
+    let mut required = crate::config::SourceSpec {
+        name: "baseline".into(),
+        origin: crate::config::OriginSpec {
+            origin_type: OriginType::Git,
+            url: "file:///nonexistent/required-repo".into(),
+            branch: "main".into(),
+            auth: None,
+            ssh_strict_host_key_checking: Default::default(),
+        },
+        subscription: Default::default(),
+        sync: Default::default(),
+    };
+    required.sync.required = true;
+
+    let result = mgr.load_sources(&[required], &printer);
+    assert!(
+        result.is_err(),
+        "a failing required source must make load_sources fatal"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("baseline"),
+        "fatal error must name the required source, got: {err}"
+    );
+}
+
+/// An empty local profile (no layers) — the smallest valid input for `compose`.
+fn empty_local_profile() -> crate::config::ResolvedProfile {
+    crate::config::ResolvedProfile {
+        layers: Vec::new(),
+        merged: crate::config::MergedProfile::default(),
+    }
+}
+
+#[test]
+fn compose_fails_when_required_source_not_loaded() {
+    // The compose chokepoint is the authoritative fail-closed gate: a
+    // `required:true` source that never loaded (cache miss / warn-skip on the
+    // read path) must make compose fatal, not silently `continue` past it. This
+    // covers ALL read paths (diff/status/verify/compliance/checkin) and the
+    // daemon reconcile, which compose offline via load_sources_cached.
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = SourceManager::new(dir.path());
+
+    let mut required = crate::config::SourceSpec {
+        name: "baseline".into(),
+        origin: crate::config::OriginSpec {
+            origin_type: OriginType::Git,
+            url: "https://example.test/baseline.git".into(),
+            branch: "main".into(),
+            auth: None,
+            ssh_strict_host_key_checking: Default::default(),
+        },
+        subscription: Default::default(),
+        sync: Default::default(),
+    };
+    required.sync.required = true;
+
+    let local = empty_local_profile();
+    let err = mgr
+        .compose(&[required], &local)
+        .expect_err("a required source absent from the loaded set must make compose fatal");
+    assert!(
+        matches!(
+            err,
+            crate::errors::CfgdError::Composition(ref e)
+                if matches!(**e, crate::errors::CompositionError::RequiredSourceUnavailable { .. })
+        ),
+        "expected RequiredSourceUnavailable, got: {err}"
+    );
+    assert!(
+        err.to_string().contains("baseline"),
+        "fatal error must name the required source, got: {err}"
+    );
+    // It must map to the ConfigInvalid exit family (resolved config can't build).
+    assert_eq!(
+        crate::exit::exit_code_for_error(&err),
+        crate::exit::ExitCode::ConfigInvalid,
+        "a required-source-unavailable error must exit ConfigInvalid"
+    );
+}
+
+#[test]
+fn compose_succeeds_when_non_required_source_not_loaded() {
+    // A non-required source absent from the loaded set is benign — compose
+    // returns the local profile unchanged (today's best-effort read behaviour).
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = SourceManager::new(dir.path());
+
+    let optional = crate::config::SourceSpec {
+        name: "optional".into(),
+        origin: crate::config::OriginSpec {
+            origin_type: OriginType::Git,
+            url: "https://example.test/optional.git".into(),
+            branch: "main".into(),
+            auth: None,
+            ssh_strict_host_key_checking: Default::default(),
+        },
+        subscription: Default::default(),
+        sync: Default::default(), // required defaults to false
+    };
+
+    let local = empty_local_profile();
+    mgr.compose(&[optional], &local)
+        .expect("a non-required absent source must not make compose fatal");
+}
+
+#[test]
 fn git_clone_with_fallback_local_repo() {
     let dir = tempfile::tempdir().unwrap();
     let origin_path = dir.path().join("origin");
@@ -2086,6 +2201,98 @@ mod local_source_fixture {
             );
             // No clone should have been left behind on a fail-fast pin.
             assert!(!cache_dir.join("pin-nomatch").exists());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_pin_miss_with_cache_keeps_previous_ref() {
+        // First load resolves a pin and caches a checkout. A later load whose pin
+        // no longer matches any tag must KEEP the previously-resolved checkout
+        // (non-required source) rather than dropping the source.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let (bare, oids) = make_bare_with_tags(&tmp, "pin-keep", &["v1.0.0", "v2.0.0"]);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+
+            // Resolve ~2 → v2.0.0 and cache it.
+            let good = pinned_spec("pin-keep", &bare, "~2");
+            mgr.load_source(&good, &test_printer()).unwrap();
+            let want = oids.iter().find(|(t, _)| t == "v2.0.0").unwrap().1.clone();
+            assert_eq!(head_oid(&cache_dir, "pin-keep"), want);
+
+            // Re-pin to ~9 (no matching tag). Cache exists + non-required →
+            // keep the previously-resolved checkout instead of aborting.
+            let miss = pinned_spec("pin-keep", &bare, "~9");
+            mgr.load_source(&miss, &test_printer())
+                .expect("pin-miss with existing cache must keep previous ref, not error");
+            assert!(
+                mgr.get("pin-keep").is_some(),
+                "source must remain present after a pin-miss with cache"
+            );
+            assert_eq!(
+                head_oid(&cache_dir, "pin-keep"),
+                want,
+                "checkout must stay on the previously-resolved ref"
+            );
+            assert_eq!(
+                mgr.get("pin-keep").unwrap().last_commit.as_deref(),
+                Some(want.as_str()),
+                "last_commit must reflect the kept checkout"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_pin_miss_with_cache_required_is_fatal() {
+        // A required source whose pin can no longer resolve must FAIL, never
+        // silently fall back to a stale cached ref.
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let (bare, _oids) = make_bare_with_tags(&tmp, "pin-req", &["v1.0.0", "v2.0.0"]);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+
+            let mut good = pinned_spec("pin-req", &bare, "~2");
+            good.sync.required = true;
+            mgr.load_source(&good, &test_printer()).unwrap();
+            assert!(mgr.get("pin-req").is_some());
+
+            let mut miss = pinned_spec("pin-req", &bare, "~9");
+            miss.sync.required = true;
+            let err = mgr.load_source(&miss, &test_printer()).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    crate::errors::CfgdError::Source(SourceError::PinRefNotFound { .. })
+                ),
+                "required pin-miss must be fatal PinRefNotFound, got: {err}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_source_pin_miss_no_cache_non_required_errors() {
+        // No prior cache + pin-miss → there is nothing to keep, so resolution
+        // errors (load_sources then warn-drops it for a non-required source).
+        with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
+            let tmp = tempfile::tempdir().unwrap();
+            let (bare, _) = make_bare_with_tags(&tmp, "pin-fresh", &["v1.0.0", "v2.0.0"]);
+            let cache_dir = tmp.path().join("cache");
+            let mut mgr = SourceManager::new(&cache_dir);
+            let spec = pinned_spec("pin-fresh", &bare, "~9");
+            let err = mgr.load_source(&spec, &test_printer()).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    crate::errors::CfgdError::Source(SourceError::PinRefNotFound { .. })
+                ),
+                "first-ever pin-miss must error, got: {err}"
+            );
+            assert!(!cache_dir.join("pin-fresh").exists());
         });
     }
 

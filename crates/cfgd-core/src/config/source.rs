@@ -68,6 +68,14 @@ pub struct SourceSyncSpec {
     pub auto_apply: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pin_version: Option<String>,
+    /// Fail-closed marker. When `true`, a failure to load this source (fetch,
+    /// manifest, signature, or an unresolvable `pinVersion`) is fatal — apply /
+    /// plan / compose abort rather than silently dropping the source. Default
+    /// `false` keeps the best-effort warn-and-continue behaviour for optional
+    /// sources. Use it for security or team baselines that must always be
+    /// composed in.
+    #[serde(default)]
+    pub required: bool,
 }
 
 impl Default for SourceSyncSpec {
@@ -76,6 +84,7 @@ impl Default for SourceSyncSpec {
             interval: default_sync_interval(),
             auto_apply: false,
             pin_version: None,
+            required: false,
         }
     }
 }
@@ -312,6 +321,30 @@ bogusField: 1
         let spec: SubscriptionSpec = serde_yaml::from_str(yaml).unwrap();
         assert!(!spec.allow_scripts);
         assert!(!SubscriptionSpec::default().allow_scripts);
+    }
+
+    #[test]
+    fn sync_spec_parses_required_true() {
+        let yaml = "interval: 30m\nrequired: true\n";
+        let spec: SourceSyncSpec = serde_yaml::from_str(yaml).unwrap();
+        assert!(spec.required);
+        assert_eq!(spec.interval, "30m");
+    }
+
+    #[test]
+    fn sync_spec_required_defaults_false() {
+        let yaml = "interval: 1h\n";
+        let spec: SourceSyncSpec = serde_yaml::from_str(yaml).unwrap();
+        assert!(!spec.required);
+        assert!(!SourceSyncSpec::default().required);
+    }
+
+    #[test]
+    fn sync_spec_rejects_unknown_field_alongside_required() {
+        let yaml = "required: true\nbogusField: 1\n";
+        let err = serde_yaml::from_str::<SourceSyncSpec>(yaml)
+            .expect_err("expected deny_unknown_fields to reject bogusField");
+        assert!(format!("{err}").contains("unknown field"));
     }
 
     #[test]

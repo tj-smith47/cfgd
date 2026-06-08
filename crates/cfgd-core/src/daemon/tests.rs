@@ -5208,6 +5208,7 @@ fn build_sync_tasks_includes_source_when_dir_exists() {
             interval: "120s".to_string(),
             auto_apply: true,
             pin_version: None,
+            required: false,
         },
     }];
 
@@ -6942,6 +6943,7 @@ fn build_sync_tasks_propagates_source_sync_interval() {
             auto_apply: true,
             interval: "60s".into(),
             pin_version: None,
+            required: false,
         },
     }];
 
@@ -11203,6 +11205,150 @@ async fn handle_reconcile_never_synced_source_reconciles_local_only() {
     assert!(
         guard.last_reconcile.is_some(),
         "a never-synced source (cache-miss) must NOT skip the tick — reconcile proceeds local-only"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn handle_reconcile_required_uncached_source_skips_tick_and_preserves_package() {
+    // A `sync.required: true` source with NO cache must NOT degrade to local-only
+    // (which the daemon's pruning reconcile would treat as the required source's
+    // packages being phantom drift, uninstalling them under autoApply). The
+    // compose chokepoint returns RequiredSourceUnavailable → tick SKIPPED, the
+    // tracked source-delivered package survives, last_reconcile untouched, alert
+    // raised. Parallels handle_reconcile_compose_error_skips_tick_and_preserves_source_package
+    // but for the cache-only fail-OPEN gap the chokepoint fix closes.
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    // Point the source cache at an EMPTY xdg-data dir → the required source is
+    // never-synced (no cache), so compose must fail-closed.
+    let xdg_data = tmp.path().join("xdg-data-empty");
+    std::fs::create_dir_all(&xdg_data).unwrap();
+    let _xdg = crate::test_helpers::EnvVarGuard::set("XDG_DATA_HOME", xdg_data.to_str().unwrap());
+
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+
+    // cfgd previously installed the required source's package (tracked in state).
+    {
+        let seed = StateStore::open_in_dir(&state_dir).unwrap();
+        seed.upsert_managed_resource("package", "cargo/source-pkg", "req-src", None, None)
+            .unwrap();
+    }
+
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n  sources:\n    - name: req-src\n      origin:\n        type: Git\n        url: https://example.test/req.git\n      subscription:\n        profile: team\n      sync:\n        required: true\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    let uninstalled = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    struct PrunePkgHooks {
+        uninstalled: Arc<Mutex<Vec<String>>>,
+    }
+    impl DaemonHooks for PrunePkgHooks {
+        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+            let mut reg = ProviderRegistry::new();
+            reg.package_managers
+                .push(Box::new(RecordingUninstallManager {
+                    uninstalled: Arc::clone(&self.uninstalled),
+                    installed: ["source-pkg".to_string()].into_iter().collect(),
+                }));
+            reg
+        }
+        fn plan_files(
+            &self,
+            _: &Path,
+            _: &ResolvedProfile,
+        ) -> crate::errors::Result<Vec<FileAction>> {
+            Ok(vec![])
+        }
+        fn plan_packages(
+            &self,
+            _: &MergedProfile,
+            _: &[&dyn PackageManager],
+            cfgd_installed: &std::collections::HashSet<String>,
+        ) -> crate::errors::Result<Vec<PackageAction>> {
+            let mut actions = Vec::new();
+            if cfgd_installed.contains("cargo/source-pkg") {
+                actions.push(PackageAction::Uninstall {
+                    manager: "cargo".into(),
+                    packages: vec!["source-pkg".into()],
+                    origin: "req-src".into(),
+                });
+            }
+            Ok(actions)
+        }
+        fn extend_registry_custom_managers(
+            &self,
+            _: &mut ProviderRegistry,
+            _: &config::PackagesSpec,
+        ) {
+        }
+        fn expand_tilde(&self, path: &Path) -> PathBuf {
+            crate::expand_tilde(path)
+        }
+    }
+
+    let hooks = PrunePkgHooks {
+        uninstalled: Arc::clone(&uninstalled),
+    };
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let st = Arc::clone(&state);
+    let not = Arc::clone(&notifier);
+    let sd = state_dir.clone();
+    let cp = config_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let printer = test_printer();
+        handle_reconcile(
+            &cp,
+            None,
+            quiet_reconcile_ctx(&st, &not, true, &hooks, &sd, &printer),
+        );
+    })
+    .await
+    .unwrap();
+
+    // SAFETY: the required source's tracked package must NOT be uninstalled.
+    let uninstalled = uninstalled.lock().await;
+    assert!(
+        uninstalled.is_empty(),
+        "fail-closed skip must prevent pruning the required source's package; got: {uninstalled:?}"
+    );
+
+    let after = StateStore::open_in_dir(&state_dir).unwrap();
+    assert!(
+        after
+            .is_resource_managed("package", "cargo/source-pkg")
+            .unwrap(),
+        "required source package's tracking row must survive a skipped tick"
+    );
+
+    {
+        let guard = state.lock().await;
+        assert!(
+            guard.last_reconcile.is_none(),
+            "a required-uncached source must SKIP the tick (no last_reconcile update)"
+        );
+    }
+
+    let alerts = notifier.captured();
+    assert!(
+        alerts
+            .iter()
+            .any(|(title, body)| title.contains("reconcile skipped")
+                && body.contains("source's cached config is broken")),
+        "a required-uncached source must raise the fail-closed skip alert; got: {alerts:?}"
     );
 }
 

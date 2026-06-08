@@ -65,12 +65,25 @@ impl SourceManager {
     }
 
     /// Load all sources from config, fetching if needed.
-    /// Returns an error if sources were specified but none loaded successfully.
+    ///
+    /// A source marked `sync.required: true` is fail-closed: any load failure
+    /// propagates immediately (naming the source), so a security or team
+    /// baseline that cannot be fetched aborts apply/plan rather than being
+    /// silently composed out. Non-required sources keep best-effort behaviour —
+    /// a per-source failure is warn-logged and skipped, and an error is only
+    /// returned when sources were specified but every one of them failed.
     pub fn load_sources(&mut self, sources: &[SourceSpec], printer: &Printer) -> Result<()> {
         let mut loaded = 0;
         for spec in sources {
             match self.load_source(spec, printer) {
                 Ok(()) => loaded += 1,
+                Err(e) if spec.sync.required => {
+                    return Err(SourceError::FetchFailed {
+                        name: spec.name.clone(),
+                        message: format!("required source failed to load: {e}"),
+                    }
+                    .into());
+                }
                 Err(e) => {
                     printer.status_simple(
                         Role::Warn,
@@ -192,8 +205,35 @@ impl SourceManager {
         // A pin resolves to a concrete git ref (tag or commit SHA) rather than
         // tracking a branch. Resolution happens on every load so a semver-range
         // pin re-selects the highest matching tag when the remote gains one.
+        //
+        // When the pin no longer matches any remote ref, the resolution returns
+        // `PinRefNotFound`. For a non-required source that already has a
+        // resolved checkout on disk, this is NOT fatal: keep the
+        // previously-resolved checkout (parse + compose it) instead of dropping
+        // the source. A required source — or a first-ever load with no cache —
+        // still fails fast. Only the pin-not-found case gets this fallback; a
+        // network/ls-remote error (GitError) still propagates.
         let pinned_ref = match spec.sync.pin_version.as_deref() {
-            Some(pin) => Some(self.resolve_pinned_ref(spec, pin)?),
+            Some(pin) => match self.resolve_pinned_ref(spec, pin) {
+                Ok(resolved) => Some(resolved),
+                Err(e)
+                    if matches!(
+                        e,
+                        crate::errors::CfgdError::Source(SourceError::PinRefNotFound { .. })
+                    ) && !spec.sync.required
+                        && source_dir.exists() =>
+                {
+                    printer.status_simple(
+                        Role::Warn,
+                        format!(
+                            "Source '{}': pin '{}' no longer matches any ref; keeping the previously-resolved checkout",
+                            spec.name, pin
+                        ),
+                    );
+                    return self.load_from_existing_cache(spec, &source_dir);
+                }
+                Err(e) => return Err(e),
+            },
             None => None,
         };
 
@@ -223,6 +263,32 @@ impl SourceManager {
             manifest,
             last_commit,
             last_fetched: Some(crate::utc_now_iso8601()),
+        };
+
+        self.sources.insert(spec.name.clone(), cached);
+        Ok(())
+    }
+
+    /// Insert a source from its existing on-disk checkout without re-fetching.
+    /// Used when a `pinVersion` no longer resolves but a prior successful load
+    /// left a usable checkout: parse + signature-verify the cached manifest and
+    /// keep it composed at the previously-resolved ref. A corrupt manifest or
+    /// failed signature still surfaces as an error — only the pin-not-found case
+    /// routes here.
+    fn load_from_existing_cache(&mut self, spec: &SourceSpec, source_dir: &Path) -> Result<()> {
+        let manifest = self.parse_manifest(&spec.name, source_dir)?;
+        self.verify_commit_signature(&spec.name, source_dir, &manifest.spec.policy.constraints)?;
+
+        let last_commit = Self::head_commit(source_dir);
+
+        let cached = CachedSource {
+            name: spec.name.clone(),
+            origin_url: spec.origin.url.clone(),
+            origin_branch: spec.origin.branch.clone(),
+            local_path: source_dir.to_path_buf(),
+            manifest,
+            last_commit,
+            last_fetched: None,
         };
 
         self.sources.insert(spec.name.clone(), cached);
@@ -805,6 +871,24 @@ impl SourceManager {
         local: &ResolvedProfile,
     ) -> Result<crate::composition::CompositionResult> {
         use crate::composition::{CompositionInput, SubscriptionConfig};
+
+        // Authoritative fail-closed gate. This is the single chokepoint every
+        // read/refresh/daemon path flows through, so enforcing `sync.required`
+        // here — rather than only in the refresh-time `load_sources` — covers
+        // the cache-only paths (diff/status/verify/compliance/checkin, daemon
+        // reconcile) by construction. A required source that did not load for
+        // ANY reason (cache miss, warn-skip, fetch/manifest/signature failure)
+        // is absent from `self.sources`; without this check the loop below would
+        // silently `continue` past it, and the daemon's pruning reconcile would
+        // then uninstall its packages/modules as phantom drift.
+        for spec in cfg_sources {
+            if spec.sync.required && self.get(&spec.name).is_none() {
+                return Err(crate::errors::CompositionError::RequiredSourceUnavailable {
+                    source_name: spec.name.clone(),
+                }
+                .into());
+            }
+        }
 
         let mut inputs = Vec::new();
         for spec in cfg_sources {

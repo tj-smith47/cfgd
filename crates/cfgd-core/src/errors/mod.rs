@@ -287,6 +287,11 @@ pub enum CompositionError {
     #[error("source '{source_name}' is not allowed to run scripts")]
     ScriptsNotAllowed { source_name: String },
 
+    #[error(
+        "required source '{source_name}' is not available (not synced or failed to load); fix the source or set its sync.required to false"
+    )]
+    RequiredSourceUnavailable { source_name: String },
+
     #[error("source '{source_name}' template attempted to access local variable '{variable}'")]
     TemplateSandboxViolation {
         source_name: String,

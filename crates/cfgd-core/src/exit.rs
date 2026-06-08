@@ -217,6 +217,18 @@ mod tests {
     }
 
     #[test]
+    fn composition_required_source_unavailable_maps_to_config_invalid() {
+        // A required-but-unavailable source means the resolved config can't be
+        // built — same class as other composition policy failures (4).
+        let err = CfgdError::Composition(Box::new(
+            crate::errors::CompositionError::RequiredSourceUnavailable {
+                source_name: "baseline".into(),
+            },
+        ));
+        assert_eq!(exit_code_for_error(&err), ExitCode::ConfigInvalid);
+    }
+
+    #[test]
     fn source_not_found_maps_to_not_found() {
         let err = CfgdError::Source(crate::errors::SourceError::NotFound {
             name: "acme".into(),

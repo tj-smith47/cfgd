@@ -95,6 +95,7 @@ spec:
         interval: "1h"
         autoApply: false
         pinVersion: "~2"
+        required: false      # fail-closed: a load failure aborts apply/plan
 ```
 
 ## Platform-Aware Profile Auto-Selection
@@ -359,7 +360,7 @@ The `pinVersion` field pins a source to a concrete **git ref** — a tag selecte
 
 A `pinVersion` value is interpreted in this order:
 
-1. **Semver range** — list the source's git tags, strip a leading `v`, filter by the range, and check out the **highest** matching tag. If no tag matches, cfgd fails fast with an error (it never checks out a tag outside the range).
+1. **Semver range** — list the source's git tags, strip a leading `v`, filter by the range, and check out the **highest** matching tag. It never checks out a tag outside the range. When no tag matches, behaviour depends on whether a previously-resolved checkout exists and whether the source is `required` — see [When a pin stops matching](#when-a-pin-stops-matching) below.
 2. **Commit SHA** (7–40 hex characters) — check out that exact commit. A SHA is an immutable pin: it always resolves to the same commit.
 3. **Exact tag name** (e.g. `release-2024`) — check out that tag verbatim.
 
@@ -381,9 +382,45 @@ cfgd source add https://github.com/acme/config.git --pin-version "v2.1.0"
 cfgd source add https://github.com/acme/config.git --pin-version "9f3c1ab2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9"
 ```
 
-On `cfgd source update`, a semver-range pin is **re-resolved** so a newly-published higher matching tag is picked up; a tag or commit-SHA pin is immutable and stays put. When a source advances but no tag matches your range, cfgd fails fast and keeps the previously resolved ref. The error appears in `cfgd status` and daemon notifications. To move the pin, change your `pinVersion`.
+On `cfgd source update`, a semver-range pin is **re-resolved** so a newly-published higher matching tag is picked up; a tag or commit-SHA pin is immutable and stays put. To move the pin, change your `pinVersion`.
 
 For commit-SHA pins, cfgd first tries a shallow fetch of the commit; if the server refuses (no `uploadpack.allowReachableSHA1InWant`), it deepens the fetch and prints a note so the depth relaxation is never silent.
+
+### When a pin stops matching
+
+When a source advances but **no tag matches your range** (or an exact tag/SHA pin no longer resolves), the outcome depends on `sync.required` and whether a prior load already cached a checkout:
+
+| Situation | Behaviour |
+|---|---|
+| Cache exists + `required: false` (default) | cfgd **keeps the previously-resolved checkout** and warns. The source still composes (its policy tiers, profiles, and module bodies stay in effect) at the last-known-good ref. Change your `pinVersion` to move forward. |
+| Cache exists + `required: true` | **Fatal** — a required source whose pin can't resolve aborts apply/plan rather than silently composing a stale ref. |
+| No prior checkout (first-ever load) | Resolution **errors**. For a non-required source the error is warned and the source is skipped; for a `required` source it is fatal. |
+
+This keep-previous fallback applies only to the pin-not-found case. A network/`ls-remote` failure, a corrupt cached manifest, or a failed signature is always an error.
+
+## Required (fail-closed) sources
+
+By default a source is **best-effort**: if it can't be fetched (network error, bad manifest, signature failure, or an unresolvable first-time pin), cfgd warns and composes without it, and apply/plan still succeed. That is wrong for a security or team baseline that **must** always be present.
+
+Set `sync.required: true` to make the source **fail-closed**: if the source is unavailable for **any** reason — a failed fetch, a bad/unsigned cached manifest, an unresolvable pin, or simply never having been synced — its absence is fatal. The check lives at the composition chokepoint that every command flows through, so it is enforced uniformly across the refresh path *and* the offline read/daemon paths:
+
+| Surface | Behaviour when a `required` source is unavailable |
+|---|---|
+| `cfgd apply` / `cfgd plan` (refresh) | **Aborts**, naming the source (exit code `4`, config-invalid). |
+| `cfgd diff` / `status` / `verify` / `compliance` / `checkin` (offline read) | **Errors** instead of composing without it — a never-synced or cache-missed required source is never silently absent. |
+| daemon reconcile tick | **Skips the tick** and raises an alert. The pruning reconcile never runs against a desired set that is missing the required source, so its packages/modules are never uninstalled as phantom drift. Run `cfgd sync` then `cfgd status` to recover. |
+
+```yaml
+spec:
+  subscriptions:
+    - origin:
+        url: https://github.com/acme/security-baseline.git
+      sync:
+        pinVersion: "~2"
+        required: true       # baseline must load, or every path fails closed
+```
+
+`required` is independent of the policy **required** *tier* (which marks individual items the subscriber must keep): `sync.required` governs whether the whole source must load at all.
 
 ## Source Removal
 
