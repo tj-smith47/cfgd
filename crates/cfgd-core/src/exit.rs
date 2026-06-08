@@ -80,6 +80,7 @@ pub fn exit_code_for_error(err: &CfgdError) -> ExitCode {
         // ProfileNotFound is routed here rather than collapsing to ConfigInvalid.
         CfgdError::Config(ConfigError::ProfileNotFound { .. }) => ExitCode::NotFound,
         CfgdError::Module(ModuleError::NotFound { .. }) => ExitCode::NotFound,
+        CfgdError::Module(ModuleError::OfferedButMissing { .. }) => ExitCode::NotFound,
         CfgdError::Module(ModuleError::RegistryNotFound { .. }) => ExitCode::NotFound,
         CfgdError::Source(SourceError::NotFound { .. }) => ExitCode::NotFound,
         CfgdError::Source(SourceError::ProfileNotFound { .. }) => ExitCode::NotFound,
@@ -160,6 +161,15 @@ mod tests {
     fn registry_not_found_maps_to_not_found() {
         let err = CfgdError::Module(crate::errors::ModuleError::RegistryNotFound {
             name: "acme-registry".into(),
+        });
+        assert_eq!(exit_code_for_error(&err), ExitCode::NotFound);
+    }
+
+    #[test]
+    fn offered_but_missing_maps_to_not_found() {
+        let err = CfgdError::Module(crate::errors::ModuleError::OfferedButMissing {
+            name: "dev-tools".into(),
+            source_name: "team".into(),
         });
         assert_eq!(exit_code_for_error(&err), ExitCode::NotFound);
     }

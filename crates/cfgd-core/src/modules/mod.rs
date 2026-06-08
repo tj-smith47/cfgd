@@ -26,7 +26,7 @@ pub use git::{
 pub use loader::{load_module, load_modules, resolve_dependency_order};
 pub use lockfile::{
     diff_module_specs, hash_module_contents, load_all_modules, load_locked_modules, load_lockfile,
-    save_lockfile, verify_lockfile_integrity,
+    load_source_modules, save_lockfile, verify_lockfile_integrity,
 };
 pub use registry::{
     FetchedRemoteModule, RegistryModule, RegistryRef, extract_registry_name,
@@ -73,6 +73,19 @@ pub struct ResolvedFile {
     pub permissions: Option<String>,
 }
 
+/// A root of source-delivered module bodies, derived from a subscribed
+/// ConfigSource's cache. `offered` is the publisher-declared allow-list
+/// (`provides.modules` in the source manifest); only names in `offered` whose
+/// body exists under `modules_dir/<name>/module.yaml` are eligible to load.
+/// Higher `priority` wins among sources; consumer-local modules always win.
+#[derive(Debug, Clone)]
+pub struct SourceModuleRoot {
+    pub source_name: String,
+    pub priority: u32,
+    pub modules_dir: PathBuf,
+    pub offered: Vec<String>,
+}
+
 /// A fully resolved module — ready for the reconciler.
 #[derive(Debug, Clone, Serialize)]
 pub struct ResolvedModule {
@@ -97,6 +110,9 @@ pub struct ResolvedModule {
     /// platform. A skipped module carries empty packages/files/scripts and is
     /// surfaced as a visible Skip action (never silently dropped).
     pub platform_skip_reason: Option<String>,
+    /// Provenance: `None` = consumer-local (or locked/registry) module;
+    /// `Some(source_name)` = body delivered by the named ConfigSource.
+    pub origin: Option<String>,
 }
 
 impl ResolvedModule {
@@ -105,7 +121,13 @@ impl ResolvedModule {
     /// (packages, files, env, aliases, system, scripts) is empty. Centralizing
     /// the empty-contents invariant here keeps a skipped module from silently
     /// acquiring applyable state if `ResolvedModule` later gains a field.
-    pub fn skipped(name: String, dir: PathBuf, depends: Vec<String>, reason: String) -> Self {
+    pub fn skipped(
+        name: String,
+        dir: PathBuf,
+        depends: Vec<String>,
+        reason: String,
+        origin: Option<String>,
+    ) -> Self {
         ResolvedModule {
             name,
             packages: Vec::new(),
@@ -122,6 +144,7 @@ impl ResolvedModule {
             depends,
             dir,
             platform_skip_reason: Some(reason),
+            origin,
         }
     }
 }
@@ -136,6 +159,9 @@ pub struct LoadedModule {
     pub name: String,
     pub spec: ModuleSpec,
     pub dir: PathBuf,
+    /// Provenance: `None` = consumer-local (or locked/registry) module;
+    /// `Some(source_name)` = body delivered by the named ConfigSource.
+    pub origin: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

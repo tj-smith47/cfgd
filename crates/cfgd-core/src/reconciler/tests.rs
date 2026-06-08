@@ -579,6 +579,7 @@ fn plan_module_with_files() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -636,6 +637,7 @@ fn plan_module_with_scripts() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -698,6 +700,7 @@ fn plan_multiple_modules_in_dependency_order() {
             system: HashMap::new(),
             depends: vec![],
             dir: PathBuf::from("."),
+            origin: None,
             platform_skip_reason: None,
         },
         ResolvedModule {
@@ -721,6 +724,7 @@ fn plan_multiple_modules_in_dependency_order() {
             system: HashMap::new(),
             depends: vec!["node".to_string()],
             dir: PathBuf::from("."),
+            origin: None,
             platform_skip_reason: None,
         },
     ];
@@ -1094,6 +1098,7 @@ fn verify_module_script_packages_not_false_drift() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -1315,6 +1320,7 @@ fn plan_module_with_script_packages() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -1440,6 +1446,7 @@ fn conflict_detection_different_content() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -1554,6 +1561,7 @@ fn conflict_detection_identical_content_ok() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -1588,6 +1596,7 @@ fn conflict_detection_identical_content_ok() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
     assert!(
@@ -1636,6 +1645,7 @@ fn conflict_detection_no_overlap_ok() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -1668,6 +1678,7 @@ fn conflict_detection_no_overlap_ok() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
     assert!(
@@ -1783,6 +1794,7 @@ fn plan_env_module_wins_on_conflict() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
     // plan_env merges and generates actions — the merged env should have EDITOR=nvim
@@ -1911,6 +1923,7 @@ fn plan_env_module_alias_wins_on_conflict() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
     let tmp = tempfile::tempdir().unwrap();
@@ -4655,6 +4668,7 @@ fn apply_guard_skipped_module_script_does_not_fire_on_change() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -4752,6 +4766,7 @@ fn apply_guard_permitted_module_script_fires_on_change() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -4837,6 +4852,7 @@ fn apply_skipped_module_does_not_fire_on_change() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -5415,6 +5431,7 @@ fn plan_modules_reconcile_context_uses_pre_post_reconcile() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -5620,6 +5637,7 @@ fn detect_file_conflicts_skip_and_delete_actions_ignored() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -5699,6 +5717,7 @@ fn merge_module_env_aliases_merges_correctly() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -7024,6 +7043,7 @@ fn apply_module_install_packages_calls_manager() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -7113,6 +7133,7 @@ fn apply_module_deploy_files_creates_target() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -7198,6 +7219,7 @@ fn apply_module_deploy_files_symlink_strategy() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -7326,6 +7348,7 @@ fn apply_module_install_packages_bootstraps_when_needed() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -7472,6 +7495,7 @@ fn plan_modules_encryption_always_with_symlink_skips() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -7521,6 +7545,7 @@ fn plan_modules_platform_skipped_emits_single_skip_and_no_other_actions() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: Some("platform not matched (requires: macos)".to_string()),
     }];
 
@@ -7581,6 +7606,7 @@ fn plan_modules_encryption_always_with_copy_proceeds() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -7637,6 +7663,7 @@ fn plan_modules_encryption_check_err_skips_with_error_reason() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -7703,6 +7730,7 @@ fn plan_modules_encryption_check_err_breaks_after_first_file() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -7767,6 +7795,7 @@ fn plan_modules_encryption_file_not_encrypted_skips() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -7868,6 +7897,7 @@ fn apply_module_run_script_executes_in_module_dir() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -8195,6 +8225,7 @@ fn verify_module_files_produce_no_reconciler_rows() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -8558,6 +8589,7 @@ fn merge_module_env_aliases_combines_profile_and_modules() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -8596,6 +8628,7 @@ fn merge_module_env_aliases_module_overrides_profile() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -8666,6 +8699,7 @@ fn apply_module_deploy_files_hardlink_strategy() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -8762,6 +8796,7 @@ fn apply_module_deploy_files_copy_strategy() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -8853,6 +8888,7 @@ fn apply_module_deploy_files_applies_permissions() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -8942,6 +8978,7 @@ fn apply_module_deploy_files_directory_copy_strategy() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -9026,6 +9063,7 @@ fn apply_module_deploy_files_overwrites_existing_file() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -9109,6 +9147,7 @@ fn apply_module_on_change_script_runs_when_module_has_changes() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -9170,6 +9209,7 @@ fn apply_module_on_change_script_does_not_run_when_no_changes() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -10367,6 +10407,7 @@ fn apply_module_install_packages_bootstraps_unavailable_manager_and_writes_env()
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -10469,6 +10510,7 @@ fn apply_module_install_packages_with_existing_env_appends_new_dirs() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -10554,6 +10596,7 @@ fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -10630,6 +10673,7 @@ fn apply_module_install_packages_script_manager_runs_per_package_script() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -10706,6 +10750,7 @@ fn apply_module_install_packages_script_manager_failure_returns_err() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -10785,6 +10830,7 @@ fn apply_module_on_change_script_runs_when_module_changed() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -10859,6 +10905,7 @@ fn apply_module_on_change_script_does_not_run_when_module_unchanged() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -10920,6 +10967,7 @@ fn apply_module_on_change_skip_scripts_flag_bypasses_module_on_change() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -11110,6 +11158,7 @@ fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
         system: HashMap::new(),
         depends: vec![],
         dir: PathBuf::from("."),
+        origin: None,
         platform_skip_reason: None,
     };
 
@@ -11178,6 +11227,7 @@ fn apply_module_with_git_source_file_serializes_into_module_state() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -11266,6 +11316,7 @@ fn apply_module_on_change_failure_continues_with_default_continue_on_error() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -11353,6 +11404,7 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     }];
 
@@ -11657,6 +11709,7 @@ fn apply_post_scripts_filter_runs_module_post_scripts() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     };
 
@@ -11753,6 +11806,7 @@ fn apply_pre_scripts_filter_runs_module_pre_scripts() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     };
 
@@ -11846,6 +11900,7 @@ fn apply_modules_phase_filter_runs_all_module_actions() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     };
 
@@ -11929,6 +11984,7 @@ fn apply_post_scripts_filter_skips_other_phases() {
         system: HashMap::new(),
         depends: vec![],
         dir: dir.path().to_path_buf(),
+        origin: None,
         platform_skip_reason: None,
     };
 

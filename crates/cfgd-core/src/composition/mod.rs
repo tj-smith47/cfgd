@@ -104,4 +104,9 @@ pub struct CompositionResult {
     /// Source name → commit hash, populated by the caller that has access to
     /// `SourceManager` (not by `compose()` itself, which only sees layers).
     pub source_commits: HashMap<String, String>,
+    /// Source-delivered module roots (cache dir + `provides.modules` allow-list +
+    /// subscription priority), populated by the caller with `SourceManager`
+    /// access. Threaded into `modules::resolve_modules` so a subscribed profile's
+    /// module references resolve to bodies the source ships.
+    pub source_module_roots: Vec<crate::modules::SourceModuleRoot>,
 }

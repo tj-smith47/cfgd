@@ -996,6 +996,7 @@ fn empty_module(name: &str) -> ResolvedModule {
         depends: Vec::new(),
         dir: std::path::PathBuf::from("/tmp/module"),
         platform_skip_reason: None,
+        origin: None,
     }
 }
 

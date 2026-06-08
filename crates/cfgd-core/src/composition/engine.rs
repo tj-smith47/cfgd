@@ -97,6 +97,7 @@ pub fn compose(local: &ResolvedProfile, sources: &[CompositionInput]) -> Result<
         conflicts,
         source_env,
         source_commits: HashMap::new(),
+        source_module_roots: Vec::new(),
     })
 }
 

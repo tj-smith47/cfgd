@@ -4377,6 +4377,7 @@ fn make_loaded_module(name: &str, spec: config::ModuleSpec) -> modules::LoadedMo
         name: name.to_string(),
         spec,
         dir: std::path::PathBuf::from("/tmp/test-module"),
+        origin: None,
     }
 }
 

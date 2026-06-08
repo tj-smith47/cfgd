@@ -28,6 +28,7 @@ pub(super) fn cmd_verify(
             &[mod_name.to_string()],
             &config_dir,
             &cache_base,
+            &[],
             &platform,
             &mgr_map,
             printer,

@@ -662,6 +662,31 @@ impl SourceManager {
         Ok(cached.local_path.join(PROFILES_DIR))
     }
 
+    /// Get the source modules directory path (`<cache>/modules`), where bodies
+    /// for the names in the manifest's `provides.modules` allow-list live.
+    pub fn source_modules_dir(&self, source_name: &str) -> Result<PathBuf> {
+        let cached = self
+            .sources
+            .get(source_name)
+            .ok_or_else(|| SourceError::NotFound {
+                name: source_name.to_string(),
+            })?;
+        Ok(cached.local_path.join("modules"))
+    }
+
+    /// The module names this source declares as deliverable — the manifest's
+    /// `spec.provides.modules` allow-list. A module body present in the cache but
+    /// absent from this list is NOT delivered to subscribers.
+    pub fn available_source_modules(&self, source_name: &str) -> Result<Vec<String>> {
+        let cached = self
+            .sources
+            .get(source_name)
+            .ok_or_else(|| SourceError::NotFound {
+                name: source_name.to_string(),
+            })?;
+        Ok(cached.manifest.spec.provides.modules.clone())
+    }
+
     /// Get the source files directory path.
     pub fn source_files_dir(&self, source_name: &str) -> Result<PathBuf> {
         let cached = self

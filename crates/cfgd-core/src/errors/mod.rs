@@ -376,6 +376,11 @@ pub enum ModuleError {
     #[error("module not found: {name}")]
     NotFound { name: String },
 
+    #[error(
+        "module '{name}' is declared by source '{source_name}' (provides.modules) but its body is missing from that source — the publisher must add modules/{name}/module.yaml, or run 'cfgd source update {source_name}'"
+    )]
+    OfferedButMissing { name: String, source_name: String },
+
     #[error("module registry not found: {name}")]
     RegistryNotFound { name: String },
 

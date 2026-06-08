@@ -566,6 +566,7 @@ fn resolve_local_files() {
             ..Default::default()
         },
         dir: dir.path().to_path_buf(),
+        origin: None,
     };
 
     let cache_dir = tempfile::tempdir().unwrap();
@@ -641,6 +642,7 @@ spec:
         &["nvim".into()],
         dir.path(),
         cache_dir.path(),
+        &[],
         &platform,
         &managers,
         &printer,
@@ -697,6 +699,7 @@ spec:
         &["watched".into()],
         dir.path(),
         cache_dir.path(),
+        &[],
         &platform,
         &managers,
         &printer,
@@ -719,6 +722,7 @@ fn skipped_resolved_module_has_empty_on_drift_scripts() {
         std::path::PathBuf::from("/tmp/gated"),
         Vec::new(),
         "platform not matched".into(),
+        None,
     );
     assert!(
         skipped.on_drift_scripts.is_empty(),
@@ -761,6 +765,7 @@ spec:
         &["macstuff".into()],
         dir.path(),
         cache_dir.path(),
+        &[],
         &linux_ubuntu_platform(),
         &managers,
         &printer,
@@ -787,6 +792,7 @@ spec:
         &["macstuff".into()],
         dir.path(),
         cache_dir.path(),
+        &[],
         &macos_platform(),
         &mac_managers,
         &printer,
@@ -839,6 +845,7 @@ spec:
         &["app".into()],
         dir.path(),
         cache_dir.path(),
+        &[],
         &linux_ubuntu_platform(),
         &managers,
         &printer,
@@ -1228,6 +1235,7 @@ fn resolve_module_packages_skips_filtered() {
             ..Default::default()
         },
         dir: PathBuf::from("/fake/test"),
+        origin: None,
     };
 
     let resolved = resolve_module_packages(&module, &platform, &managers).unwrap();
@@ -1463,6 +1471,7 @@ fn diff_module_specs_no_changes() {
             system: HashMap::new(),
         },
         dir: PathBuf::from("/fake"),
+        origin: None,
     };
 
     let changes = diff_module_specs(&module, &module);
@@ -1510,6 +1519,7 @@ fn diff_module_specs_detects_changes() {
             system: HashMap::new(),
         },
         dir: PathBuf::from("/fake"),
+        origin: None,
     };
 
     let new = LoadedModule {
@@ -1551,6 +1561,7 @@ fn diff_module_specs_detects_changes() {
             system: HashMap::new(),
         },
         dir: PathBuf::from("/fake"),
+        origin: None,
     };
 
     let changes = diff_module_specs(&old, &new);
@@ -1899,6 +1910,7 @@ fn diff_module_specs_scripts_changed() {
             system: HashMap::new(),
         },
         dir: PathBuf::from("/tmp"),
+        origin: None,
     };
     let new = LoadedModule {
         name: "test".into(),
@@ -1916,6 +1928,7 @@ fn diff_module_specs_scripts_changed() {
             system: HashMap::new(),
         },
         dir: PathBuf::from("/tmp"),
+        origin: None,
     };
     let changes = diff_module_specs(&old, &new);
     assert!(changes.iter().any(|c| c.contains("+ postApply script")));
@@ -2027,6 +2040,7 @@ fn make_loaded_module(name: &str, spec: crate::config::ModuleSpec) -> LoadedModu
         name: name.to_string(),
         spec,
         dir: PathBuf::from("/fake"),
+        origin: None,
     }
 }
 
@@ -2575,6 +2589,7 @@ fn resolve_module_files_local_relative() {
             ..Default::default()
         },
         dir: mod_dir.clone(),
+        origin: None,
     };
 
     let printer = test_printer();
@@ -2609,6 +2624,7 @@ fn resolve_module_files_path_traversal_rejected() {
             ..Default::default()
         },
         dir: mod_dir,
+        origin: None,
     };
 
     let printer = test_printer();
@@ -2655,6 +2671,7 @@ fn resolve_module_files_multiple_files() {
             ..Default::default()
         },
         dir: mod_dir.clone(),
+        origin: None,
     };
 
     let printer = test_printer();
@@ -2684,6 +2701,7 @@ fn resolve_module_files_empty_spec() {
         name: "empty".into(),
         spec: ModuleSpec::default(),
         dir: mod_dir,
+        origin: None,
     };
 
     let printer = test_printer();
@@ -2723,6 +2741,7 @@ fn resolve_module_files_symlink_escape_rejected() {
             ..Default::default()
         },
         dir: mod_dir,
+        origin: None,
     };
 
     let printer = test_printer();
@@ -2801,6 +2820,7 @@ fn dependency_order_deep_chain_within_limit() {
                     ..Default::default()
                 },
                 dir: PathBuf::from(format!("/fake/{name}")),
+                origin: None,
             },
         );
     }
@@ -2830,6 +2850,7 @@ fn dependency_order_exceeds_depth_limit() {
                     ..Default::default()
                 },
                 dir: PathBuf::from(format!("/fake/{name}")),
+                origin: None,
             },
         );
     }
@@ -2867,7 +2888,7 @@ spec:
     std::fs::create_dir_all(&cache_base).unwrap();
     let printer = test_printer();
 
-    let modules = load_all_modules(dir.path(), &cache_base, &printer).unwrap();
+    let modules = load_all_modules(dir.path(), &cache_base, &[], &printer).unwrap();
     assert_eq!(modules.len(), 1);
     assert!(modules.contains_key("shell"));
     assert_eq!(modules["shell"].spec.packages.len(), 1);
@@ -2885,7 +2906,7 @@ fn load_all_modules_with_empty_lockfile_returns_no_remote_modules() {
     std::fs::write(dir.path().join("modules.lock"), "modules: []\n").unwrap();
 
     let printer = test_printer();
-    let modules = load_all_modules(dir.path(), &cache_base, &printer).unwrap();
+    let modules = load_all_modules(dir.path(), &cache_base, &[], &printer).unwrap();
     assert!(
         modules.is_empty(),
         "empty lockfile with no local modules should produce empty result"
@@ -2915,10 +2936,540 @@ fn load_all_modules_errors_when_locked_module_cache_missing() {
     .unwrap();
 
     let printer = test_printer();
-    let result = load_all_modules(dir.path(), &cache_base, &printer);
+    let result = load_all_modules(dir.path(), &cache_base, &[], &printer);
     assert!(
         result.is_err(),
         "expected error when locked remote module has no cache"
+    );
+}
+
+// --- source-delivered module bodies (SourceModuleRoot) ---
+
+/// Write `<root>/modules/<name>/module.yaml` for a module with one package, and
+/// return the `modules/` directory path (suitable as `SourceModuleRoot.modules_dir`).
+fn write_source_module(root: &Path, name: &str, package: &str) -> std::path::PathBuf {
+    let modules_dir = root.join("modules");
+    let mod_dir = modules_dir.join(name);
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n  packages:\n    - name: {package}\n"
+        ),
+    )
+    .unwrap();
+    modules_dir
+}
+
+#[test]
+fn resolve_modules_loads_source_delivered_body_and_tags_origin() {
+    let consumer = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module(source.path(), "dev-tools", "ripgrep");
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["dev-tools".into()],
+    };
+
+    let brew = MockManager::new("brew").with_package("ripgrep", "14.1.0");
+    let managers = make_manager_map(&[("brew", &brew)]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let resolved = resolve_modules(
+        &["dev-tools".into()],
+        consumer.path(),
+        cache_dir.path(),
+        std::slice::from_ref(&root),
+        &macos_platform(),
+        &managers,
+        &printer,
+    )
+    .unwrap();
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(resolved[0].name, "dev-tools");
+    assert_eq!(
+        resolved[0].origin.as_deref(),
+        Some("team"),
+        "source-delivered module must be tagged with its source name"
+    );
+    assert_eq!(resolved[0].packages.len(), 1);
+}
+
+#[test]
+fn resolve_modules_consumer_local_shadows_source_offered() {
+    let consumer = tempfile::tempdir().unwrap();
+    // Consumer-local dev-tools (origin None).
+    let local_dir = consumer.path().join("modules").join("dev-tools");
+    std::fs::create_dir_all(&local_dir).unwrap();
+    std::fs::write(
+        local_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: dev-tools\nspec:\n  packages:\n    - name: localpkg\n",
+    )
+    .unwrap();
+
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module(source.path(), "dev-tools", "sourcepkg");
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 999,
+        modules_dir,
+        offered: vec!["dev-tools".into()],
+    };
+
+    let brew = MockManager::new("brew")
+        .with_package("localpkg", "1.0.0")
+        .with_package("sourcepkg", "1.0.0");
+    let managers = make_manager_map(&[("brew", &brew)]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let resolved = resolve_modules(
+        &["dev-tools".into()],
+        consumer.path(),
+        cache_dir.path(),
+        std::slice::from_ref(&root),
+        &macos_platform(),
+        &managers,
+        &printer,
+    )
+    .unwrap();
+
+    assert_eq!(resolved.len(), 1);
+    assert!(
+        resolved[0].origin.is_none(),
+        "consumer-local module must win over a source offering the same name"
+    );
+    assert_eq!(resolved[0].packages[0].canonical_name, "localpkg");
+}
+
+#[test]
+fn resolve_modules_higher_priority_source_wins() {
+    let consumer = tempfile::tempdir().unwrap();
+
+    let low = tempfile::tempdir().unwrap();
+    let low_dir = write_source_module(low.path(), "dev-tools", "lowpkg");
+    let high = tempfile::tempdir().unwrap();
+    let high_dir = write_source_module(high.path(), "dev-tools", "highpkg");
+
+    let roots = vec![
+        SourceModuleRoot {
+            source_name: "low".into(),
+            priority: 100,
+            modules_dir: low_dir,
+            offered: vec!["dev-tools".into()],
+        },
+        SourceModuleRoot {
+            source_name: "high".into(),
+            priority: 900,
+            modules_dir: high_dir,
+            offered: vec!["dev-tools".into()],
+        },
+    ];
+
+    let brew = MockManager::new("brew")
+        .with_package("lowpkg", "1.0.0")
+        .with_package("highpkg", "1.0.0");
+    let managers = make_manager_map(&[("brew", &brew)]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let resolved = resolve_modules(
+        &["dev-tools".into()],
+        consumer.path(),
+        cache_dir.path(),
+        &roots,
+        &macos_platform(),
+        &managers,
+        &printer,
+    )
+    .unwrap();
+
+    assert_eq!(resolved.len(), 1);
+    assert_eq!(
+        resolved[0].origin.as_deref(),
+        Some("high"),
+        "higher-priority source must win among sources offering the same name"
+    );
+    assert_eq!(resolved[0].packages[0].canonical_name, "highpkg");
+}
+
+#[test]
+fn resolve_modules_offered_but_body_missing_names_source() {
+    let consumer = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    // Empty modules dir — declared but no body on disk.
+    let modules_dir = source.path().join("modules");
+    std::fs::create_dir_all(&modules_dir).unwrap();
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["dev-tools".into()],
+    };
+
+    let managers = make_manager_map(&[]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let err = resolve_modules(
+        &["dev-tools".into()],
+        consumer.path(),
+        cache_dir.path(),
+        std::slice::from_ref(&root),
+        &macos_platform(),
+        &managers,
+        &printer,
+    )
+    .expect_err("a declared-but-missing module body must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("dev-tools") && msg.contains("team"),
+        "error should name both the module and the source: {msg}"
+    );
+}
+
+#[test]
+fn resolve_modules_unknown_module_is_plain_not_found() {
+    let consumer = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module(source.path(), "dev-tools", "ripgrep");
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["dev-tools".into()],
+    };
+
+    let managers = make_manager_map(&[]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    // "ghost" is neither local nor offered anywhere → plain NotFound, source unnamed.
+    let err = resolve_modules(
+        &["ghost".into()],
+        consumer.path(),
+        cache_dir.path(),
+        std::slice::from_ref(&root),
+        &macos_platform(),
+        &managers,
+        &printer,
+    )
+    .expect_err("an unknown module must be NotFound");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("ghost") && msg.contains("not found") && !msg.contains("team"),
+        "plain not-found must name the module but not any source: {msg}"
+    );
+}
+
+#[test]
+fn resolve_modules_body_present_but_not_offered_is_gated_out() {
+    let consumer = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    // Body for "secret-mod" exists on disk but is NOT in the offered allow-list.
+    let modules_dir = write_source_module(source.path(), "secret-mod", "ripgrep");
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: Vec::new(), // publisher did not declare it
+    };
+
+    let managers = make_manager_map(&[]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let err = resolve_modules(
+        &["secret-mod".into()],
+        consumer.path(),
+        cache_dir.path(),
+        std::slice::from_ref(&root),
+        &macos_platform(),
+        &managers,
+        &printer,
+    )
+    .expect_err("an undeclared body must not be loaded (allow-list gate)");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("secret-mod") && msg.contains("not found"),
+        "undeclared body must be plain NotFound, not loaded: {msg}"
+    );
+}
+
+#[test]
+fn load_source_modules_respects_allow_list_and_precedence() {
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module(source.path(), "offered-mod", "pkg");
+    // A second body exists but is not declared.
+    write_source_module(source.path(), "hidden-mod", "pkg");
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["offered-mod".into()],
+    };
+
+    let mut modules = std::collections::HashMap::new();
+    load_source_modules(std::slice::from_ref(&root), &mut modules).unwrap();
+
+    assert!(
+        modules.contains_key("offered-mod"),
+        "declared body must load"
+    );
+    assert!(
+        !modules.contains_key("hidden-mod"),
+        "undeclared body must not load even though it exists on disk"
+    );
+    assert_eq!(modules["offered-mod"].origin.as_deref(), Some("team"));
+}
+
+/// Write `<root>/modules/<name>/module.yaml` for a module with one package and a
+/// `depends` list; returns the `modules/` directory path.
+fn write_source_module_with_deps(
+    root: &Path,
+    name: &str,
+    package: &str,
+    depends: &[&str],
+) -> std::path::PathBuf {
+    let modules_dir = root.join("modules");
+    let mod_dir = modules_dir.join(name);
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    let depends_yaml = depends
+        .iter()
+        .map(|d| format!("    - {d}\n"))
+        .collect::<String>();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n  depends:\n{depends_yaml}  packages:\n    - name: {package}\n"
+        ),
+    )
+    .unwrap();
+    modules_dir
+}
+
+#[test]
+fn load_source_modules_equal_priority_ties_break_on_source_name() {
+    // Two roots, EQUAL priority, both offering the same module. The
+    // alphabetically-first source_name must win deterministically regardless of
+    // slice order, so the result is independent of how the caller ordered them.
+    let alpha = tempfile::tempdir().unwrap();
+    let alpha_dir = write_source_module(alpha.path(), "dev-tools", "alphapkg");
+    let beta = tempfile::tempdir().unwrap();
+    let beta_dir = write_source_module(beta.path(), "dev-tools", "betapkg");
+
+    let alpha_root = SourceModuleRoot {
+        source_name: "alpha".into(),
+        priority: 500,
+        modules_dir: alpha_dir,
+        offered: vec!["dev-tools".into()],
+    };
+    let beta_root = SourceModuleRoot {
+        source_name: "beta".into(),
+        priority: 500,
+        modules_dir: beta_dir,
+        offered: vec!["dev-tools".into()],
+    };
+
+    // beta listed first to prove slice order does not decide the winner.
+    let roots = vec![beta_root, alpha_root];
+    let mut modules = std::collections::HashMap::new();
+    load_source_modules(&roots, &mut modules).unwrap();
+
+    assert_eq!(
+        modules["dev-tools"].origin.as_deref(),
+        Some("alpha"),
+        "on equal priority the alphabetically-first source_name must win"
+    );
+}
+
+#[test]
+fn enrich_not_found_names_highest_priority_offering_source() {
+    // Two roots offer the missing body at DIFFERENT priorities. The error must
+    // name the higher-priority source (the one that would have won the race).
+    let consumer = tempfile::tempdir().unwrap();
+    let low = tempfile::tempdir().unwrap();
+    let high = tempfile::tempdir().unwrap();
+    // Empty modules dirs — the bodies are declared but absent on disk.
+    let low_dir = low.path().join("modules");
+    std::fs::create_dir_all(&low_dir).unwrap();
+    let high_dir = high.path().join("modules");
+    std::fs::create_dir_all(&high_dir).unwrap();
+
+    let roots = vec![
+        SourceModuleRoot {
+            source_name: "low".into(),
+            priority: 100,
+            modules_dir: low_dir,
+            offered: vec!["dev-tools".into()],
+        },
+        SourceModuleRoot {
+            source_name: "high".into(),
+            priority: 900,
+            modules_dir: high_dir,
+            offered: vec!["dev-tools".into()],
+        },
+    ];
+
+    let managers = make_manager_map(&[]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let err = resolve_modules(
+        &["dev-tools".into()],
+        consumer.path(),
+        cache_dir.path(),
+        &roots,
+        &macos_platform(),
+        &managers,
+        &printer,
+    )
+    .expect_err("a declared-but-missing body offered by several sources must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("dev-tools") && msg.contains("high") && !msg.contains("'low'"),
+        "error must name the higher-priority source ('high'), not 'low': {msg}"
+    );
+}
+
+#[test]
+fn resolve_modules_source_module_depends_on_source_module() {
+    // A source-delivered module whose `depends` references another module that is
+    // ALSO source-delivered (and offered) must resolve and order correctly.
+    let consumer = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    write_source_module(source.path(), "base", "basepkg");
+    let modules_dir = write_source_module_with_deps(source.path(), "app", "apppkg", &["base"]);
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["app".into(), "base".into()],
+    };
+
+    let brew = MockManager::new("brew")
+        .with_package("basepkg", "1.0.0")
+        .with_package("apppkg", "1.0.0");
+    let managers = make_manager_map(&[("brew", &brew)]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let resolved = resolve_modules(
+        &["app".into()],
+        consumer.path(),
+        cache_dir.path(),
+        std::slice::from_ref(&root),
+        &macos_platform(),
+        &managers,
+        &printer,
+    )
+    .unwrap();
+
+    assert_eq!(resolved.len(), 2, "app + its source-delivered dep base");
+    assert_eq!(
+        resolved[0].name, "base",
+        "dependency orders before dependent"
+    );
+    assert_eq!(resolved[1].name, "app");
+    assert_eq!(resolved[0].origin.as_deref(), Some("team"));
+    assert_eq!(resolved[1].origin.as_deref(), Some("team"));
+}
+
+#[test]
+fn resolve_modules_source_module_depends_on_consumer_local_module() {
+    // Mixed case: a source-delivered module depends on a consumer-local module.
+    // The local module wins/loads and orders before the source-delivered dependent.
+    let consumer = tempfile::tempdir().unwrap();
+    let local_dir = consumer.path().join("modules").join("base");
+    std::fs::create_dir_all(&local_dir).unwrap();
+    std::fs::write(
+        local_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: base\nspec:\n  packages:\n    - name: basepkg\n",
+    )
+    .unwrap();
+
+    let source = tempfile::tempdir().unwrap();
+    let modules_dir = write_source_module_with_deps(source.path(), "app", "apppkg", &["base"]);
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["app".into()],
+    };
+
+    let brew = MockManager::new("brew")
+        .with_package("basepkg", "1.0.0")
+        .with_package("apppkg", "1.0.0");
+    let managers = make_manager_map(&[("brew", &brew)]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let resolved = resolve_modules(
+        &["app".into()],
+        consumer.path(),
+        cache_dir.path(),
+        std::slice::from_ref(&root),
+        &macos_platform(),
+        &managers,
+        &printer,
+    )
+    .unwrap();
+
+    assert_eq!(resolved.len(), 2);
+    assert_eq!(resolved[0].name, "base");
+    assert_eq!(resolved[1].name, "app");
+    assert!(
+        resolved[0].origin.is_none(),
+        "the dependency is consumer-local → origin None"
+    );
+    assert_eq!(resolved[1].origin.as_deref(), Some("team"));
+}
+
+#[test]
+fn resolve_modules_source_module_with_unoffered_transitive_dep_is_missing_dependency() {
+    // Publisher ships a broken graph: `app` (offered) depends on `base`, but
+    // `base` is NOT in the allow-list (and not consumer-local). This surfaces as
+    // a MissingDependency error (publisher error, exit 1); the message must be
+    // intelligible — naming both the dependent module and the missing dependency.
+    let consumer = tempfile::tempdir().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    // base body exists on disk but is not offered.
+    write_source_module(source.path(), "base", "basepkg");
+    let modules_dir = write_source_module_with_deps(source.path(), "app", "apppkg", &["base"]);
+
+    let root = SourceModuleRoot {
+        source_name: "team".into(),
+        priority: 500,
+        modules_dir,
+        offered: vec!["app".into()], // base deliberately omitted
+    };
+
+    let managers = make_manager_map(&[]);
+    let cache_dir = tempfile::tempdir().unwrap();
+    let printer = test_printer();
+
+    let err = resolve_modules(
+        &["app".into()],
+        consumer.path(),
+        cache_dir.path(),
+        std::slice::from_ref(&root),
+        &macos_platform(),
+        &managers,
+        &printer,
+    )
+    .expect_err("a dependent on an unoffered transitive dep must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("app") && msg.contains("base"),
+        "MissingDependency message must name both 'app' and 'base': {msg}"
     );
 }
 
@@ -2950,6 +3501,7 @@ fn diff_module_specs_file_changes() {
             ..Default::default()
         },
         dir: PathBuf::from("/fake/mymod"),
+        origin: None,
     };
     let new = LoadedModule {
         name: "mymod".into(),
@@ -2975,6 +3527,7 @@ fn diff_module_specs_file_changes() {
             ..Default::default()
         },
         dir: PathBuf::from("/fake/mymod"),
+        origin: None,
     };
 
     let changes = diff_module_specs(&old, &new);
@@ -3008,6 +3561,7 @@ fn diff_module_specs_env_changes_not_tracked() {
             ..Default::default()
         },
         dir: PathBuf::from("/fake/mymod"),
+        origin: None,
     };
     let new = LoadedModule {
         name: "mymod".into(),
@@ -3019,6 +3573,7 @@ fn diff_module_specs_env_changes_not_tracked() {
             ..Default::default()
         },
         dir: PathBuf::from("/fake/mymod"),
+        origin: None,
     };
 
     let changes = diff_module_specs(&old, &new);
@@ -3225,6 +3780,7 @@ fn resolve_module_packages_multiple_packages() {
             ..Default::default()
         },
         dir: PathBuf::from("/fake/tools"),
+        origin: None,
     };
 
     let resolved = resolve_module_packages(&module, &platform, &managers).unwrap();
@@ -3247,6 +3803,7 @@ fn resolve_module_packages_empty_packages() {
         name: "empty".into(),
         spec: ModuleSpec::default(),
         dir: PathBuf::from("/fake/empty"),
+        origin: None,
     };
 
     let resolved = resolve_module_packages(&module, &platform, &managers).unwrap();
@@ -3288,6 +3845,7 @@ fn resolve_module_packages_mixed_platforms() {
             ..Default::default()
         },
         dir: PathBuf::from("/fake/mixed"),
+        origin: None,
     };
 
     let resolved = resolve_module_packages(&module, &platform, &managers).unwrap();
@@ -3771,6 +4329,7 @@ fn dependency_order_exceeds_module_count_limit() {
                 name: name.clone(),
                 spec: ModuleSpec::default(),
                 dir: PathBuf::from(format!("/fake/{name}")),
+                origin: None,
             },
         );
         requested.push(name);

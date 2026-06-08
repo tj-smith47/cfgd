@@ -125,7 +125,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
         if module_only {
             // Validate that requested modules exist
             let cache_base = modules::default_module_cache_dir()?;
-            let all_modules = modules::load_all_modules(&target_dir, &cache_base, printer)?;
+            let all_modules = modules::load_all_modules(&target_dir, &cache_base, &[], printer)?;
             for m in args.apply_modules {
                 let resolved_name = modules::resolve_profile_module_name(m);
                 if !all_modules.contains_key(resolved_name) {
@@ -152,6 +152,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 args.apply_modules,
                 &target_dir,
                 &cache_base,
+                &[],
                 &platform,
                 &mgr_map,
                 printer,
@@ -221,7 +222,8 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 let mgr_map = super::managers_map(&registry);
                 let cache_base = modules::default_module_cache_dir()?;
                 // Validate --apply-module names exist (load once, check all)
-                let all_modules = modules::load_all_modules(&target_dir, &cache_base, printer)?;
+                let all_modules =
+                    modules::load_all_modules(&target_dir, &cache_base, &[], printer)?;
                 for m in args.apply_modules {
                     let resolved_name = modules::resolve_profile_module_name(m);
                     if !all_modules.contains_key(resolved_name) {
@@ -232,6 +234,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     &module_names,
                     &target_dir,
                     &cache_base,
+                    &[],
                     &platform,
                     &mgr_map,
                     printer,

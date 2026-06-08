@@ -340,6 +340,7 @@ mod tests {
             depends: Vec::new(),
             dir: std::path::PathBuf::new(),
             platform_skip_reason: None,
+            origin: None,
         }
     }
 
@@ -450,6 +451,7 @@ mod tests {
             depends: Vec::new(),
             dir: std::path::PathBuf::new(),
             platform_skip_reason: None,
+            origin: None,
         }
     }
 

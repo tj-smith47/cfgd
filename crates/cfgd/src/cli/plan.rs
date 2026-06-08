@@ -79,15 +79,17 @@ pub fn cmd_plan(
     let phase_filter: Option<PhaseName> = args.phase.map(apply_phase_to_phase_name);
 
     // Compose with sources if configured
-    let source_env = if !cfg.spec.sources.is_empty() {
+    let (composed_resolved, source_env, source_module_roots) = if !cfg.spec.sources.is_empty() {
         let composition_result = compose_with_sources(cli, &cfg, &resolved, printer)?;
-        let se = composition_result.source_env;
-        (Some(composition_result.resolved), se)
+        (
+            Some(composition_result.resolved),
+            composition_result.source_env,
+            composition_result.source_module_roots,
+        )
     } else {
-        (None, std::collections::HashMap::new())
+        (None, std::collections::HashMap::new(), Vec::new())
     };
-    let mut effective_resolved = source_env.0.unwrap_or(resolved);
-    let source_env = source_env.1;
+    let mut effective_resolved = composed_resolved.unwrap_or(resolved);
 
     // Resolve manifest files (Brewfile, package.json, etc.) into package lists
     packages::resolve_manifest_packages(&mut effective_resolved.merged.packages, &config_dir)?;
@@ -112,6 +114,7 @@ pub fn cmd_plan(
             &module_names,
             &config_dir,
             &cache_base,
+            &source_module_roots,
             &platform,
             &mgr_map,
             printer,

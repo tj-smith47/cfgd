@@ -151,19 +151,24 @@ pub fn run_apply(
     let phase_filter: Option<PhaseName> = args.phase.map(apply_phase_to_phase_name);
 
     // Compose with sources if configured
-    let (source_env, source_commits) = if !cfg.spec.sources.is_empty() {
-        let composition_result = compose_with_sources(cli, &cfg, &resolved, printer)?;
-        let se = composition_result.source_env;
-        let sc = composition_result.source_commits;
-        ((Some(composition_result.resolved), se), sc)
-    } else {
-        (
-            (None, std::collections::HashMap::new()),
-            std::collections::HashMap::new(),
-        )
-    };
-    let mut effective_resolved = source_env.0.unwrap_or(resolved);
-    let source_env = source_env.1;
+    let (composed_resolved, source_env, source_commits, source_module_roots) =
+        if !cfg.spec.sources.is_empty() {
+            let composition_result = compose_with_sources(cli, &cfg, &resolved, printer)?;
+            (
+                Some(composition_result.resolved),
+                composition_result.source_env,
+                composition_result.source_commits,
+                composition_result.source_module_roots,
+            )
+        } else {
+            (
+                None,
+                std::collections::HashMap::new(),
+                std::collections::HashMap::new(),
+                Vec::new(),
+            )
+        };
+    let mut effective_resolved = composed_resolved.unwrap_or(resolved);
 
     // Resolve manifest files (Brewfile, package.json, etc.) into package lists
     packages::resolve_manifest_packages(&mut effective_resolved.merged.packages, &config_dir)?;
@@ -188,6 +193,7 @@ pub fn run_apply(
             &module_names,
             &config_dir,
             &cache_base,
+            &source_module_roots,
             &platform,
             &mgr_map,
             printer,

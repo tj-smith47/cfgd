@@ -268,7 +268,7 @@ pub(super) fn cmd_status(
     // load_all_modules failure (e.g., malformed module YAML) should not abort a
     // read-only status query; degrade to an empty map so the rest still renders.
     let all_modules =
-        modules::load_all_modules(&config_dir, &cache_base, printer).unwrap_or_default();
+        modules::load_all_modules(&config_dir, &cache_base, &[], printer).unwrap_or_default();
     let state_map = module_state_map(&state);
     let module_entries: Vec<ModuleStatusEntry> = resolved
         .merged
@@ -368,7 +368,7 @@ pub(super) fn cmd_status_module(
     // cannot be answered, and it must error rather than silently claim the
     // module was not found.
     let cache_base = modules::default_module_cache_dir()?;
-    let all_modules = modules::load_all_modules(&config_dir, &cache_base, printer)?;
+    let all_modules = modules::load_all_modules(&config_dir, &cache_base, &[], printer)?;
 
     let module = match all_modules.get(mod_name) {
         Some(m) => m,

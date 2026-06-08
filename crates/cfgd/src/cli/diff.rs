@@ -145,6 +145,7 @@ fn cmd_diff_module(
         &[mod_name.to_string()],
         config_dir,
         &cache_base,
+        &[],
         &platform,
         &mgr_map,
         printer,

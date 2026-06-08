@@ -8,9 +8,9 @@ use crate::PathDisplayExt;
 use crate::config::{ModuleLockEntry, ModuleLockfile};
 use crate::errors::{ConfigError, ModuleError, Result};
 
-use super::LoadedModule;
 use super::git::{GitSource, fetch_git_source, git_cache_dir, parse_git_source, resolve_subdir};
 use super::loader::{load_module, load_modules};
+use super::{LoadedModule, SourceModuleRoot};
 
 /// Load the module lockfile from `<config_dir>/modules.lock`.
 /// Returns an empty lockfile if the file does not exist.
@@ -165,14 +165,55 @@ pub fn load_locked_modules(
     Ok(())
 }
 
-/// Load all modules: local modules from disk + remote locked modules.
+/// Load module bodies delivered by subscribed ConfigSources into `modules`.
+///
+/// Precedence: a name already present (consumer-local or locked) is never
+/// overwritten, and among `source_roots` the higher `priority` wins. Each root's
+/// `offered` list is the publisher-declared allow-list (the source manifest's
+/// `provides.modules`): a body present on disk but absent from `offered` is NOT
+/// loaded. Loaded modules are tagged with `origin = Some(source_name)`.
+pub fn load_source_modules(
+    source_roots: &[SourceModuleRoot],
+    modules: &mut HashMap<String, LoadedModule>,
+) -> Result<()> {
+    let mut roots: Vec<&SourceModuleRoot> = source_roots.iter().collect();
+    // Higher priority first so it wins the first-insert race for a shared name.
+    // Equal priorities tie-break on source_name so the winner is deterministic
+    // regardless of slice order.
+    roots.sort_by(|a, b| {
+        b.priority
+            .cmp(&a.priority)
+            .then_with(|| a.source_name.cmp(&b.source_name))
+    });
+
+    for root in roots {
+        for name in &root.offered {
+            if modules.contains_key(name) {
+                continue;
+            }
+            let module_yaml = root.modules_dir.join(name).join("module.yaml");
+            if !module_yaml.exists() {
+                continue;
+            }
+            let mut module = load_module(&root.modules_dir.join(name))?;
+            module.origin = Some(root.source_name.clone());
+            modules.insert(name.clone(), module);
+        }
+    }
+    Ok(())
+}
+
+/// Load all modules: local modules from disk + remote locked modules +
+/// source-delivered bodies (lowest precedence; see [`load_source_modules`]).
 pub fn load_all_modules(
     config_dir: &Path,
     cache_base: &Path,
+    source_roots: &[SourceModuleRoot],
     printer: &crate::output::Printer,
 ) -> Result<HashMap<String, LoadedModule>> {
     let mut modules = load_modules(config_dir)?;
     load_locked_modules(config_dir, cache_base, &mut modules, printer)?;
+    load_source_modules(source_roots, &mut modules)?;
     Ok(modules)
 }
 

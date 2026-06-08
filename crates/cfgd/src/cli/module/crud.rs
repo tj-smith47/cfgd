@@ -255,6 +255,7 @@ pub fn cmd_module_create(
             std::slice::from_ref(name),
             &config_dir,
             &cache_base,
+            &[],
             &platform,
             &mgr_map,
             printer,

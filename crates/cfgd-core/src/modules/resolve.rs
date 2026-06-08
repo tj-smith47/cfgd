@@ -10,11 +10,13 @@ use crate::errors::{ModuleError, Result};
 use crate::platform::Platform;
 use crate::providers::PackageManager;
 
+use crate::errors::CfgdError;
+
 use super::git::{fetch_git_source, is_git_source, parse_git_source};
 use super::loader::resolve_dependency_order;
 use super::lockfile::load_all_modules;
 use super::registry::resolve_profile_module_name;
-use super::{LoadedModule, ResolvedFile, ResolvedModule, ResolvedPackage};
+use super::{LoadedModule, ResolvedFile, ResolvedModule, ResolvedPackage, SourceModuleRoot};
 
 // ---------------------------------------------------------------------------
 // Package resolution
@@ -232,11 +234,12 @@ pub fn resolve_modules(
     requested: &[String],
     config_dir: &Path,
     cache_base: &Path,
+    source_roots: &[SourceModuleRoot],
     platform: &Platform,
     managers: &HashMap<String, &dyn PackageManager>,
     printer: &crate::output::Printer,
 ) -> Result<Vec<ResolvedModule>> {
-    let all_modules = load_all_modules(config_dir, cache_base, printer)?;
+    let all_modules = load_all_modules(config_dir, cache_base, source_roots, printer)?;
 
     // Resolve profile references (e.g., "community/tmux" → "tmux") to actual module names
     let resolved_names: Vec<String> = requested
@@ -244,7 +247,8 @@ pub fn resolve_modules(
         .map(|r| resolve_profile_module_name(r).to_string())
         .collect();
 
-    let order = resolve_dependency_order(&resolved_names, &all_modules)?;
+    let order = resolve_dependency_order(&resolved_names, &all_modules)
+        .map_err(|e| enrich_not_found(e, source_roots))?;
 
     // Determine platform-skipped modules up front so an active module that
     // depends on a skipped one can be rejected as a config error before any
@@ -277,6 +281,7 @@ pub fn resolve_modules(
                     "platform not matched (requires: {})",
                     module.spec.platforms.join(", ")
                 ),
+                module.origin.clone(),
             ));
             continue;
         }
@@ -310,10 +315,38 @@ pub fn resolve_modules(
             depends: module.spec.depends.clone(),
             dir: module.dir.clone(),
             platform_skip_reason: None,
+            origin: module.origin.clone(),
         });
     }
 
     Ok(resolved)
+}
+
+/// Enrich a `ModuleError::NotFound` raised during dependency resolution: when the
+/// missing name appears in some source root's `offered` allow-list, the publisher
+/// declared it in `provides.modules` but failed to deliver the body — surface that
+/// as `OfferedButMissing` naming the source. When several roots offer the name, the
+/// highest-priority one is named (tie-break on source_name) so the message matches
+/// the source that would have won the body race. All other errors pass through;
+/// both variants keep the exit-6 NotFound code.
+fn enrich_not_found(err: CfgdError, source_roots: &[SourceModuleRoot]) -> CfgdError {
+    if let CfgdError::Module(ModuleError::NotFound { name }) = &err
+        && let Some(root) = source_roots
+            .iter()
+            .filter(|root| root.offered.iter().any(|m| m == name))
+            .max_by(|a, b| {
+                a.priority
+                    .cmp(&b.priority)
+                    .then_with(|| b.source_name.cmp(&a.source_name))
+            })
+    {
+        return ModuleError::OfferedButMissing {
+            name: name.clone(),
+            source_name: root.source_name.clone(),
+        }
+        .into();
+    }
+    err
 }
 
 /// Reject an active module that depends on a platform-skipped one.

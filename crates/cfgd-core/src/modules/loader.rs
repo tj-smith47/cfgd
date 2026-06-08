@@ -97,6 +97,7 @@ pub fn load_modules(config_dir: &Path) -> Result<HashMap<String, LoadedModule>> 
                 name,
                 spec: doc.spec,
                 dir: path,
+                origin: None,
             },
         );
     }
@@ -127,6 +128,7 @@ pub fn load_module(module_dir: &Path) -> Result<LoadedModule> {
         name,
         spec: doc.spec,
         dir: module_dir.to_path_buf(),
+        origin: None,
     })
 }
 

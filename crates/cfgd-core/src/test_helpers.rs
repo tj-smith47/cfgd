@@ -1115,6 +1115,7 @@ pub fn make_resolved_module(name: &str) -> crate::modules::ResolvedModule {
         depends: vec![],
         dir: PathBuf::from("."),
         platform_skip_reason: None,
+        origin: None,
     }
 }
 
@@ -1133,6 +1134,7 @@ pub fn make_test_modules(
                     ..Default::default()
                 },
                 dir: PathBuf::from(format!("/fake/{name}")),
+                origin: None,
             },
         );
     }

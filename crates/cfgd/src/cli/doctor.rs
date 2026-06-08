@@ -210,7 +210,7 @@ fn collect_doctor_output(
 
     let cache_base = modules::default_module_cache_dir().unwrap_or_default();
     let all_modules =
-        modules::load_all_modules(&config_dir, &cache_base, printer).unwrap_or_default();
+        modules::load_all_modules(&config_dir, &cache_base, &[], printer).unwrap_or_default();
 
     // Per-module package detail: resolve each declared package against the
     // platform's manager and query installed_packages to know whether the

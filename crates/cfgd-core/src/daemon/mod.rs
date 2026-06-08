@@ -119,6 +119,7 @@ pub(crate) fn resolve_daemon_modules(
         &resolved.merged.modules,
         config_dir,
         &cache_base,
+        &[],
         &platform,
         &mgr_map,
         printer,

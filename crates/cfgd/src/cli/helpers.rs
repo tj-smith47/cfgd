@@ -293,6 +293,7 @@ pub(in crate::cli) fn resolve_profile_modules(
         &resolved.merged.modules,
         config_dir,
         &cache_base,
+        &[],
         &platform,
         &mgr_map,
         printer,
@@ -446,6 +447,7 @@ pub(in crate::cli) fn compose_with_sources(
             conflicts: Vec::new(),
             source_env: std::collections::HashMap::new(),
             source_commits: std::collections::HashMap::new(),
+            source_module_roots: Vec::new(),
         });
     }
 
@@ -503,6 +505,23 @@ pub(in crate::cli) fn compose_with_sources(
             result
                 .source_commits
                 .insert(source_spec.name.clone(), commit.clone());
+        }
+    }
+
+    // Build module roots so a subscribed profile's module references resolve to
+    // bodies the source ships (modules_dir + provides.modules allow-list).
+    for source_spec in &cfg.spec.sources {
+        if mgr.get(&source_spec.name).is_some() {
+            let modules_dir = mgr.source_modules_dir(&source_spec.name)?;
+            let offered = mgr.available_source_modules(&source_spec.name)?;
+            result
+                .source_module_roots
+                .push(cfgd_core::modules::SourceModuleRoot {
+                    source_name: source_spec.name.clone(),
+                    priority: source_spec.subscription.priority,
+                    modules_dir,
+                    offered,
+                });
         }
     }
 

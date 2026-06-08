@@ -247,6 +247,7 @@ mod tests {
             depends: Vec::new(),
             dir: PathBuf::from("/tmp/module"),
             platform_skip_reason: None,
+            origin: None,
         }
     }
 
