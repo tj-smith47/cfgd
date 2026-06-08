@@ -795,6 +795,7 @@ fn format_module_plan_items_packages() {
                     },
                 ],
             },
+            origin: None,
         })],
     };
 
@@ -821,6 +822,7 @@ fn format_module_plan_items_files() {
                     permissions: None,
                 }],
             },
+            origin: None,
         })],
     };
 
@@ -840,6 +842,7 @@ fn format_module_plan_items_skip() {
             kind: ModuleActionKind::Skip {
                 reason: "dependency not met".to_string(),
             },
+            origin: None,
         })],
     };
 
@@ -866,6 +869,7 @@ fn format_module_action_description() {
                 unless: None,
             }],
         },
+        origin: None,
     });
 
     let desc = format_action_description(&action);
@@ -1031,6 +1035,7 @@ fn plan_hash_includes_module_actions() {
                         unless: None,
                     }],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -1402,6 +1407,7 @@ fn format_module_plan_script_packages() {
                     unless: None,
                 }],
             },
+            origin: None,
         })],
     };
 
@@ -4711,6 +4717,7 @@ fn apply_guard_skipped_module_script_does_not_fire_on_change() {
                     script: guarded,
                     phase: ScriptPhase::PostApply,
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -4809,6 +4816,7 @@ fn apply_guard_permitted_module_script_fires_on_change() {
                     script: guarded,
                     phase: ScriptPhase::PostApply,
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -4894,6 +4902,7 @@ fn apply_skipped_module_does_not_fire_on_change() {
                 kind: ModuleActionKind::Skip {
                     reason: "platform not matched".to_string(),
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -5032,6 +5041,7 @@ fn action_target_path_module_returns_none() {
         kind: ModuleActionKind::Skip {
             reason: "n/a".into(),
         },
+        origin: None,
     });
     assert!(super::action_target_path(&action).is_none());
 }
@@ -5164,6 +5174,7 @@ fn format_action_description_module_deploy_files() {
                 },
             ],
         },
+        origin: None,
     });
     let desc = format_action_description(&action);
     assert_eq!(desc, "module:nvim:files:2");
@@ -5176,6 +5187,7 @@ fn format_action_description_module_skip() {
         kind: ModuleActionKind::Skip {
             reason: "dependency unmet".into(),
         },
+        origin: None,
     });
     assert_eq!(format_action_description(&action), "module:broken:skip");
 }
@@ -5188,6 +5200,7 @@ fn format_action_description_module_run_script() {
             script: ScriptEntry::Simple("setup.sh".into()),
             phase: ScriptPhase::PostApply,
         },
+        origin: None,
     });
     assert_eq!(format_action_description(&action), "module:nvim:script");
 }
@@ -5615,6 +5628,7 @@ fn format_module_action_item_deploy_truncates_many_files() {
     let action = ModuleAction {
         module_name: "big".into(),
         kind: ModuleActionKind::DeployFiles { files },
+        origin: None,
     };
     let item = super::format_module_action_item(&action);
     assert!(item.contains("[big]"));
@@ -7097,6 +7111,7 @@ fn apply_module_install_packages_calls_manager() {
                         unless: None,
                     }],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -7188,6 +7203,7 @@ fn apply_module_deploy_files_creates_target() {
                         permissions: None,
                     }],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -7274,6 +7290,7 @@ fn apply_module_deploy_files_symlink_strategy() {
                         permissions: None,
                     }],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -7318,6 +7335,7 @@ fn apply_module_skip_reports_skipped() {
                 kind: ModuleActionKind::Skip {
                     reason: "dependency not met".to_string(),
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -7408,6 +7426,7 @@ fn apply_module_install_packages_bootstraps_when_needed() {
                         unless: None,
                     }],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -7955,6 +7974,7 @@ fn apply_module_run_script_executes_in_module_dir() {
                     script: ScriptEntry::Simple(format!("touch {}", marker.display())),
                     phase: ScriptPhase::PostApply,
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -8410,6 +8430,7 @@ fn format_action_description_module_install_multiple_packages() {
                 },
             ],
         },
+        origin: None,
     });
     let desc = format_action_description(&action);
     assert_eq!(desc, "module:neovim:packages:neovim,ripgrep");
@@ -8439,6 +8460,7 @@ fn format_action_description_module_deploy_two_files() {
                 },
             ],
         },
+        origin: None,
     });
     let desc = format_action_description(&action);
     assert_eq!(desc, "module:nvim:files:2");
@@ -8452,6 +8474,7 @@ fn format_action_description_module_run_post_apply_script() {
             script: ScriptEntry::Simple("./setup.sh".to_string()),
             phase: ScriptPhase::PostApply,
         },
+        origin: None,
     });
     let desc = format_action_description(&action);
     assert_eq!(desc, "module:rust:script");
@@ -8464,6 +8487,7 @@ fn format_action_description_module_skip_dependency() {
         kind: ModuleActionKind::Skip {
             reason: "dependency not met".to_string(),
         },
+        origin: None,
     });
     let desc = format_action_description(&action);
     assert_eq!(desc, "module:rust:skip");
@@ -8723,6 +8747,7 @@ fn apply_module_deploy_files_hardlink_strategy() {
                         permissions: None,
                     }],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -8820,6 +8845,7 @@ fn apply_module_deploy_files_copy_strategy() {
                         permissions: None,
                     }],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -8919,6 +8945,7 @@ fn apply_module_deploy_files_applies_permissions() {
                 kind: ModuleActionKind::DeployFiles {
                     files: vec![file.clone()],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -9002,6 +9029,7 @@ fn apply_module_deploy_files_directory_copy_strategy() {
                         permissions: None,
                     }],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -9094,6 +9122,7 @@ fn apply_module_deploy_files_overwrites_existing_file() {
                         permissions: None,
                     }],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -9175,6 +9204,7 @@ fn apply_module_on_change_script_runs_when_module_has_changes() {
                         permissions: None,
                     }],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -10041,6 +10071,7 @@ fn format_module_action_item_run_script() {
                 script: ScriptEntry::Simple("make install".into()),
                 phase: ScriptPhase::PostApply,
             },
+            origin: None,
         })],
     };
     let items = format_plan_items(&phase);
@@ -10048,6 +10079,58 @@ fn format_module_action_item_run_script() {
     assert!(items[0].contains("[nvim]"), "got: {}", items[0]);
     assert!(items[0].contains("postApply"), "got: {}", items[0]);
     assert!(items[0].contains("make install"), "got: {}", items[0]);
+}
+
+#[test]
+fn format_module_action_item_source_delivered_shows_origin_suffix() {
+    // A source-delivered module (origin = Some) gets the same ` <- <source>`
+    // provenance suffix as source-delivered files/packages.
+    let phase = Phase {
+        name: PhaseName::Modules,
+        actions: vec![Action::Module(ModuleAction::with_origin(
+            "nvim",
+            ModuleActionKind::DeployFiles {
+                files: vec![ResolvedFile {
+                    source: PathBuf::from("/cache/nvim/config"),
+                    target: PathBuf::from("/home/user/.config/nvim"),
+                    is_git_source: false,
+                    strategy: None,
+                    encryption: None,
+                    permissions: None,
+                }],
+            },
+            Some("acme".to_string()),
+        ))],
+    };
+    let items = format_plan_items(&phase);
+    assert_eq!(items.len(), 1);
+    assert!(items[0].contains("[nvim]"), "got: {}", items[0]);
+    assert!(items[0].ends_with(" <- acme"), "got: {}", items[0]);
+}
+
+#[test]
+fn format_module_action_item_local_has_no_origin_suffix() {
+    // A consumer-local module (origin = None) renders with no provenance suffix,
+    // exactly as before — regression guard for local modules.
+    let phase = Phase {
+        name: PhaseName::Modules,
+        actions: vec![Action::Module(ModuleAction::local(
+            "nvim",
+            ModuleActionKind::DeployFiles {
+                files: vec![ResolvedFile {
+                    source: PathBuf::from("/cache/nvim/config"),
+                    target: PathBuf::from("/home/user/.config/nvim"),
+                    is_git_source: false,
+                    strategy: None,
+                    encryption: None,
+                    permissions: None,
+                }],
+            },
+        ))],
+    };
+    let items = format_plan_items(&phase);
+    assert_eq!(items.len(), 1);
+    assert!(!items[0].contains(" <- "), "got: {}", items[0]);
 }
 
 #[test]
@@ -10067,6 +10150,7 @@ fn format_module_action_item_deploy_many_files_truncates() {
         actions: vec![Action::Module(ModuleAction {
             module_name: "big".into(),
             kind: ModuleActionKind::DeployFiles { files },
+            origin: None,
         })],
     };
     let items = format_plan_items(&phase);
@@ -10090,6 +10174,7 @@ fn format_action_description_module_alias_canonical_mismatch() {
                 unless: None,
             }],
         },
+        origin: None,
     });
     let desc = format_action_description(&action);
     assert!(
@@ -10485,6 +10570,7 @@ fn apply_module_install_packages_bootstraps_unavailable_manager_and_writes_env()
                         unless: None,
                     }],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -10594,6 +10680,7 @@ fn apply_module_install_packages_with_existing_env_appends_new_dirs() {
                         unless: None,
                     }],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -10686,6 +10773,7 @@ fn apply_module_install_packages_no_op_when_manager_not_in_registry() {
                         unless: None,
                     }],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -10778,6 +10866,7 @@ fn apply_module_install_packages_script_manager_runs_per_package_script() {
                         },
                     ],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -10849,6 +10938,7 @@ fn apply_module_install_packages_script_manager_failure_returns_err() {
                         unless: None,
                     }],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -10928,6 +11018,7 @@ fn run_guarded_script_install(
                         unless,
                     }],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -11111,6 +11202,7 @@ fn apply_module_on_change_script_runs_when_module_changed() {
                         permissions: None,
                     }],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -11246,6 +11338,7 @@ fn apply_module_on_change_skip_scripts_flag_bypasses_module_on_change() {
                         permissions: None,
                     }],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -11515,6 +11608,7 @@ fn apply_module_with_git_source_file_serializes_into_module_state() {
                         permissions: None,
                     }],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -11604,6 +11698,7 @@ fn apply_module_on_change_failure_continues_with_default_continue_on_error() {
                         permissions: None,
                     }],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -11692,6 +11787,7 @@ fn apply_module_on_change_failure_aborts_when_continue_on_error_false() {
                         permissions: None,
                     }],
                 },
+                origin: None,
             })],
         }],
         warnings: vec![],
@@ -11860,6 +11956,7 @@ fn action_matches_phase_filter_table() {
             script: ScriptEntry::Simple("echo pre".to_string()),
             phase: ScriptPhase::PreApply,
         },
+        origin: None,
     });
     let module_post_script = Action::Module(ModuleAction {
         module_name: "m".to_string(),
@@ -11867,10 +11964,12 @@ fn action_matches_phase_filter_table() {
             script: ScriptEntry::Simple("echo post".to_string()),
             phase: ScriptPhase::PostApply,
         },
+        origin: None,
     });
     let module_install = Action::Module(ModuleAction {
         module_name: "m".to_string(),
         kind: ModuleActionKind::InstallPackages { resolved: vec![] },
+        origin: None,
     });
     let pkg_install = Action::Package(PackageAction::Install {
         manager: "brew".to_string(),
@@ -11990,6 +12089,7 @@ fn apply_post_scripts_filter_runs_module_post_scripts() {
                     Action::Module(ModuleAction {
                         module_name: "nvim".to_string(),
                         kind: ModuleActionKind::InstallPackages { resolved: vec![] },
+                        origin: None,
                     }),
                     Action::Module(ModuleAction {
                         module_name: "nvim".to_string(),
@@ -11997,6 +12097,7 @@ fn apply_post_scripts_filter_runs_module_post_scripts() {
                             script: ScriptEntry::Simple(format!("touch {}", marker.display())),
                             phase: ScriptPhase::PostApply,
                         },
+                        origin: None,
                     }),
                 ],
             },
@@ -12094,10 +12195,12 @@ fn apply_pre_scripts_filter_runs_module_pre_scripts() {
                             script: ScriptEntry::Simple(format!("touch {}", marker.display())),
                             phase: ScriptPhase::PreApply,
                         },
+                        origin: None,
                     }),
                     Action::Module(ModuleAction {
                         module_name: "nvim".to_string(),
                         kind: ModuleActionKind::InstallPackages { resolved: vec![] },
+                        origin: None,
                     }),
                 ],
             },
@@ -12183,16 +12286,19 @@ fn apply_modules_phase_filter_runs_all_module_actions() {
                         script: ScriptEntry::Simple(format!("touch {}", marker.display())),
                         phase: ScriptPhase::PostApply,
                     },
+                    origin: None,
                 }),
                 Action::Module(ModuleAction {
                     module_name: "nvim".to_string(),
                     kind: ModuleActionKind::InstallPackages { resolved: vec![] },
+                    origin: None,
                 }),
                 Action::Module(ModuleAction {
                     module_name: "nvim".to_string(),
                     kind: ModuleActionKind::Skip {
                         reason: "exercised by test".to_string(),
                     },
+                    origin: None,
                 }),
             ],
         }],
@@ -12292,6 +12398,7 @@ fn apply_post_scripts_filter_skips_other_phases() {
                         script: ScriptEntry::Simple(format!("touch {}", marker.display())),
                         phase: ScriptPhase::PostApply,
                     },
+                    origin: None,
                 })],
             },
         ],
@@ -12700,6 +12807,7 @@ fn install_packages_action(module: &str, resolved: Vec<ResolvedPackage>) -> Acti
     Action::Module(ModuleAction {
         module_name: module.to_string(),
         kind: ModuleActionKind::InstallPackages { resolved },
+        origin: None,
     })
 }
 

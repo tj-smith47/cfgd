@@ -57,6 +57,7 @@ fn happy_output() -> SourceShowOutput {
                 resource_id: "EDITOR".into(),
             },
         ],
+        modules: vec!["dev-tools".into(), "shell".into()],
     }
 }
 
@@ -70,7 +71,10 @@ fn happy_manifest() -> ConfigSourceDocument {
             description: Some("Team-wide baseline".into()),
         },
         spec: ConfigSourceSpec {
-            provides: ConfigSourceProvides::default(),
+            provides: ConfigSourceProvides {
+                modules: vec!["dev-tools".into(), "shell".into()],
+                ..ConfigSourceProvides::default()
+            },
             policy: ConfigSourcePolicy {
                 required: PolicyItems {
                     files: vec![ManagedFileSpec {
@@ -120,6 +124,7 @@ fn empty_output() -> SourceShowOutput {
         pin_version: None,
         state: None,
         managed_resources: Vec::new(),
+        modules: Vec::new(),
     }
 }
 
@@ -147,6 +152,50 @@ fn source_show_happy_json() {
         "emit -o json must match serde_json::to_value(output)"
     );
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "source_show/happy.json");
+}
+
+#[test]
+fn source_show_lists_delivered_modules_human_and_json() {
+    // A source with `provides.modules` surfaces a Modules section in human
+    // output and a `modules` array in the structured payload.
+    let output = happy_output();
+    let manifest = happy_manifest();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_source_show_doc(&output, Some(&manifest)));
+    drop(printer);
+
+    let human = cap.human();
+    assert!(human.contains("Modules"), "human output: {human}");
+    assert!(human.contains("dev-tools"), "human output: {human}");
+    assert!(human.contains("shell"), "human output: {human}");
+
+    let json = serde_json::to_value(&output).unwrap();
+    assert_eq!(
+        json["modules"],
+        serde_json::json!(["dev-tools", "shell"]),
+        "structured payload must list delivered modules: {json}"
+    );
+}
+
+#[test]
+fn source_show_no_modules_omits_field() {
+    // Regression: a source delivering no modules omits the `modules` key entirely
+    // (serde skip_serializing_if) and renders no Modules section.
+    let output = empty_output();
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_source_show_doc(&output, None));
+    drop(printer);
+
+    let human = cap.human();
+    assert!(
+        !human.contains("Modules"),
+        "no Modules section expected: {human}"
+    );
+    let json = serde_json::to_value(&output).unwrap();
+    assert!(
+        json.get("modules").is_none(),
+        "modules key must be omitted when empty: {json}"
+    );
 }
 
 #[test]

@@ -80,6 +80,16 @@ pub fn build_source_show_doc(
         },
     );
 
+    // Modules this source DELIVERS — its manifest `provides.modules` allow-list
+    // (the bodies a subscriber can resolve from this source).
+    doc = doc.section_if_nonempty("Modules", &output.modules, |s, modules| {
+        let mut s = s;
+        for m in modules {
+            s = s.status(Role::Info, m.clone());
+        }
+        s
+    });
+
     if let Some(m) = manifest {
         doc = doc.section("Manifest", |s| {
             let mut s = s.kv("Name", &m.metadata.name);
@@ -193,7 +203,7 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
     let state_info = state.config_source_by_name(name)?;
     let resources = state.managed_resources_by_source(name)?;
 
-    let output = SourceShowOutput {
+    let mut output = SourceShowOutput {
         name: name.to_string(),
         url: source_spec.origin.url.clone(),
         branch: source_spec.origin.branch.clone(),
@@ -216,6 +226,7 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
                 resource_id: r.resource_id.clone(),
             })
             .collect(),
+        modules: Vec::new(),
     };
 
     let cache_dir = source_cache_dir(cli)?;
@@ -232,6 +243,13 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
         );
     }
     let manifest = mgr.get(name).map(|c| &c.manifest);
+
+    // Modules this source DELIVERS — its manifest `provides.modules` allow-list
+    // (the bodies it offers to subscribers), distinct from the policy resources
+    // above. Empty when the manifest could not be loaded.
+    if let Some(m) = manifest {
+        output.modules = m.spec.provides.modules.clone();
+    }
 
     printer.emit(build_source_show_doc(&output, manifest));
     Ok(())

@@ -308,7 +308,17 @@ pub fn format_plan_items(phase: &Phase) -> Vec<String> {
 }
 
 /// Format a module action for plan display.
+///
+/// Source-delivered modules (`origin = Some`) get the same ` <- <source>`
+/// provenance suffix as source-delivered files/packages; consumer-local modules
+/// (`origin = None`) render with no suffix.
 pub(super) fn format_module_action_item(action: &ModuleAction) -> String {
+    let suffix = provenance_suffix(action.origin.as_deref().unwrap_or(""));
+    let body = format_module_action_body(action);
+    format!("{body}{suffix}")
+}
+
+fn format_module_action_body(action: &ModuleAction) -> String {
     match &action.kind {
         ModuleActionKind::InstallPackages { resolved } => {
             // Group by manager for display

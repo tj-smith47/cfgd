@@ -172,6 +172,13 @@ pub struct PlanActionOutput {
     /// scraping `description`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub targets: Vec<String>,
+    /// The ConfigSource that delivered the resource's body, when not local.
+    /// `Some(source_name)` for source-delivered modules/files/packages; omitted
+    /// from the wire (and `None`) for consumer-local resources. Lets `-o json`
+    /// consumers read provenance without scraping the ` <- <source>` suffix off
+    /// `description`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -283,6 +290,12 @@ pub struct SourceShowOutput {
     pub pin_version: Option<String>,
     pub state: Option<SourceStateInfo>,
     pub managed_resources: Vec<SourceResourceEntry>,
+    /// Module names this source declares deliverable — its manifest
+    /// `spec.provides.modules` allow-list (the module bodies it offers to
+    /// subscribers). Empty (and omitted from the wire) when the source delivers
+    /// no modules or its manifest could not be loaded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modules: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -688,6 +701,7 @@ mod tests {
                     description: "install pkg".to_string(),
                     action_type: "package".to_string(),
                     targets: vec![],
+                    origin: None,
                 }],
             }],
             total_actions: 1,
@@ -727,6 +741,7 @@ mod tests {
                 description: "render file".to_string(),
                 action_type: "file".to_string(),
                 targets: vec!["/etc/hosts".to_string()],
+                origin: None,
             }],
         };
         let json = serde_json::to_value(&v).unwrap();
@@ -741,6 +756,7 @@ mod tests {
             description: "configure systemd".to_string(),
             action_type: "system".to_string(),
             targets: vec![],
+            origin: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["description"], json!("configure systemd"));
@@ -765,6 +781,7 @@ mod tests {
             description: "create /etc/hosts".to_string(),
             action_type: "file.create".to_string(),
             targets: vec!["/etc/hosts".to_string()],
+            origin: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(
@@ -1042,8 +1059,10 @@ mod tests {
                 resource_type: "Module".to_string(),
                 resource_id: "shell".to_string(),
             }],
+            modules: vec!["dev-tools".to_string()],
         };
         let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(json["modules"], json!(["dev-tools"]));
         assert_eq!(json["name"], json!("infra"));
         assert_eq!(json["url"], json!("https://example.com/r.git"));
         assert_eq!(json["branch"], json!("main"));

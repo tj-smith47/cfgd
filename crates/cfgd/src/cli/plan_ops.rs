@@ -142,6 +142,53 @@ pub(in crate::cli) fn action_targets(action: &reconciler::Action) -> Vec<String>
     }
 }
 
+/// Source provenance of a plan action for structured (`-o json`) consumers:
+/// `Some(source_name)` when a ConfigSource delivered the resource body, `None`
+/// for consumer-local resources (and for action kinds with no provenance, e.g.
+/// system writes / env / locally-authored scripts). Files/packages/secrets/
+/// scripts carry origin as the sentinel `String` `"local"`/`""`; modules carry
+/// it as `Option<String>`. Both normalize to `None` for local here so the wire
+/// field is omitted exactly when there is no remote provenance to report.
+pub(in crate::cli) fn action_origin(action: &reconciler::Action) -> Option<String> {
+    fn norm(origin: &str) -> Option<String> {
+        if origin.is_empty() || origin == "local" {
+            None
+        } else {
+            Some(origin.to_string())
+        }
+    }
+    match action {
+        reconciler::Action::Module(ma) => ma.origin.clone(),
+        reconciler::Action::File(fa) => match fa {
+            FileAction::Create { origin, .. }
+            | FileAction::Update { origin, .. }
+            | FileAction::Delete { origin, .. }
+            | FileAction::SetPermissions { origin, .. }
+            | FileAction::Skip { origin, .. } => norm(origin),
+        },
+        reconciler::Action::Package(pa) => match pa {
+            PackageAction::Bootstrap { origin, .. }
+            | PackageAction::Install { origin, .. }
+            | PackageAction::Uninstall { origin, .. }
+            | PackageAction::Skip { origin, .. } => norm(origin),
+        },
+        reconciler::Action::Secret(sa) => match sa {
+            SecretAction::Decrypt { origin, .. }
+            | SecretAction::Resolve { origin, .. }
+            | SecretAction::ResolveEnv { origin, .. }
+            | SecretAction::Skip { origin, .. } => norm(origin),
+        },
+        reconciler::Action::System(sa) => match sa {
+            reconciler::SystemAction::SetValue { origin, .. } => norm(origin),
+            reconciler::SystemAction::Skip { origin, .. } => norm(origin),
+        },
+        reconciler::Action::Script(sa) => match sa {
+            reconciler::ScriptAction::Run { origin, .. } => norm(origin),
+        },
+        reconciler::Action::Env(_) => None,
+    }
+}
+
 /// Build a PlanOutput from a reconciler Plan, applying an optional phase filter.
 pub(in crate::cli) fn build_plan_output(
     plan: &reconciler::Plan,
@@ -164,6 +211,7 @@ pub(in crate::cli) fn build_plan_output(
                 description: desc.clone(),
                 action_type: action_type_str(action).to_string(),
                 targets: action_targets(action),
+                origin: action_origin(action),
             })
             .collect();
         phases.push(PlanPhaseOutput {
@@ -928,6 +976,7 @@ mod tests {
         Action::Module(ModuleAction {
             module_name: "dev-tools".to_string(),
             kind: ModuleActionKind::InstallPackages { resolved: vec![] },
+            origin: None,
         })
     }
 
@@ -938,6 +987,7 @@ mod tests {
                 script: ScriptEntry::Simple("install.sh".to_string()),
                 phase: ScriptPhase::PostApply,
             },
+            origin: None,
         })
     }
 
@@ -945,6 +995,7 @@ mod tests {
         Action::Module(ModuleAction {
             module_name: "dotfiles".to_string(),
             kind: ModuleActionKind::DeployFiles { files: vec![] },
+            origin: None,
         })
     }
 
@@ -954,6 +1005,7 @@ mod tests {
             kind: ModuleActionKind::Skip {
                 reason: "dependency not met".to_string(),
             },
+            origin: None,
         })
     }
 
@@ -1091,6 +1143,7 @@ mod tests {
                     },
                 ],
             },
+            origin: None,
         });
         assert_eq!(
             action_targets(&deploy),
@@ -1493,6 +1546,77 @@ mod tests {
         assert_eq!(output.phases.len(), 1);
         assert_eq!(output.phases[0].phase, "Files");
         assert_eq!(output.total_actions, 1);
+    }
+
+    fn module_install_from_source(source: &str) -> Action {
+        Action::Module(ModuleAction::with_origin(
+            "dev-tools",
+            ModuleActionKind::InstallPackages { resolved: vec![] },
+            Some(source.to_string()),
+        ))
+    }
+
+    #[test]
+    fn build_plan_output_carries_source_module_origin() {
+        // A source-delivered module exposes its origin in the structured payload;
+        // a co-planned local module omits origin (serde skips None on the wire).
+        let plan = make_plan(vec![(
+            PhaseName::Modules,
+            vec![module_install_from_source("acme"), module_install()],
+        )]);
+        let output = build_plan_output(&plan, "ctx", None);
+
+        let actions = &output.phases[0].actions;
+        let sourced = actions
+            .iter()
+            .find(|a| a.description.contains(" <- acme"))
+            .expect("source-delivered module action present");
+        assert_eq!(sourced.origin.as_deref(), Some("acme"));
+
+        let local = actions
+            .iter()
+            .find(|a| !a.description.contains(" <- "))
+            .expect("local module action present");
+        assert_eq!(local.origin, None, "local module must omit origin");
+
+        // The wire form omits origin for the local action and includes it for
+        // the source-delivered one (serde camelCase + skip_serializing_if=None).
+        let json = serde_json::to_value(&output).unwrap();
+        let acts = json["phases"][0]["actions"].as_array().unwrap();
+        assert!(
+            acts.iter()
+                .any(|a| a["origin"] == serde_json::json!("acme")),
+            "expected origin: \"acme\" in json: {json}"
+        );
+        assert!(
+            acts.iter().any(|a| a.get("origin").is_none()),
+            "expected a local action with no origin key in json: {json}"
+        );
+    }
+
+    #[test]
+    fn build_plan_output_local_only_omits_all_origins() {
+        // Regression: a plan of only local modules emits no origin keys at all.
+        let plan = make_plan(vec![(
+            PhaseName::Modules,
+            vec![module_install(), module_deploy_files()],
+        )]);
+        let output = build_plan_output(&plan, "ctx", None);
+        for phase in &output.phases {
+            for action in &phase.actions {
+                assert_eq!(action.origin, None, "local plan must carry no origin");
+                assert!(
+                    !action.description.contains(" <- "),
+                    "local plan must carry no provenance suffix"
+                );
+            }
+        }
+        let json = serde_json::to_value(&output).unwrap();
+        let acts = json["phases"][0]["actions"].as_array().unwrap();
+        assert!(
+            acts.iter().all(|a| a.get("origin").is_none()),
+            "no origin key expected in local-only json: {json}"
+        );
     }
 
     #[test]

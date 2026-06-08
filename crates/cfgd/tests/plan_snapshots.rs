@@ -43,6 +43,7 @@ fn happy_plan_output() -> PlanOutput {
                 description: "create /etc/hosts".to_string(),
                 action_type: "file.create".to_string(),
                 targets: vec!["/etc/hosts".to_string()],
+                origin: None,
             }],
         }],
         total_actions: 1,

@@ -386,12 +386,13 @@ impl<'a> super::Reconciler<'a> {
             // other actions. A Skip action reports changed=false and does not
             // fire onChange, so no apply-side handling is needed.
             if let Some(reason) = &module.platform_skip_reason {
-                actions.push(Action::Module(ModuleAction {
-                    module_name: module.name.clone(),
-                    kind: ModuleActionKind::Skip {
+                actions.push(Action::Module(ModuleAction::with_origin(
+                    module.name.clone(),
+                    ModuleActionKind::Skip {
                         reason: reason.clone(),
                     },
-                }));
+                    module.origin.clone(),
+                )));
                 continue;
             }
 
@@ -413,13 +414,14 @@ impl<'a> super::Reconciler<'a> {
 
             // Pre-scripts for this module
             for script in pre_scripts {
-                actions.push(Action::Module(ModuleAction {
-                    module_name: module.name.clone(),
-                    kind: ModuleActionKind::RunScript {
+                actions.push(Action::Module(ModuleAction::with_origin(
+                    module.name.clone(),
+                    ModuleActionKind::RunScript {
                         script: script.clone(),
                         phase: pre_phase.clone(),
                     },
-                }));
+                    module.origin.clone(),
+                )));
             }
 
             // Packages: group by manager for efficient batch install
@@ -451,12 +453,13 @@ impl<'a> super::Reconciler<'a> {
 
             for mgr_name in manager_order {
                 let resolved = &by_manager[mgr_name];
-                actions.push(Action::Module(ModuleAction {
-                    module_name: module.name.clone(),
-                    kind: ModuleActionKind::InstallPackages {
+                actions.push(Action::Module(ModuleAction::with_origin(
+                    module.name.clone(),
+                    ModuleActionKind::InstallPackages {
                         resolved: resolved.clone(),
                     },
-                }));
+                    module.origin.clone(),
+                )));
             }
 
             // Files — validate encryption requirements before deploying
@@ -472,16 +475,17 @@ impl<'a> super::Reconciler<'a> {
                                     | crate::config::FileStrategy::Hardlink
                             )
                         {
-                            actions.push(Action::Module(ModuleAction {
-                                module_name: module.name.clone(),
-                                kind: ModuleActionKind::Skip {
+                            actions.push(Action::Module(ModuleAction::with_origin(
+                                module.name.clone(),
+                                ModuleActionKind::Skip {
                                     reason: format!(
                                         "encryption mode Always incompatible with {:?} for {}",
                                         strategy,
                                         file.source.posix()
                                     ),
                                 },
-                            }));
+                                module.origin.clone(),
+                            )));
                             encryption_ok = false;
                             break;
                         }
@@ -489,30 +493,32 @@ impl<'a> super::Reconciler<'a> {
                             match crate::is_file_encrypted(&file.source, &enc.backend) {
                                 Ok(true) => {}
                                 Ok(false) => {
-                                    actions.push(Action::Module(ModuleAction {
-                                        module_name: module.name.clone(),
-                                        kind: ModuleActionKind::Skip {
+                                    actions.push(Action::Module(ModuleAction::with_origin(
+                                        module.name.clone(),
+                                        ModuleActionKind::Skip {
                                             reason: format!(
                                                 "file {} requires encryption (backend: {}) but is not encrypted",
                                                 file.source.posix(),
                                                 enc.backend
                                             ),
                                         },
-                                    }));
+                                        module.origin.clone(),
+                                    )));
                                     encryption_ok = false;
                                     break;
                                 }
                                 Err(e) => {
-                                    actions.push(Action::Module(ModuleAction {
-                                        module_name: module.name.clone(),
-                                        kind: ModuleActionKind::Skip {
+                                    actions.push(Action::Module(ModuleAction::with_origin(
+                                        module.name.clone(),
+                                        ModuleActionKind::Skip {
                                             reason: format!(
                                                 "encryption check failed for {}: {}",
                                                 file.source.posix(),
                                                 e
                                             ),
                                         },
-                                    }));
+                                        module.origin.clone(),
+                                    )));
                                     encryption_ok = false;
                                     break;
                                 }
@@ -521,24 +527,26 @@ impl<'a> super::Reconciler<'a> {
                     }
                 }
                 if encryption_ok {
-                    actions.push(Action::Module(ModuleAction {
-                        module_name: module.name.clone(),
-                        kind: ModuleActionKind::DeployFiles {
+                    actions.push(Action::Module(ModuleAction::with_origin(
+                        module.name.clone(),
+                        ModuleActionKind::DeployFiles {
                             files: module.files.clone(),
                         },
-                    }));
+                        module.origin.clone(),
+                    )));
                 }
             }
 
             // Post-scripts for this module
             for script in post_scripts {
-                actions.push(Action::Module(ModuleAction {
-                    module_name: module.name.clone(),
-                    kind: ModuleActionKind::RunScript {
+                actions.push(Action::Module(ModuleAction::with_origin(
+                    module.name.clone(),
+                    ModuleActionKind::RunScript {
                         script: script.clone(),
                         phase: post_phase.clone(),
                     },
-                }));
+                    module.origin.clone(),
+                )));
             }
         }
 

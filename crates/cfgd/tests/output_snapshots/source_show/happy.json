@@ -16,6 +16,10 @@
       "resourceType": "env"
     }
   ],
+  "modules": [
+    "dev-tools",
+    "shell"
+  ],
   "name": "team-config",
   "pinVersion": "v1.2.3",
   "priority": 100,

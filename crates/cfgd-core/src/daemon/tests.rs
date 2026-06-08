@@ -75,6 +75,7 @@ fn module_action(
     crate::reconciler::Action::Module(crate::reconciler::ModuleAction {
         module_name: name.to_string(),
         kind,
+        origin: None,
     })
 }
 
@@ -1048,6 +1049,7 @@ fn action_resource_info_module() {
     let action = Action::Module(ModuleAction {
         module_name: "security-baseline".into(),
         kind: ModuleActionKind::InstallPackages { resolved: vec![] },
+        origin: None,
     });
     let (rtype, rid) = action_resource_info(&action);
     assert_eq!(rtype, "module");

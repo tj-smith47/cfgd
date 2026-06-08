@@ -109,6 +109,37 @@ pub enum Action {
 pub struct ModuleAction {
     pub module_name: String,
     pub kind: ModuleActionKind,
+    /// Provenance of the module body: `None` = consumer-local module;
+    /// `Some(source_name)` = body delivered by the named ConfigSource. Mirrors
+    /// `ResolvedModule::origin` and drives the ` <- <source>` plan suffix and the
+    /// structured `origin` field, exactly as file/package actions surface theirs.
+    pub origin: Option<String>,
+}
+
+impl ModuleAction {
+    /// Build a module action for a consumer-local module (no source provenance).
+    pub fn local(module_name: impl Into<String>, kind: ModuleActionKind) -> Self {
+        ModuleAction {
+            module_name: module_name.into(),
+            kind,
+            origin: None,
+        }
+    }
+
+    /// Build a module action, carrying the originating module's source
+    /// provenance (`ResolvedModule::origin`) so the plan and structured output
+    /// can attribute the module to the ConfigSource that delivered it.
+    pub fn with_origin(
+        module_name: impl Into<String>,
+        kind: ModuleActionKind,
+        origin: Option<String>,
+    ) -> Self {
+        ModuleAction {
+            module_name: module_name.into(),
+            kind,
+            origin,
+        }
+    }
 }
 
 /// What kind of module action to take.

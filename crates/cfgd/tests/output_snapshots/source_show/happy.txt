@@ -21,6 +21,10 @@ Managed Resources
   file     ~/.bashrc
   env      EDITOR   
 
+Modules
+  dev-tools
+  shell
+
 Manifest
   Name         team-config
   Description  Team-wide baseline

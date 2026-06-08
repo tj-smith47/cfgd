@@ -8511,6 +8511,7 @@ fn action_type_str_module_variants() {
         super::action_type_str(&Action::Module(ModuleAction {
             module_name: "m".into(),
             kind: ModuleActionKind::InstallPackages { resolved: vec![] },
+            origin: None,
         })),
         "install"
     );
@@ -8519,6 +8520,7 @@ fn action_type_str_module_variants() {
         super::action_type_str(&Action::Module(ModuleAction {
             module_name: "m".into(),
             kind: ModuleActionKind::DeployFiles { files: vec![] },
+            origin: None,
         })),
         "deploy"
     );
@@ -8530,6 +8532,7 @@ fn action_type_str_module_variants() {
                 script: cfgd_core::config::ScriptEntry::Simple("echo hi".into()),
                 phase: cfgd_core::reconciler::ScriptPhase::PostApply,
             },
+            origin: None,
         })),
         "run"
     );
@@ -8540,6 +8543,7 @@ fn action_type_str_module_variants() {
             kind: ModuleActionKind::Skip {
                 reason: "test".into()
             },
+            origin: None,
         })),
         "skip"
     );
@@ -8679,6 +8683,7 @@ fn strip_scripts_removes_module_run_script_actions() {
                 reconciler::Action::Module(ModuleAction {
                     module_name: "m".into(),
                     kind: ModuleActionKind::InstallPackages { resolved: vec![] },
+                    origin: None,
                 }),
                 reconciler::Action::Module(ModuleAction {
                     module_name: "m".into(),
@@ -8686,10 +8691,12 @@ fn strip_scripts_removes_module_run_script_actions() {
                         script: cfgd_core::config::ScriptEntry::Simple("echo hello".into()),
                         phase: cfgd_core::reconciler::ScriptPhase::PostApply,
                     },
+                    origin: None,
                 }),
                 reconciler::Action::Module(ModuleAction {
                     module_name: "m".into(),
                     kind: ModuleActionKind::DeployFiles { files: vec![] },
+                    origin: None,
                 }),
             ],
         }],
@@ -13612,6 +13619,7 @@ fn action_path_module() {
     let action = reconciler::Action::Module(reconciler::ModuleAction {
         module_name: "dev-tools".into(),
         kind: reconciler::ModuleActionKind::InstallPackages { resolved: vec![] },
+        origin: None,
     });
     let path = super::action_path(&PhaseName::Modules, &action);
     assert_eq!(path, "modules.dev-tools");

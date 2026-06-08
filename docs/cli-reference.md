@@ -117,6 +117,24 @@ cfgd plan -o json                       # structured plan output
 | `--skip-scripts` | Exclude all script hooks from the plan |
 | `--context <ctx>` | `apply` (default) or `reconcile` — selects which hooks to include |
 
+A module delivered by a [ConfigSource](sources.md) is tagged with its origin
+just like source-delivered files and packages: the human plan line ends with
+` <- <source>`, and each action in the `-o json`/`-o yaml` payload carries an
+`origin` field (omitted for consumer-local modules).
+
+```sh
+$ cfgd plan
+Phase: Modules
+  - [dev-tools] brew install ripgrep, fd <- team   # delivered by source 'team'
+  - [localmod] brew install jq                     # consumer-local, no tag
+```
+
+```jsonc
+// cfgd plan -o json  →  phases[].actions[]
+{ "type": "install", "description": "[dev-tools] brew install ripgrep, fd <- team", "origin": "team" }
+{ "type": "install", "description": "[localmod] brew install jq" }   // no "origin" key
+```
+
 ### `cfgd status`
 
 Show configuration status, drift, and pending decisions.
@@ -461,7 +479,10 @@ List subscribed sources.
 
 ### `cfgd source show <name>`
 
-Show source details, provided profiles, policy breakdown, conflicts.
+Show source details, provided profiles, policy breakdown, conflicts, and the
+modules the source delivers (its manifest `provides.modules` allow-list). The
+delivered modules appear under a `Modules` section in human output and as a
+`modules` array in the structured (`-o json`/`-o yaml`) payload.
 
 ### `cfgd source remove <name>`
 
