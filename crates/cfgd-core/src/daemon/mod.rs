@@ -104,6 +104,7 @@ pub(crate) fn resolve_daemon_modules(
     config_dir: &Path,
     source_roots: &[crate::modules::SourceModuleRoot],
     printer: &Printer,
+    scope: crate::Scope,
 ) -> Vec<crate::modules::ResolvedModule> {
     if resolved.merged.modules.is_empty() {
         return Vec::new();
@@ -114,7 +115,7 @@ pub(crate) fn resolve_daemon_modules(
         .iter()
         .map(|m| (m.name().to_string(), m.as_ref() as &dyn PackageManager))
         .collect();
-    let cache_base = crate::modules::default_module_cache_dir()
+    let cache_base = crate::modules::default_module_cache_dir_for(scope)
         .unwrap_or_else(|_| config_dir.join(".module-cache"));
     match crate::modules::resolve_modules(
         &resolved.merged.modules,
@@ -157,11 +158,12 @@ pub(crate) fn compose_daemon_desired_state(
     cfg: &config::CfgdConfig,
     local: &ResolvedProfile,
     printer: &Printer,
+    scope: crate::Scope,
 ) -> Result<(ResolvedProfile, Vec<crate::modules::SourceModuleRoot>)> {
     if cfg.spec.sources.is_empty() {
         return Ok((local.clone(), Vec::new()));
     }
-    let cache_dir = crate::sources::SourceManager::default_cache_dir()
+    let cache_dir = crate::sources::SourceManager::default_cache_dir_for(scope)
         .unwrap_or_else(|_| PathBuf::from(".cfgd-sources"));
     let mut mgr = crate::sources::SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
@@ -527,6 +529,7 @@ pub(super) fn build_pre_loop_setup(
     config_path: &Path,
     profile_override: Option<&str>,
     hooks: &dyn DaemonHooks,
+    scope: crate::Scope,
 ) -> Result<PreLoopSetup> {
     let cfg = config::load_config(config_path)?;
     let daemon_cfg = cfg.spec.daemon.clone().unwrap_or(config::DaemonConfig {
@@ -554,7 +557,7 @@ pub(super) fn build_pre_loop_setup(
         .to_path_buf();
     let allow_unsigned = cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned);
 
-    let source_cache_dir = crate::sources::SourceManager::default_cache_dir()
+    let source_cache_dir = crate::sources::SourceManager::default_cache_dir_for(scope)
         .unwrap_or_else(|_| config_dir.join(".cfgd-sources"));
     let sync_tasks = build_sync_tasks(
         &config_dir,
@@ -629,6 +632,7 @@ pub async fn run_daemon(
     runtime_override: Option<PathBuf>,
     printer: Arc<Printer>,
     hooks: Arc<dyn DaemonHooks>,
+    scope: crate::Scope,
 ) -> Result<()> {
     // Resolve the bind socket once at the entry point so the `--runtime-dir`
     // flag reaches the daemon (env/default when `None`); the client side
@@ -639,10 +643,8 @@ pub async fn run_daemon(
         printer,
         hooks,
         DaemonRunOverrides {
-            ipc_path: Some(resolve_default_ipc_path(
-                runtime_override.as_deref(),
-                crate::Scope::User,
-            )),
+            ipc_path: Some(resolve_default_ipc_path(runtime_override.as_deref(), scope)),
+            scope,
             ..DaemonRunOverrides::default()
         },
     )
@@ -670,13 +672,26 @@ pub async fn run_daemon(
 ///   SIGINT / SIGTERM handlers) and drives the loop entirely from the
 ///   provided receivers. The test owns the matching senders and pushes
 ///   events to drive specific arms in `run_daemon_loop`.
-#[derive(Default)]
 pub(super) struct DaemonRunOverrides {
     pub ipc_path: Option<PathBuf>,
     pub state_dir_override: Option<PathBuf>,
     pub skip_health_server: bool,
     pub skip_startup_checkin: bool,
     pub(in crate::daemon) external_triggers: Option<DaemonTriggers>,
+    pub scope: crate::Scope,
+}
+
+impl Default for DaemonRunOverrides {
+    fn default() -> Self {
+        Self {
+            ipc_path: None,
+            state_dir_override: None,
+            skip_health_server: false,
+            skip_startup_checkin: false,
+            external_triggers: None,
+            scope: crate::Scope::User,
+        }
+    }
 }
 
 /// Bundle of trigger receivers + the task handles that feed them. Production
@@ -703,10 +718,23 @@ pub(super) async fn run_daemon_with(
     printer.heading("Daemon");
     printer.status_simple(Role::Info, "Starting cfgd daemon...");
 
-    let setup = build_pre_loop_setup(&config_path, profile_override.as_deref(), &*hooks)?;
+    let setup = build_pre_loop_setup(
+        &config_path,
+        profile_override.as_deref(),
+        &*hooks,
+        overrides.scope,
+    )?;
+
+    // Materialize the state dir from scope when no explicit override is given,
+    // so every downstream site (reconcile ticks, /drift endpoint) all agree on
+    // the same path rather than each re-deriving it independently from scope.
+    let resolved_state_dir: Option<PathBuf> = match overrides.state_dir_override {
+        Some(ref d) => Some(d.clone()),
+        None => crate::state::default_state_dir_for(overrides.scope).ok(),
+    };
 
     let (daemon_state, state_dir_warning) =
-        init_daemon_state_with_warning(overrides.state_dir_override.as_deref());
+        init_daemon_state_with_warning(resolved_state_dir.as_deref(), overrides.scope);
     if let Some(msg) = state_dir_warning {
         printer.status_simple(Role::Warn, msg);
     }
@@ -735,8 +763,8 @@ pub(super) async fn run_daemon_with(
     let ipc_path = overrides
         .ipc_path
         .clone()
-        .unwrap_or_else(|| resolve_default_ipc_path(None, crate::Scope::User));
-    check_already_running(&ipc_path)?;
+        .unwrap_or_else(|| resolve_default_ipc_path(None, overrides.scope));
+    check_already_running(&ipc_path, overrides.scope)?;
 
     // Start health server (skippable in tests that don't need /healthz).
     let health_handle = if overrides.skip_health_server {
@@ -869,8 +897,9 @@ pub(super) async fn run_daemon_with(
         notify_on_drift: setup.parsed.notify_on_drift,
         compliance_config: setup.compliance_config.clone(),
         printer: Arc::clone(&printer),
-        state_dir_override: overrides.state_dir_override.clone(),
+        state_dir_override: resolved_state_dir.clone(),
         managed_paths: setup.managed_paths.clone(),
+        scope: overrides.scope,
     };
 
     let loop_result = run_daemon_loop(
@@ -925,8 +954,8 @@ pub(super) async fn run_daemon_with(
 /// Test-only convenience that drops the warning string —
 /// `init_daemon_state_with_warning` is the one used by `run_daemon_with`.
 #[cfg(test)]
-pub(super) fn init_daemon_state(override_dir: Option<&Path>) -> DaemonState {
-    init_daemon_state_with_warning(override_dir).0
+pub(super) fn init_daemon_state(override_dir: Option<&Path>, scope: crate::Scope) -> DaemonState {
+    init_daemon_state_with_warning(override_dir, scope).0
 }
 
 /// Like [`init_daemon_state`] but also returns a printer-facing warning
@@ -935,10 +964,11 @@ pub(super) fn init_daemon_state(override_dir: Option<&Path>) -> DaemonState {
 /// catching the `tracing::warn!` line.
 pub(super) fn init_daemon_state_with_warning(
     override_dir: Option<&Path>,
+    scope: crate::Scope,
 ) -> (DaemonState, Option<String>) {
     let dir_result = override_dir
         .map(|d| Ok(d.to_path_buf()))
-        .unwrap_or_else(crate::state::default_state_dir);
+        .unwrap_or_else(|| crate::state::default_state_dir_for(scope));
     match dir_result {
         Ok(dir) => (
             DaemonState::new().with_store_path(dir.join(crate::state::STATE_DB_FILENAME)),
@@ -957,7 +987,7 @@ pub(super) fn init_daemon_state_with_warning(
 /// (Unix) otherwise. On Windows, falls back to the shared
 /// `connect_daemon_ipc()` probe and ignores `_ipc_path` — named pipes are
 /// kernel objects with no on-disk cleanup.
-pub(super) fn check_already_running(_ipc_path: &Path) -> Result<()> {
+pub(super) fn check_already_running(_ipc_path: &Path, _scope: crate::Scope) -> Result<()> {
     #[cfg(unix)]
     {
         if _ipc_path.exists() {
@@ -973,7 +1003,7 @@ pub(super) fn check_already_running(_ipc_path: &Path) -> Result<()> {
     }
     #[cfg(windows)]
     {
-        if connect_daemon_ipc(None, crate::Scope::User).is_some() {
+        if connect_daemon_ipc(None, _scope).is_some() {
             return Err(DaemonError::AlreadyRunning {
                 pid: std::process::id(),
             }

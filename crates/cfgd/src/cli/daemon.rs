@@ -58,6 +58,7 @@ pub(super) fn cmd_daemon(
             runtime_override,
             daemon_printer,
             hooks,
+            cli.scope(),
         )
         .await
     });

@@ -22,6 +22,7 @@ fn quiet_reconcile_ctx<'a>(
         module_filter: None,
         auto_apply_override: None,
         drift_policy_override: None,
+        scope: crate::Scope::User,
     }
 }
 
@@ -7353,6 +7354,7 @@ mod harness {
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
             managed_paths: Vec::new(),
+            scope: crate::Scope::User,
         };
         (ctx, state, buf)
     }
@@ -8053,6 +8055,7 @@ mod harness {
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
             managed_paths: Vec::new(),
+            scope: crate::Scope::User,
         };
         (ctx, state)
     }
@@ -8126,6 +8129,7 @@ mod harness {
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
             managed_paths: Vec::new(),
+            scope: crate::Scope::User,
         };
         let (triggers, senders) = make_triggers();
         let reconcile_secs = Arc::new(AtomicU64::new(300));
@@ -8372,6 +8376,7 @@ mod harness {
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
             managed_paths: Vec::new(),
+            scope: crate::Scope::User,
         };
         let mut tasks = vec![
             ReconcileTask {
@@ -8444,6 +8449,7 @@ mod harness {
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
             managed_paths: Vec::new(),
+            scope: crate::Scope::User,
         };
         let mut tasks = vec![ReconcileTask {
             entity: "monitoring".to_string(),
@@ -8501,6 +8507,7 @@ mod harness {
             printer,
             state_dir_override: Some(tmp.path().to_path_buf()),
             managed_paths: Vec::new(),
+            scope: crate::Scope::User,
         };
         let mut tasks = vec![ReconcileTask {
             entity: "vault".to_string(),
@@ -8881,7 +8888,8 @@ mod harness {
         let config_path = write_happy_path_config(&tmp);
         let hooks = NoopHooks;
 
-        let setup = build_pre_loop_setup(&config_path, None, &hooks).expect("happy setup");
+        let setup = build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User)
+            .expect("happy setup");
 
         // Default reconcile + sync interval = 300s (5m)
         assert_eq!(setup.parsed.reconcile_interval, Duration::from_secs(300));
@@ -8931,7 +8939,8 @@ mod harness {
         .unwrap();
         let hooks = NoopHooks;
 
-        let setup = build_pre_loop_setup(&config_path, None, &hooks).expect("setup");
+        let setup =
+            build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User).expect("setup");
 
         assert!(setup.compliance_config.is_some());
         assert_eq!(setup.compliance_interval, Some(Duration::from_secs(1800)));
@@ -8955,7 +8964,8 @@ mod harness {
         .unwrap();
         let hooks = NoopHooks;
 
-        let setup = build_pre_loop_setup(&config_path, None, &hooks).expect("setup");
+        let setup =
+            build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User).expect("setup");
 
         // Compliance config present but interval None because enabled=false short-circuits filter.
         assert!(setup.compliance_config.is_some());
@@ -8970,7 +8980,7 @@ mod harness {
         std::fs::write(&config_path, "::: not yaml :::").unwrap();
         let hooks = NoopHooks;
 
-        let result = build_pre_loop_setup(&config_path, None, &hooks);
+        let result = build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User);
 
         match result {
             Ok(_) => panic!("invalid yaml must error"),
@@ -9006,8 +9016,13 @@ mod harness {
         .unwrap();
         let hooks = NoopHooks;
 
-        let setup =
-            build_pre_loop_setup(&config_path, Some("override-profile"), &hooks).expect("setup");
+        let setup = build_pre_loop_setup(
+            &config_path,
+            Some("override-profile"),
+            &hooks,
+            crate::Scope::User,
+        )
+        .expect("setup");
 
         // override-profile has a managed file → discover_managed_paths populates it.
         assert_eq!(setup.managed_paths.len(), 1);
@@ -9033,7 +9048,8 @@ mod harness {
         std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
         let hooks = NoopHooks;
 
-        let setup = build_pre_loop_setup(&config_path, None, &hooks).expect("setup");
+        let setup =
+            build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User).expect("setup");
 
         // No profile resolution → no managed paths, reconcile_tasks contains just __default__
         assert!(setup.managed_paths.is_empty());
@@ -9059,7 +9075,8 @@ mod harness {
         .unwrap();
         let hooks = NoopHooks;
 
-        let setup = build_pre_loop_setup(&config_path, None, &hooks).expect("setup");
+        let setup =
+            build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User).expect("setup");
 
         assert!(setup.parsed.auto_pull);
         assert!(setup.parsed.auto_push);
@@ -9087,7 +9104,8 @@ mod harness {
         .unwrap();
         let hooks = NoopHooks;
 
-        let setup = build_pre_loop_setup(&config_path, None, &hooks).expect("setup");
+        let setup =
+            build_pre_loop_setup(&config_path, None, &hooks, crate::Scope::User).expect("setup");
 
         assert_eq!(
             setup.server_checkin_url.as_deref(),
@@ -9131,6 +9149,7 @@ mod harness {
             &hooks,
             &compliance_cfg,
             Some(&state_dir),
+            crate::Scope::User,
         );
 
         // Snapshot row was written to the override DB.
@@ -9167,6 +9186,7 @@ mod harness {
             &hooks,
             &compliance_cfg,
             Some(&state_dir),
+            crate::Scope::User,
         );
 
         // No snapshot stored because config load failed.
@@ -9209,6 +9229,7 @@ mod harness {
             &hooks,
             &compliance_cfg,
             Some(&state_dir),
+            crate::Scope::User,
         );
 
         // No snapshot stored because resolve_profile failed.
@@ -9251,6 +9272,7 @@ mod harness {
             &hooks,
             &compliance_cfg,
             Some(&state_dir),
+            crate::Scope::User,
         );
 
         let store =
@@ -9326,7 +9348,7 @@ mod harness {
     #[test]
     fn init_daemon_state_uses_override_dir_for_store_path() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let st = super::super::init_daemon_state(Some(tmp.path()));
+        let st = super::super::init_daemon_state(Some(tmp.path()), crate::Scope::User);
         let store = st
             .store_path_for_test()
             .expect("override yields a store_path");
@@ -9352,7 +9374,7 @@ mod harness {
 
         // The fallback yields a state with no store_path (the /drift endpoint
         // then returns empty events).
-        let st = super::super::init_daemon_state(None);
+        let st = super::super::init_daemon_state(None, crate::Scope::User);
         assert!(
             st.store_path_for_test().is_none(),
             "resolve failure must fall back to a store-less state"
@@ -9360,7 +9382,8 @@ mod harness {
 
         // With an explicit override the store_path is always set.
         let tmp = tempfile::TempDir::new().unwrap();
-        let st_with_override = super::super::init_daemon_state(Some(tmp.path()));
+        let st_with_override =
+            super::super::init_daemon_state(Some(tmp.path()), crate::Scope::User);
         assert!(st_with_override.store_path_for_test().is_some());
     }
 
@@ -9381,7 +9404,7 @@ mod harness {
         let _home = EnvVarGuard::unset("HOME");
         let _userprofile = EnvVarGuard::unset("USERPROFILE");
 
-        let (st, warning) = super::super::init_daemon_state_with_warning(None);
+        let (st, warning) = super::super::init_daemon_state_with_warning(None, crate::Scope::User);
         let msg = warning.expect("resolve failure must surface an operator-facing warning");
         assert!(
             msg.contains("Drift endpoint disabled"),
@@ -9394,8 +9417,56 @@ mod harness {
 
         // With an override the variant must NEVER emit a warning.
         let tmp = tempfile::TempDir::new().unwrap();
-        let (_st2, w2) = super::super::init_daemon_state_with_warning(Some(tmp.path()));
+        let (_st2, w2) =
+            super::super::init_daemon_state_with_warning(Some(tmp.path()), crate::Scope::User);
         assert!(w2.is_none(), "override path must not warn; got {w2:?}");
+    }
+
+    // ----- system-scope directory resolution tests -----
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn run_daemon_with_system_scope_ipc_resolves_fhs() {
+        use crate::test_helpers::EnvVarGuard;
+        let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _runtime = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+        let _xdg = EnvVarGuard::unset("XDG_RUNTIME_DIR");
+        let _runtime_dir = EnvVarGuard::unset("RUNTIME_DIRECTORY");
+
+        let overrides = super::super::DaemonRunOverrides {
+            scope: crate::Scope::System,
+            skip_health_server: true,
+            ..Default::default()
+        };
+        let ipc = overrides
+            .ipc_path
+            .clone()
+            .unwrap_or_else(|| super::super::resolve_default_ipc_path(None, overrides.scope));
+        assert!(
+            ipc.starts_with("/run/cfgd"),
+            "system-scope IPC path must be under /run/cfgd, got: {}",
+            ipc.display()
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn init_daemon_state_with_warning_system_scope_uses_fhs_state_dir() {
+        use crate::test_helpers::EnvVarGuard;
+        let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
+        let _home = EnvVarGuard::unset("HOME");
+        let _userprofile = EnvVarGuard::unset("USERPROFILE");
+
+        let (st, _warning) =
+            super::super::init_daemon_state_with_warning(None, crate::Scope::System);
+        assert!(
+            st.store_path_for_test()
+                .map(|p| p.starts_with("/var/lib/cfgd"))
+                .unwrap_or(false),
+            "system-scope state dir must be under /var/lib/cfgd"
+        );
     }
 
     // ----- check_already_running tests -----
@@ -9405,7 +9476,8 @@ mod harness {
     fn check_already_running_ok_when_path_missing() {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("missing.sock");
-        super::super::check_already_running(&path).expect("ok when path missing");
+        super::super::check_already_running(&path, crate::Scope::User)
+            .expect("ok when path missing");
         assert!(!path.exists());
     }
 
@@ -9417,7 +9489,7 @@ mod harness {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("stale.sock");
         std::fs::write(&path, b"stale").unwrap();
-        super::super::check_already_running(&path).expect("ok with stale file");
+        super::super::check_already_running(&path, crate::Scope::User).expect("ok with stale file");
         assert!(
             !path.exists(),
             "stale socket file should have been removed: {}",
@@ -9432,7 +9504,7 @@ mod harness {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("live.sock");
         let _listener = StdUnixListener::bind(&path).unwrap();
-        let err = super::super::check_already_running(&path)
+        let err = super::super::check_already_running(&path, crate::Scope::User)
             .expect_err("expect AlreadyRunning when a listener is accepting");
         let msg = format!("{err}");
         assert!(
@@ -9681,6 +9753,7 @@ mod harness {
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
+            scope: crate::Scope::User,
         }
     }
 
@@ -9947,6 +10020,7 @@ mod harness {
             skip_health_server: false,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
+            scope: crate::Scope::User,
         };
         let daemon = tokio::spawn(super::super::run_daemon_with(
             config_path,
@@ -9998,6 +10072,7 @@ mod harness {
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
+            scope: crate::Scope::User,
         };
         let result = super::super::run_daemon_with(
             config_path,
@@ -10275,6 +10350,7 @@ mod harness {
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: None,
+            scope: crate::Scope::User,
         };
 
         let daemon = tokio::spawn(super::super::run_daemon_with(
@@ -10515,6 +10591,7 @@ mod harness {
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
+            scope: crate::Scope::User,
         };
         let daemon = tokio::spawn(super::super::run_daemon_with(
             config_path,
@@ -10568,6 +10645,7 @@ mod harness {
             skip_health_server: true,
             skip_startup_checkin: true,
             external_triggers: Some(triggers),
+            scope: crate::Scope::User,
         };
         let daemon = tokio::spawn(super::super::run_daemon_with(
             config_path.clone(),
@@ -12008,6 +12086,7 @@ mod handle_reconcile_extra_branches {
                     module_filter: Some("dev-tools"),
                     auto_apply_override: Some(false),
                     drift_policy_override: Some(config::DriftPolicy::NotifyOnly),
+                    scope: crate::Scope::User,
                 },
             );
         })
@@ -12247,7 +12326,7 @@ mod tests_run_daemon_wrapper {
         let printer = Arc::new(test_printer());
         let hooks: Arc<dyn DaemonHooks> = Arc::new(StubHooks2);
         let bogus_path = PathBuf::from("/nonexistent-cfgd-cfg-7f9a/does-not-exist.yaml");
-        let result = run_daemon(bogus_path, None, None, printer, hooks).await;
+        let result = run_daemon(bogus_path, None, None, printer, hooks, crate::Scope::User).await;
         assert!(
             result.is_err(),
             "missing config must propagate as Err, got Ok"

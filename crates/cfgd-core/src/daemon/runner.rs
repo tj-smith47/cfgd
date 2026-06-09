@@ -43,6 +43,8 @@ pub(super) struct DaemonLoopContext {
     /// drift only when its path is one of these; config/source/`.git` paths
     /// trigger a reconcile but are not drift.
     pub managed_paths: Vec<PathBuf>,
+    /// Deployment scope that selects FHS vs XDG directory roots.
+    pub scope: crate::Scope,
 }
 
 pub(super) struct DaemonTriggers {
@@ -183,6 +185,7 @@ pub(super) async fn handle_file_change_tick(
         let hk = Arc::clone(&ctx.hooks);
         let state_dir = ctx.state_dir_override.clone();
         let printer = Arc::clone(&ctx.printer);
+        let scope = ctx.scope;
         tokio::task::spawn_blocking(move || {
             handle_reconcile(
                 &cp,
@@ -197,6 +200,7 @@ pub(super) async fn handle_file_change_tick(
                     module_filter: None,
                     auto_apply_override: None,
                     drift_policy_override: None,
+                    scope,
                 },
             );
         })
@@ -235,6 +239,7 @@ pub(super) async fn handle_reconcile_tick(
             let hk = Arc::clone(&ctx.hooks);
             let state_dir = ctx.state_dir_override.clone();
             let printer = Arc::clone(&ctx.printer);
+            let scope = ctx.scope;
             tokio::task::spawn_blocking(move || {
                 handle_reconcile(
                     &cp,
@@ -249,6 +254,7 @@ pub(super) async fn handle_reconcile_tick(
                         module_filter: None,
                         auto_apply_override: None,
                         drift_policy_override: None,
+                        scope,
                     },
                 );
             })
@@ -276,6 +282,7 @@ pub(super) async fn handle_reconcile_tick(
             let state_dir = ctx.state_dir_override.clone();
             let printer = Arc::clone(&ctx.printer);
             let module_name = entity_name.clone();
+            let scope = ctx.scope;
             tokio::task::spawn_blocking(move || {
                 handle_reconcile(
                     &cp,
@@ -290,6 +297,7 @@ pub(super) async fn handle_reconcile_tick(
                         module_filter: Some(&module_name),
                         auto_apply_override: Some(task_auto_apply),
                         drift_policy_override: Some(task_drift_policy),
+                        scope,
                     },
                 );
             })
@@ -354,8 +362,9 @@ pub(super) async fn handle_compliance_tick(ctx: &DaemonLoopContext) -> Result<()
         let hk = Arc::clone(&ctx.hooks);
         let cc2 = cc.clone();
         let sd = ctx.state_dir_override.clone();
+        let scope = ctx.scope;
         tokio::task::spawn_blocking(move || {
-            handle_compliance_snapshot(&cp, po.as_deref(), &*hk, &cc2, sd.as_deref());
+            handle_compliance_snapshot(&cp, po.as_deref(), &*hk, &cc2, sd.as_deref(), scope);
         })
         .await
         .map_err(|e| DaemonError::WatchError {

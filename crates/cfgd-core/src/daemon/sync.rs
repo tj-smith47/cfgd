@@ -162,6 +162,7 @@ pub(crate) fn handle_compliance_snapshot(
     hooks: &dyn DaemonHooks,
     compliance_cfg: &config::ComplianceConfig,
     state_dir_override: Option<&Path>,
+    scope: crate::Scope,
 ) {
     tracing::info!("running compliance snapshot");
 
@@ -209,6 +210,7 @@ pub(crate) fn handle_compliance_snapshot(
         &cfg,
         &local_resolved,
         &printer,
+        scope,
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -232,6 +234,7 @@ pub(crate) fn handle_compliance_snapshot(
         &config_dir,
         &source_module_roots,
         &printer,
+        scope,
     );
 
     // Wire a content-aware file manager when this binary provides one. The

@@ -124,6 +124,9 @@ pub(crate) struct ReconcileCtx<'a> {
     /// Override for `cfg.spec.daemon.reconcile.drift_policy`. Only consulted
     /// when `module_filter` is set; otherwise the global config wins.
     pub drift_policy_override: Option<config::DriftPolicy>,
+    /// Deployment scope that selects FHS vs XDG directory roots for module/source
+    /// cache directories.
+    pub scope: crate::Scope,
 }
 
 pub(crate) fn handle_reconcile(
@@ -141,6 +144,7 @@ pub(crate) fn handle_reconcile(
         module_filter,
         auto_apply_override,
         drift_policy_override,
+        scope,
     } = ctx;
     if let Some(name) = module_filter {
         tracing::info!(module = %name, "running per-module reconciliation check");
@@ -225,6 +229,7 @@ pub(crate) fn handle_reconcile(
         &cfg,
         &local_resolved,
         printer,
+        scope,
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -356,6 +361,7 @@ pub(crate) fn handle_reconcile(
         &config_dir,
         &source_module_roots,
         printer,
+        scope,
     );
     let resolved_modules_ref = resolved_modules.clone();
     let mut plan = match reconciler.plan(
