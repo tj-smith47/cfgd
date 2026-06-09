@@ -23,7 +23,10 @@ pub struct SourceSpec {
 pub struct SubscriptionSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
-    #[serde(default = "default_source_priority")]
+    #[serde(
+        default = "default_source_priority",
+        deserialize_with = "deserialize_source_priority"
+    )]
     pub priority: u32,
     #[serde(default)]
     pub accept_recommended: bool,
@@ -59,6 +62,34 @@ impl Default for SubscriptionSpec {
 
 fn default_source_priority() -> u32 {
     500
+}
+
+/// Maximum user-settable source priority. The `required` tier ranks a source at
+/// `priority + 1000` and the locked-tier sentinel is `u32::MAX`; capping here keeps
+/// the required rank strictly below the locked sentinel and the addition overflow-free.
+pub const MAX_SOURCE_PRIORITY: u32 = u32::MAX - 1001;
+
+/// Validate a user-supplied source priority against [`MAX_SOURCE_PRIORITY`].
+///
+/// Returns the priority unchanged when in range, or the canonical
+/// over-ceiling message so every entry point (YAML deserialization, the
+/// interactive prompt, `source add --priority`, and `source priority`)
+/// reports identical wording.
+pub fn validate_source_priority(n: u32) -> std::result::Result<u32, String> {
+    if n > MAX_SOURCE_PRIORITY {
+        return Err(format!(
+            "source priority {n} exceeds maximum {MAX_SOURCE_PRIORITY}"
+        ));
+    }
+    Ok(n)
+}
+
+fn deserialize_source_priority<'de, D>(deserializer: D) -> std::result::Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let n = u32::deserialize(deserializer)?;
+    validate_source_priority(n).map_err(serde::de::Error::custom)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -381,5 +412,37 @@ bogusField: 1
         assert_eq!(vars.len(), 2);
         assert_eq!(vars[0].name, "MY_APP_KEY");
         assert_eq!(vars[1].name, "PATH");
+    }
+
+    #[test]
+    fn subscription_priority_rejects_over_cap() {
+        // u32::MAX (4294967295) is above MAX_SOURCE_PRIORITY — must be rejected.
+        let yaml = "priority: 4294967295\n";
+        let err = serde_yaml::from_str::<SubscriptionSpec>(yaml)
+            .expect_err("priority at u32::MAX must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("exceeds maximum"),
+            "error should mention 'exceeds maximum': {msg}"
+        );
+    }
+
+    #[test]
+    fn subscription_priority_accepts_at_cap() {
+        // MAX_SOURCE_PRIORITY itself must be accepted.
+        let yaml = format!("priority: {}\n", MAX_SOURCE_PRIORITY);
+        let spec: SubscriptionSpec =
+            serde_yaml::from_str(&yaml).expect("priority at MAX_SOURCE_PRIORITY must be accepted");
+        assert_eq!(spec.priority, MAX_SOURCE_PRIORITY);
+    }
+
+    #[test]
+    fn subscription_priority_default_unaffected_by_cap() {
+        // Omitting `priority` falls back to the default (500) via `default_source_priority`,
+        // not through `deserialize_source_priority`, so the default path must still work.
+        let yaml = "profile: dev\n";
+        let spec: SubscriptionSpec =
+            serde_yaml::from_str(yaml).expect("default priority path must not be broken");
+        assert_eq!(spec.priority, 500);
     }
 }

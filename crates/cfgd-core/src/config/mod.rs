@@ -53,8 +53,8 @@ pub use root::{
 pub use security::{ModuleSecurityConfig, ModulesConfig, SecurityConfig};
 pub use source::{
     ConfigSourceDocument, ConfigSourceMetadata, ConfigSourcePolicy, ConfigSourceProfileEntry,
-    ConfigSourceProvides, ConfigSourceSpec, EnvVar, PolicyItems, ShellAlias, SourceConstraints,
-    SourceSpec, SourceSyncSpec, SubscriptionSpec,
+    ConfigSourceProvides, ConfigSourceSpec, EnvVar, MAX_SOURCE_PRIORITY, PolicyItems, ShellAlias,
+    SourceConstraints, SourceSpec, SourceSyncSpec, SubscriptionSpec, validate_source_priority,
 };
 pub use sync_secrets::{
     NotifyConfig, NotifyMethod, SecretIntegration, SecretsConfig, SopsConfig, SyncConfig,

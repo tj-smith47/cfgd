@@ -549,9 +549,9 @@ fn parse_priority_input_accepts_valid_u32() {
     assert_eq!(super::parse_priority_input("0").unwrap(), 0);
     assert_eq!(super::parse_priority_input("1000").unwrap(), 1000);
     assert_eq!(
-        super::parse_priority_input("4294967295").unwrap(),
-        u32::MAX,
-        "must accept the full u32 range to match the field type"
+        super::parse_priority_input(&cfgd_core::config::MAX_SOURCE_PRIORITY.to_string()).unwrap(),
+        cfgd_core::config::MAX_SOURCE_PRIORITY,
+        "must accept a value at the priority ceiling"
     );
 }
 

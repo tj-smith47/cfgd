@@ -1,4 +1,5 @@
 use super::*;
+use cfgd_core::config::validate_source_priority;
 use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_source_priority(
@@ -30,6 +31,7 @@ pub fn cmd_source_priority(
 
     match value {
         Some(new_priority) => {
+            validate_source_priority(new_priority).map_err(|m| anyhow::anyhow!(m))?;
             let old_priority = source.subscription.priority;
             // Update priority in cfgd.yaml
             with_source_config(&config_path, name, |source_entry| {

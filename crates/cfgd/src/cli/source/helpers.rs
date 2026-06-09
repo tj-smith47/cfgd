@@ -1,5 +1,6 @@
 use super::*;
 use cfgd_core::PathDisplayExt;
+use cfgd_core::config::validate_source_priority;
 use cfgd_core::output::{Doc, Printer, Role, SectionBuilder};
 
 // --- Source cache layout ---
@@ -86,9 +87,10 @@ pub(crate) fn resolve_non_interactive_profile(
 /// Surfaces the canonical `invalid priority: '<input>' (must be a number)`
 /// error so the wording stays in lockstep with the user-facing CLI.
 pub(crate) fn parse_priority_input(input: &str) -> anyhow::Result<u32> {
-    input
+    let n = input
         .parse::<u32>()
-        .map_err(|_| anyhow::anyhow!("invalid priority: '{}' (must be a number)", input))
+        .map_err(|_| anyhow::anyhow!("invalid priority: '{}' (must be a number)", input))?;
+    validate_source_priority(n).map_err(|m| anyhow::anyhow!(m))
 }
 
 /// Emit the "Source Manifest" + "Policy" sections via a buffered Doc and
@@ -409,4 +411,47 @@ pub(crate) fn format_conflict_preview_lines(
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cfgd_core::config::MAX_SOURCE_PRIORITY;
+
+    #[test]
+    fn parse_priority_input_rejects_over_cap() {
+        // u32::MAX is over MAX_SOURCE_PRIORITY — must error.
+        let result = parse_priority_input("4294967295");
+        assert!(result.is_err(), "u32::MAX must be rejected");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("exceeds maximum"),
+            "error should mention 'exceeds maximum': {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_priority_input_accepts_at_cap() {
+        let cap = MAX_SOURCE_PRIORITY.to_string();
+        let result = parse_priority_input(&cap);
+        assert!(
+            result.is_ok(),
+            "MAX_SOURCE_PRIORITY must be accepted, got: {:?}",
+            result
+        );
+        assert_eq!(result.unwrap(), MAX_SOURCE_PRIORITY);
+    }
+
+    #[test]
+    fn parse_priority_input_rejects_non_numeric() {
+        let result = parse_priority_input("abc");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("must be a number"));
+    }
+
+    #[test]
+    fn parse_priority_input_accepts_typical_value() {
+        let result = parse_priority_input("500");
+        assert_eq!(result.unwrap(), 500);
+    }
 }

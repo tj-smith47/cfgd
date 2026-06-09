@@ -39,7 +39,7 @@ pub(super) fn build_source_layers(
         layers.push(ProfileLayer {
             source: input.source_name.clone(),
             profile_name: format!("{}/required", input.source_name),
-            priority: input.priority + 1000, // Required beats normal priority
+            priority: input.priority.saturating_add(1000), // Required beats normal priority
             policy: LayerPolicy::Required,
             spec,
         });
@@ -112,7 +112,7 @@ pub(super) fn build_source_layers(
         layers.push(ProfileLayer {
             source: input.source_name.clone(),
             profile_name: format!("{}/overrides", input.source_name),
-            priority: input.priority + 1,
+            priority: input.priority.saturating_add(1),
             policy: LayerPolicy::Recommended,
             spec,
         });

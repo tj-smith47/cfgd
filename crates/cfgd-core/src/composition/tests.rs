@@ -3600,3 +3600,51 @@ fn compose_accepts_compliant_source() {
         "compliant source must compose successfully"
     );
 }
+
+#[test]
+fn compose_max_priority_source_no_overflow_and_correct_rank() {
+    // A source at MAX_SOURCE_PRIORITY must not panic (overflow) in debug builds
+    // and its required layer must rank strictly below the locked sentinel (u32::MAX)
+    // and strictly above local config (1000) — priority inversion would defeat
+    // the "required beats normal/local" guarantee.
+    let source = CompositionInput {
+        source_name: "max-prio".into(),
+        priority: crate::config::MAX_SOURCE_PRIORITY,
+        policy: ConfigSourcePolicy {
+            required: PolicyItems {
+                env: vec![EnvVar {
+                    name: "REQUIRED_VAR".into(),
+                    value: "enforced".into(),
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        constraints: SourceConstraints::default(),
+        layers: vec![],
+        subscription: SubscriptionConfig::default(),
+        allow_scripts: false,
+    };
+
+    // Must not panic; without saturating_add this panics in debug builds.
+    let layers = build_source_layers(&source, &mut vec![])
+        .expect("build_source_layers must not error at MAX_SOURCE_PRIORITY");
+
+    let required_layer = layers
+        .iter()
+        .find(|l| l.profile_name.ends_with("/required"))
+        .expect("required layer must be present");
+
+    // Strictly below locked sentinel.
+    assert!(
+        required_layer.priority < u32::MAX,
+        "required layer rank must be below locked sentinel (u32::MAX), got {}",
+        required_layer.priority
+    );
+    // Strictly above local config rank.
+    assert!(
+        required_layer.priority > 1000,
+        "required layer rank must beat local config rank (1000), got {}",
+        required_layer.priority
+    );
+}
