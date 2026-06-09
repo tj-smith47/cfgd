@@ -554,7 +554,7 @@ Continuous compliance snapshot configuration. When enabled, the daemon captures 
 | `scope.watchPaths` | list | No | `[]` | Additional unmanaged paths to audit for existence, permissions, and ownership. |
 | `scope.watchPackageManagers` | list | No | `[]` | Package managers from which to capture a full installed-package inventory. Runs in parallel across managers. |
 | `export.format` | enum | No | `json` | Snapshot output format: `json` or `yaml`. |
-| `export.path` | string | No | `~/.local/share/cfgd/compliance/` | Directory where snapshot files are written. |
+| `export.path` | string | No | `~/.local/state/cfgd/compliance/` | Directory where snapshot files are written (under the state dir — machine-local generated data). |
 
 **Example:**
 ```yaml
@@ -576,7 +576,7 @@ compliance:
       - apt
   export:
     format: json
-    path: ~/.local/share/cfgd/compliance/
+    path: ~/.local/state/cfgd/compliance/
 ```
 
 Compliance reports the **effective** desired state — the active profile combined with the modules it pulls in — so files, packages, and system settings contributed by a module are first-class in every compliance surface (snapshot, export, diff, history) and in the checkin summary, exactly as they appear in `cfgd verify` and `cfgd diff`. Module resources are attributed to their module in the check detail. File checks are content-aware on both profile and module files.

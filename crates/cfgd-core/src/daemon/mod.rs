@@ -188,8 +188,8 @@ const WINDOWS_PIPE_PATH: &str = r"\\.\pipe\cfgd";
 /// isolate the socket. Otherwise:
 /// - Unix: places `cfgd.sock` under [`crate::default_runtime_dir`], which is
 ///   `$XDG_RUNTIME_DIR/cfgd` on Linux when available (per-user tmpfs),
-///   `$HOME/.cache/cfgd` as the Linux fallback, and
-///   `$HOME/Library/Application Support/cfgd` on macOS. World-writable
+///   `$HOME/.cache/cfgd/runtime` as the Linux fallback, and
+///   `$HOME/Library/Application Support/cfgd/runtime` on macOS. World-writable
 ///   `/tmp` is deliberately avoided — see the v0.4.0 hijack-vector audit.
 ///   A last-ditch fallback to `/tmp/cfgd.sock` only fires when home
 ///   resolution fails entirely (no `$HOME`, no override); the bind path
@@ -299,7 +299,7 @@ pub(super) struct DaemonState {
     module_last_reconcile: HashMap<String, String>,
     // State DB path the `/drift` endpoint should read. `None` means "no store"
     // (used in tests so endpoint returns empty events without touching the
-    // user's real `~/.local/share/cfgd/state.db`).
+    // user's real `~/.local/state/cfgd/state.db`).
     store_path: Option<PathBuf>,
 }
 
@@ -641,7 +641,7 @@ pub async fn run_daemon(
 ///   socket resolved by [`resolve_default_ipc_path`].
 /// * `state_dir_override` — redirect both the `DaemonState` store path and
 ///   the per-tick `handle_reconcile` / `handle_compliance_snapshot` state
-///   dir to a tempdir so the real `~/.local/share/cfgd/` is never touched.
+///   dir to a tempdir so the real `~/.local/state/cfgd/` is never touched.
 /// * `skip_health_server` — don't spawn the HTTP/IPC health server. Useful
 ///   when a test doesn't need `/healthz` or `/drift` and wants to avoid the
 ///   socket bind entirely.

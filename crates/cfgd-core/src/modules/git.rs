@@ -132,22 +132,22 @@ pub fn git_cache_dir(cache_base: &Path, repo_url: &str) -> PathBuf {
     cache_base.join(&hash[..32])
 }
 
-/// Default cache directory for module git sources.
+/// Default cache directory for module git sources: `<cache-root>/modules` under
+/// the single unified cfgd cache root.
 ///
-/// Honors the thread-local test-home override (set via `with_test_home_guard`)
-/// so tests can redirect module cache writes off the real `~/.cache/cfgd/`.
-/// Without an override this falls through to `directories::BaseDirs` (XDG on
-/// Linux, `~/Library/Caches` on macOS, `AppData\Local` on Windows).
+/// Rebased onto the shared [`crate::default_cache_dir`] resolver so the source
+/// cache and module cache share ONE root (Linux `~/.cache/cfgd`, macOS
+/// `~/Library/Caches/cfgd`, Windows `%LOCALAPPDATA%\cfgd`). That resolver
+/// honors the thread-local test-home override, so tests still redirect module
+/// cache writes off the real cache.
 pub fn default_module_cache_dir() -> Result<PathBuf> {
-    if let Some(home) = crate::util::test_home_override() {
-        return Ok(home.join(".cache").join("cfgd").join("modules"));
-    }
-    let base = directories::BaseDirs::new().ok_or_else(|| ModuleError::GitFetchFailed {
-        module: String::new(),
-        url: String::new(),
-        message: "cannot determine home directory".into(),
-    })?;
-    Ok(base.cache_dir().join("cfgd").join("modules"))
+    Ok(crate::default_cache_dir()
+        .map_err(|e| ModuleError::GitFetchFailed {
+            module: String::new(),
+            url: String::new(),
+            message: e.to_string(),
+        })?
+        .join("modules"))
 }
 
 /// Resolve optional subdir within a cache directory with traversal validation.

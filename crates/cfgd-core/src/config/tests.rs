@@ -1681,7 +1681,7 @@ spec:
     assert!(compliance.scope.watch_package_managers.is_empty());
     // export defaults
     assert_eq!(compliance.export.format, ComplianceFormat::Json);
-    assert_eq!(compliance.export.path, "~/.local/share/cfgd/compliance/");
+    assert_eq!(compliance.export.path, "~/.local/state/cfgd/compliance/");
 }
 
 #[test]
@@ -1733,7 +1733,7 @@ spec:
       secrets: true
     export:
       format: Json
-      path: ~/.local/share/cfgd/compliance/
+      path: ~/.local/state/cfgd/compliance/
 "#;
     let config = parse_config(yaml, Path::new("cfgd.yaml")).unwrap();
     assert_eq!(config.spec.profile.as_deref(), Some("default"));
@@ -1746,7 +1746,7 @@ spec:
     assert!(compliance.scope.system);
     assert!(compliance.scope.secrets);
     assert_eq!(compliance.export.format, ComplianceFormat::Json);
-    assert_eq!(compliance.export.path, "~/.local/share/cfgd/compliance/");
+    assert_eq!(compliance.export.path, "~/.local/state/cfgd/compliance/");
 }
 
 #[test]

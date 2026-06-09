@@ -160,15 +160,16 @@ Files can be marked `private: true` to exclude them from git (added to `.gitigno
 
 ## File locations
 
-cfgd stores three kinds of per-user data, each resolved independently. Pass
-`--config <path>` / `CFGD_CONFIG` and `--state-dir <dir>` / `CFGD_STATE_DIR` to
-override the config file and state directory explicitly.
+cfgd stores four kinds of per-user data, each resolved independently and each
+XDG-correct. Pass `--config <path>` / `CFGD_CONFIG` and `--state-dir <dir>` /
+`CFGD_STATE_DIR` to override the config file and state directory explicitly.
 
 | Data | Default location |
 |---|---|
 | **Config** (`cfgd.yaml`, `profiles/`, `files/`, `modules.lock`) | `$XDG_CONFIG_HOME/cfgd` if set, else the platform default below |
-| **State** (`state.db`, history, drift, apply journal) | platform-native data dir — Linux `$XDG_DATA_HOME/cfgd` or `~/.local/share/cfgd`, macOS `~/Library/Application Support/cfgd`, Windows `%LOCALAPPDATA%\cfgd` |
-| **Runtime** (daemon socket, pid files) | Linux `$XDG_RUNTIME_DIR/cfgd` (else `~/.cache/cfgd`), macOS `~/Library/Application Support/cfgd`, Windows `%LOCALAPPDATA%\cfgd` |
+| **State** (`state.db`, history, drift, apply journal, `apply.lock`, compliance exports, device credential) | platform-native state dir — Linux `$XDG_STATE_HOME/cfgd` or `~/.local/state/cfgd`, macOS `~/Library/Application Support/cfgd/state`, Windows `%LOCALAPPDATA%\cfgd\state` |
+| **Cache** (source cache, module cache) | platform-native cache dir — Linux `$XDG_CACHE_HOME/cfgd` or `~/.cache/cfgd`, macOS `~/Library/Caches/cfgd`, Windows `%LOCALAPPDATA%\cfgd`. Sources live under `<cache>/sources`, modules under `<cache>/modules`. |
+| **Runtime** (daemon socket, pid files) | Linux `$XDG_RUNTIME_DIR/cfgd` (else `~/.cache/cfgd/runtime`), macOS `~/Library/Application Support/cfgd/runtime`, Windows `%LOCALAPPDATA%\cfgd` |
 
 The **config** platform default per OS (used only when `XDG_CONFIG_HOME` is
 unset):

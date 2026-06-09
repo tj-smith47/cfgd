@@ -3826,7 +3826,7 @@ mod cmd_init_from_local_bare {
 //
 // Cover the apply branch of cmd_init that scaffolds and immediately applies
 // the resulting plan. `CFGD_STATE_DIR` redirects the state store away from
-// `~/.local/share/cfgd/`; `with_test_home_guard` keeps the module-cache lookup
+// `~/.local/state/cfgd/`; `with_test_home_guard` keeps the module-cache lookup
 // off real disk.
 
 #[cfg(unix)]

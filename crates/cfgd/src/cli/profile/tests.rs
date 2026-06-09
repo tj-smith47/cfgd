@@ -2739,7 +2739,7 @@ mod profile_update_module_cleanup {
 
     /// Mirror `test_cli` from the outer module but with `state_dir` plumbed
     /// in so the test can drive `open_state_store` at a known path without
-    /// touching the real `~/.local/share/cfgd/state`.
+    /// touching the real `~/.local/state/cfgd/state.db`.
     fn cli_with_state_dir(
         config_dir: &std::path::Path,
         state_dir: &std::path::Path,

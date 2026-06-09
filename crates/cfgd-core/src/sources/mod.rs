@@ -56,12 +56,15 @@ impl SourceManager {
         self.allow_unsigned = allow;
     }
 
-    /// Default cache directory: ~/.local/share/cfgd/sources/
+    /// Default source cache directory: `<cache-root>/sources` under the single
+    /// unified cfgd cache root (Linux `~/.cache/cfgd/sources`, macOS
+    /// `~/Library/Caches/cfgd/sources`, Windows `%LOCALAPPDATA%\cfgd\sources`).
     pub fn default_cache_dir() -> Result<PathBuf> {
-        let base = directories::BaseDirs::new().ok_or_else(|| SourceError::CacheError {
-            message: "cannot determine home directory".into(),
-        })?;
-        Ok(base.data_local_dir().join("cfgd").join("sources"))
+        Ok(crate::default_cache_dir()
+            .map_err(|e| SourceError::CacheError {
+                message: e.to_string(),
+            })?
+            .join("sources"))
     }
 
     /// Load all sources from config, fetching if needed.

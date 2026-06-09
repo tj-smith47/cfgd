@@ -67,7 +67,7 @@ Failed actions within a phase don't abort the entire apply. They're logged, skip
 
 ## State Store
 
-cfgd tracks state in a SQLite database at `~/.local/share/cfgd/state.db`. This is what lets cfgd detect drift, show history, and know what it's responsible for.
+cfgd tracks state in a SQLite database at `~/.local/state/cfgd/state.db` (Linux; see the file-locations table in `configuration.md` for macOS/Windows). This is what lets cfgd detect drift, show history, and know what it's responsible for.
 
 **What cfgd tracks:**
 

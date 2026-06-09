@@ -337,7 +337,7 @@ files:
   - source: git@github.com:user/repo.git@v2.1.0         # SSH with tag
 ```
 
-Git sources are cached in `~/.local/share/cfgd/module-cache/` and updated on `cfgd apply` or daemon sync.
+Git sources are cached in `~/.cache/cfgd/modules/` (Linux; under the cache dir on every platform — see `configuration.md`) and updated on `cfgd apply` or daemon sync.
 
 cfgd honors your local git configuration when cloning and fetching, so
 `url.<base>.insteadOf` rewrite rules, `http.proxy`, and similar settings apply.

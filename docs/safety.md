@@ -52,11 +52,11 @@ Rollback is available for any apply that has backups in the state store.
 
 cfgd uses `flock()` to prevent concurrent applies. Only one `cfgd apply` can run at a time.
 
-- The lock file is at `~/.local/share/cfgd/apply.lock`
+- The lock file is at `~/.local/state/cfgd/apply.lock` (Linux; under the state dir on every platform — see `configuration.md`)
 - The daemon skips reconciliation ticks if the lock is held by a CLI apply
 - The lock is released automatically when the process exits
 
-**Resolving a stuck lock**: If a cfgd process crashes without releasing the lock, `flock()` releases it automatically on file descriptor close. If the lock file contains a stale PID (process no longer running), simply delete `~/.local/share/cfgd/apply.lock` or kill the PID shown in the error message.
+**Resolving a stuck lock**: If a cfgd process crashes without releasing the lock, `flock()` releases it automatically on file descriptor close. If the lock file contains a stale PID (process no longer running), simply delete `~/.local/state/cfgd/apply.lock` or kill the PID shown in the error message.
 
 ## Graceful Interruption (SIGINT / SIGTERM)
 

@@ -37,7 +37,7 @@ pub(super) struct DaemonLoopContext {
     pub printer: Arc<Printer>,
     /// When set, `handle_reconcile` uses this directory instead of the
     /// platform default state dir. Tests pass a tempdir here so the loop
-    /// never touches `~/.local/share/cfgd/`.
+    /// never touches `~/.local/state/cfgd/`.
     pub state_dir_override: Option<PathBuf>,
     /// Managed file targets the profile declares. A file-watch event records
     /// drift only when its path is one of these; config/source/`.git` paths

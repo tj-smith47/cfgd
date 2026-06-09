@@ -7326,7 +7326,7 @@ mod harness {
     /// Build a `DaemonLoopContext` wired for tests. `config_path` is set to a
     /// nonexistent file under `tmp` so any handler that tries to load config
     /// returns early before touching real system state. `state_dir_override`
-    /// is set so `handle_reconcile` does not touch `~/.local/share/cfgd/`.
+    /// is set so `handle_reconcile` does not touch `~/.local/state/cfgd/`.
     pub(super) fn make_test_ctx(
         tmp: &tempfile::TempDir,
         on_change_reconcile: bool,
@@ -10985,9 +10985,10 @@ async fn handle_reconcile_auto_apply_with_sources_processes_decisions_and_resolv
 /// profile carries a `preApply` script. The source's policy keeps the default
 /// `noScripts: true` constraint, so composition of the subscribed `team` profile
 /// fails with `ScriptsNotAllowed` — a realistic "cached manifest went bad"
-/// error. Returns nothing; the cache dir is derived from `XDG_DATA_HOME`.
-fn stage_constraint_violating_cached_source(xdg_data: &Path, name: &str) {
-    let src_dir = xdg_data.join("cfgd").join("sources").join(name);
+/// error. Returns nothing; `cache_root` is the unified cfgd cache root
+/// (`<home>/.cache/cfgd`) under which the source cache lives.
+fn stage_constraint_violating_cached_source(cache_root: &Path, name: &str) {
+    let src_dir = cache_root.join("sources").join(name);
     std::fs::create_dir_all(src_dir.join("profiles")).unwrap();
     // Default policy → constraints.noScripts = true.
     std::fs::write(
@@ -11014,11 +11015,15 @@ async fn handle_reconcile_compose_error_skips_tick_and_preserves_source_package(
     // package survives, last_reconcile is NOT advanced, and an alert is raised.
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
-    // The daemon's source cache resolves via XDG_DATA_HOME on Linux; point it at
-    // the tmp dir so we control the cache contents deterministically.
-    let xdg_data = tmp.path().join("xdg-data");
-    let _xdg = crate::test_helpers::EnvVarGuard::set("XDG_DATA_HOME", xdg_data.to_str().unwrap());
-    stage_constraint_violating_cached_source(&xdg_data, "test-src");
+    // The daemon's source cache resolves under the unified cache root
+    // (`$XDG_CACHE_HOME/cfgd` on Linux). reconcile runs on a `spawn_blocking`
+    // worker thread, where the thread-local test-home override does NOT apply —
+    // so drive the cache root via the process-global `XDG_CACHE_HOME` env var,
+    // which `directories::BaseDirs` honors across threads.
+    let xdg_cache = tmp.path().join("xdg-cache");
+    let _xdg = crate::test_helpers::EnvVarGuard::set("XDG_CACHE_HOME", xdg_cache.to_str().unwrap());
+    let cache_root = xdg_cache.join("cfgd");
+    stage_constraint_violating_cached_source(&cache_root, "test-src");
 
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -11163,10 +11168,13 @@ async fn handle_reconcile_never_synced_source_reconciles_local_only() {
     // so reconcile proceeds local-only and completes (last_reconcile advances).
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
-    // Point the source cache at an EMPTY xdg-data dir → the source is never-synced.
-    let xdg_data = tmp.path().join("xdg-data-empty");
-    std::fs::create_dir_all(&xdg_data).unwrap();
-    let _xdg = crate::test_helpers::EnvVarGuard::set("XDG_DATA_HOME", xdg_data.to_str().unwrap());
+    // Pin the unified cache root to an EMPTY `$XDG_CACHE_HOME` dir → the source
+    // is never-synced (cache-miss). reconcile runs on a `spawn_blocking` worker
+    // thread where the thread-local home override does not apply, so use the
+    // process-global env var (honored by `directories::BaseDirs` cross-thread).
+    let xdg_cache = tmp.path().join("xdg-cache-empty");
+    std::fs::create_dir_all(&xdg_cache).unwrap();
+    let _xdg = crate::test_helpers::EnvVarGuard::set("XDG_CACHE_HOME", xdg_cache.to_str().unwrap());
 
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -11222,11 +11230,13 @@ async fn handle_reconcile_required_uncached_source_skips_tick_and_preserves_pack
     // but for the cache-only fail-OPEN gap the chokepoint fix closes.
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
-    // Point the source cache at an EMPTY xdg-data dir → the required source is
-    // never-synced (no cache), so compose must fail-closed.
-    let xdg_data = tmp.path().join("xdg-data-empty");
-    std::fs::create_dir_all(&xdg_data).unwrap();
-    let _xdg = crate::test_helpers::EnvVarGuard::set("XDG_DATA_HOME", xdg_data.to_str().unwrap());
+    // Pin the unified cache root to an EMPTY `$XDG_CACHE_HOME` dir → the required
+    // source is never-synced (no cache), so compose must fail-closed. reconcile
+    // runs on a `spawn_blocking` worker thread where the thread-local home
+    // override does not apply, so use the process-global env var.
+    let xdg_cache = tmp.path().join("xdg-cache-empty");
+    std::fs::create_dir_all(&xdg_cache).unwrap();
+    let _xdg = crate::test_helpers::EnvVarGuard::set("XDG_CACHE_HOME", xdg_cache.to_str().unwrap());
 
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -11404,7 +11414,12 @@ mod ipc_socket_security {
         let _unset_xdg = EnvVarGuard::unset("XDG_RUNTIME_DIR");
         let tmp = tempfile::tempdir().unwrap();
         let _home = EnvVarGuard::set("HOME", tmp.path().to_str().unwrap());
-        let expected = tmp.path().join(".cache").join("cfgd").join("cfgd.sock");
+        let expected = tmp
+            .path()
+            .join(".cache")
+            .join("cfgd")
+            .join("runtime")
+            .join("cfgd.sock");
         assert_eq!(resolve_default_ipc_path(), expected);
     }
 
@@ -11420,6 +11435,7 @@ mod ipc_socket_security {
             .join("Library")
             .join("Application Support")
             .join("cfgd")
+            .join("runtime")
             .join("cfgd.sock");
         assert_eq!(resolve_default_ipc_path(), expected);
     }

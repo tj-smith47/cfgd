@@ -239,13 +239,16 @@ fn copy_tree_preserving_symlinks(
 /// Per-user runtime directory for short-lived sockets and pid files.
 ///
 /// Resolution order:
-/// - Linux: `$XDG_RUNTIME_DIR/cfgd` if set, else `$HOME/.cache/cfgd`. The base
-///   `$XDG_RUNTIME_DIR` is owner-private by spec; the cache fallback is
-///   under the user's home where Linux-default permissions already protect it.
-/// - macOS: `$HOME/Library/Application Support/cfgd`. There is no
+/// - Linux: `$XDG_RUNTIME_DIR/cfgd` if set, else `$HOME/.cache/cfgd/runtime`.
+///   The base `$XDG_RUNTIME_DIR` is owner-private by spec; the cache fallback
+///   nests under a `runtime/` subdir of the cache root so the socket/lock never
+///   land directly in the cache root (where module/source caches live).
+/// - macOS: `$HOME/Library/Application Support/cfgd/runtime`. There is no
 ///   per-user `tmpfs` on macOS, and `$TMPDIR` is per-user but still
 ///   world-traversable when the umask leaks; Application Support is the
-///   conventional per-user location for app state.
+///   conventional per-user location for app state. The `runtime/` subdir
+///   de-collides the socket/lock from the config root, which on macOS shares
+///   the same Application Support parent.
 /// - Windows: `%LOCALAPPDATA%\cfgd` via `directories::BaseDirs`. (Daemons on
 ///   Windows use named pipes, which are kernel objects — this path is
 ///   provided for parity and is unused by the daemon socket flow.)
@@ -267,7 +270,12 @@ pub fn default_runtime_dir() -> Option<std::path::PathBuf> {
             }
         }
         let home = home_dir_var()?;
-        Some(std::path::PathBuf::from(home).join(".cache").join("cfgd"))
+        Some(
+            std::path::PathBuf::from(home)
+                .join(".cache")
+                .join("cfgd")
+                .join("runtime"),
+        )
     }
     #[cfg(target_os = "macos")]
     {
@@ -276,7 +284,8 @@ pub fn default_runtime_dir() -> Option<std::path::PathBuf> {
             std::path::PathBuf::from(home)
                 .join("Library")
                 .join("Application Support")
-                .join("cfgd"),
+                .join("cfgd")
+                .join("runtime"),
         )
     }
     #[cfg(windows)]
@@ -289,7 +298,134 @@ pub fn default_runtime_dir() -> Option<std::path::PathBuf> {
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let home = home_dir_var()?;
-        Some(std::path::PathBuf::from(home).join(".cache").join("cfgd"))
+        Some(
+            std::path::PathBuf::from(home)
+                .join(".cache")
+                .join("cfgd")
+                .join("runtime"),
+        )
+    }
+}
+
+/// The single per-user cache root for cfgd. Both the source cache
+/// ([`ResolvedDirs::sources_dir`]) and the module cache
+/// ([`ResolvedDirs::module_cache_dir`]) nest under this one root.
+///
+/// Resolution: the platform-native cache location with a `cfgd` segment:
+/// - Linux: `$XDG_CACHE_HOME/cfgd` (default `~/.cache/cfgd`)
+/// - macOS: `~/Library/Caches/cfgd`
+/// - Windows: `%LOCALAPPDATA%\cfgd`
+///
+/// Honors the [`TestHomeGuard`] thread-local override (test builds resolve a
+/// Linux-shaped `~/.cache/cfgd` under the override home) so tests never write
+/// to the real cache. Errors only when no home directory can be resolved.
+pub fn default_cache_dir() -> crate::errors::Result<std::path::PathBuf> {
+    if let Some(home) = test_home_override() {
+        return Ok(home.join(".cache").join("cfgd"));
+    }
+    let base =
+        directories::BaseDirs::new().ok_or(crate::errors::StateError::DirectoryNotWritable {
+            path: std::path::PathBuf::from("~/.cache/cfgd"),
+        })?;
+    Ok(base.cache_dir().join("cfgd"))
+}
+
+/// Resolve the config directory, applying an explicit override when present.
+///
+/// `over` is the highest-precedence source (a `--config-dir` flag or its env
+/// var, resolved by the CLI layer). When `None`, falls through to
+/// [`default_config_dir`] (XDG + platform-native + macOS-legacy resolution,
+/// which is frozen). Pure path logic — never touches the filesystem or prints.
+pub fn resolve_config_dir(over: Option<&std::path::Path>) -> std::path::PathBuf {
+    match over {
+        Some(p) => p.to_path_buf(),
+        None => default_config_dir(),
+    }
+}
+
+/// Resolve the state directory, applying an explicit override when present.
+///
+/// When `None`, falls through to [`crate::state::default_state_dir`] (which
+/// honors the `CFGD_STATE_DIR` short-circuit and `XDG_STATE_HOME`). Surfaces
+/// the same [`crate::errors::StateError`] when no home can be resolved.
+pub fn resolve_state_dir(
+    over: Option<&std::path::Path>,
+) -> crate::errors::Result<std::path::PathBuf> {
+    match over {
+        Some(p) => Ok(p.to_path_buf()),
+        None => crate::state::default_state_dir(),
+    }
+}
+
+/// Resolve the cache directory, applying an explicit override when present.
+///
+/// When `None`, falls through to [`default_cache_dir`] (the single cache root
+/// shared by the source and module caches).
+pub fn resolve_cache_dir(
+    over: Option<&std::path::Path>,
+) -> crate::errors::Result<std::path::PathBuf> {
+    match over {
+        Some(p) => Ok(p.to_path_buf()),
+        None => default_cache_dir(),
+    }
+}
+
+/// Resolve the runtime directory, applying an explicit override when present.
+///
+/// When `None`, falls through to [`default_runtime_dir`], which is `None` only
+/// when no home can be resolved (e.g. `HOME` unset on Unix).
+pub fn resolve_runtime_dir(over: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    match over {
+        Some(p) => Some(p.to_path_buf()),
+        None => default_runtime_dir(),
+    }
+}
+
+/// The four resolved base directories cfgd writes under, each XDG-correct with
+/// a uniform `flag > env > XDG > platform-native` override precedence.
+///
+/// The cache root is unified: both the source cache and module cache nest under
+/// [`ResolvedDirs::cache`] (via [`ResolvedDirs::sources_dir`] /
+/// [`ResolvedDirs::module_cache_dir`]) rather than each resolving an
+/// independent root. `runtime` is `Option` because a home directory is required
+/// to resolve it and the daemon socket/lock path may be unavailable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedDirs {
+    /// Config root (YAML config, profiles). XDG_CONFIG_HOME / `~/.config/cfgd`.
+    pub config: std::path::PathBuf,
+    /// State root (SQLite state DB, backups). XDG_STATE_HOME / `~/.local/state/cfgd`.
+    pub state: std::path::PathBuf,
+    /// Unified cache root (sources + modules). XDG_CACHE_HOME / `~/.cache/cfgd`.
+    pub cache: std::path::PathBuf,
+    /// Runtime root (socket, pid/lock files). `None` when no home is resolvable.
+    pub runtime: Option<std::path::PathBuf>,
+}
+
+impl ResolvedDirs {
+    /// Resolve all four roots, threading each override through its per-role
+    /// resolver. Pure path logic — creates no directories.
+    pub fn resolve(
+        config_over: Option<&std::path::Path>,
+        state_over: Option<&std::path::Path>,
+        cache_over: Option<&std::path::Path>,
+        runtime_over: Option<&std::path::Path>,
+    ) -> crate::errors::Result<Self> {
+        Ok(Self {
+            config: resolve_config_dir(config_over),
+            state: resolve_state_dir(state_over)?,
+            cache: resolve_cache_dir(cache_over)?,
+            runtime: resolve_runtime_dir(runtime_over),
+        })
+    }
+
+    /// The source cache directory: `<cache>/sources`.
+    pub fn sources_dir(&self) -> std::path::PathBuf {
+        self.cache.join("sources")
+    }
+
+    /// The module cache directory: `<cache>/modules`.
+    pub fn module_cache_dir(&self) -> std::path::PathBuf {
+        self.cache.join("modules")
     }
 }
 
@@ -668,5 +804,187 @@ impl std::fmt::Display for PathPosix<'_> {
         {
             std::fmt::Display::fmt(&self.0.display(), f)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_helpers::EnvVarGuard;
+    use std::path::{Path, PathBuf};
+
+    // --- resolve_* override precedence (flag/env path wins) ---
+
+    #[test]
+    fn resolve_config_dir_returns_override_when_some() {
+        let over = PathBuf::from("/explicit/config");
+        assert_eq!(resolve_config_dir(Some(&over)), over);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn resolve_config_dir_falls_through_to_default_when_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = with_test_home_guard(dir.path());
+        assert_eq!(resolve_config_dir(None), default_config_dir());
+    }
+
+    #[test]
+    fn resolve_state_dir_returns_override_when_some() {
+        let over = PathBuf::from("/explicit/state");
+        assert_eq!(resolve_state_dir(Some(&over)).unwrap(), over);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn resolve_state_dir_falls_through_to_default_when_none() {
+        let _cfgd = EnvVarGuard::set("CFGD_STATE_DIR", "/from/env/state");
+        assert_eq!(
+            resolve_state_dir(None).unwrap(),
+            crate::state::default_state_dir().unwrap()
+        );
+    }
+
+    #[test]
+    fn resolve_cache_dir_returns_override_when_some() {
+        let over = PathBuf::from("/explicit/cache");
+        assert_eq!(resolve_cache_dir(Some(&over)).unwrap(), over);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn resolve_cache_dir_falls_through_to_default_when_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = with_test_home_guard(dir.path());
+        assert_eq!(
+            resolve_cache_dir(None).unwrap(),
+            default_cache_dir().unwrap()
+        );
+    }
+
+    #[test]
+    fn resolve_runtime_dir_returns_override_when_some() {
+        let over = PathBuf::from("/explicit/runtime");
+        assert_eq!(resolve_runtime_dir(Some(&over)), Some(over));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn resolve_runtime_dir_falls_through_to_default_when_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = with_test_home_guard(dir.path());
+        let _xdg = EnvVarGuard::set("XDG_RUNTIME_DIR", "/run/user/test");
+        assert_eq!(resolve_runtime_dir(None), default_runtime_dir());
+    }
+
+    // --- default_state_dir: CFGD_STATE_DIR short-circuit + XDG_STATE_HOME ---
+
+    #[test]
+    #[serial_test::serial]
+    fn default_state_dir_honors_cfgd_state_dir_env() {
+        let _cfgd = EnvVarGuard::set("CFGD_STATE_DIR", "/verbatim/state/dir");
+        assert_eq!(
+            crate::state::default_state_dir().unwrap(),
+            PathBuf::from("/verbatim/state/dir")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[serial_test::serial]
+    fn default_state_dir_honors_xdg_state_home_on_linux() {
+        let dir = tempfile::tempdir().unwrap();
+        let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _xdg = EnvVarGuard::set("XDG_STATE_HOME", dir.path().to_str().unwrap());
+        let _home = EnvVarGuard::set("HOME", dir.path().to_str().unwrap());
+        let state = crate::state::default_state_dir().unwrap();
+        assert!(
+            state.ends_with("cfgd"),
+            "tail must be cfgd, got: {}",
+            state.display()
+        );
+        assert!(
+            state.starts_with(dir.path()),
+            "must be under XDG_STATE_HOME, got: {}",
+            state.display()
+        );
+    }
+
+    // --- default_cache_dir: single root, tail = cfgd ---
+
+    #[test]
+    #[serial_test::serial]
+    fn default_cache_dir_tail_is_cfgd() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = with_test_home_guard(dir.path());
+        let cache = default_cache_dir().unwrap();
+        assert!(
+            cache.ends_with("cfgd"),
+            "tail must be cfgd, got: {}",
+            cache.display()
+        );
+        assert!(
+            cache.starts_with(dir.path()),
+            "must be under test home, got: {}",
+            cache.display()
+        );
+    }
+
+    // --- ResolvedDirs: unified cache root + sub-paths ---
+
+    #[test]
+    #[serial_test::serial]
+    fn resolved_dirs_sources_and_modules_share_one_cache_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = with_test_home_guard(dir.path());
+        let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let dirs = ResolvedDirs::resolve(None, None, None, None).unwrap();
+        assert!(dirs.sources_dir().ends_with("sources"));
+        assert!(dirs.module_cache_dir().ends_with("modules"));
+        assert_eq!(dirs.sources_dir().parent(), Some(dirs.cache.as_path()));
+        assert_eq!(dirs.module_cache_dir().parent(), Some(dirs.cache.as_path()));
+        assert!(dirs.cache.ends_with("cfgd"));
+    }
+
+    #[test]
+    fn resolved_dirs_resolve_threads_overrides() {
+        let cfg = Path::new("/o/config");
+        let state = Path::new("/o/state");
+        let cache = Path::new("/o/cache");
+        let runtime = Path::new("/o/runtime");
+        let dirs =
+            ResolvedDirs::resolve(Some(cfg), Some(state), Some(cache), Some(runtime)).unwrap();
+        assert_eq!(dirs.config, cfg);
+        assert_eq!(dirs.state, state);
+        assert_eq!(dirs.cache, cache);
+        assert_eq!(dirs.runtime.as_deref(), Some(runtime));
+        assert_eq!(dirs.sources_dir(), cache.join("sources"));
+        assert_eq!(dirs.module_cache_dir(), cache.join("modules"));
+    }
+
+    // --- default_runtime_dir: XDG_RUNTIME_DIR vs cache/runtime fallback ---
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[serial_test::serial]
+    fn default_runtime_dir_uses_xdg_runtime_dir_when_set() {
+        let _xdg = EnvVarGuard::set("XDG_RUNTIME_DIR", "/run/user/4242");
+        let runtime = default_runtime_dir().expect("runtime dir resolves with XDG set");
+        assert_eq!(runtime, PathBuf::from("/run/user/4242").join("cfgd"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[serial_test::serial]
+    fn default_runtime_dir_falls_back_to_cache_runtime_subdir_on_linux() {
+        let dir = tempfile::tempdir().unwrap();
+        let _xdg = EnvVarGuard::unset("XDG_RUNTIME_DIR");
+        let _home = with_test_home_guard(dir.path());
+        let runtime = default_runtime_dir().expect("runtime dir resolves without XDG");
+        assert!(
+            runtime.ends_with("cfgd/runtime"),
+            "fallback must nest under cfgd/runtime, got: {}",
+            runtime.display()
+        );
     }
 }

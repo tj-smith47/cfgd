@@ -463,7 +463,7 @@ impl ServerClient {
 
 // --- Credential Storage ---
 
-/// Path to the device credential file: `~/.local/share/cfgd/device-credential.json`
+/// Path to the device credential file: `~/.local/state/cfgd/device-credential.json`
 pub fn credential_path() -> Result<PathBuf> {
     let dir = crate::state::default_state_dir()?;
     Ok(dir.join("device-credential.json"))

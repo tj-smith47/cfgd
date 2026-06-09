@@ -79,8 +79,17 @@ pub struct ComplianceExport {
     pub path: String,
 }
 
+/// Default compliance export directory: `compliance/` under the state root.
+///
+/// Compliance exports are machine-local generated data, so they live with state
+/// (`~/.local/state/cfgd/compliance/` on Linux), not in the data/share root.
+/// Kept as a tilde literal rather than deriving from [`crate::state::default_state_dir`]
+/// because this is a serde `default` (must be infallible `fn() -> String`) and the
+/// value is a stored config string that consumers expand at use-time via
+/// `expand_tilde` — baking an env-resolved absolute path here would break that
+/// contract and config portability.
 fn default_compliance_path() -> String {
-    "~/.local/share/cfgd/compliance/".into()
+    "~/.local/state/cfgd/compliance/".into()
 }
 
 impl Default for ComplianceExport {
@@ -120,5 +129,31 @@ mod tests {
     fn compliance_format_serializes_canonical_pascalcase() {
         let s = serde_yaml::to_string(&ComplianceFormat::Json).expect("serialize");
         assert_eq!(s.trim(), "Json");
+    }
+
+    #[test]
+    fn default_compliance_path_resolves_under_state_root_not_share() {
+        // The default export dir lives with state, not in the data/share root.
+        assert_eq!(default_compliance_path(), "~/.local/state/cfgd/compliance/");
+        assert!(!default_compliance_path().contains("/share/"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn default_compliance_path_expands_to_state_compliance_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let resolved = crate::with_test_home(dir.path(), || {
+            crate::expand_tilde(std::path::Path::new(&default_compliance_path()))
+        });
+        assert!(
+            resolved.starts_with(dir.path()),
+            "must expand under the test home, got: {}",
+            resolved.display()
+        );
+        assert!(
+            resolved.ends_with("state/cfgd/compliance"),
+            "tail must be state/cfgd/compliance, got: {}",
+            resolved.display()
+        );
     }
 }

@@ -239,7 +239,7 @@ pub struct StateStore {
 
 impl StateStore {
     /// Open or create a state store at the default location.
-    /// Uses `~/.local/share/cfgd/state.db`.
+    /// Uses `~/.local/state/cfgd/state.db`.
     pub fn open_default() -> Result<Self> {
         Self::open_in_dir(&default_state_dir()?)
     }
@@ -350,25 +350,42 @@ pub fn plan_hash(data: &str) -> String {
     crate::sha256_hex(data.as_bytes())
 }
 
+/// Default per-user state directory (SQLite state DB, backups).
+///
+/// Resolution order:
+/// 1. `CFGD_STATE_DIR` when set (verbatim) — back-compat short-circuit, wins
+///    over everything.
+/// 2. the platform-native state location with a `cfgd` segment, honoring
+///    `XDG_STATE_HOME`:
+///    - Linux: `$XDG_STATE_HOME/cfgd` (default `~/.local/state/cfgd`)
+///    - macOS/Windows: `BaseDirs::state_dir()` is `None`, so fall back to the
+///      data-local dir nested under a `state/` segment
+///      (macOS `~/Library/Application Support/cfgd/state`,
+///      Windows `%LOCALAPPDATA%\cfgd\state`).
+///
+/// Resolves home through the same policy config discovery uses (HOME on Unix,
+/// USERPROFILE/HOME on Windows) so an unset HOME fails uniformly instead of
+/// creating an orphan state.db beside a config error.
 pub fn default_state_dir() -> Result<PathBuf> {
     if let Ok(dir) = std::env::var("CFGD_STATE_DIR") {
         return Ok(PathBuf::from(dir));
     }
-    // Resolve home through the same policy config discovery uses (HOME on Unix,
-    // USERPROFILE/HOME on Windows). `directories` would otherwise fall back to
-    // the passwd database when HOME is unset, resolving a home that config
-    // discovery cannot — the two subsystems must agree so an unset HOME fails
-    // uniformly instead of creating an orphan state.db beside a config error.
+    // `directories` would otherwise fall back to the passwd database when HOME
+    // is unset, resolving a home that config discovery cannot — the two
+    // subsystems must agree.
     if crate::home_dir_var().is_none() {
         return Err(StateError::DirectoryNotWritable {
-            path: PathBuf::from("~/.local/share/cfgd"),
+            path: PathBuf::from("~/.local/state/cfgd"),
         }
         .into());
     }
     let base = directories::BaseDirs::new().ok_or_else(|| StateError::DirectoryNotWritable {
-        path: PathBuf::from("~/.local/share/cfgd"),
+        path: PathBuf::from("~/.local/state/cfgd"),
     })?;
-    Ok(base.data_local_dir().join("cfgd"))
+    Ok(match base.state_dir() {
+        Some(state) => state.join("cfgd"),
+        None => base.data_local_dir().join("cfgd").join("state"),
+    })
 }
 
 #[cfg(test)]
