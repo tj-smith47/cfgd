@@ -24,6 +24,7 @@ pub struct InitArgs<'a> {
     pub apply_profile: Option<&'a str>,
     pub apply_modules: &'a [String],
     pub cache_dir: Option<&'a Path>,
+    pub state_dir: Option<&'a Path>,
 }
 
 /// Structured-output payload for `cfgd init`. Drives `-o json|yaml|jsonpath|template`.
@@ -173,8 +174,11 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 &reconciler,
                 &resolved,
                 &target_dir,
-                args.dry_run,
-                args.yes,
+                ApplyPlanOpts {
+                    dry_run: args.dry_run,
+                    yes: args.yes,
+                    state_dir: args.state_dir,
+                },
                 printer,
             )?;
         } else {
@@ -279,8 +283,11 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 &reconciler,
                 &resolved,
                 &target_dir,
-                args.dry_run,
-                args.yes,
+                ApplyPlanOpts {
+                    dry_run: args.dry_run,
+                    yes: args.yes,
+                    state_dir: args.state_dir,
+                },
                 printer,
             )?;
         }
@@ -418,14 +425,21 @@ pub(super) fn is_module_only_apply(apply_profile: Option<&str>, apply_modules: &
     !apply_modules.is_empty() && apply_profile.is_none()
 }
 
+/// Apply-behavior inputs for [`apply_plan`], threaded from `InitArgs`.
+pub(super) struct ApplyPlanOpts<'a> {
+    pub dry_run: bool,
+    pub yes: bool,
+    /// `--state-dir` override for the apply mutex (see `helpers::apply_lock_dir`).
+    pub state_dir: Option<&'a Path>,
+}
+
 /// Show plan, prompt for confirmation, and apply.
 pub(super) fn apply_plan(
     plan: &cfgd_core::reconciler::Plan,
     reconciler: &cfgd_core::reconciler::Reconciler<'_>,
     resolved: &config::ResolvedProfile,
     config_dir: &Path,
-    dry_run: bool,
-    yes: bool,
+    opts: ApplyPlanOpts<'_>,
     printer: &Printer,
 ) -> anyhow::Result<()> {
     let total = plan.total_actions();
@@ -437,11 +451,11 @@ pub(super) fn apply_plan(
     super::display_plan_table(plan, printer, None);
     printer.status_simple(Role::Info, format!("{} action(s) planned", total));
 
-    if dry_run {
+    if opts.dry_run {
         return Ok(());
     }
 
-    if !yes {
+    if !opts.yes {
         let confirmed = printer
             .prompt_confirm("Apply these changes?")
             .unwrap_or(false);
@@ -451,9 +465,9 @@ pub(super) fn apply_plan(
         }
     }
 
-    let state_dir = cfgd_core::state::default_state_dir()
-        .map_err(|e| anyhow::anyhow!("cannot determine state directory: {}", e))?;
-    let _apply_lock = cfgd_core::acquire_apply_lock(&state_dir)?;
+    // see helpers::apply_lock_dir — honor --state-dir so init --apply
+    // mutually-excludes against `cfgd apply` and the daemon.
+    let _apply_lock = cfgd_core::acquire_apply_lock(&apply_lock_dir(opts.state_dir)?)?;
 
     let result = reconciler.apply(
         plan,

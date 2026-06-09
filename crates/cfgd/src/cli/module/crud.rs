@@ -297,9 +297,10 @@ pub fn cmd_module_create(
                 }
             }
 
-            let state_dir = cfgd_core::state::default_state_dir()
-                .map_err(|e| anyhow::anyhow!("cannot determine state directory: {}", e))?;
-            let _apply_lock = cfgd_core::acquire_apply_lock(&state_dir)?;
+            // see helpers::apply_lock_dir — honor --state-dir so this lock
+            // mutually-excludes against `cfgd apply` and the daemon.
+            let _apply_lock =
+                cfgd_core::acquire_apply_lock(&apply_lock_dir(cli.state_dir.as_deref())?)?;
 
             let result = reconciler.apply(
                 &plan,

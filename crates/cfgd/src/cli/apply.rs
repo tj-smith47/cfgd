@@ -367,16 +367,8 @@ pub fn run_apply(
         }
     }
 
-    // Acquire apply lock to prevent concurrent applies
-    let lock_state_dir;
-    let apply_lock_dir: &std::path::Path = if let Some(dir) = cli.state_dir.as_deref() {
-        dir
-    } else {
-        lock_state_dir = cfgd_core::state::default_state_dir()
-            .map_err(|e| anyhow::anyhow!("cannot determine state directory: {}", e))?;
-        &lock_state_dir
-    };
-    let _apply_lock = cfgd_core::acquire_apply_lock(apply_lock_dir)?;
+    // Acquire apply lock to prevent concurrent applies (see helpers::apply_lock_dir).
+    let _apply_lock = cfgd_core::acquire_apply_lock(&apply_lock_dir(cli.state_dir.as_deref())?)?;
 
     // Register cooperative-cancellation handlers for the duration of the apply.
     // SIGINT/SIGTERM flip the shared flag (the reconciler checks it between

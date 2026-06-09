@@ -160,6 +160,9 @@ pub(crate) fn handle_reconcile(
             }
         },
     };
+    // apply mutex lives in the state dir; the CLI's apply_lock_dir() must
+    // resolve to the same place (override-else-default_state_dir) or concurrent
+    // CLI+daemon applies won't mutually-exclude.
     let _lock = match crate::acquire_apply_lock(&state_dir) {
         Ok(guard) => guard,
         Err(crate::errors::CfgdError::State(crate::errors::StateError::ApplyLockHeld {

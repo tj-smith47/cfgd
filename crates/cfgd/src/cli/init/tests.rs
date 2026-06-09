@@ -548,6 +548,7 @@ fn cmd_init_scaffolds_local_directory() {
         apply_profile: None,
         apply_modules: &[],
         cache_dir: None,
+        state_dir: None,
     };
 
     let result = cmd_init(&printer, &args);
@@ -601,6 +602,7 @@ fn cmd_init_skips_if_already_initialized() {
         apply_profile: None,
         apply_modules: &[],
         cache_dir: None,
+        state_dir: None,
     };
 
     let result = cmd_init(&printer, &args);
@@ -630,6 +632,7 @@ fn cmd_init_creates_directory_if_missing() {
         apply_profile: None,
         apply_modules: &[],
         cache_dir: None,
+        state_dir: None,
     };
 
     let result = cmd_init(&printer, &args);
@@ -834,6 +837,7 @@ fn cmd_init_with_from_local_path() {
         apply_profile: None,
         apply_modules: &[],
         cache_dir: None,
+        state_dir: None,
     };
 
     cmd_init(&printer, &args).unwrap();
@@ -909,6 +913,7 @@ fn cmd_init_scaffold_to_new_dir() {
         apply_profile: None,
         apply_modules: &[],
         cache_dir: None,
+        state_dir: None,
     };
 
     cmd_init(&printer, &args).unwrap();
@@ -962,6 +967,7 @@ fn cmd_init_already_initialized() {
         apply_profile: None,
         apply_modules: &[],
         cache_dir: None,
+        state_dir: None,
     };
 
     cmd_init(&printer, &args).unwrap();
@@ -994,6 +1000,7 @@ fn cmd_init_with_theme() {
         apply_profile: None,
         apply_modules: &[],
         cache_dir: None,
+        state_dir: None,
     };
 
     cmd_init(&printer, &args).unwrap();
@@ -1483,6 +1490,7 @@ fn cmd_init_with_name_overrides_dir_name() {
         apply_profile: None,
         apply_modules: &[],
         cache_dir: None,
+        state_dir: None,
     };
 
     cmd_init(&printer, &args).unwrap();
@@ -1514,6 +1522,7 @@ fn cmd_init_creates_git_repo() {
         apply_profile: None,
         apply_modules: &[],
         cache_dir: None,
+        state_dir: None,
     };
 
     cmd_init(&printer, &args).unwrap();
@@ -1547,6 +1556,7 @@ fn cmd_init_with_theme_and_name_together() {
         apply_profile: None,
         apply_modules: &[],
         cache_dir: None,
+        state_dir: None,
     };
 
     cmd_init(&printer, &args).unwrap();
@@ -1589,8 +1599,11 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
         &reconciler,
         &resolved,
         dir.path(),
-        false,
-        false,
+        ApplyPlanOpts {
+            dry_run: false,
+            yes: false,
+            state_dir: None,
+        },
         &printer,
     );
     assert!(result.is_ok());
@@ -1767,6 +1780,7 @@ fn cmd_init_from_local_path_uses_source_dir() {
         apply_profile: None,
         apply_modules: &[],
         cache_dir: None,
+        state_dir: None,
     };
 
     cmd_init(&printer, &args).unwrap();
@@ -2013,8 +2027,11 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
         &reconciler,
         &resolved,
         dir.path(),
-        false, // dry_run
-        false, // yes — exercises the prompt arm
+        ApplyPlanOpts {
+            dry_run: false,
+            yes: false,
+            state_dir: None,
+        },
         &printer,
     );
     assert!(result.is_ok(), "declined prompt should still return Ok");
@@ -2077,8 +2094,11 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
         &reconciler,
         &resolved,
         dir.path(),
-        false,
-        false,
+        ApplyPlanOpts {
+            dry_run: false,
+            yes: false,
+            state_dir: None,
+        },
         &printer,
     );
     assert!(
@@ -2143,8 +2163,11 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
         &reconciler,
         &resolved,
         dir.path(),
-        false,
-        false,
+        ApplyPlanOpts {
+            dry_run: false,
+            yes: false,
+            state_dir: None,
+        },
         &printer,
     );
     assert!(
@@ -2197,8 +2220,11 @@ fn apply_plan_dry_run_skips_apply() {
         &reconciler,
         &resolved,
         dir.path(),
-        true, // dry_run
-        false,
+        ApplyPlanOpts {
+            dry_run: true,
+            yes: false,
+            state_dir: None,
+        },
         &printer,
     );
     assert!(result.is_ok());
@@ -2254,6 +2280,7 @@ fn cmd_init_from_git_source_with_explicit_target() {
         apply_profile: None,
         apply_modules: &[],
         cache_dir: None,
+        state_dir: None,
     };
 
     let result = cmd_init(&printer, &args);
@@ -2308,6 +2335,7 @@ fn cmd_init_from_git_with_theme_override() {
         apply_profile: None,
         apply_modules: &[],
         cache_dir: None,
+        state_dir: None,
     };
 
     let result = cmd_init(&printer, &args);
@@ -2365,6 +2393,7 @@ fn cmd_init_from_git_applies_name_and_theme_overrides_together() {
         apply_profile: None,
         apply_modules: &[],
         cache_dir: None,
+        state_dir: None,
     };
 
     let result = cmd_init(&printer, &args);
@@ -3752,6 +3781,7 @@ mod cmd_init_from_local_bare {
             apply_profile: None,
             apply_modules: &[],
             cache_dir: None,
+            state_dir: None,
         };
         cmd_init(&printer, &args).expect("cmd_init --from should succeed");
 
@@ -3795,6 +3825,7 @@ mod cmd_init_from_local_bare {
             apply_profile: None,
             apply_modules: &[],
             cache_dir: None,
+            state_dir: None,
         };
         cmd_init(&printer, &args).expect("cmd_init --from --theme should succeed");
 
@@ -3829,6 +3860,7 @@ mod cmd_init_from_local_bare {
             apply_profile: None,
             apply_modules: &[],
             cache_dir: None,
+            state_dir: None,
         };
         cmd_init(&printer, &args).expect("clone of empty repo should still return Ok");
 
@@ -3893,6 +3925,7 @@ mod cmd_init_apply_orchestration {
                 apply_profile: None,
                 apply_modules: &[],
                 cache_dir: None,
+                state_dir: None,
             };
             let err = cmd_init(&printer, &args)
                 .expect_err("scaffold+apply without profile should surface pick_profile bail");
@@ -3935,6 +3968,7 @@ mod cmd_init_apply_orchestration {
                 apply_profile: None,
                 apply_modules: &modules,
                 cache_dir: None,
+                state_dir: None,
             };
             let err = cmd_init(&printer, &args)
                 .expect_err("--apply-module on unknown module should bail");
@@ -3972,6 +4006,7 @@ mod cmd_init_apply_orchestration {
                 apply_profile: Some("missing-profile"),
                 apply_modules: &[],
                 cache_dir: None,
+                state_dir: None,
             };
             let err = cmd_init(&printer, &args)
                 .expect_err("--apply-profile on missing profile should bail");
@@ -4064,6 +4099,7 @@ mod cmd_init_apply_orchestration {
                 apply_profile: None,
                 apply_modules: &[],
                 cache_dir: None,
+                state_dir: None,
             };
             cmd_init(&printer, &args).expect("--from + --apply --dry-run should succeed");
         });
@@ -4111,6 +4147,7 @@ mod cmd_init_apply_orchestration {
                 apply_profile: Some("default"),
                 apply_modules: &[],
                 cache_dir: None,
+                state_dir: None,
             };
             cmd_init(&printer, &args).expect("--apply-profile default should drive apply branch");
         });
@@ -4201,6 +4238,7 @@ mod cmd_init_apply_orchestration {
                 apply_profile: None,
                 apply_modules: &modules,
                 cache_dir: None,
+                state_dir: None,
             };
             cmd_init(&printer, &args).expect("--apply-module drives module-only branch");
         });
@@ -4286,6 +4324,7 @@ mod cmd_init_apply_orchestration {
                 apply_profile: None,
                 apply_modules: &[],
                 cache_dir: None,
+                state_dir: None,
             };
             cmd_init(&printer, &args).expect("pick_profile should select the sole profile");
         });
@@ -4389,6 +4428,7 @@ mod cmd_init_apply_orchestration {
                 apply_profile: Some("default"),
                 apply_modules: &modules,
                 cache_dir: None,
+                state_dir: None,
             };
             cmd_init(&printer, &args)
                 .expect("--apply-profile + --apply-module should walk the combined arm");
@@ -4447,6 +4487,7 @@ mod cmd_init_apply_orchestration {
                 apply_profile: Some("default"),
                 apply_modules: &modules,
                 cache_dir: None,
+                state_dir: None,
             };
             let err = cmd_init(&printer, &args).expect_err(
                 "profile-based apply with unknown --apply-module should bail before plan",
@@ -4487,6 +4528,7 @@ mod cmd_init_apply_orchestration {
             apply_profile: None,
             apply_modules: &[],
             cache_dir: None,
+            state_dir: None,
         };
         cmd_init(&printer, &args).expect("cmd_init with install_daemon must succeed");
 
@@ -4540,6 +4582,7 @@ mod cmd_init_apply_orchestration {
             apply_profile: None,
             apply_modules: &[],
             cache_dir: None,
+            state_dir: None,
         };
         cmd_init(&printer, &args).expect("cmd_init with install_daemon must succeed");
 

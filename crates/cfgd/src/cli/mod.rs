@@ -1629,6 +1629,7 @@ pub fn execute(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resul
                 apply_profile: apply_profile.as_deref(),
                 apply_modules,
                 cache_dir: cli.cache_dir.as_deref(),
+                state_dir: cli.state_dir.as_deref(),
             },
         ),
         Command::Module { command } => match command {

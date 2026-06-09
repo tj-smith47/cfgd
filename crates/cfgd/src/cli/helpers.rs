@@ -339,6 +339,19 @@ pub(in crate::cli) fn module_cache_dir_for(cache_over: Option<&Path>) -> anyhow:
     Ok(cfgd_core::resolve_cache_dir(cache_over)?.join("modules"))
 }
 
+/// Directory holding the apply mutex (`apply.lock`).
+///
+/// The apply mutex serializes the only operation that mutates live system
+/// state, so it co-locates with the `state.db` it guards — the same dir the
+/// daemon reconcile loop locks — and every acquirer must resolve it identically
+/// (`--state-dir` flag > `CFGD_STATE_DIR` env > `XDG_STATE_HOME` > platform
+/// default) regardless of how the process was launched, or the lock fails to
+/// mutually-exclude and concurrent applies corrupt state.
+pub(in crate::cli) fn apply_lock_dir(state_over: Option<&Path>) -> anyhow::Result<PathBuf> {
+    cfgd_core::resolve_state_dir(state_over)
+        .map_err(|e| anyhow::anyhow!("cannot determine state directory: {}", e))
+}
+
 /// Resolve the effective config-file path honoring `--config` > `--config-dir` > default.
 /// `config_is_explicit` is true when the user supplied `--config`/`CFGD_CONFIG`
 /// (not the clap default). When the config arg is the default and a `config_dir`

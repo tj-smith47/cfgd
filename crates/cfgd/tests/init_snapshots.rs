@@ -53,6 +53,7 @@ fn init_happy_human() {
         apply_profile: None,
         apply_modules: &[],
         cache_dir: None,
+        state_dir: None,
     };
 
     let (printer, cap) = Printer::for_test_doc();
@@ -86,6 +87,7 @@ fn init_happy_json() {
         apply_profile: None,
         apply_modules: &[],
         cache_dir: None,
+        state_dir: None,
     };
 
     let (printer, cap) = Printer::for_test_doc();
@@ -129,6 +131,7 @@ fn init_already_initialized_human() {
         apply_profile: None,
         apply_modules: &[],
         cache_dir: None,
+        state_dir: None,
     };
 
     let (printer, cap) = Printer::for_test_doc();
@@ -200,6 +203,7 @@ fn init_with_apply_renders_apply_status_streaming() {
         apply_profile: Some("default"),
         apply_modules: &[],
         cache_dir: None,
+        state_dir: None,
     };
 
     let (printer, cap) = Printer::for_test_doc();
@@ -278,6 +282,75 @@ fn init_apply_then_next_steps_bridge_invariant() {
         Path::new(SNAPSHOT_ROOT),
         "init/apply_then_next_steps.txt",
         &captured,
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn init_apply_lock_honors_state_dir_override() {
+    // Regression guard: `cfgd init --apply` must acquire the apply mutex in the
+    // dir resolved by `--state-dir` (threaded through `InitArgs.state_dir`), the
+    // same dir `cfgd apply` and the daemon lock — otherwise the three fail to
+    // mutually-exclude. `acquire_apply_lock(dir)` creates `dir/apply.lock`, which
+    // persists after the guard drops, so its presence proves which dir was used.
+    let tmp = tempfile::tempdir().unwrap();
+    // Sandbox HOME so the UNFIXED code path (which calls `default_state_dir()`,
+    // resolving through HOME) cannot touch the real `~/.local/state/cfgd`, and
+    // so its lock lands somewhere OTHER than our `state_dir` override.
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let _home_guard = cfgd_core::test_helpers::EnvVarGuard::set("HOME", home.to_str().unwrap());
+    // The override must win over CFGD_STATE_DIR too; leave it unset so the only
+    // way the lock reaches `state_dir` is via the flag chain we are testing.
+    let _state_env = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_STATE_DIR");
+
+    let state_dir = tmp.path().join("explicit-state");
+    let cache_dir = tmp.path().join("explicit-cache");
+    let target = tmp.path().join("locked-cfg");
+    let target_str = target.to_string_lossy().into_owned();
+
+    // The profile must carry at least one action: `apply_plan` early-returns on
+    // a zero-action plan BEFORE the lock is acquired, so an empty profile would
+    // never reach the lock site this test is asserting on. One managed-file copy
+    // is the minimal plan that drives the apply past the lock acquisition.
+    std::fs::create_dir_all(target.join("files")).unwrap();
+    std::fs::write(target.join("files").join("hello.txt"), "hi").unwrap();
+    let deployed = tmp.path().join("deployed").join("hello.txt");
+    std::fs::create_dir_all(target.join("profiles")).unwrap();
+    std::fs::write(
+        target.join("profiles").join("default.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
+            deployed.display()
+        ),
+    )
+    .unwrap();
+
+    let args = InitArgs {
+        path: Some(&target_str),
+        from: None,
+        branch: "master",
+        name: Some("locked-cfg"),
+        apply: true,
+        dry_run: false,
+        yes: true,
+        install_daemon: false,
+        theme: None,
+        apply_profile: Some("default"),
+        apply_modules: &[],
+        cache_dir: Some(cache_dir.as_path()),
+        state_dir: Some(state_dir.as_path()),
+    };
+
+    let (printer, _cap) = Printer::for_test_doc();
+    cmd_init(&printer, &args).unwrap();
+    drop(printer);
+
+    assert!(
+        state_dir.join("apply.lock").exists(),
+        "init --apply must acquire the lock in the --state-dir override ({}), \
+         not the default state dir",
+        state_dir.display()
     );
 }
 
