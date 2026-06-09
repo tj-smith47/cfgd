@@ -54,6 +54,7 @@ fn init_happy_human() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        scope: cfgd_core::Scope::User,
     };
 
     let (printer, cap) = Printer::for_test_doc();
@@ -88,6 +89,7 @@ fn init_happy_json() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        scope: cfgd_core::Scope::User,
     };
 
     let (printer, cap) = Printer::for_test_doc();
@@ -132,6 +134,7 @@ fn init_already_initialized_human() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        scope: cfgd_core::Scope::User,
     };
 
     let (printer, cap) = Printer::for_test_doc();
@@ -204,6 +207,7 @@ fn init_with_apply_renders_apply_status_streaming() {
         apply_modules: &[],
         cache_dir: None,
         state_dir: None,
+        scope: cfgd_core::Scope::User,
     };
 
     let (printer, cap) = Printer::for_test_doc();
@@ -340,6 +344,7 @@ fn init_apply_lock_honors_state_dir_override() {
         apply_modules: &[],
         cache_dir: Some(cache_dir.as_path()),
         state_dir: Some(state_dir.as_path()),
+        scope: cfgd_core::Scope::User,
     };
 
     let (printer, _cap) = Printer::for_test_doc();

@@ -256,7 +256,7 @@ fn profiles_inheriting_match_found() {
 #[test]
 fn collect_module_file_targets_nonexistent_returns_empty() {
     let dir = tempfile::tempdir().unwrap();
-    let result = collect_module_file_targets("nope", dir.path(), None);
+    let result = collect_module_file_targets("nope", dir.path(), None, cfgd_core::Scope::User);
     assert!(result.is_empty());
 }
 
@@ -439,7 +439,7 @@ fn collect_module_file_targets_local_module() {
     let module_yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages: []\n  files:\n    - source: foo.conf\n      target: /tmp/foo.conf\n";
     std::fs::write(module_dir.join("module.yaml"), module_yaml).unwrap();
 
-    let result = collect_module_file_targets("test-mod", dir.path(), None);
+    let result = collect_module_file_targets("test-mod", dir.path(), None, cfgd_core::Scope::User);
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], PathBuf::from("/tmp/foo.conf"));
 }
@@ -500,6 +500,7 @@ fn test_cli(dir: &Path) -> super::super::Cli {
         config_dir: None,
         cache_dir: None,
         runtime_dir: None,
+        system: false,
         command: Some(super::super::Command::Status {
             module: None,
             exit_code: false,
@@ -2762,6 +2763,7 @@ mod profile_update_module_cleanup {
             // resolving to the real `~/.cache/cfgd`.
             cache_dir: Some(state_dir.to_path_buf()),
             runtime_dir: None,
+            system: false,
             command: Some(super::super::Command::Status {
                 module: None,
                 exit_code: false,

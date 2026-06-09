@@ -25,6 +25,7 @@ pub struct InitArgs<'a> {
     pub apply_modules: &'a [String],
     pub cache_dir: Option<&'a Path>,
     pub state_dir: Option<&'a Path>,
+    pub scope: cfgd_core::Scope,
 }
 
 /// Structured-output payload for `cfgd init`. Drives `-o json|yaml|jsonpath|template`.
@@ -126,7 +127,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
         if module_only {
             // Validate that requested modules exist
-            let cache_base = module_cache_dir_for(args.cache_dir)?;
+            let cache_base = module_cache_dir_for(args.cache_dir, args.scope)?;
             let all_modules = modules::load_all_modules(&target_dir, &cache_base, &[], printer)?;
             for m in args.apply_modules {
                 let resolved_name = modules::resolve_profile_module_name(m);
@@ -178,6 +179,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     dry_run: args.dry_run,
                     yes: args.yes,
                     state_dir: args.state_dir,
+                    scope: args.scope,
                 },
                 printer,
             )?;
@@ -225,7 +227,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             let resolved_modules = if !module_names.is_empty() {
                 let platform = cfgd_core::platform::Platform::detect();
                 let mgr_map = super::managers_map(&registry);
-                let cache_base = module_cache_dir_for(args.cache_dir)?;
+                let cache_base = module_cache_dir_for(args.cache_dir, args.scope)?;
                 // Validate --apply-module names exist (load once, check all)
                 let all_modules =
                     modules::load_all_modules(&target_dir, &cache_base, &[], printer)?;
@@ -287,6 +289,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                     dry_run: args.dry_run,
                     yes: args.yes,
                     state_dir: args.state_dir,
+                    scope: args.scope,
                 },
                 printer,
             )?;
@@ -431,6 +434,8 @@ pub(super) struct ApplyPlanOpts<'a> {
     pub yes: bool,
     /// `--state-dir` override for the apply mutex (see `helpers::apply_lock_dir`).
     pub state_dir: Option<&'a Path>,
+    /// Installation scope for the apply mutex (`--system` vs per-user).
+    pub scope: cfgd_core::Scope,
 }
 
 /// Show plan, prompt for confirmation, and apply.
@@ -467,7 +472,7 @@ pub(super) fn apply_plan(
 
     // see helpers::apply_lock_dir — honor --state-dir so init --apply
     // mutually-excludes against `cfgd apply` and the daemon.
-    let _apply_lock = cfgd_core::acquire_apply_lock(&apply_lock_dir(opts.state_dir)?)?;
+    let _apply_lock = cfgd_core::acquire_apply_lock(&apply_lock_dir(opts.state_dir, opts.scope)?)?;
 
     let result = reconciler.apply(
         plan,

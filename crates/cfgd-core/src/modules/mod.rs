@@ -20,8 +20,9 @@ mod registry;
 mod resolve;
 
 pub use git::{
-    GitSource, TagSignatureStatus, check_tag_signature, default_module_cache_dir, fetch_git_source,
-    get_head_commit_sha, git_cache_dir, is_git_source, parse_git_source,
+    GitSource, TagSignatureStatus, check_tag_signature, default_module_cache_dir,
+    default_module_cache_dir_for, fetch_git_source, get_head_commit_sha, git_cache_dir,
+    is_git_source, parse_git_source,
 };
 pub use loader::{load_module, load_modules, resolve_dependency_order};
 pub use lockfile::{

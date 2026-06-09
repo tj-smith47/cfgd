@@ -348,6 +348,13 @@ pub struct Cli {
     #[arg(long, global = true, env = "CFGD_RUNTIME_DIR")]
     pub runtime_dir: Option<PathBuf>,
 
+    /// Operate on the system-wide (root) installation: FHS roots on Linux
+    /// (/etc/cfgd, /var/lib/cfgd, /var/cache/cfgd, /run/cfgd), the /Library
+    /// mirror on macOS, %ProgramData%\cfgd on Windows. Default is the per-user
+    /// installation.
+    #[arg(long, global = true, env = "CFGD_SYSTEM")]
+    pub system: bool,
+
     // Optional so `cfgd` with no args prints help and exits 0. A required
     // subcommand (non-Option) makes clap emit a "usage" error and exit with
     // code 2, which package-manager validators (winget's, chocolatey's)
@@ -355,6 +362,15 @@ pub struct Cli {
     // with no args.
     #[command(subcommand)]
     pub command: Option<Command>,
+}
+
+impl Cli {
+    /// Installation scope selected by `--system` (`CFGD_SYSTEM`): system-wide
+    /// when set, per-user otherwise. Threaded into every directory resolver so
+    /// the whole CLI surface agrees on one root.
+    pub fn scope(&self) -> cfgd_core::Scope {
+        cfgd_core::Scope::from_system_flag(self.system)
+    }
 }
 
 #[derive(Parser)]
@@ -1643,6 +1659,7 @@ pub fn execute(
                 apply_modules,
                 cache_dir: cli.cache_dir.as_deref(),
                 state_dir: cli.state_dir.as_deref(),
+                scope: cli.scope(),
             },
         ),
         Command::Module { command } => match command {

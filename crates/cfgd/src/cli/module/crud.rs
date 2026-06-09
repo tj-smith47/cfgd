@@ -299,8 +299,10 @@ pub fn cmd_module_create(
 
             // see helpers::apply_lock_dir — honor --state-dir so this lock
             // mutually-excludes against `cfgd apply` and the daemon.
-            let _apply_lock =
-                cfgd_core::acquire_apply_lock(&apply_lock_dir(cli.state_dir.as_deref())?)?;
+            let _apply_lock = cfgd_core::acquire_apply_lock(&apply_lock_dir(
+                cli.state_dir.as_deref(),
+                cli.scope(),
+            )?)?;
 
             let result = reconciler.apply(
                 &plan,

@@ -11407,7 +11407,7 @@ mod ipc_socket_security {
     fn resolve_default_ipc_path_env_override_wins() {
         let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", "/custom/cfgd.sock");
         assert_eq!(
-            resolve_default_ipc_path(None),
+            resolve_default_ipc_path(None, crate::Scope::User),
             std::path::PathBuf::from("/custom/cfgd.sock")
         );
     }
@@ -11419,7 +11419,7 @@ mod ipc_socket_security {
         let _unset_override = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
         let _xdg = EnvVarGuard::set("XDG_RUNTIME_DIR", "/tmp/test-xdg");
         assert_eq!(
-            resolve_default_ipc_path(None),
+            resolve_default_ipc_path(None, crate::Scope::User),
             std::path::PathBuf::from("/tmp/test-xdg/cfgd/cfgd.sock")
         );
     }
@@ -11438,7 +11438,7 @@ mod ipc_socket_security {
             .join("cfgd")
             .join("runtime")
             .join("cfgd.sock");
-        assert_eq!(resolve_default_ipc_path(None), expected);
+        assert_eq!(resolve_default_ipc_path(None, crate::Scope::User), expected);
     }
 
     #[cfg(target_os = "macos")]
@@ -11455,7 +11455,7 @@ mod ipc_socket_security {
             .join("cfgd")
             .join("runtime")
             .join("cfgd.sock");
-        assert_eq!(resolve_default_ipc_path(None), expected);
+        assert_eq!(resolve_default_ipc_path(None, crate::Scope::User), expected);
     }
 
     /// Drives `run_health_server` against a tempdir socket path and asserts
@@ -11590,7 +11590,7 @@ mod ipc_socket_security {
         });
 
         let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock_path.to_str().unwrap());
-        let result = tokio::task::spawn_blocking(|| query_daemon_status(None))
+        let result = tokio::task::spawn_blocking(|| query_daemon_status(None, crate::Scope::User))
             .await
             .unwrap();
         let _ = server.join();
@@ -11624,7 +11624,8 @@ mod query_daemon_status_paths {
         let tmp = tempfile::tempdir().unwrap();
         let nonexistent = tmp.path().join("nope.sock");
         let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", nonexistent.to_str().unwrap());
-        let result = query_daemon_status(None).expect("missing socket must not error");
+        let result =
+            query_daemon_status(None, crate::Scope::User).expect("missing socket must not error");
         assert!(
             result.is_none(),
             "missing socket path returns Ok(None), got: {result:?}"
@@ -11676,7 +11677,7 @@ mod query_daemon_status_paths {
         });
 
         let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock_path.to_str().unwrap());
-        let result = tokio::task::spawn_blocking(|| query_daemon_status(None))
+        let result = tokio::task::spawn_blocking(|| query_daemon_status(None, crate::Scope::User))
             .await
             .unwrap();
         let _ = server.join();
@@ -11718,7 +11719,7 @@ mod query_daemon_status_paths {
         });
 
         let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock_path.to_str().unwrap());
-        let result = tokio::task::spawn_blocking(|| query_daemon_status(None))
+        let result = tokio::task::spawn_blocking(|| query_daemon_status(None, crate::Scope::User))
             .await
             .unwrap();
         let _ = server.join();
@@ -11764,7 +11765,7 @@ mod query_daemon_status_paths {
         });
 
         let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock_path.to_str().unwrap());
-        let result = tokio::task::spawn_blocking(|| query_daemon_status(None))
+        let result = tokio::task::spawn_blocking(|| query_daemon_status(None, crate::Scope::User))
             .await
             .unwrap();
         let _ = server.join();

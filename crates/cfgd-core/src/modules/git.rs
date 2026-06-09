@@ -141,7 +141,14 @@ pub fn git_cache_dir(cache_base: &Path, repo_url: &str) -> PathBuf {
 /// honors the thread-local test-home override, so tests still redirect module
 /// cache writes off the real cache.
 pub fn default_module_cache_dir() -> Result<PathBuf> {
-    Ok(crate::default_cache_dir()
+    default_module_cache_dir_for(crate::Scope::User)
+}
+
+/// Default module cache directory (`<cache-root>/modules`) for the given
+/// [`crate::Scope`]: per-user under [`crate::Scope::User`], the FHS / platform
+/// system cache root under [`crate::Scope::System`].
+pub fn default_module_cache_dir_for(scope: crate::Scope) -> Result<PathBuf> {
+    Ok(crate::default_cache_dir_for(scope)
         .map_err(|e| ModuleError::GitFetchFailed {
             module: String::new(),
             url: String::new(),

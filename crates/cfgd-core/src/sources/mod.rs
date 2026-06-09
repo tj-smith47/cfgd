@@ -60,7 +60,14 @@ impl SourceManager {
     /// unified cfgd cache root (Linux `~/.cache/cfgd/sources`, macOS
     /// `~/Library/Caches/cfgd/sources`, Windows `%LOCALAPPDATA%\cfgd\sources`).
     pub fn default_cache_dir() -> Result<PathBuf> {
-        Ok(crate::default_cache_dir()
+        Self::default_cache_dir_for(crate::Scope::User)
+    }
+
+    /// Default source cache directory (`<cache-root>/sources`) for the given
+    /// [`crate::Scope`]: per-user under [`crate::Scope::User`], the FHS /
+    /// platform system cache root under [`crate::Scope::System`].
+    pub fn default_cache_dir_for(scope: crate::Scope) -> Result<PathBuf> {
+        Ok(crate::default_cache_dir_for(scope)
             .map_err(|e| SourceError::CacheError {
                 message: e.to_string(),
             })?

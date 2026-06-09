@@ -199,15 +199,17 @@ const WINDOWS_PIPE_PATH: &str = r"\\.\pipe\cfgd";
 ///    per-user-directory dance does not apply).
 ///
 /// `runtime_over` is the explicit `--runtime-dir` override; pass `None` to take
-/// the env/default. Bind and connect agree automatically under env/default; a
-/// user passing `--runtime-dir` must pass it consistently to both sides.
-pub fn resolve_default_ipc_path(runtime_over: Option<&Path>) -> PathBuf {
+/// the env/default. `scope` selects the per-user vs system runtime root so the
+/// system socket lives under `/run/cfgd`. Bind and connect agree automatically
+/// under env/default; a user passing `--runtime-dir`/`--system` must pass it
+/// consistently to both sides.
+pub fn resolve_default_ipc_path(runtime_over: Option<&Path>, scope: crate::Scope) -> PathBuf {
     if let Some(override_path) = std::env::var_os("CFGD_DAEMON_IPC_PATH") {
         return PathBuf::from(override_path);
     }
     #[cfg(unix)]
     {
-        crate::resolve_runtime_dir(runtime_over, crate::Scope::User)
+        crate::resolve_runtime_dir(runtime_over, scope)
             .map(|dir| dir.join(IPC_SOCKET_FILE))
             .unwrap_or_else(|| PathBuf::from("/tmp/cfgd.sock"))
     }
@@ -630,14 +632,17 @@ pub async fn run_daemon(
 ) -> Result<()> {
     // Resolve the bind socket once at the entry point so the `--runtime-dir`
     // flag reaches the daemon (env/default when `None`); the client side
-    // resolves identically via `resolve_default_ipc_path(runtime_over)`.
+    // resolves identically via `resolve_default_ipc_path(runtime_over, scope)`.
     run_daemon_with(
         config_path,
         profile_override,
         printer,
         hooks,
         DaemonRunOverrides {
-            ipc_path: Some(resolve_default_ipc_path(runtime_override.as_deref())),
+            ipc_path: Some(resolve_default_ipc_path(
+                runtime_override.as_deref(),
+                crate::Scope::User,
+            )),
             ..DaemonRunOverrides::default()
         },
     )
@@ -730,7 +735,7 @@ pub(super) async fn run_daemon_with(
     let ipc_path = overrides
         .ipc_path
         .clone()
-        .unwrap_or_else(|| resolve_default_ipc_path(None));
+        .unwrap_or_else(|| resolve_default_ipc_path(None, crate::Scope::User));
     check_already_running(&ipc_path)?;
 
     // Start health server (skippable in tests that don't need /healthz).
@@ -968,7 +973,7 @@ pub(super) fn check_already_running(_ipc_path: &Path) -> Result<()> {
     }
     #[cfg(windows)]
     {
-        if connect_daemon_ipc(None).is_some() {
+        if connect_daemon_ipc(None, crate::Scope::User).is_some() {
             return Err(DaemonError::AlreadyRunning {
                 pid: std::process::id(),
             }

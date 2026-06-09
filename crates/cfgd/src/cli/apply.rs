@@ -368,7 +368,8 @@ pub fn run_apply(
     }
 
     // Acquire apply lock to prevent concurrent applies (see helpers::apply_lock_dir).
-    let _apply_lock = cfgd_core::acquire_apply_lock(&apply_lock_dir(cli.state_dir.as_deref())?)?;
+    let _apply_lock =
+        cfgd_core::acquire_apply_lock(&apply_lock_dir(cli.state_dir.as_deref(), cli.scope())?)?;
 
     // Register cooperative-cancellation handlers for the duration of the apply.
     // SIGINT/SIGTERM flip the shared flag (the reconciler checks it between

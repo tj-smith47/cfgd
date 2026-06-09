@@ -105,6 +105,8 @@ pub fn config_dir_source(
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PathsOutput {
+    /// Active installation scope: `"system"` (`--system`) or `"user"`.
+    pub scope: &'static str,
     pub config: ConfigPaths,
     pub state: StatePaths,
     pub cache: CachePaths,
@@ -167,6 +169,7 @@ pub struct RuntimePaths {
 /// while the home-independent socket fallback (`/tmp/cfgd.sock` / named pipe) is
 /// still reported.
 fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::Result<PathsOutput> {
+    let scope = cli.scope();
     // `cli.config` is the already-resolved config FILE (main.rs folds --config /
     // --config-dir / resolve_config_path / macOS migration into it); the config
     // dir is the directory that actually contains it, never a re-resolved root.
@@ -182,8 +185,7 @@ fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::Result<Paths
         file: cli.config.posix().to_string(),
     };
 
-    let state_dir =
-        cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cfgd_core::Scope::User).ok();
+    let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), scope).ok();
     let state = StatePaths {
         dir: state_dir.as_ref().map(|d| d.posix().to_string()),
         source: sources.state,
@@ -202,8 +204,7 @@ fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::Result<Paths
     // than open-coding `.join("sources")` / `.join("modules")`. Only the `cache`
     // field is read by those accessors, so the others take empty placeholders to
     // avoid cloning paths that go unused.
-    let cache = match cfgd_core::resolve_cache_dir(cli.cache_dir.as_deref(), cfgd_core::Scope::User)
-    {
+    let cache = match cfgd_core::resolve_cache_dir(cli.cache_dir.as_deref(), scope) {
         Ok(cache_dir) => {
             let dirs = cfgd_core::ResolvedDirs {
                 config: std::path::PathBuf::new(),
@@ -230,12 +231,12 @@ fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::Result<Paths
     // reported path is exactly what `cfgd daemon` binds and `cfgd daemon status`
     // connects to (honors CFGD_DAEMON_IPC_PATH, --runtime-dir, and the /tmp and
     // named-pipe fallbacks).
-    let socket = cfgd_core::resolve_default_ipc_path(cli.runtime_dir.as_deref())
+    let socket = cfgd_core::resolve_default_ipc_path(cli.runtime_dir.as_deref(), scope)
         .posix()
         .to_string();
 
     let runtime = RuntimePaths {
-        dir: cfgd_core::resolve_runtime_dir(cli.runtime_dir.as_deref(), cfgd_core::Scope::User)
+        dir: cfgd_core::resolve_runtime_dir(cli.runtime_dir.as_deref(), scope)
             .as_ref()
             .map(|d| d.posix().to_string()),
         source: sources.runtime,
@@ -243,6 +244,7 @@ fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::Result<Paths
     };
 
     Ok(PathsOutput {
+        scope: if scope.is_system() { "system" } else { "user" },
         config,
         state,
         cache,
@@ -261,6 +263,7 @@ fn or_unavailable(value: &Option<String>) -> String {
 /// Build the `paths` human + structured `Doc` from a collected payload.
 pub fn build_paths_doc(output: &PathsOutput) -> Doc {
     let mut doc = Doc::new().heading("cfgd directories");
+    doc = doc.kv("scope", output.scope);
 
     let config = &output.config;
     doc = doc.section("Config", |s| {
@@ -325,6 +328,15 @@ mod tests {
         cli.state_dir = state_dir;
         cli.cache_dir = cache_dir;
         cli
+    }
+
+    /// Unset the systemd `$*_DIRECTORY` vars so a user-scope default resolves to
+    /// the XDG/platform root rather than a systemd-injected override.
+    fn unset_systemd_dir_vars() -> Vec<EnvVarGuard> {
+        ["STATE_DIRECTORY", "CACHE_DIRECTORY", "RUNTIME_DIRECTORY"]
+            .into_iter()
+            .map(EnvVarGuard::unset)
+            .collect()
     }
 
     #[test]
@@ -411,6 +423,8 @@ mod tests {
         for root in ["config", "state", "cache", "runtime"] {
             assert!(obj.contains_key(root), "missing root {root}: {v}");
         }
+        // The scope label rides alongside the four roots; default is user.
+        assert_eq!(v["scope"], serde_json::json!("user"), "scope: {v}");
         // camelCase nested keys.
         assert!(v["state"]["applyLock"].is_string(), "state.applyLock: {v}");
         assert!(v["config"]["file"].is_string(), "config.file: {v}");
@@ -582,6 +596,73 @@ mod tests {
         assert!(v["config"]["dir"].is_string(), "config.dir: {v}");
         assert!(v["state"]["applyLock"].is_string(), "state.applyLock: {v}");
         assert_eq!(v["cache"]["source"], serde_json::json!("default"));
+    }
+
+    // --- scope ---
+
+    // Default (no --system): scope label is user and the human Doc surfaces it.
+    #[test]
+    #[serial]
+    fn default_scope_is_user_in_payload_and_doc() {
+        let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _systemd = unset_systemd_dir_vars();
+        let state = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let cli = test_cli(
+            Some(state.path().to_path_buf()),
+            Some(cache.path().to_path_buf()),
+        );
+        let output =
+            collect_paths_output(&cli, &DirSources::all_default()).expect("collect must succeed");
+        assert_eq!(output.scope, "user");
+
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        cmd_paths(&cli, &printer, &DirSources::all_default()).expect("cmd_paths must succeed");
+        let out = buf.lock().unwrap().clone();
+        assert!(out.contains("scope"), "scope kv missing: {out}");
+        assert!(out.contains("user"), "scope value missing: {out}");
+    }
+
+    // `--system` flips the scope label and resolves the FHS system roots (no
+    // state/cache override; systemd dir vars unset so the scope default wins).
+    #[test]
+    #[serial]
+    fn system_scope_yields_system_label_and_fhs_roots() {
+        let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _systemd = unset_systemd_dir_vars();
+        let mut cli = test_cli(None, None);
+        cli.system = true;
+        let output =
+            collect_paths_output(&cli, &DirSources::all_default()).expect("collect must succeed");
+
+        assert_eq!(output.scope, "system");
+        assert!(
+            output.state.dir.as_deref().unwrap().ends_with("cfgd"),
+            "state root: {:?}",
+            output.state.dir
+        );
+        assert!(
+            output.cache.dir.as_deref().unwrap().ends_with("cfgd"),
+            "cache root: {:?}",
+            output.cache.dir
+        );
+    }
+
+    // The absolute FHS roots are Linux-specific; pin them precisely there.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[serial]
+    fn system_scope_fhs_absolute_roots_linux() {
+        let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _systemd = unset_systemd_dir_vars();
+        let mut cli = test_cli(None, None);
+        cli.system = true;
+        let output =
+            collect_paths_output(&cli, &DirSources::all_default()).expect("collect must succeed");
+
+        assert_eq!(output.state.dir.as_deref(), Some("/var/lib/cfgd"));
+        assert_eq!(output.cache.dir.as_deref(), Some("/var/cache/cfgd"));
+        assert_eq!(output.runtime.socket, "/run/cfgd/cfgd.sock");
     }
 
     // --- legacy_migration_eligible ---

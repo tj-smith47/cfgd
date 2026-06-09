@@ -32,6 +32,7 @@ const BOOL_ENV_VARS: &[&str] = &[
     "CFGD_QUIET",
     "CFGD_REQUIRE_COSIGN",
     "CFGD_LIST_ENVELOPE",
+    "CFGD_SYSTEM",
 ];
 
 /// Rewrite a boolish env var to the canonical `true`/`false` spelling clap's
@@ -139,6 +140,16 @@ fn main() -> anyhow::Result<()> {
     // a user-supplied value from the default before folding in `--config-dir`.
     let config_is_explicit =
         matches.value_source("config") != Some(clap::parser::ValueSource::DefaultValue);
+
+    // `--config` defaults to the per-user config file at clap-parse time. Under
+    // `--system`, redirect that default to the system config root BEFORE the
+    // `--config` / `--config-dir` fold so an explicit `--config`/`--config-dir`
+    // (or `$CFGD_CONFIG*`) still wins — only the bare default is repointed.
+    if cli.system && !config_is_explicit && cli.config_dir.is_none() {
+        cli.config = cfgd_core::resolve_config_dir(None, cfgd_core::Scope::System)
+            .join(cfgd_core::config::CONFIG_FILENAME);
+    }
+
     cli.config =
         cli::effective_config_file(&cli.config, config_is_explicit, cli.config_dir.as_deref());
 
@@ -227,7 +238,10 @@ fn main() -> anyhow::Result<()> {
     // state/cache roots before any store opens or the config sentinel is read.
     // Runs for the daemon too (it is silent, no prompt) so daemon and CLI never
     // diverge; the default-roots-only gate lives in `legacy_migration_eligible`.
-    if dir_sources.legacy_migration_eligible() {
+    // User scope only: the legacy migration relocates the per-user
+    // `~/.local/share/cfgd`, so under `--system` it must never run — it would
+    // drag user data into the FHS `/var/lib` system root.
+    if !cli.system && dir_sources.legacy_migration_eligible() {
         cli::config_migration::migrate_legacy_data_dirs(&printer);
     }
 

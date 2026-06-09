@@ -77,22 +77,23 @@ pub(super) fn cmd_daemon(
 }
 
 pub fn cmd_daemon_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    let status = match cfgd_core::daemon::query_daemon_status(cli.runtime_dir.as_deref()) {
-        Ok(s) => s,
-        Err(e) => {
-            let msg = format!(
-                "Failed to query daemon status: {}",
-                cfgd_core::output::collapse_to_subject_line(&e),
-            );
-            return Err(crate::cli::cli_error_ctx(
-                e.into(),
-                "cfgd",
-                "status_unavailable",
-                msg,
-                serde_json::Value::Null,
-            ));
-        }
-    };
+    let status =
+        match cfgd_core::daemon::query_daemon_status(cli.runtime_dir.as_deref(), cli.scope()) {
+            Ok(s) => s,
+            Err(e) => {
+                let msg = format!(
+                    "Failed to query daemon status: {}",
+                    cfgd_core::output::collapse_to_subject_line(&e),
+                );
+                return Err(crate::cli::cli_error_ctx(
+                    e.into(),
+                    "cfgd",
+                    "status_unavailable",
+                    msg,
+                    serde_json::Value::Null,
+                ));
+            }
+        };
     printer.emit(build_daemon_status_doc(status.as_ref()));
     Ok(())
 }
@@ -396,6 +397,7 @@ mod tests {
             config_dir: None,
             cache_dir: None,
             runtime_dir: None,
+            system: false,
             command: None,
         }
     }

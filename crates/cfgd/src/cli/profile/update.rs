@@ -127,7 +127,7 @@ pub fn cmd_profile_update(
         if doc.spec.modules.len() < before {
             // Collect module file targets before cleanup for backup restore prompts
             let module_file_targets =
-                collect_module_file_targets(m, &config_dir, cli.cache_dir.as_deref());
+                collect_module_file_targets(m, &config_dir, cli.cache_dir.as_deref(), cli.scope());
 
             // Clean up lockfile entry and cache if this was a remote module
             let mut lockfile = modules::load_lockfile(&config_dir)?;

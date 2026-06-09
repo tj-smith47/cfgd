@@ -404,6 +404,7 @@ spec: {}
             config_dir: None,
             cache_dir: None,
             runtime_dir: None,
+            system: false,
             command: None,
         }
     }

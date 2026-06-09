@@ -431,13 +431,16 @@ pub(in crate::cli) fn profiles_dir(cli: &Cli) -> PathBuf {
 
 /// The module cache directory honoring the `--cache-dir`/`CFGD_CACHE_DIR` override.
 pub(in crate::cli) fn module_cache_dir(cli: &Cli) -> anyhow::Result<PathBuf> {
-    module_cache_dir_for(cli.cache_dir.as_deref())
+    module_cache_dir_for(cli.cache_dir.as_deref(), cli.scope())
 }
 
 /// Lower form for call sites that have the cache override but not the full `Cli`
 /// (e.g. `cfgd init`, which threads the override through `InitArgs`).
-pub(in crate::cli) fn module_cache_dir_for(cache_over: Option<&Path>) -> anyhow::Result<PathBuf> {
-    Ok(cfgd_core::resolve_cache_dir(cache_over, cfgd_core::Scope::User)?.join("modules"))
+pub(in crate::cli) fn module_cache_dir_for(
+    cache_over: Option<&Path>,
+    scope: cfgd_core::Scope,
+) -> anyhow::Result<PathBuf> {
+    Ok(cfgd_core::resolve_cache_dir(cache_over, scope)?.join("modules"))
 }
 
 /// Directory holding the apply mutex (`apply.lock`).
@@ -448,8 +451,11 @@ pub(in crate::cli) fn module_cache_dir_for(cache_over: Option<&Path>) -> anyhow:
 /// (`--state-dir` flag > `CFGD_STATE_DIR` env > `XDG_STATE_HOME` > platform
 /// default) regardless of how the process was launched, or the lock fails to
 /// mutually-exclude and concurrent applies corrupt state.
-pub(in crate::cli) fn apply_lock_dir(state_over: Option<&Path>) -> anyhow::Result<PathBuf> {
-    cfgd_core::resolve_state_dir(state_over, cfgd_core::Scope::User)
+pub(in crate::cli) fn apply_lock_dir(
+    state_over: Option<&Path>,
+    scope: cfgd_core::Scope,
+) -> anyhow::Result<PathBuf> {
+    cfgd_core::resolve_state_dir(state_over, scope)
         .map_err(|e| anyhow::anyhow!("cannot determine state directory: {}", e))
 }
 
@@ -785,6 +791,7 @@ mod tests {
             config_dir: None,
             cache_dir: None,
             runtime_dir: None,
+            system: false,
             command: None,
         }
     }
@@ -1080,7 +1087,8 @@ mod tests {
     #[test]
     fn module_cache_dir_for_appends_modules_to_override() {
         let over = PathBuf::from("/over/cache");
-        let dir = module_cache_dir_for(Some(&over)).unwrap();
+        // Explicit override wins regardless of scope; use the per-user default.
+        let dir = module_cache_dir_for(Some(&over), cfgd_core::Scope::User).unwrap();
         assert_eq!(dir, over.join("modules"));
     }
 

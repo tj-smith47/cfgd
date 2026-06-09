@@ -60,6 +60,7 @@ fn cli_for(config_dir: &Path) -> cfgd::cli::Cli {
         config_dir: None,
         cache_dir: None,
         runtime_dir: None,
+        system: false,
         command: Some(cfgd::cli::Command::Status {
             module: None,
             exit_code: false,
