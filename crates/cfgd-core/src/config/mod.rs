@@ -42,9 +42,9 @@ pub use parse::{
 pub use platform::{PlatformInfo, detect_platform, match_platform_profile, source_profile_names};
 pub use profile_spec::{
     AptSpec, BrewSpec, CargoSpec, CustomManagerSpec, EncryptionConstraint, EncryptionMode,
-    EncryptionSpec, EnvScope, FileStrategy, FilesSpec, FlatpakSpec, ManagedFileSpec, NpmSpec,
-    PackagesSpec, ProfileDocument, ProfileMetadata, ProfileSpec, ScriptSpec, SecretSpec, SnapSpec,
-    validate_secret_specs,
+    EncryptionSpec, EnvScope, FileStrategy, FilesSpec, FlatpakSpec, ManagedFileSpec, MergeSpec,
+    NpmSpec, PackagesSpec, ProfileDocument, ProfileMetadata, ProfileSpec, ScriptSpec, SecretSpec,
+    SnapSpec, validate_secret_specs,
 };
 pub use resolve::{
     ALL_MANAGER_NAMES, LayerPolicy, MergedProfile, PackageClaim, ProfileLayer, ResolvedProfile,

@@ -16,6 +16,86 @@ pub trait FromPackageList {
     fn from_package_list(packages: Vec<String>) -> Self;
 }
 
+/// Layer one manager spec's values onto another during profile composition.
+///
+/// Each implementor owns its own per-field merge semantics — scalar `Option`
+/// fields are overwritten when the incoming side is `Some`, list fields are
+/// union-extended (dedup, order-preserving). Centralizing the policy on the
+/// type (rather than open-coding it in the composition engine) means a new
+/// field on a manager spec is merged by editing only that struct's
+/// `merge_from`, so the merge layer cannot silently drift per manager.
+pub trait MergeSpec {
+    /// Layer `other`'s values onto `self`.
+    fn merge_from(&mut self, other: &Self);
+}
+
+impl MergeSpec for BrewSpec {
+    fn merge_from(&mut self, other: &Self) {
+        if other.file.is_some() {
+            self.file = other.file.clone();
+        }
+        crate::union_extend(&mut self.taps, &other.taps);
+        crate::union_extend(&mut self.formulae, &other.formulae);
+        crate::union_extend(&mut self.casks, &other.casks);
+    }
+}
+
+impl MergeSpec for AptSpec {
+    fn merge_from(&mut self, other: &Self) {
+        if other.file.is_some() {
+            self.file = other.file.clone();
+        }
+        crate::union_extend(&mut self.packages, &other.packages);
+    }
+}
+
+impl MergeSpec for CargoSpec {
+    fn merge_from(&mut self, other: &Self) {
+        if other.file.is_some() {
+            self.file = other.file.clone();
+        }
+        crate::union_extend(&mut self.packages, &other.packages);
+    }
+}
+
+impl MergeSpec for NpmSpec {
+    fn merge_from(&mut self, other: &Self) {
+        if other.file.is_some() {
+            self.file = other.file.clone();
+        }
+        crate::union_extend(&mut self.global, &other.global);
+    }
+}
+
+impl MergeSpec for SnapSpec {
+    fn merge_from(&mut self, other: &Self) {
+        crate::union_extend(&mut self.packages, &other.packages);
+        crate::union_extend(&mut self.classic, &other.classic);
+    }
+}
+
+impl MergeSpec for FlatpakSpec {
+    fn merge_from(&mut self, other: &Self) {
+        crate::union_extend(&mut self.packages, &other.packages);
+        if other.remote.is_some() {
+            self.remote = other.remote.clone();
+        }
+    }
+}
+
+impl MergeSpec for CustomManagerSpec {
+    fn merge_from(&mut self, other: &Self) {
+        self.check = other.check.clone();
+        self.list_installed = other.list_installed.clone();
+        self.install = other.install.clone();
+        self.uninstall = other.uninstall.clone();
+        if other.update.is_some() {
+            self.update = other.update.clone();
+        }
+        crate::union_extend(&mut self.packages, &other.packages);
+    }
+}
+
 /// Accept either a YAML sequence (the package list) or a map with a `packages:`
 /// key (rejecting any other key) for a field whose type stays `Vec<String>`.
 ///

@@ -1,4 +1,4 @@
-use crate::config::{PackagesSpec, PolicyItems};
+use crate::config::{MergeSpec, PackagesSpec, PolicyItems};
 use crate::errors::{CompositionError, Result};
 use crate::union_extend;
 
@@ -33,39 +33,32 @@ pub(super) fn validate_reject_keys(source_name: &str, reject: &serde_yaml::Value
     Ok(())
 }
 
+/// Layer `source`'s optional manager spec onto `target`'s. When `source` is
+/// `Some`, the target field is materialized (default if absent) and the
+/// incoming values are layered on via the type's [`MergeSpec`] impl. The
+/// per-field policy lives on the spec type, never here, so this stays uniform
+/// across every struct-backed manager.
+fn merge_optional<T: MergeSpec + Default>(target: &mut Option<T>, source: &Option<T>) {
+    if let Some(incoming) = source {
+        target
+            .get_or_insert_with(Default::default)
+            .merge_from(incoming);
+    }
+}
+
 /// Merge packages from `source` into `target`, unioning lists and applying
 /// later-wins for scalar fields (file paths, remotes, custom manager commands).
+///
+/// Per-manager merge semantics live on each spec type's [`MergeSpec`] impl, so
+/// this function holds no per-field logic: every manager is a uniform call and
+/// adding a field to a spec cannot silently drift the merge layer.
 pub fn merge_packages(target: &mut PackagesSpec, source: &PackagesSpec) {
-    if let Some(ref brew) = source.brew {
-        let target_brew = target.brew.get_or_insert_with(Default::default);
-        if brew.file.is_some() {
-            target_brew.file = brew.file.clone();
-        }
-        union_extend(&mut target_brew.taps, &brew.taps);
-        union_extend(&mut target_brew.formulae, &brew.formulae);
-        union_extend(&mut target_brew.casks, &brew.casks);
-    }
-    if let Some(ref apt) = source.apt {
-        let target_apt = target.apt.get_or_insert_with(Default::default);
-        if apt.file.is_some() {
-            target_apt.file = apt.file.clone();
-        }
-        union_extend(&mut target_apt.packages, &apt.packages);
-    }
-    if let Some(ref cargo) = source.cargo {
-        let target_cargo = target.cargo.get_or_insert_with(Default::default);
-        if cargo.file.is_some() {
-            target_cargo.file = cargo.file.clone();
-        }
-        union_extend(&mut target_cargo.packages, &cargo.packages);
-    }
-    if let Some(ref npm) = source.npm {
-        let target_npm = target.npm.get_or_insert_with(Default::default);
-        if npm.file.is_some() {
-            target_npm.file = npm.file.clone();
-        }
-        union_extend(&mut target_npm.global, &npm.global);
-    }
+    merge_optional(&mut target.brew, &source.brew);
+    merge_optional(&mut target.apt, &source.apt);
+    merge_optional(&mut target.cargo, &source.cargo);
+    merge_optional(&mut target.npm, &source.npm);
+    merge_optional(&mut target.snap, &source.snap);
+    merge_optional(&mut target.flatpak, &source.flatpak);
     union_extend(&mut target.pipx, &source.pipx);
     union_extend(&mut target.dnf, &source.dnf);
     union_extend(&mut target.apk, &source.apk);
@@ -73,34 +66,16 @@ pub fn merge_packages(target: &mut PackagesSpec, source: &PackagesSpec) {
     union_extend(&mut target.zypper, &source.zypper);
     union_extend(&mut target.yum, &source.yum);
     union_extend(&mut target.pkg, &source.pkg);
-    if let Some(ref snap) = source.snap {
-        let target_snap = target.snap.get_or_insert_with(Default::default);
-        union_extend(&mut target_snap.packages, &snap.packages);
-        union_extend(&mut target_snap.classic, &snap.classic);
-    }
-    if let Some(ref flatpak) = source.flatpak {
-        let target_flatpak = target.flatpak.get_or_insert_with(Default::default);
-        union_extend(&mut target_flatpak.packages, &flatpak.packages);
-        if flatpak.remote.is_some() {
-            target_flatpak.remote = flatpak.remote.clone();
-        }
-    }
     union_extend(&mut target.nix, &source.nix);
     union_extend(&mut target.go, &source.go);
     union_extend(&mut target.winget, &source.winget);
     union_extend(&mut target.chocolatey, &source.chocolatey);
     union_extend(&mut target.scoop, &source.scoop);
-    // Custom managers: merge by name, union packages
+    // Custom managers: merge by name (existing entry layered via MergeSpec),
+    // append otherwise. Name is the merge key, so it is never overwritten.
     for custom in &source.custom {
         if let Some(existing) = target.custom.iter_mut().find(|c| c.name == custom.name) {
-            existing.check = custom.check.clone();
-            existing.list_installed = custom.list_installed.clone();
-            existing.install = custom.install.clone();
-            existing.uninstall = custom.uninstall.clone();
-            if custom.update.is_some() {
-                existing.update = custom.update.clone();
-            }
-            union_extend(&mut existing.packages, &custom.packages);
+            existing.merge_from(custom);
         } else {
             target.custom.push(custom.clone());
         }
@@ -226,5 +201,241 @@ fn remove_rejected_from_mapping(
 fn remove_rejected_from_seq(reject_map: &serde_yaml::Mapping, key: &str, target: &mut Vec<String>) {
     if let Some(val) = reject_map.get(serde_yaml::Value::String(key.into())) {
         remove_rejected_list(target, Some(val));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::{BrewSpec, CustomManagerSpec, FlatpakSpec, PackagesSpec, SnapSpec};
+
+    use super::merge_packages;
+
+    fn brew(file: Option<&str>, formulae: &[&str], taps: &[&str], casks: &[&str]) -> BrewSpec {
+        BrewSpec {
+            file: file.map(str::to_string),
+            taps: taps.iter().map(|s| s.to_string()).collect(),
+            formulae: formulae.iter().map(|s| s.to_string()).collect(),
+            casks: casks.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn struct_scalar_field_overwrites_when_source_some() {
+        let mut target = PackagesSpec {
+            brew: Some(brew(Some("a/Brewfile"), &[], &[], &[])),
+            ..Default::default()
+        };
+        let source = PackagesSpec {
+            brew: Some(brew(Some("b/Brewfile"), &[], &[], &[])),
+            ..Default::default()
+        };
+        merge_packages(&mut target, &source);
+        assert_eq!(target.brew.unwrap().file.as_deref(), Some("b/Brewfile"));
+    }
+
+    #[test]
+    fn struct_scalar_field_kept_when_source_none() {
+        let mut target = PackagesSpec {
+            brew: Some(brew(Some("a/Brewfile"), &[], &[], &[])),
+            ..Default::default()
+        };
+        let source = PackagesSpec {
+            brew: Some(brew(None, &["jq"], &[], &[])),
+            ..Default::default()
+        };
+        merge_packages(&mut target, &source);
+        let result = target.brew.unwrap();
+        assert_eq!(result.file.as_deref(), Some("a/Brewfile"));
+        assert_eq!(result.formulae, vec!["jq".to_string()]);
+    }
+
+    #[test]
+    fn struct_list_fields_union_dedup_order_preserved() {
+        let mut target = PackagesSpec {
+            brew: Some(brew(None, &["jq", "ripgrep"], &["a/tap"], &["firefox"])),
+            ..Default::default()
+        };
+        let source = PackagesSpec {
+            brew: Some(brew(
+                None,
+                &["ripgrep", "bat"],
+                &["a/tap", "b/tap"],
+                &["firefox", "chrome"],
+            )),
+            ..Default::default()
+        };
+        merge_packages(&mut target, &source);
+        let result = target.brew.unwrap();
+        assert_eq!(result.formulae, vec!["jq", "ripgrep", "bat"]);
+        assert_eq!(result.taps, vec!["a/tap", "b/tap"]);
+        assert_eq!(result.casks, vec!["firefox", "chrome"]);
+    }
+
+    #[test]
+    fn struct_manager_inserted_when_target_none() {
+        let mut target = PackagesSpec::default();
+        let source = PackagesSpec {
+            brew: Some(brew(Some("Brewfile"), &["jq"], &["x/tap"], &["app"])),
+            ..Default::default()
+        };
+        merge_packages(&mut target, &source);
+        let result = target.brew.expect("brew inserted from source");
+        assert_eq!(result.file.as_deref(), Some("Brewfile"));
+        assert_eq!(result.formulae, vec!["jq".to_string()]);
+        assert_eq!(result.taps, vec!["x/tap".to_string()]);
+        assert_eq!(result.casks, vec!["app".to_string()]);
+    }
+
+    #[test]
+    fn snap_dual_list_fields_union_dedup() {
+        let mut target = PackagesSpec {
+            snap: Some(SnapSpec {
+                packages: vec!["a".into(), "b".into()],
+                classic: vec!["code".into()],
+            }),
+            ..Default::default()
+        };
+        let source = PackagesSpec {
+            snap: Some(SnapSpec {
+                packages: vec!["b".into(), "c".into()],
+                classic: vec!["code".into(), "go".into()],
+            }),
+            ..Default::default()
+        };
+        merge_packages(&mut target, &source);
+        let result = target.snap.unwrap();
+        assert_eq!(result.packages, vec!["a", "b", "c"]);
+        assert_eq!(result.classic, vec!["code", "go"]);
+    }
+
+    #[test]
+    fn flatpak_scalar_remote_overwrites_list_unions() {
+        let mut target = PackagesSpec {
+            flatpak: Some(FlatpakSpec {
+                packages: vec!["org.gimp.GIMP".into()],
+                remote: Some("flathub".into()),
+            }),
+            ..Default::default()
+        };
+        let source = PackagesSpec {
+            flatpak: Some(FlatpakSpec {
+                packages: vec!["org.gimp.GIMP".into(), "org.inkscape.Inkscape".into()],
+                remote: Some("flathub-beta".into()),
+            }),
+            ..Default::default()
+        };
+        merge_packages(&mut target, &source);
+        let result = target.flatpak.unwrap();
+        assert_eq!(
+            result.packages,
+            vec!["org.gimp.GIMP", "org.inkscape.Inkscape"]
+        );
+        assert_eq!(result.remote.as_deref(), Some("flathub-beta"));
+    }
+
+    #[test]
+    fn bare_list_manager_unions_dedup() {
+        let mut target = PackagesSpec {
+            pipx: vec!["black".into(), "ruff".into()],
+            ..Default::default()
+        };
+        let source = PackagesSpec {
+            pipx: vec!["ruff".into(), "mypy".into()],
+            ..Default::default()
+        };
+        merge_packages(&mut target, &source);
+        assert_eq!(target.pipx, vec!["black", "ruff", "mypy"]);
+    }
+
+    #[test]
+    fn custom_manager_merges_by_name() {
+        let base = || CustomManagerSpec {
+            name: "asdf".into(),
+            check: "asdf which".into(),
+            list_installed: "asdf list".into(),
+            install: "asdf install".into(),
+            uninstall: "asdf uninstall".into(),
+            update: Some("asdf update old".into()),
+            packages: vec!["nodejs".into()],
+        };
+        let mut target = PackagesSpec {
+            custom: vec![base()],
+            ..Default::default()
+        };
+        let source = PackagesSpec {
+            custom: vec![CustomManagerSpec {
+                update: Some("asdf update new".into()),
+                packages: vec!["nodejs".into(), "python".into()],
+                ..base()
+            }],
+            ..Default::default()
+        };
+        merge_packages(&mut target, &source);
+        assert_eq!(target.custom.len(), 1);
+        let merged = &target.custom[0];
+        assert_eq!(merged.name, "asdf");
+        assert_eq!(merged.update.as_deref(), Some("asdf update new"));
+        assert_eq!(merged.packages, vec!["nodejs", "python"]);
+    }
+
+    #[test]
+    fn custom_manager_appended_when_new_name() {
+        let mut target = PackagesSpec {
+            custom: vec![CustomManagerSpec {
+                name: "asdf".into(),
+                check: "c".into(),
+                list_installed: "l".into(),
+                install: "i".into(),
+                uninstall: "u".into(),
+                update: None,
+                packages: vec![],
+            }],
+            ..Default::default()
+        };
+        let source = PackagesSpec {
+            custom: vec![CustomManagerSpec {
+                name: "mise".into(),
+                check: "c2".into(),
+                list_installed: "l2".into(),
+                install: "i2".into(),
+                uninstall: "u2".into(),
+                update: None,
+                packages: vec!["node".into()],
+            }],
+            ..Default::default()
+        };
+        merge_packages(&mut target, &source);
+        assert_eq!(target.custom.len(), 2);
+        assert_eq!(target.custom[1].name, "mise");
+    }
+
+    #[test]
+    fn custom_update_none_keeps_existing() {
+        let mut target = PackagesSpec {
+            custom: vec![CustomManagerSpec {
+                name: "asdf".into(),
+                check: "c".into(),
+                list_installed: "l".into(),
+                install: "i".into(),
+                uninstall: "u".into(),
+                update: Some("keep me".into()),
+                packages: vec![],
+            }],
+            ..Default::default()
+        };
+        let source = PackagesSpec {
+            custom: vec![CustomManagerSpec {
+                name: "asdf".into(),
+                check: "c".into(),
+                list_installed: "l".into(),
+                install: "i".into(),
+                uninstall: "u".into(),
+                update: None,
+                packages: vec![],
+            }],
+            ..Default::default()
+        };
+        merge_packages(&mut target, &source);
+        assert_eq!(target.custom[0].update.as_deref(), Some("keep me"));
     }
 }
