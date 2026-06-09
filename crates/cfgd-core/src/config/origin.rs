@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OriginSpec {
     #[serde(rename = "type")]
@@ -19,7 +19,9 @@ pub struct OriginSpec {
 }
 
 /// SSH `StrictHostKeyChecking` policy for git operations over SSH.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema,
+)]
 pub enum SshHostKeyPolicy {
     /// Accept first-seen keys, reject changed keys (safe default for automation).
     #[default]
@@ -40,7 +42,7 @@ impl SshHostKeyPolicy {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum OriginType {
     Git,
     Server,

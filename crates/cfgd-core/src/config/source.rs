@@ -7,7 +7,7 @@ use super::profile_spec::{EncryptionConstraint, ManagedFileSpec, PackagesSpec, S
 
 // --- Multi-source config management ---
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceSpec {
     pub name: String,
@@ -18,7 +18,7 @@ pub struct SourceSpec {
     pub sync: SourceSyncSpec,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubscriptionSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -36,8 +36,10 @@ pub struct SubscriptionSpec {
     #[serde(default)]
     pub allow_scripts: bool,
     #[serde(default)]
+    #[schemars(with = "serde_json::Value")]
     pub overrides: serde_yaml::Value,
     #[serde(default)]
+    #[schemars(with = "serde_json::Value")]
     pub reject: serde_yaml::Value,
 }
 
@@ -59,7 +61,7 @@ fn default_source_priority() -> u32 {
     500
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceSyncSpec {
     #[serde(default = "default_sync_interval")]
@@ -95,7 +97,7 @@ pub(super) fn default_sync_interval() -> String {
 
 // --- ConfigSource manifest (published by team, lives in source repo as cfgd-source.yaml) ---
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourceDocument {
     pub api_version: String,
@@ -104,7 +106,7 @@ pub struct ConfigSourceDocument {
     pub spec: ConfigSourceSpec,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourceMetadata {
     pub name: String,
@@ -114,7 +116,7 @@ pub struct ConfigSourceMetadata {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourceSpec {
     #[serde(default)]
@@ -123,7 +125,7 @@ pub struct ConfigSourceSpec {
     pub policy: ConfigSourcePolicy,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourceProvides {
     #[serde(default)]
@@ -138,7 +140,7 @@ pub struct ConfigSourceProvides {
 
 /// Detailed profile entry in a ConfigSource manifest.
 /// When present, provides richer info than the flat `profiles` list.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourceProfileEntry {
     pub name: String,
@@ -150,7 +152,7 @@ pub struct ConfigSourceProfileEntry {
     pub inherits: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigSourcePolicy {
     #[serde(default)]
@@ -165,7 +167,7 @@ pub struct ConfigSourcePolicy {
     pub constraints: SourceConstraints,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct EnvVar {
     pub name: String,
@@ -192,7 +194,7 @@ impl<'de> Deserialize<'de> for EnvVar {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ShellAlias {
     pub name: String,
@@ -219,7 +221,7 @@ impl<'de> Deserialize<'de> for ShellAlias {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PolicyItems {
     #[serde(default)]
@@ -231,6 +233,7 @@ pub struct PolicyItems {
     #[serde(default)]
     pub aliases: Vec<ShellAlias>,
     #[serde(default)]
+    #[schemars(with = "std::collections::HashMap<String, serde_json::Value>")]
     pub system: HashMap<String, serde_yaml::Value>,
     #[serde(default)]
     pub profiles: Vec<String>,
@@ -240,7 +243,7 @@ pub struct PolicyItems {
     pub secrets: Vec<SecretSpec>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceConstraints {
     #[serde(default = "default_true")]

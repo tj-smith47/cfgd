@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::source::default_sync_interval;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SyncConfig {
     #[serde(default)]
@@ -16,7 +16,7 @@ pub struct SyncConfig {
     pub interval: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NotifyConfig {
     #[serde(default)]
@@ -27,7 +27,7 @@ pub struct NotifyConfig {
     pub webhook_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum NotifyMethod {
     #[default]
     Desktop,
@@ -35,7 +35,7 @@ pub enum NotifyMethod {
     Webhook,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SecretsConfig {
     #[serde(default = "default_secrets_backend")]
@@ -50,7 +50,7 @@ fn default_secrets_backend() -> String {
     "sops".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SopsConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,11 +60,12 @@ pub struct SopsConfig {
 // no deny_unknown_fields — incompatible with serde(flatten) on `extra`; the
 // flattened map intentionally captures arbitrary per-backend keys (vault, item,
 // etc.) and `deny_unknown_fields` would short-circuit that routing.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SecretIntegration {
     pub name: String,
     #[serde(flatten)]
+    #[schemars(with = "std::collections::HashMap<String, serde_json::Value>")]
     pub extra: HashMap<String, serde_yaml::Value>,
 }
 

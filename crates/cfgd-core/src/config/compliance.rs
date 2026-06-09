@@ -6,7 +6,7 @@ use super::source::default_true;
 // Compliance configuration
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ComplianceConfig {
     #[serde(default)]
@@ -28,7 +28,7 @@ fn default_compliance_retention() -> String {
     "30d".into()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ComplianceScope {
     #[serde(default = "default_true")]
@@ -58,14 +58,14 @@ impl Default for ComplianceScope {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 pub enum ComplianceFormat {
     #[default]
     Json,
     Yaml,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ComplianceExport {
     #[serde(default)]

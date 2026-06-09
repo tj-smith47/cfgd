@@ -10,7 +10,7 @@ use crate::errors::{ConfigError, Result};
 
 // --- Module ---
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleDocument {
     pub api_version: String,
@@ -19,7 +19,7 @@ pub struct ModuleDocument {
     pub spec: ModuleSpec,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleMetadata {
     pub name: String,
@@ -27,7 +27,7 @@ pub struct ModuleMetadata {
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleSpec {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -59,10 +59,11 @@ pub struct ModuleSpec {
     /// System configurator settings contributed by this module.
     /// Deep-merged into the profile system map; module values override profile values at leaf level.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[schemars(with = "std::collections::HashMap<String, serde_json::Value>")]
     pub system: HashMap<String, serde_yaml::Value>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModulePackageEntry {
     #[serde(default)]
@@ -107,7 +108,7 @@ pub struct ModulePackageEntry {
     pub platforms: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleFileEntry {
     pub source: String,
@@ -128,7 +129,9 @@ pub struct ModuleFileEntry {
 }
 
 /// Interpreter for inline lifecycle scripts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum ScriptShell {
     /// Platform default: `sh` on Unix, `cmd.exe` on Windows.
@@ -141,7 +144,7 @@ pub enum ScriptShell {
     Cmd,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum ScriptEntry {
     Simple(String),
@@ -226,7 +229,7 @@ impl std::fmt::Display for ScriptEntry {
 
 /// Lockfile recording pinned remote modules with integrity hashes.
 /// Stored at `<config_dir>/modules.lock`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleLockfile {
     #[serde(default)]
@@ -234,7 +237,7 @@ pub struct ModuleLockfile {
 }
 
 /// A single locked remote module.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleLockEntry {
     /// Module name (matches metadata.name in the module spec).
@@ -255,7 +258,7 @@ pub struct ModuleLockEntry {
 // --- Module Registries ---
 
 /// A module registry — a git repo containing modules in `modules/<name>/module.yaml` structure.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleRegistryEntry {
     /// Short name / alias for this source (defaults to GitHub org name).

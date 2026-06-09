@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::sync_secrets::{NotifyConfig, SyncConfig};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DaemonConfig {
     #[serde(default)]
@@ -22,7 +22,7 @@ pub struct DaemonConfig {
     pub windows_event_log: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReconcileConfig {
     #[serde(default = "default_reconcile_interval")]
@@ -47,7 +47,7 @@ pub struct ReconcileConfig {
 
 /// A kustomize-style reconcile patch targeting a specific module or profile.
 /// When `name` is omitted, the patch applies to all entities of the given kind.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReconcilePatch {
     pub kind: ReconcilePatchKind,
@@ -61,14 +61,14 @@ pub struct ReconcilePatch {
     pub drift_policy: Option<DriftPolicy>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum ReconcilePatchKind {
     Module,
     Profile,
 }
 
 /// Daemon drift reconciliation policy. PascalCase values match K8s enum conventions.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum DriftPolicy {
     /// Apply drift corrections automatically (current behavior, now opt-in).
     Auto,
@@ -79,7 +79,7 @@ pub enum DriftPolicy {
     Prompt,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AutoApplyPolicyConfig {
     #[serde(default = "default_policy_notify")]
@@ -100,7 +100,7 @@ impl Default for AutoApplyPolicyConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum PolicyAction {
     Notify,
     Accept,

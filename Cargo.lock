@@ -586,6 +586,7 @@ dependencies = [
  "openssl",
  "pretty_assertions",
  "rusqlite",
+ "schemars 0.8.22",
  "secrecy",
  "semver",
  "serde",

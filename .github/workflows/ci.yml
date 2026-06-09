@@ -62,6 +62,8 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Clippy
         run: task clippy
+      - name: Schema drift guard
+        run: task schema:check
 
   test:
     name: Tests (${{ matrix.os }})

@@ -16,12 +16,23 @@ description = "Core library for cfgd — shared types, providers, reconciler, st
 keywords = ["config", "management", "gitops", "reconciliation", "declarative"]
 categories = ["config", "command-line-utilities"]
 
+# Editor-config JSON schema generator. Emits schemas/*.schema.json from the
+# config document types so the published SchemaStore schemas are generated,
+# not hand-written. Mirrors cfgd-operator's `cfgd-gen-crds` bin (gen_crds.rs).
+[[bin]]
+name = "cfgd-gen-schemas"
+path = "src/bin/gen_schemas.rs"
+
 [dependencies]
 # Serialization / Config
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 toml = "0.8"
+# JSON Schema generation for the published editor-config schemas
+# (schemas/*.schema.json). Derived on the config document types so the
+# schemas are generated from the Rust structs and can never silently drift.
+schemars = "0.8"
 
 # Output & Theming
 console = "0.15"

@@ -1,138 +1,474 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://cfgd.io/schemas/cfgd-module.schema.json",
-  "title": "cfgd Module",
-  "description": "Schema for cfgd Module documents (kind: Module)",
-  "type": "object",
-  "required": ["apiVersion", "kind", "metadata", "spec"],
-  "properties": {
-    "apiVersion": {
-      "type": "string",
-      "const": "cfgd.io/v1alpha1"
-    },
-    "kind": {
-      "type": "string",
-      "const": "Module"
-    },
-    "metadata": {
-      "type": "object",
-      "required": ["name"],
-      "properties": {
-        "name": {
-          "type": "string",
-          "description": "Module name"
-        },
-        "description": {
-          "type": "string",
-          "description": "Human-readable module description"
-        }
-      }
-    },
-    "spec": {
-      "type": "object",
-      "properties": {
-        "depends": {
-          "type": "array",
-          "items": { "type": "string" },
-          "default": [],
-          "description": "Module names this module depends on (installed first)"
-        },
-        "env": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "name": { "type": "string" },
-              "value": { "type": "string" }
-            },
-            "required": ["name", "value"]
-          },
-          "default": [],
-          "description": "Environment variables as name/value pairs"
-        },
-        "packages": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/packageEntry" },
-          "default": [],
-          "description": "Packages to install, with cross-platform resolution"
-        },
-        "files": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/fileEntry" },
-          "default": [],
-          "description": "Files to deploy (local paths or git URLs)"
-        },
-        "scripts": {
-          "type": "object",
-          "properties": {
-            "post-apply": {
-              "type": "array",
-              "items": { "type": "string" },
-              "default": [],
-              "description": "Commands to run after module packages and files are applied"
-            }
-          }
-        }
-      }
-    }
-  },
   "$defs": {
-    "packageEntry": {
-      "type": "object",
-      "required": ["name"],
+    "EncryptionMode": {
+      "description": "Controls when encryption is required for a managed file.",
+      "oneOf": [
+        {
+          "description": "File must be encrypted when stored in the repository.",
+          "enum": [
+            "InRepo"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "File must always be encrypted, including at rest on disk.",
+          "enum": [
+            "Always"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "EncryptionSpec": {
+      "additionalProperties": false,
+      "description": "Encryption settings for a managed file.",
+      "properties": {
+        "backend": {
+          "description": "The encryption backend to use (e.g. \"sops\", \"age\").",
+          "type": "string"
+        },
+        "mode": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/EncryptionMode"
+            }
+          ],
+          "default": "InRepo",
+          "description": "When encryption must be enforced. Defaults to `InRepo`."
+        }
+      },
+      "required": [
+        "backend"
+      ],
+      "type": "object"
+    },
+    "EnvVar": {
       "properties": {
         "name": {
-          "type": "string",
-          "description": "Canonical package name"
+          "type": "string"
         },
-        "min-version": {
-          "type": "string",
-          "description": "Minimum acceptable version (semver)"
-        },
-        "prefer": {
-          "type": "array",
-          "items": { "type": "string" },
-          "description": "Ordered list of managers to try. If omitted, uses platform's native manager."
-        },
-        "aliases": {
-          "type": "object",
-          "additionalProperties": { "type": "string" },
-          "description": "Per-manager name overrides (e.g., {\"apt\": \"fd-find\"} for fd)"
-        },
-        "script": {
-          "type": "string",
-          "description": "Inline shell script or path. Used when prefer includes 'script'."
-        },
-        "platforms": {
-          "type": "array",
-          "items": { "type": "string" },
-          "description": "Platform filter. Skip on non-matching platforms (e.g., [\"linux\", \"ubuntu\", \"x86_64\"])."
+        "value": {
+          "type": "string"
         }
-      }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "type": "object"
     },
-    "fileEntry": {
-      "type": "object",
-      "required": ["source", "target"],
+    "FileStrategy": {
+      "description": "File deployment strategy.",
+      "oneOf": [
+        {
+          "description": "Create a symbolic link from target to source (default).",
+          "enum": [
+            "Symlink"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Copy source content to target.",
+          "enum": [
+            "Copy"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Render a Tera template and write the output (auto-selected for .tera files).",
+          "enum": [
+            "Template"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Create a hard link from target to source.",
+          "enum": [
+            "Hardlink"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "ModuleFileEntry": {
+      "additionalProperties": false,
       "properties": {
-        "source": {
-          "type": "string",
-          "description": "Local path (relative to module dir) or git URL"
+        "encryption": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EncryptionSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Encryption settings for this module file."
         },
-        "target": {
-          "type": "string",
-          "description": "Absolute target path on the machine"
-        },
-        "strategy": {
-          "type": "string",
-          "enum": ["symlink", "copy", "template", "hardlink"],
-          "description": "File deployment strategy override"
+        "permissions": {
+          "description": "Unix permission bits (e.g. \"600\", \"644\") to apply after deployment.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "private": {
-          "type": "boolean",
-          "default": false,
-          "description": "When true, file is local-only (auto-gitignored)"
+          "description": "When true, the source file is local-only: auto-added to .gitignore, silently skipped on machines where it doesn't exist.",
+          "type": "boolean"
+        },
+        "source": {
+          "type": "string"
+        },
+        "strategy": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FileStrategy"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Per-file deployment strategy override. If None, uses the global default."
+        },
+        "target": {
+          "type": "string"
         }
-      }
+      },
+      "required": [
+        "source",
+        "target"
+      ],
+      "type": "object"
+    },
+    "ModuleMetadata": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "ModulePackageEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "aliases": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "creates": {
+          "description": "Skip the install script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks. Only meaningful for a `prefer: [script]` install; ignored otherwise.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "deny": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "minVersion": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "default": "",
+          "type": "string"
+        },
+        "onlyIf": {
+          "description": "Run the install script only if this command exits zero. A non-zero exit skips the install (the condition for installing was not met). Only meaningful for a `prefer: [script]` install; ignored for manager-backed installs (those are idempotent via the manager's installed-package query).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "platforms": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "prefer": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "script": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unless": {
+          "description": "Run the install script only if this command exits NON-zero. A zero exit (success) skips the install (the package already appears present). Only meaningful for a `prefer: [script]` install; ignored otherwise.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ModuleSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "aliases": {
+          "items": {
+            "$ref": "#/$defs/ShellAlias"
+          },
+          "type": "array"
+        },
+        "depends": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "env": {
+          "items": {
+            "$ref": "#/$defs/EnvVar"
+          },
+          "type": "array"
+        },
+        "files": {
+          "items": {
+            "$ref": "#/$defs/ModuleFileEntry"
+          },
+          "type": "array"
+        },
+        "packages": {
+          "items": {
+            "$ref": "#/$defs/ModulePackageEntry"
+          },
+          "type": "array"
+        },
+        "platforms": {
+          "description": "Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a Skipped action rather than vanishing). Tags are matched against OS / distro / arch via `Platform::matches_any`; the canonical macOS token is `macos`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "scripts": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ScriptSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "system": {
+          "additionalProperties": true,
+          "description": "System configurator settings contributed by this module. Deep-merged into the profile system map; module values override profile values at leaf level.",
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "ScriptEntry": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "properties": {
+            "continueOnError": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "creates": {
+              "description": "Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "idleTimeout": {
+              "description": "Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "interactive": {
+              "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+              "type": "boolean"
+            },
+            "onlyIf": {
+              "description": "Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "run": {
+              "type": "string"
+            },
+            "shell": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/ScriptShell"
+                }
+              ],
+              "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts."
+            },
+            "timeout": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "unless": {
+              "description": "Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workdir": {
+              "description": "Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "run"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ScriptShell": {
+      "description": "Interpreter for inline lifecycle scripts.",
+      "oneOf": [
+        {
+          "enum": [
+            "sh",
+            "bash",
+            "zsh",
+            "pwsh",
+            "cmd"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Platform default: `sh` on Unix, `cmd.exe` on Windows.",
+          "enum": [
+            "auto"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "ScriptSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "onChange": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ScriptEntry"
+          },
+          "type": "array"
+        },
+        "onDrift": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ScriptEntry"
+          },
+          "type": "array"
+        },
+        "postApply": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ScriptEntry"
+          },
+          "type": "array"
+        },
+        "postReconcile": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ScriptEntry"
+          },
+          "type": "array"
+        },
+        "preApply": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ScriptEntry"
+          },
+          "type": "array"
+        },
+        "preReconcile": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ScriptEntry"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ShellAlias": {
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "command",
+        "name"
+      ],
+      "type": "object"
     }
-  }
+  },
+  "$id": "https://cfgd.io/schemas/cfgd-module.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Schema for cfgd Module documents (kind: Module)",
+  "properties": {
+    "apiVersion": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "metadata": {
+      "$ref": "#/$defs/ModuleMetadata"
+    },
+    "spec": {
+      "$ref": "#/$defs/ModuleSpec"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
+  "title": "cfgd Module",
+  "type": "object"
 }

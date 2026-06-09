@@ -123,6 +123,30 @@ tasks:
     cmds:
       - bash .claude/scripts/audit.sh
 
+  schema:generate:
+    desc: Regenerate the published editor-config JSON schemas (schemas/*.schema.json) from the Rust config structs.
+    deps: [_check:tmp-headroom]
+    cmds:
+      - cargo run -q -p cfgd-core --bin cfgd-gen-schemas -- schemas
+
+  schema:check:
+    desc: Verify schemas/*.schema.json are up to date with the Rust config structs (CI drift guard).
+    deps: [_check:tmp-headroom]
+    cmds:
+      - cmd: |
+          set -e
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          cargo run -q -p cfgd-core --bin cfgd-gen-schemas -- "$tmp"
+          for f in cfgd-config cfgd-module cfgd-profile cfgd-source; do
+            if ! diff -u "schemas/$f.schema.json" "$tmp/$f.schema.json"; then
+              echo ""
+              echo "ERROR: schemas/$f.schema.json is out of date — run: task schema:generate"
+              exit 1
+            fi
+          done
+          echo "schemas up to date"
+
   coverage:check:
     desc: Run workspace test coverage and write cobertura.xml. Prints the same percentage the README badge shows. No branch switching, no push.
     cmds:
@@ -222,6 +246,7 @@ tasks:
     cmds:
       - task: fmt:check
       - task: clippy
+      - task: schema:check
       - task: test
       - task: audit
       - task: audit:test

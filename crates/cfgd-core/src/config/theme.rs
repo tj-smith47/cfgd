@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ThemeConfig {
     #[serde(default = "default_theme_name")]
@@ -69,7 +69,7 @@ impl<'de> serde::Deserialize<'de> for ThemeConfig {
 // are deliberately ignored at the typed-deserialize layer so old configs keep
 // parsing; `parse::warn_on_legacy_theme_keys` surfaces them as `tracing::warn!`
 // so users see their override did nothing and can migrate cleanly.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ThemeOverrides {
     // Style overrides (12) — hex colors applied on top of the active preset.

@@ -154,7 +154,7 @@ where
 }
 // --- Profile ---
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProfileDocument {
     pub api_version: String,
@@ -163,13 +163,13 @@ pub struct ProfileDocument {
     pub spec: ProfileSpec,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProfileMetadata {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProfileSpec {
     #[serde(default)]
@@ -199,6 +199,7 @@ pub struct ProfileSpec {
     pub files: Option<FilesSpec>,
 
     #[serde(default)]
+    #[schemars(with = "std::collections::HashMap<String, serde_json::Value>")]
     pub system: HashMap<String, serde_yaml::Value>,
 
     #[serde(default)]
@@ -213,7 +214,9 @@ pub struct ProfileSpec {
 /// The two env fields differ by *scope of affected users*: `spec.env` targets
 /// the current user, `spec.system.environment` targets all users (privileged).
 /// This knob narrows the *current-user* reach; it never widens beyond the user.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub enum EnvScope {
     /// Every standard user entry point cfgd can safely touch: interactive +
     /// login shells, `systemd --user` / Wayland GUI sessions, macOS GUI apps,
@@ -229,7 +232,7 @@ pub enum EnvScope {
     Interactive,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackagesSpec {
     #[serde(default, deserialize_with = "list_or_struct")]
@@ -362,7 +365,7 @@ impl PackagesSpec {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BrewSpec {
     #[serde(default)]
@@ -386,7 +389,7 @@ impl FromPackageList for BrewSpec {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AptSpec {
     #[serde(default)]
@@ -404,7 +407,7 @@ impl FromPackageList for AptSpec {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NpmSpec {
     #[serde(default)]
@@ -426,7 +429,7 @@ impl FromPackageList for NpmSpec {
 /// Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`)
 /// and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the
 /// shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CargoSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -444,7 +447,7 @@ impl FromPackageList for CargoSpec {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SnapSpec {
     #[serde(default)]
@@ -462,7 +465,7 @@ impl FromPackageList for SnapSpec {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FlatpakSpec {
     #[serde(default)]
@@ -480,7 +483,7 @@ impl FromPackageList for FlatpakSpec {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CustomManagerSpec {
     pub name: String,
@@ -494,7 +497,7 @@ pub struct CustomManagerSpec {
     pub packages: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FilesSpec {
     #[serde(default)]
@@ -504,7 +507,9 @@ pub struct FilesSpec {
 }
 
 /// File deployment strategy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub enum FileStrategy {
     /// Create a symbolic link from target to source (default).
     #[default]
@@ -518,7 +523,9 @@ pub enum FileStrategy {
 }
 
 /// Controls when encryption is required for a managed file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub enum EncryptionMode {
     /// File must be encrypted when stored in the repository.
     #[default]
@@ -528,7 +535,7 @@ pub enum EncryptionMode {
 }
 
 /// Encryption settings for a managed file.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EncryptionSpec {
     /// The encryption backend to use (e.g. "sops", "age").
@@ -539,7 +546,7 @@ pub struct EncryptionSpec {
 }
 
 /// Encryption constraint applied to files from a config source.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EncryptionConstraint {
     /// Glob patterns or explicit paths that must be encrypted.
@@ -553,7 +560,7 @@ pub struct EncryptionConstraint {
     pub mode: Option<EncryptionMode>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedFileSpec {
     pub source: String,
@@ -577,7 +584,13 @@ pub struct ManagedFileSpec {
     pub permissions: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// `target` XOR `envs` (at least one required) is enforced at runtime by
+// `validate_secret_specs`, not in the JSON schema: both are plain `Option`
+// fields, so the generated schema marks them optional. Expressing the XOR
+// would require a hand-written `oneOf`, which would drift from this struct —
+// the by-construction generation is the priority, runtime validation is the
+// backstop.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SecretSpec {
     pub source: String,
@@ -607,7 +620,7 @@ pub fn validate_secret_specs(specs: &[SecretSpec]) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ScriptSpec {
     #[serde(default)]
