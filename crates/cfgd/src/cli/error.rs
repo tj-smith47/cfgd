@@ -22,6 +22,11 @@ pub struct CliErrorMeta {
     pub message: String,
     pub extras: serde_json::Value,
     pub hints: Vec<String>,
+    /// Verbatim, copy-pasteable lines (e.g. a YAML snippet) replayed AFTER the
+    /// hints in human mode only. Rendered as a tight code block — no `→` glyph,
+    /// no blank lines between rows — so a multi-line remediation snippet stays
+    /// readable and pasteable. Empty for the common case.
+    pub code_block: Vec<String>,
 }
 
 impl std::fmt::Display for CliErrorMeta {
@@ -39,12 +44,24 @@ fn meta(
     extras: serde_json::Value,
     hints: Vec<String>,
 ) -> CliErrorMeta {
+    meta_full(name, error_kind, message, extras, hints, Vec::new())
+}
+
+fn meta_full(
+    name: impl Into<String>,
+    error_kind: impl Into<String>,
+    message: impl Into<String>,
+    extras: serde_json::Value,
+    hints: Vec<String>,
+    code_block: Vec<String>,
+) -> CliErrorMeta {
     CliErrorMeta {
         error_kind: error_kind.into(),
         name: name.into(),
         message: message.into(),
         extras,
         hints,
+        code_block,
     }
 }
 
@@ -95,6 +112,24 @@ pub fn cli_error_ctx_with_hints(
     hints: Vec<String>,
 ) -> anyhow::Error {
     source.context(meta(name, error_kind, message, extras, hints))
+}
+
+/// Like [`cli_error_ctx_with_hints`] but also carries a tight `code_block` of
+/// verbatim lines (e.g. a YAML snippet) replayed after the hints in human mode.
+/// The block renders without per-line glyphs or inter-row blanks so it stays
+/// copy-pasteable; the typed `source` error is preserved for exit-code downcast.
+pub fn cli_error_ctx_with_hints_and_block(
+    source: anyhow::Error,
+    name: impl Into<String>,
+    error_kind: impl Into<String>,
+    message: impl Into<String>,
+    extras: serde_json::Value,
+    hints: Vec<String>,
+    code_block: Vec<String>,
+) -> anyhow::Error {
+    source.context(meta_full(
+        name, error_kind, message, extras, hints, code_block,
+    ))
 }
 
 /// Emit the idempotent no-op success Doc for a `--ignore-not-found` removal of a
@@ -165,6 +200,12 @@ pub fn render_cli_error(
             );
             for hint in &m.hints {
                 doc = doc.hint(hint.clone());
+            }
+            // The code block renders after the hints in human mode as a tight,
+            // copy-pasteable snippet. `with_data` keeps it out of the structured
+            // payload, same as the hints above.
+            if !m.code_block.is_empty() {
+                doc = doc.code_block(m.code_block.clone());
             }
             doc
         }

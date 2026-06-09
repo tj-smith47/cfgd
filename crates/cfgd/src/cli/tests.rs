@@ -8290,6 +8290,180 @@ fn load_config_and_profile_missing_profile_errors() {
     );
 }
 
+#[test]
+fn load_config_and_profile_active_profile_delivered_by_source_emits_wrap_hint() {
+    // The active profile names a profile that exists ONLY in a subscribed
+    // source's cached profiles/. The smart error must (a) carry the wrap hint
+    // naming the providing source, and (b) still downcast to exit code 6.
+    let (config_dir, state_dir) = setup_test_env();
+    std::fs::write(
+        config_dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: acme-backend\n  sources:\n    - name: acme-corp\n      origin:\n        type: Git\n        url: git@github.com:acme-corp/dev-config.git\n        branch: master\n",
+    )
+    .unwrap();
+
+    // Seed the source cache with a profile the local config doesn't have.
+    let src_profiles = state_dir
+        .path()
+        .join("sources")
+        .join("acme-corp")
+        .join("profiles");
+    std::fs::create_dir_all(&src_profiles).unwrap();
+    std::fs::write(
+        src_profiles.join("acme-backend.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: acme-backend\nspec: {}\n",
+    )
+    .unwrap();
+
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+
+    let err = super::load_config_and_profile(&cli).unwrap_err();
+
+    // Exit code survives the metadata wrap (typed ProfileNotFound → exit 6).
+    assert_eq!(
+        super::exit_code_for_anyhow(&err),
+        cfgd_core::exit::ExitCode::NotFound,
+        "source-delivered profile must still resolve exit 6"
+    );
+
+    let meta = err
+        .downcast_ref::<super::CliErrorMeta>()
+        .expect("smart error carries CliErrorMeta");
+    let joined = meta.hints.join("\n");
+    assert!(
+        meta.hints.iter().any(|h| h.contains("acme-corp")),
+        "wrap hint must name the providing source, got: {joined}"
+    );
+    // The YAML wrap lives in the code block, not the hints.
+    assert!(
+        meta.code_block.iter().any(|l| l.contains("subscription:")),
+        "code block must show the subscription wrap, got: {:?}",
+        meta.code_block
+    );
+    assert!(
+        meta.code_block
+            .iter()
+            .any(|l| l.contains("profile: acme-backend")),
+        "code block must wrap the source profile, got: {:?}",
+        meta.code_block
+    );
+    // Every carried line (hint OR code block) must be newline-free so the
+    // write_line debug_assert holds when replayed.
+    assert!(
+        meta.hints
+            .iter()
+            .chain(meta.code_block.iter())
+            .all(|l| !l.contains('\n')),
+        "each carried line must be newline-free, got hints={joined} block={:?}",
+        meta.code_block
+    );
+    // Structured consumers see the providing source(s) and profile name.
+    assert_eq!(meta.extras["profile"], "acme-backend");
+    assert_eq!(meta.extras["sources"], serde_json::json!(["acme-corp"]));
+
+    // Regression: the RENDERED human output must show the YAML block tight —
+    // no `→` glyph on the YAML rows and no blank line between them — so it stays
+    // copy-pasteable (the original BLOCKER: each row replayed as a spaced hint).
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    super::error::render_cli_error(&printer, &err);
+    printer.flush();
+    let out = cfgd_core::output::strip_ansi(&buf.lock().unwrap());
+    let block = "spec:\n  sources:\n    - name: acme-corp\n      subscription:\n        profile: acme-backend\n";
+    assert!(
+        out.contains(block),
+        "YAML block must render contiguous (no `→`, no inter-row blanks), got:\n{out}"
+    );
+}
+
+#[test]
+fn load_config_and_profile_explicit_profile_delivered_by_source_emits_wrap_hint() {
+    // Same remedy applies when the name comes from --profile, not active_profile.
+    let (config_dir, state_dir) = setup_test_env();
+    std::fs::write(
+        config_dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: team-base\n      origin:\n        type: Git\n        url: git@github.com:team/base.git\n        branch: master\n",
+    )
+    .unwrap();
+
+    let src_profiles = state_dir
+        .path()
+        .join("sources")
+        .join("team-base")
+        .join("profiles");
+    std::fs::create_dir_all(&src_profiles).unwrap();
+    std::fs::write(
+        src_profiles.join("hardened.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: hardened\nspec: {}\n",
+    )
+    .unwrap();
+
+    let cli = Cli {
+        profile: Some("hardened".to_string()),
+        ..test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()))
+    };
+
+    let err = super::load_config_and_profile(&cli).unwrap_err();
+
+    assert_eq!(
+        super::exit_code_for_anyhow(&err),
+        cfgd_core::exit::ExitCode::NotFound
+    );
+    let meta = err
+        .downcast_ref::<super::CliErrorMeta>()
+        .expect("smart error carries CliErrorMeta");
+    assert!(
+        meta.hints.iter().any(|h| h.contains("team-base")),
+        "wrap hint must name the providing source, got: {:?}",
+        meta.hints
+    );
+    assert_eq!(meta.extras["profile"], "hardened");
+}
+
+#[test]
+fn load_config_and_profile_plain_typo_returns_bare_not_found() {
+    // No source provides the name → the original bare ProfileNotFound, no hint,
+    // exit 6. The smart-error path must not decorate an honest typo.
+    let (config_dir, state_dir) = setup_test_env();
+    std::fs::write(
+        config_dir.path().join("cfgd.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: typo\n  sources:\n    - name: acme-corp\n      origin:\n        type: Git\n        url: git@github.com:acme-corp/dev-config.git\n        branch: master\n",
+    )
+    .unwrap();
+
+    // Source cache exists but provides a DIFFERENT profile.
+    let src_profiles = state_dir
+        .path()
+        .join("sources")
+        .join("acme-corp")
+        .join("profiles");
+    std::fs::create_dir_all(&src_profiles).unwrap();
+    std::fs::write(
+        src_profiles.join("acme-backend.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: acme-backend\nspec: {}\n",
+    )
+    .unwrap();
+
+    let cli = test_cli_with_state(config_dir.path(), Some(state_dir.path().to_path_buf()));
+
+    let err = super::load_config_and_profile(&cli).unwrap_err();
+
+    assert_eq!(
+        super::exit_code_for_anyhow(&err),
+        cfgd_core::exit::ExitCode::NotFound,
+        "plain typo still exit 6"
+    );
+    assert!(
+        err.downcast_ref::<super::CliErrorMeta>().is_none(),
+        "a plain typo must NOT be decorated with a wrap hint"
+    );
+    assert!(
+        err.to_string().contains("profile not found: typo"),
+        "bare ProfileNotFound preserved, got: {}",
+        err
+    );
+}
+
 // --- add_to_gitignore edge cases ---
 
 #[test]

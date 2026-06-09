@@ -441,6 +441,18 @@ fn source_profiles_dir_nonexistent_source() {
 }
 
 #[test]
+fn cached_profiles_dir_derives_path_without_loading() {
+    // The offline-scan accessor must yield the deterministic cache-layout path
+    // for a source that was NEVER loaded into the in-memory map (unlike
+    // source_profiles_dir, which errors NotFound), and never touch the network.
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = SourceManager::new(dir.path());
+
+    let path = mgr.cached_profiles_dir("acme-corp");
+    assert_eq!(path, dir.path().join("acme-corp").join("profiles"));
+}
+
+#[test]
 fn source_files_dir_nonexistent_source() {
     let dir = tempfile::tempdir().unwrap();
     let mgr = SourceManager::new(dir.path());

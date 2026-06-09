@@ -270,6 +270,24 @@ impl Renderer {
         self.mark_top_level_blank_if_at_root();
     }
 
+    /// Code block: a tight run of verbatim lines (e.g. a copy-pasteable YAML
+    /// snippet). Shown at Normal+ like `hint` (NOT Verbose-only like `note`).
+    /// Unlike `hint`, NO per-line glyph and NO blank line between rows — the
+    /// block renders as one contiguous unit, with a single trailing blank set
+    /// at the end (modeled on `render_kv_block_no_flush`). Each entry in `lines`
+    /// must be newline-free; multi-line content is split by the caller so the
+    /// `write_line` debug_assert holds.
+    pub fn render_code_block(&self, w: &dyn Writer, depth: usize, lines: &[String]) {
+        if self.verbosity == Verbosity::Quiet || lines.is_empty() {
+            return;
+        }
+        self.flush_pending_section_headers(w);
+        for line in lines {
+            self.write_line(w, depth, &self.theme.muted.apply_to(line).to_string());
+        }
+        self.mark_top_level_blank_if_at_root();
+    }
+
     /// Note: multi-line prose. Suppressed at both Quiet and Normal; only Verbose.
     pub fn render_note(&self, w: &dyn Writer, depth: usize, text: &str) {
         if self.verbosity != Verbosity::Verbose {
@@ -287,6 +305,7 @@ impl Renderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::output::strip_ansi;
 
     #[test]
     fn fresh_renderer_at_depth_0() {
@@ -397,6 +416,54 @@ mod tests {
         let s = buf.lock().unwrap();
         assert!(s.contains("→"), "got: {s:?}");
         assert!(s.contains("run cfgd apply"));
+    }
+
+    #[test]
+    fn code_block_renders_tight_no_arrow_no_blank_lines() {
+        let (r, sink, buf) = capture();
+        r.render_code_block(
+            &sink,
+            0,
+            &[
+                "spec:".to_string(),
+                "  sources:".to_string(),
+                "    - name: acme".to_string(),
+            ],
+        );
+        let out = strip_ansi(&buf.lock().unwrap());
+        // Every YAML row present, verbatim, no `→` glyph.
+        assert!(out.contains("spec:"), "got: {out:?}");
+        assert!(out.contains("  sources:"), "got: {out:?}");
+        assert!(out.contains("    - name: acme"), "got: {out:?}");
+        assert!(
+            !out.contains('→'),
+            "code block must NOT prefix `→`: {out:?}"
+        );
+        // Tight: no blank line between rows.
+        assert!(
+            !out.contains("\n\n"),
+            "code block rows must be contiguous: {out:?}"
+        );
+    }
+
+    #[test]
+    fn code_block_shown_at_normal() {
+        // Unlike note (Verbose-only), a code block is visible at Normal.
+        let (r, sink, buf) = capture();
+        r.render_code_block(&sink, 0, &["line".to_string()]);
+        assert!(
+            !buf.lock().unwrap().is_empty(),
+            "code block visible at Normal"
+        );
+    }
+
+    #[test]
+    fn code_block_quiet_suppressed() {
+        let buf = Arc::new(Mutex::new(String::new()));
+        let sink = StringSink(buf.clone());
+        let r = Renderer::new(Theme::default(), Verbosity::Quiet);
+        r.render_code_block(&sink, 0, &["line".to_string()]);
+        assert!(buf.lock().unwrap().is_empty());
     }
 
     #[test]

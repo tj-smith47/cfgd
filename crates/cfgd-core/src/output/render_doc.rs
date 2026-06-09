@@ -68,6 +68,9 @@ fn render_component(renderer: &Renderer, sink: &dyn Writer, c: &Component, depth
         Component::Note { text } => {
             renderer.render_note(sink, depth, text);
         }
+        Component::CodeBlock { lines } => {
+            renderer.render_code_block(sink, depth, lines);
+        }
         Component::Table {
             headers,
             rows,

@@ -34,8 +34,9 @@ pub mod verify;
 pub mod workflow;
 
 pub use error::{
-    CliErrorMeta, cli_error, cli_error_ctx, cli_error_ctx_with_hints, cli_error_with_hints,
-    emit_not_found_ignored, exit_code_for_anyhow,
+    CliErrorMeta, cli_error, cli_error_ctx, cli_error_ctx_with_hints,
+    cli_error_ctx_with_hints_and_block, cli_error_with_hints, emit_not_found_ignored,
+    exit_code_for_anyhow,
 };
 pub use helpers::effective_config_file;
 pub(in crate::cli) use helpers::*;

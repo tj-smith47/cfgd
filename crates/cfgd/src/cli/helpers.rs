@@ -10,8 +10,109 @@ pub(in crate::cli) fn load_config_and_profile(
         Some(p) => p.to_string(),
         None => cfg.active_profile()?.to_string(),
     };
-    let resolved = config::resolve_profile(&profile_name, &profiles_dir(cli))?;
+    let resolved = match config::resolve_profile(&profile_name, &profiles_dir(cli)) {
+        Ok(resolved) => resolved,
+        Err(e) => return Err(decorate_profile_not_found(cli, &cfg, &profile_name, e)),
+    };
     Ok((cfg, profile_name, resolved))
+}
+
+/// Turn a bare `ProfileNotFound` into an actionable error when the requested
+/// profile is actually delivered by a subscribed source. cfgd's composition
+/// model requires the active/selected profile to be a LOCAL profile; a
+/// source-delivered profile is a building block you wrap by setting that
+/// source's `subscription.profile`. Without this, the user sees only "profile
+/// not found" with no clue the name exists remotely.
+///
+/// Best-effort and side-effect-free: it scans each subscribed source's on-disk
+/// profile cache (no network, no signature verification). Any failure to
+/// classify — including a non-`ProfileNotFound` error or no providing source —
+/// returns the original error unchanged, preserving the typed exit code.
+fn decorate_profile_not_found(
+    cli: &Cli,
+    cfg: &CfgdConfig,
+    profile_name: &str,
+    original: cfgd_core::errors::CfgdError,
+) -> anyhow::Error {
+    use cfgd_core::errors::{CfgdError, ConfigError};
+
+    // Only the not-found case (typo OR source-delivered) is decoratable; a
+    // circular-inheritance or parse error must surface as-is.
+    if !matches!(
+        &original,
+        CfgdError::Config(ConfigError::ProfileNotFound { .. })
+    ) {
+        return original.into();
+    }
+
+    let providers = sources_providing_profile(cli, cfg, profile_name);
+    if providers.is_empty() {
+        // A plain typo: no source delivers this name. Bare ProfileNotFound, exit 6.
+        return original.into();
+    }
+
+    let providers_list = providers.join(", ");
+    // `--config` may name a DIRECTORY (the default resolves a dir, then joins the
+    // config filename); normalize to the concrete file the user must open.
+    let config_file = cfgd_core::config::resolve_config_path(&cli.config);
+
+    // Prose stays in hints (one `→` line each); the YAML wrap goes in a tight,
+    // copy-pasteable code block. Schema: spec.sources[].subscription.profile
+    // wires the source profile in (see docs/sources.md); spec.profile is the
+    // local active profile.
+    let hints = vec![
+        cfgd_core::output::collapse_to_subject_line(format!(
+            "Profile '{profile_name}' is delivered by source(s): {providers_list}. The active/selected profile must be a LOCAL profile; wrap the source profile in one."
+        )),
+        cfgd_core::output::collapse_to_subject_line(format!(
+            "Set the source's subscription.profile in {}:",
+            config_file.posix()
+        )),
+    ];
+
+    let code_block = vec![
+        "spec:".to_string(),
+        "  sources:".to_string(),
+        format!("    - name: {}", providers[0]),
+        "      subscription:".to_string(),
+        format!("        profile: {profile_name}"),
+    ];
+
+    let extras = serde_json::json!({
+        "profile": profile_name,
+        "sources": providers,
+    });
+
+    crate::cli::cli_error_ctx_with_hints_and_block(
+        original.into(),
+        profile_name,
+        "profile_source_delivered",
+        format!("profile not found: {profile_name}"),
+        extras,
+        hints,
+        code_block,
+    )
+}
+
+/// Names of subscribed sources whose on-disk profile cache contains a profile
+/// whose stem equals `profile_name`. Best-effort: a source with no cache, an
+/// unreadable dir, or no match is simply omitted (never an error).
+fn sources_providing_profile(cli: &Cli, cfg: &CfgdConfig, profile_name: &str) -> Vec<String> {
+    let Ok(cache_dir) = source_cache_dir(cli) else {
+        return Vec::new();
+    };
+    let mgr = SourceManager::new(&cache_dir);
+    cfg.spec
+        .sources
+        .iter()
+        .filter(|spec| {
+            let dir = mgr.cached_profiles_dir(&spec.name);
+            list_yaml_stems(&dir)
+                .map(|stems| stems.iter().any(|s| s == profile_name))
+                .unwrap_or(false)
+        })
+        .map(|spec| spec.name.clone())
+        .collect()
 }
 
 /// Parse a `--package` flag value. If it contains `:` and the prefix is a known

@@ -140,6 +140,16 @@ impl Doc {
         self
     }
 
+    /// Append a tight, copy-pasteable block of verbatim lines (e.g. a YAML
+    /// snippet). Each entry is one physical line; the renderer emits them
+    /// contiguously with no `→` glyph and no blank lines between rows.
+    pub fn code_block(mut self, lines: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        self.children.push(Component::CodeBlock {
+            lines: lines.into_iter().map(Into::into).collect(),
+        });
+        self
+    }
+
     pub fn table(mut self, t: Table) -> Self {
         self.children.push(Component::Table {
             headers: t.headers,

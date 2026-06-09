@@ -798,6 +798,17 @@ impl SourceManager {
         Ok(cached.local_path.join(PROFILES_DIR))
     }
 
+    /// Deterministic on-disk profiles-directory path for a source name, derived
+    /// from the cache layout WITHOUT requiring the source to be loaded into the
+    /// in-memory map. Unlike [`source_profiles_dir`](Self::source_profiles_dir),
+    /// this never fails on an unloaded source and performs no network or
+    /// signature work — it is the offline-scan entry point (e.g. a CLI smart
+    /// error that wants to know whether a subscribed source would provide a
+    /// given profile). The returned path may not exist.
+    pub fn cached_profiles_dir(&self, source_name: &str) -> PathBuf {
+        self.cache_dir.join(source_name).join(PROFILES_DIR)
+    }
+
     /// Get the source modules directory path (`<cache>/modules`), where bodies
     /// for the names in the manifest's `provides.modules` allow-list live.
     pub fn source_modules_dir(&self, source_name: &str) -> Result<PathBuf> {

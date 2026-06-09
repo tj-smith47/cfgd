@@ -38,6 +38,12 @@ pub enum Component {
     Note {
         text: String,
     },
+    /// A tight, copy-pasteable block of verbatim lines (e.g. a YAML snippet).
+    /// Each entry is one physical line, newline-free; the renderer emits them
+    /// contiguously with no per-line glyph and no blank lines between rows.
+    CodeBlock {
+        lines: Vec<String>,
+    },
     Table {
         headers: Vec<String>,
         rows: Vec<Vec<String>>,
