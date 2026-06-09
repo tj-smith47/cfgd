@@ -223,6 +223,14 @@ fn main() -> anyhow::Result<()> {
         );
     }
 
+    // Silently migrate a legacy combined data dir (state + sources) to the split
+    // state/cache roots before any store opens or the config sentinel is read.
+    // Runs for the daemon too (it is silent, no prompt) so daemon and CLI never
+    // diverge; the default-roots-only gate lives in `legacy_migration_eligible`.
+    if dir_sources.legacy_migration_eligible() {
+        cli::config_migration::migrate_legacy_data_dirs(&printer);
+    }
+
     // One-time macOS prompt to migrate a legacy ~/.config/cfgd to the native
     // location (or pin XDG_CONFIG_HOME). No-op off macOS and in non-interactive
     // sessions; re-resolve the config path when the dir was moved. Skipped for

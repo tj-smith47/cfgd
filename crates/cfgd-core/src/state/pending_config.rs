@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use super::default_state_dir;
 use crate::errors::{Result, StateError};
 
-const PENDING_CONFIG_FILENAME: &str = "pending-server-config.json";
+/// Filename of the desired config the device gateway pushed for later
+/// reconciliation. A migration sidecar artifact in the state dir.
+pub const PENDING_CONFIG_FILENAME: &str = "pending-server-config.json";
 
 /// Save a desired config received from the device gateway for later reconciliation.
 pub fn save_pending_server_config(config: &serde_json::Value) -> Result<PathBuf> {

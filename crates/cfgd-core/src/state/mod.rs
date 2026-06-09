@@ -17,7 +17,8 @@ mod sources;
 mod types;
 
 pub use pending_config::{
-    clear_pending_server_config, load_pending_server_config, save_pending_server_config,
+    PENDING_CONFIG_FILENAME, clear_pending_server_config, load_pending_server_config,
+    save_pending_server_config,
 };
 pub use types::{
     ApplyRecord, ApplyStatus, ComplianceHistoryRow, ConfigSourceRecord, DriftEvent,
@@ -386,6 +387,83 @@ pub fn default_state_dir() -> Result<PathBuf> {
         Some(state) => state.join("cfgd"),
         None => base.data_local_dir().join("cfgd").join("state"),
     })
+}
+
+/// Crash-safe move of the state DB (and any unfolded WAL/SHM sidecars) from a
+/// legacy directory to a new one. Returns `true` when a DB was migrated,
+/// `false` when there was nothing to do.
+///
+/// Never clobbers: when a DB already exists at `new_dir` the legacy DB is left
+/// in place and `false` is returned, so a partial earlier migration (or a fresh
+/// install that already wrote to the new location) is never overwritten.
+///
+/// Before moving, a best-effort `wal_checkpoint(TRUNCATE)` is run against a bare
+/// connection (no schema migrations) to fold the WAL into the main DB file. When
+/// the checkpoint succeeds the folded sidecars are removed; when it fails (a
+/// locked or degraded DB) the sidecars — snapshotted before any connection opens,
+/// since opening one would let SQLite delete them — are recreated beside the
+/// moved DB so no committed-but-unfolded data is lost.
+pub fn migrate_state_db(legacy_dir: &Path, new_dir: &Path) -> Result<bool> {
+    let legacy_db = legacy_dir.join(STATE_DB_FILENAME);
+    let new_db = new_dir.join(STATE_DB_FILENAME);
+    if !legacy_db.exists() {
+        return Ok(false);
+    }
+    // A DB already at the destination is authoritative — never overwrite it.
+    if new_db.exists() {
+        return Ok(false);
+    }
+
+    // Snapshot the sidecar bytes BEFORE opening any connection: opening (and
+    // dropping) a connection to the DB makes SQLite delete what it judges to be
+    // stale `-wal`/`-shm` files, which would destroy the recovery copies before
+    // the checkpoint-failure branch below could carry them across. Read them up
+    // front so a degraded/locked DB never loses committed-but-unfolded data.
+    let sidecars: Vec<(&str, Vec<u8>)> = ["-wal", "-shm"]
+        .into_iter()
+        .filter_map(|suffix| {
+            let path = legacy_dir.join(format!("{STATE_DB_FILENAME}{suffix}"));
+            std::fs::read(&path).ok().map(|bytes| (suffix, bytes))
+        })
+        .collect();
+
+    // Fold the WAL into the main DB so the moved file is self-contained. A bare
+    // connection is used (not StateStore::open) so this never runs schema
+    // migrations on an old DB mid-move. Failure (locked/degraded DB) is captured
+    // and recovered from below by writing the snapshotted sidecars instead.
+    let checkpointed = match Connection::open(&legacy_db) {
+        Ok(conn) => conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .is_ok(),
+        Err(_) => false,
+    };
+
+    std::fs::create_dir_all(new_dir).map_err(|e| StateError::FilesystemIo {
+        path: new_dir.to_path_buf(),
+        source: e,
+    })?;
+    crate::move_file(&legacy_db, &new_db).map_err(|e| StateError::FilesystemIo {
+        path: new_db.clone(),
+        source: e,
+    })?;
+
+    // When the checkpoint succeeded the WAL is folded and truncated, so the moved
+    // DB is self-contained and the sidecars hold nothing extra — drop any that
+    // survive at legacy. When it failed, recreate the snapshotted sidecars beside
+    // the moved DB so committed-but-unfolded data is preserved.
+    if checkpointed {
+        for suffix in ["-wal", "-shm"] {
+            let _ = std::fs::remove_file(legacy_dir.join(format!("{STATE_DB_FILENAME}{suffix}")));
+        }
+    } else {
+        for (suffix, bytes) in &sidecars {
+            let new_sidecar = new_dir.join(format!("{STATE_DB_FILENAME}{suffix}"));
+            let _ = std::fs::write(&new_sidecar, bytes);
+            let _ = std::fs::remove_file(legacy_dir.join(format!("{STATE_DB_FILENAME}{suffix}")));
+        }
+    }
+
+    Ok(true)
 }
 
 #[cfg(test)]

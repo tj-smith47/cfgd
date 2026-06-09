@@ -463,10 +463,14 @@ impl ServerClient {
 
 // --- Credential Storage ---
 
+/// Filename of the enrolled device credential. Lives in the state dir and is a
+/// sensitive migration sidecar artifact (its parent dir is kept 0700).
+pub const DEVICE_CREDENTIAL_FILENAME: &str = "device-credential.json";
+
 /// Path to the device credential file: `~/.local/state/cfgd/device-credential.json`
 pub fn credential_path() -> Result<PathBuf> {
     let dir = crate::state::default_state_dir()?;
-    Ok(dir.join("device-credential.json"))
+    Ok(dir.join(DEVICE_CREDENTIAL_FILENAME))
 }
 
 /// Save a device credential to disk after enrollment.

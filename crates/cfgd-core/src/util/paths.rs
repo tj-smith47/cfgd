@@ -236,6 +236,62 @@ fn copy_tree_preserving_symlinks(
     Ok(())
 }
 
+/// Move a single file from `src` to `dst`, creating `dst`'s parent first.
+///
+/// The single-file sibling of [`move_dir`]. Refuses when `dst` already exists
+/// (so a prior migration is never clobbered). Tries an atomic `rename` (the
+/// same-filesystem fast path) and falls back to copy + remove when the paths
+/// live on different filesystems (`rename` then fails with `EXDEV`). On a failed
+/// copy or a failed source-removal the destination is rolled back so a degraded
+/// move never strands two divergent copies.
+pub fn move_file(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    if dst.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!("destination already exists: {}", dst.posix()),
+        ));
+    }
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match std::fs::rename(src, dst) {
+        Ok(()) => Ok(()),
+        // EXDEV (errno 18 on Linux/macOS): cross-filesystem rename is rejected;
+        // fall back to copy-then-remove. Other errors surface unchanged.
+        Err(e) if e.raw_os_error() == Some(18) => {
+            if let Err(copy_err) = std::fs::copy(src, dst) {
+                let _ = std::fs::remove_file(dst);
+                return Err(copy_err);
+            }
+            if let Err(rm_err) = std::fs::remove_file(src) {
+                let _ = std::fs::remove_file(dst);
+                return Err(rm_err);
+            }
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// The pre-split default data directory (`<data_local>/cfgd`) — the single
+/// location that held both the state DB and the `sources/` cache before they
+/// moved to independent state and cache roots.
+///
+/// Reproduced here (rather than inlined at the migration call site) so the
+/// startup migration and its tests share one definition. This is the legacy
+/// *default* only: it never honors `CFGD_STATE_DIR`/`CFGD_CACHE_DIR` (those are
+/// overrides, not the legacy default). Pure path logic — touches no filesystem.
+///
+/// Honors the [`TestHomeGuard`] thread-local override (test builds resolve a
+/// Linux-shaped `~/.local/share/cfgd` under the override home) so tests never
+/// read the real data dir. Returns `None` when no home directory is resolvable.
+pub fn legacy_data_dir() -> Option<std::path::PathBuf> {
+    if let Some(home) = test_home_override() {
+        return Some(home.join(".local").join("share").join("cfgd"));
+    }
+    Some(directories::BaseDirs::new()?.data_local_dir().join("cfgd"))
+}
+
 /// Per-user runtime directory for short-lived sockets and pid files.
 ///
 /// Resolution order:
@@ -1023,6 +1079,48 @@ mod tests {
             runtime.ends_with("cfgd/runtime"),
             "fallback must nest under cfgd/runtime, got: {}",
             runtime.display()
+        );
+    }
+
+    // --- move_file ---
+
+    #[test]
+    fn move_file_relocates_and_removes_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        let dst = dir.path().join("sub").join("b.txt");
+        std::fs::write(&src, b"payload").unwrap();
+        move_file(&src, &dst).unwrap();
+        assert!(!src.exists(), "source must be gone after move");
+        assert_eq!(std::fs::read(&dst).unwrap(), b"payload");
+    }
+
+    #[test]
+    fn move_file_refuses_when_destination_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("a.txt");
+        let dst = dir.path().join("b.txt");
+        std::fs::write(&src, b"new").unwrap();
+        std::fs::write(&dst, b"old").unwrap();
+        let err = move_file(&src, &dst).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        // Neither file disturbed.
+        assert_eq!(std::fs::read(&src).unwrap(), b"new");
+        assert_eq!(std::fs::read(&dst).unwrap(), b"old");
+    }
+
+    // --- legacy_data_dir ---
+
+    #[test]
+    #[serial_test::serial]
+    fn legacy_data_dir_resolves_under_test_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = with_test_home_guard(dir.path());
+        let legacy = legacy_data_dir().expect("legacy data dir resolves under test home");
+        assert!(
+            legacy.ends_with(".local/share/cfgd"),
+            "legacy data dir must end with .local/share/cfgd, got: {}",
+            legacy.display()
         );
     }
 }

@@ -57,6 +57,16 @@ impl DirSources {
             runtime: DirSource::Default,
         }
     }
+
+    /// Whether the legacy combined-data-dir migration may run: only when BOTH the
+    /// state and cache roots are at their platform default. An explicit
+    /// `--state-dir`/`--cache-dir` (or `CFGD_STATE_DIR`/`CFGD_CACHE_DIR`) means the
+    /// user is driving — possibly at a throwaway location — and real user data must
+    /// never be dragged into an overridden/ephemeral root. The config and runtime
+    /// roots are irrelevant: the migration only touches state and sources.
+    pub fn legacy_migration_eligible(&self) -> bool {
+        self.state == DirSource::Default && self.cache == DirSource::Default
+    }
 }
 
 /// Map a clap [`ValueSource`](clap::parser::ValueSource) for one directory arg
@@ -570,5 +580,40 @@ mod tests {
         assert!(v["config"]["dir"].is_string(), "config.dir: {v}");
         assert!(v["state"]["applyLock"].is_string(), "state.applyLock: {v}");
         assert_eq!(v["cache"]["source"], serde_json::json!("default"));
+    }
+
+    // --- legacy_migration_eligible ---
+
+    #[test]
+    fn legacy_migration_eligible_when_both_roots_default() {
+        assert!(DirSources::all_default().legacy_migration_eligible());
+    }
+
+    #[test]
+    fn legacy_migration_blocked_when_state_overridden() {
+        let sources = DirSources {
+            state: DirSource::Flag,
+            ..DirSources::all_default()
+        };
+        assert!(!sources.legacy_migration_eligible());
+    }
+
+    #[test]
+    fn legacy_migration_blocked_when_cache_overridden() {
+        let sources = DirSources {
+            cache: DirSource::Env,
+            ..DirSources::all_default()
+        };
+        assert!(!sources.legacy_migration_eligible());
+    }
+
+    #[test]
+    fn legacy_migration_blocked_when_both_roots_overridden() {
+        let sources = DirSources {
+            state: DirSource::Flag,
+            cache: DirSource::Env,
+            ..DirSources::all_default()
+        };
+        assert!(!sources.legacy_migration_eligible());
     }
 }

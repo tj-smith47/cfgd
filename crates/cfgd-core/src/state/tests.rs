@@ -1880,3 +1880,153 @@ fn update_apply_status_changes_status() {
     assert_eq!(rec.status, ApplyStatus::Success);
     assert_eq!(rec.summary.as_deref(), Some("{\"total\": 5}"));
 }
+
+// --- migrate_state_db ---
+
+#[test]
+fn migrate_state_db_moves_db_and_reopens() {
+    let legacy = tempfile::tempdir().unwrap();
+    let new = tempfile::tempdir().unwrap();
+    let new_dir = new.path().join("state");
+
+    // Seed a schema-bearing DB at the legacy location.
+    {
+        let store = StateStore::open_in_dir(legacy.path()).unwrap();
+        store
+            .record_apply("default", "h1", ApplyStatus::Success, Some("seed"))
+            .unwrap();
+    }
+
+    let migrated = migrate_state_db(legacy.path(), &new_dir).unwrap();
+    assert!(migrated, "a DB present at legacy must report migrated=true");
+    assert!(
+        new_dir.join(STATE_DB_FILENAME).exists(),
+        "DB must exist at new dir"
+    );
+    assert!(
+        !legacy.path().join(STATE_DB_FILENAME).exists(),
+        "legacy DB must be gone"
+    );
+
+    // Reopens cleanly at the new location.
+    let store = StateStore::open_in_dir(&new_dir).unwrap();
+    assert!(store.last_apply().unwrap().is_some());
+}
+
+#[test]
+fn migrate_state_db_preserves_committed_rows() {
+    let legacy = tempfile::tempdir().unwrap();
+    let new = tempfile::tempdir().unwrap();
+    let new_dir = new.path().join("state");
+
+    // Write through the real store (WAL mode) and close it so the row is
+    // committed but possibly still in the WAL.
+    {
+        let store = StateStore::open_in_dir(legacy.path()).unwrap();
+        store
+            .record_apply("prod", "deadbeef", ApplyStatus::Success, Some("survives"))
+            .unwrap();
+    }
+
+    assert!(migrate_state_db(legacy.path(), &new_dir).unwrap());
+
+    let store = StateStore::open_in_dir(&new_dir).unwrap();
+    let rec = store
+        .last_apply()
+        .unwrap()
+        .expect("the committed row must survive the move");
+    assert_eq!(rec.profile, "prod");
+    assert_eq!(rec.plan_hash, "deadbeef");
+    assert_eq!(rec.summary.as_deref(), Some("survives"));
+}
+
+#[test]
+fn migrate_state_db_never_clobbers_existing_new_db() {
+    let legacy = tempfile::tempdir().unwrap();
+    let new = tempfile::tempdir().unwrap();
+    let new_dir = new.path().join("state");
+    std::fs::create_dir_all(&new_dir).unwrap();
+
+    // Distinct content already at the destination.
+    let new_db = new_dir.join(STATE_DB_FILENAME);
+    std::fs::write(&new_db, b"DO-NOT-OVERWRITE").unwrap();
+
+    // A real DB at legacy.
+    {
+        let store = StateStore::open_in_dir(legacy.path()).unwrap();
+        store
+            .record_apply("x", "y", ApplyStatus::Success, None)
+            .unwrap();
+    }
+
+    let migrated = migrate_state_db(legacy.path(), &new_dir).unwrap();
+    assert!(!migrated, "an existing new DB must short-circuit to false");
+    assert_eq!(std::fs::read(&new_db).unwrap(), b"DO-NOT-OVERWRITE");
+    assert!(
+        legacy.path().join(STATE_DB_FILENAME).exists(),
+        "legacy DB stays put"
+    );
+}
+
+#[test]
+fn migrate_state_db_no_legacy_db_is_noop() {
+    let legacy = tempfile::tempdir().unwrap();
+    let new = tempfile::tempdir().unwrap();
+    let migrated = migrate_state_db(legacy.path(), &new.path().join("state")).unwrap();
+    assert!(!migrated, "no legacy DB means nothing to migrate");
+}
+
+#[test]
+fn migrate_state_db_preserves_sidecars_when_checkpoint_fails() {
+    let legacy = tempfile::tempdir().unwrap();
+    let new = tempfile::tempdir().unwrap();
+    let new_dir = new.path().join("state");
+
+    // A legacy "db" whose bytes are NOT a valid SQLite file: Connection::open
+    // succeeds (open is lazy) but the wal_checkpoint PRAGMA fails, deterministically
+    // forcing the checkpoint-failure branch on Linux without any lock-timing races.
+    let legacy_db = legacy.path().join(STATE_DB_FILENAME);
+    std::fs::write(&legacy_db, b"this is not a sqlite database").unwrap();
+    std::fs::write(
+        legacy.path().join(format!("{STATE_DB_FILENAME}-wal")),
+        b"wal-bytes",
+    )
+    .unwrap();
+    std::fs::write(
+        legacy.path().join(format!("{STATE_DB_FILENAME}-shm")),
+        b"shm-bytes",
+    )
+    .unwrap();
+
+    let migrated = migrate_state_db(legacy.path(), &new_dir).unwrap();
+    assert!(migrated, "a present legacy DB still reports migrated=true");
+    assert!(
+        new_dir.join(STATE_DB_FILENAME).exists(),
+        "main DB must land at new dir"
+    );
+    // The checkpoint failed, so committed-but-unfolded sidecars must be carried
+    // across (with their bytes intact) rather than dropped.
+    assert_eq!(
+        std::fs::read(new_dir.join(format!("{STATE_DB_FILENAME}-wal"))).unwrap(),
+        b"wal-bytes",
+        "WAL sidecar bytes must be preserved at new dir on checkpoint failure"
+    );
+    assert_eq!(
+        std::fs::read(new_dir.join(format!("{STATE_DB_FILENAME}-shm"))).unwrap(),
+        b"shm-bytes",
+        "SHM sidecar bytes must be preserved at new dir on checkpoint failure"
+    );
+    // And removed from legacy (moved, not copied).
+    assert!(
+        !legacy
+            .path()
+            .join(format!("{STATE_DB_FILENAME}-wal"))
+            .exists()
+    );
+    assert!(
+        !legacy
+            .path()
+            .join(format!("{STATE_DB_FILENAME}-shm"))
+            .exists()
+    );
+}

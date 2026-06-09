@@ -26,6 +26,10 @@ const FISH_XDG_LINE: &str = r#"set -gx XDG_CONFIG_HOME "$HOME/.config""#;
 /// already used.
 const XDG_VAR_MARKER: &str = "XDG_CONFIG_HOME";
 
+/// Sentinel filename recording that the user chose "keep ~/.config" on the macOS
+/// config-location prompt. A state-dir migration sidecar artifact.
+const MACOS_CONFIG_PINNED_SENTINEL: &str = "macos-config-pinned";
+
 /// Offer the macOS config-location migration when applicable. Returns the new
 /// config directory when the user chose to move (so the caller re-resolves the
 /// config path), otherwise `None`.
@@ -149,7 +153,7 @@ fn keep_at_dotconfig(printer: &Printer, home: &Path) {
 fn pin_sentinel() -> Option<PathBuf> {
     cfgd_core::state::default_state_dir()
         .ok()
-        .map(|d| d.join("macos-config-pinned"))
+        .map(|d| d.join(MACOS_CONFIG_PINNED_SENTINEL))
 }
 
 /// rc target for persisting `XDG_CONFIG_HOME`, by shell family.
@@ -230,6 +234,121 @@ fn append_line_once(path: &Path, line: &str, var_marker: &str) -> std::io::Resul
     }
     writeln!(f, "{line}")?;
     Ok(())
+}
+
+/// Silently migrate a legacy combined data dir (state DB + `sources/` cache) to
+/// the split state and cache roots. A no-op when no home is resolvable or the
+/// new roots can't be resolved. Runs on every startup (idempotent); the heavy
+/// lifting and all output live in [`migrate_legacy_data_dirs_at`].
+pub fn migrate_legacy_data_dirs(printer: &Printer) {
+    let Some(legacy) = cfgd_core::legacy_data_dir() else {
+        return;
+    };
+    let Ok(new_state) = cfgd_core::state::default_state_dir() else {
+        return;
+    };
+    let Ok(new_sources) = cfgd_core::default_cache_dir().map(|c| c.join("sources")) else {
+        return;
+    };
+    migrate_legacy_data_dirs_at(printer, &legacy, &new_state, &new_sources);
+}
+
+/// Per-artifact migration of the allowlisted state files and the `sources/`
+/// cache from `legacy` into `new_state` / `new_sources`.
+///
+/// Only the named state artifacts and the `sources/` subdir are moved — never a
+/// whole-dir move — because the legacy data dir is shared (it also holds config
+/// and modules on macOS). Every step is best-effort and never clobbers an
+/// existing destination, so a partial earlier run resumes cleanly.
+fn migrate_legacy_data_dirs_at(
+    printer: &Printer,
+    legacy: &Path,
+    new_state: &Path,
+    new_sources: &Path,
+) {
+    match cfgd_core::state::migrate_state_db(legacy, new_state) {
+        Ok(true) => printer.status_simple(
+            Role::Info,
+            format!("Migrated state database to {}", new_state.posix()),
+        ),
+        Ok(false) => {}
+        Err(e) => printer.status_simple(
+            Role::Warn,
+            format!(
+                "Could not migrate state database ({}); continuing",
+                collapse_to_subject_line(&e)
+            ),
+        ),
+    }
+
+    for name in [
+        cfgd_core::state::PENDING_CONFIG_FILENAME,
+        cfgd_core::server_client::DEVICE_CREDENTIAL_FILENAME,
+        MACOS_CONFIG_PINNED_SENTINEL,
+    ] {
+        migrate_state_file(printer, legacy, new_state, name);
+    }
+    // The device credential is sensitive: lock the destination dir to owner-only
+    // once it has landed there (defense in depth; no-op on Windows).
+    if new_state
+        .join(cfgd_core::server_client::DEVICE_CREDENTIAL_FILENAME)
+        .exists()
+    {
+        let _ = cfgd_core::set_file_permissions(new_state, 0o700);
+    }
+
+    let legacy_sources = legacy.join("sources");
+    if legacy_sources.is_dir() && !new_sources.exists() {
+        match cfgd_core::move_dir(&legacy_sources, new_sources) {
+            Ok(()) => printer.status_simple(
+                Role::Info,
+                format!("Migrated sources cache to {}", new_sources.posix()),
+            ),
+            Err(e) => printer.status_simple(
+                Role::Warn,
+                format!(
+                    "Could not migrate sources cache ({}); continuing",
+                    collapse_to_subject_line(&e)
+                ),
+            ),
+        }
+    }
+
+    // Non-recursive: succeeds only when the legacy dir is now empty (the Linux
+    // case where it held only state + sources). On macOS/Windows it still holds
+    // config/modules, so this fails and is ignored — never a recursive delete.
+    let _ = std::fs::remove_dir(legacy);
+}
+
+/// Move a single allowlisted state file from `legacy` to `new_state` when it is
+/// present at the source and absent at the destination. Best-effort: a failure
+/// warns and continues rather than aborting the whole migration.
+fn migrate_state_file(printer: &Printer, legacy: &Path, new_state: &Path, name: &str) {
+    let src = legacy.join(name);
+    let dst = new_state.join(name);
+    if !src.exists() || dst.exists() {
+        return;
+    }
+    if let Err(e) = std::fs::create_dir_all(new_state) {
+        printer.status_simple(
+            Role::Warn,
+            format!(
+                "Could not migrate {name} ({}); continuing",
+                collapse_to_subject_line(&e)
+            ),
+        );
+        return;
+    }
+    match cfgd_core::move_file(&src, &dst) {
+        Ok(()) => printer.status_simple(Role::Info, format!("Migrated {name} to {}", dst.posix())),
+        Err(e) => printer.status_simple(
+            Role::Warn,
+            format!(
+                "Could not migrate {name} ({}); continuing",
+                collapse_to_subject_line(&e)
+            ),
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -321,5 +440,159 @@ mod tests {
                 .unwrap()
                 .contains(XDG_EXPORT_LINE)
         );
+    }
+
+    // --- migrate_legacy_data_dirs_at ---
+
+    use cfgd_core::output::{Printer, Verbosity};
+    use cfgd_core::state::StateStore;
+
+    /// Seed a legacy data dir with a schema-bearing state DB and the allowlisted
+    /// sidecar artifacts plus a `sources/foo/bar` cache tree.
+    fn seed_legacy(legacy: &Path) {
+        {
+            let store = StateStore::open_in_dir(legacy).unwrap();
+            store
+                .record_apply("default", "h", cfgd_core::state::ApplyStatus::Success, None)
+                .unwrap();
+        }
+        std::fs::write(
+            legacy.join(cfgd_core::server_client::DEVICE_CREDENTIAL_FILENAME),
+            b"{\"id\":\"x\"}",
+        )
+        .unwrap();
+        std::fs::write(
+            legacy.join(cfgd_core::state::PENDING_CONFIG_FILENAME),
+            b"{}",
+        )
+        .unwrap();
+        let nested = legacy.join("sources").join("foo");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("bar"), b"clone").unwrap();
+    }
+
+    #[test]
+    fn migrates_all_allowlisted_artifacts() {
+        let legacy_t = tempfile::tempdir().unwrap();
+        let roots = tempfile::tempdir().unwrap();
+        let legacy = legacy_t.path();
+        let new_state = roots.path().join("state");
+        let new_sources = roots.path().join("cache").join("sources");
+        seed_legacy(legacy);
+
+        // Normal verbosity so the success Info lines render and can be asserted.
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        migrate_legacy_data_dirs_at(&printer, legacy, &new_state, &new_sources);
+
+        // State DB reopens at the new location.
+        let store = StateStore::open_in_dir(&new_state).unwrap();
+        assert!(store.last_apply().unwrap().is_some());
+        assert!(
+            new_state
+                .join(cfgd_core::server_client::DEVICE_CREDENTIAL_FILENAME)
+                .exists()
+        );
+        assert!(
+            new_state
+                .join(cfgd_core::state::PENDING_CONFIG_FILENAME)
+                .exists()
+        );
+        assert!(new_sources.join("foo").join("bar").exists());
+
+        // Originals moved away.
+        assert!(
+            !legacy
+                .join(cfgd_core::server_client::DEVICE_CREDENTIAL_FILENAME)
+                .exists()
+        );
+        assert!(
+            !legacy
+                .join(cfgd_core::state::PENDING_CONFIG_FILENAME)
+                .exists()
+        );
+        assert!(!legacy.join("sources").exists());
+        assert!(!legacy.join(cfgd_core::state::STATE_DB_FILENAME).exists());
+
+        // The credential is sensitive: its destination dir is locked to 0700.
+        #[cfg(unix)]
+        {
+            let meta = std::fs::metadata(&new_state).unwrap();
+            assert_eq!(
+                cfgd_core::file_permissions_mode(&meta),
+                Some(0o700),
+                "new state dir must be 0700 after migrating the device credential"
+            );
+        }
+
+        // The success line reads as a full sentence ending in the new state path,
+        // not merely a substring — the human-facing status shape is load-bearing.
+        let out = buf.lock().unwrap().clone();
+        let expected = format!("Migrated state database to {}", new_state.posix());
+        let matched = out.lines().any(|l| l.trim_end().ends_with(&expected));
+        assert!(
+            matched,
+            "expected a status line ending in {expected:?}, got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn is_idempotent_on_second_run() {
+        let legacy_t = tempfile::tempdir().unwrap();
+        let roots = tempfile::tempdir().unwrap();
+        let legacy = legacy_t.path();
+        let new_state = roots.path().join("state");
+        let new_sources = roots.path().join("cache").join("sources");
+        seed_legacy(legacy);
+
+        let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
+        migrate_legacy_data_dirs_at(&printer, legacy, &new_state, &new_sources);
+        // Second run must not panic and must leave everything in place.
+        migrate_legacy_data_dirs_at(&printer, legacy, &new_state, &new_sources);
+
+        assert!(new_state.join(cfgd_core::state::STATE_DB_FILENAME).exists());
+        assert!(new_sources.join("foo").join("bar").exists());
+        let store = StateStore::open_in_dir(&new_state).unwrap();
+        assert!(store.last_apply().unwrap().is_some());
+    }
+
+    #[test]
+    fn never_clobbers_existing_new_state_db() {
+        let legacy_t = tempfile::tempdir().unwrap();
+        let roots = tempfile::tempdir().unwrap();
+        let legacy = legacy_t.path();
+        let new_state = roots.path().join("state");
+        let new_sources = roots.path().join("cache").join("sources");
+        std::fs::create_dir_all(&new_state).unwrap();
+        let new_db = new_state.join(cfgd_core::state::STATE_DB_FILENAME);
+        std::fs::write(&new_db, b"KEEP-ME").unwrap();
+        seed_legacy(legacy);
+
+        let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
+        migrate_legacy_data_dirs_at(&printer, legacy, &new_state, &new_sources);
+
+        assert_eq!(std::fs::read(&new_db).unwrap(), b"KEEP-ME");
+        assert!(
+            legacy.join(cfgd_core::state::STATE_DB_FILENAME).exists(),
+            "legacy DB stays put when the new DB already exists"
+        );
+    }
+
+    #[test]
+    fn never_sweeps_non_allowlisted_config_file() {
+        let legacy_t = tempfile::tempdir().unwrap();
+        let roots = tempfile::tempdir().unwrap();
+        let legacy = legacy_t.path();
+        let new_state = roots.path().join("state");
+        let new_sources = roots.path().join("cache").join("sources");
+        seed_legacy(legacy);
+        // A config file shares the legacy dir on macOS — it must never move.
+        let config = legacy.join("cfgd.yaml");
+        std::fs::write(&config, b"apiVersion: cfgd.io/v1alpha1").unwrap();
+
+        let (printer, _buf) = Printer::for_test_at(Verbosity::Quiet);
+        migrate_legacy_data_dirs_at(&printer, legacy, &new_state, &new_sources);
+
+        assert!(config.exists(), "config file must remain at legacy");
+        assert!(!new_state.join("cfgd.yaml").exists());
     }
 }
