@@ -1063,6 +1063,7 @@ mod cmd_generate_mockito {
             quiet: true,
             no_color: true,
             output: super::super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+            list_envelope: false,
             jsonpath: None,
             state_dir: None,
         }
@@ -1562,6 +1563,7 @@ mod cmd_generate_mockito {
             quiet: true,
             no_color: true,
             output: super::super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+            list_envelope: false,
             jsonpath: None,
             state_dir: None,
         };
@@ -1844,6 +1846,7 @@ mod cmd_generate_mockito {
             quiet: true,
             no_color: true,
             output: super::super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+            list_envelope: false,
             jsonpath: None,
             state_dir: None,
         };

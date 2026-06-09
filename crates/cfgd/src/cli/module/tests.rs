@@ -246,6 +246,7 @@ spec:
         quiet: true,
         no_color: false,
         output: super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+        list_envelope: false,
         jsonpath: None,
         state_dir: None,
     };
@@ -289,6 +290,7 @@ fn test_cli(dir: &std::path::Path) -> super::Cli {
         quiet: true,
         no_color: true,
         output: super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+        list_envelope: false,
         jsonpath: None,
         state_dir: None,
     }

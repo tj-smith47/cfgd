@@ -169,6 +169,7 @@ impl CliTestHarness {
             verbose: 0,
             quiet: true,
             output: OutputFormatArg(self.output_format.clone()),
+            list_envelope: false,
             jsonpath: None,
             state_dir: Some(self.state_dir.path().to_path_buf()),
             command: Some(Command::Status {
@@ -1122,6 +1123,7 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
         verbose: 0,
         quiet: true,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+        list_envelope: false,
         jsonpath: None,
         state_dir,
         command: Some(Command::Status {
@@ -3847,6 +3849,7 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
         verbose: 0,
         quiet: true,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+        list_envelope: false,
         jsonpath: None,
         state_dir: None,
         command: Some(Command::Status {
@@ -4334,6 +4337,7 @@ fn execute_with_no_subcommand_prints_help_and_returns_ok() {
         verbose: 0,
         quiet: false,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+        list_envelope: false,
         jsonpath: None,
         state_dir: Some(h.state_path().to_path_buf()),
         command: None,

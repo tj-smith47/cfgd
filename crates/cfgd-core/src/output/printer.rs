@@ -60,6 +60,11 @@ pub struct Printer {
     /// stderr. The CLI entrypoint reads it via `had_output_error` after dispatch
     /// to exit non-zero — the failure has already been reported on stderr.
     pub(crate) output_error: AtomicBool,
+    /// When set (via `--list-envelope` / `CFGD_LIST_ENVELOPE`), a top-level JSON
+    /// array emitted under `-o json`/`-o yaml` is wrapped in a KRM List envelope
+    /// (`{apiVersion, kind: List, items}`). Off by default — bare arrays stay
+    /// byte-identical. Never affects projecting formats (name/jsonpath/template).
+    pub(crate) list_envelope: bool,
 }
 
 impl Printer {
@@ -107,7 +112,16 @@ impl Printer {
             test_doc_capture: None,
             prompt_queue: None,
             output_error: AtomicBool::new(false),
+            list_envelope: false,
         }
+    }
+
+    /// Enable or disable the KRM List envelope for top-level JSON arrays under
+    /// `-o json`/`-o yaml`. Builder-style; off by default. Wired from the global
+    /// `--list-envelope` flag / `CFGD_LIST_ENVELOPE` env var.
+    pub fn with_list_envelope(mut self, enabled: bool) -> Self {
+        self.list_envelope = enabled;
+        self
     }
 
     pub fn verbosity(&self) -> Verbosity {
@@ -342,6 +356,7 @@ impl Printer {
             &self.output_error,
             &doc,
             &self.output_format,
+            self.list_envelope,
         );
         if !handled {
             self.render(doc);
@@ -494,6 +509,34 @@ mod tests {
             out.contains("--jsonpath is deprecated"),
             "deprecation must be force-shown under structured/Quiet; got: {out:?}"
         );
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn emit_threads_list_envelope_through_to_structured_output() {
+        // for_test_with_format(Json) shares one StringSink for stdout, so the
+        // emitted payload lands in `buf`. with_list_envelope(true) must reach
+        // emit_structured and wrap the top-level array.
+        let payload = serde_json::json!([{"name": "alpha"}, {"name": "beta"}]);
+        let (p, buf) = Printer::for_test_with_format(OutputFormat::Json);
+        let p = p.with_list_envelope(true);
+        p.emit(super::super::doc::Doc::new().with_data(payload.clone()));
+        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["apiVersion"], "cfgd.io/v1alpha1");
+        assert_eq!(parsed["kind"], "List");
+        assert_eq!(parsed["items"], payload);
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn emit_default_leaves_array_bare() {
+        let payload = serde_json::json!([{"name": "alpha"}]);
+        let (p, buf) = Printer::for_test_with_format(OutputFormat::Json);
+        p.emit(super::super::doc::Doc::new().with_data(payload.clone()));
+        let out = buf.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed, payload, "default emit must keep the bare array");
     }
 
     #[cfg(feature = "test-helpers")]

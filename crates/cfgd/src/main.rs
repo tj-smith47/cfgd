@@ -27,7 +27,12 @@ fn canonical_bool_str(raw: &str) -> Option<&'static str> {
 /// shell-truthy spellings (`1`/`yes`/`on`/…), so each is rewritten to the
 /// canonical `true`/`false` before parsing — keeping `CFGD_QUIET=1` ergonomic
 /// without touching the per-arg `#[arg(env = …)]` sites.
-const BOOL_ENV_VARS: &[&str] = &["CFGD_YES", "CFGD_QUIET", "CFGD_REQUIRE_COSIGN"];
+const BOOL_ENV_VARS: &[&str] = &[
+    "CFGD_YES",
+    "CFGD_QUIET",
+    "CFGD_REQUIRE_COSIGN",
+    "CFGD_LIST_ENVELOPE",
+];
 
 /// Rewrite a boolish env var to the canonical `true`/`false` spelling clap's
 /// bool value-parser accepts. No-op when the var is unset or holds a value
@@ -181,7 +186,8 @@ fn main() -> anyhow::Result<()> {
         .and_then(|c| c.spec.theme);
     let theme_name = theme_config.as_ref().map(|t| t.name.clone());
     let printer =
-        cfgd_core::output::Printer::with_format(verbosity, theme_name.as_deref(), output_format);
+        cfgd_core::output::Printer::with_format(verbosity, theme_name.as_deref(), output_format)
+            .with_list_envelope(cli.list_envelope);
 
     if jsonpath_deprecated {
         // A deprecation notice is a stderr diagnostic, not `-o` data — and

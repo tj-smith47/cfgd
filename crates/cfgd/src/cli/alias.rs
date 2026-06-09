@@ -76,6 +76,7 @@ mod tests {
             quiet: true,
             no_color: true,
             output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+            list_envelope: false,
             jsonpath: None,
             state_dir: None,
             command: None,

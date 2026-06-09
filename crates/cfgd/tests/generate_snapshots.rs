@@ -54,6 +54,7 @@ fn cli_for(config_dir: &Path) -> cfgd::cli::Cli {
         verbose: 0,
         quiet: true,
         output: cfgd::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+        list_envelope: false,
         jsonpath: None,
         state_dir: None,
         command: Some(cfgd::cli::Command::Status {

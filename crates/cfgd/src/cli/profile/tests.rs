@@ -494,6 +494,7 @@ fn test_cli(dir: &Path) -> super::super::Cli {
         verbose: 0,
         quiet: true,
         output: super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+        list_envelope: false,
         jsonpath: None,
         state_dir: None,
         command: Some(super::super::Command::Status {
@@ -2750,6 +2751,7 @@ mod profile_update_module_cleanup {
             verbose: 0,
             quiet: true,
             output: super::super::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+            list_envelope: false,
             jsonpath: None,
             state_dir: Some(state_dir.to_path_buf()),
             command: Some(super::super::Command::Status {

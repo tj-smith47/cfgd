@@ -288,6 +288,18 @@ fn clean_io_reason(e: &std::io::Error) -> String {
     }
 }
 
+/// Wrap a top-level JSON array in a Kubernetes-style List envelope
+/// (apiVersion / kind: List / items). Reached only under `-o json` / `-o yaml`
+/// when `--list-envelope` is set; callers gate on `value.is_array()` so this is
+/// never reached with a non-array value.
+fn wrap_list_envelope(items: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "apiVersion": crate::API_VERSION,
+        "kind": "List",
+        "items": items,
+    })
+}
+
 /// Route a `Doc` to `sink_stdout` per `format`. Returns `true` when the format
 /// was handled (structured); returns `false` for `Table | Wide` so the caller
 /// can fall back to the human renderer.
@@ -303,17 +315,24 @@ pub(crate) fn emit_structured(
     output_error: &std::sync::atomic::AtomicBool,
     doc: &Doc,
     format: &OutputFormat,
+    list_envelope: bool,
 ) -> bool {
     match format {
         OutputFormat::Table | OutputFormat::Wide => false,
         OutputFormat::Json => {
-            let v = doc.data_or_self_json();
+            let mut v = doc.data_or_self_json();
+            if list_envelope && v.is_array() {
+                v = wrap_list_envelope(v);
+            }
             let text = serde_json::to_string_pretty(&v).unwrap_or_default();
             sink_stdout.write_line(&text);
             true
         }
         OutputFormat::Yaml => {
-            let v = doc.data_or_self_json();
+            let mut v = doc.data_or_self_json();
+            if list_envelope && v.is_array() {
+                v = wrap_list_envelope(v);
+            }
             let yaml = serde_yaml::to_string(&v).unwrap_or_default();
             let trimmed = yaml.strip_prefix("---\n").unwrap_or(&yaml);
             sink_stdout.write_line(trimmed.trim_end());
@@ -430,9 +449,20 @@ mod tests {
     /// flag, returning `(handled, output_error)`. Used by the happy-path tests
     /// that only care about the stdout buffer.
     fn emit(sink_stdout: &StringSink, doc: &Doc, fmt: &OutputFormat) -> (bool, bool) {
+        emit_env(sink_stdout, doc, fmt, false)
+    }
+
+    /// Like `emit` but lets the caller set `list_envelope`, for the KRM List
+    /// wrapper tests.
+    fn emit_env(
+        sink_stdout: &StringSink,
+        doc: &Doc,
+        fmt: &OutputFormat,
+        list_envelope: bool,
+    ) -> (bool, bool) {
         let stderr = StringSink(Arc::new(Mutex::new(String::new())));
         let flag = std::sync::atomic::AtomicBool::new(false);
-        let handled = emit_structured(sink_stdout, &stderr, &flag, doc, fmt);
+        let handled = emit_structured(sink_stdout, &stderr, &flag, doc, fmt, list_envelope);
         (handled, flag.load(std::sync::atomic::Ordering::Relaxed))
     }
 
@@ -446,7 +476,7 @@ mod tests {
         let stderr_buf = Arc::new(Mutex::new(String::new()));
         let stderr = StringSink(stderr_buf.clone());
         let flag = std::sync::atomic::AtomicBool::new(false);
-        let handled = emit_structured(sink_stdout, &stderr, &flag, doc, fmt);
+        let handled = emit_structured(sink_stdout, &stderr, &flag, doc, fmt, false);
         (
             handled,
             flag.load(std::sync::atomic::Ordering::Relaxed),
@@ -755,6 +785,97 @@ mod tests {
             "expected leading doc-marker stripped, got: {captured:?}"
         );
         assert_eq!(captured, format!("{expected_body}\n"));
+    }
+
+    #[test]
+    fn emit_structured_json_array_with_list_envelope_wraps_in_krm_list() {
+        let (buf, sink) = capture();
+        let payload = serde_json::json!([
+            {"name": "alpha", "value": 1},
+            {"name": "beta", "value": 2},
+        ]);
+        let doc = doc_with(payload.clone());
+        let (handled, _) = emit_env(&sink, &doc, &OutputFormat::Json, true);
+        assert!(handled);
+        let parsed: serde_json::Value = serde_json::from_str(&take(&buf)).unwrap();
+        assert!(parsed.is_object(), "envelope must be a JSON object");
+        assert_eq!(parsed["apiVersion"], "cfgd.io/v1alpha1");
+        assert_eq!(parsed["kind"], "List");
+        assert_eq!(parsed["items"], payload);
+    }
+
+    #[test]
+    fn emit_structured_json_array_without_list_envelope_stays_bare() {
+        let (buf, sink) = capture();
+        let payload = serde_json::json!([
+            {"name": "alpha"},
+            {"name": "beta"},
+        ]);
+        let doc = doc_with(payload.clone());
+        let (handled, _) = emit_env(&sink, &doc, &OutputFormat::Json, false);
+        assert!(handled);
+        let parsed: serde_json::Value = serde_json::from_str(&take(&buf)).unwrap();
+        assert_eq!(parsed, payload, "default must be the bare array, unchanged");
+    }
+
+    #[test]
+    fn emit_structured_json_object_with_list_envelope_is_unchanged() {
+        let (buf, sink) = capture();
+        let payload = serde_json::json!({"entries": [{"name": "alpha"}], "count": 1});
+        let doc = doc_with(payload.clone());
+        let (handled, _) = emit_env(&sink, &doc, &OutputFormat::Json, true);
+        assert!(handled);
+        let parsed: serde_json::Value = serde_json::from_str(&take(&buf)).unwrap();
+        assert_eq!(parsed, payload, "objects are never wrapped");
+    }
+
+    #[test]
+    fn emit_structured_yaml_array_with_list_envelope_wraps_in_krm_list() {
+        let (buf, sink) = capture();
+        let payload = serde_json::json!([
+            {"name": "alpha"},
+            {"name": "beta"},
+        ]);
+        let doc = doc_with(payload.clone());
+        let (handled, _) = emit_env(&sink, &doc, &OutputFormat::Yaml, true);
+        assert!(handled);
+        let parsed: serde_json::Value = serde_yaml::from_str(&take(&buf)).unwrap();
+        assert_eq!(parsed["apiVersion"], "cfgd.io/v1alpha1");
+        assert_eq!(parsed["kind"], "List");
+        assert_eq!(parsed["items"], payload);
+    }
+
+    #[test]
+    fn emit_structured_yaml_array_without_list_envelope_stays_bare() {
+        let (buf, sink) = capture();
+        let payload = serde_json::json!([
+            {"name": "alpha"},
+            {"name": "beta"},
+        ]);
+        let doc = doc_with(payload.clone());
+        let (handled, _) = emit_env(&sink, &doc, &OutputFormat::Yaml, false);
+        assert!(handled);
+        let parsed: serde_json::Value = serde_yaml::from_str(&take(&buf)).unwrap();
+        assert_eq!(parsed, payload, "default must be the bare array, unchanged");
+    }
+
+    #[test]
+    fn emit_structured_name_array_ignores_list_envelope() {
+        let payload = serde_json::json!([
+            {"name": "alpha"},
+            {"name": "beta"},
+        ]);
+        let (buf_off, sink_off) = capture();
+        let (buf_on, sink_on) = capture();
+        let doc = doc_with(payload);
+        emit_env(&sink_off, &doc, &OutputFormat::Name, false);
+        emit_env(&sink_on, &doc, &OutputFormat::Name, true);
+        assert_eq!(
+            take(&buf_on),
+            take(&buf_off),
+            "list_envelope must not affect non-json/yaml formats"
+        );
+        assert_eq!(take(&buf_on), "alpha\nbeta\n");
     }
 
     #[test]

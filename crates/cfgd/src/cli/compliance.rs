@@ -414,6 +414,7 @@ mod tests {
             quiet: true,
             no_color: true,
             output: OutputFormatArg(OutputFormat::Table),
+            list_envelope: false,
             jsonpath: None,
             state_dir: Some(state_dir.to_path_buf()),
             command: None,

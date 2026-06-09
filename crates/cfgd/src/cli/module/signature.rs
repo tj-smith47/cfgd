@@ -143,6 +143,7 @@ mod tests {
             verbose: 0,
             quiet: true,
             output: crate::cli::OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+            list_envelope: false,
             jsonpath: None,
             state_dir: None,
             command: None,

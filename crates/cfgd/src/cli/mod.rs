@@ -310,6 +310,10 @@ pub struct Cli {
     #[arg(long, short = 'o', global = true, default_value = "table")]
     pub output: OutputFormatArg,
 
+    /// Wrap top-level array payloads under -o json/yaml in a KRM List envelope ({apiVersion, kind: List, items})
+    #[arg(long, global = true, env = "CFGD_LIST_ENVELOPE")]
+    pub list_envelope: bool,
+
     /// [DEPRECATED — use --output jsonpath=EXPR] JSONPath expression to extract from structured output
     #[arg(long, global = true, hide = true)]
     pub jsonpath: Option<String>,

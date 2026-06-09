@@ -287,6 +287,7 @@ These flags work with any subcommand:
 | `--quiet` | `-q` | `CFGD_QUIET` | Suppress all non-error output |
 | `--no-color` | | `NO_COLOR` | Disable colored terminal output |
 | `--output <format>` | `-o` | | Output format: `table` (default), `wide`, `json`, `yaml`, `name`, `jsonpath=EXPR`, `template=TMPL`, `template-file=PATH` |
+| `--list-envelope` | | `CFGD_LIST_ENVELOPE` | Under `-o json`/`-o yaml`, wrap a top-level array in a KRM `List` envelope (`{apiVersion, kind: List, items}`) |
 
 Boolean env vars accept shell-truthy spellings, not just `true`/`false`. The
 accept-set matches `CFGD_YES`: `1`/`y`/`yes`/`t`/`true`/`on` (case-insensitive)
@@ -307,6 +308,46 @@ cfgd profile list -o json                       # [ { "name": "base", ... }, ...
 cfgd profile list -o 'jsonpath={[0].name}'      # base
 cfgd profile list -o 'jsonpath={[*].name}'      # one name per line
 cfgd profile list -o 'jsonpath={.items[0]}'     # empty — no `items` key on a bare array
+```
+
+##### KRM `List` envelope (`--list-envelope`)
+
+If you'd rather consume list output as a Kubernetes-style `List` object, pass
+the global `--list-envelope` flag (or set `CFGD_LIST_ENVELOPE=1`). It wraps the
+top-level array under an `apiVersion: cfgd.io/v1alpha1`, `kind: List`, and an
+`items` array carrying the original elements. The default (flag absent) stays a
+bare array — this is purely opt-in:
+
+```sh
+cfgd source list -o json
+# [ { "name": "base", ... }, ... ]
+
+cfgd source list -o json --list-envelope
+# {
+#   "apiVersion": "cfgd.io/v1alpha1",
+#   "items": [ { "name": "base", ... }, ... ],
+#   "kind": "List"
+# }
+
+cfgd source list -o yaml --list-envelope
+# apiVersion: cfgd.io/v1alpha1
+# items:
+# - name: base
+#   ...
+# kind: List
+```
+
+(Object keys serialize alphabetically — `apiVersion`, `items`, `kind` — as with
+every cfgd JSON/YAML payload; key order is not semantically meaningful.)
+
+The envelope shifts the path of every element: a bare-array `[0].name` becomes
+`.items[0].name` under the envelope. It applies **only** to `-o json` and
+`-o yaml`. The projecting formats (`-o name`, `-o jsonpath=…`, `-o template=…`,
+`-o template-file=…`) ignore it and keep operating on the bare data, so your
+existing jsonpath/template expressions are never reshaped:
+
+```sh
+cfgd source list -o 'jsonpath={[0].name}' --list-envelope   # still indexes the bare array
 ```
 
 Single-object commands (e.g. `cfgd status`) expose their fields directly, so

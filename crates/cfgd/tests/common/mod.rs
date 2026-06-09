@@ -99,6 +99,7 @@ pub fn cli_for(config_dir: &std::path::Path, state_dir: &std::path::Path) -> Cli
         verbose: 0,
         quiet: true,
         output: OutputFormatArg(cfgd_core::output::OutputFormat::Table),
+        list_envelope: false,
         jsonpath: None,
         state_dir: Some(state_dir.to_path_buf()),
         command: Some(Command::Status {

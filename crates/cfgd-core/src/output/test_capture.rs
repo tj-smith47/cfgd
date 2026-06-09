@@ -30,6 +30,7 @@ fn build_test_printer(
         test_doc_capture,
         prompt_queue,
         output_error: std::sync::atomic::AtomicBool::new(false),
+        list_envelope: false,
     }
 }
 
