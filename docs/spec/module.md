@@ -50,15 +50,17 @@ spec:
 
   scripts:
     preApply:
-      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
     postApply:
-      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
     preReconcile:
-      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
     postReconcile:
-      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
     onChange:
-      - string | { run: string, shell: string, timeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
+    onDrift:
+      - string | { run: string, shell: string, timeout: string, idleTimeout: string, continueOnError: bool, onlyIf: string, unless: string, creates: string, interactive: bool, workdir: string }
 ```
 
 ---
@@ -343,7 +345,7 @@ Lifecycle scripts executed at different points during module apply and reconcili
 | `onChange` | list | No | `[]` | Run after apply/reconcile only if this module's resources changed. |
 | `onDrift` | list | No | `[]` | Run in the daemon when drift is detected in this module's own resources, before the drift policy decides how to respond. Observability, not remediation. Fires on both whole-profile and per-module reconcile ticks. |
 
-Each entry can be a simple string or a full object with `run`, `shell`, `timeout`, `continueOnError`, `interactive`, `workdir`, and the idempotency guards `onlyIf`, `unless`, and `creates`.
+Each entry can be a simple string or a full object with `run`, `shell`, `timeout`, `idleTimeout`, `continueOnError`, `interactive`, `workdir`, and the idempotency guards `onlyIf`, `unless`, and `creates`. `idleTimeout` kills a script that produces no output for the given duration, e.g. `30s`.
 
 The `shell` field selects the interpreter for inline commands: `bash`, `zsh`, `sh`, `pwsh`, `cmd`, or `auto` (default). `auto` uses `sh` on Unix and `cmd.exe` on Windows. `shell` only applies to inline commands; file scripts use their shebang.
 

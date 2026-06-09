@@ -14,7 +14,14 @@ This is different from [module registries](modules.md#module-registries), which 
 
 ## ConfigSource Manifest
 
-Published by the team as `cfgd-source.yaml` at the root of their config repo:
+Published by the team as `cfgd-source.yaml` at the root of their config repo. A source must provide at least one **profile** or at least one **module** in `spec.provides` — a manifest with neither is rejected as invalid.
+
+A source delivers only:
+- **Profiles** — complete profile specs (`spec.provides.profiles` / `spec.provides.platformProfiles`)
+- **Policy tiers** — required, recommended, optional, locked items and constraints (`spec.policy`)
+- **Module bodies** — module implementations listed in `spec.provides.modules` (a "module library" source)
+
+Consumer-local top-level config sections (`theme`, `ai`, `daemon`, `fileStrategy`, `compliance`) are **never** source-delivered. They are always local-only and ignored if present in a source's profile.
 
 ```yaml
 apiVersion: cfgd.io/v1alpha1
@@ -95,7 +102,7 @@ spec:
         interval: "1h"
         autoApply: false
         pinVersion: "~2"
-        required: false      # fail-closed: a load failure aborts apply/plan
+        required: false      # best-effort: a load failure warns and skips this source
 ```
 
 ## Platform-Aware Profile Auto-Selection
@@ -134,7 +141,7 @@ Sources use four tiers to control what subscribers can and can't change. The key
 |---|---|---|
 | **Locked** | Subscriber cannot override, modify, or remove. The source has absolute control. | A security policy file that must be byte-for-byte what the team published |
 | **Required** | Must be present, but subscriber can add alongside. | `git-secrets` must be installed, but you can also install your own tools |
-| **Recommended** | Applied by default, but subscriber can reject specific items. | Team suggests k9s, but you prefer a different k8s dashboard |
+| **Recommended** | Applied only when the subscriber sets `acceptRecommended: true`; individual items can still be rejected. | Team suggests k9s, but you prefer a different k8s dashboard |
 | **Optional** | Subscriber must explicitly opt in. | An SRE-specific profile most developers don't need |
 
 Local config is always priority 1000. Team sources default to 500. Higher priority wins on conflict.
@@ -160,7 +167,8 @@ The full algorithm for each resource:
 3. If multiple sources:
    - **Locked**: source wins unconditionally
    - **Required**: packages union; files/env/system — source wins
-   - **Recommended + not rejected**: source value as default, local override wins
+   - **Recommended + `acceptRecommended: true` + not rejected**: source value as default, local override wins
+   - **Recommended + `acceptRecommended: false` (default)**: skip entirely unless individually accepted
    - **Recommended + rejected**: skip entirely
    - **Subscriber `overrides`**: applied just above the source's own recommended/standard items (so they beat what the source recommends) but below its required/locked tiers. Overrides ride one step above the source's own items, so they share the source's rank against local config (priority 1000): below local at the default source priority (500), but above local only if you deliberately raise the source to priority ≥ 1000 (the same "higher priority wins" rule). Because an override rides at its own source's rank, it refines only that source — a *higher-priority sibling source* still wins over it; to override across sources, raise this source's priority or set the value in your local config. Scalar fields (env, aliases, system, files) replace the source's value by name; list fields (packages, modules) are added (union), not replaced.
    - **Multiple non-local sources conflict**: higher priority wins; equal priority — alphabetical source name
@@ -339,15 +347,19 @@ Higher priority wins. When two sources have equal priority, the source whose nam
 Here's a concrete three-source conflict:
 
 ```
-Sources:
+Sources (subscriber has acceptRecommended: true):
   acme-base     (priority 400)  — sets EDITOR="nano"      (recommended)
   acme-backend  (priority 500)  — sets EDITOR="code"      (recommended)
   local config  (priority 1000) — sets EDITOR="nvim"
 
 Resolution for EDITOR:
   acme-base loses to acme-backend (500 > 400)
-  acme-backend loses to local (1000 > 500, and recommended allows override)
+  acme-backend loses to local (1000 > 500; recommended items can be overridden by local)
   Result: EDITOR="nvim"
+
+Without acceptRecommended: true:
+  Both recommended EDITOR values are skipped entirely.
+  Result: EDITOR="nvim" (local only)
 
 But if acme-backend had EDITOR as "locked":
   Locked always wins regardless of priority
@@ -355,6 +367,8 @@ But if acme-backend had EDITOR as "locked":
 ```
 
 ## Version Pinning
+
+A source subscribed **without** `pinVersion` is **floating**: it tracks the remote's default-branch HEAD and is not reproducible — any `cfgd source update` may advance it to a different commit. Pin the source to get a reproducible ref.
 
 The `pinVersion` field pins a source to a concrete **git ref** — a tag selected from the source repository's tags, or an exact commit SHA. cfgd resolves the pin against the remote's git tags (via `git ls-remote --tags`), **not** the source's self-reported `metadata.version`. This is more secure: a source cannot bypass your pin by editing the version string in its own `cfgd-source.yaml`. A checked-out pin is always a detached HEAD on the resolved ref.
 
@@ -421,6 +435,35 @@ spec:
 ```
 
 `required` is independent of the policy **required** *tier* (which marks individual items the subscriber must keep): `sync.required` governs whether the whole source must load at all.
+
+## Source-Delivered Module Bodies
+
+A source can act as a **module library**: it delivers module implementations (bodies) via `spec.provides.modules`. The list is the delivery allow-list — only modules named there are made available to subscribers.
+
+A subscribed profile may reference a module from the source the same way it references a local module. When cfgd resolves a module name, it checks:
+
+1. **Local modules** — modules in `<config-dir>/modules/` always win.
+2. **Source modules by priority** — if the module exists in multiple subscribed sources, the higher-priority source wins. Equal priority is tie-broken by source name (alphabetical).
+
+Referencing a module that is neither consumer-local nor listed in any subscribed source's `provides.modules` is a **fatal error** (`ModuleError::NotFound`), naming the source that could have offered it if its allow-list included it.
+
+`cfgd plan` and `cfgd source show` display the originating source for each source-delivered module:
+
+```
+nvim        unchanged   <- acme-corp
+corp-vpn    install     <- acme-corp
+```
+
+### Module-library-only sources
+
+A source that delivers only modules (no profiles) is valid — `spec.provides.profiles` may be empty as long as `spec.provides.modules` is non-empty. This lets teams publish reusable module collections without a full profile.
+
+```yaml
+spec:
+  provides:
+    modules: [corp-vpn, corp-certs, approved-editor]
+  # No profiles field required for a module-library source
+```
 
 ## Source Removal
 

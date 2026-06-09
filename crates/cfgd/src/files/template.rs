@@ -11,11 +11,21 @@ pub(crate) fn is_tera_template(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()) == Some("tera")
 }
 
-/// Insert system facts (__os, __arch, __hostname) into a Tera template context.
+/// Insert system facts (`__os`, `__arch`, `__hostname`, `__distro`) into a Tera template context.
+///
+/// - `__os`: operating system (`linux`, `macos`, `freebsd`, `windows`)
+/// - `__arch`: CPU architecture (`x86_64`, `aarch64`)
+/// - `__hostname`: machine hostname
+/// - `__distro`: Linux distribution or pseudo-distro (`ubuntu`, `debian`, `fedora`, `rhel`,
+///   `centos`, `arch`, `manjaro`, `alpine`, `opensuse`, `macos`, `freebsd`, `windows`, `unknown`)
 pub(super) fn insert_system_facts(ctx: &mut Context) {
     ctx.insert("__os", &std::env::consts::OS);
     ctx.insert("__arch", &std::env::consts::ARCH);
     ctx.insert("__hostname", &cfgd_core::hostname_string());
+    ctx.insert(
+        "__distro",
+        cfgd_core::platform::Platform::detect().distro.as_str(),
+    );
 }
 
 impl super::CfgdFileManager {

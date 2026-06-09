@@ -17425,10 +17425,10 @@ mod cmd_source_add_local {
     #[test]
     #[serial]
     fn cmd_source_add_with_empty_provided_profiles_bails_at_source_load() {
-        // Manifest declares no profiles at all. SourceManager::load_source
+        // Manifest declares no profiles and no modules. SourceManager::load_source
         // rejects the source before we ever reach the profile-selection arms
         // of cmd_source_add — encoding the contract that a subscribable
-        // source must expose at least one profile.
+        // source must expose at least one profile or at least one module.
         with_test_env_var("CFGD_ALLOW_LOCAL_SOURCES", Some("1"), || {
             let scratch = tempfile::tempdir().unwrap();
             let bare = scratch.path().join("empty-bare.git");
@@ -17471,10 +17471,12 @@ mod cmd_source_add_local {
                 ..empty_source_args(url)
             };
             let result = super::source::cmd_source_add(&h.cli(), h.printer(), &args);
-            let err = result.expect_err("empty provides.profiles must fail in source load");
+            let err = result.expect_err("empty provides must fail in source load");
             assert!(
-                err.to_string().to_lowercase().contains("no profiles"),
-                "expected 'no profiles' in error, got: {err}"
+                err.to_string()
+                    .to_lowercase()
+                    .contains("provides neither profiles nor modules"),
+                "expected 'provides neither profiles nor modules' in error, got: {err}"
             );
         });
     }

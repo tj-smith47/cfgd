@@ -1008,8 +1008,11 @@ fn read_manifest(name: &str, source_dir: &Path) -> Result<ConfigSourceDocument> 
         message: e.to_string(),
     })?;
 
-    if doc.spec.provides.profiles.is_empty() && doc.spec.provides.profile_details.is_empty() {
-        return Err(SourceError::NoProfiles {
+    if doc.spec.provides.profiles.is_empty()
+        && doc.spec.provides.profile_details.is_empty()
+        && doc.spec.provides.modules.is_empty()
+    {
+        return Err(SourceError::EmptyProvides {
             name: name.to_string(),
         }
         .into());

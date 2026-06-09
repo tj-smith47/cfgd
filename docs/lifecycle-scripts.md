@@ -135,7 +135,7 @@ cfgd injects these read-only variables into every lifecycle script's environment
 | `CFGD_CONFIG_DIR` | Absolute path to the config root |
 | `CFGD_PROFILE` | Active profile name |
 | `CFGD_CONTEXT` | `apply` or `reconcile` |
-| `CFGD_PHASE` | The phase being run (`preApply`, `postApply`, `onChange`, `onDrift`, …) |
+| `CFGD_PHASE` | The phase being run (`preApply`, `postApply`, `preReconcile`, `postReconcile`, `onChange`, `onDrift`) |
 | `CFGD_MODULE_NAME` | Module name (module scripts only) |
 | `CFGD_MODULE_DIR` | Absolute path to the module's directory (module scripts only) |
 

@@ -240,8 +240,8 @@ pub enum SourceError {
         available: Option<String>,
     },
 
-    #[error("source '{name}' contains no profiles")]
-    NoProfiles { name: String },
+    #[error("source '{name}' provides neither profiles nor modules")]
+    EmptyProvides { name: String },
 
     #[error("profile '{profile}' not found in source '{name}'")]
     ProfileNotFound { name: String, profile: String },

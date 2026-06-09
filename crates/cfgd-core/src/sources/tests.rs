@@ -510,7 +510,7 @@ fn resolve_ref_no_tags_gives_no_available_hint() {
 }
 
 #[test]
-fn read_manifest_no_profiles_is_error() {
+fn read_manifest_empty_provides_is_error() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join(SOURCE_MANIFEST_FILE),
@@ -531,13 +531,13 @@ spec:
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(
-        err.contains("no profiles") || err.contains("NoProfiles"),
-        "expected no-profiles error, got: {err}"
+        err.contains("provides neither profiles nor modules") || err.contains("EmptyProvides"),
+        "expected empty-provides error, got: {err}"
     );
 }
 
 #[test]
-fn detect_source_manifest_no_profiles_is_error() {
+fn detect_source_manifest_empty_provides_is_error() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join(SOURCE_MANIFEST_FILE),
@@ -557,8 +557,10 @@ spec:
     // detect_source_manifest delegates to read_manifest which should fail
     let err = detect_source_manifest(dir.path()).unwrap_err();
     assert!(
-        err.to_string().contains("no profiles") || err.to_string().contains("NoProfiles"),
-        "expected no-profiles error, got: {err}"
+        err.to_string()
+            .contains("provides neither profiles nor modules")
+            || err.to_string().contains("EmptyProvides"),
+        "expected empty-provides error, got: {err}"
     );
 }
 
@@ -585,6 +587,65 @@ fn default_cache_dir_returns_path() {
     let path = result.unwrap();
     assert!(path.to_string_lossy().contains("cfgd"));
     assert!(path.to_string_lossy().contains("sources"));
+}
+
+#[test]
+fn read_manifest_modules_only_is_accepted() {
+    // A source that delivers only module bodies (provides.modules non-empty, no profiles)
+    // must be a valid "module library" source — not an error.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(SOURCE_MANIFEST_FILE),
+        r#"
+apiVersion: cfgd.io/v1alpha1
+kind: ConfigSource
+metadata:
+  name: module-library
+spec:
+  provides:
+    profiles: []
+    modules: [corp-vpn, corp-certs]
+  policy: {}
+"#,
+    )
+    .unwrap();
+
+    let result = read_manifest("module-library", dir.path());
+    assert!(
+        result.is_ok(),
+        "modules-only source must be accepted; got: {}",
+        result.unwrap_err()
+    );
+}
+
+#[test]
+fn detect_source_manifest_modules_only_is_accepted() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(SOURCE_MANIFEST_FILE),
+        r#"
+apiVersion: cfgd.io/v1alpha1
+kind: ConfigSource
+metadata:
+  name: module-library
+spec:
+  provides:
+    profiles: []
+    modules: [corp-vpn]
+  policy: {}
+"#,
+    )
+    .unwrap();
+
+    let result = detect_source_manifest(dir.path());
+    assert!(
+        result.is_ok(),
+        "detect_source_manifest must accept modules-only source"
+    );
+    assert!(
+        result.unwrap().is_some(),
+        "modules-only source must be Some"
+    );
 }
 
 #[test]

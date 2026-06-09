@@ -370,6 +370,58 @@ fn template_custom_functions() {
 }
 
 #[test]
+fn template_system_fact_distro() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path();
+
+    let files_dir = config_dir.join("files");
+    fs::create_dir_all(&files_dir).unwrap();
+    fs::write(files_dir.join("distro.txt.tera"), "distro={{ __distro }}").unwrap();
+
+    let target = config_dir.join("target").join("distro.txt");
+
+    let resolved = make_resolved_profile(
+        vec![],
+        FilesSpec {
+            managed: vec![ManagedFileSpec {
+                source: "files/distro.txt.tera".to_string(),
+                target: target.clone(),
+                strategy: Some(FileStrategy::Copy),
+                private: false,
+                origin: None,
+                encryption: None,
+                permissions: None,
+            }],
+            permissions: HashMap::new(),
+        },
+    );
+
+    let printer = test_printer();
+    let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+    let actions = fm.plan(&resolved.merged).unwrap();
+    fm.apply(&actions, &printer).unwrap();
+
+    let content = fs::read_to_string(&target).unwrap();
+    let expected_distro = cfgd_core::platform::Platform::detect()
+        .distro
+        .as_str()
+        .to_string();
+    let known = [
+        "ubuntu", "debian", "fedora", "rhel", "centos", "arch", "manjaro", "alpine", "opensuse",
+        "macos", "freebsd", "windows", "unknown",
+    ];
+    assert!(
+        known.contains(&expected_distro.as_str()),
+        "unexpected __distro value: {expected_distro}"
+    );
+    assert_eq!(
+        content,
+        format!("distro={expected_distro}"),
+        "__distro system fact not rendered correctly"
+    );
+}
+
+#[test]
 #[cfg(unix)]
 fn permissions_set_correctly() {
     let dir = tempfile::tempdir().unwrap();

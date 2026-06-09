@@ -136,7 +136,7 @@ YAML objects (preserved via `x-kubernetes-preserve-unknown-fields: true`).
 | `requiredModules` | list of string | No | `[]` | Module names that all team members must have installed. The composition function injects these into every generated `MachineConfig.spec.moduleRefs` with `required: true`. |
 | `recommendedModules` | list of string | No | `[]` | Module names recommended for team members. Injected with `required: false`; members may opt out. |
 | `required` | object | No | | Arbitrary config items that subscribers cannot override or remove. Free-form YAML merged at the highest priority in generated configs. |
-| `recommended` | object | No | | Arbitrary config items that subscribers receive by default but can override or reject. |
+| `recommended` | object | No | | Arbitrary config items subscribers receive only when `acceptRecommended: true`; they may override or reject individual items. |
 | `locked` | object | No | | Arbitrary config items that subscribers cannot modify or remove under any circumstances. Enforced by the composition function regardless of member overrides. |
 
 **Example:**

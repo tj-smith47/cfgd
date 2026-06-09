@@ -12,6 +12,7 @@ Available as top-level variables in all templates:
 | `__os` | System | Operating system (`linux`, `macos`, `freebsd`) |
 | `__arch` | System | Architecture (`x86_64`, `aarch64`) |
 | `__hostname` | System | Machine hostname |
+| `__distro` | System | Linux distribution / pseudo-distro (`ubuntu`, `debian`, `fedora`, `rhel`, `centos`, `arch`, `manjaro`, `alpine`, `opensuse`, `macos`, `freebsd`, `windows`, `unknown`) |
 
 ## Custom Functions
 

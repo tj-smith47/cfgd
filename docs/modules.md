@@ -497,6 +497,24 @@ The `integrity` field is a sha256 hash of the module directory contents. cfgd ve
 
 Use `cfgd module upgrade` to move to a newer version.
 
+## Modules from Config Sources
+
+[Config sources](sources.md) can deliver module bodies via `spec.provides.modules` in their `cfgd-source.yaml` manifest. This makes the source a **module library** in addition to (or instead of) providing profiles. The `provides.modules` list is the delivery allow-list — only modules named there are made available to subscribers.
+
+Resolution order when a profile references a module by name:
+
+1. **Local modules** (`<config-dir>/modules/`) always win over source-delivered modules.
+2. **Source priority** — when the module exists in multiple subscribed sources, the higher-priority source wins. Equal priority is tie-broken alphabetically by source name.
+
+Referencing a module that is neither local nor offered by any subscribed source is a **fatal error**. `cfgd plan` and `cfgd source show` display the originating source:
+
+```
+nvim        unchanged   <- acme-corp
+corp-vpn    install     <- acme-corp
+```
+
+A source that delivers only modules (no profiles) is valid — see [Source-Delivered Module Bodies](sources.md#source-delivered-module-bodies) for the full contract.
+
 ## CLI Commands
 
 ```sh
