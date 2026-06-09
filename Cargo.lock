@@ -645,6 +645,7 @@ dependencies = [
  "axum",
  "cfgd-core",
  "chrono",
+ "clap",
  "futures",
  "http",
  "http-body-util",
