@@ -664,7 +664,7 @@ cfgd apply
 /// Generate or regenerate the release workflow based on current modules/profiles.
 /// Called by init and also by module create / profile create.
 pub(crate) fn regenerate_workflow(config_dir: &Path, printer: &Printer) -> anyhow::Result<()> {
-    let profiles = scan_profile_names(&config_dir.join("profiles"))?;
+    let profiles = scan_profile_names(&config_dir.join("profiles"), printer)?;
     let modules = scan_module_names(&config_dir.join("modules"))?;
 
     if profiles.is_empty() && modules.is_empty() {

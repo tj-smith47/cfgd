@@ -227,11 +227,24 @@ pub(in crate::cli) fn validate_resource_name(name: &str, kind: &str) -> anyhow::
 // --- Scan helpers ---
 
 /// Scan a profiles/ directory and return sorted profile names.
-pub(in crate::cli) fn scan_profile_names(profiles_dir: &Path) -> anyhow::Result<Vec<String>> {
+pub(in crate::cli) fn scan_profile_names(
+    profiles_dir: &Path,
+    printer: &Printer,
+) -> anyhow::Result<Vec<String>> {
     let mut names = Vec::new();
     cfgd_core::config::for_each_yaml_file(profiles_dir, |path| {
-        if let Ok(doc) = config::load_profile(path) {
-            names.push(doc.metadata.name);
+        match config::load_profile(path) {
+            Ok(doc) => names.push(doc.metadata.name),
+            // Surface unparseable profiles instead of silently dropping them —
+            // a missing profile in generated output is otherwise invisible.
+            Err(e) => printer.status_simple(
+                Role::Warn,
+                format!(
+                    "Skipping profile '{}': {}",
+                    path.display(),
+                    cfgd_core::output::collapse_to_subject_line(&e)
+                ),
+            ),
         }
         Ok(())
     })?;

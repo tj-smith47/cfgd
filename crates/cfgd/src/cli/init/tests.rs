@@ -2427,7 +2427,9 @@ fn scan_profile_names_filters_yaml_only() {
     )
     .unwrap();
 
-    let names = scan_profile_names(&profiles).unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let names = scan_profile_names(&profiles, &printer).unwrap();
     assert!(names.contains(&"work".to_string()));
     assert!(names.contains(&"home".to_string()));
     assert!(!names.contains(&"notes".to_string()));

@@ -3146,7 +3146,9 @@ fn walk_yaml_path_mut_creates_intermediate() {
 fn scan_profile_names_from_dir() {
     let dir = create_test_config_dir();
     let profiles_dir = dir.path().join("profiles");
-    let names = super::scan_profile_names(&profiles_dir).unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let names = super::scan_profile_names(&profiles_dir, &printer).unwrap();
     assert!(names.contains(&"default".to_string()));
     assert!(names.contains(&"work".to_string()));
 }
@@ -3154,11 +3156,56 @@ fn scan_profile_names_from_dir() {
 #[test]
 fn scan_profile_names_empty_dir() {
     let dir = tempfile::tempdir().unwrap();
-    let names = super::scan_profile_names(dir.path()).unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let names = super::scan_profile_names(dir.path(), &printer).unwrap();
     assert_eq!(
         names,
         Vec::<String>::new(),
         "empty dir should yield empty profile list"
+    );
+}
+
+#[test]
+fn scan_profile_names_warns_and_skips_malformed() {
+    let dir = tempfile::tempdir().unwrap();
+    let profiles_dir = dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("alpha.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: alpha\nspec:\n  packages: {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        profiles_dir.join("beta.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: beta\nspec:\n  packages: {}\n",
+    )
+    .unwrap();
+    // Missing required apiVersion/kind/metadata so load_profile errors.
+    std::fs::write(
+        profiles_dir.join("bad.yaml"),
+        "this: [is, not, a, profile\n",
+    )
+    .unwrap();
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let names = super::scan_profile_names(&profiles_dir, &printer).unwrap();
+
+    assert_eq!(
+        names,
+        vec!["alpha".to_string(), "beta".to_string()],
+        "good profiles scanned, malformed one absent"
+    );
+
+    let out = buf.lock().unwrap();
+    assert!(
+        out.contains("bad.yaml"),
+        "warning must name the malformed profile path; got: {out:?}"
+    );
+    assert!(
+        out.contains("Skipping profile"),
+        "warning must use the 'Skipping profile' shape; got: {out:?}"
     );
 }
 
@@ -13209,7 +13256,9 @@ fn scan_profile_names_finds_all_profiles() {
     // Non-yaml file should be ignored
     std::fs::write(profiles_dir.join("readme.txt"), "not a profile").unwrap();
 
-    let names = super::scan_profile_names(&profiles_dir).unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let names = super::scan_profile_names(&profiles_dir, &printer).unwrap();
     assert!(
         names.contains(&"default".to_string()),
         "should find default profile, got: {:?}",
@@ -13230,7 +13279,9 @@ fn scan_profile_names_finds_all_profiles() {
 fn scan_profile_names_nonexistent_dir_returns_empty() {
     let dir = tempfile::tempdir().unwrap();
     let profiles_dir = dir.path().join("no-such-dir");
-    let names = super::scan_profile_names(&profiles_dir).unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let names = super::scan_profile_names(&profiles_dir, &printer).unwrap();
     assert!(
         names.is_empty(),
         "nonexistent profiles dir should return empty list"

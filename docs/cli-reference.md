@@ -618,6 +618,8 @@ Generate GitHub Actions workflows for config repo releases.
 cfgd workflow generate --force   # overwrite existing
 ```
 
+Profiles whose YAML fails to parse are skipped with a warning naming the file and the parse error; the remaining valid profiles still generate.
+
 ### `cfgd checkin`
 
 Check in with the device gateway.

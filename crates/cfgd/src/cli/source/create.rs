@@ -58,7 +58,7 @@ pub fn cmd_source_create(
         None => "0.1.0".to_string(),
     };
 
-    let profile_names = scan_profile_names(&config_dir.join("profiles"))?;
+    let profile_names = scan_profile_names(&config_dir.join("profiles"), printer)?;
     let module_names = scan_module_names(&config_dir.join("modules"))?;
 
     // Build profiles YAML block

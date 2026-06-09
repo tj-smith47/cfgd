@@ -8,7 +8,7 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
     let workflow_path = workflow_dir.join("cfgd-release.yml");
 
     // Scan for profiles and modules
-    let profile_names = scan_profile_names(&config_dir.join("profiles"))?;
+    let profile_names = scan_profile_names(&config_dir.join("profiles"), printer)?;
     let module_names = scan_module_names(&config_dir.join("modules"))?;
 
     let default_branch =
