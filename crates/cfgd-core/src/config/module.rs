@@ -129,9 +129,7 @@ pub struct ModuleFileEntry {
 }
 
 /// Interpreter for inline lifecycle scripts.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum ScriptShell {
     /// Platform default: `sh` on Unix, `cmd.exe` on Windows.
@@ -143,6 +141,15 @@ pub enum ScriptShell {
     Pwsh,
     Cmd,
 }
+
+case_insensitive_enum!(ScriptShell {
+    "auto" => ScriptShell::Auto,
+    "sh" => ScriptShell::Sh,
+    "bash" => ScriptShell::Bash,
+    "zsh" => ScriptShell::Zsh,
+    "pwsh" => ScriptShell::Pwsh,
+    "cmd" => ScriptShell::Cmd,
+});
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
@@ -629,5 +636,37 @@ interactive: true
         );
         let roundtripped: ScriptEntry = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(entry, roundtripped);
+    }
+
+    #[test]
+    fn script_shell_parses_case_insensitively() {
+        for (token, expected) in [
+            ("auto", ScriptShell::Auto),
+            ("AUTO", ScriptShell::Auto),
+            ("Auto", ScriptShell::Auto),
+            ("sh", ScriptShell::Sh),
+            ("bash", ScriptShell::Bash),
+            ("BASH", ScriptShell::Bash),
+            ("zsh", ScriptShell::Zsh),
+            ("pwsh", ScriptShell::Pwsh),
+            ("Pwsh", ScriptShell::Pwsh),
+            ("cmd", ScriptShell::Cmd),
+            ("CMD", ScriptShell::Cmd),
+        ] {
+            let parsed: ScriptShell = serde_yaml::from_str(token)
+                .unwrap_or_else(|e| panic!("`{token}` should parse: {e}"));
+            assert_eq!(parsed, expected, "token {token}");
+        }
+    }
+
+    #[test]
+    fn script_shell_rejects_garbage() {
+        serde_yaml::from_str::<ScriptShell>("fish").expect_err("unknown ScriptShell must error");
+    }
+
+    #[test]
+    fn script_shell_serializes_canonical_camelcase() {
+        let s = serde_yaml::to_string(&ScriptShell::Auto).expect("serialize");
+        assert_eq!(s.trim(), "auto");
     }
 }

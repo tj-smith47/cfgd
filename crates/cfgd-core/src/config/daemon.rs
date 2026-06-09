@@ -61,14 +61,19 @@ pub struct ReconcilePatch {
     pub drift_policy: Option<DriftPolicy>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub enum ReconcilePatchKind {
     Module,
     Profile,
 }
 
+case_insensitive_enum!(ReconcilePatchKind {
+    "Module" => ReconcilePatchKind::Module,
+    "Profile" => ReconcilePatchKind::Profile,
+});
+
 /// Daemon drift reconciliation policy. PascalCase values match K8s enum conventions.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub enum DriftPolicy {
     /// Apply drift corrections automatically (current behavior, now opt-in).
     Auto,
@@ -78,6 +83,12 @@ pub enum DriftPolicy {
     /// Future: notify with actionable prompt.
     Prompt,
 }
+
+case_insensitive_enum!(DriftPolicy {
+    "Auto" => DriftPolicy::Auto,
+    "NotifyOnly" => DriftPolicy::NotifyOnly,
+    "Prompt" => DriftPolicy::Prompt,
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -100,13 +111,20 @@ impl Default for AutoApplyPolicyConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 pub enum PolicyAction {
     Notify,
     Accept,
     Reject,
     Ignore,
 }
+
+case_insensitive_enum!(PolicyAction {
+    "Notify" => PolicyAction::Notify,
+    "Accept" => PolicyAction::Accept,
+    "Reject" => PolicyAction::Reject,
+    "Ignore" => PolicyAction::Ignore,
+});
 
 fn default_policy_notify() -> PolicyAction {
     PolicyAction::Notify
@@ -211,6 +229,77 @@ mod tests {
             msg.contains("unknown field") && msg.contains("dirftPolicy"),
             "expected unknown-field error mentioning dirftPolicy, got: {msg}"
         );
+    }
+
+    #[test]
+    fn drift_policy_parses_case_insensitively() {
+        for (token, expected) in [
+            ("auto", DriftPolicy::Auto),
+            ("AUTO", DriftPolicy::Auto),
+            ("Auto", DriftPolicy::Auto),
+            ("notifyonly", DriftPolicy::NotifyOnly),
+            ("NOTIFYONLY", DriftPolicy::NotifyOnly),
+            ("NotifyOnly", DriftPolicy::NotifyOnly),
+            ("notifyOnly", DriftPolicy::NotifyOnly),
+            ("prompt", DriftPolicy::Prompt),
+            ("PROMPT", DriftPolicy::Prompt),
+        ] {
+            let parsed: DriftPolicy = serde_yaml::from_str(token)
+                .unwrap_or_else(|e| panic!("`{token}` should parse: {e}"));
+            assert_eq!(parsed, expected, "token {token}");
+        }
+    }
+
+    #[test]
+    fn drift_policy_rejects_garbage() {
+        serde_yaml::from_str::<DriftPolicy>("notifymaybe")
+            .expect_err("unknown DriftPolicy must error");
+    }
+
+    #[test]
+    fn drift_policy_serializes_canonical_pascalcase() {
+        let s = serde_yaml::to_string(&DriftPolicy::NotifyOnly).expect("serialize");
+        assert_eq!(s.trim(), "NotifyOnly");
+    }
+
+    #[test]
+    fn policy_action_parses_case_insensitively() {
+        for (token, expected) in [
+            ("notify", PolicyAction::Notify),
+            ("NOTIFY", PolicyAction::Notify),
+            ("accept", PolicyAction::Accept),
+            ("Reject", PolicyAction::Reject),
+            ("iGnOrE", PolicyAction::Ignore),
+        ] {
+            let parsed: PolicyAction = serde_yaml::from_str(token)
+                .unwrap_or_else(|e| panic!("`{token}` should parse: {e}"));
+            assert_eq!(parsed, expected, "token {token}");
+        }
+    }
+
+    #[test]
+    fn policy_action_rejects_garbage() {
+        serde_yaml::from_str::<PolicyAction>("maybe").expect_err("unknown PolicyAction must error");
+    }
+
+    #[test]
+    fn reconcile_patch_kind_parses_case_insensitively() {
+        for (token, expected) in [
+            ("module", ReconcilePatchKind::Module),
+            ("MODULE", ReconcilePatchKind::Module),
+            ("profile", ReconcilePatchKind::Profile),
+            ("Profile", ReconcilePatchKind::Profile),
+        ] {
+            let parsed: ReconcilePatchKind = serde_yaml::from_str(token)
+                .unwrap_or_else(|e| panic!("`{token}` should parse: {e}"));
+            assert_eq!(parsed, expected, "token {token}");
+        }
+    }
+
+    #[test]
+    fn reconcile_patch_kind_rejects_garbage() {
+        serde_yaml::from_str::<ReconcilePatchKind>("cluster")
+            .expect_err("unknown ReconcilePatchKind must error");
     }
 
     #[test]

@@ -214,9 +214,7 @@ pub struct ProfileSpec {
 /// The two env fields differ by *scope of affected users*: `spec.env` targets
 /// the current user, `spec.system.environment` targets all users (privileged).
 /// This knob narrows the *current-user* reach; it never widens beyond the user.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, schemars::JsonSchema)]
 pub enum EnvScope {
     /// Every standard user entry point cfgd can safely touch: interactive +
     /// login shells, `systemd --user` / Wayland GUI sessions, macOS GUI apps,
@@ -231,6 +229,12 @@ pub enum EnvScope {
     /// historical behavior before full reach.
     Interactive,
 }
+
+case_insensitive_enum!(EnvScope {
+    "All" => EnvScope::All,
+    "Login" => EnvScope::Login,
+    "Interactive" => EnvScope::Interactive,
+});
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -507,9 +511,7 @@ pub struct FilesSpec {
 }
 
 /// File deployment strategy.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, schemars::JsonSchema)]
 pub enum FileStrategy {
     /// Create a symbolic link from target to source (default).
     #[default]
@@ -522,10 +524,15 @@ pub enum FileStrategy {
     Hardlink,
 }
 
+case_insensitive_enum!(FileStrategy {
+    "Symlink" => FileStrategy::Symlink,
+    "Copy" => FileStrategy::Copy,
+    "Template" => FileStrategy::Template,
+    "Hardlink" => FileStrategy::Hardlink,
+});
+
 /// Controls when encryption is required for a managed file.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, schemars::JsonSchema)]
 pub enum EncryptionMode {
     /// File must be encrypted when stored in the repository.
     #[default]
@@ -533,6 +540,11 @@ pub enum EncryptionMode {
     /// File must always be encrypted, including at rest on disk.
     Always,
 }
+
+case_insensitive_enum!(EncryptionMode {
+    "InRepo" => EncryptionMode::InRepo,
+    "Always" => EncryptionMode::Always,
+});
 
 /// Encryption settings for a managed file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -695,5 +707,71 @@ mod tests {
     #[test]
     fn env_scope_default_is_all() {
         assert_eq!(EnvScope::default(), EnvScope::All);
+    }
+
+    #[test]
+    fn env_scope_parses_case_insensitively() {
+        for (token, expected) in [
+            ("all", EnvScope::All),
+            ("ALL", EnvScope::All),
+            ("login", EnvScope::Login),
+            ("Login", EnvScope::Login),
+            ("interactive", EnvScope::Interactive),
+            ("INTERACTIVE", EnvScope::Interactive),
+            ("Interactive", EnvScope::Interactive),
+        ] {
+            let parsed: EnvScope = serde_yaml::from_str(token)
+                .unwrap_or_else(|e| panic!("`{token}` should parse: {e}"));
+            assert_eq!(parsed, expected, "token {token}");
+        }
+    }
+
+    #[test]
+    fn file_strategy_parses_case_insensitively() {
+        for (token, expected) in [
+            ("symlink", FileStrategy::Symlink),
+            ("SYMLINK", FileStrategy::Symlink),
+            ("copy", FileStrategy::Copy),
+            ("Copy", FileStrategy::Copy),
+            ("template", FileStrategy::Template),
+            ("hardlink", FileStrategy::Hardlink),
+            ("HardLink", FileStrategy::Hardlink),
+        ] {
+            let parsed: FileStrategy = serde_yaml::from_str(token)
+                .unwrap_or_else(|e| panic!("`{token}` should parse: {e}"));
+            assert_eq!(parsed, expected, "token {token}");
+        }
+    }
+
+    #[test]
+    fn file_strategy_rejects_garbage() {
+        serde_yaml::from_str::<FileStrategy>("move").expect_err("unknown FileStrategy must error");
+    }
+
+    #[test]
+    fn file_strategy_serializes_canonical_pascalcase() {
+        let s = serde_yaml::to_string(&FileStrategy::Symlink).expect("serialize");
+        assert_eq!(s.trim(), "Symlink");
+    }
+
+    #[test]
+    fn encryption_mode_parses_case_insensitively() {
+        for (token, expected) in [
+            ("inrepo", EncryptionMode::InRepo),
+            ("INREPO", EncryptionMode::InRepo),
+            ("InRepo", EncryptionMode::InRepo),
+            ("always", EncryptionMode::Always),
+            ("Always", EncryptionMode::Always),
+        ] {
+            let parsed: EncryptionMode = serde_yaml::from_str(token)
+                .unwrap_or_else(|e| panic!("`{token}` should parse: {e}"));
+            assert_eq!(parsed, expected, "token {token}");
+        }
+    }
+
+    #[test]
+    fn encryption_mode_rejects_garbage() {
+        serde_yaml::from_str::<EncryptionMode>("never")
+            .expect_err("unknown EncryptionMode must error");
     }
 }

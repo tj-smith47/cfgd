@@ -58,12 +58,17 @@ impl Default for ComplianceScope {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, PartialEq, schemars::JsonSchema)]
 pub enum ComplianceFormat {
     #[default]
     Json,
     Yaml,
 }
+
+case_insensitive_enum!(ComplianceFormat {
+    "Json" => ComplianceFormat::Json,
+    "Yaml" => ComplianceFormat::Yaml,
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -84,5 +89,36 @@ impl Default for ComplianceExport {
             format: ComplianceFormat::default(),
             path: default_compliance_path(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compliance_format_parses_case_insensitively() {
+        for token in ["json", "JSON", "Json", "jSoN"] {
+            let parsed: ComplianceFormat = serde_yaml::from_str(token)
+                .unwrap_or_else(|e| panic!("`{token}` should parse as Json: {e}"));
+            assert_eq!(parsed, ComplianceFormat::Json, "token {token}");
+        }
+        for token in ["yaml", "YAML", "Yaml"] {
+            let parsed: ComplianceFormat = serde_yaml::from_str(token)
+                .unwrap_or_else(|e| panic!("`{token}` should parse as Yaml: {e}"));
+            assert_eq!(parsed, ComplianceFormat::Yaml, "token {token}");
+        }
+    }
+
+    #[test]
+    fn compliance_format_rejects_garbage() {
+        serde_yaml::from_str::<ComplianceFormat>("toml")
+            .expect_err("unknown ComplianceFormat must error");
+    }
+
+    #[test]
+    fn compliance_format_serializes_canonical_pascalcase() {
+        let s = serde_yaml::to_string(&ComplianceFormat::Json).expect("serialize");
+        assert_eq!(s.trim(), "Json");
     }
 }

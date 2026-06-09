@@ -3,6 +3,9 @@
 // This module is split into per-concern submodules; everything previously
 // public at `cfgd_core::config::X` is preserved here via `pub use` re-exports.
 
+#[macro_use]
+mod enum_de;
+
 mod ai;
 mod compliance;
 mod daemon;

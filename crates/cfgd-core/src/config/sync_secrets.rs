@@ -27,13 +27,19 @@ pub struct NotifyConfig {
     pub webhook_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, schemars::JsonSchema)]
 pub enum NotifyMethod {
     #[default]
     Desktop,
     Stdout,
     Webhook,
 }
+
+case_insensitive_enum!(NotifyMethod {
+    "Desktop" => NotifyMethod::Desktop,
+    "Stdout" => NotifyMethod::Stdout,
+    "Webhook" => NotifyMethod::Webhook,
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -214,6 +220,33 @@ mod tests {
                 _ => panic!("expected {expected:?} for input {input}, got {parsed:?}"),
             }
         }
+    }
+
+    #[test]
+    fn notify_method_parses_case_insensitively() {
+        for (token, expected) in [
+            ("desktop", NotifyMethod::Desktop),
+            ("DESKTOP", NotifyMethod::Desktop),
+            ("Desktop", NotifyMethod::Desktop),
+            ("stdout", NotifyMethod::Stdout),
+            ("StdOut", NotifyMethod::Stdout),
+            ("webhook", NotifyMethod::Webhook),
+            ("WEBHOOK", NotifyMethod::Webhook),
+        ] {
+            let parsed: NotifyMethod = serde_yaml::from_str(token)
+                .unwrap_or_else(|e| panic!("`{token}` should parse: {e}"));
+            match (&parsed, &expected) {
+                (NotifyMethod::Desktop, NotifyMethod::Desktop)
+                | (NotifyMethod::Stdout, NotifyMethod::Stdout)
+                | (NotifyMethod::Webhook, NotifyMethod::Webhook) => {}
+                _ => panic!("token {token}: expected {expected:?}, got {parsed:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn notify_method_rejects_garbage() {
+        serde_yaml::from_str::<NotifyMethod>("email").expect_err("unknown NotifyMethod must error");
     }
 
     #[test]
