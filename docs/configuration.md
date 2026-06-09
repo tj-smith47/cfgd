@@ -161,8 +161,9 @@ Files can be marked `private: true` to exclude them from git (added to `.gitigno
 ## File locations
 
 cfgd stores four kinds of per-user data, each resolved independently and each
-XDG-correct. Pass `--config <path>` / `CFGD_CONFIG` and `--state-dir <dir>` /
-`CFGD_STATE_DIR` to override the config file and state directory explicitly.
+XDG-correct. Every root can be relocated explicitly (see [Overriding a
+directory root](#overriding-a-directory-root) below), and `cfgd paths` prints
+the resolved values on any host.
 
 | Data | Default location |
 |---|---|
@@ -185,6 +186,81 @@ when it is set to a non-empty, absolute path; an empty or relative value is
 ignored per the XDG Base Directory spec. Setting `XDG_CONFIG_HOME` relocates the
 config dir on any platform — and is the supported way to keep config under
 `~/.config` on macOS.
+
+### Overriding a directory root
+
+Each root has a dedicated flag and environment variable. The resolution
+precedence for every root is uniform:
+
+```text
+--<role>-dir flag  >  CFGD_<ROLE>_DIR env  >  XDG base for that role  >  platform default
+```
+
+The XDG base per role is the one shown in the table above (`XDG_CONFIG_HOME`,
+`XDG_STATE_HOME`, `XDG_CACHE_HOME`, and `XDG_RUNTIME_DIR` for runtime).
+
+| Root | Flag | Env var |
+|---|---|---|
+| Config | `--config-dir <dir>` (or `--config <file>`, which wins) | `CFGD_CONFIG_DIR` (or `CFGD_CONFIG`) |
+| State | `--state-dir <dir>` | `CFGD_STATE_DIR` |
+| Cache | `--cache-dir <dir>` | `CFGD_CACHE_DIR` |
+| Runtime | `--runtime-dir <dir>` | `CFGD_RUNTIME_DIR` |
+
+The roots are independent — overriding one does not move the others. `--config`
+names the config *file* (or a directory cfgd searches for `cfgd.yaml`/`cfgd.toml`)
+and takes precedence over `--config-dir`. `--cache-dir` relocates **both** the
+source and module caches (they share one root). `--runtime-dir` relocates the
+daemon socket and lock files, and is honored by both `cfgd daemon` and
+`cfgd daemon status` so they always agree on the socket path.
+
+### `cfgd paths`
+
+`cfgd paths` reports the four resolved roots, the effective source of each
+(`flag`, `env`, or `default`), and the files cfgd owns in each — so you never
+have to guess where a host is reading or writing:
+
+```console
+$ cfgd paths
+cfgd directories
+
+Config
+  dir     /home/you/.config/cfgd
+  source  default
+  file    /home/you/.config/cfgd/cfgd.yaml
+
+State
+  dir       /home/you/.local/state/cfgd
+  source    default
+  db        /home/you/.local/state/cfgd/state.db
+  applyLock /home/you/.local/state/cfgd/apply.lock
+
+Cache
+  dir     /home/you/.cache/cfgd
+  source  default
+  sources /home/you/.cache/cfgd/sources
+  modules /home/you/.cache/cfgd/modules
+
+Runtime
+  dir     /run/user/1000/cfgd
+  source  default
+  socket  /run/user/1000/cfgd/cfgd.sock
+```
+
+`cfgd paths -o json` (or `-o yaml`) emits the same data as a structured object
+for scripts; the `source` field reflects any override in effect:
+
+```console
+$ cfgd --cache-dir /srv/cfgd-cache paths -o json
+{
+  "cache": {
+    "dir": "/srv/cfgd-cache",
+    "modules": "/srv/cfgd-cache/modules",
+    "source": "flag",
+    "sources": "/srv/cfgd-cache/sources"
+  },
+  ...
+}
+```
 
 ### macOS: legacy `~/.config/cfgd` migration
 
@@ -217,6 +293,35 @@ config dir is affected; **state** and **runtime** data stay under
 `~/Library/Application Support/cfgd`. That split is intentional: managed-file
 symlink targets are declared explicitly in each file entry, so they don't depend
 on where the config dir resides.
+
+### Silent state & cache migration
+
+Earlier builds kept the state DB and the source cache together in one data dir
+(`~/.local/share/cfgd` on Linux, `~/Library/Application Support/cfgd` on macOS,
+`%LOCALAPPDATA%\cfgd` on Windows). cfgd now resolves **state** and **cache** to
+their own roots (the table above). On the first run after upgrading, cfgd
+relocates that data to the new defaults automatically — **no prompt**. Unlike the
+config dir, state and cache are app-managed (not hand-authored, not git-tracked),
+so there is nothing to ask: the state DB (with its WAL sidecars and the device
+credential), the queued server config, and the `sources/` cache move to their
+new homes, while the module cache — already in the cache root — stays put.
+
+The migration is safe by construction:
+
+- **Per-artifact, never whole-dir.** Only cfgd's own files move; anything else in
+  the legacy directory (including a co-located config dir on macOS) is left
+  untouched.
+- **Crash-safe state DB.** The SQLite WAL is folded into the DB before the file
+  is moved; if that step can't run (a locked or degraded DB) the WAL/SHM sidecars
+  are carried across so no committed data is lost. An existing state DB at the new
+  location is authoritative and never overwritten.
+- **Idempotent.** Re-running is a no-op once everything is in place.
+- **Override-aware.** The migration runs **only** when both the state and cache
+  roots are at their defaults. If you pass `--state-dir`/`--cache-dir` or set
+  `CFGD_STATE_DIR`/`CFGD_CACHE_DIR`, cfgd assumes you are driving (e.g. a
+  throwaway location) and never moves data into an overridden root.
+
+Run `cfgd paths` afterward to confirm the new locations.
 
 ## Linux
 
@@ -283,6 +388,10 @@ These flags work with any subcommand:
 | Flag | Short | Env Var | Description |
 |---|---|---|---|
 | `--config <path>` | | `CFGD_CONFIG` | Path to `cfgd.yaml` (or a directory — cfgd infers `cfgd.yaml`, then `cfgd.toml`, inside it) |
+| `--config-dir <dir>` | | `CFGD_CONFIG_DIR` | Override the config directory (`--config` wins over it) |
+| `--state-dir <dir>` | | `CFGD_STATE_DIR` | Override the state directory (`state.db`, history, `apply.lock`) |
+| `--cache-dir <dir>` | | `CFGD_CACHE_DIR` | Override the cache directory (source + module caches) |
+| `--runtime-dir <dir>` | | `CFGD_RUNTIME_DIR` | Override the runtime directory (daemon socket, locks) |
 | `--profile <name>` | | `CFGD_PROFILE` | Override the active profile |
 | `--verbose` | `-v` | `CFGD_VERBOSE` | Show debug output (`-vv` = trace) |
 | `--quiet` | `-q` | `CFGD_QUIET` | Suppress all non-error output |

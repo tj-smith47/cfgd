@@ -105,6 +105,36 @@ spec:
         required: false      # best-effort: a load failure warns and skips this source
 ```
 
+## Adopting a team base profile
+
+The **active profile is always local**. A source-delivered profile is a remote
+building block that a local profile *pulls in* via `subscription.profile` — it
+can never be `spec.profile` directly. This keeps composition strict: a machine's
+active configuration lives in its own repo, and source profiles layer underneath
+it by priority.
+
+So to adopt a team's `acme-backend` profile, subscribe a local profile to it
+rather than naming it as the active profile:
+
+```yaml
+spec:
+  profile: workstation          # local — your machine's active profile
+  sources:
+    - name: acme-corp
+      origin:
+        type: Git
+        url: git@github.com:acme-corp/dev-config.git
+      subscription:
+        profile: acme-backend   # the team profile, pulled in under `workstation`
+        priority: 500
+```
+
+If you point `spec.profile` (or `--profile`) at a name that only a subscribed
+source provides, cfgd doesn't just say "profile not found" — it names the source
+that offers it and prints the exact `subscription` snippet to wire it in, then
+reminds you to set `spec.profile` to a local profile. (A plain typo that no
+source provides still gets the bare not-found.)
+
 ## Platform-Aware Profile Auto-Selection
 
 Cross-platform sources (e.g., a team config with separate macOS/Ubuntu/Fedora profiles) can declare a `platformProfiles` map in their manifest. When a subscriber runs `cfgd source add` without `--profile`, cfgd detects the local platform and selects the matching profile automatically.

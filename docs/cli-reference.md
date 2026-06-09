@@ -242,6 +242,20 @@ cfgd explain --recursive machineconfig     # expand all fields
 
 Resource types: `module`, `profile`, `cfgdconfig`, `configsource`, `machineconfig`, `configpolicy`, `driftalert`, `teamconfig`.
 
+### `cfgd paths`
+
+Print the resolved config, state, cache, and runtime directories, each with its
+effective source (`flag`/`env`/`default`) and the files cfgd owns there.
+
+```sh
+cfgd paths                 # human-readable
+cfgd paths -o json         # structured (config/state/cache/runtime objects)
+cfgd --cache-dir /srv/c paths -o json   # source reflects the override → "flag"
+```
+
+See [Configuration → File locations](configuration.md#file-locations) for the
+per-platform defaults and the override precedence.
+
 ## Profile Commands
 
 ### `cfgd profile list`
