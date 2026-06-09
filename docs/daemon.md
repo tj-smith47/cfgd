@@ -253,6 +253,50 @@ Restart with `cfgd daemon` (foreground) or the service-manager equivalent
 
 The service is configured to start at login (macOS/Linux) or at system boot (Windows) and restart on failure.
 
+### System scope
+
+Pass `--system` (or `CFGD_SYSTEM=1`) to install cfgd as a privileged, machine-wide
+daemon using FHS paths. This is the right choice for servers, k8s nodes, and any
+host where cfgd is managed by infrastructure tooling rather than a personal login.
+
+```bash
+sudo cfgd --system daemon install    # install the system service
+sudo cfgd --system daemon uninstall  # stop and remove it
+cfgd --system daemon status          # check state (no root needed)
+```
+
+`install` and `uninstall` require root (`sudo` on Linux/macOS). Running without root
+prints a clear error and the exact `sudo` command to re-run. `daemon status` never
+requires root.
+
+On **Linux** the service is written to `/etc/systemd/system/cfgd.service` and activated
+with `systemctl enable --now cfgd`. The unit includes
+`ConfigurationDirectory=cfgd`, `StateDirectory=cfgd`, `CacheDirectory=cfgd`, and
+`RuntimeDirectory=cfgd` directives; systemd creates and owns those directories and
+injects `$CONFIGURATION_DIRECTORY`, `$STATE_DIRECTORY`, `$CACHE_DIRECTORY`,
+`$RUNTIME_DIRECTORY` into the process environment. cfgd reads them in preference to
+the FHS defaults, so any systemd override (`SystemdConfigurationDirectory`,
+`TemporaryFileSystem`, `BindPaths`) is fully honored.
+
+On **macOS** the plist is written to `/Library/LaunchDaemons/com.cfgd.daemon.plist`
+and loaded with `launchctl bootstrap system`. Logs go to `/var/log/cfgd.log` and
+`/var/log/cfgd.err`.
+
+The generated service bakes `--system` into `ExecStart` (Linux) and `ProgramArguments`
+(macOS), so the daemon and any `cfgd --system <command>` admin-CLI invocations resolve
+the same roots. Path defaults under system scope:
+
+| Root | Linux | macOS |
+|---|---|---|
+| Config | `/etc/cfgd` | `/Library/Application Support/cfgd` |
+| State | `/var/lib/cfgd` | `/Library/Application Support/cfgd/state` |
+| Cache | `/var/cache/cfgd` | `/Library/Caches/cfgd` |
+| Runtime | `/run/cfgd` | `/Library/Application Support/cfgd/runtime` |
+
+All four roots can still be relocated with `--<role>-dir` flags or `CFGD_<ROLE>_DIR`
+env vars, or via the systemd `$*_DIRECTORY` injection described above. Use
+`cfgd --system paths` to confirm the resolved roots on any host.
+
 ### Headless installs on Linux
 
 On Linux the unit is a systemd **user** unit, so `cfgd daemon install`

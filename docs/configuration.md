@@ -160,10 +160,9 @@ Files can be marked `private: true` to exclude them from git (added to `.gitigno
 
 ## File locations
 
-cfgd stores four kinds of per-user data, each resolved independently and each
-XDG-correct. Every root can be relocated explicitly (see [Overriding a
-directory root](#overriding-a-directory-root) below), and `cfgd paths` prints
-the resolved values on any host.
+cfgd stores four kinds of data, each resolved independently. Every root can be
+relocated explicitly (see [Overriding a directory root](#overriding-a-directory-root)
+below), and `cfgd paths` prints the resolved values on any host.
 
 | Data | Default location |
 |---|---|
@@ -187,17 +186,59 @@ ignored per the XDG Base Directory spec. Setting `XDG_CONFIG_HOME` relocates the
 config dir on any platform — and is the supported way to keep config under
 `~/.config` on macOS.
 
+### System scope
+
+Pass `--system` (or `CFGD_SYSTEM=1`) to switch all four roots to their
+machine-wide FHS / `/Library` equivalents:
+
+| Root | Linux system | macOS system |
+|---|---|---|
+| Config | `/etc/cfgd` | `/Library/Application Support/cfgd` |
+| State | `/var/lib/cfgd` | `/Library/Application Support/cfgd/state` |
+| Cache | `/var/cache/cfgd` | `/Library/Caches/cfgd` |
+| Runtime | `/run/cfgd` | `/Library/Application Support/cfgd/runtime` |
+
+Windows is always system-scope; `--system` is a no-op there.
+
+```console
+$ cfgd --system paths
+cfgd directories (scope: system)
+
+Config
+  dir    /etc/cfgd
+  source default
+
+State
+  dir    /var/lib/cfgd
+  source default
+
+Cache
+  dir    /var/cache/cfgd
+  source default
+
+Runtime
+  dir    /run/cfgd
+  source default
+```
+
 ### Overriding a directory root
 
 Each root has a dedicated flag and environment variable. The resolution
-precedence for every root is uniform:
+precedence for every root is:
 
 ```text
---<role>-dir flag  >  CFGD_<ROLE>_DIR env  >  XDG base for that role  >  platform default
+--<role>-dir flag  >  CFGD_<ROLE>_DIR env  >  $*_DIRECTORY (systemd, system scope)  >  scope default  >  platform default
 ```
 
-The XDG base per role is the one shown in the table above (`XDG_CONFIG_HOME`,
-`XDG_STATE_HOME`, `XDG_CACHE_HOME`, and `XDG_RUNTIME_DIR` for runtime).
+The `$*_DIRECTORY` tier applies only under system scope on Linux: when cfgd runs
+as a systemd system service, systemd injects `$CONFIGURATION_DIRECTORY`,
+`$STATE_DIRECTORY`, `$CACHE_DIRECTORY`, and `$RUNTIME_DIRECTORY`; cfgd reads the
+first `:`-separated entry from each and prefers it over the FHS defaults. This
+means any systemd override (e.g. `StateDirectory=/srv/cfgd-state`) is honored
+without any extra cfgd configuration.
+
+The XDG base per role (`XDG_CONFIG_HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`,
+`XDG_RUNTIME_DIR`) applies under user scope only.
 
 | Root | Flag | Env var |
 |---|---|---|
