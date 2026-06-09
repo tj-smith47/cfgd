@@ -253,6 +253,23 @@ Restart with `cfgd daemon` (foreground) or the service-manager equivalent
 
 The service is configured to start at login (macOS/Linux) or at system boot (Windows) and restart on failure.
 
+### Headless installs on Linux
+
+On Linux the unit is a systemd **user** unit, so `cfgd daemon install`
+(and `cfgd init --install-daemon`) starts it with `systemctl --user`, which
+needs the per-user bus at `$XDG_RUNTIME_DIR`. A non-interactive bootstrap (ssh
+non-login shell, CI, container, provisioning script) usually has no
+`XDG_RUNTIME_DIR`. cfgd detects this and self-sets `XDG_RUNTIME_DIR` to
+`/run/user/<uid>` when that directory exists, noting it in the output. If no
+user session bus exists at all, cfgd installs the unit, reports that it could
+not start it, and points you at lingering — enable it so the user service can
+run without an active login:
+
+```bash
+loginctl enable-linger $USER
+cfgd daemon install
+```
+
 ### Windows Service
 
 On Windows, `cfgd daemon install` registers cfgd as a Windows Service named `cfgd`. The service starts automatically on boot and restarts on failure.

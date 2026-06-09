@@ -74,6 +74,40 @@ pub(crate) fn systemd_start_argv() -> [Vec<&'static str>; 2] {
     ]
 }
 
+/// How `start_systemd_service` should source `XDG_RUNTIME_DIR` for the
+/// `systemctl --user` calls. A headless bootstrap (ssh non-login shell, CI,
+/// provisioning script) typically has no `XDG_RUNTIME_DIR`, so `systemctl --user`
+/// cannot find the user bus; resolving the dir up front lets the caller either
+/// self-set it or warn clearly instead of surfacing the cryptic bus error.
+#[cfg(unix)]
+#[derive(Debug)]
+enum RuntimeDirPlan {
+    /// `XDG_RUNTIME_DIR` is already set to an existing directory — inherit it.
+    AlreadySet,
+    /// `XDG_RUNTIME_DIR` was absent/invalid but `/run/user/<uid>` exists — set it.
+    Derived(std::path::PathBuf),
+    /// No usable runtime dir exists; no user session bus is available.
+    Missing,
+}
+
+/// Decide how to source `XDG_RUNTIME_DIR` for `systemctl --user`. Pure so the
+/// decision is unit-testable without touching the real `/run/user` or env:
+/// a non-empty `xdg` pointing at an existing dir wins; otherwise the
+/// `/run/user/<uid>` `fallback` is used when it exists; otherwise nothing.
+#[cfg(unix)]
+fn resolve_runtime_dir(xdg: Option<&str>, fallback: &std::path::Path) -> RuntimeDirPlan {
+    if let Some(dir) = xdg
+        && !dir.is_empty()
+        && std::path::Path::new(dir).is_dir()
+    {
+        return RuntimeDirPlan::AlreadySet;
+    }
+    if fallback.is_dir() {
+        return RuntimeDirPlan::Derived(fallback.to_path_buf());
+    }
+    RuntimeDirPlan::Missing
+}
+
 /// Enable and start the just-installed systemd user service so the daemon runs
 /// immediately rather than only after the next login. Best-effort: when the
 /// user has no session systemd (no lingering, no active login session) the
@@ -94,9 +128,41 @@ pub(crate) fn start_systemd_service(printer: &Printer) -> Result<bool> {
         return Ok(false);
     }
 
+    let fallback =
+        std::path::PathBuf::from(format!("/run/user/{}", nix::unistd::geteuid().as_raw()));
+    let runtime_dir = match resolve_runtime_dir(
+        std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
+        &fallback,
+    ) {
+        RuntimeDirPlan::AlreadySet => None,
+        RuntimeDirPlan::Derived(dir) => {
+            printer.status_simple(
+                Role::Info,
+                format!(
+                    "XDG_RUNTIME_DIR unset — using {} for the user service bus",
+                    dir.posix()
+                ),
+            );
+            Some(dir)
+        }
+        RuntimeDirPlan::Missing => {
+            printer.status_simple(
+                Role::Warn,
+                "no user session bus (XDG_RUNTIME_DIR unset and /run/user/<uid> absent) — daemon installed but not started",
+            );
+            printer.hint(
+                "Enable lingering so the user service can run without an active login: loginctl enable-linger $USER, then re-run cfgd daemon install",
+            );
+            return Ok(false);
+        }
+    };
+
     for args in systemd_start_argv() {
         let mut cmd = std::process::Command::new("systemctl");
         cmd.args(&args);
+        if let Some(dir) = &runtime_dir {
+            cmd.env("XDG_RUNTIME_DIR", dir);
+        }
         match crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT) {
             Ok(output) if output.status.success() => {}
             Ok(output) => {
@@ -285,6 +351,62 @@ mod tests {
         assert!(unit.contains("Restart=on-failure"));
         assert!(unit.contains("WantedBy=default.target"));
         assert!(!unit.contains("--profile"));
+    }
+
+    #[test]
+    fn resolve_runtime_dir_already_set_when_xdg_dir_exists() {
+        let xdg = TempDir::new().expect("tempdir");
+        let fallback = PathBuf::from("/nonexistent/run/user/0");
+        assert!(matches!(
+            resolve_runtime_dir(Some(&xdg.path().display().to_string()), &fallback),
+            RuntimeDirPlan::AlreadySet
+        ));
+    }
+
+    #[test]
+    fn resolve_runtime_dir_derives_when_xdg_empty() {
+        let fallback = TempDir::new().expect("tempdir");
+        match resolve_runtime_dir(Some(""), fallback.path()) {
+            RuntimeDirPlan::Derived(dir) => assert_eq!(dir, fallback.path()),
+            other => panic!("expected Derived, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_runtime_dir_derives_when_xdg_points_at_missing_dir() {
+        let fallback = TempDir::new().expect("tempdir");
+        match resolve_runtime_dir(Some("/nonexistent/xdg/abc"), fallback.path()) {
+            RuntimeDirPlan::Derived(dir) => assert_eq!(dir, fallback.path()),
+            other => panic!("expected Derived, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_runtime_dir_derives_when_xdg_none_and_fallback_exists() {
+        let fallback = TempDir::new().expect("tempdir");
+        match resolve_runtime_dir(None, fallback.path()) {
+            RuntimeDirPlan::Derived(dir) => assert_eq!(dir, fallback.path()),
+            other => panic!("expected Derived, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_runtime_dir_missing_when_xdg_none_and_fallback_absent() {
+        let fallback = PathBuf::from("/nonexistent/run/user/4242");
+        assert!(matches!(
+            resolve_runtime_dir(None, &fallback),
+            RuntimeDirPlan::Missing
+        ));
+    }
+
+    #[test]
+    fn resolve_runtime_dir_prefers_xdg_over_fallback_when_both_exist() {
+        let xdg = TempDir::new().expect("tempdir");
+        let fallback = TempDir::new().expect("tempdir");
+        assert!(matches!(
+            resolve_runtime_dir(Some(&xdg.path().display().to_string()), fallback.path()),
+            RuntimeDirPlan::AlreadySet
+        ));
     }
 
     #[test]
