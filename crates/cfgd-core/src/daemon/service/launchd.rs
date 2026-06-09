@@ -8,6 +8,7 @@ pub(crate) fn generate_launchd_plist(
     config_path: &Path,
     profile: Option<&str>,
     home: &Path,
+    scope: crate::Scope,
 ) -> String {
     let mut args = vec![
         format!("<string>{}</string>", binary.display()),
@@ -18,12 +19,27 @@ pub(crate) fn generate_launchd_plist(
         args.push("<string>--profile</string>".to_string());
         args.push(format!("<string>{}</string>", p));
     }
+    if scope == crate::Scope::System {
+        args.push("<string>--system</string>".to_string());
+    }
     args.push("<string>--quiet</string>".to_string());
     args.push("<string>daemon</string>".to_string());
 
     let args_xml = args.join("\n            ");
     let label = LAUNCHD_LABEL;
-    let home_display = home.display();
+
+    let (stdout_path, stderr_path) = if scope == crate::Scope::System {
+        (
+            "/var/log/cfgd.log".to_string(),
+            "/var/log/cfgd.err".to_string(),
+        )
+    } else {
+        let home_display = home.display();
+        (
+            format!("{home_display}/Library/Logs/cfgd.log"),
+            format!("{home_display}/Library/Logs/cfgd.err"),
+        )
+    };
 
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -41,9 +57,9 @@ pub(crate) fn generate_launchd_plist(
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>{home_display}/Library/Logs/cfgd.log</string>
+    <string>{stdout_path}</string>
     <key>StandardErrorPath</key>
-    <string>{home_display}/Library/Logs/cfgd.err</string>
+    <string>{stderr_path}</string>
 </dict>
 </plist>"#
     )
@@ -54,18 +70,27 @@ pub(crate) fn install_launchd_service(
     binary: &Path,
     config_path: &Path,
     profile: Option<&str>,
+    scope: crate::Scope,
 ) -> Result<()> {
     let home = crate::expand_tilde(Path::new("~"));
-    let plist_dir = home.join(LAUNCHD_AGENTS_DIR);
+    let (plist_dir, plist_path) = if scope == crate::Scope::System {
+        let dir = std::path::PathBuf::from(LAUNCHD_DAEMONS_DIR);
+        let path = dir.join(format!("{}.plist", LAUNCHD_LABEL));
+        (dir, path)
+    } else {
+        let dir = home.join(LAUNCHD_AGENTS_DIR);
+        let path = dir.join(format!("{}.plist", LAUNCHD_LABEL));
+        (dir, path)
+    };
+
     std::fs::create_dir_all(&plist_dir).map_err(|e| DaemonError::ServiceInstallFailed {
-        message: format!("create LaunchAgents dir: {}", e),
+        message: format!("create LaunchAgents/LaunchDaemons dir: {}", e),
     })?;
 
-    let plist_path = plist_dir.join(format!("{}.plist", LAUNCHD_LABEL));
     let config_abs =
         std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
 
-    let plist = generate_launchd_plist(binary, &config_abs, profile, &home);
+    let plist = generate_launchd_plist(binary, &config_abs, profile, &home, scope);
 
     crate::atomic_write_str(&plist_path, &plist).map_err(|e| {
         DaemonError::ServiceInstallFailed {
@@ -77,36 +102,55 @@ pub(crate) fn install_launchd_service(
     Ok(())
 }
 
-/// Build the `launchctl bootstrap` argv that loads the LaunchAgent into the
-/// user's GUI domain (`gui/<uid>`). Split out so the command construction is
-/// testable without invoking `launchctl`.
+/// Build the `launchctl bootstrap` argv that loads the service. Split out so
+/// the command construction is testable without invoking `launchctl`.
+///
+/// User scope targets `gui/<uid>`; system scope targets `system`.
 #[cfg(unix)]
-pub(crate) fn launchd_bootstrap_argv(uid: u32, plist_path: &Path) -> Vec<String> {
-    vec![
-        "bootstrap".to_string(),
-        format!("gui/{uid}"),
-        plist_path.display().to_string(),
-    ]
+pub(crate) fn launchd_bootstrap_argv(
+    uid: u32,
+    plist_path: &Path,
+    scope: crate::Scope,
+) -> Vec<String> {
+    if scope == crate::Scope::System {
+        vec![
+            "bootstrap".to_string(),
+            "system".to_string(),
+            plist_path.display().to_string(),
+        ]
+    } else {
+        vec![
+            "bootstrap".to_string(),
+            format!("gui/{uid}"),
+            plist_path.display().to_string(),
+        ]
+    }
 }
 
-/// Build the `launchctl enable` argv that marks the service enabled in the
-/// user's GUI domain so it survives a later bootout/bootstrap cycle.
+/// Build the `launchctl enable` argv that marks the service enabled so it
+/// survives a later bootout/bootstrap cycle.
+///
+/// User scope targets `gui/<uid>/...`; system scope targets `system/...`.
 #[cfg(unix)]
-pub(crate) fn launchd_enable_argv(uid: u32) -> Vec<String> {
-    vec!["enable".to_string(), format!("gui/{uid}/{LAUNCHD_LABEL}")]
+pub(crate) fn launchd_enable_argv(uid: u32, scope: crate::Scope) -> Vec<String> {
+    if scope == crate::Scope::System {
+        vec!["enable".to_string(), format!("system/{LAUNCHD_LABEL}")]
+    } else {
+        vec!["enable".to_string(), format!("gui/{uid}/{LAUNCHD_LABEL}")]
+    }
 }
 
-/// Bootstrap and enable the just-installed LaunchAgent into the current user's
-/// GUI domain so the daemon runs immediately rather than only after the next
-/// GUI login. Best-effort: a headless session (no `gui/<uid>` domain, e.g. over
-/// plain SSH) cannot host a LaunchAgent, so the failure is surfaced as a warning
-/// plus an actionable hint rather than aborting the calling init flow.
+/// Bootstrap and enable the just-installed launchd service into the appropriate
+/// domain so the daemon runs immediately rather than only after the next
+/// login/boot. Best-effort: a headless session (no `gui/<uid>` domain, e.g.
+/// over plain SSH) cannot host a LaunchAgent, so the failure is surfaced as a
+/// warning plus an actionable hint rather than aborting the calling init flow.
 ///
 /// Returns `Ok(true)` when the agent was bootstrapped and enabled, `Ok(false)`
 /// when it was installed but could not be started now (the caller reports the
 /// real state instead of over-claiming `started`).
 #[cfg(unix)]
-pub(crate) fn start_launchd_service(printer: &Printer) -> Result<bool> {
+pub(crate) fn start_launchd_service(printer: &Printer, scope: crate::Scope) -> Result<bool> {
     if !crate::command_available("launchctl") {
         printer.status_simple(
             Role::Warn,
@@ -117,12 +161,15 @@ pub(crate) fn start_launchd_service(printer: &Printer) -> Result<bool> {
     }
 
     let home = crate::expand_tilde(Path::new("~"));
-    let plist_path = home
-        .join(LAUNCHD_AGENTS_DIR)
-        .join(format!("{}.plist", LAUNCHD_LABEL));
+    let plist_path = if scope == crate::Scope::System {
+        std::path::PathBuf::from(LAUNCHD_DAEMONS_DIR).join(format!("{}.plist", LAUNCHD_LABEL))
+    } else {
+        home.join(LAUNCHD_AGENTS_DIR)
+            .join(format!("{}.plist", LAUNCHD_LABEL))
+    };
     let uid = nix::unistd::getuid().as_raw();
 
-    let bootstrap = launchd_bootstrap_argv(uid, &plist_path);
+    let bootstrap = launchd_bootstrap_argv(uid, &plist_path, scope);
     let mut cmd = std::process::Command::new("launchctl");
     cmd.args(&bootstrap);
     match crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT) {
@@ -152,7 +199,7 @@ pub(crate) fn start_launchd_service(printer: &Printer) -> Result<bool> {
         }
     }
 
-    let enable = launchd_enable_argv(uid);
+    let enable = launchd_enable_argv(uid, scope);
     let mut cmd = std::process::Command::new("launchctl");
     cmd.args(&enable);
     match crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT) {
@@ -184,26 +231,40 @@ pub(crate) fn start_launchd_service(printer: &Printer) -> Result<bool> {
     Ok(true)
 }
 
-/// Build the `launchctl bootout` argv that unloads and stops the LaunchAgent
-/// from the user's GUI domain — the inverse of `launchd_bootstrap_argv`. Split
-/// out so the command construction is testable without invoking `launchctl`.
-/// `bootout gui/<uid> <plist>` mirrors the `bootstrap gui/<uid> <plist>` form.
+/// Build the `launchctl bootout` argv that unloads and stops the service —
+/// the inverse of `launchd_bootstrap_argv`. Split out so the command
+/// construction is testable without invoking `launchctl`.
+///
+/// `bootout gui/<uid> <plist>` mirrors the user bootstrap form;
+/// `bootout system <plist>` mirrors the system bootstrap form.
 #[cfg(unix)]
-pub(crate) fn launchd_bootout_argv(uid: u32, plist_path: &Path) -> Vec<String> {
-    vec![
-        "bootout".to_string(),
-        format!("gui/{uid}"),
-        plist_path.display().to_string(),
-    ]
+pub(crate) fn launchd_bootout_argv(
+    uid: u32,
+    plist_path: &Path,
+    scope: crate::Scope,
+) -> Vec<String> {
+    if scope == crate::Scope::System {
+        vec![
+            "bootout".to_string(),
+            "system".to_string(),
+            plist_path.display().to_string(),
+        ]
+    } else {
+        vec![
+            "bootout".to_string(),
+            format!("gui/{uid}"),
+            plist_path.display().to_string(),
+        ]
+    }
 }
 
-/// Unload and stop the running LaunchAgent so `uninstall` leaves no orphan
+/// Unload and stop the running launchd service so `uninstall` leaves no orphan
 /// daemon process behind — the inverse of `start_launchd_service`. Best-effort:
-/// a missing `launchctl` or a headless session (no `gui/<uid>` domain, nothing
-/// was ever loaded) is surfaced as a warning rather than aborting the uninstall
-/// flow. Must run while the plist still exists (before removal).
+/// a missing `launchctl` or a headless session (nothing was ever loaded) is
+/// surfaced as a warning rather than aborting the uninstall flow. Must run
+/// while the plist still exists (before removal).
 #[cfg(unix)]
-pub(crate) fn stop_launchd_service(printer: &Printer) {
+pub(crate) fn stop_launchd_service(printer: &Printer, scope: crate::Scope) {
     // A test with a scoped HOME override must never run a real `launchctl`
     // against the runner's session. The argv builder (`launchd_bootout_argv`)
     // carries command-construction coverage; skip the side-effecting call here.
@@ -215,17 +276,25 @@ pub(crate) fn stop_launchd_service(printer: &Printer) {
             Role::Warn,
             "launchctl not found — plist removed but daemon may still be running",
         );
-        printer.hint("Stop it later from a GUI login session with: launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.cfgd.daemon.plist");
+        let hint = if scope == crate::Scope::System {
+            "Stop it later with: launchctl bootout system /Library/LaunchDaemons/com.cfgd.daemon.plist".to_string()
+        } else {
+            "Stop it later from a GUI login session with: launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.cfgd.daemon.plist".to_string()
+        };
+        printer.hint(hint);
         return;
     }
 
     let home = crate::expand_tilde(Path::new("~"));
-    let plist_path = home
-        .join(LAUNCHD_AGENTS_DIR)
-        .join(format!("{}.plist", LAUNCHD_LABEL));
+    let plist_path = if scope == crate::Scope::System {
+        std::path::PathBuf::from(LAUNCHD_DAEMONS_DIR).join(format!("{}.plist", LAUNCHD_LABEL))
+    } else {
+        home.join(LAUNCHD_AGENTS_DIR)
+            .join(format!("{}.plist", LAUNCHD_LABEL))
+    };
     let uid = nix::unistd::getuid().as_raw();
 
-    let bootout = launchd_bootout_argv(uid, &plist_path);
+    let bootout = launchd_bootout_argv(uid, &plist_path, scope);
     let mut cmd = std::process::Command::new("launchctl");
     cmd.args(&bootout);
     match crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT) {
@@ -253,15 +322,18 @@ pub(crate) fn stop_launchd_service(printer: &Printer) {
 }
 
 #[cfg(unix)]
-pub(crate) fn uninstall_launchd_service(printer: &Printer) -> Result<()> {
+pub(crate) fn uninstall_launchd_service(printer: &Printer, scope: crate::Scope) -> Result<()> {
     let home = crate::expand_tilde(Path::new("~"));
-    let plist_path = home
-        .join(LAUNCHD_AGENTS_DIR)
-        .join(format!("{}.plist", LAUNCHD_LABEL));
+    let plist_path = if scope == crate::Scope::System {
+        std::path::PathBuf::from(LAUNCHD_DAEMONS_DIR).join(format!("{}.plist", LAUNCHD_LABEL))
+    } else {
+        home.join(LAUNCHD_AGENTS_DIR)
+            .join(format!("{}.plist", LAUNCHD_LABEL))
+    };
 
-    // Bootout BEFORE removing the plist so launchd can unload the agent it still
-    // knows about — otherwise the running daemon is orphaned.
-    stop_launchd_service(printer);
+    // Bootout BEFORE removing the plist so launchd can unload the agent/daemon it
+    // still knows about — otherwise the running daemon is orphaned.
+    stop_launchd_service(printer, scope);
 
     if plist_path.exists() {
         std::fs::remove_file(&plist_path).map_err(|e| DaemonError::ServiceInstallFailed {
@@ -289,8 +361,13 @@ mod tests {
         let config = home_dir.path().join("cfgd.yaml");
         std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\n").expect("write config");
 
-        install_launchd_service(&PathBuf::from("/usr/local/bin/cfgd"), &config, Some("ws"))
-            .expect("install");
+        install_launchd_service(
+            &PathBuf::from("/usr/local/bin/cfgd"),
+            &config,
+            Some("ws"),
+            crate::Scope::User,
+        )
+        .expect("install");
 
         let plist_path = home_dir
             .path()
@@ -302,11 +379,11 @@ mod tests {
         assert!(plist.contains("<string>ws</string>"));
 
         let printer = Printer::new(crate::output::Verbosity::Quiet);
-        uninstall_launchd_service(&printer).expect("uninstall");
+        uninstall_launchd_service(&printer, crate::Scope::User).expect("uninstall");
         assert!(!plist_path.exists());
 
         // Second uninstall is a no-op (file absent).
-        uninstall_launchd_service(&printer).expect("idempotent uninstall");
+        uninstall_launchd_service(&printer, crate::Scope::User).expect("idempotent uninstall");
     }
 
     #[test]
@@ -316,6 +393,7 @@ mod tests {
             &PathBuf::from("/etc/cfgd/config.yaml"),
             None,
             &PathBuf::from("/Users/tj"),
+            crate::Scope::User,
         );
         assert!(plist.contains("<string>/usr/local/bin/cfgd</string>"));
         assert!(plist.contains("<string>/etc/cfgd/config.yaml</string>"));
@@ -333,6 +411,7 @@ mod tests {
             &PathBuf::from("/etc/cfgd/config.yaml"),
             Some("workstation"),
             &PathBuf::from("/Users/tj"),
+            crate::Scope::User,
         );
         assert!(plist.contains("<string>--profile</string>"));
         assert!(plist.contains("<string>workstation</string>"));
@@ -343,6 +422,7 @@ mod tests {
         let argv = launchd_bootstrap_argv(
             501,
             &PathBuf::from("/Users/tj/Library/LaunchAgents/x.plist"),
+            crate::Scope::User,
         );
         assert_eq!(
             argv,
@@ -359,6 +439,7 @@ mod tests {
         let argv = launchd_bootout_argv(
             501,
             &PathBuf::from("/Users/tj/Library/LaunchAgents/x.plist"),
+            crate::Scope::User,
         );
         assert_eq!(
             argv,
@@ -372,7 +453,7 @@ mod tests {
 
     #[test]
     fn launchd_enable_argv_targets_label_in_gui_domain() {
-        let argv = launchd_enable_argv(501);
+        let argv = launchd_enable_argv(501, crate::Scope::User);
         assert_eq!(argv, ["enable", &format!("gui/501/{LAUNCHD_LABEL}")]);
     }
 
@@ -383,6 +464,7 @@ mod tests {
             &PathBuf::from("/c.yaml"),
             None,
             &PathBuf::from("/h"),
+            crate::Scope::User,
         );
         assert!(plist.contains("<key>Label</key>"));
         assert!(plist.contains("<key>ProgramArguments</key>"));
@@ -390,5 +472,60 @@ mod tests {
         assert!(plist.contains("<key>KeepAlive</key>"));
         assert!(plist.contains("<key>StandardOutPath</key>"));
         assert!(plist.contains("<key>StandardErrorPath</key>"));
+    }
+
+    #[test]
+    fn generate_launchd_plist_system_scope_adds_system_flag_and_system_log_paths() {
+        let plist = generate_launchd_plist(
+            &PathBuf::from("/usr/local/bin/cfgd"),
+            &PathBuf::from("/etc/cfgd/config.yaml"),
+            None,
+            &PathBuf::from("/root"),
+            crate::Scope::System,
+        );
+        assert!(plist.contains("<string>--system</string>"));
+        assert!(plist.contains("/var/log/cfgd.log"));
+        assert!(plist.contains("/var/log/cfgd.err"));
+        assert!(!plist.contains("/root/Library/Logs"));
+    }
+
+    #[test]
+    fn launchd_bootstrap_argv_system_scope_targets_system_domain() {
+        let argv = launchd_bootstrap_argv(
+            0,
+            &PathBuf::from("/Library/LaunchDaemons/com.cfgd.daemon.plist"),
+            crate::Scope::System,
+        );
+        assert_eq!(
+            argv,
+            [
+                "bootstrap",
+                "system",
+                "/Library/LaunchDaemons/com.cfgd.daemon.plist"
+            ]
+        );
+    }
+
+    #[test]
+    fn launchd_bootout_argv_system_scope_targets_system_domain() {
+        let argv = launchd_bootout_argv(
+            0,
+            &PathBuf::from("/Library/LaunchDaemons/com.cfgd.daemon.plist"),
+            crate::Scope::System,
+        );
+        assert_eq!(
+            argv,
+            [
+                "bootout",
+                "system",
+                "/Library/LaunchDaemons/com.cfgd.daemon.plist"
+            ]
+        );
+    }
+
+    #[test]
+    fn launchd_enable_argv_system_scope_targets_system_domain() {
+        let argv = launchd_enable_argv(0, crate::Scope::System);
+        assert_eq!(argv, ["enable", &format!("system/{LAUNCHD_LABEL}")]);
     }
 }

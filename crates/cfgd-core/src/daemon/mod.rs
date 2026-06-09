@@ -230,7 +230,11 @@ const LAUNCHD_LABEL: &str = "com.cfgd.daemon";
 #[cfg(unix)]
 const LAUNCHD_AGENTS_DIR: &str = "Library/LaunchAgents";
 #[cfg(unix)]
+const LAUNCHD_DAEMONS_DIR: &str = "/Library/LaunchDaemons";
+#[cfg(unix)]
 const SYSTEMD_USER_DIR: &str = ".config/systemd/user";
+#[cfg(unix)]
+const SYSTEMD_SYSTEM_DIR: &str = "/etc/systemd/system";
 
 // --- Sync Task ---
 
@@ -951,8 +955,7 @@ pub(super) async fn run_daemon_with(
 /// empty events rather than crash). The `override_dir` parameter exists for
 /// tests: passing `Some(dir)` skips the platform lookup entirely.
 ///
-/// Test-only convenience that drops the warning string —
-/// `init_daemon_state_with_warning` is the one used by `run_daemon_with`.
+/// Test-only convenience that drops the warning string.
 #[cfg(test)]
 pub(super) fn init_daemon_state(override_dir: Option<&Path>, scope: crate::Scope) -> DaemonState {
     init_daemon_state_with_warning(override_dir, scope).0

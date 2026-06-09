@@ -13027,7 +13027,8 @@ fn daemon_uninstall_prints_platform_info_and_succeeds() {
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
     // On Linux (CI/test env), uninstall_service just removes the unit file
     // if present; in a clean test env there is nothing to remove, so it succeeds.
-    let result = super::daemon::cmd_daemon_uninstall(&printer);
+    let cli = Cli::try_parse_from(["cfgd"]).unwrap();
+    let result = super::daemon::cmd_daemon_uninstall(&cli, &printer);
     drop(printer);
     let output = cap.human();
 

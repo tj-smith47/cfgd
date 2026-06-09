@@ -4366,7 +4366,7 @@ fn generate_launchd_plist_contains_correct_structure() {
     let config = Path::new("/Users/testuser/.config/cfgd/config.yaml");
     let home = Path::new("/Users/testuser");
 
-    let plist = generate_launchd_plist(binary, config, None, home);
+    let plist = generate_launchd_plist(binary, config, None, home, crate::Scope::User);
 
     assert!(
         plist.contains("<?xml version=\"1.0\""),
@@ -4431,7 +4431,7 @@ fn generate_launchd_plist_with_profile() {
     let config = Path::new("/home/user/.config/cfgd/config.yaml");
     let home = Path::new("/home/user");
 
-    let plist = generate_launchd_plist(binary, config, Some("work"), home);
+    let plist = generate_launchd_plist(binary, config, Some("work"), home, crate::Scope::User);
 
     assert!(
         plist.contains("<string>--profile</string>"),
@@ -4468,7 +4468,7 @@ fn generate_systemd_unit_contains_correct_structure() {
     let binary = Path::new("/usr/local/bin/cfgd");
     let config = Path::new("/home/user/.config/cfgd/config.yaml");
 
-    let unit = generate_systemd_unit(binary, config, None);
+    let unit = generate_systemd_unit(binary, config, None, crate::Scope::User);
 
     assert!(
         unit.contains("[Unit]"),
@@ -4525,7 +4525,7 @@ fn generate_systemd_unit_with_profile() {
     let binary = Path::new("/opt/bin/cfgd");
     let config = Path::new("/etc/cfgd/config.yaml");
 
-    let unit = generate_systemd_unit(binary, config, Some("server"));
+    let unit = generate_systemd_unit(binary, config, Some("server"), crate::Scope::User);
 
     assert!(
         unit.contains(
@@ -4550,7 +4550,8 @@ fn install_then_uninstall_launchd_service_round_trips_plist() {
     let config = tmp.path().join("config.yaml");
     std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\n").unwrap();
 
-    install_launchd_service(&binary, &config, Some("work")).expect("install ok");
+    install_launchd_service(&binary, &config, Some("work"), crate::Scope::User)
+        .expect("install ok");
 
     let plist = tmp
         .path()
@@ -4560,7 +4561,7 @@ fn install_then_uninstall_launchd_service_round_trips_plist() {
     assert!(body.contains("com.cfgd.daemon"));
     assert!(body.contains("--profile"));
 
-    uninstall_launchd_service(&test_printer()).expect("uninstall ok");
+    uninstall_launchd_service(&test_printer(), crate::Scope::User).expect("uninstall ok");
     assert!(!plist.exists(), "plist should be removed after uninstall");
 }
 
@@ -4571,7 +4572,8 @@ fn uninstall_launchd_service_is_noop_when_absent() {
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
     // No prior install — uninstall must succeed without error.
-    uninstall_launchd_service(&test_printer()).expect("uninstall on clean home is a no-op");
+    uninstall_launchd_service(&test_printer(), crate::Scope::User)
+        .expect("uninstall on clean home is a no-op");
 }
 
 #[cfg(unix)]
@@ -4585,7 +4587,7 @@ fn install_then_uninstall_systemd_service_round_trips_unit() {
     let config = tmp.path().join("config.yaml");
     std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\n").unwrap();
 
-    install_systemd_service(&binary, &config, None).expect("install ok");
+    install_systemd_service(&binary, &config, None, crate::Scope::User).expect("install ok");
 
     let unit_path = tmp.path().join(".config/systemd/user/cfgd.service");
     assert!(unit_path.exists(), "unit should be installed");
@@ -4594,7 +4596,7 @@ fn install_then_uninstall_systemd_service_round_trips_unit() {
     assert!(body.contains("--quiet daemon"));
     assert!(!body.contains("--profile"));
 
-    uninstall_systemd_service(&test_printer()).expect("uninstall ok");
+    uninstall_systemd_service(&test_printer(), crate::Scope::User).expect("uninstall ok");
     assert!(
         !unit_path.exists(),
         "unit should be removed after uninstall"
@@ -4607,7 +4609,8 @@ fn install_then_uninstall_systemd_service_round_trips_unit() {
 fn uninstall_systemd_service_is_noop_when_absent() {
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
-    uninstall_systemd_service(&test_printer()).expect("uninstall on clean home is a no-op");
+    uninstall_systemd_service(&test_printer(), crate::Scope::User)
+        .expect("uninstall on clean home is a no-op");
 }
 
 // Cross-platform dispatcher: install_service uses current_exe() + cfg(macos)/else
@@ -4621,11 +4624,13 @@ fn install_service_then_uninstall_service_round_trips_via_dispatcher() {
     let config = tmp.path().join("config.yaml");
     std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\n").unwrap();
 
-    crate::daemon::service::install_service(&config, None).expect("install_service ok");
+    crate::daemon::service::install_service(&config, None, crate::Scope::User)
+        .expect("install_service ok");
     // Whether macOS (plist) or Linux (unit), uninstall must round-trip without
     // panic. Skip exists() assertions — the dispatcher branch depends on
     // target_os and we just want both arms exercised.
-    crate::daemon::service::uninstall_service(&test_printer()).expect("uninstall_service ok");
+    crate::daemon::service::uninstall_service(&test_printer(), crate::Scope::User)
+        .expect("uninstall_service ok");
 }
 
 // --- managed-target drift gating (#97) ---
@@ -6608,7 +6613,7 @@ fn generate_launchd_plist_xml_structure_complete() {
     let config = Path::new("/Users/alice/.config/cfgd/config.yaml");
     let home = Path::new("/Users/alice");
 
-    let plist = generate_launchd_plist(binary, config, None, home);
+    let plist = generate_launchd_plist(binary, config, None, home, crate::Scope::User);
 
     // Verify required XML structure
     assert!(
@@ -6673,7 +6678,7 @@ fn generate_launchd_plist_includes_profile_flag() {
     let config = Path::new("/home/user/config.yaml");
     let home = Path::new("/home/user");
 
-    let plist = generate_launchd_plist(binary, config, Some("work"), home);
+    let plist = generate_launchd_plist(binary, config, Some("work"), home, crate::Scope::User);
 
     assert!(
         plist.contains("<string>--profile</string>"),
@@ -6714,7 +6719,7 @@ fn generate_systemd_unit_complete_structure() {
     let binary = Path::new("/usr/local/bin/cfgd");
     let config = Path::new("/home/user/.config/cfgd/config.yaml");
 
-    let unit = generate_systemd_unit(binary, config, None);
+    let unit = generate_systemd_unit(binary, config, None, crate::Scope::User);
 
     assert!(unit.contains("[Unit]"), "should contain [Unit] section");
     assert!(
@@ -6770,7 +6775,7 @@ fn generate_systemd_unit_includes_profile() {
     let binary = Path::new("/opt/cfgd/cfgd");
     let config = Path::new("/etc/cfgd/config.yaml");
 
-    let unit = generate_systemd_unit(binary, config, Some("server"));
+    let unit = generate_systemd_unit(binary, config, Some("server"), crate::Scope::User);
 
     let expected_exec = format!(
         "ExecStart={} --config {} --profile {} --quiet daemon",

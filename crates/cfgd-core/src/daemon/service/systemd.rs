@@ -7,6 +7,7 @@ pub(crate) fn generate_systemd_unit(
     binary: &Path,
     config_path: &Path,
     profile: Option<&str>,
+    scope: crate::Scope,
 ) -> String {
     let mut args = vec![
         binary.display().to_string(),
@@ -17,12 +18,35 @@ pub(crate) fn generate_systemd_unit(
         args.push("--profile".to_string());
         args.push(p.to_string());
     }
+    if scope == crate::Scope::System {
+        args.push("--system".to_string());
+    }
     args.push("--quiet".to_string());
     args.push("daemon".to_string());
     let exec_start = args.join(" ");
 
-    format!(
-        r#"[Unit]
+    if scope == crate::Scope::System {
+        format!(
+            r#"[Unit]
+Description=cfgd configuration daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={exec_start}
+Restart=on-failure
+RestartSec=10
+ConfigurationDirectory=cfgd
+StateDirectory=cfgd
+CacheDirectory=cfgd
+RuntimeDirectory=cfgd
+
+[Install]
+WantedBy=multi-user.target"#
+        )
+    } else {
+        format!(
+            r#"[Unit]
 Description=cfgd configuration daemon
 After=network.target
 
@@ -34,7 +58,8 @@ RestartSec=10
 
 [Install]
 WantedBy=default.target"#
-    )
+        )
+    }
 }
 
 #[cfg(unix)]
@@ -42,36 +67,48 @@ pub(crate) fn install_systemd_service(
     binary: &Path,
     config_path: &Path,
     profile: Option<&str>,
+    scope: crate::Scope,
 ) -> Result<()> {
-    let home = crate::expand_tilde(Path::new("~"));
-    let unit_dir = home.join(SYSTEMD_USER_DIR);
+    let unit_dir = if scope == crate::Scope::System {
+        std::path::PathBuf::from(SYSTEMD_SYSTEM_DIR)
+    } else {
+        let home = crate::expand_tilde(Path::new("~"));
+        home.join(SYSTEMD_USER_DIR)
+    };
     std::fs::create_dir_all(&unit_dir).map_err(|e| DaemonError::ServiceInstallFailed {
-        message: format!("create systemd user dir: {}", e),
+        message: format!("create systemd unit dir: {}", e),
     })?;
 
     let unit_path = unit_dir.join("cfgd.service");
     let config_abs =
         std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
 
-    let unit = generate_systemd_unit(binary, &config_abs, profile);
+    let unit = generate_systemd_unit(binary, &config_abs, profile, scope);
 
     crate::atomic_write_str(&unit_path, &unit).map_err(|e| DaemonError::ServiceInstallFailed {
         message: format!("write unit file: {}", e),
     })?;
 
-    tracing::info!(path = %unit_path.posix(), "installed systemd user service");
+    tracing::info!(path = %unit_path.posix(), "installed systemd service");
     Ok(())
 }
 
-/// Build the `systemctl --user` argv vectors that reload the unit cache and
+/// Build the `systemctl` argv vectors that reload the unit cache and
 /// enable+start the service. Split out so the command construction is testable
-/// without a running user systemd bus.
+/// without a running systemd bus.
 #[cfg(unix)]
-pub(crate) fn systemd_start_argv() -> [Vec<&'static str>; 2] {
-    [
-        vec!["--user", "daemon-reload"],
-        vec!["--user", "enable", "--now", "cfgd.service"],
-    ]
+pub(crate) fn systemd_start_argv(scope: crate::Scope) -> [Vec<&'static str>; 2] {
+    if scope == crate::Scope::System {
+        [
+            vec!["daemon-reload"],
+            vec!["enable", "--now", "cfgd.service"],
+        ]
+    } else {
+        [
+            vec!["--user", "daemon-reload"],
+            vec!["--user", "enable", "--now", "cfgd.service"],
+        ]
+    }
 }
 
 /// How `start_systemd_service` should source `XDG_RUNTIME_DIR` for the
@@ -108,8 +145,8 @@ fn resolve_runtime_dir(xdg: Option<&str>, fallback: &std::path::Path) -> Runtime
     RuntimeDirPlan::Missing
 }
 
-/// Enable and start the just-installed systemd user service so the daemon runs
-/// immediately rather than only after the next login. Best-effort: when the
+/// Enable and start the just-installed systemd service so the daemon runs
+/// immediately rather than only after the next login/boot. Best-effort: when the
 /// user has no session systemd (no lingering, no active login session) the
 /// enable-now cannot take effect, so the failure is surfaced as a warning plus
 /// an actionable hint rather than aborting the calling init flow.
@@ -118,46 +155,53 @@ fn resolve_runtime_dir(xdg: Option<&str>, fallback: &std::path::Path) -> Runtime
 /// when it was installed but could not be started now (the caller reports the
 /// real state instead of over-claiming `started`).
 #[cfg(unix)]
-pub(crate) fn start_systemd_service(printer: &Printer) -> Result<bool> {
+pub(crate) fn start_systemd_service(printer: &Printer, scope: crate::Scope) -> Result<bool> {
     if !crate::command_available("systemctl") {
+        let hint_cmd = if scope == crate::Scope::System {
+            "systemctl enable --now cfgd.service"
+        } else {
+            "systemctl --user enable --now cfgd.service"
+        };
         printer.status_simple(
             Role::Warn,
             "systemctl not found — daemon installed but not started",
         );
-        printer.hint("Start it later with: systemctl --user enable --now cfgd.service");
+        printer.hint(format!("Start it later with: {}", hint_cmd));
         return Ok(false);
     }
 
-    let fallback =
-        std::path::PathBuf::from(format!("/run/user/{}", nix::unistd::geteuid().as_raw()));
-    let runtime_dir = match resolve_runtime_dir(
-        std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
-        &fallback,
-    ) {
-        RuntimeDirPlan::AlreadySet => None,
-        RuntimeDirPlan::Derived(dir) => {
-            printer.status_simple(
-                Role::Info,
-                format!(
-                    "XDG_RUNTIME_DIR unset — using {} for the user service bus",
-                    dir.posix()
-                ),
-            );
-            Some(dir)
+    // XDG_RUNTIME_DIR resolution is only needed for user-scope systemctl --user.
+    let runtime_dir = if scope == crate::Scope::User {
+        let fallback =
+            std::path::PathBuf::from(format!("/run/user/{}", nix::unistd::geteuid().as_raw()));
+        match resolve_runtime_dir(std::env::var("XDG_RUNTIME_DIR").ok().as_deref(), &fallback) {
+            RuntimeDirPlan::AlreadySet => None,
+            RuntimeDirPlan::Derived(dir) => {
+                printer.status_simple(
+                    Role::Info,
+                    format!(
+                        "XDG_RUNTIME_DIR unset — using {} for the user service bus",
+                        dir.posix()
+                    ),
+                );
+                Some(dir)
+            }
+            RuntimeDirPlan::Missing => {
+                printer.status_simple(
+                    Role::Warn,
+                    "no user session bus (XDG_RUNTIME_DIR unset and /run/user/<uid> absent) — daemon installed but not started",
+                );
+                printer.hint(
+                    "Enable lingering so the user service can run without an active login: loginctl enable-linger $USER, then re-run cfgd daemon install",
+                );
+                return Ok(false);
+            }
         }
-        RuntimeDirPlan::Missing => {
-            printer.status_simple(
-                Role::Warn,
-                "no user session bus (XDG_RUNTIME_DIR unset and /run/user/<uid> absent) — daemon installed but not started",
-            );
-            printer.hint(
-                "Enable lingering so the user service can run without an active login: loginctl enable-linger $USER, then re-run cfgd daemon install",
-            );
-            return Ok(false);
-        }
+    } else {
+        None
     };
 
-    for args in systemd_start_argv() {
+    for args in systemd_start_argv(scope) {
         let mut cmd = std::process::Command::new("systemctl");
         cmd.args(&args);
         if let Some(dir) = &runtime_dir {
@@ -175,9 +219,11 @@ pub(crate) fn start_systemd_service(printer: &Printer) -> Result<bool> {
                         crate::output::collapse_to_subject_line(&detail)
                     ),
                 );
-                printer.hint(
-                    "If you have no active login session, enable lingering: loginctl enable-linger $USER",
-                );
+                if scope == crate::Scope::User {
+                    printer.hint(
+                        "If you have no active login session, enable lingering: loginctl enable-linger $USER",
+                    );
+                }
                 return Ok(false);
             }
             Err(e) => {
@@ -189,9 +235,11 @@ pub(crate) fn start_systemd_service(printer: &Printer) -> Result<bool> {
                         crate::output::collapse_to_subject_line(&e)
                     ),
                 );
-                printer.hint(
-                    "If you have no active login session, enable lingering: loginctl enable-linger $USER",
-                );
+                if scope == crate::Scope::User {
+                    printer.hint(
+                        "If you have no active login session, enable lingering: loginctl enable-linger $USER",
+                    );
+                }
                 return Ok(false);
             }
         }
@@ -201,26 +249,33 @@ pub(crate) fn start_systemd_service(printer: &Printer) -> Result<bool> {
     Ok(true)
 }
 
-/// Build the `systemctl --user` argv vectors that uninstall mirrors against
+/// Build the `systemctl` argv vectors that uninstall mirrors against
 /// install: stop+disable the unit, then (after the file is gone) reload the unit
 /// cache. Returned together so command construction is testable without a
-/// running user systemd bus; the caller invokes them at the correct points
+/// running systemd bus; the caller invokes them at the correct points
 /// around the file removal (disable BEFORE the rm, daemon-reload AFTER).
 #[cfg(unix)]
-pub(crate) fn systemd_stop_argv() -> [Vec<&'static str>; 2] {
-    [
-        vec!["--user", "disable", "--now", "cfgd.service"],
-        vec!["--user", "daemon-reload"],
-    ]
+pub(crate) fn systemd_stop_argv(scope: crate::Scope) -> [Vec<&'static str>; 2] {
+    if scope == crate::Scope::System {
+        [
+            vec!["disable", "--now", "cfgd.service"],
+            vec!["daemon-reload"],
+        ]
+    } else {
+        [
+            vec!["--user", "disable", "--now", "cfgd.service"],
+            vec!["--user", "daemon-reload"],
+        ]
+    }
 }
 
-/// Stop and disable the running systemd user unit so `uninstall` leaves no
+/// Stop and disable the running systemd unit so `uninstall` leaves no
 /// orphan daemon process behind — the inverse of `start_systemd_service`.
 /// Best-effort: a missing `systemctl` or a session with no user systemd is
 /// surfaced as a warning plus an actionable hint rather than aborting the
 /// uninstall flow. Must run while the unit file still exists (before removal).
 #[cfg(unix)]
-pub(crate) fn stop_systemd_service(printer: &Printer) {
+pub(crate) fn stop_systemd_service(printer: &Printer, scope: crate::Scope) {
     // A test with a scoped HOME override must never run a real
     // `systemctl --user` against the runner's session manager. The argv builder
     // (`systemd_stop_argv`) carries command-construction coverage; skip the
@@ -233,11 +288,16 @@ pub(crate) fn stop_systemd_service(printer: &Printer) {
             Role::Warn,
             "systemctl not found — unit file removed but daemon may still be running",
         );
-        printer.hint("Stop it manually with: systemctl --user disable --now cfgd.service");
+        let hint_cmd = if scope == crate::Scope::System {
+            "systemctl disable --now cfgd.service".to_string()
+        } else {
+            "systemctl --user disable --now cfgd.service".to_string()
+        };
+        printer.hint(format!("Stop it manually with: {}", hint_cmd));
         return;
     }
 
-    let [disable, _reload] = systemd_stop_argv();
+    let [disable, _reload] = systemd_stop_argv(scope);
     let mut cmd = std::process::Command::new("systemctl");
     cmd.args(&disable);
     match crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT) {
@@ -267,24 +327,28 @@ pub(crate) fn stop_systemd_service(printer: &Printer) {
 }
 
 #[cfg(unix)]
-pub(crate) fn uninstall_systemd_service(printer: &Printer) -> Result<()> {
-    let home = crate::expand_tilde(Path::new("~"));
-    let unit_path = home.join(SYSTEMD_USER_DIR).join("cfgd.service");
+pub(crate) fn uninstall_systemd_service(printer: &Printer, scope: crate::Scope) -> Result<()> {
+    let unit_path = if scope == crate::Scope::System {
+        std::path::PathBuf::from(SYSTEMD_SYSTEM_DIR).join("cfgd.service")
+    } else {
+        let home = crate::expand_tilde(Path::new("~"));
+        home.join(SYSTEMD_USER_DIR).join("cfgd.service")
+    };
 
     // Stop+disable BEFORE removing the unit file so systemd can act on a unit it
     // still knows about — otherwise the running daemon is orphaned.
-    stop_systemd_service(printer);
+    stop_systemd_service(printer, scope);
 
     if unit_path.exists() {
         std::fs::remove_file(&unit_path).map_err(|e| DaemonError::ServiceInstallFailed {
             message: format!("remove unit file: {}", e),
         })?;
-        tracing::info!(path = %unit_path.posix(), "removed systemd user service");
+        tracing::info!(path = %unit_path.posix(), "removed systemd service");
     }
 
     // Reload AFTER removal so systemd drops the now-deleted unit from its view.
     if crate::test_home_override().is_none() && crate::command_available("systemctl") {
-        let [_disable, reload] = systemd_stop_argv();
+        let [_disable, reload] = systemd_stop_argv(scope);
         let mut cmd = std::process::Command::new("systemctl");
         cmd.args(&reload);
         if let Ok(output) = crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT)
@@ -321,8 +385,13 @@ mod tests {
         let config = home_dir.path().join("cfgd.yaml");
         std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\n").expect("write config");
 
-        install_systemd_service(&PathBuf::from("/usr/local/bin/cfgd"), &config, Some("ws"))
-            .expect("install");
+        install_systemd_service(
+            &PathBuf::from("/usr/local/bin/cfgd"),
+            &config,
+            Some("ws"),
+            crate::Scope::User,
+        )
+        .expect("install");
 
         let unit_path = home_dir.path().join(SYSTEMD_USER_DIR).join("cfgd.service");
         let unit = std::fs::read_to_string(&unit_path).expect("read unit");
@@ -330,10 +399,10 @@ mod tests {
         assert!(unit.contains("--profile ws"));
 
         let printer = Printer::new(crate::output::Verbosity::Quiet);
-        uninstall_systemd_service(&printer).expect("uninstall");
+        uninstall_systemd_service(&printer, crate::Scope::User).expect("uninstall");
         assert!(!unit_path.exists());
 
-        uninstall_systemd_service(&printer).expect("idempotent uninstall");
+        uninstall_systemd_service(&printer, crate::Scope::User).expect("idempotent uninstall");
     }
 
     #[test]
@@ -342,6 +411,7 @@ mod tests {
             &PathBuf::from("/usr/local/bin/cfgd"),
             &PathBuf::from("/etc/cfgd/config.yaml"),
             None,
+            crate::Scope::User,
         );
         assert!(unit.contains("Description=cfgd configuration daemon"));
         assert!(unit.contains("After=network.target"));
@@ -411,14 +481,14 @@ mod tests {
 
     #[test]
     fn systemd_start_argv_reloads_then_enables_now() {
-        let [reload, enable] = systemd_start_argv();
+        let [reload, enable] = systemd_start_argv(crate::Scope::User);
         assert_eq!(reload, ["--user", "daemon-reload"]);
         assert_eq!(enable, ["--user", "enable", "--now", "cfgd.service"]);
     }
 
     #[test]
     fn systemd_stop_argv_disables_now_then_reloads() {
-        let [disable, reload] = systemd_stop_argv();
+        let [disable, reload] = systemd_stop_argv(crate::Scope::User);
         assert_eq!(disable, ["--user", "disable", "--now", "cfgd.service"]);
         assert_eq!(reload, ["--user", "daemon-reload"]);
     }
@@ -429,9 +499,43 @@ mod tests {
             &PathBuf::from("/cfgd"),
             &PathBuf::from("/c.yaml"),
             Some("workstation"),
+            crate::Scope::User,
         );
         assert!(
             unit.contains("ExecStart=/cfgd --config /c.yaml --profile workstation --quiet daemon")
         );
+    }
+
+    #[test]
+    fn generate_systemd_unit_system_scope_adds_system_flag_and_resource_dirs() {
+        let unit = generate_systemd_unit(
+            &PathBuf::from("/usr/local/bin/cfgd"),
+            &PathBuf::from("/etc/cfgd/config.yaml"),
+            None,
+            crate::Scope::System,
+        );
+        assert!(unit.contains(
+            "ExecStart=/usr/local/bin/cfgd --config /etc/cfgd/config.yaml --system --quiet daemon"
+        ));
+        assert!(unit.contains("ConfigurationDirectory=cfgd"));
+        assert!(unit.contains("StateDirectory=cfgd"));
+        assert!(unit.contains("CacheDirectory=cfgd"));
+        assert!(unit.contains("RuntimeDirectory=cfgd"));
+        assert!(unit.contains("WantedBy=multi-user.target"));
+        assert!(!unit.contains("WantedBy=default.target"));
+    }
+
+    #[test]
+    fn systemd_start_argv_system_scope_omits_user_flag() {
+        let [reload, enable] = systemd_start_argv(crate::Scope::System);
+        assert_eq!(reload, ["daemon-reload"]);
+        assert_eq!(enable, ["enable", "--now", "cfgd.service"]);
+    }
+
+    #[test]
+    fn systemd_stop_argv_system_scope_omits_user_flag() {
+        let [disable, reload] = systemd_stop_argv(crate::Scope::System);
+        assert_eq!(disable, ["disable", "--now", "cfgd.service"]);
+        assert_eq!(reload, ["daemon-reload"]);
     }
 }

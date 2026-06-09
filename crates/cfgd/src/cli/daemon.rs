@@ -32,7 +32,7 @@ pub(super) fn cmd_daemon(
     match command {
         Some(DaemonCommand::Status) => return cmd_daemon_status(cli, printer),
         Some(DaemonCommand::Install) => return cmd_daemon_install(cli, printer),
-        Some(DaemonCommand::Uninstall) => return cmd_daemon_uninstall(printer),
+        Some(DaemonCommand::Uninstall) => return cmd_daemon_uninstall(cli, printer),
         Some(DaemonCommand::Service) => return cmd_daemon_service(),
         Some(DaemonCommand::Run) | None => {}
     }
@@ -185,7 +185,17 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
         ("linux", "cfgd.service")
     };
 
-    if let Err(e) = cfgd_core::daemon::install_service(&cli.config, cli.profile.as_deref()) {
+    let scope = cli.scope();
+
+    if scope == cfgd_core::Scope::System && !cfgd_core::is_root() {
+        printer.status_simple(Role::Fail, "system-scope install requires root privileges");
+        printer.hint("Re-run with sudo: sudo cfgd --system daemon install");
+        return Err(anyhow::anyhow!(
+            "insufficient privileges for system-scope install"
+        ));
+    }
+
+    if let Err(e) = cfgd_core::daemon::install_service(&cli.config, cli.profile.as_deref(), scope) {
         let msg = format!(
             "Failed to install daemon service: {}",
             cfgd_core::output::collapse_to_subject_line(&e),
@@ -203,7 +213,7 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
     // so `cfgd daemon install` actually runs the service. Degrades to a warning
     // plus hint (lingering / GUI login) when the session cannot host it, in which
     // case `started` reports false so `-o json` consumers see the real state.
-    let started = cfgd_core::daemon::start_service(printer)?;
+    let started = cfgd_core::daemon::start_service(printer, scope)?;
 
     #[cfg(windows)]
     let payload = {
@@ -223,18 +233,28 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
 
     #[cfg(unix)]
     let payload = if cfg!(target_os = "macos") {
+        let path = if scope == cfgd_core::Scope::System {
+            "/Library/LaunchDaemons/com.cfgd.daemon.plist".to_string()
+        } else {
+            "~/Library/LaunchAgents/com.cfgd.daemon.plist".to_string()
+        };
         DaemonInstallOutput {
             platform: "macos".to_string(),
             service: "com.cfgd.daemon".to_string(),
-            path: "~/Library/LaunchAgents/com.cfgd.daemon.plist".to_string(),
+            path,
             started,
             windows_event_log: None,
         }
     } else {
+        let path = if scope == cfgd_core::Scope::System {
+            "/etc/systemd/system/cfgd.service".to_string()
+        } else {
+            "~/.config/systemd/user/cfgd.service".to_string()
+        };
         DaemonInstallOutput {
             platform: "linux".to_string(),
             service: "cfgd.service".to_string(),
-            path: "~/.config/systemd/user/cfgd.service".to_string(),
+            path,
             started,
             windows_event_log: None,
         }
@@ -298,7 +318,7 @@ pub fn build_daemon_install_doc(payload: &DaemonInstallOutput) -> Doc {
     doc.with_data(payload)
 }
 
-pub(super) fn cmd_daemon_uninstall(printer: &Printer) -> anyhow::Result<()> {
+pub(super) fn cmd_daemon_uninstall(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     let (platform, service) = if cfg!(windows) {
         ("windows", "cfgd")
     } else if cfg!(target_os = "macos") {
@@ -307,7 +327,20 @@ pub(super) fn cmd_daemon_uninstall(printer: &Printer) -> anyhow::Result<()> {
         ("linux", "cfgd.service")
     };
 
-    if let Err(e) = cfgd_core::daemon::uninstall_service(printer) {
+    let scope = cli.scope();
+
+    if scope == cfgd_core::Scope::System && !cfgd_core::is_root() {
+        printer.status_simple(
+            Role::Fail,
+            "system-scope uninstall requires root privileges",
+        );
+        printer.hint("Re-run with sudo: sudo cfgd --system daemon uninstall");
+        return Err(anyhow::anyhow!(
+            "insufficient privileges for system-scope uninstall"
+        ));
+    }
+
+    if let Err(e) = cfgd_core::daemon::uninstall_service(printer, scope) {
         let msg = format!(
             "Failed to uninstall daemon service: {}",
             cfgd_core::output::collapse_to_subject_line(&e),
@@ -326,23 +359,38 @@ pub(super) fn cmd_daemon_uninstall(printer: &Printer) -> anyhow::Result<()> {
         service: service.to_string(),
         removed: true,
     };
-    printer.emit(build_daemon_uninstall_doc(&payload));
+    printer.emit(build_daemon_uninstall_doc(&payload, scope));
     Ok(())
 }
 
 /// Build the Doc emitted for `cfgd daemon uninstall`.
-pub fn build_daemon_uninstall_doc(payload: &DaemonUninstallOutput) -> Doc {
+pub fn build_daemon_uninstall_doc(payload: &DaemonUninstallOutput, scope: cfgd_core::Scope) -> Doc {
     let mut doc = Doc::new().heading("Uninstall Daemon Service");
     let detail = match payload.platform.as_str() {
         "windows" => format!("Stopping and removing Windows Service: {}", payload.service),
-        "macos" => format!(
-            "Unloading: launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/{}.plist",
-            payload.service
-        ),
-        _ => format!(
-            "Stopping: systemctl --user disable --now {}",
-            payload.service
-        ),
+        "macos" => {
+            if scope == cfgd_core::Scope::System {
+                format!(
+                    "Unloading: launchctl bootout system /Library/LaunchDaemons/{}.plist",
+                    payload.service
+                )
+            } else {
+                format!(
+                    "Unloading: launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/{}.plist",
+                    payload.service
+                )
+            }
+        }
+        _ => {
+            if scope == cfgd_core::Scope::System {
+                format!("Stopping: systemctl disable --now {}", payload.service)
+            } else {
+                format!(
+                    "Stopping: systemctl --user disable --now {}",
+                    payload.service
+                )
+            }
+        }
     };
     doc = doc.status(Role::Info, detail);
     doc = doc.status(Role::Ok, "Daemon service removed");
@@ -576,7 +624,7 @@ mod tests {
             removed: true,
         };
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_uninstall_doc(&payload);
+        let doc = build_daemon_uninstall_doc(&payload, cfgd_core::Scope::User);
         printer.emit(doc);
         let json = cap.json().expect("doc must carry JSON payload");
         assert_eq!(json["platform"], "linux");
@@ -597,7 +645,7 @@ mod tests {
             removed: true,
         };
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_uninstall_doc(&payload);
+        let doc = build_daemon_uninstall_doc(&payload, cfgd_core::Scope::User);
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -616,7 +664,7 @@ mod tests {
             removed: true,
         };
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_uninstall_doc(&payload);
+        let doc = build_daemon_uninstall_doc(&payload, cfgd_core::Scope::User);
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -873,7 +921,7 @@ mod tests {
             removed: true,
         };
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_uninstall_doc(&payload);
+        let doc = build_daemon_uninstall_doc(&payload, cfgd_core::Scope::User);
         printer.emit(doc);
         let human = cap.human();
         assert!(
@@ -890,7 +938,7 @@ mod tests {
             removed: true,
         };
         let (printer, cap) = Printer::for_test_doc();
-        let doc = build_daemon_uninstall_doc(&payload);
+        let doc = build_daemon_uninstall_doc(&payload, cfgd_core::Scope::User);
         printer.emit(doc);
         let human = cap.human();
         assert!(

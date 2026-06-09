@@ -20,21 +20,25 @@ pub use windows::run_as_windows_service;
 // --- Service Management ---
 // launchd on macOS, systemd on Linux, Windows Service on Windows.
 
-pub fn install_service(config_path: &Path, profile: Option<&str>) -> Result<()> {
+pub fn install_service(
+    config_path: &Path,
+    profile: Option<&str>,
+    scope: crate::Scope,
+) -> Result<()> {
     let cfgd_binary = std::env::current_exe().map_err(|e| DaemonError::ServiceInstallFailed {
         message: format!("cannot determine binary path: {}", e),
     })?;
     #[cfg(windows)]
     {
         let enable_event_log = read_event_log_flag(config_path);
-        install_windows_service(&cfgd_binary, config_path, profile, enable_event_log)
+        install_windows_service(&cfgd_binary, config_path, profile, enable_event_log, scope)
     }
     #[cfg(unix)]
     {
         if cfg!(target_os = "macos") {
-            install_launchd_service(&cfgd_binary, config_path, profile)
+            install_launchd_service(&cfgd_binary, config_path, profile, scope)
         } else {
-            install_systemd_service(&cfgd_binary, config_path, profile)
+            install_systemd_service(&cfgd_binary, config_path, profile, scope)
         }
     }
 }
@@ -67,10 +71,11 @@ fn read_event_log_flag(config_path: &Path) -> bool {
 /// `Ok(false)` when it was installed but could not be started now. Callers use
 /// the boolean to report a truthful `started` state rather than over-claiming.
 #[cfg(any(unix, windows))]
-pub fn start_service(printer: &crate::output::Printer) -> Result<bool> {
+pub fn start_service(printer: &crate::output::Printer, scope: crate::Scope) -> Result<bool> {
     #[cfg(windows)]
     {
         let _ = printer;
+        let _ = scope;
         // `install_windows_service` already issues `sc start`, so the service
         // is running by the time this is reached.
         Ok(true)
@@ -87,9 +92,9 @@ pub fn start_service(printer: &crate::output::Printer) -> Result<bool> {
             return Ok(false);
         }
         if cfg!(target_os = "macos") {
-            start_launchd_service(printer)
+            start_launchd_service(printer, scope)
         } else {
-            start_systemd_service(printer)
+            start_systemd_service(printer, scope)
         }
     }
 }
@@ -98,20 +103,21 @@ pub fn start_service(printer: &crate::output::Printer) -> Result<bool> {
 /// followed by `start_service`. The running daemon is stopped BEFORE the
 /// unit/plist is removed so no orphan process is left behind. Stop is
 /// best-effort (warn+hint via `printer`); only the file removal can hard-fail.
-pub fn uninstall_service(printer: &crate::output::Printer) -> Result<()> {
+pub fn uninstall_service(printer: &crate::output::Printer, scope: crate::Scope) -> Result<()> {
     #[cfg(windows)]
     {
         // `uninstall_windows_service` already issues `sc stop` before delete and
         // reports through tracing, so the printer is unused on this platform.
         let _ = printer;
+        let _ = scope;
         uninstall_windows_service()
     }
     #[cfg(unix)]
     {
         if cfg!(target_os = "macos") {
-            uninstall_launchd_service(printer)
+            uninstall_launchd_service(printer, scope)
         } else {
-            uninstall_systemd_service(printer)
+            uninstall_systemd_service(printer, scope)
         }
     }
 }

@@ -303,7 +303,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             let config_path = target_dir.join("cfgd.yaml");
             let cfg = config::load_config(&config_path)?;
             let profile = cfg.spec.profile.as_deref();
-            match cfgd_core::daemon::install_service(&config_path, profile) {
+            match cfgd_core::daemon::install_service(&config_path, profile, args.scope) {
                 Ok(()) => {
                     printer.status_simple(Role::Ok, "Daemon service installed");
                     #[cfg(windows)]
@@ -311,7 +311,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                         .status_simple(Role::Info, "The service will start automatically on boot");
                     // Writing the unit/plist alone leaves the daemon down; enable
                     // and start it so the documented bootstrap actually runs it.
-                    cfgd_core::daemon::start_service(printer)?;
+                    cfgd_core::daemon::start_service(printer, args.scope)?;
                 }
                 Err(e) => {
                     printer.status_simple(

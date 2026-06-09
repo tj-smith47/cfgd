@@ -326,10 +326,10 @@ fn uninstall_payload(platform: &str, service: &str) -> DaemonUninstallOutput {
 #[test]
 fn daemon_uninstall_linux_human() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_daemon_uninstall_doc(&uninstall_payload(
-        "linux",
-        "cfgd.service",
-    )));
+    printer.emit(build_daemon_uninstall_doc(
+        &uninstall_payload("linux", "cfgd.service"),
+        cfgd_core::Scope::User,
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(
         Path::new(SNAPSHOT_ROOT),
@@ -340,10 +340,10 @@ fn daemon_uninstall_linux_human() {
 #[test]
 fn daemon_uninstall_linux_json() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_daemon_uninstall_doc(&uninstall_payload(
-        "linux",
-        "cfgd.service",
-    )));
+    printer.emit(build_daemon_uninstall_doc(
+        &uninstall_payload("linux", "cfgd.service"),
+        cfgd_core::Scope::User,
+    ));
     drop(printer);
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["platform"], "linux");
@@ -357,10 +357,10 @@ fn daemon_uninstall_linux_json() {
 #[test]
 fn daemon_uninstall_macos_human() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_daemon_uninstall_doc(&uninstall_payload(
-        "macos",
-        "com.cfgd.daemon",
-    )));
+    printer.emit(build_daemon_uninstall_doc(
+        &uninstall_payload("macos", "com.cfgd.daemon"),
+        cfgd_core::Scope::User,
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(
         Path::new(SNAPSHOT_ROOT),
@@ -371,10 +371,10 @@ fn daemon_uninstall_macos_human() {
 #[test]
 fn daemon_uninstall_macos_json() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_daemon_uninstall_doc(&uninstall_payload(
-        "macos",
-        "com.cfgd.daemon",
-    )));
+    printer.emit(build_daemon_uninstall_doc(
+        &uninstall_payload("macos", "com.cfgd.daemon"),
+        cfgd_core::Scope::User,
+    ));
     drop(printer);
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["platform"], "macos");
@@ -388,9 +388,10 @@ fn daemon_uninstall_macos_json() {
 #[test]
 fn daemon_uninstall_windows_human() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_daemon_uninstall_doc(&uninstall_payload(
-        "windows", "cfgd",
-    )));
+    printer.emit(build_daemon_uninstall_doc(
+        &uninstall_payload("windows", "cfgd"),
+        cfgd_core::Scope::User,
+    ));
     drop(printer);
     cap.assert_human_snapshot_in(
         Path::new(SNAPSHOT_ROOT),
@@ -401,9 +402,10 @@ fn daemon_uninstall_windows_human() {
 #[test]
 fn daemon_uninstall_windows_json() {
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_daemon_uninstall_doc(&uninstall_payload(
-        "windows", "cfgd",
-    )));
+    printer.emit(build_daemon_uninstall_doc(
+        &uninstall_payload("windows", "cfgd"),
+        cfgd_core::Scope::User,
+    ));
     drop(printer);
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["platform"], "windows");
