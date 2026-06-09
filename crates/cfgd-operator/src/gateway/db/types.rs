@@ -43,6 +43,12 @@ pub struct Device {
     pub status: DeviceStatus,
     pub desired_config: Option<serde_json::Value>,
     pub compliance_summary: Option<serde_json::Value>,
+    /// RFC 3339 timestamp of the most recent accepted desired-config push, or
+    /// `None` if no config has ever been pushed to this device.
+    pub last_pushed_at: Option<String>,
+    /// Monotonic counter incremented on every accepted push. Lets a consumer
+    /// distinguish a re-push of identical config from "nothing happened".
+    pub generation: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

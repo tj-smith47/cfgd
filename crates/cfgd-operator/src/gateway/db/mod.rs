@@ -120,6 +120,11 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE devices ADD COLUMN desired_config TEXT;",
     // Migration 2: add compliance_summary column to store last-reported compliance data.
     "ALTER TABLE devices ADD COLUMN compliance_summary TEXT;",
+    // Migration 3: push observability — last_pushed_at (re-push timestamp).
+    "ALTER TABLE devices ADD COLUMN last_pushed_at TEXT;",
+    // Migration 4: push observability — generation counter (distinguishes an
+    // identical re-push from "nothing happened").
+    "ALTER TABLE devices ADD COLUMN generation INTEGER NOT NULL DEFAULT 0;",
 ];
 
 // --- Connection init / pool helpers ---

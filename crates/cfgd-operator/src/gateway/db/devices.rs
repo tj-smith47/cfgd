@@ -21,6 +21,8 @@ fn map_device_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Device> {
         status: DeviceStatus::parse(&status_str),
         desired_config,
         compliance_summary,
+        last_pushed_at: row.get(9)?,
+        generation: row.get(10)?,
     })
 }
 
@@ -92,7 +94,7 @@ pub fn update_checkin_tx(
 
 pub fn get_device_tx(conn: &Connection, id: &str) -> Result<Device, GatewayError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, hostname, os, arch, last_checkin, config_hash, status, desired_config, compliance_summary FROM devices WHERE id = ?1",
+        "SELECT id, hostname, os, arch, last_checkin, config_hash, status, desired_config, compliance_summary, last_pushed_at, generation FROM devices WHERE id = ?1",
     )?;
     stmt.query_row(params![id], map_device_row)
         .map_err(|e| match e {
@@ -110,8 +112,14 @@ pub fn set_device_config_tx(
 ) -> Result<(), GatewayError> {
     let config_str = serde_json::to_string(config)
         .map_err(|e| GatewayError::Internal(format!("failed to serialize config: {e}")))?;
-    let mut stmt = conn.prepare_cached("UPDATE devices SET desired_config = ?1 WHERE id = ?2")?;
-    let rows = stmt.execute(params![&config_str, id])?;
+    let now = cfgd_core::utc_now_iso8601();
+    // Bump generation + last_pushed_at on EVERY accepted push so an identical
+    // re-push is still observable on the device read path (config_hash alone
+    // can't distinguish it from "nothing happened").
+    let mut stmt = conn.prepare_cached(
+        "UPDATE devices SET desired_config = ?1, last_pushed_at = ?2, generation = generation + 1 WHERE id = ?3",
+    )?;
+    let rows = stmt.execute(params![&config_str, &now, id])?;
     if rows == 0 {
         return Err(GatewayError::NotFound(format!("device not found: {id}")));
     }
@@ -124,7 +132,7 @@ pub fn list_devices_paginated_tx(
     offset: u32,
 ) -> Result<Vec<Device>, GatewayError> {
     let mut stmt = conn.prepare_cached(
-        "SELECT id, hostname, os, arch, last_checkin, config_hash, status, desired_config, compliance_summary FROM devices ORDER BY hostname LIMIT ?1 OFFSET ?2",
+        "SELECT id, hostname, os, arch, last_checkin, config_hash, status, desired_config, compliance_summary, last_pushed_at, generation FROM devices ORDER BY hostname LIMIT ?1 OFFSET ?2",
     )?;
     let devices = stmt
         .query_map(params![limit, offset], map_device_row)?

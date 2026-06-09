@@ -121,6 +121,76 @@ async fn set_and_get_device_config() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn push_advances_generation_even_for_identical_config() {
+    let (db, _tmp) = test_db();
+    let device = db
+        .register_device("dev-gen", "ws-gen", "linux", "x86_64", "hash1", None)
+        .await
+        .expect("register failed");
+    // Registration is not a push: generation starts at 0, never pushed.
+    assert_eq!(device.generation, 0, "fresh device starts at generation 0");
+    assert!(
+        device.last_pushed_at.is_none(),
+        "fresh device has no last_pushed_at"
+    );
+
+    let config = serde_json::json!({"packages": ["vim", "git"]});
+    db.set_device_config("dev-gen", &config)
+        .await
+        .expect("first push failed");
+    let after_first = db.get_device("dev-gen").await.expect("get failed");
+    assert_eq!(after_first.generation, 1, "first push -> generation 1");
+    let first_pushed_at = after_first
+        .last_pushed_at
+        .clone()
+        .expect("first push sets last_pushed_at");
+    let hash_after_first = after_first.config_hash.clone();
+
+    // Re-push the IDENTICAL config: generation must still advance and the
+    // push must remain observable even though the config (and thus the
+    // device's config_hash) is byte-identical.
+    db.set_device_config("dev-gen", &config)
+        .await
+        .expect("identical re-push failed");
+    let after_second = db.get_device("dev-gen").await.expect("get failed");
+    assert_eq!(
+        after_second.generation, 2,
+        "identical re-push -> generation 2 (core observability assertion)"
+    );
+    assert!(
+        after_second.last_pushed_at.is_some(),
+        "identical re-push keeps last_pushed_at set"
+    );
+    assert!(
+        after_second.last_pushed_at.as_deref() >= Some(first_pushed_at.as_str()),
+        "last_pushed_at must not regress on re-push"
+    );
+    assert_eq!(
+        after_second.config_hash, hash_after_first,
+        "config_hash must be unchanged by an identical re-push"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn generation_and_last_pushed_at_surface_on_list() {
+    let (db, _tmp) = test_db();
+    db.register_device("dev-list", "ws-list", "linux", "x86_64", "hash1", None)
+        .await
+        .expect("register failed");
+    db.set_device_config("dev-list", &serde_json::json!({"a": 1}))
+        .await
+        .expect("push failed");
+
+    let devices = db.list_devices().await.expect("list failed");
+    let d = devices
+        .iter()
+        .find(|d| d.id == "dev-list")
+        .expect("device present in list");
+    assert_eq!(d.generation, 1);
+    assert!(d.last_pushed_at.is_some());
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn set_config_not_found() {
     let (db, _tmp) = test_db();
     let config = serde_json::json!({"packages": []});
