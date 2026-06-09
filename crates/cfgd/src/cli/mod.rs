@@ -18,6 +18,7 @@ mod live_drift;
 pub mod log;
 pub mod module;
 pub mod output_types;
+pub mod paths;
 pub mod plan;
 mod plan_ops;
 pub mod plugin;
@@ -581,6 +582,12 @@ pub enum Command {
         long_about = "Diagnose environment prerequisites, tool versions, and config validity.\n\nExamples:\n  cfgd doctor\n  cfgd --output json doctor"
     )]
     Doctor,
+
+    /// Show the directory roots cfgd reads and writes
+    #[command(
+        long_about = "Print the resolved config, state, cache, and runtime directories, their source (flag/env/default), and the files cfgd owns in each.\n\nExamples:\n  cfgd paths\n  cfgd --output json paths"
+    )]
+    Paths,
 
     /// Manage modules
     #[command(
@@ -1555,7 +1562,11 @@ pub enum ModuleRegistryCommand {
 }
 
 /// Execute the given CLI command. Returns Ok(()) on success.
-pub fn execute(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Result<()> {
+pub fn execute(
+    cli: &Cli,
+    printer: &cfgd_core::output::Printer,
+    dir_sources: &paths::DirSources,
+) -> anyhow::Result<()> {
     // No subcommand: print help and exit 0. Required for package-manager
     // validators (winget, chocolatey) that smoke-test the installed binary
     // with no arguments and treat any non-zero exit code as failure.
@@ -1603,6 +1614,7 @@ pub fn execute(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resul
             } => profile::cmd_profile_delete(cli, printer, name, *yes, *ignore_not_found),
         },
         Command::Doctor => doctor::cmd_doctor(cli, printer),
+        Command::Paths => paths::cmd_paths(cli, printer, dir_sources),
         Command::Init {
             path,
             from,

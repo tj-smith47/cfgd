@@ -831,7 +831,8 @@ fn extract_zip(archive: &Path, dest: &Path) -> std::result::Result<(), UpgradeEr
 /// Check if the daemon is running and restart it.
 /// Returns true if the daemon was restarted, false if it wasn't running.
 pub fn restart_daemon_if_running() -> bool {
-    let status = match crate::daemon::query_daemon_status() {
+    // No CLI runtime override available in the self-upgrade path; env/default.
+    let status = match crate::daemon::query_daemon_status(None) {
         Ok(Some(s)) => s,
         _ => return false,
     };

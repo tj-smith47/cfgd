@@ -247,9 +247,11 @@ where
 }
 // --- Status Query (for cfgd daemon status) ---
 
-/// Connect to the daemon IPC endpoint. Returns `None` if the daemon is not reachable.
-pub(crate) fn connect_daemon_ipc() -> Option<IpcStream> {
-    let path = super::resolve_default_ipc_path();
+/// Connect to the daemon IPC endpoint. Returns `None` if the daemon is not
+/// reachable. `runtime_over` carries the `--runtime-dir` override so the client
+/// resolves the same socket the server bound; pass `None` for env/default.
+pub(crate) fn connect_daemon_ipc(runtime_over: Option<&std::path::Path>) -> Option<IpcStream> {
+    let path = super::resolve_default_ipc_path(runtime_over);
     #[cfg(unix)]
     {
         if !path.exists() {
@@ -309,8 +311,13 @@ impl std::io::Write for IpcStream {
     }
 }
 
-pub fn query_daemon_status() -> Result<Option<DaemonStatusResponse>> {
-    let mut stream = match connect_daemon_ipc() {
+/// Query the running daemon's status over IPC. `runtime_over` carries the
+/// `--runtime-dir` override so the socket is resolved identically to the
+/// server's bind; pass `None` for env/default.
+pub fn query_daemon_status(
+    runtime_over: Option<&std::path::Path>,
+) -> Result<Option<DaemonStatusResponse>> {
+    let mut stream = match connect_daemon_ipc(runtime_over) {
         Some(s) => s,
         None => return Ok(None),
     };

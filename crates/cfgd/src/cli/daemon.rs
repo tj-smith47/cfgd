@@ -30,7 +30,7 @@ pub(super) fn cmd_daemon(
     command: Option<&DaemonCommand>,
 ) -> anyhow::Result<()> {
     match command {
-        Some(DaemonCommand::Status) => return cmd_daemon_status(printer),
+        Some(DaemonCommand::Status) => return cmd_daemon_status(cli, printer),
         Some(DaemonCommand::Install) => return cmd_daemon_install(cli, printer),
         Some(DaemonCommand::Uninstall) => return cmd_daemon_uninstall(printer),
         Some(DaemonCommand::Service) => return cmd_daemon_service(),
@@ -50,8 +50,16 @@ pub(super) fn cmd_daemon(
     let hooks: std::sync::Arc<dyn cfgd_core::daemon::DaemonHooks> =
         std::sync::Arc::new(WorkstationDaemonHooks);
     let rt = tokio::runtime::Runtime::new()?;
+    let runtime_override = cli.runtime_dir.clone();
     let result = rt.block_on(async {
-        cfgd_core::daemon::run_daemon(config_path, profile_override, daemon_printer, hooks).await
+        cfgd_core::daemon::run_daemon(
+            config_path,
+            profile_override,
+            runtime_override,
+            daemon_printer,
+            hooks,
+        )
+        .await
     });
     rt.shutdown_timeout(std::time::Duration::from_secs(2));
     if let Err(e) = result {
@@ -68,8 +76,8 @@ pub(super) fn cmd_daemon(
     Ok(())
 }
 
-pub fn cmd_daemon_status(printer: &Printer) -> anyhow::Result<()> {
-    let status = match cfgd_core::daemon::query_daemon_status() {
+pub fn cmd_daemon_status(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
+    let status = match cfgd_core::daemon::query_daemon_status(cli.runtime_dir.as_deref()) {
         Ok(s) => s,
         Err(e) => {
             let msg = format!(
@@ -681,8 +689,9 @@ mod tests {
 
     #[test]
     fn cmd_daemon_status_returns_ok_when_no_daemon() {
+        let cli = make_cli();
         let printer = make_printer();
-        let result = cmd_daemon_status(&printer);
+        let result = cmd_daemon_status(&cli, &printer);
         result.expect("cmd_daemon_status must succeed when daemon is not running");
     }
 

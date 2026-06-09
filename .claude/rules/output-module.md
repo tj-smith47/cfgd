@@ -93,6 +93,7 @@ missing from the table.
 | module_show                  | yes               | introspection                                      |
 | module_update_local          | yes               | update records                                     |
 | module_upgrade               | yes               | upgrade result records                             |
+| paths                        | yes               | resolved directory roots consumed by scripts       |
 | plan                         | yes               | plan output consumed by CI                         |
 | profile_create               | yes               | new profile metadata                               |
 | profile_delete               | yes               | deletion records                                   |

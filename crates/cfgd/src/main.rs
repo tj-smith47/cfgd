@@ -118,6 +118,22 @@ fn main() -> anyhow::Result<()> {
 
     let mut cli = cli::Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
 
+    // Capture the effective source (flag / env / default) of each directory
+    // override before the ArgMatches is dropped — `cfgd paths` reports it and
+    // only clap's ValueSource can distinguish the three honestly.
+    // `--config` (a file or dir) wins over `--config-dir`; the config root is
+    // overridden if EITHER arg was supplied, so its source folds both.
+    use cli::paths::dir_source_from_value_source as dir_src;
+    let dir_sources = cli::paths::DirSources {
+        config: cli::paths::config_dir_source(
+            matches.value_source("config"),
+            matches.value_source("config_dir"),
+        ),
+        state: dir_src(matches.value_source("state_dir")),
+        cache: dir_src(matches.value_source("cache_dir")),
+        runtime: dir_src(matches.value_source("runtime_dir")),
+    };
+
     // `--config` (a file OR dir, more specific) wins over `--config-dir`. Because
     // `--config` carries a clap default, the ArgMatches value source distinguishes
     // a user-supplied value from the default before folding in `--config-dir`.
@@ -219,7 +235,7 @@ fn main() -> anyhow::Result<()> {
         cli.config = cfgd_core::config::resolve_config_path(&new_config);
     }
 
-    if let Err(e) = cli::execute(&cli, &printer) {
+    if let Err(e) = cli::execute(&cli, &printer, &dir_sources) {
         cli::error::render_cli_error(&printer, &e).exit();
     }
 

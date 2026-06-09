@@ -25,6 +25,8 @@ pub mod upgrade;
 mod util;
 pub use util::*;
 
+pub use daemon::resolve_default_ipc_path;
+
 #[cfg(test)]
 pub(crate) use util::{home_dir_var, resolve_macos_config_dir, test_home_override};
 

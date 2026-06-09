@@ -11389,7 +11389,7 @@ mod ipc_socket_security {
     fn resolve_default_ipc_path_env_override_wins() {
         let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", "/custom/cfgd.sock");
         assert_eq!(
-            resolve_default_ipc_path(),
+            resolve_default_ipc_path(None),
             std::path::PathBuf::from("/custom/cfgd.sock")
         );
     }
@@ -11401,7 +11401,7 @@ mod ipc_socket_security {
         let _unset_override = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
         let _xdg = EnvVarGuard::set("XDG_RUNTIME_DIR", "/tmp/test-xdg");
         assert_eq!(
-            resolve_default_ipc_path(),
+            resolve_default_ipc_path(None),
             std::path::PathBuf::from("/tmp/test-xdg/cfgd/cfgd.sock")
         );
     }
@@ -11420,7 +11420,7 @@ mod ipc_socket_security {
             .join("cfgd")
             .join("runtime")
             .join("cfgd.sock");
-        assert_eq!(resolve_default_ipc_path(), expected);
+        assert_eq!(resolve_default_ipc_path(None), expected);
     }
 
     #[cfg(target_os = "macos")]
@@ -11437,7 +11437,7 @@ mod ipc_socket_security {
             .join("cfgd")
             .join("runtime")
             .join("cfgd.sock");
-        assert_eq!(resolve_default_ipc_path(), expected);
+        assert_eq!(resolve_default_ipc_path(None), expected);
     }
 
     /// Drives `run_health_server` against a tempdir socket path and asserts
@@ -11572,7 +11572,7 @@ mod ipc_socket_security {
         });
 
         let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock_path.to_str().unwrap());
-        let result = tokio::task::spawn_blocking(query_daemon_status)
+        let result = tokio::task::spawn_blocking(|| query_daemon_status(None))
             .await
             .unwrap();
         let _ = server.join();
@@ -11606,7 +11606,7 @@ mod query_daemon_status_paths {
         let tmp = tempfile::tempdir().unwrap();
         let nonexistent = tmp.path().join("nope.sock");
         let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", nonexistent.to_str().unwrap());
-        let result = query_daemon_status().expect("missing socket must not error");
+        let result = query_daemon_status(None).expect("missing socket must not error");
         assert!(
             result.is_none(),
             "missing socket path returns Ok(None), got: {result:?}"
@@ -11658,7 +11658,7 @@ mod query_daemon_status_paths {
         });
 
         let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock_path.to_str().unwrap());
-        let result = tokio::task::spawn_blocking(query_daemon_status)
+        let result = tokio::task::spawn_blocking(|| query_daemon_status(None))
             .await
             .unwrap();
         let _ = server.join();
@@ -11700,7 +11700,7 @@ mod query_daemon_status_paths {
         });
 
         let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock_path.to_str().unwrap());
-        let result = tokio::task::spawn_blocking(query_daemon_status)
+        let result = tokio::task::spawn_blocking(|| query_daemon_status(None))
             .await
             .unwrap();
         let _ = server.join();
@@ -11746,7 +11746,7 @@ mod query_daemon_status_paths {
         });
 
         let _g = EnvVarGuard::set("CFGD_DAEMON_IPC_PATH", sock_path.to_str().unwrap());
-        let result = tokio::task::spawn_blocking(query_daemon_status)
+        let result = tokio::task::spawn_blocking(|| query_daemon_status(None))
             .await
             .unwrap();
         let _ = server.join();
@@ -12228,7 +12228,7 @@ mod tests_run_daemon_wrapper {
         let printer = Arc::new(test_printer());
         let hooks: Arc<dyn DaemonHooks> = Arc::new(StubHooks2);
         let bogus_path = PathBuf::from("/nonexistent-cfgd-cfg-7f9a/does-not-exist.yaml");
-        let result = run_daemon(bogus_path, None, printer, hooks).await;
+        let result = run_daemon(bogus_path, None, None, printer, hooks).await;
         assert!(
             result.is_err(),
             "missing config must propagate as Err, got Ok"

@@ -172,9 +172,8 @@ pub(crate) fn compose_daemon_desired_state(
 
 const DEBOUNCE_MS: u64 = 500;
 
-/// Per-user fallback socket name placed under the resolved runtime directory.
-#[cfg(unix)]
-const IPC_SOCKET_FILE: &str = "cfgd.sock";
+/// Per-user socket name placed under the resolved runtime directory.
+pub const IPC_SOCKET_FILE: &str = "cfgd.sock";
 
 /// Windows IPC endpoint. Named pipes are kernel objects in the
 /// `\\.\pipe\` namespace — per-session, not file-system objects — so the
@@ -182,34 +181,41 @@ const IPC_SOCKET_FILE: &str = "cfgd.sock";
 #[cfg(windows)]
 const WINDOWS_PIPE_PATH: &str = r"\\.\pipe\cfgd";
 
-/// Resolve the daemon IPC endpoint when no explicit override is supplied.
+/// Resolve the daemon IPC endpoint.
 ///
-/// Honors `CFGD_DAEMON_IPC_PATH` first so test harnesses and operators can
-/// isolate the socket. Otherwise:
-/// - Unix: places `cfgd.sock` under [`crate::default_runtime_dir`], which is
-///   `$XDG_RUNTIME_DIR/cfgd` on Linux when available (per-user tmpfs),
-///   `$HOME/.cache/cfgd/runtime` as the Linux fallback, and
-///   `$HOME/Library/Application Support/cfgd/runtime` on macOS. World-writable
-///   `/tmp` is deliberately avoided — see the v0.4.0 hijack-vector audit.
-///   A last-ditch fallback to `/tmp/cfgd.sock` only fires when home
-///   resolution fails entirely (no `$HOME`, no override); the bind path
-///   later refuses to listen if the parent dir is not owner-only.
-/// - Windows: returns the named-pipe path verbatim.
+/// Single source of truth shared by the server-side bind (`run_daemon_with`),
+/// the client-side connect (`connect_daemon_ipc`), and `cfgd paths`, so all
+/// agree on the socket location. Precedence:
+/// 1. `CFGD_DAEMON_IPC_PATH` — verbatim override (test harnesses, operators).
+/// 2. `cfgd.sock` under [`resolve_runtime_dir`]`(runtime_over)`, honoring the
+///    `--runtime-dir` flag / `CFGD_RUNTIME_DIR` env / `$XDG_RUNTIME_DIR/cfgd`
+///    (per-user tmpfs on Linux) / `$HOME/.cache/cfgd/runtime` (Linux fallback)
+///    / `$HOME/Library/Application Support/cfgd/runtime` (macOS). World-writable
+///    `/tmp` is deliberately avoided — see the v0.4.0 hijack-vector audit.
+/// 3. Unix last-ditch `/tmp/cfgd.sock` only when home resolution fails entirely
+///    (no `$HOME`, no override); the bind path later refuses to listen if the
+///    parent dir is not owner-only.
+/// 4. Windows: the named-pipe path verbatim (per-session kernel object, so the
+///    per-user-directory dance does not apply).
 ///
-/// Used by both the server-side bind (`run_daemon_with`) and the client-side
-/// connect (`connect_daemon_ipc`) so the two stay in sync.
-pub(crate) fn resolve_default_ipc_path() -> PathBuf {
+/// `runtime_over` is the explicit `--runtime-dir` override; pass `None` to take
+/// the env/default. Bind and connect agree automatically under env/default; a
+/// user passing `--runtime-dir` must pass it consistently to both sides.
+pub fn resolve_default_ipc_path(runtime_over: Option<&Path>) -> PathBuf {
     if let Some(override_path) = std::env::var_os("CFGD_DAEMON_IPC_PATH") {
         return PathBuf::from(override_path);
     }
     #[cfg(unix)]
     {
-        crate::default_runtime_dir()
+        crate::resolve_runtime_dir(runtime_over)
             .map(|dir| dir.join(IPC_SOCKET_FILE))
             .unwrap_or_else(|| PathBuf::from("/tmp/cfgd.sock"))
     }
     #[cfg(windows)]
     {
+        // The runtime dir is irrelevant to named pipes; the parameter exists for
+        // signature parity with the Unix arm.
+        let _ = runtime_over;
         PathBuf::from(WINDOWS_PIPE_PATH)
     }
 }
@@ -618,15 +624,22 @@ pub(super) fn build_pre_loop_setup(
 pub async fn run_daemon(
     config_path: PathBuf,
     profile_override: Option<String>,
+    runtime_override: Option<PathBuf>,
     printer: Arc<Printer>,
     hooks: Arc<dyn DaemonHooks>,
 ) -> Result<()> {
+    // Resolve the bind socket once at the entry point so the `--runtime-dir`
+    // flag reaches the daemon (env/default when `None`); the client side
+    // resolves identically via `resolve_default_ipc_path(runtime_over)`.
     run_daemon_with(
         config_path,
         profile_override,
         printer,
         hooks,
-        DaemonRunOverrides::default(),
+        DaemonRunOverrides {
+            ipc_path: Some(resolve_default_ipc_path(runtime_override.as_deref())),
+            ..DaemonRunOverrides::default()
+        },
     )
     .await
 }
@@ -717,7 +730,7 @@ pub(super) async fn run_daemon_with(
     let ipc_path = overrides
         .ipc_path
         .clone()
-        .unwrap_or_else(resolve_default_ipc_path);
+        .unwrap_or_else(|| resolve_default_ipc_path(None));
     check_already_running(&ipc_path)?;
 
     // Start health server (skippable in tests that don't need /healthz).
@@ -955,7 +968,7 @@ pub(super) fn check_already_running(_ipc_path: &Path) -> Result<()> {
     }
     #[cfg(windows)]
     {
-        if connect_daemon_ipc().is_some() {
+        if connect_daemon_ipc(None).is_some() {
             return Err(DaemonError::AlreadyRunning {
                 pid: std::process::id(),
             }

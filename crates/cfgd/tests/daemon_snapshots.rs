@@ -39,6 +39,9 @@
 
 use std::path::Path;
 
+use clap::Parser;
+
+use cfgd::cli::Cli;
 use cfgd::cli::daemon::{
     DaemonInstallOutput, DaemonUninstallOutput, build_daemon_install_doc, build_daemon_status_doc,
     build_daemon_uninstall_doc, cmd_daemon_status,
@@ -101,16 +104,18 @@ fn sample_status_no_timestamps() -> DaemonStatusResponse {
 
 #[test]
 fn daemon_status_not_running_human() {
+    let cli = Cli::parse_from(["cfgd"]);
     let (printer, cap) = Printer::for_test_doc();
-    cmd_daemon_status(&printer).unwrap();
+    cmd_daemon_status(&cli, &printer).unwrap();
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "daemon_status/not_running.txt");
 }
 
 #[test]
 fn daemon_status_not_running_json() {
+    let cli = Cli::parse_from(["cfgd"]);
     let (printer, cap) = Printer::for_test_doc();
-    cmd_daemon_status(&printer).unwrap();
+    cmd_daemon_status(&cli, &printer).unwrap();
     drop(printer);
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["running"], false);

@@ -1,5 +1,10 @@
 use crate::errors;
 
+/// Filename of the apply mutex inside the state directory. The single source of
+/// truth shared by [`acquire_apply_lock`] and `cfgd paths`, so the reported lock
+/// path can never drift from the one actually acquired.
+pub const APPLY_LOCK_FILENAME: &str = "apply.lock";
+
 /// Platform-specific lock file type.
 /// Unix: `nix::fcntl::Flock` (safe RAII flock, unlocks on drop).
 /// Windows: plain `File` (LockFileEx releases on handle close).
@@ -36,7 +41,7 @@ pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLo
     use std::io::Write;
 
     std::fs::create_dir_all(state_dir)?;
-    let lock_path = state_dir.join("apply.lock");
+    let lock_path = state_dir.join(APPLY_LOCK_FILENAME);
 
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -83,7 +88,7 @@ pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLo
     };
 
     std::fs::create_dir_all(state_dir)?;
-    let lock_path = state_dir.join("apply.lock");
+    let lock_path = state_dir.join(APPLY_LOCK_FILENAME);
 
     let file = std::fs::OpenOptions::new()
         .create(true)

@@ -344,7 +344,8 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
 
     // Spawn the daemon loop on the runtime
     rt.spawn(async move {
-        if let Err(e) = run_daemon(config_path, profile_override, printer, hooks).await {
+        // Windows service has no CLI runtime override; env/default socket.
+        if let Err(e) = run_daemon(config_path, profile_override, None, printer, hooks).await {
             tracing::error!(error = %e, "daemon error");
         }
     });
