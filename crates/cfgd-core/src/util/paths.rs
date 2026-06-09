@@ -53,6 +53,60 @@ pub(crate) fn test_home_override() -> Option<std::path::PathBuf> {
     TEST_HOME_OVERRIDE.with(|o| o.borrow().clone())
 }
 
+/// Deployment scope selecting the family of base directories cfgd writes under.
+///
+/// [`Scope::User`] resolves the per-user XDG / platform-native locations (the
+/// historical default). [`Scope::System`] resolves the machine-wide FHS
+/// (`/etc`, `/var/lib`, `/var/cache`, `/run`) locations on Linux, `/Library`
+/// locations on macOS, and `%ProgramData%` locations on Windows — cfgd runs as
+/// root in this scope. The scope-aware `default_*_for(scope)` resolvers select
+/// the family; the zero-argument `default_*` overloads are the `User` default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// Per-user directories (XDG / `~/...` / `%APPDATA%`). The default.
+    User,
+    /// Machine-wide directories (FHS / `/Library` / `%ProgramData%`). cfgd runs
+    /// as root.
+    System,
+}
+
+impl Scope {
+    /// Map a `--system` flag to a scope: `true` → [`Scope::System`], `false` →
+    /// [`Scope::User`].
+    pub fn from_system_flag(system: bool) -> Self {
+        if system { Scope::System } else { Scope::User }
+    }
+
+    /// Whether this is the machine-wide [`Scope::System`].
+    pub fn is_system(&self) -> bool {
+        matches!(self, Scope::System)
+    }
+}
+
+/// First `:`-separated entry of a systemd directory env var (e.g.
+/// `STATE_DIRECTORY`) as a `PathBuf`, or `None` when unset or empty.
+///
+/// systemd sets `CONFIGURATION_DIRECTORY` / `STATE_DIRECTORY` /
+/// `CACHE_DIRECTORY` / `RUNTIME_DIRECTORY` for a service process whose unit
+/// declares the matching `*Directory=` setting; the value is a colon-separated
+/// list and the first entry is the primary directory. These vars are only ever
+/// present in a systemd-managed process, so honoring them whenever set (in any
+/// scope) routes cfgd to exactly the directory systemd provisioned.
+pub(crate) fn systemd_dir(env_var: &str) -> Option<std::path::PathBuf> {
+    let raw = std::env::var_os(env_var)?;
+    if raw.is_empty() {
+        return None;
+    }
+    // The value is a `:`-separated list; the primary directory is the first
+    // non-empty entry. `OsStr` has no `split`, so route through the lossy form —
+    // systemd directory paths are ordinary filesystem paths.
+    let value = raw.to_string_lossy();
+    value
+        .split(':')
+        .find(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
 /// Default config directory.
 ///
 /// Resolution order:
@@ -78,8 +132,28 @@ pub(crate) fn test_home_override() -> Option<std::path::PathBuf> {
 /// `~/.config/cfgd` so the caller surfaces a clean error and writes nothing,
 /// instead of silently resolving to the account's real home.
 pub fn default_config_dir() -> std::path::PathBuf {
-    // Thread-local test override always wins. Lets tests redirect config
-    // lookup to a tempdir without mutating global env state.
+    default_config_dir_for(Scope::User)
+}
+
+/// Scope-aware config directory.
+///
+/// Precedence (highest first): systemd's `$CONFIGURATION_DIRECTORY` (set only in
+/// a systemd-managed process), then the scope default. [`Scope::User`] is the
+/// frozen XDG / platform-native resolution documented on [`default_config_dir`];
+/// [`Scope::System`] is the absolute machine-wide config root (Linux `/etc/cfgd`,
+/// macOS `/Library/Application Support/cfgd`, Windows `%ProgramData%\cfgd`) and
+/// consults neither the test-home override nor XDG. Config has no
+/// `CFGD_CONFIG_DIR` short-circuit here — the CLI threads that as an explicit
+/// override. Pure path logic — never touches the filesystem.
+pub fn default_config_dir_for(scope: Scope) -> std::path::PathBuf {
+    if let Some(dir) = systemd_dir("CONFIGURATION_DIRECTORY") {
+        return dir;
+    }
+    if scope.is_system() {
+        return system_config_dir();
+    }
+    // Thread-local test override always wins for the user scope. Lets tests
+    // redirect config lookup to a tempdir without mutating global env state.
     if let Some(home) = test_home_override() {
         return home.join(".config").join("cfgd");
     }
@@ -107,6 +181,38 @@ pub fn default_config_dir() -> std::path::PathBuf {
             .map(|b| b.config_dir().join("cfgd"))
             .unwrap_or_else(|| std::path::PathBuf::from(r"C:\ProgramData\cfgd"))
     }
+}
+
+/// The machine-wide config root: Linux `/etc/cfgd`, macOS
+/// `/Library/Application Support/cfgd`, Windows `%ProgramData%\cfgd`. Absolute on
+/// every platform — never consults a home directory or the test-home override.
+fn system_config_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        std::path::PathBuf::from("/etc/cfgd")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::path::PathBuf::from("/Library/Application Support/cfgd")
+    }
+    #[cfg(windows)]
+    {
+        program_data_dir().join("cfgd")
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        std::path::PathBuf::from("/etc/cfgd")
+    }
+}
+
+/// Windows `%ProgramData%` (via `ProgramData` env), with the `C:\ProgramData`
+/// fallback the rest of cfgd uses. Only compiled on Windows — the only platform
+/// whose system roots nest under `%ProgramData%`.
+#[cfg(windows)]
+pub(crate) fn program_data_dir() -> std::path::PathBuf {
+    std::env::var_os("ProgramData")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(r"C:\ProgramData"))
 }
 
 /// `$XDG_CONFIG_HOME/cfgd` when the variable is a non-empty, absolute path;
@@ -316,8 +422,26 @@ pub fn legacy_data_dir() -> Option<std::path::PathBuf> {
 /// tests can redirect the runtime dir without mutating process-global env
 /// state. Returns `None` only when no home directory can be resolved at all.
 pub fn default_runtime_dir() -> Option<std::path::PathBuf> {
+    default_runtime_dir_for(Scope::User)
+}
+
+/// Scope-aware runtime directory.
+///
+/// Precedence (highest first): `CFGD_RUNTIME_DIR` (verbatim), systemd's
+/// `$RUNTIME_DIRECTORY`, then the scope default. [`Scope::User`] is the frozen
+/// resolution documented on [`default_runtime_dir`]. [`Scope::System`] is the
+/// absolute machine-wide runtime root (Linux `/run/cfgd`, macOS
+/// `/Library/Application Support/cfgd/runtime`, Windows `%ProgramData%\cfgd\runtime`)
+/// and is therefore always `Some` — it needs no home directory. Pure path logic.
+pub fn default_runtime_dir_for(scope: Scope) -> Option<std::path::PathBuf> {
     if let Ok(dir) = std::env::var("CFGD_RUNTIME_DIR") {
         return Some(std::path::PathBuf::from(dir));
+    }
+    if let Some(dir) = systemd_dir("RUNTIME_DIRECTORY") {
+        return Some(dir);
+    }
+    if scope.is_system() {
+        return Some(system_runtime_dir());
     }
     #[cfg(target_os = "linux")]
     {
@@ -385,8 +509,26 @@ pub fn default_runtime_dir() -> Option<std::path::PathBuf> {
 /// Linux-shaped `~/.cache/cfgd` under the override home) so tests never write
 /// to the real cache. Errors only when no home directory can be resolved.
 pub fn default_cache_dir() -> crate::errors::Result<std::path::PathBuf> {
+    default_cache_dir_for(Scope::User)
+}
+
+/// Scope-aware cache directory.
+///
+/// Precedence (highest first): `CFGD_CACHE_DIR` (verbatim), systemd's
+/// `$CACHE_DIRECTORY`, then the scope default. [`Scope::User`] is the frozen
+/// resolution documented on [`default_cache_dir`]. [`Scope::System`] is the
+/// absolute machine-wide cache root (Linux `/var/cache/cfgd`, macOS
+/// `/Library/Caches/cfgd`, Windows `%ProgramData%\cfgd\cache`) and consults no
+/// home directory. Pure path logic — never touches the filesystem.
+pub fn default_cache_dir_for(scope: Scope) -> crate::errors::Result<std::path::PathBuf> {
     if let Ok(dir) = std::env::var("CFGD_CACHE_DIR") {
         return Ok(std::path::PathBuf::from(dir));
+    }
+    if let Some(dir) = systemd_dir("CACHE_DIRECTORY") {
+        return Ok(dir);
+    }
+    if scope.is_system() {
+        return Ok(system_cache_dir());
     }
     if let Some(home) = test_home_override() {
         return Ok(home.join(".cache").join("cfgd"));
@@ -398,54 +540,105 @@ pub fn default_cache_dir() -> crate::errors::Result<std::path::PathBuf> {
     Ok(base.cache_dir().join("cfgd"))
 }
 
+/// The machine-wide runtime root: Linux `/run/cfgd`, macOS
+/// `/Library/Application Support/cfgd/runtime`, Windows `%ProgramData%\cfgd\runtime`.
+/// Absolute on every platform — never consults a home directory.
+fn system_runtime_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        std::path::PathBuf::from("/run/cfgd")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::path::PathBuf::from("/Library/Application Support/cfgd/runtime")
+    }
+    #[cfg(windows)]
+    {
+        program_data_dir().join("cfgd").join("runtime")
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        std::path::PathBuf::from("/run/cfgd")
+    }
+}
+
+/// The machine-wide cache root: Linux `/var/cache/cfgd`, macOS
+/// `/Library/Caches/cfgd`, Windows `%ProgramData%\cfgd\cache`. Absolute on every
+/// platform — never consults a home directory.
+fn system_cache_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        std::path::PathBuf::from("/var/cache/cfgd")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::path::PathBuf::from("/Library/Caches/cfgd")
+    }
+    #[cfg(windows)]
+    {
+        program_data_dir().join("cfgd").join("cache")
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        std::path::PathBuf::from("/var/cache/cfgd")
+    }
+}
+
 /// Resolve the config directory, applying an explicit override when present.
 ///
 /// `over` is the highest-precedence source (a `--config-dir` flag or its env
 /// var, resolved by the CLI layer). When `None`, falls through to
-/// [`default_config_dir`] (XDG + platform-native + macOS-legacy resolution,
-/// which is frozen). Pure path logic — never touches the filesystem or prints.
-pub fn resolve_config_dir(over: Option<&std::path::Path>) -> std::path::PathBuf {
+/// [`default_config_dir_for`] for the given [`Scope`] (systemd + scope default).
+/// Pure path logic — never touches the filesystem or prints.
+pub fn resolve_config_dir(over: Option<&std::path::Path>, scope: Scope) -> std::path::PathBuf {
     match over {
         Some(p) => p.to_path_buf(),
-        None => default_config_dir(),
+        None => default_config_dir_for(scope),
     }
 }
 
 /// Resolve the state directory, applying an explicit override when present.
 ///
-/// When `None`, falls through to [`crate::state::default_state_dir`] (which
-/// honors the `CFGD_STATE_DIR` short-circuit and `XDG_STATE_HOME`). Surfaces
-/// the same [`crate::errors::StateError`] when no home can be resolved.
+/// When `None`, falls through to [`crate::state::default_state_dir_for`] for the
+/// given [`Scope`] (which honors the `CFGD_STATE_DIR` short-circuit, systemd's
+/// `$STATE_DIRECTORY`, and the scope default). Surfaces the same
+/// [`crate::errors::StateError`] when no home can be resolved.
 pub fn resolve_state_dir(
     over: Option<&std::path::Path>,
+    scope: Scope,
 ) -> crate::errors::Result<std::path::PathBuf> {
     match over {
         Some(p) => Ok(p.to_path_buf()),
-        None => crate::state::default_state_dir(),
+        None => crate::state::default_state_dir_for(scope),
     }
 }
 
 /// Resolve the cache directory, applying an explicit override when present.
 ///
-/// When `None`, falls through to [`default_cache_dir`] (the single cache root
-/// shared by the source and module caches).
+/// When `None`, falls through to [`default_cache_dir_for`] for the given
+/// [`Scope`] (the single cache root shared by the source and module caches).
 pub fn resolve_cache_dir(
     over: Option<&std::path::Path>,
+    scope: Scope,
 ) -> crate::errors::Result<std::path::PathBuf> {
     match over {
         Some(p) => Ok(p.to_path_buf()),
-        None => default_cache_dir(),
+        None => default_cache_dir_for(scope),
     }
 }
 
 /// Resolve the runtime directory, applying an explicit override when present.
 ///
-/// When `None`, falls through to [`default_runtime_dir`], which is `None` only
-/// when no home can be resolved (e.g. `HOME` unset on Unix).
-pub fn resolve_runtime_dir(over: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+/// When `None`, falls through to [`default_runtime_dir_for`] for the given
+/// [`Scope`]. `None` only in [`Scope::User`] when no home can be resolved (e.g.
+/// `HOME` unset on Unix); [`Scope::System`] is always `Some`.
+pub fn resolve_runtime_dir(
+    over: Option<&std::path::Path>,
+    scope: Scope,
+) -> Option<std::path::PathBuf> {
     match over {
         Some(p) => Some(p.to_path_buf()),
-        None => default_runtime_dir(),
+        None => default_runtime_dir_for(scope),
     }
 }
 
@@ -471,18 +664,20 @@ pub struct ResolvedDirs {
 
 impl ResolvedDirs {
     /// Resolve all four roots, threading each override through its per-role
-    /// resolver. Pure path logic — creates no directories.
+    /// resolver. `scope` selects the user vs. machine-wide default family for any
+    /// root whose override is `None`. Pure path logic — creates no directories.
     pub fn resolve(
         config_over: Option<&std::path::Path>,
         state_over: Option<&std::path::Path>,
         cache_over: Option<&std::path::Path>,
         runtime_over: Option<&std::path::Path>,
+        scope: Scope,
     ) -> crate::errors::Result<Self> {
         Ok(Self {
-            config: resolve_config_dir(config_over),
-            state: resolve_state_dir(state_over)?,
-            cache: resolve_cache_dir(cache_over)?,
-            runtime: resolve_runtime_dir(runtime_over),
+            config: resolve_config_dir(config_over, scope),
+            state: resolve_state_dir(state_over, scope)?,
+            cache: resolve_cache_dir(cache_over, scope)?,
+            runtime: resolve_runtime_dir(runtime_over, scope),
         })
     }
 
@@ -886,21 +1081,22 @@ mod tests {
     #[test]
     fn resolve_config_dir_returns_override_when_some() {
         let over = PathBuf::from("/explicit/config");
-        assert_eq!(resolve_config_dir(Some(&over)), over);
+        assert_eq!(resolve_config_dir(Some(&over), Scope::User), over);
     }
 
     #[test]
     #[serial_test::serial]
     fn resolve_config_dir_falls_through_to_default_when_none() {
         let dir = tempfile::tempdir().unwrap();
+        let _sd = EnvVarGuard::unset("CONFIGURATION_DIRECTORY");
         let _home = with_test_home_guard(dir.path());
-        assert_eq!(resolve_config_dir(None), default_config_dir());
+        assert_eq!(resolve_config_dir(None, Scope::User), default_config_dir());
     }
 
     #[test]
     fn resolve_state_dir_returns_override_when_some() {
         let over = PathBuf::from("/explicit/state");
-        assert_eq!(resolve_state_dir(Some(&over)).unwrap(), over);
+        assert_eq!(resolve_state_dir(Some(&over), Scope::User).unwrap(), over);
     }
 
     #[test]
@@ -908,7 +1104,7 @@ mod tests {
     fn resolve_state_dir_falls_through_to_default_when_none() {
         let _cfgd = EnvVarGuard::set("CFGD_STATE_DIR", "/from/env/state");
         assert_eq!(
-            resolve_state_dir(None).unwrap(),
+            resolve_state_dir(None, Scope::User).unwrap(),
             crate::state::default_state_dir().unwrap()
         );
     }
@@ -916,16 +1112,17 @@ mod tests {
     #[test]
     fn resolve_cache_dir_returns_override_when_some() {
         let over = PathBuf::from("/explicit/cache");
-        assert_eq!(resolve_cache_dir(Some(&over)).unwrap(), over);
+        assert_eq!(resolve_cache_dir(Some(&over), Scope::User).unwrap(), over);
     }
 
     #[test]
     #[serial_test::serial]
     fn resolve_cache_dir_falls_through_to_default_when_none() {
         let dir = tempfile::tempdir().unwrap();
+        let _sd = EnvVarGuard::unset("CACHE_DIRECTORY");
         let _home = with_test_home_guard(dir.path());
         assert_eq!(
-            resolve_cache_dir(None).unwrap(),
+            resolve_cache_dir(None, Scope::User).unwrap(),
             default_cache_dir().unwrap()
         );
     }
@@ -933,16 +1130,20 @@ mod tests {
     #[test]
     fn resolve_runtime_dir_returns_override_when_some() {
         let over = PathBuf::from("/explicit/runtime");
-        assert_eq!(resolve_runtime_dir(Some(&over)), Some(over));
+        assert_eq!(resolve_runtime_dir(Some(&over), Scope::User), Some(over));
     }
 
     #[test]
     #[serial_test::serial]
     fn resolve_runtime_dir_falls_through_to_default_when_none() {
         let dir = tempfile::tempdir().unwrap();
+        let _sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
         let _home = with_test_home_guard(dir.path());
         let _xdg = EnvVarGuard::set("XDG_RUNTIME_DIR", "/run/user/test");
-        assert_eq!(resolve_runtime_dir(None), default_runtime_dir());
+        assert_eq!(
+            resolve_runtime_dir(None, Scope::User),
+            default_runtime_dir()
+        );
     }
 
     // --- default_state_dir: CFGD_STATE_DIR short-circuit + XDG_STATE_HOME ---
@@ -963,6 +1164,7 @@ mod tests {
     fn default_state_dir_honors_xdg_state_home_on_linux() {
         let dir = tempfile::tempdir().unwrap();
         let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _sd = EnvVarGuard::unset("STATE_DIRECTORY");
         let _xdg = EnvVarGuard::set("XDG_STATE_HOME", dir.path().to_str().unwrap());
         let _home = EnvVarGuard::set("HOME", dir.path().to_str().unwrap());
         let state = crate::state::default_state_dir().unwrap();
@@ -985,6 +1187,7 @@ mod tests {
     fn default_cache_dir_tail_is_cfgd() {
         let dir = tempfile::tempdir().unwrap();
         let _cfgd = EnvVarGuard::unset("CFGD_CACHE_DIR");
+        let _sd = EnvVarGuard::unset("CACHE_DIRECTORY");
         let _home = with_test_home_guard(dir.path());
         let cache = default_cache_dir().unwrap();
         assert!(
@@ -1018,7 +1221,11 @@ mod tests {
         let _home = with_test_home_guard(dir.path());
         let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
         let _cache = EnvVarGuard::unset("CFGD_CACHE_DIR");
-        let dirs = ResolvedDirs::resolve(None, None, None, None).unwrap();
+        let _config_sd = EnvVarGuard::unset("CONFIGURATION_DIRECTORY");
+        let _state_sd = EnvVarGuard::unset("STATE_DIRECTORY");
+        let _cache_sd = EnvVarGuard::unset("CACHE_DIRECTORY");
+        let _runtime_sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
+        let dirs = ResolvedDirs::resolve(None, None, None, None, Scope::User).unwrap();
         assert!(dirs.sources_dir().ends_with("sources"));
         assert!(dirs.module_cache_dir().ends_with("modules"));
         assert_eq!(dirs.sources_dir().parent(), Some(dirs.cache.as_path()));
@@ -1032,8 +1239,14 @@ mod tests {
         let state = Path::new("/o/state");
         let cache = Path::new("/o/cache");
         let runtime = Path::new("/o/runtime");
-        let dirs =
-            ResolvedDirs::resolve(Some(cfg), Some(state), Some(cache), Some(runtime)).unwrap();
+        let dirs = ResolvedDirs::resolve(
+            Some(cfg),
+            Some(state),
+            Some(cache),
+            Some(runtime),
+            Scope::User,
+        )
+        .unwrap();
         assert_eq!(dirs.config, cfg);
         assert_eq!(dirs.state, state);
         assert_eq!(dirs.cache, cache);
@@ -1061,6 +1274,7 @@ mod tests {
     #[serial_test::serial]
     fn default_runtime_dir_uses_xdg_runtime_dir_when_set() {
         let _cfgd = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+        let _sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
         let _xdg = EnvVarGuard::set("XDG_RUNTIME_DIR", "/run/user/4242");
         let runtime = default_runtime_dir().expect("runtime dir resolves with XDG set");
         assert_eq!(runtime, PathBuf::from("/run/user/4242").join("cfgd"));
@@ -1072,6 +1286,7 @@ mod tests {
     fn default_runtime_dir_falls_back_to_cache_runtime_subdir_on_linux() {
         let dir = tempfile::tempdir().unwrap();
         let _cfgd = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+        let _sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
         let _xdg = EnvVarGuard::unset("XDG_RUNTIME_DIR");
         let _home = with_test_home_guard(dir.path());
         let runtime = default_runtime_dir().expect("runtime dir resolves without XDG");
@@ -1122,5 +1337,277 @@ mod tests {
             "legacy data dir must end with .local/share/cfgd, got: {}",
             legacy.display()
         );
+    }
+
+    // --- Scope mapping ---
+
+    #[test]
+    fn scope_from_system_flag_maps_both_directions() {
+        assert_eq!(Scope::from_system_flag(true), Scope::System);
+        assert_eq!(Scope::from_system_flag(false), Scope::User);
+        assert!(Scope::System.is_system());
+        assert!(!Scope::User.is_system());
+    }
+
+    // --- systemd_dir helper ---
+
+    #[test]
+    #[serial_test::serial]
+    fn systemd_dir_takes_first_colon_entry() {
+        let _v = EnvVarGuard::set("STATE_DIRECTORY", "/var/lib/cfgd:/extra/two");
+        assert_eq!(
+            systemd_dir("STATE_DIRECTORY"),
+            Some(PathBuf::from("/var/lib/cfgd"))
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn systemd_dir_skips_leading_empty_entry() {
+        let _v = EnvVarGuard::set("STATE_DIRECTORY", ":/second/entry");
+        assert_eq!(
+            systemd_dir("STATE_DIRECTORY"),
+            Some(PathBuf::from("/second/entry"))
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn systemd_dir_none_when_unset_or_empty() {
+        let _unset = EnvVarGuard::unset("STATE_DIRECTORY");
+        assert_eq!(systemd_dir("STATE_DIRECTORY"), None);
+        let _empty = EnvVarGuard::set("STATE_DIRECTORY", "");
+        assert_eq!(systemd_dir("STATE_DIRECTORY"), None);
+    }
+
+    // --- CONFIG: precedence matrix ---
+
+    #[test]
+    #[serial_test::serial]
+    fn config_systemd_dir_wins_over_system_scope() {
+        let _sd = EnvVarGuard::set("CONFIGURATION_DIRECTORY", "/run/systemd/cfgd-config");
+        assert_eq!(
+            default_config_dir_for(Scope::System),
+            PathBuf::from("/run/systemd/cfgd-config")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[cfg(target_os = "linux")]
+    fn config_system_scope_is_etc_on_linux() {
+        let _sd = EnvVarGuard::unset("CONFIGURATION_DIRECTORY");
+        assert_eq!(
+            default_config_dir_for(Scope::System),
+            PathBuf::from("/etc/cfgd")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[cfg(target_os = "macos")]
+    fn config_system_scope_is_library_on_macos() {
+        let _sd = EnvVarGuard::unset("CONFIGURATION_DIRECTORY");
+        assert_eq!(
+            default_config_dir_for(Scope::System),
+            PathBuf::from("/Library/Application Support/cfgd")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[cfg(windows)]
+    fn config_system_scope_under_program_data_on_windows() {
+        let _sd = EnvVarGuard::unset("CONFIGURATION_DIRECTORY");
+        let resolved = default_config_dir_for(Scope::System);
+        assert!(
+            resolved.ends_with("cfgd"),
+            "tail must be cfgd, got: {}",
+            resolved.display()
+        );
+        assert_eq!(resolved, program_data_dir().join("cfgd"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn config_user_scope_matches_zero_arg_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let _sd = EnvVarGuard::unset("CONFIGURATION_DIRECTORY");
+        let _home = with_test_home_guard(dir.path());
+        assert_eq!(default_config_dir_for(Scope::User), default_config_dir());
+        assert!(default_config_dir_for(Scope::User).starts_with(dir.path()));
+    }
+
+    // --- STATE: precedence matrix ---
+
+    #[test]
+    #[serial_test::serial]
+    fn state_cfgd_env_wins_over_systemd_and_system_scope() {
+        let _cfgd = EnvVarGuard::set("CFGD_STATE_DIR", "/from/cfgd/env");
+        let _sd = EnvVarGuard::set("STATE_DIRECTORY", "/from/systemd");
+        assert_eq!(
+            crate::state::default_state_dir_for(Scope::System).unwrap(),
+            PathBuf::from("/from/cfgd/env")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn state_systemd_dir_wins_over_system_scope() {
+        let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _sd = EnvVarGuard::set("STATE_DIRECTORY", "/from/systemd/state");
+        assert_eq!(
+            crate::state::default_state_dir_for(Scope::System).unwrap(),
+            PathBuf::from("/from/systemd/state")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[cfg(target_os = "linux")]
+    fn state_system_scope_is_var_lib_on_linux() {
+        let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _sd = EnvVarGuard::unset("STATE_DIRECTORY");
+        assert_eq!(
+            crate::state::default_state_dir_for(Scope::System).unwrap(),
+            PathBuf::from("/var/lib/cfgd")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[cfg(target_os = "macos")]
+    fn state_system_scope_is_library_on_macos() {
+        let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _sd = EnvVarGuard::unset("STATE_DIRECTORY");
+        assert_eq!(
+            crate::state::default_state_dir_for(Scope::System).unwrap(),
+            PathBuf::from("/Library/Application Support/cfgd/state")
+        );
+    }
+
+    // --- CACHE: precedence matrix ---
+
+    #[test]
+    #[serial_test::serial]
+    fn cache_cfgd_env_wins_over_systemd_and_system_scope() {
+        let _cfgd = EnvVarGuard::set("CFGD_CACHE_DIR", "/from/cfgd/cache");
+        let _sd = EnvVarGuard::set("CACHE_DIRECTORY", "/from/systemd/cache");
+        assert_eq!(
+            default_cache_dir_for(Scope::System).unwrap(),
+            PathBuf::from("/from/cfgd/cache")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cache_systemd_dir_wins_over_system_scope() {
+        let _cfgd = EnvVarGuard::unset("CFGD_CACHE_DIR");
+        let _sd = EnvVarGuard::set("CACHE_DIRECTORY", "/from/systemd/cache");
+        assert_eq!(
+            default_cache_dir_for(Scope::System).unwrap(),
+            PathBuf::from("/from/systemd/cache")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[cfg(target_os = "linux")]
+    fn cache_system_scope_is_var_cache_on_linux() {
+        let _cfgd = EnvVarGuard::unset("CFGD_CACHE_DIR");
+        let _sd = EnvVarGuard::unset("CACHE_DIRECTORY");
+        assert_eq!(
+            default_cache_dir_for(Scope::System).unwrap(),
+            PathBuf::from("/var/cache/cfgd")
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[cfg(target_os = "macos")]
+    fn cache_system_scope_is_library_caches_on_macos() {
+        let _cfgd = EnvVarGuard::unset("CFGD_CACHE_DIR");
+        let _sd = EnvVarGuard::unset("CACHE_DIRECTORY");
+        assert_eq!(
+            default_cache_dir_for(Scope::System).unwrap(),
+            PathBuf::from("/Library/Caches/cfgd")
+        );
+    }
+
+    // --- RUNTIME: precedence matrix ---
+
+    #[test]
+    #[serial_test::serial]
+    fn runtime_cfgd_env_wins_over_systemd_and_system_scope() {
+        let _cfgd = EnvVarGuard::set("CFGD_RUNTIME_DIR", "/from/cfgd/runtime");
+        let _sd = EnvVarGuard::set("RUNTIME_DIRECTORY", "/from/systemd/runtime");
+        assert_eq!(
+            default_runtime_dir_for(Scope::System),
+            Some(PathBuf::from("/from/cfgd/runtime"))
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn runtime_systemd_dir_wins_over_system_scope() {
+        let _cfgd = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+        let _sd = EnvVarGuard::set("RUNTIME_DIRECTORY", "/from/systemd/runtime");
+        assert_eq!(
+            default_runtime_dir_for(Scope::System),
+            Some(PathBuf::from("/from/systemd/runtime"))
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[cfg(target_os = "linux")]
+    fn runtime_system_scope_is_run_cfgd_on_linux() {
+        let _cfgd = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+        let _sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
+        assert_eq!(
+            default_runtime_dir_for(Scope::System),
+            Some(PathBuf::from("/run/cfgd"))
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[cfg(target_os = "macos")]
+    fn runtime_system_scope_is_library_on_macos() {
+        let _cfgd = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+        let _sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
+        assert_eq!(
+            default_runtime_dir_for(Scope::System),
+            Some(PathBuf::from("/Library/Application Support/cfgd/runtime"))
+        );
+    }
+
+    // --- Scope-aware resolvers honor the override before scope ---
+
+    #[test]
+    fn resolvers_override_wins_over_system_scope() {
+        let over = PathBuf::from("/explicit/override");
+        assert_eq!(resolve_config_dir(Some(&over), Scope::System), over);
+        assert_eq!(resolve_state_dir(Some(&over), Scope::System).unwrap(), over);
+        assert_eq!(resolve_cache_dir(Some(&over), Scope::System).unwrap(), over);
+        assert_eq!(resolve_runtime_dir(Some(&over), Scope::System), Some(over));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    #[cfg(target_os = "linux")]
+    fn resolved_dirs_system_scope_resolves_fhs_roots() {
+        let _config_sd = EnvVarGuard::unset("CONFIGURATION_DIRECTORY");
+        let _state_sd = EnvVarGuard::unset("STATE_DIRECTORY");
+        let _cache_sd = EnvVarGuard::unset("CACHE_DIRECTORY");
+        let _runtime_sd = EnvVarGuard::unset("RUNTIME_DIRECTORY");
+        let _cfgd_state = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _cfgd_cache = EnvVarGuard::unset("CFGD_CACHE_DIR");
+        let _cfgd_runtime = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+        let dirs = ResolvedDirs::resolve(None, None, None, None, Scope::System).unwrap();
+        assert_eq!(dirs.config, PathBuf::from("/etc/cfgd"));
+        assert_eq!(dirs.state, PathBuf::from("/var/lib/cfgd"));
+        assert_eq!(dirs.cache, PathBuf::from("/var/cache/cfgd"));
+        assert_eq!(dirs.runtime, Some(PathBuf::from("/run/cfgd")));
     }
 }

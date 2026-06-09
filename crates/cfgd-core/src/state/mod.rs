@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
+use crate::Scope;
 use crate::errors::{Result, StateError};
 
 mod applies;
@@ -368,8 +369,26 @@ pub fn plan_hash(data: &str) -> String {
 /// USERPROFILE/HOME on Windows) so an unset HOME fails uniformly instead of
 /// creating an orphan state.db beside a config error.
 pub fn default_state_dir() -> Result<PathBuf> {
+    default_state_dir_for(Scope::User)
+}
+
+/// Scope-aware state directory.
+///
+/// Precedence (highest first): `CFGD_STATE_DIR` (verbatim), systemd's
+/// `$STATE_DIRECTORY`, then the scope default. [`Scope::User`] is the frozen
+/// resolution documented on [`default_state_dir`]. [`Scope::System`] is the
+/// absolute machine-wide state root (Linux `/var/lib/cfgd`, macOS
+/// `/Library/Application Support/cfgd/state`, Windows `%ProgramData%\cfgd\state`)
+/// and consults no home directory, so it never errors. Pure path logic.
+pub fn default_state_dir_for(scope: Scope) -> Result<PathBuf> {
     if let Ok(dir) = std::env::var("CFGD_STATE_DIR") {
         return Ok(PathBuf::from(dir));
+    }
+    if let Some(dir) = crate::systemd_dir("STATE_DIRECTORY") {
+        return Ok(dir);
+    }
+    if scope.is_system() {
+        return Ok(system_state_dir());
     }
     // `directories` would otherwise fall back to the passwd database when HOME
     // is unset, resolving a home that config discovery cannot — the two
@@ -387,6 +406,28 @@ pub fn default_state_dir() -> Result<PathBuf> {
         Some(state) => state.join("cfgd"),
         None => base.data_local_dir().join("cfgd").join("state"),
     })
+}
+
+/// The machine-wide state root: Linux `/var/lib/cfgd`, macOS
+/// `/Library/Application Support/cfgd/state`, Windows `%ProgramData%\cfgd\state`.
+/// Absolute on every platform — never consults a home directory.
+fn system_state_dir() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        PathBuf::from("/var/lib/cfgd")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        PathBuf::from("/Library/Application Support/cfgd/state")
+    }
+    #[cfg(windows)]
+    {
+        crate::program_data_dir().join("cfgd").join("state")
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        PathBuf::from("/var/lib/cfgd")
+    }
 }
 
 /// Crash-safe move of the state DB (and any unfolded WAL/SHM sidecars) from a

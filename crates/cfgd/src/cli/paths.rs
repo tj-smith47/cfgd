@@ -182,7 +182,8 @@ fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::Result<Paths
         file: cli.config.posix().to_string(),
     };
 
-    let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref()).ok();
+    let state_dir =
+        cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), cfgd_core::Scope::User).ok();
     let state = StatePaths {
         dir: state_dir.as_ref().map(|d| d.posix().to_string()),
         source: sources.state,
@@ -201,7 +202,8 @@ fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::Result<Paths
     // than open-coding `.join("sources")` / `.join("modules")`. Only the `cache`
     // field is read by those accessors, so the others take empty placeholders to
     // avoid cloning paths that go unused.
-    let cache = match cfgd_core::resolve_cache_dir(cli.cache_dir.as_deref()) {
+    let cache = match cfgd_core::resolve_cache_dir(cli.cache_dir.as_deref(), cfgd_core::Scope::User)
+    {
         Ok(cache_dir) => {
             let dirs = cfgd_core::ResolvedDirs {
                 config: std::path::PathBuf::new(),
@@ -233,7 +235,7 @@ fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::Result<Paths
         .to_string();
 
     let runtime = RuntimePaths {
-        dir: cfgd_core::resolve_runtime_dir(cli.runtime_dir.as_deref())
+        dir: cfgd_core::resolve_runtime_dir(cli.runtime_dir.as_deref(), cfgd_core::Scope::User)
             .as_ref()
             .map(|d| d.posix().to_string()),
         source: sources.runtime,

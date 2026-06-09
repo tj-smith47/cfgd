@@ -207,7 +207,7 @@ pub fn resolve_default_ipc_path(runtime_over: Option<&Path>) -> PathBuf {
     }
     #[cfg(unix)]
     {
-        crate::resolve_runtime_dir(runtime_over)
+        crate::resolve_runtime_dir(runtime_over, crate::Scope::User)
             .map(|dir| dir.join(IPC_SOCKET_FILE))
             .unwrap_or_else(|| PathBuf::from("/tmp/cfgd.sock"))
     }

@@ -9334,48 +9334,66 @@ mod harness {
     }
 
     #[test]
+    #[serial_test::serial]
     fn init_daemon_state_falls_back_when_default_state_dir_fails() {
-        // Force `default_state_dir` to fail by redirecting HOME to a path
-        // whose parent does not exist. The function falls back to a state
-        // with no store_path (the /drift endpoint returns empty events).
-        let tmp = tempfile::TempDir::new().unwrap();
-        let bogus = tmp.path().join("does/not/exist");
-        let _g = crate::with_test_home_guard(&bogus);
+        use crate::test_helpers::EnvVarGuard;
+        // Drive `default_state_dir` into its deterministic failure branch: no
+        // home is resolvable. That requires every higher-precedence tier to be
+        // absent — `CFGD_STATE_DIR`, systemd's `STATE_DIRECTORY`, and the home
+        // env (`HOME`/`USERPROFILE`) — and no test-home override installed (it
+        // would otherwise satisfy `home_dir_var`). With home unresolvable the
+        // resolver returns `Err` before consulting `directories::BaseDirs`, so
+        // the fallback is exercised regardless of the runner's XDG layout or a
+        // systemd-launched `STATE_DIRECTORY`.
+        let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
+        let _home = EnvVarGuard::unset("HOME");
+        let _userprofile = EnvVarGuard::unset("USERPROFILE");
+
+        // The fallback yields a state with no store_path (the /drift endpoint
+        // then returns empty events).
         let st = super::super::init_daemon_state(None);
-        // Either resolved (Some) or fell back (None) — both are valid for
-        // the function's contract; the warn-and-fallback branch is what
-        // `None` proves.
-        // Sanity: when the override is supplied, store_path is always set.
+        assert!(
+            st.store_path_for_test().is_none(),
+            "resolve failure must fall back to a store-less state"
+        );
+
+        // With an explicit override the store_path is always set.
+        let tmp = tempfile::TempDir::new().unwrap();
         let st_with_override = super::super::init_daemon_state(Some(tmp.path()));
         assert!(st_with_override.store_path_for_test().is_some());
-        let _ = st; // touch to silence dead_code under cfg
     }
 
     #[test]
+    #[serial_test::serial]
     fn init_daemon_state_with_warning_reports_message_on_resolve_failure() {
         // Regression guard for MEDIUM #10: the daemon used to only emit a
         // `tracing::warn!` when state-dir resolution failed, leaving the
         // /drift endpoint silently disabled. The variant exposes a banner
         // message so the startup banner can surface it.
+        //
+        // Same deterministic-failure setup as the fallback test: unset every
+        // tier above the home-based resolution and install no test-home
+        // override, so resolution always fails and the warning always fires.
         use crate::test_helpers::EnvVarGuard;
-        let _xdg = EnvVarGuard::unset("XDG_DATA_HOME");
-        let _cache_xdg = EnvVarGuard::unset("XDG_RUNTIME_DIR");
-        let tmp = tempfile::TempDir::new().unwrap();
-        let bogus = tmp.path().join("does/not/exist");
-        let _g = crate::with_test_home_guard(&bogus);
+        let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
+        let _home = EnvVarGuard::unset("HOME");
+        let _userprofile = EnvVarGuard::unset("USERPROFILE");
 
-        let (_st, warning) = super::super::init_daemon_state_with_warning(None);
-        // The platform-default lookup may succeed even with a bogus HOME on
-        // some CI hosts (XDG fallback), so only assert structure WHEN the
-        // warning fires; otherwise this is a no-op probe.
-        if let Some(msg) = warning {
-            assert!(
-                msg.contains("Drift endpoint disabled"),
-                "warning should be operator-facing; got {msg:?}"
-            );
-        }
+        let (st, warning) = super::super::init_daemon_state_with_warning(None);
+        let msg = warning.expect("resolve failure must surface an operator-facing warning");
+        assert!(
+            msg.contains("Drift endpoint disabled"),
+            "warning should be operator-facing; got {msg:?}"
+        );
+        assert!(
+            st.store_path_for_test().is_none(),
+            "warning path must also fall back to a store-less state"
+        );
 
         // With an override the variant must NEVER emit a warning.
+        let tmp = tempfile::TempDir::new().unwrap();
         let (_st2, w2) = super::super::init_daemon_state_with_warning(Some(tmp.path()));
         assert!(w2.is_none(), "override path must not warn; got {w2:?}");
     }

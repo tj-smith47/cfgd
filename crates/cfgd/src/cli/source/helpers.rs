@@ -6,7 +6,10 @@ use cfgd_core::output::{Doc, Printer, Role, SectionBuilder};
 // --- Source cache layout ---
 
 pub(crate) fn source_cache_dir(cli: &Cli) -> anyhow::Result<std::path::PathBuf> {
-    Ok(cfgd_core::resolve_cache_dir(cli.cache_dir.as_deref())?.join("sources"))
+    Ok(
+        cfgd_core::resolve_cache_dir(cli.cache_dir.as_deref(), cfgd_core::Scope::User)?
+            .join("sources"),
+    )
 }
 
 // --- Composition input builder ---
