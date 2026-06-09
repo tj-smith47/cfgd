@@ -401,6 +401,9 @@ spec: {}
             list_envelope: false,
             jsonpath: None,
             state_dir: Some(state_dir.to_path_buf()),
+            config_dir: None,
+            cache_dir: None,
+            runtime_dir: None,
             command: None,
         }
     }

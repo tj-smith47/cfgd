@@ -256,7 +256,7 @@ fn profiles_inheriting_match_found() {
 #[test]
 fn collect_module_file_targets_nonexistent_returns_empty() {
     let dir = tempfile::tempdir().unwrap();
-    let result = collect_module_file_targets("nope", dir.path());
+    let result = collect_module_file_targets("nope", dir.path(), None);
     assert!(result.is_empty());
 }
 
@@ -439,7 +439,7 @@ fn collect_module_file_targets_local_module() {
     let module_yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages: []\n  files:\n    - source: foo.conf\n      target: /tmp/foo.conf\n";
     std::fs::write(module_dir.join("module.yaml"), module_yaml).unwrap();
 
-    let result = collect_module_file_targets("test-mod", dir.path());
+    let result = collect_module_file_targets("test-mod", dir.path(), None);
     assert_eq!(result.len(), 1);
     assert_eq!(result[0], PathBuf::from("/tmp/foo.conf"));
 }
@@ -497,6 +497,9 @@ fn test_cli(dir: &Path) -> super::super::Cli {
         list_envelope: false,
         jsonpath: None,
         state_dir: None,
+        config_dir: None,
+        cache_dir: None,
+        runtime_dir: None,
         command: Some(super::super::Command::Status {
             module: None,
             exit_code: false,
@@ -2754,6 +2757,11 @@ mod profile_update_module_cleanup {
             list_envelope: false,
             jsonpath: None,
             state_dir: Some(state_dir.to_path_buf()),
+            config_dir: None,
+            // Keep the module/source cache inside the test's tempdir rather than
+            // resolving to the real `~/.cache/cfgd`.
+            cache_dir: Some(state_dir.to_path_buf()),
+            runtime_dir: None,
             command: Some(super::super::Command::Status {
                 module: None,
                 exit_code: false,
@@ -2776,18 +2784,18 @@ mod profile_update_module_cleanup {
         let lock_yaml = "modules:\n  - name: ghmod\n    url: https://github.com/x/y.git@v1.0.0\n    pinnedRef: v1.0.0\n    commit: deadbeef\n    integrity: sha256:0\n";
         std::fs::write(config_dir.path().join("modules.lock"), lock_yaml).unwrap();
 
+        let cli = cli_with_state_dir(config_dir.path(), &state_dir);
+
         // Pre-create the cache dir at the location the cleanup branch will
         // compute. Using the same primitives the production code uses
         // means future hashing-scheme changes don't silently bypass the
         // assertion.
-        let cache_base = cfgd_core::modules::default_module_cache_dir().unwrap();
+        let cache_base = module_cache_dir(&cli).unwrap();
         let cache_dir =
             cfgd_core::modules::git_cache_dir(&cache_base, "https://github.com/x/y.git");
         std::fs::create_dir_all(&cache_dir).unwrap();
         std::fs::write(cache_dir.join("HEAD"), "ref: refs/heads/master\n").unwrap();
         assert!(cache_dir.exists(), "test precondition: cache dir staged");
-
-        let cli = cli_with_state_dir(config_dir.path(), &state_dir);
         let (printer, buf) =
             cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         let mut args = make_profile_update_args();

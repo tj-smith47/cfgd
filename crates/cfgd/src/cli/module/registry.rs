@@ -52,7 +52,7 @@ pub fn cmd_module_add_from_registry(
     };
 
     // Resolve the tag — use explicit tag or find latest
-    let cache_base = modules::default_module_cache_dir()?;
+    let cache_base = module_cache_dir(cli)?;
     let tag = match reg_ref.tag {
         Some(t) => t,
         None => {
@@ -117,7 +117,7 @@ pub fn cmd_module_add_remote(
     printer.heading("Add Remote Module");
 
     let config_dir = config_dir(cli);
-    let cache_base = modules::default_module_cache_dir()?;
+    let cache_base = module_cache_dir(cli)?;
 
     // Streaming: clone-fetch spinner. The lib call takes a Printer; the
     // Quiet sink suppresses the lib's progress emissions so the spinner
@@ -288,7 +288,7 @@ pub fn cmd_module_upgrade(
     printer.heading(format!("Update Module: {}", name));
 
     let config_dir = config_dir(cli);
-    let cache_base = modules::default_module_cache_dir()?;
+    let cache_base = module_cache_dir(cli)?;
     let lib_printer = null_lib_printer();
 
     // Find the lockfile entry
@@ -560,7 +560,7 @@ pub(super) fn filter_and_build_search_results(
 }
 
 pub fn cmd_module_search(cli: &Cli, printer: &Printer, query: &str) -> anyhow::Result<()> {
-    let cache_base = modules::default_module_cache_dir()?;
+    let cache_base = module_cache_dir(cli)?;
     let lib_printer = null_lib_printer();
 
     if !cli.config.exists() {

@@ -112,6 +112,7 @@ impl CliTestHarnessBuilder {
     fn build(self) -> CliTestHarness {
         let config_dir = tempfile::tempdir().unwrap();
         let state_dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
 
         std::fs::write(config_dir.path().join("cfgd.yaml"), &self.config_yaml).unwrap();
 
@@ -141,6 +142,7 @@ impl CliTestHarnessBuilder {
         CliTestHarness {
             config_dir,
             state_dir,
+            cache_dir,
             printer,
             buf,
             output_format: self.output_format,
@@ -151,6 +153,7 @@ impl CliTestHarnessBuilder {
 struct CliTestHarness {
     config_dir: tempfile::TempDir,
     state_dir: tempfile::TempDir,
+    cache_dir: tempfile::TempDir,
     printer: cfgd_core::output::Printer,
     buf: Arc<Mutex<String>>,
     output_format: cfgd_core::output::OutputFormat,
@@ -172,6 +175,9 @@ impl CliTestHarness {
             list_envelope: false,
             jsonpath: None,
             state_dir: Some(self.state_dir.path().to_path_buf()),
+            config_dir: None,
+            cache_dir: Some(self.cache_dir.path().to_path_buf()),
+            runtime_dir: None,
             command: Some(Command::Status {
                 module: None,
                 exit_code: false,
@@ -1116,6 +1122,9 @@ fn test_cli(dir: &Path) -> Cli {
 }
 
 fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
+    // Default the cache root to the state dir so source/module caches stay inside
+    // the test's tempdir rather than resolving to the real `~/.cache/cfgd`.
+    let cache_dir = state_dir.clone();
     Cli {
         config: dir.join("cfgd.yaml"),
         profile: None,
@@ -1126,6 +1135,9 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
         list_envelope: false,
         jsonpath: None,
         state_dir,
+        config_dir: None,
+        cache_dir,
+        runtime_dir: None,
         command: Some(Command::Status {
             module: None,
             exit_code: false,
@@ -3852,6 +3864,9 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
         list_envelope: false,
         jsonpath: None,
         state_dir: None,
+        config_dir: None,
+        cache_dir: None,
+        runtime_dir: None,
         command: Some(Command::Status {
             module: None,
             exit_code: false,
@@ -4340,6 +4355,9 @@ fn execute_with_no_subcommand_prints_help_and_returns_ok() {
         list_envelope: false,
         jsonpath: None,
         state_dir: Some(h.state_path().to_path_buf()),
+        config_dir: None,
+        cache_dir: None,
+        runtime_dir: None,
         command: None,
     };
     // The contract: exit 0 (Ok). winget/chocolatey treat any non-zero exit
@@ -9716,6 +9734,9 @@ fn execute_decide_accept_all() {
             all: true,
         }),
         state_dir: Some(state_dir.path().to_path_buf()),
+        config_dir: None,
+        cache_dir: None,
+        runtime_dir: None,
         ..test_cli(dir.path())
     };
     let (printer, buf) =
@@ -11437,7 +11458,7 @@ fn cmd_source_remove_deletes_cached_clone() {
     let printer = test_printer();
 
     // Seed a cached clone for the source, mirroring what `source add` leaves at
-    // `<state_dir>/sources/<name>`.
+    // `<cache_dir>/sources/<name>`.
     let cached_dir = state_dir.path().join("sources").join("team-config");
     std::fs::create_dir_all(&cached_dir).unwrap();
     std::fs::write(cached_dir.join("marker"), b"cached").unwrap();

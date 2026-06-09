@@ -6,11 +6,7 @@ use cfgd_core::output::{Doc, Printer, Role, SectionBuilder};
 // --- Source cache layout ---
 
 pub(crate) fn source_cache_dir(cli: &Cli) -> anyhow::Result<std::path::PathBuf> {
-    if let Some(ref state_dir) = cli.state_dir {
-        Ok(state_dir.join("sources"))
-    } else {
-        SourceManager::default_cache_dir().map_err(|e| anyhow::anyhow!(e))
-    }
+    Ok(cfgd_core::resolve_cache_dir(cli.cache_dir.as_deref())?.join("sources"))
 }
 
 // --- Composition input builder ---
@@ -417,6 +413,40 @@ pub(crate) fn format_conflict_preview_lines(
 mod tests {
     use super::*;
     use cfgd_core::config::MAX_SOURCE_PRIORITY;
+    use cfgd_core::output::OutputFormat;
+
+    fn cli_with_dirs(cache_dir: Option<PathBuf>, state_dir: Option<PathBuf>) -> Cli {
+        Cli {
+            config: PathBuf::from("cfgd.yaml"),
+            profile: None,
+            verbose: 0,
+            quiet: true,
+            no_color: true,
+            output: OutputFormatArg(OutputFormat::Table),
+            list_envelope: false,
+            jsonpath: None,
+            state_dir,
+            config_dir: None,
+            cache_dir,
+            runtime_dir: None,
+            command: None,
+        }
+    }
+
+    #[test]
+    fn source_cache_dir_follows_cache_override_not_state_dir() {
+        let cli = cli_with_dirs(
+            Some(PathBuf::from("/over/cache")),
+            Some(PathBuf::from("/over/state")),
+        );
+        let dir = source_cache_dir(&cli).unwrap();
+        assert_eq!(dir, PathBuf::from("/over/cache").join("sources"));
+        assert!(
+            !dir.starts_with("/over/state"),
+            "source cache must not follow --state-dir, got: {}",
+            dir.display()
+        );
+    }
 
     #[test]
     fn parse_priority_input_rejects_over_cap() {

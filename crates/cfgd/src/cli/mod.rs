@@ -37,6 +37,7 @@ pub use error::{
     CliErrorMeta, cli_error, cli_error_ctx, cli_error_ctx_with_hints, cli_error_with_hints,
     emit_not_found_ignored, exit_code_for_anyhow,
 };
+pub use helpers::effective_config_file;
 pub(in crate::cli) use helpers::*;
 pub(in crate::cli) use output_types::*;
 pub(in crate::cli) use plan_ops::*;
@@ -97,7 +98,15 @@ fn builtin_aliases() -> HashMap<String, String> {
 fn is_value_taking_flag(flag: &str) -> bool {
     matches!(
         flag,
-        "--config" | "--profile" | "--output" | "-o" | "--jsonpath" | "--state-dir"
+        "--config"
+            | "--profile"
+            | "--output"
+            | "-o"
+            | "--jsonpath"
+            | "--state-dir"
+            | "--config-dir"
+            | "--cache-dir"
+            | "--runtime-dir"
     )
 }
 
@@ -112,6 +121,9 @@ fn is_value_taking_flag_inline(arg: &str) -> bool {
         "-o=",
         "--jsonpath=",
         "--state-dir=",
+        "--config-dir=",
+        "--cache-dir=",
+        "--runtime-dir=",
     ];
     PREFIXES.iter().any(|p| arg.starts_with(p))
 }
@@ -321,6 +333,18 @@ pub struct Cli {
     /// Override state directory (default: $CFGD_STATE_DIR or platform data dir)
     #[arg(long, global = true, env = "CFGD_STATE_DIR")]
     pub state_dir: Option<PathBuf>,
+
+    /// Override config directory (default: $CFGD_CONFIG_DIR or platform config dir). --config wins.
+    #[arg(long, global = true, env = "CFGD_CONFIG_DIR")]
+    pub config_dir: Option<PathBuf>,
+
+    /// Override cache directory for sources + modules (default: $CFGD_CACHE_DIR or platform cache dir)
+    #[arg(long, global = true, env = "CFGD_CACHE_DIR")]
+    pub cache_dir: Option<PathBuf>,
+
+    /// Override runtime directory for sockets + locks (default: $CFGD_RUNTIME_DIR or platform runtime dir)
+    #[arg(long, global = true, env = "CFGD_RUNTIME_DIR")]
+    pub runtime_dir: Option<PathBuf>,
 
     // Optional so `cfgd` with no args prints help and exits 0. A required
     // subcommand (non-Option) makes clap emit a "usage" error and exit with
@@ -1604,6 +1628,7 @@ pub fn execute(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resul
                 theme: theme.as_deref(),
                 apply_profile: apply_profile.as_deref(),
                 apply_modules,
+                cache_dir: cli.cache_dir.as_deref(),
             },
         ),
         Command::Module { command } => match command {

@@ -328,6 +328,32 @@ pub(in crate::cli) fn profiles_dir(cli: &Cli) -> PathBuf {
     config_dir(cli).join("profiles")
 }
 
+/// The module cache directory honoring the `--cache-dir`/`CFGD_CACHE_DIR` override.
+pub(in crate::cli) fn module_cache_dir(cli: &Cli) -> anyhow::Result<PathBuf> {
+    module_cache_dir_for(cli.cache_dir.as_deref())
+}
+
+/// Lower form for call sites that have the cache override but not the full `Cli`
+/// (e.g. `cfgd init`, which threads the override through `InitArgs`).
+pub(in crate::cli) fn module_cache_dir_for(cache_over: Option<&Path>) -> anyhow::Result<PathBuf> {
+    Ok(cfgd_core::resolve_cache_dir(cache_over)?.join("modules"))
+}
+
+/// Resolve the effective config-file path honoring `--config` > `--config-dir` > default.
+/// `config_is_explicit` is true when the user supplied `--config`/`CFGD_CONFIG`
+/// (not the clap default). When the config arg is the default and a `config_dir`
+/// override is present, the config file is `<config_dir>/<CONFIG_FILENAME>`.
+pub fn effective_config_file(
+    config_value: &Path,
+    config_is_explicit: bool,
+    config_dir: Option<&Path>,
+) -> PathBuf {
+    match (config_is_explicit, config_dir) {
+        (false, Some(dir)) => dir.join(cfgd_core::config::CONFIG_FILENAME),
+        _ => config_value.to_path_buf(),
+    }
+}
+
 /// List sorted YAML file stems in a directory (e.g. "base" from "base.yaml").
 /// Returns an empty vec if the directory doesn't exist.
 pub(in crate::cli) fn list_yaml_stems(dir: &Path) -> anyhow::Result<Vec<String>> {
@@ -586,7 +612,7 @@ pub(in crate::cli) fn resolve_desired_state(
             .extend(packages::custom_managers(&resolved.merged.packages.custom));
         let platform = Platform::detect();
         let mgr_map = managers_map(&registry);
-        let cache_base = modules::default_module_cache_dir()?;
+        let cache_base = module_cache_dir(cli)?;
         match modules::resolve_modules(
             &module_names,
             &config_dir,
@@ -642,6 +668,9 @@ mod tests {
             list_envelope: false,
             jsonpath: None,
             state_dir: None,
+            config_dir: None,
+            cache_dir: None,
+            runtime_dir: None,
             command: None,
         }
     }
@@ -928,6 +957,48 @@ mod tests {
         let config_path = tmp.path().join("cfgd.yaml");
         let cli = make_cli(config_path);
         assert_eq!(profiles_dir(&cli), tmp.path().join("profiles"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // module_cache_dir / effective_config_file
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn module_cache_dir_for_appends_modules_to_override() {
+        let over = PathBuf::from("/over/cache");
+        let dir = module_cache_dir_for(Some(&over)).unwrap();
+        assert_eq!(dir, over.join("modules"));
+    }
+
+    #[test]
+    fn module_cache_dir_honors_cache_override() {
+        let mut cli = make_cli(PathBuf::from("cfgd.yaml"));
+        cli.cache_dir = Some(PathBuf::from("/over/cache"));
+        let dir = module_cache_dir(&cli).unwrap();
+        assert_eq!(dir, PathBuf::from("/over/cache").join("modules"));
+    }
+
+    #[test]
+    fn effective_config_file_explicit_config_wins_over_dir() {
+        let cfg = Path::new("/explicit/my.yaml");
+        let dir = PathBuf::from("/some/config-dir");
+        let out = effective_config_file(cfg, true, Some(&dir));
+        assert_eq!(out, cfg);
+    }
+
+    #[test]
+    fn effective_config_file_default_config_uses_config_dir() {
+        let cfg = Path::new("/default/cfgd.yaml");
+        let dir = PathBuf::from("/some/config-dir");
+        let out = effective_config_file(cfg, false, Some(&dir));
+        assert_eq!(out, dir.join(cfgd_core::config::CONFIG_FILENAME));
+    }
+
+    #[test]
+    fn effective_config_file_default_config_no_dir_is_unchanged() {
+        let cfg = Path::new("/default/cfgd.yaml");
+        let out = effective_config_file(cfg, false, None);
+        assert_eq!(out, cfg);
     }
 
     // ---------------------------------------------------------------------------
@@ -1357,6 +1428,7 @@ mod tests {
         let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
         let mut cli = make_cli(config_path.clone());
         cli.state_dir = Some(tmp.path().join("state"));
+        cli.cache_dir = Some(tmp.path().join("cache"));
 
         let cfg = config::load_config(&config_path).unwrap();
         let local = empty_resolved_profile("my-module");
@@ -1411,6 +1483,7 @@ mod tests {
         let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
         let mut cli = make_cli(config_path.clone());
         cli.state_dir = Some(tmp.path().join("state"));
+        cli.cache_dir = Some(tmp.path().join("cache"));
         let cfg = config::load_config(&config_path).unwrap();
         let local = empty_resolved_profile("my-module");
         let printer = quiet_printer();
@@ -1463,6 +1536,7 @@ mod tests {
         // Point the source cache at a fresh, empty dir so the source is "never
         // synced" — no refresh primes it.
         cli.state_dir = Some(tmp.path().join("never-synced-state"));
+        cli.cache_dir = Some(tmp.path().join("never-synced-cache"));
         let cfg = config::load_config(&config_path).unwrap();
         // Local profile carries a local package but no modules, so module
         // resolution is trivially empty and the assertion focuses on the
@@ -1516,6 +1590,7 @@ mod tests {
         let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
         let mut cli = make_cli(config_path.clone());
         cli.state_dir = Some(tmp.path().join("state"));
+        cli.cache_dir = Some(tmp.path().join("cache"));
         let cfg = config::load_config(&config_path).unwrap();
         let local = empty_resolved_profile("my-module");
         let printer = quiet_printer();

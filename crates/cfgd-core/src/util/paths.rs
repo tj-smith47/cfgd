@@ -253,10 +253,16 @@ fn copy_tree_preserving_symlinks(
 ///   Windows use named pipes, which are kernel objects — this path is
 ///   provided for parity and is unused by the daemon socket flow.)
 ///
+/// `CFGD_RUNTIME_DIR` short-circuits all resolution when set, so the env form
+/// works at every call site (including non-CLI ones and the daemon).
+///
 /// Honors the [`TestHomeGuard`] thread-local override on every platform so
 /// tests can redirect the runtime dir without mutating process-global env
 /// state. Returns `None` only when no home directory can be resolved at all.
 pub fn default_runtime_dir() -> Option<std::path::PathBuf> {
+    if let Ok(dir) = std::env::var("CFGD_RUNTIME_DIR") {
+        return Some(std::path::PathBuf::from(dir));
+    }
     #[cfg(target_os = "linux")]
     {
         // XDG_RUNTIME_DIR is a per-user tmpfs (typically 0700) on systemd
@@ -316,10 +322,16 @@ pub fn default_runtime_dir() -> Option<std::path::PathBuf> {
 /// - macOS: `~/Library/Caches/cfgd`
 /// - Windows: `%LOCALAPPDATA%\cfgd`
 ///
+/// `CFGD_CACHE_DIR` short-circuits all resolution when set, so the env form
+/// works at every call site (including non-CLI ones and the daemon).
+///
 /// Honors the [`TestHomeGuard`] thread-local override (test builds resolve a
 /// Linux-shaped `~/.cache/cfgd` under the override home) so tests never write
 /// to the real cache. Errors only when no home directory can be resolved.
 pub fn default_cache_dir() -> crate::errors::Result<std::path::PathBuf> {
+    if let Ok(dir) = std::env::var("CFGD_CACHE_DIR") {
+        return Ok(std::path::PathBuf::from(dir));
+    }
     if let Some(home) = test_home_override() {
         return Ok(home.join(".cache").join("cfgd"));
     }
@@ -916,6 +928,7 @@ mod tests {
     #[serial_test::serial]
     fn default_cache_dir_tail_is_cfgd() {
         let dir = tempfile::tempdir().unwrap();
+        let _cfgd = EnvVarGuard::unset("CFGD_CACHE_DIR");
         let _home = with_test_home_guard(dir.path());
         let cache = default_cache_dir().unwrap();
         assert!(
@@ -930,6 +943,16 @@ mod tests {
         );
     }
 
+    #[test]
+    #[serial_test::serial]
+    fn default_cache_dir_honors_cfgd_cache_dir_env() {
+        let _cfgd = EnvVarGuard::set("CFGD_CACHE_DIR", "/verbatim/cache/dir");
+        assert_eq!(
+            default_cache_dir().unwrap(),
+            PathBuf::from("/verbatim/cache/dir")
+        );
+    }
+
     // --- ResolvedDirs: unified cache root + sub-paths ---
 
     #[test]
@@ -938,6 +961,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let _home = with_test_home_guard(dir.path());
         let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _cache = EnvVarGuard::unset("CFGD_CACHE_DIR");
         let dirs = ResolvedDirs::resolve(None, None, None, None).unwrap();
         assert!(dirs.sources_dir().ends_with("sources"));
         assert!(dirs.module_cache_dir().ends_with("modules"));
@@ -962,12 +986,25 @@ mod tests {
         assert_eq!(dirs.module_cache_dir(), cache.join("modules"));
     }
 
+    // --- default_runtime_dir: CFGD_RUNTIME_DIR short-circuit ---
+
+    #[test]
+    #[serial_test::serial]
+    fn default_runtime_dir_honors_cfgd_runtime_dir_env() {
+        let _cfgd = EnvVarGuard::set("CFGD_RUNTIME_DIR", "/verbatim/runtime/dir");
+        assert_eq!(
+            default_runtime_dir(),
+            Some(PathBuf::from("/verbatim/runtime/dir"))
+        );
+    }
+
     // --- default_runtime_dir: XDG_RUNTIME_DIR vs cache/runtime fallback ---
 
     #[cfg(target_os = "linux")]
     #[test]
     #[serial_test::serial]
     fn default_runtime_dir_uses_xdg_runtime_dir_when_set() {
+        let _cfgd = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
         let _xdg = EnvVarGuard::set("XDG_RUNTIME_DIR", "/run/user/4242");
         let runtime = default_runtime_dir().expect("runtime dir resolves with XDG set");
         assert_eq!(runtime, PathBuf::from("/run/user/4242").join("cfgd"));
@@ -978,6 +1015,7 @@ mod tests {
     #[serial_test::serial]
     fn default_runtime_dir_falls_back_to_cache_runtime_subdir_on_linux() {
         let dir = tempfile::tempdir().unwrap();
+        let _cfgd = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
         let _xdg = EnvVarGuard::unset("XDG_RUNTIME_DIR");
         let _home = with_test_home_guard(dir.path());
         let runtime = default_runtime_dir().expect("runtime dir resolves without XDG");

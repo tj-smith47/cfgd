@@ -23,6 +23,7 @@ pub struct InitArgs<'a> {
     pub theme: Option<&'a str>,
     pub apply_profile: Option<&'a str>,
     pub apply_modules: &'a [String],
+    pub cache_dir: Option<&'a Path>,
 }
 
 /// Structured-output payload for `cfgd init`. Drives `-o json|yaml|jsonpath|template`.
@@ -124,7 +125,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
 
         if module_only {
             // Validate that requested modules exist
-            let cache_base = modules::default_module_cache_dir()?;
+            let cache_base = module_cache_dir_for(args.cache_dir)?;
             let all_modules = modules::load_all_modules(&target_dir, &cache_base, &[], printer)?;
             for m in args.apply_modules {
                 let resolved_name = modules::resolve_profile_module_name(m);
@@ -220,7 +221,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             let resolved_modules = if !module_names.is_empty() {
                 let platform = cfgd_core::platform::Platform::detect();
                 let mgr_map = super::managers_map(&registry);
-                let cache_base = modules::default_module_cache_dir()?;
+                let cache_base = module_cache_dir_for(args.cache_dir)?;
                 // Validate --apply-module names exist (load once, check all)
                 let all_modules =
                     modules::load_all_modules(&target_dir, &cache_base, &[], printer)?;

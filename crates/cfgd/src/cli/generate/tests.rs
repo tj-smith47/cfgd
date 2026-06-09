@@ -1066,6 +1066,9 @@ mod cmd_generate_mockito {
             list_envelope: false,
             jsonpath: None,
             state_dir: None,
+            config_dir: None,
+            cache_dir: None,
+            runtime_dir: None,
         }
     }
 
@@ -1566,6 +1569,9 @@ mod cmd_generate_mockito {
             list_envelope: false,
             jsonpath: None,
             state_dir: None,
+            config_dir: None,
+            cache_dir: None,
+            runtime_dir: None,
         };
         let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         let args = GenerateArgs {
@@ -1849,6 +1855,9 @@ mod cmd_generate_mockito {
             list_envelope: false,
             jsonpath: None,
             state_dir: None,
+            config_dir: None,
+            cache_dir: None,
+            runtime_dir: None,
         };
         let (printer, buf) = Printer::for_test_with_prompt_responses_at(
             vec![

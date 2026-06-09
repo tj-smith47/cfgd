@@ -251,7 +251,7 @@ pub fn cmd_module_create(
 
         let platform = cfgd_core::platform::Platform::detect();
         let mgr_map = super::managers_map(&registry);
-        let cache_base = modules::default_module_cache_dir()?;
+        let cache_base = module_cache_dir(cli)?;
         let resolved_modules = modules::resolve_modules(
             std::slice::from_ref(name),
             &config_dir,

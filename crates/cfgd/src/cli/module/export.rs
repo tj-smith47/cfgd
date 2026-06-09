@@ -21,7 +21,7 @@ pub(super) fn export_devcontainer(
     output_dir: Option<&str>,
 ) -> anyhow::Result<()> {
     let config_dir = config_dir(cli);
-    let cache_base = modules::default_module_cache_dir()?;
+    let cache_base = module_cache_dir(cli)?;
     let all_modules = modules::load_all_modules(&config_dir, &cache_base, &[], printer)?;
 
     let module = match all_modules.get(name) {

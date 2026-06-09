@@ -249,6 +249,9 @@ spec:
         list_envelope: false,
         jsonpath: None,
         state_dir: None,
+        config_dir: None,
+        cache_dir: None,
+        runtime_dir: None,
     };
 
     let result = super::export_devcontainer(
@@ -293,6 +296,9 @@ fn test_cli(dir: &std::path::Path) -> super::Cli {
         list_envelope: false,
         jsonpath: None,
         state_dir: None,
+        config_dir: None,
+        cache_dir: None,
+        runtime_dir: None,
     }
 }
 

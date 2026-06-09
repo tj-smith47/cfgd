@@ -52,6 +52,7 @@ fn init_happy_human() {
         theme: None,
         apply_profile: None,
         apply_modules: &[],
+        cache_dir: None,
     };
 
     let (printer, cap) = Printer::for_test_doc();
@@ -84,6 +85,7 @@ fn init_happy_json() {
         theme: None,
         apply_profile: None,
         apply_modules: &[],
+        cache_dir: None,
     };
 
     let (printer, cap) = Printer::for_test_doc();
@@ -126,6 +128,7 @@ fn init_already_initialized_human() {
         theme: None,
         apply_profile: None,
         apply_modules: &[],
+        cache_dir: None,
     };
 
     let (printer, cap) = Printer::for_test_doc();
@@ -196,6 +199,7 @@ fn init_with_apply_renders_apply_status_streaming() {
         theme: None,
         apply_profile: Some("default"),
         apply_modules: &[],
+        cache_dir: None,
     };
 
     let (printer, cap) = Printer::for_test_doc();

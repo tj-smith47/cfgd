@@ -102,6 +102,11 @@ pub fn cli_for(config_dir: &std::path::Path, state_dir: &std::path::Path) -> Cli
         list_envelope: false,
         jsonpath: None,
         state_dir: Some(state_dir.to_path_buf()),
+        config_dir: None,
+        // Keep source/module caches inside the state tempdir (which snapshots
+        // already normalize) rather than resolving to the real `~/.cache/cfgd`.
+        cache_dir: Some(state_dir.to_path_buf()),
+        runtime_dir: None,
         command: Some(Command::Status {
             module: None,
             exit_code: false,

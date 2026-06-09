@@ -57,6 +57,9 @@ fn cli_for(config_dir: &Path) -> cfgd::cli::Cli {
         list_envelope: false,
         jsonpath: None,
         state_dir: None,
+        config_dir: None,
+        cache_dir: None,
+        runtime_dir: None,
         command: Some(cfgd::cli::Command::Status {
             module: None,
             exit_code: false,

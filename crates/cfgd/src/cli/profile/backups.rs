@@ -4,7 +4,11 @@ use tracing::warn;
 
 use super::*;
 
-pub(crate) fn collect_module_file_targets(module_name: &str, config_dir: &Path) -> Vec<PathBuf> {
+pub(crate) fn collect_module_file_targets(
+    module_name: &str,
+    config_dir: &Path,
+    cache_over: Option<&Path>,
+) -> Vec<PathBuf> {
     // Try local module first
     let module_dir = config_dir.join("modules").join(module_name);
     if let Ok(loaded) = modules::load_module(&module_dir) {
@@ -17,7 +21,7 @@ pub(crate) fn collect_module_file_targets(module_name: &str, config_dir: &Path) 
     }
 
     // Try cached remote module
-    if let Ok(cache_base) = modules::default_module_cache_dir() {
+    if let Ok(cache_base) = module_cache_dir_for(cache_over) {
         let lockfile = modules::load_lockfile(config_dir).unwrap_or_default();
         if let Some(entry) = lockfile.modules.iter().find(|e| e.name == module_name)
             && let Ok(git_src) = modules::parse_git_source(&entry.url)

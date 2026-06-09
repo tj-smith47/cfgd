@@ -178,7 +178,7 @@ fn module_upgrade_no_change_human_json() {
     // Lock the module at v1.0.0, then call upgrade with the same ref —
     // remote HEAD is the same commit, so the "already at this version"
     // short-circuit fires.
-    let (config_dir, _state_dir) = upgrade_test_setup();
+    let (config_dir, state_dir) = upgrade_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
     let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
 
@@ -186,7 +186,7 @@ fn module_upgrade_no_change_human_json() {
     let bare = make_bare_module_repo(bare_root.path(), "upmod", "v1.0.0");
     let url = format!("{}@v1.0.0", cfgd_core::test_helpers::file_url(&bare));
 
-    let cli = cli_for(config_dir.path(), config_dir.path());
+    let cli = cli_for(config_dir.path(), state_dir.path());
     let v2a = test_printer();
     // Pre-load the lockfile via add_remote.
     module::cmd_module_add_remote(&cli, &v2a, &url, None, true, true).unwrap();
@@ -215,7 +215,7 @@ fn module_upgrade_no_change_human_json() {
 fn module_upgrade_cancelled_human() {
     // Set up an older locked ref + a newer tag on the bare repo so the
     // diff path runs. Prompt declined → Cancelled Doc.
-    let (config_dir, _state_dir) = upgrade_test_setup();
+    let (config_dir, state_dir) = upgrade_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
     let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
 
@@ -223,7 +223,7 @@ fn module_upgrade_cancelled_human() {
     let bare = make_bare_module_repo(bare_root.path(), "upmod", "v1.0.0");
     let url = format!("{}@v1.0.0", cfgd_core::test_helpers::file_url(&bare));
 
-    let cli = cli_for(config_dir.path(), config_dir.path());
+    let cli = cli_for(config_dir.path(), state_dir.path());
     let v2a = test_printer();
     module::cmd_module_add_remote(&cli, &v2a, &url, None, true, true).unwrap();
 
@@ -253,7 +253,7 @@ fn module_upgrade_cancelled_human() {
 #[test]
 #[serial]
 fn module_upgrade_happy_human_json() {
-    let (config_dir, _state_dir) = upgrade_test_setup();
+    let (config_dir, state_dir) = upgrade_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
     let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
 
@@ -261,7 +261,7 @@ fn module_upgrade_happy_human_json() {
     let bare = make_bare_module_repo(bare_root.path(), "upmod", "v1.0.0");
     let url = format!("{}@v1.0.0", cfgd_core::test_helpers::file_url(&bare));
 
-    let cli = cli_for(config_dir.path(), config_dir.path());
+    let cli = cli_for(config_dir.path(), state_dir.path());
     let v2a = test_printer();
     module::cmd_module_add_remote(&cli, &v2a, &url, None, true, true).unwrap();
 

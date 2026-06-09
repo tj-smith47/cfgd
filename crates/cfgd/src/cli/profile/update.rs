@@ -126,7 +126,8 @@ pub fn cmd_profile_update(
         doc.spec.modules.retain(|x| x != m);
         if doc.spec.modules.len() < before {
             // Collect module file targets before cleanup for backup restore prompts
-            let module_file_targets = collect_module_file_targets(m, &config_dir);
+            let module_file_targets =
+                collect_module_file_targets(m, &config_dir, cli.cache_dir.as_deref());
 
             // Clean up lockfile entry and cache if this was a remote module
             let mut lockfile = modules::load_lockfile(&config_dir)?;
@@ -136,7 +137,7 @@ pub fn cmd_profile_update(
                 modules::save_lockfile(&config_dir, &lockfile)?;
                 printer.status_simple(Role::Info, format!("Removed '{}' from modules.lock", m));
                 if let Ok(git_src) = modules::parse_git_source(&entry.url) {
-                    let cache_base = modules::default_module_cache_dir().unwrap_or_default();
+                    let cache_base = module_cache_dir(cli).unwrap_or_default();
                     let cache_dir = modules::git_cache_dir(&cache_base, &git_src.repo_url);
                     if cache_dir.exists() {
                         if let Err(e) = std::fs::remove_dir_all(&cache_dir) {

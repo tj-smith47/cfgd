@@ -320,7 +320,7 @@ fn module_add_bridge_one_blank_line() {
     // Bridge invariant: the streaming clone surface (spinner) and
     // the buffered summary (lock summary Doc) must be separated by
     // exactly one blank line in the human render — no more, no fewer.
-    let (config_dir, _state_dir) = registry_test_setup();
+    let (config_dir, state_dir) = registry_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
     let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
 
@@ -328,7 +328,9 @@ fn module_add_bridge_one_blank_line() {
     let bare = make_bare_module_repo(bare_root.path(), "bridgemod", "v1.0.0");
     let url = format!("{}@v1.0.0", cfgd_core::to_file_url(&bare));
 
-    let cli = cli_for(config_dir.path(), config_dir.path());
+    // Separate state/cache dir so the module clone lands in `<state>/modules`,
+    // not the config dir's local `modules/` (which would collide).
+    let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
     module::cmd_module_add_remote(&cli, &printer, &url, None, true, true).unwrap();
@@ -367,7 +369,7 @@ fn module_add_bridge_one_blank_line() {
 #[test]
 #[serial]
 fn module_add_happy_json() {
-    let (config_dir, _state_dir) = registry_test_setup();
+    let (config_dir, state_dir) = registry_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
     let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
 
@@ -375,7 +377,9 @@ fn module_add_happy_json() {
     let bare = make_bare_module_repo(bare_root.path(), "jsonmod", "v1.0.0");
     let url = format!("{}@v1.0.0", cfgd_core::to_file_url(&bare));
 
-    let cli = cli_for(config_dir.path(), config_dir.path());
+    // Separate state/cache dir so the module clone lands in `<state>/modules`,
+    // not the config dir's local `modules/` (which would collide).
+    let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
     module::cmd_module_add_remote(&cli, &printer, &url, None, true, true).unwrap();
@@ -396,7 +400,7 @@ fn module_add_from_registry_bridge_one_blank_line() {
     // The registry resolver assembles a synthetic git URL and delegates
     // to cmd_module_add_remote, so we get the same streaming clone +
     // buffered summary bridge from a one-step-removed entry point.
-    let (config_dir, _state_dir) = registry_test_setup();
+    let (config_dir, state_dir) = registry_test_setup();
     let _home = cfgd_core::with_test_home_guard(config_dir.path());
     let _env = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
 
@@ -410,7 +414,9 @@ fn module_add_from_registry_bridge_one_blank_line() {
     );
     std::fs::write(config_dir.path().join("cfgd.yaml"), yaml).unwrap();
 
-    let cli = cli_for(config_dir.path(), config_dir.path());
+    // Separate state/cache dir so the module clone lands in `<state>/modules`,
+    // not the config dir's local `modules/` (which would collide).
+    let cli = cli_for(config_dir.path(), state_dir.path());
     let (printer, cap) =
         Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Confirm(true)]);
     module::cmd_module_add_from_registry(&cli, &printer, "myreg/alpha@v1.0.0", true, true).unwrap();

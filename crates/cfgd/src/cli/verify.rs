@@ -23,7 +23,7 @@ pub(super) fn cmd_verify(
         let registry = build_registry();
         let platform = Platform::detect();
         let mgr_map = managers_map(&registry);
-        let cache_base = modules::default_module_cache_dir()?;
+        let cache_base = module_cache_dir(cli)?;
         let mods = modules::resolve_modules(
             &[mod_name.to_string()],
             &config_dir,

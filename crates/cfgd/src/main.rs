@@ -118,6 +118,14 @@ fn main() -> anyhow::Result<()> {
 
     let mut cli = cli::Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
 
+    // `--config` (a file OR dir, more specific) wins over `--config-dir`. Because
+    // `--config` carries a clap default, the ArgMatches value source distinguishes
+    // a user-supplied value from the default before folding in `--config-dir`.
+    let config_is_explicit =
+        matches.value_source("config") != Some(clap::parser::ValueSource::DefaultValue);
+    cli.config =
+        cli::effective_config_file(&cli.config, config_is_explicit, cli.config_dir.as_deref());
+
     // A `--config <dir>` / `CFGD_CONFIG=<dir>` argument names the config directory;
     // infer the discovery file inside it once, up front, so every downstream
     // consumer (theme load, profiles-dir derivation, dispatch) agrees on the same

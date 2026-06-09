@@ -360,7 +360,7 @@ pub(super) fn cmd_status_module(
     // queries a single named module, so a missing cache dir means the query
     // cannot be answered, and it must error rather than silently claim the
     // module was not found.
-    let cache_base = modules::default_module_cache_dir()?;
+    let cache_base = module_cache_dir(cli)?;
     let all_modules = modules::load_all_modules(&config_dir, &cache_base, &[], printer)?;
 
     let module = match all_modules.get(mod_name) {
@@ -445,6 +445,9 @@ mod tests {
             list_envelope: false,
             jsonpath: None,
             state_dir: Some(state_dir.to_path_buf()),
+            config_dir: None,
+            cache_dir: None,
+            runtime_dir: None,
             command: None,
         }
     }
