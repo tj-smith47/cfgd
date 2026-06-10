@@ -22,6 +22,7 @@ impl<'a> super::Reconciler<'a> {
         resolved: &ResolvedProfile,
         module_actions: &[ResolvedModule],
         shell_override: Option<ScriptShell>,
+        abort: &crate::AbortFlag,
     ) -> Result<(String, bool)> {
         // Find the resolved module to obtain its dir and declared env vars.
         let resolved_mod = module_actions.iter().find(|m| m.name == action.module_name);
@@ -91,6 +92,7 @@ impl<'a> super::Reconciler<'a> {
                                     MODULE_SCRIPT_TIMEOUT,
                                     printer,
                                     shell_override,
+                                    Some(abort),
                                 )
                                 .map_err(|_| {
                                     crate::errors::CfgdError::Config(ConfigError::Invalid {
@@ -302,6 +304,7 @@ impl<'a> super::Reconciler<'a> {
                     MODULE_SCRIPT_TIMEOUT,
                     printer,
                     shell_override,
+                    Some(abort),
                 )?;
 
                 Ok((format!("module:{}:script", action.module_name), changed))

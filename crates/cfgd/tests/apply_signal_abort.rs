@@ -170,38 +170,44 @@ fn apply_second_sigint_force_quits_via_default_disposition() {
         .spawn()
         .expect("spawn cfgd apply");
 
-    // Let the child enter the long preApply sleep, then deliver TWO signals.
-    // The first requests cooperative cancellation (deferred until the in-flight
-    // sleep finishes — 5s away); the second must force-quit immediately via the
-    // default disposition, long before the sleep ends.
+    // Deliver TWO SIGINTs in quick succession after cfgd enters the preApply sleep.
+    //
+    // With the abort-responder fix, the first SIGINT kills the blocking child
+    // immediately (SIGKILL to its process group) and cfgd exits 130 cooperatively
+    // within ~200 ms — often before the second signal is even sent.  The second
+    // SIGINT may therefore arrive after cfgd has already exited, or it may land
+    // while cfgd is still on the cooperative abort path, in which case the default
+    // signal disposition terminates it.
+    //
+    // Both outcomes are correct; the invariant is that cfgd exits well within the
+    // 5 s window that the sleep would have consumed without the fix.
     std::thread::sleep(Duration::from_millis(1500));
     send_sigint(child.id());
     std::thread::sleep(Duration::from_millis(300));
     send_sigint(child.id());
 
-    // It must die well before the 5s sleep would have completed.
+    // Must exit long before the 5 s preApply sleep would have finished.
     let deadline = Instant::now() + Duration::from_secs(3);
     let status = loop {
         match child.try_wait().unwrap() {
             Some(s) => break s,
             None if Instant::now() >= deadline => {
                 let _ = child.kill();
-                panic!("second SIGINT did not force-quit before deadline");
+                panic!("cfgd did not exit within deadline after two SIGINTs");
             }
             None => std::thread::sleep(Duration::from_millis(50)),
         }
     };
 
-    // Force-quit takes the default disposition: terminated BY the signal, not a
-    // graceful exit code.
-    assert_eq!(
-        status.signal(),
-        Some(libc::SIGINT),
-        "second SIGINT must terminate via default disposition (killed by signal)"
-    );
-    assert_eq!(
+    // Accept either exit path:
+    //   - cooperative abort: exit code 130 (128 + SIGINT), no terminating signal
+    //   - default disposition: killed by SIGINT, no exit code
+    let graceful = status.code() == Some(130);
+    let by_signal = status.signal() == Some(libc::SIGINT);
+    assert!(
+        graceful || by_signal,
+        "cfgd must exit 130 (cooperative) or be killed by SIGINT; got code={:?} signal={:?}",
         status.code(),
-        None,
-        "a signal-terminated process has no graceful exit code"
+        status.signal(),
     );
 }

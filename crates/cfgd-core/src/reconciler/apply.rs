@@ -298,6 +298,7 @@ impl<'a> super::Reconciler<'a> {
                     module_actions,
                     &mut secret_env_collector,
                     shell_override,
+                    abort,
                 );
 
                 let (desc, success, action_changed, error, should_abort) = match result {
@@ -361,6 +362,15 @@ impl<'a> super::Reconciler<'a> {
                     changed,
                 });
                 action_index += 1;
+
+                // If a signal arrived while the action was running, the execute_script
+                // poll loop already killed the child and returned an error. Treat this
+                // as a cooperative abort (not a script failure) so the correct exit
+                // code (130 for SIGINT) and "aborted" DB row are recorded.
+                if let Some(code) = abort.aborted() {
+                    aborted_code = Some(code);
+                    break 'phases;
+                }
 
                 // If a pre-script failed without continueOnError, abort
                 let is_pre_script = matches!(
@@ -481,6 +491,7 @@ impl<'a> super::Reconciler<'a> {
                     crate::PROFILE_SCRIPT_TIMEOUT,
                     printer,
                     shell_override,
+                    Some(abort),
                 ) {
                     Ok((desc, changed, _)) => {
                         results.push(ActionResult {
@@ -546,6 +557,7 @@ impl<'a> super::Reconciler<'a> {
                         MODULE_SCRIPT_TIMEOUT,
                         printer,
                         shell_override,
+                        Some(abort),
                     ) {
                         Ok((desc, changed, _)) => {
                             results.push(ActionResult {
@@ -714,6 +726,7 @@ impl<'a> super::Reconciler<'a> {
         module_actions: &[ResolvedModule],
         secret_env_collector: &mut Vec<(String, String)>,
         shell_override: Option<ScriptShell>,
+        abort: &AbortFlag,
     ) -> Result<(String, bool, Option<String>)> {
         match action {
             Action::System(sys) => self
@@ -735,6 +748,7 @@ impl<'a> super::Reconciler<'a> {
                 printer,
                 context,
                 shell_override,
+                abort,
             ),
             Action::Module(module) => self
                 .apply_module_action(
@@ -746,6 +760,7 @@ impl<'a> super::Reconciler<'a> {
                     resolved,
                     module_actions,
                     shell_override,
+                    abort,
                 )
                 .map(|(d, c)| (d, c, None)),
             // The `:skipped` substring convention is confined to env-action

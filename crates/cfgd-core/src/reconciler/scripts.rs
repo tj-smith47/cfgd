@@ -149,6 +149,7 @@ fn resolve_script_workdir(raw: &str, env_vars: &[(String, String)]) -> std::path
 /// override (the shebang owns the interpreter choice) and emit a debug log.
 ///
 /// Returns (description, changed, captured_output). All scripts set changed=true.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_script(
     entry: &ScriptEntry,
     script_dir: &std::path::Path,
@@ -157,6 +158,7 @@ pub(crate) fn execute_script(
     default_timeout: std::time::Duration,
     printer: &Printer,
     shell_override: Option<ScriptShell>,
+    abort: Option<&crate::AbortFlag>,
 ) -> Result<(String, bool, Option<String>)> {
     let run_str = entry.run_str();
 
@@ -516,6 +518,20 @@ pub(crate) fn execute_script(
                         kill_reason = Some(("idle (no output)", idle_dur));
                     }
                 }
+                // Cooperative abort: abort flag was set while the script was running.
+                // Kill immediately (no grace period — we're already in an interrupt path).
+                if kill_reason.is_none()
+                    && let Some(a) = abort
+                    && a.aborted().is_some()
+                {
+                    pb.finish_fail(format!("{} interrupted", run_str));
+                    kill_script_child(&mut child, false);
+                    let _ = stdout_handle.join();
+                    let _ = stderr_handle.join();
+                    return Err(CfgdError::Config(ConfigError::Invalid {
+                        message: format!("script '{}' interrupted by signal", run_str),
+                    }));
+                }
                 if let Some((reason, duration)) = kill_reason {
                     pb.finish_fail(format!(
                         "{} {} after {}s",
@@ -523,7 +539,7 @@ pub(crate) fn execute_script(
                         reason,
                         duration.as_secs()
                     ));
-                    kill_script_child(&mut child);
+                    kill_script_child(&mut child, true);
                     // Join reader threads so we capture partial output
                     let _ = stdout_handle.join();
                     let _ = stderr_handle.join();
@@ -689,20 +705,31 @@ fn run_guard_command(
     Ok(outcome.output.status.success())
 }
 
-/// Kill a script's process group (SIGTERM + grace period + SIGKILL).
-pub(super) fn kill_script_child(child: &mut std::process::Child) {
+/// Kill a script's process group.
+///
+/// `graceful=true` sends SIGTERM then waits 5 s before SIGKILL (for timeout/idle
+/// kill paths). `graceful=false` sends SIGKILL immediately — used on the
+/// abort path where cfgd itself received a signal and must exit quickly.
+pub(super) fn kill_script_child(child: &mut std::process::Child, graceful: bool) {
     #[cfg(unix)]
     {
         use nix::sys::signal::{Signal, kill};
         use nix::unistd::Pid;
+        let signal = if graceful {
+            Signal::SIGTERM
+        } else {
+            Signal::SIGKILL
+        };
         // Negative PID targets the entire process group
-        let _ = kill(Pid::from_raw(-(child.id() as i32)), Signal::SIGTERM);
+        let _ = kill(Pid::from_raw(-(child.id() as i32)), signal);
     }
     #[cfg(not(unix))]
     {
-        crate::terminate_process(child.id());
+        let _ = child.kill();
     }
-    std::thread::sleep(std::time::Duration::from_secs(5));
+    if graceful {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
     let _ = child.kill();
     let _ = child.wait();
 }
@@ -929,6 +956,7 @@ mod tests {
             std::time::Duration::from_secs(5),
             &printer,
             None,
+            None,
         )
         .expect("script with workdir override must run");
         assert!(
@@ -972,6 +1000,7 @@ mod tests {
                 std::time::Duration::from_secs(5),
                 &printer,
                 None,
+                None,
             )
             .expect("workdir ~ must run");
             assert!(home.path().join("from_tilde").exists());
@@ -1000,6 +1029,7 @@ mod tests {
                 &env,
                 std::time::Duration::from_secs(5),
                 &printer,
+                None,
                 None,
             )
             .expect("workdir $CFGD_MODULE_DIR must run");
@@ -1046,6 +1076,7 @@ mod tests {
             std::time::Duration::from_secs(5),
             &printer,
             None,
+            None,
         )
         .expect_err("missing working_dir must error");
 
@@ -1086,6 +1117,7 @@ mod tests {
             std::time::Duration::from_secs(5),
             &printer,
             None,
+            None,
         )
         .expect_err("non-directory working_dir must error");
 
@@ -1119,6 +1151,7 @@ mod tests {
             &[],
             std::time::Duration::from_secs(5),
             &printer,
+            None,
             None,
         )
         .expect("valid working_dir + `true` must succeed");
@@ -1182,6 +1215,7 @@ mod tests {
             std::time::Duration::from_secs(5),
             &printer,
             None,
+            None,
         )
         .expect("bash inline script must succeed");
 
@@ -1222,6 +1256,7 @@ mod tests {
             &[],
             std::time::Duration::from_secs(5),
             &printer,
+            None,
             None,
         )
         .expect_err("shell field on file script must be rejected");
@@ -1382,6 +1417,7 @@ mod tests {
             std::time::Duration::from_secs(5),
             &printer,
             None,
+            None,
         );
         assert!(result.is_ok(), "Auto shell on file scripts must be allowed");
     }
@@ -1406,6 +1442,7 @@ mod tests {
             std::time::Duration::from_secs(5),
             &printer,
             Some(ScriptShell::Bash),
+            None,
         )
         .expect("inline script with bash override must succeed");
 
@@ -1441,6 +1478,7 @@ mod tests {
             std::time::Duration::from_secs(5),
             &printer,
             Some(ScriptShell::Bash),
+            None,
         )
         .expect("override on file-shebang script must not error");
 
@@ -1485,6 +1523,7 @@ mod tests {
             std::time::Duration::from_secs(5),
             &printer,
             Some(ScriptShell::Bash),
+            None,
         )
         .expect_err("entry-level shell on a file script must still be rejected");
 
@@ -1536,6 +1575,7 @@ mod tests {
             &[],
             std::time::Duration::from_secs(5),
             &printer,
+            None,
             None,
         )
         .expect("guarded script must not error");
@@ -1726,6 +1766,7 @@ mod tests {
             std::time::Duration::from_millis(100),
             &printer,
             None,
+            None,
         );
 
         match result {
@@ -1797,6 +1838,7 @@ mod tests {
             std::time::Duration::from_secs(5),
             &printer,
             None,
+            None,
         )
         .expect("interactive skip must not error");
         printer.flush();
@@ -1831,6 +1873,7 @@ mod tests {
             &[],
             std::time::Duration::from_secs(5),
             &printer,
+            None,
             None,
         )
         .expect("skip must not error");

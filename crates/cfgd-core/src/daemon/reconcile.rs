@@ -493,6 +493,7 @@ pub(crate) fn handle_reconcile(
                     default_timeout,
                     printer,
                     None,
+                    None,
                 ) {
                     Ok((desc, _, _)) => {
                         tracing::info!(script = %desc, "onDrift script completed");
@@ -535,6 +536,7 @@ pub(crate) fn handle_reconcile(
                     &script_env,
                     crate::reconciler::MODULE_SCRIPT_TIMEOUT,
                     printer,
+                    None,
                     None,
                 ) {
                     Ok((desc, _, _)) => {

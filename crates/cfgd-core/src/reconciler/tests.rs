@@ -3729,6 +3729,7 @@ fn execute_script_inline_command() {
         std::time::Duration::from_secs(10),
         &printer,
         None,
+        None,
     )
     .unwrap();
     assert!(desc.contains("echo hello"));
@@ -3748,6 +3749,7 @@ fn execute_script_failure_returns_error() {
         &[],
         std::time::Duration::from_secs(10),
         &printer,
+        None,
         None,
     );
     assert!(result.is_err());
@@ -3782,6 +3784,7 @@ fn execute_script_with_timeout_override() {
         std::time::Duration::from_secs(300),
         &printer,
         None,
+        None,
     )
     .unwrap();
     assert_eq!(output, Some("fast".to_string()));
@@ -3801,6 +3804,7 @@ fn execute_script_injects_env_vars() {
         &env,
         std::time::Duration::from_secs(10),
         &printer,
+        None,
         None,
     )
     .unwrap();
@@ -3827,6 +3831,7 @@ fn execute_script_runs_executable_file() {
         std::time::Duration::from_secs(10),
         &printer,
         None,
+        None,
     )
     .unwrap();
     assert_eq!(output, Some("from_file".to_string()));
@@ -3851,6 +3856,7 @@ fn execute_script_rejects_non_executable_file() {
         &[],
         std::time::Duration::from_secs(10),
         &printer,
+        None,
         None,
     );
     assert!(result.is_err());
@@ -3886,6 +3892,7 @@ fn execute_script_idle_timeout_kills_idle_process() {
         &[],
         std::time::Duration::from_secs(30),
         &printer,
+        None,
         None,
     );
     assert!(result.is_err());

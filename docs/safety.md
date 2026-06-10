@@ -62,13 +62,14 @@ cfgd uses `flock()` to prevent concurrent applies. Only one `cfgd apply` can run
 
 `cfgd apply` handles `SIGINT` (Ctrl-C) and `SIGTERM` as a **cooperative abort** rather than an abrupt kill:
 
-- The action currently in flight finishes first — actions are atomic (atomic file writes; a package install or script completes), so the abort never leaves a torn or partially-written file.
-- The reconciler then stops **before** starting the next action and unwinds normally.
+- **File and package actions** finish before the abort is honoured — atomic file writes complete, and a package install completes before the reconciler stops. The abort is detected between actions, never mid-write.
+- **Script actions** (`preApply`, `postApply`, module scripts) are killed immediately: cfgd sends `SIGKILL` to the script's process group so the process exits within milliseconds instead of waiting for the full script timeout. Script authors should write idempotent scripts so a kill-and-rerun leaves the system in a clean state.
+- The reconciler stops **before** starting the next action after any killed/completed abort and unwinds normally.
 - The apply lock is released via its normal RAII drop (the guard drops as `cfgd apply` returns, *before* the process exits), so a subsequent `cfgd apply` runs immediately (no stuck lock).
 - The run is journaled with status `Aborted` (visible in `cfgd status` / `cfgd log`), distinct from `success` / `partial` / `failed`.
 - The process exits with the signal-conventional code: **130** for SIGINT, **143** for SIGTERM (128 + signal number).
 
-**Second signal force-quits.** A second `SIGINT`/`SIGTERM` while the first abort is being processed takes the OS default disposition (immediate termination), so a user hammering Ctrl-C is never stuck waiting on cleanup. The first signal is the graceful path; the second is the escape hatch.
+**Second signal force-quits.** A second `SIGINT`/`SIGTERM` while the first abort is being processed takes the OS default disposition (immediate termination), so a user hammering Ctrl-C is never stuck waiting on cleanup. Because cfgd now responds to the first signal immediately (scripts are killed at once), the second signal is rarely needed.
 
 The reported "{applied} of {total}" count is **filter-aware**: under `--phase` / `--skip` / `--only` / `--skip-scripts`, `total` is the number of actions actually in scope for the run, not the whole plan. A one-line message is printed, and `-o json` carries a structured payload:
 
