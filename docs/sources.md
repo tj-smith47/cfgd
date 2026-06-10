@@ -442,6 +442,52 @@ When a source advances but **no tag matches your range** (or an exact tag/SHA pi
 
 This keep-previous fallback applies only to the pin-not-found case. A network/`ls-remote` failure, a corrupt cached manifest, or a failed signature is always an error.
 
+## Source Lockfile
+
+After every `cfgd source add`, `cfgd source update`, or `cfgd sync`, cfgd writes a `sources.lock` file alongside your `cfgd.yaml`. The lockfile records the exact commit SHA each source resolved to, making composition bit-reproducible across machines — even when the source uses a floating semver-range pin.
+
+```
+~/.config/cfgd/
+├── cfgd.yaml
+├── sources.lock   ← written by cfgd, commit alongside cfgd.yaml
+└── modules.lock
+```
+
+The lockfile is YAML. A typical entry looks like:
+
+```yaml
+sources:
+  - name: acme-corp
+    url: git@github.com:acme-corp/dev-config.git
+    pinVersion: "~2"
+    resolvedRef: v2.1.0        # the tag that matched the semver range
+    resolvedCommit: 9f3c1ab2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9ab  # exact SHA
+    lockedAt: "2026-06-09T14:32:01Z"
+```
+
+`cfgd source show acme-corp` surfaces the lockfile data in the State section:
+
+```
+Source: acme-corp
+  URL            git@github.com:acme-corp/dev-config.git
+  Branch         master
+  Priority       500
+  Pin Version    ~2
+
+  State
+    Status        synced
+    Last Fetched  2026-06-09T14:32:01Z
+    Last Commit   9f3c1ab2c4d  (truncated)
+    Locked Ref    v2.1.0
+    Locked Commit 9f3c1ab2c4d  (same — the tag's commit)
+```
+
+When a source has been added but never synced, `source show` still surfaces the lockfile entry (with `Status: pending`) so you can confirm the intended SHA before the first apply.
+
+**Committing the lockfile** to your config repo (alongside `cfgd.yaml`) is recommended: it guarantees that every machine applying the config checks out the identical commits, and `git diff sources.lock` shows exactly what a source update advanced to.
+
+`cfgd source remove` prunes the corresponding entry from `sources.lock` automatically.
+
 ## Required (fail-closed) sources
 
 By default a source is **best-effort**: if it can't be fetched (network error, bad manifest, signature failure, or an unresolvable first-time pin), cfgd warns and composes without it, and apply/plan still succeed. That is wrong for a security or team baseline that **must** always be present.
