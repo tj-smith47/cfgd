@@ -211,9 +211,40 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
     let resources = state.managed_resources_by_source(name)?;
 
     let config_dir = config_dir(cli);
-    let lock_entry = cfgd_core::load_sources_lockfile(&config_dir)
-        .ok()
-        .and_then(|lf| lf.sources.into_iter().find(|e| e.name == name));
+    let lock_entry = match cfgd_core::load_sources_lockfile(&config_dir) {
+        Ok(lf) => lf.sources.into_iter().find(|e| e.name == name),
+        Err(e) => {
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "Could not read sources.lock: {}",
+                    cfgd_core::output::collapse_to_subject_line(&e),
+                ),
+            );
+            None
+        }
+    };
+
+    let state_with_lock = state_info.map(|s| SourceStateInfo {
+        status: s.status,
+        last_fetched: s.last_fetched,
+        last_commit: s.last_commit,
+        version: s.source_version,
+        locked_ref: lock_entry.as_ref().and_then(|e| e.resolved_ref.clone()),
+        locked_commit: lock_entry.as_ref().map(|e| e.resolved_commit.clone()),
+    });
+    // When there is no state DB row yet (source added but never synced), still
+    // surface lockfile data so callers can inspect the resolved SHA.
+    let state = state_with_lock.or_else(|| {
+        lock_entry.as_ref().map(|lock| SourceStateInfo {
+            status: "pending".to_string(),
+            last_fetched: None,
+            last_commit: None,
+            version: None,
+            locked_ref: lock.resolved_ref.clone(),
+            locked_commit: Some(lock.resolved_commit.clone()),
+        })
+    });
 
     let mut output = SourceShowOutput {
         name: name.to_string(),
@@ -225,14 +256,7 @@ pub fn cmd_source_show(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Resu
         sync_interval: source_spec.sync.interval.clone(),
         auto_apply: source_spec.sync.auto_apply,
         pin_version: source_spec.sync.pin_version.clone(),
-        state: state_info.map(|s| SourceStateInfo {
-            status: s.status,
-            last_fetched: s.last_fetched,
-            last_commit: s.last_commit,
-            version: s.source_version,
-            locked_ref: lock_entry.as_ref().and_then(|e| e.resolved_ref.clone()),
-            locked_commit: lock_entry.as_ref().map(|e| e.resolved_commit.clone()),
-        }),
+        state,
         managed_resources: resources
             .iter()
             .map(|r| SourceResourceEntry {

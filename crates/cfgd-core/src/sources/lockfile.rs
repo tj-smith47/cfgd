@@ -134,4 +134,23 @@ mod tests {
         assert_eq!(alpha.resolved_commit, "c".repeat(40));
         assert_eq!(alpha.resolved_ref.as_deref(), Some("v2.2.0"));
     }
+
+    #[test]
+    fn remove_source_lock_entry_removes_existing_and_noop_on_missing() {
+        let dir = TempDir::new().expect("tempdir");
+        update_source_lock_entry(dir.path(), sample_entry("alpha", &"a".repeat(40)))
+            .expect("insert alpha");
+        update_source_lock_entry(dir.path(), sample_entry("beta", &"b".repeat(40)))
+            .expect("insert beta");
+
+        remove_source_lock_entry(dir.path(), "alpha").expect("remove alpha");
+        let lf = load_sources_lockfile(dir.path()).expect("load after remove");
+        assert_eq!(lf.sources.len(), 1, "alpha must be gone");
+        assert_eq!(lf.sources[0].name, "beta");
+
+        // no-op on non-existent name — must not error or write
+        remove_source_lock_entry(dir.path(), "nonexistent").expect("no-op remove");
+        let lf2 = load_sources_lockfile(dir.path()).expect("load after no-op");
+        assert_eq!(lf2.sources.len(), 1, "count unchanged after no-op");
+    }
 }

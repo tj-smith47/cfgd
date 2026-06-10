@@ -1091,14 +1091,16 @@ mod tests {
             last_fetched: Some("2026-01-01T00:00:00Z".to_string()),
             last_commit: Some("c0ffee".to_string()),
             version: Some("v0.1".to_string()),
-            locked_ref: None,
-            locked_commit: None,
+            locked_ref: Some("v2.1.0".to_string()),
+            locked_commit: Some("a".repeat(40)),
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["status"], json!("stale"));
         assert_eq!(json["lastFetched"], json!("2026-01-01T00:00:00Z"));
         assert_eq!(json["lastCommit"], json!("c0ffee"));
         assert_eq!(json["version"], json!("v0.1"));
+        assert_eq!(json["lockedRef"], json!("v2.1.0"));
+        assert_eq!(json["lockedCommit"], json!("a".repeat(40)));
     }
 
     #[test]
