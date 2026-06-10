@@ -310,9 +310,9 @@ else
 fi
 
 # Detect kebab-case config field names in user-visible strings (not comments, not CLI flags, not file paths)
-# Dynamically generate field name patterns from config struct definitions in config/mod.rs.
+# Dynamically generate field name patterns from config struct definitions across config/*.rs.
 # This auto-updates as new fields are added — no manual list to maintain.
-config_fields=$(grep -E '^\s+pub [a-z_]+:' crates/cfgd-core/src/config/mod.rs \
+config_fields=$(grep -rE '^\s+pub [a-z_]+:' crates/cfgd-core/src/config/ --include='*.rs' \
     | sed 's/.*pub \([a-z_]*\):.*/\1/' \
     | grep '_' \
     | sed 's/_/-/g' \
@@ -333,7 +333,7 @@ if [[ -n "$config_fields" ]]; then
         log_ok "No kebab-case config field names in string literals"
     fi
 else
-    log_warn "Could not extract config field names from config/mod.rs — skipping kebab-case field check"
+    log_warn "Could not extract config field names from config/*.rs — skipping kebab-case field check"
 fi
 
 log_section "Config Parsing Boundary"
