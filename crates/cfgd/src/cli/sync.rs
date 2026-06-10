@@ -153,6 +153,30 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                                     .status(Role::Ok, format!("'{}' synced", source_spec.name))
                                     .detail(format!("commit: {}", commit_short));
                             }
+
+                            // Record the resolved commit in sources.lock.
+                            if let Some(ref commit) = cached.last_commit {
+                                let lock_entry = cfgd_core::config::SourceLockEntry {
+                                    name: source_spec.name.clone(),
+                                    url: source_spec.origin.url.clone(),
+                                    pin_version: source_spec.sync.pin_version.clone(),
+                                    resolved_ref: cached.resolved_ref.clone(),
+                                    resolved_commit: commit.clone(),
+                                    locked_at: cfgd_core::utc_now_iso8601(),
+                                };
+                                if let Err(e) =
+                                    cfgd_core::update_source_lock_entry(&config_dir, lock_entry)
+                                {
+                                    sources_sec.status_simple(
+                                        cfgd_core::output::Role::Warn,
+                                        format!(
+                                            "Could not update sources.lock: {}",
+                                            cfgd_core::output::collapse_to_subject_line(&e)
+                                        ),
+                                    );
+                                }
+                            }
+
                             changes_detected = true;
                             sync_payload.sources.push(SourceSyncOutput {
                                 name: source_spec.name.clone(),

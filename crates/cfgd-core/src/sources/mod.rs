@@ -5,6 +5,13 @@
 // Dependency rules: depends only on config/, output/, errors/, composition/,
 // modules/. Must NOT import files/, packages/, secrets/, reconciler/, providers/.
 
+pub mod lockfile;
+
+pub use lockfile::{
+    load_sources_lockfile, remove_source_lock_entry, save_sources_lockfile,
+    update_source_lock_entry,
+};
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -31,6 +38,9 @@ pub struct CachedSource {
     pub manifest: ConfigSourceDocument,
     pub last_commit: Option<String>,
     pub last_fetched: Option<String>,
+    /// Resolved tag name when the source was loaded with a `pinVersion` semver
+    /// range or exact tag. `None` for HEAD-tracking sources and commit-SHA pins.
+    pub resolved_ref: Option<String>,
 }
 
 /// Manager for multiple config sources — handles fetching, caching, version checking.
@@ -170,6 +180,7 @@ impl SourceManager {
             manifest,
             last_commit,
             last_fetched: None,
+            resolved_ref: None,
         };
 
         self.sources.insert(spec.name.clone(), cached);
@@ -265,6 +276,11 @@ impl SourceManager {
 
         let last_commit = Self::head_commit(&source_dir);
 
+        let resolved_ref = pinned_ref.as_ref().and_then(|r| match r {
+            ResolvedRef::Tag { tag, .. } => Some(tag.clone()),
+            ResolvedRef::Commit(_) => None,
+        });
+
         let cached = CachedSource {
             name: spec.name.clone(),
             origin_url: spec.origin.url.clone(),
@@ -273,6 +289,7 @@ impl SourceManager {
             manifest,
             last_commit,
             last_fetched: Some(crate::utc_now_iso8601()),
+            resolved_ref,
         };
 
         self.sources.insert(spec.name.clone(), cached);
@@ -299,6 +316,7 @@ impl SourceManager {
             manifest,
             last_commit,
             last_fetched: None,
+            resolved_ref: None,
         };
 
         self.sources.insert(spec.name.clone(), cached);

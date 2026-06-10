@@ -174,6 +174,31 @@ pub(crate) fn run_source_update(
                             cached.manifest.metadata.version.as_deref(),
                             source.sync.pin_version.as_deref(),
                         )?;
+
+                        // Keep the sources lockfile in sync with the updated commit SHA.
+                        if let Some(ref commit) = cached.last_commit {
+                            let lock_entry = cfgd_core::config::SourceLockEntry {
+                                name: source.name.clone(),
+                                url: source.origin.url.clone(),
+                                pin_version: source.sync.pin_version.clone(),
+                                resolved_ref: cached.resolved_ref.clone(),
+                                resolved_commit: commit.clone(),
+                                locked_at: cfgd_core::utc_now_iso8601(),
+                            };
+                            let cfg_dir = config_dir(cli);
+                            if let Err(e) =
+                                cfgd_core::update_source_lock_entry(&cfg_dir, lock_entry)
+                            {
+                                source_sec.status_simple(
+                                    Role::Warn,
+                                    format!(
+                                        "Could not update sources.lock: {}",
+                                        cfgd_core::output::collapse_to_subject_line(&e)
+                                    ),
+                                );
+                            }
+                        }
+
                         source_sec
                             .status_simple(Role::Ok, format!("Updated source '{}'", source.name));
                         entries.push(UpdateEntry {

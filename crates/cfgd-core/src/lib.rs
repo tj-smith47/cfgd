@@ -26,6 +26,10 @@ mod util;
 pub use util::*;
 
 pub use daemon::resolve_default_ipc_path;
+pub use sources::{
+    load_sources_lockfile, remove_source_lock_entry, save_sources_lockfile,
+    update_source_lock_entry,
+};
 
 #[cfg(test)]
 pub(crate) use util::{home_dir_var, resolve_macos_config_dir, test_home_override};

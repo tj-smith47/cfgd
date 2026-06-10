@@ -123,6 +123,18 @@ pub fn cmd_source_remove(
     state.remove_config_source(name)?;
     state.remove_source_config_hash(name)?;
 
+    // Remove the entry from sources.lock (best-effort — a missing entry is fine).
+    let cfg_dir = config_dir(cli);
+    if let Err(e) = cfgd_core::remove_source_lock_entry(&cfg_dir, name) {
+        printer.status_simple(
+            Role::Warn,
+            format!(
+                "Could not update sources.lock: {}",
+                cfgd_core::output::collapse_to_subject_line(&e)
+            ),
+        );
+    }
+
     // Remove the cached clone. It lives at `<cache_dir>/<name>` (see
     // SourceManager::load_source). Delete the directory directly: the previous
     // SourceManager::remove_source path keyed off an in-memory `sources` map

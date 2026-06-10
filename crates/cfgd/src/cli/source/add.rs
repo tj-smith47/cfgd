@@ -262,6 +262,29 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
         None,
     )?;
 
+    // Record the resolved commit SHA in the sources lockfile so composition
+    // is bit-reproducible across machines.
+    if let Some(ref commit) = cached.last_commit {
+        let lock_entry = cfgd_core::config::SourceLockEntry {
+            name: source_name.clone(),
+            url: url.clone(),
+            pin_version: pin_version.map(|s| s.to_string()),
+            resolved_ref: cached.resolved_ref.clone(),
+            resolved_commit: commit.clone(),
+            locked_at: cfgd_core::utc_now_iso8601(),
+        };
+        let cfg_dir = config_dir(cli);
+        if let Err(e) = cfgd_core::update_source_lock_entry(&cfg_dir, lock_entry) {
+            printer.status_simple(
+                cfgd_core::output::Role::Warn,
+                format!(
+                    "Could not update sources.lock: {}",
+                    cfgd_core::output::collapse_to_subject_line(&e)
+                ),
+            );
+        }
+    }
+
     let mut doc = Doc::new().status(Role::Ok, format!("Subscribed to source '{}'", source_name));
     if let Some(ref p) = selected_profile {
         doc = doc.kv("Profile", p);

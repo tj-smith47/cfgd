@@ -305,6 +305,12 @@ pub struct SourceStateInfo {
     pub last_fetched: Option<String>,
     pub last_commit: Option<String>,
     pub version: Option<String>,
+    /// Resolved tag name from sources.lock (None for HEAD-tracking sources).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locked_ref: Option<String>,
+    /// 40-char commit SHA from sources.lock at time of last lock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub locked_commit: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1054,6 +1060,8 @@ mod tests {
                 last_fetched: Some("2026-01-01T00:00:00Z".to_string()),
                 last_commit: Some("abc".to_string()),
                 version: Some("v1.2.3".to_string()),
+                locked_ref: None,
+                locked_commit: None,
             }),
             managed_resources: vec![SourceResourceEntry {
                 resource_type: "Module".to_string(),
@@ -1083,6 +1091,8 @@ mod tests {
             last_fetched: Some("2026-01-01T00:00:00Z".to_string()),
             last_commit: Some("c0ffee".to_string()),
             version: Some("v0.1".to_string()),
+            locked_ref: None,
+            locked_commit: None,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["status"], json!("stale"));

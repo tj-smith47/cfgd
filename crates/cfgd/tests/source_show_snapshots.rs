@@ -42,6 +42,8 @@ fn happy_output() -> SourceShowOutput {
             last_fetched: Some("2026-05-14T10:00:00Z".into()),
             last_commit: Some("deadbeef1234567890abcdef".into()),
             version: Some("3.1.0".into()),
+            locked_ref: None,
+            locked_commit: None,
         }),
         managed_resources: vec![
             SourceResourceEntry {

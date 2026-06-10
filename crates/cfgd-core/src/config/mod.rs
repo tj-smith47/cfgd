@@ -18,6 +18,7 @@ mod resolve;
 mod root;
 mod security;
 mod source;
+mod source_lock;
 mod sync_secrets;
 mod theme;
 
@@ -59,6 +60,7 @@ pub use source::{
     ConfigSourceProvides, ConfigSourceSpec, EnvVar, MAX_SOURCE_PRIORITY, PolicyItems, ShellAlias,
     SourceConstraints, SourceSpec, SourceSyncSpec, SubscriptionSpec, validate_source_priority,
 };
+pub use source_lock::{SourceLockEntry, SourcesLockfile};
 pub use sync_secrets::{
     NotifyConfig, NotifyMethod, SecretIntegration, SecretsConfig, SopsConfig, SyncConfig,
 };

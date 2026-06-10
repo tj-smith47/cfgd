@@ -807,6 +807,7 @@ fn remove_source_success() {
         },
         last_commit: None,
         last_fetched: None,
+        resolved_ref: None,
     };
     mgr.sources.insert("test-source".to_string(), cached);
 
@@ -855,6 +856,7 @@ fn insert_fake_source(mgr: &mut SourceManager, name: &str, local_path: PathBuf) 
         },
         last_commit: None,
         last_fetched: None,
+        resolved_ref: None,
     };
     mgr.sources.insert(name.to_string(), cached);
 }
@@ -2752,6 +2754,7 @@ fn remove_source_surfaces_cache_error_when_remove_dir_all_fails() {
         },
         last_commit: None,
         last_fetched: None,
+        resolved_ref: None,
     };
     mgr.sources.insert("bad".to_string(), cached);
 
