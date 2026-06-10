@@ -88,6 +88,7 @@ defaults:
   publish:
     cargo:
       required: true
+      retain_on_rollback: true
       index_timeout: 600
       # Per-crate tags fire independent Release.yml runs; downstream crates
       # (cfgd-operator depends on cfgd-core) would otherwise race the
@@ -98,6 +99,8 @@ defaults:
         enabled: true
         poll_interval: 5s
         max_wait: 5m
+    on_error:
+      - cmd: "echo 'cfgd: publisher {{ .Publisher }} failed for {{ .Tag }}: {{ .Error }}'"
 
 # UPX compression — shrinks binaries on targets UPX supports.
 # macOS ARM is broken in recent UPX; exclude it.
@@ -688,6 +691,7 @@ workspaces:
 # cfgd-module is draft-2020-12, so its catalog entry is added to the
 # highSchemaVersion list automatically.
 schemastore:
+  retain_on_rollback: true  # external catalog — retain even if a downstream publisher fails
   repository:
     owner: tj-smith47
     name: schemastore
@@ -870,6 +874,7 @@ sboms:
 # (github-oidc); the OCI package points at the multi-arch image already
 # pushed by `dockers_v2`.
 mcp:
+  retain_on_rollback: true  # external registry — retain even if a downstream publisher fails
   name: io.github.tj-smith47/cfgd
   # description / homepage derived from the owning crate's (cfgd) metadata.
   repository:
