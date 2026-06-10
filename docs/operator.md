@@ -147,6 +147,28 @@ Devices running `cfgd daemon` periodically check in to report their current appl
 cfgd checkin --server-url https://cfgd.acme.com --api-key <key>
 ```
 
+### Device Config Delivery
+
+An admin (or the cluster operator) pushes desired configuration to a device via the gateway:
+
+```sh
+POST /api/v1/devices/{id}/config
+```
+
+Every accepted push — even one whose `configHash` is unchanged — advances the device's **`generation`** counter and records **`lastPushedAt`**, so operators can confirm that a push was received and processed without having to wait for a checkin cycle:
+
+```json
+{
+  "id": "abc123",
+  "hostname": "jdoe-macbook",
+  "configHash": "sha256:...",
+  "generation": 5,
+  "lastPushedAt": "2026-06-10T14:32:00Z"
+}
+```
+
+The gateway enforces a **10 MiB** config-size limit. A config that exceeds this limit is rejected with `400` and an actionable message (`"config exceeds 10MB size limit"`), not a generic `413 Payload Too Large`. A `413` indicates the request body itself — including envelope overhead — exceeded the 12 MiB transport backstop (a misconfigured client, not an oversized config).
+
 ### Enrollment
 
 Two methods for registering new devices:
@@ -181,6 +203,19 @@ Device inventory, drift status, and compliance posture at a glance.
 ### SSE Streaming
 
 Real-time event feed at `/api/v1/events/stream` for monitoring integrations.
+
+## Binary CLI
+
+The `cfgd-operator` binary supports a minimal CLI surface before entering the serving loop:
+
+```sh
+cfgd-operator --version   # print version and exit 0
+cfgd-operator --help      # print usage and exit 0
+cfgd-operator             # run the operator / gateway (no-arg invocation)
+cfgd-operator --unknown   # exit non-zero immediately (no hang)
+```
+
+Previously the binary had no argv handling — any flag, including `--version`, would block indefinitely waiting for a Kubernetes cluster connection. The binary now answers `--version` and `--help` instantly and rejects unknown arguments fast. The no-argument form starts the operator or gateway as before.
 
 ## DaemonSet Mode
 
