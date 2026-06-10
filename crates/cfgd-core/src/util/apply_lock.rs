@@ -23,8 +23,8 @@ pub struct ApplyLockGuard {
 impl Drop for ApplyLockGuard {
     fn drop(&mut self) {
         // Clear the PID so stale reads aren't confusing.
-        // Lock is released when LockFile is dropped.
-        if let Err(e) = self._file.set_len(0) {
+        // Lock is released when LockFile is dropped after this.
+        if let Err(e) = std::fs::write(&self._path, b"") {
             tracing::debug!(path = ?self._path, error = %e, "failed to clear apply-lock PID on drop");
         }
     }
@@ -36,10 +36,13 @@ impl Drop for ApplyLockGuard {
 /// `LOCK_EX | LOCK_NB` — returns `StateError::ApplyLockHeld` if another
 /// process holds the lock. The lock is released automatically when the guard
 /// is dropped.
+///
+/// The PID is written via `std::fs::write` (a fresh open/write/close) rather
+/// than through the Flock fd because on macOS ARM64 writes through
+/// `Flock<File>`'s `DerefMut` are silently dropped (the flock exclusion is
+/// unaffected — `Flock<File>` still holds it).
 #[cfg(unix)]
 pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLockGuard> {
-    use std::io::Write;
-
     std::fs::create_dir_all(state_dir)?;
     let lock_path = state_dir.join(APPLY_LOCK_FILENAME);
 
@@ -50,7 +53,7 @@ pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLo
         .write(true)
         .open(&lock_path)?;
 
-    let mut locked = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock)
+    let locked = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusiveNonblock)
         .map_err(|(_file, errno)| {
             if errno == nix::errno::Errno::EWOULDBLOCK {
                 let holder = std::fs::read_to_string(&lock_path).unwrap_or_default();
@@ -62,10 +65,7 @@ pub fn acquire_apply_lock(state_dir: &std::path::Path) -> errors::Result<ApplyLo
             }
         })?;
 
-    // Write our PID to the lock file
-    locked.set_len(0)?;
-    write!(locked, "{}", std::process::id())?;
-    locked.sync_all()?;
+    std::fs::write(&lock_path, std::process::id().to_string().as_bytes())?;
 
     Ok(ApplyLockGuard {
         _file: locked,
