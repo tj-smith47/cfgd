@@ -24,6 +24,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  ANODIZER_VERSION: v0.8.1
 
 jobs:
   tag:
@@ -60,13 +61,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
       - id: t
-        # Binary pre-built by ci.yml's build-anodizer job; downloaded here
-        # instead of rebuilding from source on every Linux release job.
         uses: tj-smith47/anodizer-action@v1
         with:
-          from-artifact: anodizer-linux
-          artifact-run-id: auto
-          artifact-workflow: ci.yml
+          version: ${{ env.ANODIZER_VERSION }}
           args: tag --changelog
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
@@ -150,9 +147,7 @@ jobs:
         id: release
         uses: tj-smith47/anodizer-action@v1
         with:
-          from-artifact: anodizer-linux
-          artifact-run-id: auto
-          artifact-workflow: ci.yml
+          version: ${{ env.ANODIZER_VERSION }}
           auto-install: 'true'
           # Artifacts already in dist/ from the step above; action's built-in
           # download (which matches dist-* globally) is intentionally skipped.
@@ -230,9 +225,7 @@ jobs:
         id: release
         uses: tj-smith47/anodizer-action@v1
         with:
-          from-artifact: anodizer-linux
-          artifact-run-id: auto
-          artifact-workflow: ci.yml
+          version: ${{ env.ANODIZER_VERSION }}
           auto-install: 'true'
           # Artifacts already in dist/ from the step above; action's built-in
           # download (which matches dist-* globally) is intentionally skipped.

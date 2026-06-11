@@ -22,6 +22,7 @@ env:
   # cache. GHA cache backend — no S3 needed.
   SCCACHE_GHA_ENABLED: "true"
   RUSTC_WRAPPER: "sccache"
+  ANODIZER_VERSION: v0.8.1
 
 jobs:
   fmt:
@@ -155,27 +156,10 @@ jobs:
       - name: Package all crates
         run: task package
 
-  # Build the anodizer binary once on Linux and upload it as an artifact so
-  # downstream jobs in this workflow and release.yml can download it instead
-  # of each rebuilding from source (saves 6+ redundant rebuilds per release).
-  build-anodizer:
-    name: Build anodizer binary
-    runs-on: ubuntu-latest
-    steps:
-      - uses: tj-smith47/anodizer-action@v1
-        with:
-          from-branch: publisher-required-config
-          install-only: 'true'
-      - name: Upload anodizer binary
-        uses: actions/upload-artifact@v7
-        with:
-          name: anodizer-linux
-          path: ${{ runner.tool_cache }}/anodizer/source/anodizer
-
   snapshot:
     name: Snapshot (dry-run)
     if: github.ref == 'refs/heads/master'
-    needs: [test, build-anodizer]
+    needs: [test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -184,7 +168,7 @@ jobs:
       - name: Validate release pipeline via anodizer
         uses: tj-smith47/anodizer-action@v1
         with:
-          from-artifact: anodizer-linux
+          version: ${{ env.ANODIZER_VERSION }}
           args: release --snapshot --single-target --clean --dry-run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

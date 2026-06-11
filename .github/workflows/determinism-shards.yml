@@ -22,6 +22,9 @@ permissions:
   contents: read
   packages: read
 
+env:
+  ANODIZER_VERSION: v0.8.1
+
 jobs:
   shard:
     name: ${{ matrix.shard.name }}
@@ -44,10 +47,9 @@ jobs:
         with:
           version: "25.9"
 
-      - # from-branch: pinned to in-progress release-orchestration work; switch back to @v1 default after merge
-        uses: tj-smith47/anodizer-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         with:
-          from-branch: publisher-required-config
+          version: ${{ env.ANODIZER_VERSION }}
           auto-install: 'true'
           determinism: 'true'
           determinism-targets: ${{ matrix.shard.targets }}
