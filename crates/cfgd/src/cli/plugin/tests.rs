@@ -1368,3 +1368,392 @@ mod kubectl_shim {
         assert_eq!(cmd_arr[1], "hello");
     }
 }
+
+mod deploy {
+    use std::collections::HashMap;
+
+    use cfgd_core::output::Printer;
+
+    use super::super::{cmd_deploy, rewrite_image_refs};
+
+    const POD_TWO_VOLUMES: &str = "\
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app
+spec:
+  volumes:
+    - name: mapped
+      image:
+        reference: registry.jarvispro.io/gome/server:abc
+    - name: unmapped
+      image:
+        reference: registry.jarvispro.io/other/thing:xyz
+";
+
+    const DEPLOYMENT_ONE_VOLUME: &str = "\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+spec:
+  template:
+    spec:
+      volumes:
+        - name: mapped
+          image:
+            reference: registry.jarvispro.io/gome/server:abc
+";
+
+    fn pinned_map() -> HashMap<&'static str, &'static str> {
+        let mut m = HashMap::new();
+        m.insert(
+            "registry.jarvispro.io/gome/server:abc",
+            "registry.jarvispro.io/gome/server@sha256:deadbeef",
+        );
+        m
+    }
+
+    #[test]
+    fn rewrite_pins_mapped_volume_leaves_unmapped_untouched() {
+        let mut value: serde_yaml::Value =
+            serde_yaml::from_str(POD_TWO_VOLUMES).expect("parse pod yaml");
+        let map = pinned_map();
+        let mut rewrites = Vec::new();
+        rewrite_image_refs(&mut value, &map, &mut rewrites);
+
+        assert_eq!(rewrites.len(), 1, "exactly one volume must be rewritten");
+        assert_eq!(
+            rewrites[0].0, "registry.jarvispro.io/gome/server:abc",
+            "old ref must be the tag form"
+        );
+        assert_eq!(
+            rewrites[0].1, "registry.jarvispro.io/gome/server@sha256:deadbeef",
+            "new ref must be the pinned digest form"
+        );
+
+        let volumes = value["spec"]["volumes"].as_sequence().expect("volumes seq");
+        assert_eq!(
+            volumes[0]["image"]["reference"],
+            serde_yaml::Value::from("registry.jarvispro.io/gome/server@sha256:deadbeef"),
+            "mapped volume must be pinned"
+        );
+        assert_eq!(
+            volumes[1]["image"]["reference"],
+            serde_yaml::Value::from("registry.jarvispro.io/other/thing:xyz"),
+            "unmapped volume must be untouched"
+        );
+    }
+
+    const POD_CONTAINER_IMAGE_STRING: &str = "\
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app
+spec:
+  containers:
+    - name: gome
+      image: registry.jarvispro.io/gome/server:abc
+";
+
+    #[test]
+    fn rewrite_leaves_bare_container_image_string_untouched() {
+        // A container `image:` is a STRING, not a mapping with `reference`. Even
+        // when its value is a key in the lock map, only image MAPPINGS get pinned
+        // — bare image strings (the container runtime image) must never change.
+        let mut value: serde_yaml::Value =
+            serde_yaml::from_str(POD_CONTAINER_IMAGE_STRING).expect("parse pod yaml");
+        let map = pinned_map();
+        let mut rewrites = Vec::new();
+        rewrite_image_refs(&mut value, &map, &mut rewrites);
+
+        assert_eq!(
+            rewrites.len(),
+            0,
+            "a bare container image string must NOT be rewritten"
+        );
+        assert_eq!(
+            value["spec"]["containers"][0]["image"],
+            serde_yaml::Value::from("registry.jarvispro.io/gome/server:abc"),
+            "container image string must be unchanged"
+        );
+    }
+
+    #[test]
+    fn rewrite_pins_deployment_template_volume() {
+        let mut value: serde_yaml::Value =
+            serde_yaml::from_str(DEPLOYMENT_ONE_VOLUME).expect("parse deployment yaml");
+        let map = pinned_map();
+        let mut rewrites = Vec::new();
+        rewrite_image_refs(&mut value, &map, &mut rewrites);
+
+        assert_eq!(
+            rewrites.len(),
+            1,
+            "deployment template volume must be pinned via generic recursion"
+        );
+        assert_eq!(
+            value["spec"]["template"]["spec"]["volumes"][0]["image"]["reference"],
+            serde_yaml::Value::from("registry.jarvispro.io/gome/server@sha256:deadbeef"),
+            "template-nested volume must be pinned"
+        );
+    }
+
+    #[test]
+    fn cmd_deploy_print_mode_emits_pinned_manifest() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lock_path = dir.path().join("cfgd-images.lock");
+        std::fs::write(
+            &lock_path,
+            "\
+images:
+  - reference: registry.jarvispro.io/gome/server:abc
+    digest: sha256:deadbeef
+    pinned: registry.jarvispro.io/gome/server@sha256:deadbeef
+    lockedAt: 2026-01-01T00:00:00Z
+",
+        )
+        .expect("write lockfile");
+
+        let manifest_path = dir.path().join("pod.yaml");
+        std::fs::write(&manifest_path, POD_TWO_VOLUMES).expect("write manifest");
+
+        let (printer, cap) =
+            Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+        cmd_deploy(
+            &printer,
+            &[manifest_path.to_string_lossy().to_string()],
+            &lock_path.to_string_lossy(),
+            false,
+            "default",
+        )
+        .expect("print-mode deploy must succeed");
+        drop(printer);
+
+        let json = cap
+            .json()
+            .expect("structured deploy must emit a Doc payload");
+        assert_eq!(
+            json["applied"], false,
+            "print mode must report applied=false"
+        );
+        let rewrites = json["rewrites"].as_array().expect("rewrites array");
+        assert_eq!(rewrites.len(), 1, "exactly one reference pinned");
+        let manifest = json["manifest"].as_str().expect("manifest field");
+        assert!(
+            manifest.contains("registry.jarvispro.io/gome/server@sha256:deadbeef"),
+            "manifest must carry the pinned digest ref: {manifest}"
+        );
+        assert!(
+            !manifest.contains("gome/server:abc"),
+            "manifest must NOT still carry the old tag ref: {manifest}"
+        );
+    }
+
+    #[test]
+    fn cmd_deploy_skips_trailing_empty_yaml_document() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lock_path = dir.path().join("cfgd-images.lock");
+        std::fs::write(
+            &lock_path,
+            "\
+images:
+  - reference: registry.jarvispro.io/gome/server:abc
+    digest: sha256:deadbeef
+    pinned: registry.jarvispro.io/gome/server@sha256:deadbeef
+    lockedAt: 2026-01-01T00:00:00Z
+",
+        )
+        .expect("write lockfile");
+
+        // A trailing `---` produces a blank (null) document that must be dropped.
+        let manifest_path = dir.path().join("pod.yaml");
+        std::fs::write(&manifest_path, format!("{POD_TWO_VOLUMES}---\n")).expect("write manifest");
+
+        let (printer, cap) =
+            Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+        cmd_deploy(
+            &printer,
+            &[manifest_path.to_string_lossy().to_string()],
+            &lock_path.to_string_lossy(),
+            false,
+            "default",
+        )
+        .expect("print-mode deploy must succeed");
+        drop(printer);
+
+        let json = cap
+            .json()
+            .expect("structured deploy must emit a Doc payload");
+        let manifest = json["manifest"].as_str().expect("manifest field");
+        assert!(
+            !manifest.contains("null"),
+            "empty trailing document must not serialize to a `null` doc: {manifest}"
+        );
+        // Exactly one real document survives, so no leading `---\n` join separator.
+        assert!(
+            !manifest.starts_with("---"),
+            "single real doc must not be joined with a separator: {manifest}"
+        );
+    }
+
+    #[test]
+    fn cmd_deploy_empty_filenames_errors_filename_required() {
+        let (printer, _cap) = Printer::for_test_doc();
+        let err = cmd_deploy(&printer, &[], "cfgd-images.lock", false, "default")
+            .expect_err("no filenames must Err");
+        drop(printer);
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("handler returns CliErrorMeta");
+        assert_eq!(meta.error_kind, "filename_required");
+    }
+
+    #[test]
+    fn cmd_deploy_missing_lockfile_errors_empty_lockfile() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest_path = dir.path().join("pod.yaml");
+        std::fs::write(&manifest_path, POD_TWO_VOLUMES).expect("write manifest");
+        let missing_lock = dir.path().join("nope.lock");
+
+        let (printer, _cap) = Printer::for_test_doc();
+        let err = cmd_deploy(
+            &printer,
+            &[manifest_path.to_string_lossy().to_string()],
+            &missing_lock.to_string_lossy(),
+            false,
+            "default",
+        )
+        .expect_err("missing/empty lockfile must Err");
+        drop(printer);
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("handler returns CliErrorMeta");
+        assert_eq!(meta.error_kind, "empty_lockfile");
+        assert!(
+            meta.extras["lock"].is_string(),
+            "meta must carry lock payload: {:?}",
+            meta.extras
+        );
+    }
+
+    fn write_valid_lockfile(dir: &std::path::Path) -> std::path::PathBuf {
+        let lock_path = dir.join("cfgd-images.lock");
+        std::fs::write(
+            &lock_path,
+            "\
+images:
+  - reference: registry.jarvispro.io/gome/server:abc
+    digest: sha256:deadbeef
+    pinned: registry.jarvispro.io/gome/server@sha256:deadbeef
+    lockedAt: 2026-01-01T00:00:00Z
+",
+        )
+        .expect("write lockfile");
+        lock_path
+    }
+
+    #[test]
+    fn cmd_deploy_unreadable_manifest_errors_read_failed() {
+        // A non-empty lockfile loads fine, so the handler proceeds to read the
+        // manifest — pointing at a path that does not exist must surface
+        // error_kind "read_failed" with the offending file in the payload.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lock_path = write_valid_lockfile(dir.path());
+        let missing_manifest = dir.path().join("does-not-exist.yaml");
+
+        let (printer, _cap) = Printer::for_test_doc();
+        let err = cmd_deploy(
+            &printer,
+            &[missing_manifest.to_string_lossy().to_string()],
+            &lock_path.to_string_lossy(),
+            false,
+            "default",
+        )
+        .expect_err("unreadable manifest must Err");
+        drop(printer);
+
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("handler returns CliErrorMeta");
+        assert_eq!(meta.error_kind, "read_failed");
+        assert!(
+            meta.extras["file"].is_string(),
+            "meta must carry the offending file: {:?}",
+            meta.extras
+        );
+    }
+
+    #[test]
+    fn cmd_deploy_malformed_yaml_errors_parse_failed() {
+        // Valid lockfile, but the manifest is not parseable YAML — the
+        // per-document deserialize must surface error_kind "parse_failed".
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lock_path = write_valid_lockfile(dir.path());
+        let manifest_path = dir.path().join("bad.yaml");
+        // Unbalanced flow mapping — serde_yaml cannot deserialize this.
+        std::fs::write(&manifest_path, "{ key: [unterminated\n").expect("write manifest");
+
+        let (printer, _cap) = Printer::for_test_doc();
+        let err = cmd_deploy(
+            &printer,
+            &[manifest_path.to_string_lossy().to_string()],
+            &lock_path.to_string_lossy(),
+            false,
+            "default",
+        )
+        .expect_err("malformed YAML must Err");
+        drop(printer);
+
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("handler returns CliErrorMeta");
+        assert_eq!(meta.error_kind, "parse_failed");
+        assert!(
+            meta.extras["file"].is_string(),
+            "meta must carry the offending file: {:?}",
+            meta.extras
+        );
+    }
+
+    #[test]
+    fn cmd_deploy_human_mode_prints_pinned_manifest_to_stdout() {
+        // In a non-structured (table) printer, the rewritten manifest is written
+        // raw to stdout so it can be piped to `kubectl apply -f -`. Assert the
+        // captured stdout carries the pinned digest ref and not the old tag.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lock_path = write_valid_lockfile(dir.path());
+        let manifest_path = dir.path().join("pod.yaml");
+        std::fs::write(&manifest_path, POD_TWO_VOLUMES).expect("write manifest");
+
+        let (printer, out) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        assert!(
+            !printer.is_structured(),
+            "for_test_at must yield a non-structured (table) printer"
+        );
+        cmd_deploy(
+            &printer,
+            &[manifest_path.to_string_lossy().to_string()],
+            &lock_path.to_string_lossy(),
+            false,
+            "default",
+        )
+        .expect("human-mode deploy must succeed");
+        drop(printer);
+
+        let printed = out.lock().expect("lock capture").clone();
+        assert!(
+            printed.contains("registry.jarvispro.io/gome/server@sha256:deadbeef"),
+            "stdout must carry the pinned digest ref: {printed}"
+        );
+        assert!(
+            !printed.contains("gome/server:abc"),
+            "stdout must not carry the old mutable tag: {printed}"
+        );
+        // The unmapped volume passes through untouched.
+        assert!(
+            printed.contains("registry.jarvispro.io/other/thing:xyz"),
+            "unmapped volume reference must survive verbatim: {printed}"
+        );
+    }
+}

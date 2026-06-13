@@ -60,6 +60,7 @@ missing from the table.
 | daemon_uninstall             | no                | one-shot teardown; no scripting consumer           |
 | debug                        | no                | kubectl plugin dev-tooling                         |
 | decide                       | no                | interactive flow                                   |
+| deploy                       | yes               | image-volume pin rewrites consumed by CI           |
 | diff                         | yes               | drift reporting                                    |
 | diff_module                  | yes               | per-module drift reporting                         |
 | doctor                       | no                | dev-tooling                                        |

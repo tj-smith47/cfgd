@@ -40,6 +40,63 @@ pub fn run_argv_inherit(argv: &[String]) -> std::io::Result<i32> {
     Ok(status.code().unwrap_or(1))
 }
 
+/// Run `kubectl` with `args`, feeding `stdin_data` on stdin and inheriting
+/// stdout/stderr. Used by `kubectl cfgd deploy --apply` to `kubectl apply -f -`.
+pub fn run_with_stdin(args: &[&str], stdin_data: &str) -> std::io::Result<i32> {
+    run_with_stdin_at("kubectl", args, stdin_data)
+}
+
+/// Inner of [`run_with_stdin`] parameterized on the binary so the success path
+/// is testable (drive it through `/usr/bin/cat`) without kubectl on PATH.
+fn run_with_stdin_at(bin: &str, args: &[&str], stdin_data: &str) -> std::io::Result<i32> {
+    use std::io::Write;
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+    // Drop of the borrowed handle after write closes the pipe → the child sees EOF.
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(stdin_data.as_bytes())?;
+    }
+    let status = child.wait()?;
+    Ok(status.code().unwrap_or(1))
+}
+
+/// Like [`run_with_stdin`] but CAPTURES stdout (returned) while inheriting stderr.
+/// Used by `kubectl cfgd deploy --apply` in structured-output mode so kubectl's
+/// human output doesn't corrupt the JSON/YAML stream.
+pub fn run_with_stdin_capture_stdout(
+    args: &[&str],
+    stdin_data: &str,
+) -> std::io::Result<(i32, String)> {
+    run_with_stdin_capture_stdout_at("kubectl", args, stdin_data)
+}
+
+/// Inner of [`run_with_stdin_capture_stdout`] parameterized on the binary so the
+/// success path is testable (drive it through `/usr/bin/cat`) without kubectl on PATH.
+fn run_with_stdin_capture_stdout_at(
+    bin: &str,
+    args: &[&str],
+    stdin_data: &str,
+) -> std::io::Result<(i32, String)> {
+    use std::io::Write;
+    let mut child = Command::new(bin)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()?;
+    // Drop of the borrowed handle after write closes the pipe → the child sees EOF.
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(stdin_data.as_bytes())?;
+    }
+    let out = child.wait_with_output()?;
+    let code = out.status.code().unwrap_or(1);
+    Ok((code, String::from_utf8_lossy(&out.stdout).into_owned()))
+}
+
 #[cfg(test)]
 #[cfg(unix)]
 mod tests {
@@ -112,5 +169,54 @@ mod tests {
         }
         let err = result.expect_err("kubectl missing from PATH → Err");
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn run_with_stdin_at_cat_consumes_stdin_and_exits_zero() {
+        // `cat` reads stdin until EOF then exits 0 — proves the pipe is wired
+        // and closed correctly so the child does not hang waiting on more input.
+        if !std::path::Path::new("/usr/bin/cat").exists() {
+            return;
+        }
+        let code = run_with_stdin_at("/usr/bin/cat", &[], "hello from cfgd\n")
+            .expect("spawn cat with piped stdin");
+        assert_eq!(code, 0, "cat must exit 0 after consuming stdin");
+    }
+
+    #[test]
+    fn run_with_stdin_at_nonexistent_binary_returns_not_found() {
+        let err = run_with_stdin_at("/no/such/binary-cfgd-test", &[], "data")
+            .expect_err("spawn of missing binary must Err");
+        assert!(
+            matches!(err.kind(), std::io::ErrorKind::NotFound),
+            "expected NotFound, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn run_with_stdin_capture_stdout_at_cat_round_trips_stdin() {
+        // `cat` echoes its stdin to stdout — the capture variant must return
+        // exit 0 AND the exact bytes back, proving stdout is piped (not inherited).
+        if !std::path::Path::new("/usr/bin/cat").exists() {
+            return;
+        }
+        let (code, out) =
+            run_with_stdin_capture_stdout_at("/usr/bin/cat", &[], "hello from cfgd\n")
+                .expect("spawn cat with piped stdin+stdout");
+        assert_eq!(code, 0, "cat must exit 0");
+        assert_eq!(
+            out, "hello from cfgd\n",
+            "captured stdout must round-trip stdin"
+        );
+    }
+
+    #[test]
+    fn run_with_stdin_capture_stdout_at_nonexistent_binary_returns_not_found() {
+        let err = run_with_stdin_capture_stdout_at("/no/such/binary-cfgd-test", &[], "data")
+            .expect_err("spawn of missing binary must Err");
+        assert!(
+            matches!(err.kind(), std::io::ErrorKind::NotFound),
+            "expected NotFound, got {err:?}"
+        );
     }
 }

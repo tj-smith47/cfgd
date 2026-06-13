@@ -113,6 +113,32 @@ enum PluginCommand {
         #[arg(long, short, default_value = cfgd_core::CFGD_SYSTEM_NAMESPACE)]
         namespace: String,
     },
+    /// Pin image-volume references to packed digests, then print or apply
+    #[command(
+        long_about = "Rewrite `volumes[].image.reference` fields in Kubernetes manifests to the \
+                      pinned digests recorded in an image lockfile (written by `cfgd image pack --lock`), \
+                      so you deploy the exact bytes you packed instead of a mutable tag.\n\n\
+                      By default the rewritten manifest is printed to stdout (pipe it to kubectl). \
+                      Pass --apply to run `kubectl apply` directly.\n\n\
+                      Examples:\n  \
+                      kubectl cfgd deploy -f pod.yaml\n  \
+                      kubectl cfgd deploy -f pod.yaml --lock cfgd-images.lock | kubectl apply -f -\n  \
+                      kubectl cfgd deploy -f pod.yaml -f svc.yaml --apply -n prod"
+    )]
+    Deploy {
+        /// Manifest file(s) to process (repeatable)
+        #[arg(long = "filename", short = 'f', value_name = "FILE")]
+        filename: Vec<String>,
+        /// Image lockfile to read pinned digests from
+        #[arg(long, value_name = "FILE", default_value = crate::cli::image::lockfile::DEFAULT_IMAGE_LOCKFILE)]
+        lock: String,
+        /// Apply the rewritten manifests via `kubectl apply` instead of printing
+        #[arg(long)]
+        apply: bool,
+        /// Namespace passed to `kubectl apply` (only used with --apply)
+        #[arg(long, short, default_value = "default")]
+        namespace: String,
+    },
 }
 
 const MODULE_REQUIRED: &str = "at least one --module is required";
@@ -191,6 +217,12 @@ pub fn plugin_main() -> anyhow::Result<()> {
         } => cmd_inject(&printer, &resource, &module, &namespace),
         PluginCommand::Status => cmd_status(&printer),
         PluginCommand::Version { namespace } => cmd_version(&printer, &namespace),
+        PluginCommand::Deploy {
+            filename,
+            lock,
+            apply,
+            namespace,
+        } => cmd_deploy(&printer, &filename, &lock, apply, &namespace),
     };
 
     // The plugin has its OWN entry (main.rs returns here directly, never reaching the
@@ -478,6 +510,187 @@ pub fn cmd_inject(
                 "patched": [name],
             })),
     );
+
+    Ok(())
+}
+
+/// Recursively walk a YAML value, pinning every `image.reference` string that
+/// matches a key in `map` to its pinned digest. Walks generically (not by path)
+/// so it catches `volumes[].image.reference` at any depth — bare-Pod
+/// `spec.volumes[]` and workload `spec.template.spec.volumes[]` alike. Each
+/// rewrite is recorded as `(old, new)` in `rewrites`.
+fn rewrite_image_refs(
+    value: &mut serde_yaml::Value,
+    map: &std::collections::HashMap<&str, &str>,
+    rewrites: &mut Vec<(String, String)>,
+) {
+    match value {
+        serde_yaml::Value::Mapping(mapping) => {
+            // If this mapping has an `image` whose value is itself a mapping with
+            // a string `reference` present in the map, pin it in place.
+            if let Some(serde_yaml::Value::Mapping(image_map)) =
+                mapping.get_mut(serde_yaml::Value::from("image"))
+                && let Some(serde_yaml::Value::String(reference)) =
+                    image_map.get_mut(serde_yaml::Value::from("reference"))
+                && let Some(pinned) = map.get(reference.as_str())
+            {
+                let old = reference.clone();
+                *reference = (*pinned).to_string();
+                rewrites.push((old, (*pinned).to_string()));
+            }
+            for (_k, v) in mapping.iter_mut() {
+                rewrite_image_refs(v, map, rewrites);
+            }
+        }
+        serde_yaml::Value::Sequence(seq) => {
+            for v in seq.iter_mut() {
+                rewrite_image_refs(v, map, rewrites);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Rewrite image-volume references in Kubernetes manifests to their pinned
+/// digests from an image lockfile, then print (default) or `kubectl apply` them.
+pub fn cmd_deploy(
+    printer: &Printer,
+    filenames: &[String],
+    lock: &str,
+    apply: bool,
+    namespace: &str,
+) -> anyhow::Result<()> {
+    use std::path::Path;
+
+    use serde::Deserialize;
+
+    if filenames.is_empty() {
+        return Err(crate::cli::cli_error(
+            "deploy",
+            "filename_required",
+            "at least one -f/--filename is required".to_string(),
+            serde_json::json!({ "lock": lock }),
+        ));
+    }
+
+    let lockfile = crate::cli::image::lockfile::load_images_lockfile(Path::new(lock))?;
+    if lockfile.images.is_empty() {
+        return Err(crate::cli::cli_error(
+            "deploy",
+            "empty_lockfile",
+            format!(
+                "image lockfile '{lock}' has no entries to pin against — run `cfgd image pack --lock {lock}` first"
+            ),
+            serde_json::json!({ "lock": lock }),
+        ));
+    }
+
+    let map: std::collections::HashMap<&str, &str> = lockfile
+        .images
+        .iter()
+        .map(|e| (e.reference.as_str(), e.pinned.as_str()))
+        .collect();
+
+    let mut rewrites: Vec<(String, String)> = Vec::new();
+    let mut out_docs: Vec<String> = Vec::new();
+
+    for filename in filenames {
+        let content = std::fs::read_to_string(filename).map_err(|e| {
+            crate::cli::cli_error(
+                "deploy",
+                "read_failed",
+                format!("failed to read manifest '{filename}': {e}"),
+                serde_json::json!({ "file": filename, "lock": lock }),
+            )
+        })?;
+
+        for doc in serde_yaml::Deserializer::from_str(&content) {
+            let mut value = serde_yaml::Value::deserialize(doc).map_err(|e| {
+                crate::cli::cli_error(
+                    "deploy",
+                    "parse_failed",
+                    format!("failed to parse YAML in '{filename}': {e}"),
+                    serde_json::json!({ "file": filename }),
+                )
+            })?;
+            // A trailing/blank YAML document round-trips to Null — skip it so it
+            // neither inflates the document count nor emits a stray `null` doc.
+            if value.is_null() {
+                continue;
+            }
+            rewrite_image_refs(&mut value, &map, &mut rewrites);
+            out_docs.push(serde_yaml::to_string(&value)?);
+        }
+    }
+
+    let yaml_out = out_docs.join("---\n");
+    let rewrites_json: Vec<serde_json::Value> = rewrites
+        .iter()
+        .map(|(old, new)| serde_json::json!({ "reference": old, "pinned": new }))
+        .collect();
+
+    if apply {
+        let apply_args = ["apply", "-n", namespace, "-f", "-"];
+        // In structured mode kubectl's human output must NOT reach stdout (it
+        // would corrupt the JSON/YAML stream), so capture it and fold it into
+        // the Doc payload. In human mode inherited stdout is the right behavior.
+        let (code, kubectl_output) = if printer.is_structured() {
+            let (code, out) =
+                super::kubectl::run_with_stdin_capture_stdout(&apply_args, &yaml_out)?;
+            (code, Some(out))
+        } else {
+            let code = super::kubectl::run_with_stdin(&apply_args, &yaml_out)?;
+            (code, None)
+        };
+        if code != 0 {
+            return Err(crate::cli::cli_error(
+                "deploy",
+                "apply_failed",
+                format!("kubectl apply failed with exit code {code}"),
+                serde_json::json!({ "exitCode": code, "namespace": namespace }),
+            ));
+        }
+        let mut payload = serde_json::json!({
+            "files": filenames,
+            "rewrites": rewrites_json,
+            "applied": true,
+            "namespace": namespace,
+        });
+        if let Some(out) = kubectl_output {
+            payload["kubectlOutput"] = serde_json::Value::String(out);
+        }
+        printer.emit(
+            Doc::new()
+                .status(
+                    Role::Ok,
+                    format!(
+                        "Applied {} document(s), {} reference(s) pinned",
+                        out_docs.len(),
+                        rewrites.len()
+                    ),
+                )
+                .with_data(payload),
+        );
+        return Ok(());
+    }
+
+    if printer.is_structured() {
+        // Structured consumers get the manifest as a field — do NOT also dump
+        // raw YAML, which would corrupt the JSON/YAML output stream.
+        printer.emit(Doc::new().with_data(serde_json::json!({
+            "files": filenames,
+            "rewrites": rewrites_json,
+            "applied": false,
+            "manifest": yaml_out,
+        })));
+    } else {
+        // Human/table mode: stdout must stay a clean pipe (pipeable to kubectl),
+        // so the rewrite summary goes to STDERR via tracing, never stdout.
+        for (old, new) in &rewrites {
+            tracing::info!(reference = %old, pinned = %new, "pinned image reference");
+        }
+        printer.data_line(&yaml_out);
+    }
 
     Ok(())
 }
