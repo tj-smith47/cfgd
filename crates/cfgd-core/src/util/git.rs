@@ -161,6 +161,33 @@ pub fn detect_default_branch(repo_dir: &std::path::Path) -> Option<String> {
     None
 }
 
+/// Run a local git command in the current working directory and return its
+/// trimmed stdout, or `None` if git is missing or the command exits non-zero.
+fn git_output_cwd(args: &[&str]) -> Option<String> {
+    let output = git_cmd_local().args(args).output().ok()?;
+    if output.status.success() {
+        Some(stdout_lossy_trimmed(&output))
+    } else {
+        None
+    }
+}
+
+/// Detect the `origin` remote URL of the git repository containing the current
+/// working directory. Returns `None` outside a repo or when no `origin` is set.
+///
+/// Used to stamp provenance (source repo) into pushed artifacts.
+pub fn detect_git_remote() -> Option<String> {
+    git_output_cwd(&["remote", "get-url", "origin"])
+}
+
+/// Detect the `HEAD` commit SHA of the git repository containing the current
+/// working directory. Returns `None` outside a repo or in a repo with no commits.
+///
+/// Used to stamp provenance (source commit) into pushed artifacts.
+pub fn detect_git_head() -> Option<String> {
+    git_output_cwd(&["rev-parse", "HEAD"])
+}
+
 /// Git credential callback for git2 — handles SSH and HTTPS authentication.
 /// Used by sources/, modules/, and daemon/ for all git operations.
 ///
@@ -381,5 +408,87 @@ mod tests {
     fn try_git_cmd_fails_on_invalid_subcommand() {
         let ok = try_git_cmd(None, &["not-a-real-subcommand-xyz"], "invalid-cmd", None);
         assert!(!ok, "invalid git subcommand should return false");
+    }
+
+    mod cwd_provenance {
+        use serial_test::serial;
+
+        use super::{detect_git_head, detect_git_remote};
+        use crate::test_helpers::CwdGuard;
+
+        fn git(dir: &std::path::Path, args: &[&str]) {
+            let status = super::super::git_cmd_local()
+                .args(args)
+                .current_dir(dir)
+                .status()
+                .expect("git command");
+            assert!(status.success(), "git {args:?} failed");
+        }
+
+        #[test]
+        #[serial]
+        fn detect_git_remote_returns_url_when_origin_configured() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            git(dir.path(), &["init"]);
+            git(
+                dir.path(),
+                &[
+                    "remote",
+                    "add",
+                    "origin",
+                    "https://example.test/owner/repo.git",
+                ],
+            );
+            let _cwd = CwdGuard::set(dir.path()).expect("cwd guard");
+            assert_eq!(
+                detect_git_remote().as_deref(),
+                Some("https://example.test/owner/repo.git"),
+                "should echo configured remote URL"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn detect_git_remote_returns_none_in_fresh_repo() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            git(dir.path(), &["init"]);
+            let _cwd = CwdGuard::set(dir.path()).expect("cwd guard");
+            assert!(
+                detect_git_remote().is_none(),
+                "fresh repo with no remote must return None"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn detect_git_head_returns_sha_after_initial_commit() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            git(dir.path(), &["init"]);
+            git(dir.path(), &["config", "user.email", "test@example.com"]);
+            git(dir.path(), &["config", "user.name", "Test"]);
+            std::fs::write(dir.path().join("f.txt"), b"hello").expect("write file");
+            git(dir.path(), &["add", "."]);
+            git(dir.path(), &["commit", "-m", "init"]);
+
+            let _cwd = CwdGuard::set(dir.path()).expect("cwd guard");
+            let sha = detect_git_head().expect("HEAD must be Some after initial commit");
+            assert_eq!(sha.len(), 40, "HEAD SHA must be 40 hex chars: {sha}");
+            assert!(
+                sha.chars().all(|c| c.is_ascii_hexdigit()),
+                "HEAD SHA must be hex: {sha}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn detect_git_head_returns_none_in_empty_repo() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            git(dir.path(), &["init"]);
+            let _cwd = CwdGuard::set(dir.path()).expect("cwd guard");
+            assert!(
+                detect_git_head().is_none(),
+                "empty repo has no HEAD, must return None"
+            );
+        }
     }
 }

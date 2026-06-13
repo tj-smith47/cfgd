@@ -109,6 +109,8 @@ External call sites do not change: `cfgd_core::utc_now_iso8601(...)`, `cfgd_core
 - `git_cmd_local()` — build a `Command` for git suitable for LOCAL-only operations (`config` get/set, `tag -v`, `add`, `commit`, `rev-parse`, `log`). Sets `GIT_TERMINAL_PROMPT=0` (still desirable — prevents prompt-driven hang if git unexpectedly tries to authenticate) but skips `GIT_SSH_COMMAND` since no network is involved. Use instead of `std::process::Command::new("git")` for every local git invocation
 - `try_git_cmd(url, args, label, ssh_policy)` — run via `git_cmd_safe`, return `true` on success; use before every git2 network operation as CLI-first fallback to prevent SSH hangs
 - `detect_default_branch(repo_dir)` — best-effort detection of `origin/HEAD` then local `HEAD`; returns `Option<String>`
+- `detect_git_remote()` — `origin` remote URL of the repo containing the CWD; `None` outside a repo / no origin. Stamps artifact provenance; use for any push/pack command instead of re-deriving
+- `detect_git_head()` — `HEAD` commit SHA of the repo containing the CWD; `None` outside a repo / no commits. Stamps artifact provenance
 - `git_ssh_credentials(url, username, allowed)` — git2 credential callback (SSH agent + HTTPS helper)
 
 ## Sigstore / cosign
