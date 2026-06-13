@@ -97,7 +97,6 @@ pub fn cmd_source_remove(
         } else {
             disposition = "purged";
         }
-        // If "Remove all", they'll be cleaned up when state is updated
     } else if keep_all {
         for r in &resources {
             state.upsert_managed_resource(
@@ -114,6 +113,16 @@ pub fn cmd_source_remove(
     } else {
         // No managed resources — neutral disposition
         managed_count = 0;
+    }
+
+    // Purged resources must be deleted from state, not merely relabeled —
+    // otherwise the rows linger orphaned under the now-removed source name
+    // (their `source` column still points at a config_source that no longer
+    // exists). "kept" already re-owns them to `local` above.
+    if disposition == "purged" {
+        for r in &resources {
+            state.remove_managed_resource(&r.resource_type, &r.resource_id)?;
+        }
     }
 
     // Remove from config
@@ -168,4 +177,328 @@ pub fn cmd_source_remove(
             })),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cfgd_core::output::{OutputFormat, PromptAnswer};
+
+    const SEED_CONFIG: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: acme\n      origin:\n        type: Git\n        url: https://example.com/acme/dev.git\n        branch: main\n";
+
+    /// Build a Cli whose config + state dirs both live under `dir`, with a
+    /// seeded config containing one source named "acme".
+    fn cli_with_seeded_config(dir: &std::path::Path) -> Cli {
+        let config_path = dir.join("cfgd.yaml");
+        std::fs::write(&config_path, SEED_CONFIG).expect("write seed config");
+        let state_dir = dir.join("state");
+        std::fs::create_dir_all(&state_dir).expect("mk state dir");
+        Cli {
+            config: config_path,
+            profile: None,
+            verbose: 0,
+            quiet: true,
+            no_color: true,
+            output: crate::cli::OutputFormatArg(OutputFormat::Table),
+            list_envelope: false,
+            jsonpath: None,
+            state_dir: Some(state_dir),
+            config_dir: None,
+            cache_dir: None,
+            runtime_dir: None,
+            system: false,
+            command: None,
+        }
+    }
+
+    fn config_has_source(cli: &Cli, name: &str) -> bool {
+        let cfg = config::load_config(&cli.config).expect("reload config");
+        cfg.spec.sources.iter().any(|s| s.name == name)
+    }
+
+    #[test]
+    fn remove_rejects_keep_all_and_remove_all_together() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_with_seeded_config(dir.path());
+        let (printer, _cap) = Printer::for_test_doc();
+
+        let err = cmd_source_remove(&cli, &printer, "acme", true, true, false)
+            .expect_err("keep_all + remove_all must conflict");
+        drop(printer);
+
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("must return CliErrorMeta");
+        assert_eq!(meta.error_kind, "conflicting_flags", "got: {meta:?}");
+    }
+
+    #[test]
+    fn remove_errors_when_source_absent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_with_seeded_config(dir.path());
+        let (printer, _cap) = Printer::for_test_doc();
+
+        let err = cmd_source_remove(&cli, &printer, "nope", false, false, false)
+            .expect_err("absent source must error");
+        drop(printer);
+
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("must return CliErrorMeta");
+        assert_eq!(meta.error_kind, "not_found", "got: {meta:?}");
+        assert_eq!(meta.name, "nope");
+    }
+
+    #[test]
+    fn remove_absent_source_with_ignore_not_found_emits_noop_doc() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_with_seeded_config(dir.path());
+        let (printer, cap) = Printer::for_test_doc();
+
+        cmd_source_remove(&cli, &printer, "nope", false, false, true)
+            .expect("--ignore-not-found must succeed for an absent source");
+        drop(printer);
+
+        let doc = cap.json().expect("no-op removal must emit a Doc");
+        assert_eq!(doc["name"], "nope");
+        assert_eq!(doc["kind"], "source");
+        assert_eq!(doc["removed"], false);
+        assert_eq!(doc["reason"], "not_found");
+    }
+
+    #[test]
+    fn remove_clean_source_reports_neutral_disposition_and_mutates_config() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_with_seeded_config(dir.path());
+        assert!(
+            config_has_source(&cli, "acme"),
+            "precondition: source present"
+        );
+        let (printer, cap) = Printer::for_test_doc();
+
+        cmd_source_remove(&cli, &printer, "acme", false, false, false)
+            .expect("removing a source with no managed resources must succeed");
+        drop(printer);
+
+        let doc = cap.json().expect("removal must emit a Doc");
+        assert_eq!(doc["name"], "acme");
+        assert_eq!(doc["managedResources"], 0, "no managed resources → count 0");
+        assert_eq!(
+            doc["disposition"], "removed",
+            "no-resource removal is the neutral 'removed' disposition"
+        );
+        assert_eq!(doc["cancelled"], false);
+
+        assert!(
+            !config_has_source(&cli, "acme"),
+            "source must be gone from on-disk config after removal"
+        );
+    }
+
+    #[test]
+    fn remove_with_keep_all_transfers_resources_to_local() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_with_seeded_config(dir.path());
+
+        // Seed state: one managed resource owned by source "acme".
+        let state = open_state_store(cli.state_dir.as_deref()).expect("open state");
+        state
+            .upsert_config_source(
+                "acme",
+                "https://example.com/acme/dev.git",
+                "main",
+                None,
+                None,
+                None,
+            )
+            .expect("seed config_source");
+        state
+            .upsert_managed_resource("file", "/etc/foo", "acme", None, None)
+            .expect("seed managed resource");
+        drop(state);
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_source_remove(&cli, &printer, "acme", true, false, false)
+            .expect("keep_all removal must succeed");
+        drop(printer);
+
+        let doc = cap.json().expect("removal must emit a Doc");
+        assert_eq!(
+            doc["disposition"], "kept",
+            "--keep-all must report 'kept' disposition"
+        );
+        assert_eq!(
+            doc["managedResources"], 1,
+            "managed resource count must reflect the one seeded resource"
+        );
+
+        // The resource must now be re-owned by "local", not "acme".
+        let state = open_state_store(cli.state_dir.as_deref()).expect("reopen state");
+        let res = state.managed_resources().expect("list resources");
+        let foo = res
+            .iter()
+            .find(|r| r.resource_id == "/etc/foo")
+            .expect("resource must still exist after keep-all");
+        assert_eq!(
+            foo.source, "local",
+            "keep-all must transfer the resource to local ownership"
+        );
+        assert!(
+            state
+                .managed_resources_by_source("acme")
+                .expect("query by source")
+                .is_empty(),
+            "no resource may remain owned by the removed source"
+        );
+    }
+
+    #[test]
+    fn remove_with_remove_all_reports_purged_disposition() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_with_seeded_config(dir.path());
+
+        let state = open_state_store(cli.state_dir.as_deref()).expect("open state");
+        state
+            .upsert_config_source(
+                "acme",
+                "https://example.com/acme/dev.git",
+                "main",
+                None,
+                None,
+                None,
+            )
+            .expect("seed config_source");
+        state
+            .upsert_managed_resource("file", "/etc/bar", "acme", None, None)
+            .expect("seed managed resource");
+        drop(state);
+
+        let (printer, cap) = Printer::for_test_doc();
+        cmd_source_remove(&cli, &printer, "acme", false, true, false)
+            .expect("remove_all removal must succeed");
+        drop(printer);
+
+        let doc = cap.json().expect("removal must emit a Doc");
+        assert_eq!(
+            doc["disposition"], "purged",
+            "--remove-all must report 'purged' disposition"
+        );
+        assert_eq!(doc["managedResources"], 1);
+
+        // The config_source row is removed.
+        let state = open_state_store(cli.state_dir.as_deref()).expect("reopen state");
+        assert!(
+            state
+                .config_sources()
+                .expect("list config sources")
+                .iter()
+                .all(|s| s.name != "acme"),
+            "remove must delete the config_source row for the source"
+        );
+        // --remove-all ("purged") must delete the managed_resource rows owned by
+        // the source, not leave them orphaned under a config_source that no
+        // longer exists.
+        let still_owned = state
+            .managed_resources_by_source("acme")
+            .expect("query by source");
+        assert!(
+            still_owned.is_empty(),
+            "--remove-all must purge the managed_resource rows, leaving none owned by the removed source"
+        );
+        // And nothing should have been silently re-homed to local either.
+        assert!(
+            state
+                .managed_resources_by_source("local")
+                .expect("query local")
+                .iter()
+                .all(|r| r.resource_id != "/etc/bar"),
+            "purged resources must not reappear under local management"
+        );
+    }
+
+    #[test]
+    fn remove_interactive_cancel_leaves_source_intact() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_with_seeded_config(dir.path());
+
+        let state = open_state_store(cli.state_dir.as_deref()).expect("open state");
+        state
+            .upsert_config_source(
+                "acme",
+                "https://example.com/acme/dev.git",
+                "main",
+                None,
+                None,
+                None,
+            )
+            .expect("seed config_source");
+        state
+            .upsert_managed_resource("file", "/etc/baz", "acme", None, None)
+            .expect("seed managed resource");
+        drop(state);
+
+        // Seed the interactive select to choose the "Cancel" option.
+        let (printer, cap) =
+            Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Select(
+                "Cancel (abort remove)".into(),
+            )]);
+        cmd_source_remove(&cli, &printer, "acme", false, false, false)
+            .expect("cancel path must return Ok");
+        drop(printer);
+
+        let doc = cap.json().expect("cancel must emit a Doc");
+        assert_eq!(doc["cancelled"], true, "cancel must set cancelled=true");
+        assert_eq!(doc["managedResources"], 1);
+
+        assert!(
+            config_has_source(&cli, "acme"),
+            "cancel must leave the source in config untouched"
+        );
+    }
+
+    #[test]
+    fn remove_interactive_keep_choice_transfers_to_local() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_with_seeded_config(dir.path());
+
+        let state = open_state_store(cli.state_dir.as_deref()).expect("open state");
+        state
+            .upsert_config_source(
+                "acme",
+                "https://example.com/acme/dev.git",
+                "main",
+                None,
+                None,
+                None,
+            )
+            .expect("seed config_source");
+        state
+            .upsert_managed_resource("file", "/etc/keepme", "acme", None, None)
+            .expect("seed managed resource");
+        drop(state);
+
+        let (printer, cap) =
+            Printer::for_test_doc_with_prompt_responses(vec![PromptAnswer::Select(
+                "Keep all (resources become locally managed)".into(),
+            )]);
+        cmd_source_remove(&cli, &printer, "acme", false, false, false)
+            .expect("keep choice must return Ok");
+        drop(printer);
+
+        let doc = cap.json().expect("keep must emit a Doc");
+        assert_eq!(doc["disposition"], "kept");
+        assert_eq!(doc["cancelled"], false);
+        assert!(
+            !config_has_source(&cli, "acme"),
+            "keep still removes the source from config (resources transferred, not the subscription)"
+        );
+
+        let state = open_state_store(cli.state_dir.as_deref()).expect("reopen state");
+        let res = state.managed_resources().expect("list");
+        let r = res
+            .iter()
+            .find(|r| r.resource_id == "/etc/keepme")
+            .expect("resource retained");
+        assert_eq!(r.source, "local", "keep choice transfers resource to local");
+    }
 }
