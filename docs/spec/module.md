@@ -521,4 +521,16 @@ spec:
 ```
 
 Remote module versions are pinned in `modules.lock` at the config root. Run `cfgd module update`
-to fetch new versions. Unpinned modules always resolve to the registry's default branch HEAD.
+to fetch new versions.
+
+A registry reference without an explicit `@tag` (e.g. `acme/nvim`) resolves to the module's
+**latest published git tag** — module versions are git tags named `<module>/<version>` — never a
+branch HEAD. If the registry exposes no tags for that module, the reference is rejected with
+`No tags found for module '<name>' in registry '<registry>'`. To pin a specific version, append the
+tag: `acme/nvim@v1.4.0`.
+
+cfgd never tracks a floating branch for a remote module. A direct git URL carrying a branch ref
+(`...repo.git?ref=main`) — or one with no ref at all — is rejected with *"remote module requires a
+pinned ref (tag or commit) — branch tracking is not allowed for security"*. This is a deliberate
+supply-chain safety choice: a branch ref lets an upstream push silently change the code cfgd
+executes, so only immutable refs (tags or commit SHAs) are accepted.
