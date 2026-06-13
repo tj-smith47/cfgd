@@ -574,17 +574,25 @@ pub fn cmd_module_update_local(
         }
     }
 
-    // Remove post-apply scripts
+    // Remove post-apply scripts. A module with no scripts block at all still
+    // reports the script as not-found, matching the env/alias remove paths
+    // rather than silently no-opping.
     for script in &remove_post_apply {
-        if let Some(ref mut scripts) = doc.spec.scripts {
-            let before = scripts.post_apply.len();
-            scripts.post_apply.retain(|e| e.run_str() != script);
-            if scripts.post_apply.len() < before {
-                printer.status_simple(Role::Ok, format!("Removed post-apply script: {}", script));
-                changes += 1;
-            } else {
-                printer.status_simple(Role::Warn, format!("Script '{}' not found", script));
-            }
+        let removed = doc
+            .spec
+            .scripts
+            .as_mut()
+            .map(|scripts| {
+                let before = scripts.post_apply.len();
+                scripts.post_apply.retain(|e| e.run_str() != script);
+                scripts.post_apply.len() < before
+            })
+            .unwrap_or(false);
+        if removed {
+            printer.status_simple(Role::Ok, format!("Removed post-apply script: {}", script));
+            changes += 1;
+        } else {
+            printer.status_simple(Role::Warn, format!("Script '{}' not found", script));
         }
     }
 
