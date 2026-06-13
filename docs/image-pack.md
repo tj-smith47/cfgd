@@ -262,9 +262,15 @@ the lockfile are left untouched.
 (Fulcio/OIDC + Rekor) — suitable for CI with a GitHub Actions OIDC token. Pass
 `--key <path>` to use a local signing key instead.
 
-`--attest` generates a SLSA provenance statement (repo URL + git HEAD, detected from
+`--attest` generates a SLSA v1 provenance predicate (repo URL + git HEAD, detected from
 the working tree's `origin` remote and `HEAD` ref) and attaches it as a cosign
-attestation. Requires cosign on `PATH`.
+attestation of type `slsaprovenance1`. Requires cosign on `PATH`. Verify it with the
+matching type:
+
+```bash
+cosign verify-attestation --key cosign.pub --type slsaprovenance1 \
+  registry.example.com/myapp:v1.4.0
+```
 
 Both flags are independent and can be combined: `--sign --attest` signs the image
 manifest and attaches the provenance in one invocation.

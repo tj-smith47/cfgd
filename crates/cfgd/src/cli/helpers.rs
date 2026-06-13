@@ -808,15 +808,14 @@ pub(in crate::cli) fn sign_and_attest(
         let repo = repo.unwrap_or_else(|| "unknown".to_string());
         let commit = commit.unwrap_or_else(|| "unknown".to_string());
 
-        let provenance = cfgd_core::oci::generate_slsa_provenance(artifact, digest, &repo, &commit)
-            .map_err(|e| {
-                cli_error(
-                    artifact,
-                    "attest_failed",
-                    cfgd_core::output::collapse_to_subject_line(&e),
-                    serde_json::json!({ "artifact": artifact, "digest": digest, "step": "provenance" }),
-                )
-            })?;
+        let provenance = cfgd_core::oci::generate_slsa_provenance(&repo, &commit).map_err(|e| {
+            cli_error(
+                artifact,
+                "attest_failed",
+                cfgd_core::output::collapse_to_subject_line(&e),
+                serde_json::json!({ "artifact": artifact, "digest": digest, "step": "provenance" }),
+            )
+        })?;
         let tmp = tempfile::NamedTempFile::new()?;
         cfgd_core::atomic_write_str(tmp.path(), &provenance)?;
         cfgd_core::oci::attach_attestation(artifact, &tmp.path().display().to_string(), key)

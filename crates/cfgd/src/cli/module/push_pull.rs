@@ -196,7 +196,7 @@ pub fn cmd_module_pull(
     }
 
     if verify_attestation {
-        cfgd_core::oci::verify_attestation(artifact_ref, "slsaprovenance", &verify_opts).map_err(
+        cfgd_core::oci::verify_attestation(artifact_ref, "slsaprovenance1", &verify_opts).map_err(
             |e| {
                 crate::cli::cli_error(
                     artifact_ref,

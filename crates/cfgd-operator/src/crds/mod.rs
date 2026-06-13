@@ -414,7 +414,7 @@ pub struct ModuleStatus {
     /// Digest of the cosign signature (if verified).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature_digest: Option<String>,
-    /// Attestation types found on the artifact (e.g. "slsaprovenance").
+    /// Attestation types found on the artifact (e.g. "slsaprovenance1").
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attestations: Vec<String>,
     #[serde(default)]

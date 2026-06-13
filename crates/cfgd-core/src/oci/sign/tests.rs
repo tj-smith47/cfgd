@@ -65,7 +65,7 @@ fn attach_attestation_rejects_when_cosign_missing() {
 fn verify_attestation_rejects_keyless_without_identity() {
     let result = verify_attestation(
         "ghcr.io/test/mod:v1",
-        "slsaprovenance",
+        "slsaprovenance1",
         &VerifyOptions {
             key: None,
             identity: None,
@@ -84,7 +84,7 @@ fn verify_attestation_rejects_when_cosign_missing() {
     }
     let result = verify_attestation(
         "ghcr.io/test/mod:v1",
-        "slsaprovenance",
+        "slsaprovenance1",
         &VerifyOptions {
             key: Some("cosign.pub"),
             identity: None,
@@ -96,17 +96,49 @@ fn verify_attestation_rejects_when_cosign_missing() {
 
 #[test]
 fn generate_slsa_provenance_creates_valid_json() {
-    let prov = generate_slsa_provenance(
-        "ghcr.io/test/mod:v1",
-        "sha256:abc123",
-        "https://github.com/myorg/myrepo",
-        "abc123def",
-    )
-    .unwrap();
+    let prov = generate_slsa_provenance("https://github.com/myorg/myrepo", "abc123def").unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&prov).unwrap();
-    assert_eq!(parsed["predicateType"], "https://slsa.dev/provenance/v1");
-    assert_eq!(parsed["subject"][0]["name"], "ghcr.io/test/mod:v1");
-    assert_eq!(parsed["subject"][0]["digest"]["sha256"], "abc123");
+    // A SLSA v1 predicate BODY: buildDefinition + runDetails at the top level.
+    assert_eq!(
+        parsed["buildDefinition"]["buildType"],
+        "https://cfgd.io/ModuleBuild/v1"
+    );
+    assert_eq!(
+        parsed["runDetails"]["builder"]["id"],
+        "https://cfgd.io/builder/v1"
+    );
+}
+
+#[test]
+fn generate_slsa_provenance_is_predicate_body_not_statement() {
+    // Regression guard: the payload must be the predicate BODY only — never a full
+    // in-toto Statement. `cosign attest --type slsaprovenance1` builds the statement
+    // and sets the subject itself; emitting `_type`/`predicateType`/`subject` here
+    // makes cosign read the outer object as the predicate and reject it with
+    // "provenance predicate: required field builder missing".
+    let prov = generate_slsa_provenance("https://github.com/org/repo", "deadbeef").unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&prov).unwrap();
+    assert!(
+        parsed.get("_type").is_none(),
+        "predicate body must not carry the statement's _type: {parsed}"
+    );
+    assert!(
+        parsed.get("predicateType").is_none(),
+        "predicate body must not carry predicateType: {parsed}"
+    );
+    assert!(
+        parsed.get("subject").is_none(),
+        "predicate body must not carry subject (cosign sets it): {parsed}"
+    );
+    assert!(
+        parsed.get("predicate").is_none(),
+        "must not be wrapped in a `predicate` key — it IS the predicate: {parsed}"
+    );
+    // The builder field cosign requires lives at predicate-top-level runDetails.
+    assert!(
+        parsed["runDetails"]["builder"]["id"].is_string(),
+        "builder.id must be present at the predicate top level: {parsed}"
+    );
 }
 
 // --- VerifyOptions ---
@@ -289,57 +321,20 @@ fn apply_verify_args_key_takes_precedence_over_keyless() {
     assert_eq!(args, vec!["--key", "my.pub", "--insecure-ignore-tlog=true"]);
 }
 
-// --- generate_slsa_provenance: digest prefix stripping ---
-
-#[test]
-fn generate_slsa_provenance_strips_sha256_prefix() {
-    let prov = generate_slsa_provenance(
-        "ghcr.io/test/mod:v1",
-        "sha256:deadbeef1234",
-        "https://github.com/org/repo",
-        "abc123",
-    )
-    .unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&prov).unwrap();
-    // The sha256 prefix should be stripped from the digest value
-    assert_eq!(parsed["subject"][0]["digest"]["sha256"], "deadbeef1234");
-}
-
-#[test]
-fn generate_slsa_provenance_handles_plain_digest() {
-    let prov = generate_slsa_provenance(
-        "ghcr.io/test/mod:v1",
-        "plaindigest",
-        "https://github.com/org/repo",
-        "abc123",
-    )
-    .unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&prov).unwrap();
-    // When no sha256: prefix, the whole string is used
-    assert_eq!(parsed["subject"][0]["digest"]["sha256"], "plaindigest");
-}
-
 #[test]
 fn generate_slsa_provenance_includes_source_info() {
-    let prov = generate_slsa_provenance(
-        "ghcr.io/myorg/mymod:v2",
-        "sha256:abcdef",
-        "https://github.com/myorg/myrepo",
-        "deadbeef123",
-    )
-    .unwrap();
+    let prov = generate_slsa_provenance("https://github.com/myorg/myrepo", "deadbeef123").unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&prov).unwrap();
-    assert_eq!(parsed["_type"], "https://in-toto.io/Statement/v1");
     assert_eq!(
-        parsed["predicate"]["buildDefinition"]["externalParameters"]["source"]["uri"],
+        parsed["buildDefinition"]["externalParameters"]["source"]["uri"],
         "https://github.com/myorg/myrepo"
     );
     assert_eq!(
-        parsed["predicate"]["buildDefinition"]["externalParameters"]["source"]["digest"]["gitCommit"],
+        parsed["buildDefinition"]["externalParameters"]["source"]["digest"]["gitCommit"],
         "deadbeef123"
     );
     assert_eq!(
-        parsed["predicate"]["runDetails"]["builder"]["id"],
+        parsed["runDetails"]["builder"]["id"],
         "https://cfgd.io/builder/v1"
     );
 }
@@ -348,70 +343,35 @@ fn generate_slsa_provenance_includes_source_info() {
 
 #[test]
 fn generate_slsa_provenance_complete_structure() {
-    let prov = generate_slsa_provenance(
-        "ghcr.io/org/mod:v2.0.0",
-        "sha256:deadbeef1234",
-        "https://github.com/org/config",
-        "abc123def456",
-    )
-    .unwrap();
+    let prov = generate_slsa_provenance("https://github.com/org/config", "abc123def456").unwrap();
 
     let parsed: serde_json::Value = serde_json::from_str(&prov).unwrap();
 
-    // Top-level fields
+    // The predicate body's buildDefinition.
     assert_eq!(
-        parsed["_type"], "https://in-toto.io/Statement/v1",
-        "should be in-toto v1 statement"
-    );
-    assert_eq!(
-        parsed["predicateType"], "https://slsa.dev/provenance/v1",
-        "should be SLSA v1 provenance"
-    );
-
-    // Subject
-    let subject = &parsed["subject"][0];
-    assert_eq!(subject["name"], "ghcr.io/org/mod:v2.0.0");
-    assert_eq!(
-        subject["digest"]["sha256"], "deadbeef1234",
-        "sha256: prefix should be stripped"
-    );
-
-    // Predicate
-    let predicate = &parsed["predicate"];
-    assert_eq!(
-        predicate["buildDefinition"]["buildType"],
+        parsed["buildDefinition"]["buildType"],
         "https://cfgd.io/ModuleBuild/v1"
     );
     assert_eq!(
-        predicate["buildDefinition"]["externalParameters"]["source"]["uri"],
+        parsed["buildDefinition"]["externalParameters"]["source"]["uri"],
         "https://github.com/org/config"
     );
     assert_eq!(
-        predicate["buildDefinition"]["externalParameters"]["source"]["digest"]["gitCommit"],
+        parsed["buildDefinition"]["externalParameters"]["source"]["digest"]["gitCommit"],
         "abc123def456"
     );
     assert_eq!(
-        predicate["runDetails"]["builder"]["id"],
+        parsed["runDetails"]["builder"]["id"],
         "https://cfgd.io/builder/v1"
     );
 
-    // Metadata timestamps should be non-empty
-    let invocation_id = predicate["runDetails"]["metadata"]["invocationId"]
+    // Metadata timestamps should be non-empty.
+    let invocation_id = parsed["runDetails"]["metadata"]["invocationId"]
         .as_str()
         .unwrap();
     assert!(
         !invocation_id.is_empty(),
         "invocationId should not be empty"
-    );
-}
-
-#[test]
-fn generate_slsa_provenance_bare_digest() {
-    let prov = generate_slsa_provenance("ghcr.io/test:v1", "abcdef", "repo", "commit").unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&prov).unwrap();
-    assert_eq!(
-        parsed["subject"][0]["digest"]["sha256"], "abcdef",
-        "bare digest should pass through as-is"
     );
 }
 
@@ -677,8 +637,9 @@ mod fake_cosign {
             "argv pins predicate path: {argv}"
         );
         assert!(
-            argv.contains("--type slsaprovenance"),
-            "argv pins predicate type: {argv}"
+            argv.contains("--type slsaprovenance1"),
+            "argv pins the SLSA v1 predicate type (v0.2 'slsaprovenance' validates a \
+             different schema and rejects the v1 body): {argv}"
         );
         assert!(
             argv.contains("--key /keys/cosign.key"),

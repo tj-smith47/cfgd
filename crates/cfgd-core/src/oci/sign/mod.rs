@@ -122,41 +122,39 @@ pub fn verify_signature(artifact_ref: &str, opts: &VerifyOptions<'_>) -> Result<
 // Attestations (SLSA provenance / in-toto)
 // ---------------------------------------------------------------------------
 
-/// Generate a SLSA v1 provenance predicate JSON for a module artifact.
+/// Generate a SLSA v1 provenance *predicate body* for an artifact.
+///
+/// Returns only the predicate (`buildDefinition` + `runDetails`), NOT a full
+/// in-toto Statement. `cosign attest --type slsaprovenance1` wraps this body into
+/// the statement itself and sets the `subject` from the artifact's resolved
+/// digest. Emitting a full statement here (with its own `_type`/`predicateType`/
+/// `subject`) makes cosign read that outer object as the predicate and reject it
+/// with "provenance predicate: required field builder missing", because the
+/// statement's top level has no `builder`.
 pub fn generate_slsa_provenance(
-    artifact_ref: &str,
-    digest: &str,
     source_repo: &str,
     source_commit: &str,
 ) -> Result<String, OciError> {
     let now = crate::utc_now_iso8601();
     serde_json::to_string_pretty(&serde_json::json!({
-        "_type": "https://in-toto.io/Statement/v1",
-        "predicateType": "https://slsa.dev/provenance/v1",
-        "subject": [{
-            "name": artifact_ref,
-            "digest": {
-                "sha256": crate::strip_sha256_prefix(digest),
-            }
-        }],
-        "predicate": {
-            "buildDefinition": {
-                "buildType": "https://cfgd.io/ModuleBuild/v1",
-                "externalParameters": {
-                    "source": {
-                        "uri": source_repo,
-                        "digest": { "gitCommit": source_commit },
-                    }
-                },
-            },
-            "runDetails": {
-                "builder": {
-                    "id": "https://cfgd.io/builder/v1",
-                },
-                "metadata": {
-                    "invocationId": &now,
-                    "startedOn": &now,
+        "buildDefinition": {
+            "buildType": "https://cfgd.io/ModuleBuild/v1",
+            "externalParameters": {
+                "source": {
+                    "uri": source_repo,
+                    "digest": { "gitCommit": source_commit },
                 }
+            },
+            "internalParameters": {},
+            "resolvedDependencies": [],
+        },
+        "runDetails": {
+            "builder": {
+                "id": "https://cfgd.io/builder/v1",
+            },
+            "metadata": {
+                "invocationId": &now,
+                "startedOn": &now,
             }
         }
     }))
@@ -191,7 +189,7 @@ pub fn attach_attestation(
     cmd.arg("--predicate")
         .arg(attestation_path)
         .arg("--type")
-        .arg("slsaprovenance")
+        .arg("slsaprovenance1")
         .arg(artifact_ref);
 
     let output = cmd.output().map_err(|e| OciError::AttestationError {
