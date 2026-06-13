@@ -53,6 +53,15 @@ pub const MEDIA_TYPE_OCI_IMAGE_CONFIG: &str = "application/vnd.oci.image.config.
 /// `volume.image` — as opposed to the cfgd-custom `vnd.cfgd.module.layer.*` type.
 pub const MEDIA_TYPE_OCI_IMAGE_LAYER: &str = "application/vnd.oci.image.layer.v1.tar+gzip";
 
+/// OCI image index (multi-platform manifest list) media type. A base image may be
+/// served as an index whose `manifests` array points at per-platform image manifests.
+pub(super) const MEDIA_TYPE_OCI_INDEX: &str = "application/vnd.oci.image.index.v1+json";
+
+/// Docker manifest-list media type — the Docker v2 equivalent of an OCI image index.
+/// Registries serving Docker-format multi-platform images use this type.
+pub(super) const MEDIA_TYPE_DOCKER_MANIFEST_LIST: &str =
+    "application/vnd.docker.distribution.manifest.list.v2+json";
+
 // ---------------------------------------------------------------------------
 // OCI Reference
 // ---------------------------------------------------------------------------
@@ -222,6 +231,37 @@ pub(super) struct OciDescriptor {
     pub(super) size: u64,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub(super) annotations: HashMap<String, String>,
+}
+
+// ---------------------------------------------------------------------------
+// OCI Image Index types (multi-platform manifest list)
+// ---------------------------------------------------------------------------
+
+/// A parsed OCI image index / Docker manifest list. Only the `manifests` array
+/// is consumed — enough to select the per-platform image manifest a base ref
+/// resolves to when layering a new config layer on top of it.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct OciImageIndex {
+    pub(super) manifests: Vec<OciIndexEntry>,
+}
+
+/// One entry in an image index: the digest of a platform-specific manifest plus
+/// the platform it targets (absent for non-image entries like attestations).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct OciIndexEntry {
+    pub(super) digest: String,
+    #[serde(default)]
+    pub(super) platform: Option<OciPlatform>,
+}
+
+/// The `platform` object of an index entry. `os`/`architecture` are matched
+/// against the resolved pack target to pick the right base manifest.
+#[derive(Debug, Deserialize)]
+pub(super) struct OciPlatform {
+    pub(super) os: String,
+    pub(super) architecture: String,
 }
 
 // ---------------------------------------------------------------------------

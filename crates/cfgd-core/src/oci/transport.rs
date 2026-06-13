@@ -1,11 +1,18 @@
 // Authenticated HTTP transport: 401-with-Bearer-challenge token exchange,
 // blob upload (HEAD existence check + monolithic POST/PUT flow).
 
+use std::io::Read;
+
 use crate::errors::OciError;
 use crate::sha256_digest;
 
 use super::OciReference;
 use super::auth::{RegistryAuth, get_bearer_token};
+
+/// Maximum blob size accepted by [`fetch_blob`] (512 MiB). Mirrors the cap in
+/// `pull_module`; a base image layer larger than this is rejected rather than
+/// risking OOM from a malicious or mis-sized descriptor.
+const MAX_BLOB_SIZE: u64 = 512 * 1024 * 1024;
 
 /// Make an authenticated request. Handles 401 → token exchange flow.
 pub(super) fn authenticated_request(
@@ -194,6 +201,108 @@ pub(super) fn upload_blob(
 
     tracing::debug!(digest = %digest, size = data.len(), "blob uploaded");
     Ok(digest)
+}
+
+/// Download a blob's bytes from `oci_ref`'s repository.
+///
+/// GETs `{api_base}/{repo}/blobs/{digest}` and reads the body (capped at
+/// [`MAX_BLOB_SIZE`]). The caller is responsible for digest verification; this
+/// helper only transports bytes.
+pub(super) fn fetch_blob(
+    agent: &ureq::Agent,
+    oci_ref: &OciReference,
+    auth: Option<&RegistryAuth>,
+    digest: &str,
+) -> Result<Vec<u8>, OciError> {
+    let blob_url = format!(
+        "{}/{}/blobs/{}",
+        oci_ref.api_base(),
+        oci_ref.repository,
+        digest
+    );
+
+    let resp = authenticated_request(
+        agent,
+        "GET",
+        &blob_url,
+        auth,
+        Some("application/octet-stream"),
+        None,
+        None,
+    )
+    .map_err(|e| OciError::BlobNotFound {
+        digest: format!("{digest}: {e}"),
+    })?;
+
+    let mut data = Vec::new();
+    resp.into_reader()
+        .take(MAX_BLOB_SIZE + 1024)
+        .read_to_end(&mut data)?;
+
+    if data.len() as u64 > MAX_BLOB_SIZE {
+        return Err(OciError::RequestFailed {
+            message: format!("blob {digest} exceeds maximum allowed size ({MAX_BLOB_SIZE} bytes)"),
+        });
+    }
+
+    Ok(data)
+}
+
+/// Ensure the blob `digest` is present in the destination repository `dst`.
+///
+/// Resolution order:
+/// 1. HEAD `{dst}/blobs/{digest}` — if it returns 200, the blob is already
+///    present and nothing more is done.
+/// 2. Same-registry cross-repo mount — when `src.registry == dst.registry`,
+///    POST `{dst}/blobs/uploads/?mount=<digest>&from=<src repo>`. A `201`
+///    means the registry mounted the blob directly (no bytes transferred).
+///    Any other status falls through to the copy path.
+/// 3. Copy — `fetch_blob(src)` → verify `sha256_digest(bytes) == digest`
+///    (guards against a registry serving the wrong content) → `upload_blob(dst)`.
+pub(super) fn ensure_blob_present(
+    agent: &ureq::Agent,
+    src: &OciReference,
+    dst: &OciReference,
+    auth_src: Option<&RegistryAuth>,
+    auth_dst: Option<&RegistryAuth>,
+    digest: &str,
+    media_type: &str,
+) -> Result<(), OciError> {
+    // 1. Already present in the destination repo?
+    let head_url = format!("{}/{}/blobs/{}", dst.api_base(), dst.repository, digest);
+    if authenticated_request(agent, "HEAD", &head_url, auth_dst, None, None, None).is_ok() {
+        tracing::debug!(digest = %digest, "base blob already present in target, skipping");
+        return Ok(());
+    }
+
+    // 2. Same-registry cross-repo mount — avoids transferring the bytes.
+    if src.registry == dst.registry {
+        let mount_url = format!(
+            "{}/{}/blobs/uploads/?mount={}&from={}",
+            dst.api_base(),
+            dst.repository,
+            digest,
+            src.repository
+        );
+        if let Ok(resp) =
+            authenticated_request(agent, "POST", &mount_url, auth_dst, None, None, Some(&[]))
+            && resp.status() == 201
+        {
+            tracing::debug!(digest = %digest, "base blob mounted from source repo");
+            return Ok(());
+        }
+    }
+
+    // 3. Copy: fetch from source, verify, re-upload to destination.
+    let bytes = fetch_blob(agent, src, auth_src, digest)?;
+    let actual = sha256_digest(&bytes);
+    if actual != digest {
+        return Err(OciError::RequestFailed {
+            message: format!("base blob digest mismatch: expected {digest}, got {actual}"),
+        });
+    }
+    upload_blob(agent, dst, auth_dst, &bytes, media_type)?;
+    Ok(())
 }
 
 #[cfg(test)]
