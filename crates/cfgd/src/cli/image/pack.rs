@@ -18,6 +18,8 @@ pub struct ImagePackOptions<'a> {
     pub sign: bool,
     pub key: Option<&'a str>,
     pub attest: bool,
+    pub base: Option<&'a str>,
+    pub lock: Option<&'a str>,
 }
 
 pub fn cmd_image_pack(
@@ -38,6 +40,8 @@ pub fn cmd_image_pack(
         sign,
         key,
         attest,
+        base,
+        lock,
     } = opts;
 
     if !dir.exists() {
@@ -88,6 +92,7 @@ pub fn cmd_image_pack(
         labels: parsed_labels,
         annotations: parsed_annotations,
         platform: platform.map(|s| s.to_string()),
+        base: base.map(|s| s.to_string()),
     };
 
     printer.heading("Pack Image");
@@ -95,6 +100,9 @@ pub fn cmd_image_pack(
         ("Directory".to_string(), dir.posix().to_string()),
         ("Artifact".to_string(), artifact.to_string()),
     ];
+    if let Some(b) = base {
+        header.push(("Base".to_string(), b.to_string()));
+    }
     if let Some(p) = platform {
         header.push(("Platform".to_string(), p.to_string()));
     }
@@ -119,14 +127,27 @@ pub fn cmd_image_pack(
         attested: attestation_attached,
     } = crate::cli::helpers::sign_and_attest(printer, artifact, &digest, key, sign, attest)?;
 
+    if let Some(lock_path) = lock {
+        let entry = cfgd_core::config::ImageLockEntry {
+            reference: artifact.to_string(),
+            digest: digest.clone(),
+            pinned: crate::cli::image::lockfile::pinned_reference(artifact, &digest)?,
+            locked_at: cfgd_core::utc_now_iso8601(),
+        };
+        crate::cli::image::lockfile::update_image_lock_entry(Path::new(lock_path), entry)?;
+        printer.kv("Locked", lock_path);
+    }
+
     printer.status_simple(Role::Ok, format!("Packed and pushed {artifact}"));
 
     printer.emit(Doc::new().with_data(serde_json::json!({
         "artifact": artifact,
         "digest": digest,
         "platform": platform_str,
+        "base": base,
         "signed": signed,
         "attested": attestation_attached,
+        "locked": lock,
     })));
 
     Ok(())
@@ -163,6 +184,8 @@ mod tests {
             sign: false,
             key: None,
             attest: false,
+            base: None,
+            lock: None,
         }
     }
 
@@ -323,7 +346,7 @@ mod tests {
     mod with_mock_registry {
         use cfgd_core::output::Printer;
 
-        use super::super::cmd_image_pack;
+        use super::super::{ImagePackOptions, cmd_image_pack};
         use super::no_opts;
 
         #[test]
@@ -401,6 +424,95 @@ mod tests {
                 doc.get("attested").and_then(|v| v.as_bool()),
                 Some(false),
                 "attested must be false: {doc:?}"
+            );
+        }
+
+        #[test]
+        fn cmd_image_pack_with_lock_writes_pinned_entry() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            std::fs::write(dir.path().join("config.yaml"), "key: value\n")
+                .expect("write config file");
+            let lock_dir = tempfile::tempdir().expect("lock tempdir");
+            let lock_path = lock_dir.path().join("cfgd-images.lock");
+
+            let mut server = mockito::Server::new();
+            let registry = server.url().trim_start_matches("http://").to_string();
+            let artifact = format!("{}/test/image:v1", registry);
+            let upload_location = format!("{}/v2/test/image/blobs/uploads/up-id", server.url());
+            let manifest_digest =
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+            server
+                .mock(
+                    "HEAD",
+                    mockito::Matcher::Regex(r"/v2/test/image/blobs/sha256:.*".to_string()),
+                )
+                .with_status(404)
+                .expect_at_least(2)
+                .create();
+            server
+                .mock("POST", "/v2/test/image/blobs/uploads/")
+                .with_status(202)
+                .with_header("Location", &upload_location)
+                .expect_at_least(2)
+                .create();
+            server
+                .mock(
+                    "PUT",
+                    mockito::Matcher::Regex(
+                        r"/v2/test/image/blobs/uploads/up-id\?digest=sha256:.*".to_string(),
+                    ),
+                )
+                .with_status(201)
+                .expect_at_least(2)
+                .create();
+            server
+                .mock("PUT", "/v2/test/image/manifests/v1")
+                .with_status(201)
+                .with_header("Docker-Content-Digest", manifest_digest)
+                .create();
+
+            let lock_str = lock_path.to_string_lossy().into_owned();
+            let (printer, cap) = Printer::for_test_doc();
+            cmd_image_pack(
+                &printer,
+                dir.path(),
+                &artifact,
+                ImagePackOptions {
+                    lock: Some(&lock_str),
+                    ..no_opts()
+                },
+            )
+            .expect("pack with --lock should succeed with mock registry");
+            drop(printer);
+
+            // The on-disk lockfile must carry exactly one pinned entry linking the
+            // artifact tag reference to the resolved digest in pinned-digest form.
+            let lockfile = crate::cli::image::lockfile::load_images_lockfile(&lock_path)
+                .expect("lockfile must load");
+            assert_eq!(lockfile.images.len(), 1, "exactly one locked entry");
+            let entry = &lockfile.images[0];
+            assert_eq!(
+                entry.reference, artifact,
+                "entry reference must be the tag ref"
+            );
+            assert!(
+                entry.digest.starts_with("sha256:"),
+                "entry digest must be a sha256 digest: {}",
+                entry.digest
+            );
+            assert_eq!(
+                entry.pinned,
+                format!("{registry}/test/image@{}", entry.digest),
+                "pinned must be the <registry>/<repo>@<digest> form"
+            );
+
+            // The emitted success Doc must report the lockfile path under "locked".
+            let doc = cap.json().expect("handler must emit a Doc payload");
+            assert_eq!(
+                doc.get("locked").and_then(|v| v.as_str()),
+                Some(lock_str.as_str()),
+                "doc must carry the lockfile path under 'locked': {doc:?}"
             );
         }
     }

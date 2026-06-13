@@ -68,6 +68,7 @@ $ cfgd image pack ./out registry.example.com/myapp/server:v1.4.0 \
 | `--sign` | Sign the pushed image with cosign (keyless by default) |
 | `--key <path>` | Signing key path (used with `--sign` or `--attest`) |
 | `--attest` | Attach a SLSA provenance attestation |
+| `--lock [<file>]` | Record the resolved digest in an image lockfile (default `cfgd-images.lock`) for `kubectl cfgd deploy` |
 
 Global `-o` / `--output` applies: `json`, `yaml`, `jsonpath`, and `go-template` are all
 supported. See [Global flags](configuration.md#global-flags).
@@ -183,6 +184,77 @@ both `kube-apiserver-arg` (master) and `kubelet-arg` (all nodes), then restart k
 Verify with `kubectl get --raw /metrics | grep 'kubernetes_feature_enabled{name="ImageVolume"}'`.
 In Kubernetes 1.33 the gate is beta but off by default; it is expected to be on-by-default
 in a future release.
+
+## Closed-loop pinning: `--lock` + `kubectl cfgd deploy`
+
+Pinning the exact bytes you packed is a two-step loop. `cfgd image pack --lock` records the
+resolved digest in an image lockfile; `kubectl cfgd deploy` rewrites the mutable
+`volumes[].image.reference` tag in your manifests to that pinned digest — so you deploy the
+artifact you tested, not whatever the tag happens to point at later.
+
+### Step 1 — pack with `--lock`
+
+```bash
+$ cfgd image pack ./out \
+    registry.jarvispro.io/gome/server:abc123 \
+    --entrypoint /app/gome --lock
+Pack Image
+  Directory  ./out
+  Artifact   registry.jarvispro.io/gome/server:abc123
+  Digest     sha256:3a7b9c4d...
+  Locked     cfgd-images.lock
+✓ Packed and pushed registry.jarvispro.io/gome/server:abc123
+```
+
+`--lock` writes (or upserts, matched by `reference`) an entry into `cfgd-images.lock` in the
+current directory. Pass a path (`--lock path/to/file`) to override the location.
+
+```yaml
+# cfgd-images.lock
+images:
+  - reference: registry.jarvispro.io/gome/server:abc123
+    digest: sha256:3a7b9c4d...
+    pinned: registry.jarvispro.io/gome/server@sha256:3a7b9c4d...
+    lockedAt: 2026-06-13T12:00:00Z
+```
+
+### Step 2 — deploy with the pinned digest
+
+`kubectl cfgd deploy` reads the lockfile and rewrites every `volumes[].image.reference`
+whose tag matches a locked entry — at any depth, so bare-Pod `spec.volumes[]` and workload
+`spec.template.spec.volumes[]` shapes both get pinned. By default it prints the rewritten
+manifest to stdout (pipe it to `kubectl`); `--apply` runs `kubectl apply` directly.
+
+```bash
+# Print mode (default) — stdout is a clean pipe
+$ kubectl cfgd deploy -f pod.yaml --lock cfgd-images.lock | kubectl apply -f -
+
+# Apply directly into a namespace
+$ kubectl cfgd deploy -f pod.yaml --apply -n prod
+✓ Applied 1 document(s), 1 reference(s) pinned
+```
+
+The rewrite, before and after:
+
+```yaml
+# pod.yaml (as authored — mutable tag)
+volumes:
+  - name: app
+    image:
+      reference: registry.jarvispro.io/gome/server:abc123
+```
+
+```yaml
+# emitted by `kubectl cfgd deploy` (pinned to packed bytes)
+volumes:
+  - name: app
+    image:
+      reference: registry.jarvispro.io/gome/server@sha256:3a7b9c4d...
+```
+
+In `-o json` mode the rewritten manifest is returned as a `manifest` field alongside a
+`rewrites` array, so CI can consume the pin set programmatically. References not present in
+the lockfile are left untouched.
 
 ## Signing and attestation
 

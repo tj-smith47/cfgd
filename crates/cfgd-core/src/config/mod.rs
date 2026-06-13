@@ -9,6 +9,7 @@ mod enum_de;
 mod ai;
 mod compliance;
 mod daemon;
+mod image_lock;
 mod module;
 mod origin;
 mod parse;
@@ -31,6 +32,7 @@ pub use daemon::{
     AutoApplyPolicyConfig, DaemonConfig, DriftPolicy, PolicyAction, ReconcileConfig,
     ReconcilePatch, ReconcilePatchKind,
 };
+pub use image_lock::{ImageLockEntry, ImagesLockfile};
 pub use module::{
     ModuleDocument, ModuleFileEntry, ModuleLockEntry, ModuleLockfile, ModuleMetadata,
     ModulePackageEntry, ModuleRegistryEntry, ModuleSpec, ScriptEntry, ScriptShell, parse_module,

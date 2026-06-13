@@ -854,6 +854,13 @@ pub enum ImageCommand {
         /// Attach SLSA provenance attestation after push
         #[arg(long)]
         attest: bool,
+        /// Base image to layer the packed directory on top of (e.g. ghcr.io/org/app:v1)
+        #[arg(long, value_name = "REF")]
+        base: Option<String>,
+        /// Record the resolved digest in an image lockfile for `kubectl cfgd deploy`
+        /// (default file: cfgd-images.lock). Pass a path to override.
+        #[arg(long, value_name = "FILE", num_args = 0..=1, default_missing_value = crate::cli::image::lockfile::DEFAULT_IMAGE_LOCKFILE)]
+        lock: Option<String>,
     },
 }
 
@@ -2001,6 +2008,8 @@ pub fn execute(
                 sign,
                 key,
                 attest,
+                base,
+                lock,
             } => image::cmd_image_pack(
                 printer,
                 dir,
@@ -2017,6 +2026,8 @@ pub fn execute(
                     sign: *sign,
                     key: key.as_deref(),
                     attest: *attest,
+                    base: base.as_deref(),
+                    lock: lock.as_deref(),
                 },
             ),
         },
