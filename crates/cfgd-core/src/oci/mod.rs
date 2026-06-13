@@ -13,14 +13,16 @@ use crate::errors::OciError;
 mod archive;
 mod auth;
 mod build;
+mod pack;
 mod pull;
 mod push;
 mod sign;
 mod transport;
 
-pub use archive::{create_tar_gz, extract_tar_gz};
+pub use archive::{create_tar_gz, create_tar_gz_with_diff_id, extract_tar_gz};
 pub use auth::RegistryAuth;
 pub use build::{build_module, detect_container_runtime};
+pub use pack::{PackOptions, PackOutcome, pack_image};
 pub use pull::{SignaturePolicy, pull_module};
 pub use push::{
     current_platform, parse_platform_target, push_module, push_module_multiplatform,
@@ -40,6 +42,16 @@ pub const MEDIA_TYPE_MODULE_LAYER: &str = "application/vnd.cfgd.module.layer.v1.
 
 /// OCI image manifest v2 media type.
 pub(super) const MEDIA_TYPE_OCI_MANIFEST: &str = "application/vnd.oci.image.manifest.v1+json";
+
+/// Standard OCI image config media type (the JSON blob whose digest becomes the manifest's config
+/// descriptor). Use this when building a standard mountable image (e.g. `cfgd image pack`), as
+/// opposed to the cfgd-custom `vnd.cfgd.module.config.*` type used for module artifacts.
+pub const MEDIA_TYPE_OCI_IMAGE_CONFIG: &str = "application/vnd.oci.image.config.v1+json";
+
+/// Standard OCI gzipped-layer media type. Identifies a layer as a gzip-compressed tar archive
+/// conforming to the OCI Image Layer spec, making the image mountable as a Kubernetes
+/// `volume.image` — as opposed to the cfgd-custom `vnd.cfgd.module.layer.*` type.
+pub const MEDIA_TYPE_OCI_IMAGE_LAYER: &str = "application/vnd.oci.image.layer.v1.tar+gzip";
 
 // ---------------------------------------------------------------------------
 // OCI Reference
@@ -210,6 +222,58 @@ pub(super) struct OciDescriptor {
     pub(super) size: u64,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub(super) annotations: HashMap<String, String>,
+}
+
+// ---------------------------------------------------------------------------
+// OCI Image Config types (image-config JSON blob, per OCI Image Layout Spec)
+// ---------------------------------------------------------------------------
+
+/// OCI image config blob — the JSON whose digest populates the manifest's `config` descriptor.
+///
+/// Top-level keys are **lowercase/snake_case** per the OCI Image Config Spec
+/// (`architecture`, `os`, `created`, `config`, `rootfs`). Do NOT apply
+/// `rename_all = "camelCase"` here; the field names already match the required JSON keys.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageConfig {
+    pub architecture: String,
+    pub os: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<ImageRuntimeConfig>,
+    pub rootfs: RootFs,
+}
+
+/// The `rootfs` section of an OCI image config.
+///
+/// Uses snake_case keys (`type`, `diff_ids`) as specified by the OCI Image Config Spec.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RootFs {
+    /// Always `"layers"` for a standard OCI image.
+    #[serde(rename = "type")]
+    pub fs_type: String,
+    /// Layer diff IDs (`sha256:<hex>` of the uncompressed tar). Serializes as `"diff_ids"`.
+    pub diff_ids: Vec<String>,
+}
+
+/// The inner runtime `config` object within an OCI image config blob.
+///
+/// Keys are **PascalCase** per the OCI Runtime Config Spec (`Entrypoint`, `Cmd`, `Env`, etc.).
+/// Each field carries an explicit `rename` so the Rust `snake_case` field names map correctly.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ImageRuntimeConfig {
+    #[serde(rename = "Entrypoint", skip_serializing_if = "Option::is_none")]
+    pub entrypoint: Option<Vec<String>>,
+    #[serde(rename = "Cmd", skip_serializing_if = "Option::is_none")]
+    pub cmd: Option<Vec<String>>,
+    #[serde(rename = "Env", skip_serializing_if = "Option::is_none")]
+    pub env: Option<Vec<String>>,
+    #[serde(rename = "WorkingDir", skip_serializing_if = "Option::is_none")]
+    pub working_dir: Option<String>,
+    #[serde(rename = "User", skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    #[serde(rename = "Labels", skip_serializing_if = "Option::is_none")]
+    pub labels: Option<std::collections::BTreeMap<String, String>>,
 }
 
 // ---------------------------------------------------------------------------

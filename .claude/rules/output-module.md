@@ -68,6 +68,7 @@ missing from the table.
 | explain                      | no                | dev-tooling                                        |
 | generate                     | yes               | generated module metadata                          |
 | generate_scan_only           | yes               | scan results consumed by scripts                   |
+| image_pack                   | yes               | packed-image artifact + digest records             |
 | init                         | no                | one-shot setup; no scripting consumer              |
 | inject                       | no                | kubectl plugin; pod mutation                       |
 | log                          | no                | already a streaming log surface                    |

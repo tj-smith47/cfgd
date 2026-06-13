@@ -762,6 +762,82 @@ pub(in crate::cli) fn resolve_desired_state(
     })
 }
 
+/// Outcome of the shared cosign sign + SLSA-attest tail.
+#[derive(Debug)]
+pub(in crate::cli) struct SignAttestOutcome {
+    pub signed: bool,
+    pub attested: bool,
+}
+
+/// Cosign-sign and/or attach SLSA provenance to an already-pushed OCI artifact.
+///
+/// Shared by `cfgd module push` and `cfgd image pack`: both push an artifact,
+/// then optionally sign it and attach provenance derived from the local git
+/// `origin`/`HEAD`. Errors route through `collapse_to_subject_line` so a
+/// multi-line cosign stderr can't trip the renderer's single-line invariant.
+pub(in crate::cli) fn sign_and_attest(
+    printer: &Printer,
+    artifact: &str,
+    digest: &str,
+    key: Option<&str>,
+    sign: bool,
+    attest: bool,
+) -> anyhow::Result<SignAttestOutcome> {
+    if sign {
+        cfgd_core::oci::sign_artifact(artifact, key).map_err(|e| {
+            cli_error(
+                artifact,
+                "sign_failed",
+                cfgd_core::output::collapse_to_subject_line(&e),
+                serde_json::json!({ "artifact": artifact }),
+            )
+        })?;
+        printer.status_simple(Role::Ok, "Signed artifact with cosign");
+    }
+
+    let mut attested = false;
+    if attest {
+        let repo = cfgd_core::detect_git_remote();
+        let commit = cfgd_core::detect_git_head();
+        if repo.is_none() || commit.is_none() {
+            printer.status_simple(
+                Role::Warn,
+                "No git remote/HEAD detected — SLSA provenance will record source as \"unknown\"",
+            );
+        }
+        let repo = repo.unwrap_or_else(|| "unknown".to_string());
+        let commit = commit.unwrap_or_else(|| "unknown".to_string());
+
+        let provenance = cfgd_core::oci::generate_slsa_provenance(artifact, digest, &repo, &commit)
+            .map_err(|e| {
+                cli_error(
+                    artifact,
+                    "attest_failed",
+                    cfgd_core::output::collapse_to_subject_line(&e),
+                    serde_json::json!({ "artifact": artifact, "digest": digest, "step": "provenance" }),
+                )
+            })?;
+        let tmp = tempfile::NamedTempFile::new()?;
+        cfgd_core::atomic_write_str(tmp.path(), &provenance)?;
+        cfgd_core::oci::attach_attestation(artifact, &tmp.path().display().to_string(), key)
+            .map_err(|e| {
+                cli_error(
+                    artifact,
+                    "attest_failed",
+                    cfgd_core::output::collapse_to_subject_line(&e),
+                    serde_json::json!({ "artifact": artifact, "step": "attach" }),
+                )
+            })?;
+        printer.status_simple(Role::Ok, "Attached SLSA provenance attestation");
+        attested = true;
+    }
+
+    Ok(SignAttestOutcome {
+        signed: sign,
+        attested,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -1767,6 +1843,208 @@ mod tests {
         assert_eq!(
             desired.resolved.merged.modules, local.merged.modules,
             "no-sources resolved must equal the local profile"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // sign_and_attest
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn sign_and_attest_no_op_returns_both_false_without_cosign() {
+        // Neither flag set: the function must not touch cosign at all and must
+        // report nothing signed or attested. No shim is installed, so any
+        // cosign shell-out would fail — proving the no-op path is taken.
+        let printer = quiet_printer();
+        let outcome = sign_and_attest(
+            &printer,
+            "localhost:5000/x:v1",
+            "sha256:dead",
+            None,
+            false,
+            false,
+        )
+        .expect("no-op sign/attest must succeed");
+        assert!(!outcome.signed, "signed must be false when sign=false");
+        assert!(
+            !outcome.attested,
+            "attested must be false when attest=false"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn sign_and_attest_attest_without_git_warns_and_records_unknown_source() {
+        // Attesting from a directory with no git remote/HEAD must emit the
+        // "source as unknown" warning and still complete the attestation.
+        let shim = cfgd_core::test_helpers::CosignTestShim::builder()
+            .with_argv_logging(false)
+            .with_exit(0)
+            .install();
+        let dir = tempdir().expect("tempdir");
+        let _cwd = cfgd_core::test_helpers::CwdGuard::set(dir.path()).expect("cwd guard");
+
+        // Normal verbosity: the Warn role is suppressed under Quiet.
+        let (printer, cap) = Printer::for_test_at(Verbosity::Normal);
+        let outcome = sign_and_attest(
+            &printer,
+            "localhost:5000/x:v1",
+            "sha256:dead",
+            None,
+            false,
+            true,
+        )
+        .expect("attest must succeed under the cosign shim");
+        drop(printer);
+        drop(shim);
+
+        assert!(!outcome.signed, "signed must be false when sign=false");
+        assert!(
+            outcome.attested,
+            "attested must be true after a successful attach"
+        );
+        let out = cap.lock().expect("capture lock");
+        assert!(
+            out.contains("record source as"),
+            "no-git attestation must warn about unknown provenance source, got: {out}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn sign_and_attest_sign_failure_maps_to_sign_failed_meta() {
+        // A non-zero cosign exit on the sign step must surface as a
+        // CliErrorMeta with error_kind "sign_failed".
+        let shim = cfgd_core::test_helpers::CosignTestShim::builder()
+            .with_argv_logging(false)
+            .with_exit(1)
+            .install();
+        let printer = quiet_printer();
+        let err = sign_and_attest(
+            &printer,
+            "localhost:5000/x:v1",
+            "sha256:dead",
+            None,
+            true,
+            false,
+        )
+        .expect_err("failing cosign sign must return Err");
+        drop(shim);
+
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("sign failure returns CliErrorMeta");
+        assert_eq!(
+            meta.error_kind, "sign_failed",
+            "cosign sign failure must map to sign_failed: {meta:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn sign_and_attest_attest_failure_maps_to_attest_failed_meta() {
+        // Provenance generation succeeds, but a non-zero cosign exit on the
+        // attach step must surface as error_kind "attest_failed".
+        let shim = cfgd_core::test_helpers::CosignTestShim::builder()
+            .with_argv_logging(false)
+            .with_exit(1)
+            .install();
+        let dir = tempdir().expect("tempdir");
+        let _cwd = cfgd_core::test_helpers::CwdGuard::set(dir.path()).expect("cwd guard");
+
+        let printer = quiet_printer();
+        let err = sign_and_attest(
+            &printer,
+            "localhost:5000/x:v1",
+            "sha256:dead",
+            None,
+            false,
+            true,
+        )
+        .expect_err("failing cosign attest must return Err");
+        drop(shim);
+
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("attest failure returns CliErrorMeta");
+        assert_eq!(
+            meta.error_kind, "attest_failed",
+            "cosign attach failure must map to attest_failed: {meta:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // display_and_persist_conflicts
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn display_and_persist_conflicts_routes_roles_and_persists() {
+        use std::collections::HashMap;
+
+        let tmp = tempdir().expect("tempdir");
+        let mut cli = make_cli(tmp.path().join("cfgd.yaml"));
+        cli.state_dir = Some(tmp.path().join("state"));
+
+        let result = composition::CompositionResult {
+            resolved: ResolvedProfile {
+                layers: Vec::new(),
+                merged: MergedProfile::default(),
+            },
+            conflicts: vec![
+                composition::ConflictResolution {
+                    resource_id: "pkg.ripgrep".to_string(),
+                    resolution_type: composition::ResolutionType::Locked,
+                    winning_source: "base".to_string(),
+                    details: "locked by base".to_string(),
+                },
+                composition::ConflictResolution {
+                    resource_id: "pkg.fd".to_string(),
+                    resolution_type: composition::ResolutionType::Override,
+                    winning_source: "team".to_string(),
+                    details: "overridden by team".to_string(),
+                },
+                composition::ConflictResolution {
+                    resource_id: "pkg.bat".to_string(),
+                    resolution_type: composition::ResolutionType::Default,
+                    winning_source: "base".to_string(),
+                    details: "silent default".to_string(),
+                },
+            ],
+            source_env: HashMap::new(),
+            source_commits: HashMap::new(),
+            source_module_roots: Vec::new(),
+        };
+
+        let (printer, cap) = Printer::for_test_at(Verbosity::Normal);
+        display_and_persist_conflicts(&cli, &result, &printer);
+        drop(printer);
+
+        let out = cap.lock().expect("capture lock");
+        assert!(
+            out.contains("Source Conflicts"),
+            "conflicts must render under their section: {out}"
+        );
+        // Locked routes to a Warn line, Override to an Info line; both details
+        // must surface. The Default resolution is intentionally silent.
+        assert!(
+            out.contains("locked by base"),
+            "Locked conflict detail must render: {out}"
+        );
+        assert!(
+            out.contains("overridden by team"),
+            "Override conflict detail must render: {out}"
+        );
+        assert!(
+            !out.contains("silent default"),
+            "Default resolution must NOT render a line: {out}"
+        );
+
+        // Persistence ran against a real state store (temp state_dir); reopening
+        // it must succeed, proving the open_state_store branch was exercised.
+        assert!(
+            open_state_store(cli.state_dir.as_deref()).is_ok(),
+            "state store must be openable after persistence"
         );
     }
 }

@@ -576,6 +576,39 @@ cfgd decide accept --source acme-corp      # accept all from source
 cfgd decide accept --all                   # accept everything
 ```
 
+## Image Commands
+
+### `cfgd image pack <DIR> <ARTIFACT>`
+
+Pack a directory into a standard OCI image and push it to a registry. The result is
+mountable as a Kubernetes `volume.image` (KEP-4639) via containerd. No Dockerfile or
+Docker daemon required.
+
+```sh
+cfgd image pack ./out registry.example.com/myapp:v1.4.0
+cfgd image pack ./out registry.example.com/myapp:v1.4.0 --sign --attest
+cfgd image pack ./out registry.example.com/myapp:v1.4.0 --platform linux/arm64
+cfgd image pack ./out registry.example.com/myapp:v1.4.0 -o json
+```
+
+| Flag | Description |
+|---|---|
+| `--platform <os/arch>` | Target platform (default: host, e.g. `linux/amd64`) |
+| `--entrypoint <arg>` | Image entrypoint, repeatable |
+| `--cmd <arg>` | Default command arguments, repeatable |
+| `--env KEY=VALUE` | Runtime environment variable, repeatable |
+| `--working-dir <path>` | Working directory for the entrypoint |
+| `--user <user>` | User/UID for the entrypoint |
+| `--label k=v` | Image config label (`→ config.Labels`), repeatable |
+| `--annotation k=v` | Manifest annotation, repeatable |
+| `--sign` | Sign with cosign (keyless by default) |
+| `--key <path>` | Signing key path |
+| `--attest` | Attach SLSA provenance attestation |
+
+Structured output (`-o json`) payload: `{ artifact, digest, platform, signed, attested }`.
+
+See [image-pack.md](image-pack.md) for the full reference, worked example, and Pod spec.
+
 ## Other Commands
 
 ### `cfgd config show`

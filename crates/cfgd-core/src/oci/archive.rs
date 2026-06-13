@@ -7,22 +7,40 @@ use std::path::Path;
 use crate::PathDisplayExt;
 use crate::errors::OciError;
 
+/// Build an uncompressed tar of `dir` into a `Vec<u8>`.
+fn build_tar(dir: &Path) -> Result<Vec<u8>, OciError> {
+    let buf = Vec::new();
+    let mut archive = tar::Builder::new(buf);
+    add_dir_to_tar(&mut archive, dir, dir)?;
+    archive.into_inner().map_err(|e| OciError::ArchiveError {
+        message: format!("tar finalization failed: {e}"),
+    })
+}
+
+/// Gzip-compress a byte buffer.
+fn gzip(data: Vec<u8>) -> Result<Vec<u8>, OciError> {
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut encoder, &data).map_err(|e| OciError::ArchiveError {
+        message: format!("gzip write failed: {e}"),
+    })?;
+    encoder.finish().map_err(|e| OciError::ArchiveError {
+        message: format!("gzip finalization failed: {e}"),
+    })
+}
+
 /// Create a tar.gz archive of a directory's contents.
 pub fn create_tar_gz(dir: &Path) -> Result<Vec<u8>, OciError> {
-    let buf = Vec::new();
-    let encoder = flate2::write::GzEncoder::new(buf, flate2::Compression::default());
-    let mut archive = tar::Builder::new(encoder);
+    gzip(build_tar(dir)?)
+}
 
-    // Add directory contents relative to dir
-    add_dir_to_tar(&mut archive, dir, dir)?;
-
-    let encoder = archive.into_inner().map_err(|e| OciError::ArchiveError {
-        message: format!("tar finalization failed: {e}"),
-    })?;
-    let compressed = encoder.finish().map_err(|e| OciError::ArchiveError {
-        message: format!("gzip finalization failed: {e}"),
-    })?;
-    Ok(compressed)
+/// Build a gzip-compressed tar of `dir` and also return the layer's diff_id
+/// (the sha256 digest of the UNCOMPRESSED tar, the value an OCI image-config
+/// records in rootfs.diff_ids). The returned tuple is (gzipped_bytes, diff_id).
+pub fn create_tar_gz_with_diff_id(dir: &Path) -> Result<(Vec<u8>, String), OciError> {
+    let uncompressed = build_tar(dir)?;
+    let diff_id = crate::sha256_digest(&uncompressed);
+    let compressed = gzip(uncompressed)?;
+    Ok((compressed, diff_id))
 }
 
 fn add_dir_to_tar<W: std::io::Write>(
@@ -43,6 +61,10 @@ fn add_dir_to_tar<W: std::io::Write>(
         })?;
         // Skip symlinks — prevents including content from outside the module directory
         if file_type.is_symlink() {
+            tracing::warn!(
+                path = %entry.path().posix(),
+                "skipping symlink in archive (excluded for path-traversal safety); its target content will not be packed"
+            );
             continue;
         }
         let path = entry.path();
@@ -471,6 +493,64 @@ mod tests {
         assert!(
             !out.path().join("link.txt").exists(),
             "symlinks should be skipped in create_tar_gz"
+        );
+    }
+
+    // --- create_tar_gz_with_diff_id ---
+
+    #[test]
+    fn create_tar_gz_with_diff_id_diff_id_differs_from_gzip_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), "hello diff_id\n").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "world diff_id\n").unwrap();
+
+        let (gzip_bytes, diff_id) = create_tar_gz_with_diff_id(dir.path()).unwrap();
+
+        assert!(
+            diff_id.starts_with("sha256:"),
+            "diff_id must be a sha256:<hex> digest, got: {diff_id}"
+        );
+
+        let gzip_digest = crate::sha256_digest(&gzip_bytes);
+        assert_ne!(
+            diff_id, gzip_digest,
+            "diff_id (uncompressed tar digest) must differ from the gzip-bytes digest"
+        );
+    }
+
+    #[test]
+    fn create_tar_gz_with_diff_id_gzip_extracts_to_same_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("module.yaml"), "name: roundtrip\n").unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/file.txt"), "inner content\n").unwrap();
+
+        let (gzip_bytes, _diff_id) = create_tar_gz_with_diff_id(dir.path()).unwrap();
+
+        let out = tempfile::tempdir().unwrap();
+        extract_tar_gz(&gzip_bytes, out.path()).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(out.path().join("module.yaml")).unwrap(),
+            "name: roundtrip\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(out.path().join("sub/file.txt")).unwrap(),
+            "inner content\n"
+        );
+    }
+
+    #[test]
+    fn create_tar_gz_with_diff_id_is_deterministic() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("stable.txt"), "determinism check\n").unwrap();
+
+        let (_bytes1, diff_id1) = create_tar_gz_with_diff_id(dir.path()).unwrap();
+        let (_bytes2, diff_id2) = create_tar_gz_with_diff_id(dir.path()).unwrap();
+
+        assert_eq!(
+            diff_id1, diff_id2,
+            "two calls on the same dir must produce the same diff_id"
         );
     }
 

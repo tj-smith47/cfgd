@@ -12,6 +12,7 @@ pub mod error;
 pub mod explain;
 pub mod generate;
 mod helpers;
+pub mod image;
 pub mod init;
 mod kubectl;
 mod live_drift;
@@ -796,6 +797,63 @@ pub enum Command {
     Compliance {
         #[command(subcommand)]
         command: Option<ComplianceCommand>,
+    },
+
+    /// Pack a host directory into a standard OCI image and push it to a registry
+    #[command(
+        long_about = "Pack a local directory into a standard OCI image (mountable as a Kubernetes volume.image) and push it to a registry.\n\nUnlike `cfgd module push`, which uses cfgd-custom media types, `cfgd image pack` emits standard OCI image config and layer media types so the result is mountable via containerd's image volume support.\n\nExamples:\n  cfgd image pack ./config registry.example.com/myapp/config:v1.0.0\n  cfgd image pack ./data ghcr.io/myorg/mydata:latest --platform linux/arm64\n  cfgd image pack ./config ghcr.io/myorg/config:v1.0.0 --sign --attest\n  cfgd image pack ./app ghcr.io/myorg/app:v1.0.0 --label version=1.0.0 --label maintainer=ops"
+    )]
+    Image {
+        #[command(subcommand)]
+        command: ImageCommand,
+    },
+}
+
+/// Subcommands for `cfgd image`.
+#[derive(Subcommand)]
+pub enum ImageCommand {
+    /// Pack a directory into a standard OCI image and push to a registry
+    #[command(
+        long_about = "Pack a local directory into a standard OCI image and push it to a registry.\n\nProduces a standard OCI image (linux/amd64 or specified platform) whose single layer contains the directory contents as a gzipped tar archive. The result is mountable as a Kubernetes volume.image via containerd.\n\nExamples:\n  cfgd image pack ./config registry.example.com/myapp/config:v1.0.0\n  cfgd image pack ./data ghcr.io/myorg/mydata:latest --platform linux/arm64\n  cfgd image pack ./config ghcr.io/myorg/config:v1.0.0 --sign\n  cfgd image pack ./app ghcr.io/myorg/app:v1.0.0 --label version=1.0.0 --env APP_MODE=prod"
+    )]
+    Pack {
+        /// Path to the directory to pack into the image
+        dir: std::path::PathBuf,
+        /// OCI artifact reference to push to (e.g. ghcr.io/myorg/myapp:v1.0.0)
+        artifact: String,
+        /// Target platform in os/arch form (e.g. linux/amd64). Defaults to host platform.
+        #[arg(long)]
+        platform: Option<String>,
+        /// Image ENTRYPOINT entries (repeatable; e.g. --entrypoint /bin/sh)
+        #[arg(long = "entrypoint", value_name = "ARG")]
+        entrypoint: Vec<String>,
+        /// Image CMD entries (repeatable; e.g. --cmd -c --cmd "echo hi")
+        #[arg(long = "cmd", value_name = "ARG")]
+        cmd: Vec<String>,
+        /// Image environment variables in KEY=VALUE form (repeatable)
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        /// Working directory inside the image (sets image config WorkingDir)
+        #[arg(long, value_name = "PATH")]
+        working_dir: Option<String>,
+        /// User inside the image (sets image config User)
+        #[arg(long, value_name = "USER")]
+        user: Option<String>,
+        /// Image config labels in KEY=VALUE form (repeatable)
+        #[arg(long = "label", value_name = "KEY=VALUE")]
+        label: Vec<String>,
+        /// OCI manifest annotations in KEY=VALUE form (repeatable)
+        #[arg(long = "annotation", value_name = "KEY=VALUE")]
+        annotation: Vec<String>,
+        /// Sign the pushed image with cosign
+        #[arg(long)]
+        sign: bool,
+        /// Path to cosign private key (omit for keyless signing via Fulcio/Rekor)
+        #[arg(long)]
+        key: Option<String>,
+        /// Attach SLSA provenance attestation after push
+        #[arg(long)]
+        attest: bool,
     },
 }
 
@@ -1927,6 +1985,40 @@ pub fn execute(
             Some(ComplianceCommand::Diff { base_id, target_id }) => {
                 compliance::cmd_compliance_diff(cli, printer, *base_id, *target_id)
             }
+        },
+        Command::Image { command } => match command {
+            ImageCommand::Pack {
+                dir,
+                artifact,
+                platform,
+                entrypoint,
+                cmd,
+                env,
+                working_dir,
+                user,
+                label,
+                annotation,
+                sign,
+                key,
+                attest,
+            } => image::cmd_image_pack(
+                printer,
+                dir,
+                artifact,
+                image::ImagePackOptions {
+                    platform: platform.as_deref(),
+                    entrypoint: entrypoint.clone(),
+                    cmd: cmd.clone(),
+                    env: env.clone(),
+                    working_dir: working_dir.as_deref(),
+                    user: user.as_deref(),
+                    labels: label.clone(),
+                    annotations: annotation.clone(),
+                    sign: *sign,
+                    key: key.as_deref(),
+                    attest: *attest,
+                },
+            ),
         },
     }
 }

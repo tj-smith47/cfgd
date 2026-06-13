@@ -58,49 +58,10 @@ pub fn cmd_module_push(
 
     printer.kv("Digest", &digest);
 
-    if sign {
-        cfgd_core::oci::sign_artifact(artifact, key).map_err(|e| {
-            crate::cli::cli_error(
-                artifact,
-                "sign_failed",
-                e.to_string(),
-                serde_json::json!({ "artifact": artifact }),
-            )
-        })?;
-        printer.status_simple(Role::Ok, "Signed artifact with cosign");
-    }
-
-    let mut attestation_attached = false;
-
-    if attest {
-        let repo = detect_git_remote().unwrap_or_else(|| "unknown".to_string());
-        let commit = detect_git_head().unwrap_or_else(|| "unknown".to_string());
-
-        let provenance = cfgd_core::oci::generate_slsa_provenance(
-            artifact, &digest, &repo, &commit,
-        )
-        .map_err(|e| {
-            crate::cli::cli_error(
-                artifact,
-                "attest_failed",
-                e.to_string(),
-                serde_json::json!({ "artifact": artifact, "digest": digest, "step": "provenance" }),
-            )
-        })?;
-        let tmp = tempfile::NamedTempFile::new()?;
-        std::fs::write(tmp.path(), &provenance)?;
-        cfgd_core::oci::attach_attestation(artifact, &tmp.path().display().to_string(), key)
-            .map_err(|e| {
-                crate::cli::cli_error(
-                    artifact,
-                    "attest_failed",
-                    e.to_string(),
-                    serde_json::json!({ "artifact": artifact, "step": "attach" }),
-                )
-            })?;
-        printer.status_simple(Role::Ok, "Attached SLSA provenance attestation");
-        attestation_attached = true;
-    }
+    let crate::cli::helpers::SignAttestOutcome {
+        signed,
+        attested: attestation_attached,
+    } = crate::cli::helpers::sign_and_attest(printer, artifact, &digest, key, sign, attest)?;
 
     let mut applied_name: Option<String> = None;
     if apply {
@@ -118,39 +79,12 @@ pub fn cmd_module_push(
         "artifact": artifact,
         "platform": platform,
         "digest": digest,
-        "signed": sign,
+        "signed": signed,
         "attestation": attestation_attached,
         "applied": applied_name,
     })));
 
     Ok(())
-}
-
-fn git_output(args: &[&str]) -> Option<String> {
-    let output = cfgd_core::git_cmd_local().args(args).output().ok()?;
-    if output.status.success() {
-        Some(cfgd_core::stdout_lossy_trimmed(&output))
-    } else {
-        None
-    }
-}
-
-fn detect_git_remote() -> Option<String> {
-    git_output(&["remote", "get-url", "origin"])
-}
-
-fn detect_git_head() -> Option<String> {
-    git_output(&["rev-parse", "HEAD"])
-}
-
-#[cfg(test)]
-pub(super) fn detect_git_remote_for_tests() -> Option<String> {
-    detect_git_remote()
-}
-
-#[cfg(test)]
-pub(super) fn detect_git_head_for_tests() -> Option<String> {
-    detect_git_head()
 }
 
 pub(super) fn build_module_crd_json(
@@ -972,69 +906,5 @@ mod tests {
             doc["attestation"], false,
             "attestation must be false: {doc}"
         );
-    }
-
-    mod git_helpers {
-        use cfgd_core::test_helpers::CwdGuard;
-        use serial_test::serial;
-
-        use super::super::{detect_git_head_for_tests, detect_git_remote_for_tests};
-
-        fn git(dir: &std::path::Path, args: &[&str]) {
-            let status = cfgd_core::git_cmd_local()
-                .args(args)
-                .current_dir(dir)
-                .status()
-                .expect("git command");
-            assert!(status.success(), "git {:?} failed", args);
-        }
-
-        #[test]
-        #[serial]
-        fn detect_git_remote_returns_none_in_fresh_repo() {
-            let dir = tempfile::tempdir().expect("tempdir");
-            git(dir.path(), &["init"]);
-            let _cwd = CwdGuard::set(dir.path()).expect("cwd guard");
-            let result = detect_git_remote_for_tests();
-            assert!(
-                result.is_none(),
-                "fresh repo with no remote must return None, got: {result:?}"
-            );
-        }
-
-        #[test]
-        #[serial]
-        fn detect_git_head_returns_some_after_initial_commit() {
-            let dir = tempfile::tempdir().expect("tempdir");
-            git(dir.path(), &["init"]);
-            git(dir.path(), &["config", "user.email", "test@example.com"]);
-            git(dir.path(), &["config", "user.name", "Test"]);
-            std::fs::write(dir.path().join("f.txt"), b"hello").expect("write file");
-            git(dir.path(), &["add", "."]);
-            git(dir.path(), &["commit", "-m", "init"]);
-
-            let _cwd = CwdGuard::set(dir.path()).expect("cwd guard");
-            let result = detect_git_head_for_tests();
-
-            let sha = result.expect("HEAD must be Some after initial commit");
-            assert_eq!(sha.len(), 40, "HEAD SHA must be 40 hex chars: {sha}");
-            assert!(
-                sha.chars().all(|c| c.is_ascii_hexdigit()),
-                "HEAD SHA must be hex: {sha}"
-            );
-        }
-
-        #[test]
-        #[serial]
-        fn detect_git_head_returns_none_in_empty_repo() {
-            let dir = tempfile::tempdir().expect("tempdir");
-            git(dir.path(), &["init"]);
-            let _cwd = CwdGuard::set(dir.path()).expect("cwd guard");
-            let result = detect_git_head_for_tests();
-            assert!(
-                result.is_none(),
-                "empty repo has no HEAD, must return None: {result:?}"
-            );
-        }
     }
 }
