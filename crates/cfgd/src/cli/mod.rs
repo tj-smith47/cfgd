@@ -845,7 +845,7 @@ pub enum ImageCommand {
         /// OCI manifest annotations in KEY=VALUE form (repeatable)
         #[arg(long = "annotation", value_name = "KEY=VALUE")]
         annotation: Vec<String>,
-        /// Sign the pushed image with cosign
+        /// Sign the image with cosign after push
         #[arg(long)]
         sign: bool,
         /// Path to cosign private key (omit for keyless signing via Fulcio/Rekor)
