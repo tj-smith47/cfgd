@@ -3949,3 +3949,136 @@ fn client_resolves_against_real_release_manifest() {
         "key-based v0.4.0 must not publish a standalone .sha256.cosign.pem"
     );
 }
+
+// --- find_asset_for: non-host target resolution (windows + unmapped arch) ---
+
+#[test]
+fn find_asset_for_windows_target_uses_zip_suffix() {
+    // The `.zip` suffix branch keys off the RESOLVED target OS (`windows`),
+    // not the compile-time host. A release built for windows ships `.zip`;
+    // resolving against a windows target on a non-windows host must still pick
+    // the `.zip` archive (and the amd64 Go-arch name), never the `.tar.gz`.
+    let release = ReleaseInfo {
+        tag: "v9.9.0".into(),
+        version: Version::new(9, 9, 0),
+        assets: vec![
+            ReleaseAsset {
+                name: "cfgd-9.9.0-windows-amd64.zip".into(),
+                download_url: "https://example.com/win".into(),
+                size: 2048,
+            },
+            // A decoy `.tar.gz` with the same target — the resolver must NOT
+            // pick this for windows.
+            ReleaseAsset {
+                name: "cfgd-9.9.0-windows-amd64.tar.gz".into(),
+                download_url: "https://example.com/decoy".into(),
+                size: 9,
+            },
+        ],
+    };
+
+    let asset = find_asset_for(&release, "windows", "x86_64")
+        .expect("windows/x86_64 must resolve to the .zip archive");
+    assert_eq!(asset.name, "cfgd-9.9.0-windows-amd64.zip");
+    assert_eq!(asset.download_url, "https://example.com/win");
+}
+
+#[test]
+fn find_asset_for_unmapped_arch_passes_arch_through_verbatim() {
+    // An arch outside the x86_64/aarch64 map (e.g. riscv64) has no Go-arch
+    // rename — both the go_arch and the rust_arch fallback candidate collapse
+    // to the same `riscv64` token. The resolver must pass it through verbatim
+    // and match `cfgd-<v>-linux-riscv64.tar.gz`.
+    let release = ReleaseInfo {
+        tag: "v9.9.0".into(),
+        version: Version::new(9, 9, 0),
+        assets: vec![ReleaseAsset {
+            name: "cfgd-9.9.0-linux-riscv64.tar.gz".into(),
+            download_url: "https://example.com/riscv".into(),
+            size: 4096,
+        }],
+    };
+
+    let asset = find_asset_for(&release, "linux", "riscv64")
+        .expect("linux/riscv64 must resolve via the verbatim arch passthrough");
+    assert_eq!(asset.name, "cfgd-9.9.0-linux-riscv64.tar.gz");
+}
+
+#[test]
+fn find_asset_for_resolves_rust_arch_fallback_name() {
+    // Tolerate a release built under the Rust-arch naming convention
+    // (`x86_64`) even though anodizer normally emits the Go-arch (`amd64`).
+    // The Go-arch candidate (`...-amd64...`) is absent here, so resolution
+    // must fall through to the second candidate (`...-x86_64...`).
+    let release = ReleaseInfo {
+        tag: "v9.9.0".into(),
+        version: Version::new(9, 9, 0),
+        assets: vec![ReleaseAsset {
+            name: "cfgd-9.9.0-linux-x86_64.tar.gz".into(),
+            download_url: "https://example.com/rustarch".into(),
+            size: 1024,
+        }],
+    };
+
+    let asset = find_asset_for(&release, "linux", "x86_64")
+        .expect("must fall back to the Rust-arch archive name when Go-arch is absent");
+    assert_eq!(asset.name, "cfgd-9.9.0-linux-x86_64.tar.gz");
+}
+
+#[test]
+fn find_asset_for_no_asset_error_reports_resolved_os_and_go_arch() {
+    // The NoAsset error must name the RESOLVED archive OS (darwin, not macos)
+    // and the RESOLVED Go arch (arm64, not aarch64) so operators see the names
+    // they would search the release page for.
+    let release = ReleaseInfo {
+        tag: "v9.9.0".into(),
+        version: Version::new(9, 9, 0),
+        assets: vec![ReleaseAsset {
+            name: "cfgd-9.9.0-linux-amd64.tar.gz".into(),
+            download_url: "https://example.com/x".into(),
+            size: 1,
+        }],
+    };
+
+    let err = find_asset_for(&release, "macos", "aarch64").unwrap_err();
+    match err {
+        crate::errors::UpgradeError::NoAsset { os, arch } => {
+            assert_eq!(os, "darwin", "error must report the resolved archive OS");
+            assert_eq!(arch, "arm64", "error must report the resolved Go arch");
+        }
+        other => panic!("expected NoAsset, got: {other:?}"),
+    }
+}
+
+// --- write_version_cache: create_dir_all failure surfaces InstallFailed ---
+
+#[test]
+fn write_version_cache_errors_when_cache_dir_path_is_blocked_by_a_file() {
+    // cache_dir() resolves to <test_home>/.cache/cfgd. Plant a regular FILE at
+    // <test_home>/.cache so create_dir_all(.cache/cfgd) cannot create the
+    // directory — the write must surface InstallFailed, not panic or silently
+    // succeed.
+    let home = tempfile::tempdir().unwrap();
+    let _guard = crate::with_test_home_guard(home.path());
+
+    // Block the `.cache` path with a file.
+    fs::write(home.path().join(".cache"), b"not a directory").unwrap();
+
+    let cache = VersionCache {
+        checked_at_secs: 42,
+        latest_tag: "v9.9.0".into(),
+        latest_version: "9.9.0".into(),
+        current_version: "9.8.0".into(),
+    };
+
+    let err = write_version_cache(&cache).unwrap_err();
+    assert!(
+        matches!(err, crate::errors::UpgradeError::InstallFailed { .. }),
+        "blocked cache dir must surface InstallFailed, got: {err:?}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains("create cache dir"),
+        "error message must name the failing step: {msg}"
+    );
+}

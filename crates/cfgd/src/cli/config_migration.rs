@@ -442,10 +442,192 @@ mod tests {
         );
     }
 
-    // --- migrate_legacy_data_dirs_at ---
+    // --- persist_xdg_pin ---
 
     use cfgd_core::output::{Printer, Verbosity};
     use cfgd_core::state::StateStore;
+    use cfgd_core::test_helpers::EnvVarGuard;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn persist_xdg_pin_zsh_writes_zshenv_with_export() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let _shell = EnvVarGuard::set("SHELL", "/bin/zsh");
+
+        let result = persist_xdg_pin(home).unwrap();
+
+        assert_eq!(result, Some(home.join(".zshenv")));
+        let body = std::fs::read_to_string(home.join(".zshenv")).unwrap();
+        assert!(
+            body.contains(r#"export XDG_CONFIG_HOME="$HOME/.config""#),
+            "zshenv must contain the POSIX export line, got:\n{body}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn persist_xdg_pin_fish_writes_confd_file_with_set_gx() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let _shell = EnvVarGuard::set("SHELL", "/usr/bin/fish");
+
+        let result = persist_xdg_pin(home).unwrap();
+
+        let expected_rc = home.join(".config/fish/conf.d/cfgd-xdg.fish");
+        assert_eq!(result, Some(expected_rc.clone()));
+        let body = std::fs::read_to_string(&expected_rc).unwrap();
+        assert!(
+            body.contains(r#"set -gx XDG_CONFIG_HOME "$HOME/.config""#),
+            "fish rc must contain the set -gx line, got:\n{body}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn persist_xdg_pin_unknown_shell_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _shell = EnvVarGuard::set("SHELL", "/usr/bin/nu");
+
+        let result = persist_xdg_pin(tmp.path()).unwrap();
+        assert_eq!(result, None, "unrecognized shell must return None");
+    }
+
+    // --- migrate_move ---
+
+    #[test]
+    fn migrate_move_success_emits_status_and_returns_native() {
+        let tmp = tempfile::tempdir().unwrap();
+        let legacy = tmp.path().join("legacy");
+        let native = tmp.path().join("native");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("cfgd.yaml"), b"apiVersion: cfgd.io/v1alpha1").unwrap();
+
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        let result = migrate_move(&printer, &legacy, &native);
+
+        assert_eq!(
+            result,
+            Some(native.clone()),
+            "must return the native path on success"
+        );
+        assert!(
+            native.join("cfgd.yaml").exists(),
+            "file must have moved to native dir"
+        );
+        assert!(
+            !legacy.exists(),
+            "legacy dir must no longer exist after move"
+        );
+
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.lines().any(|l| l.contains("Moved config to")),
+            "output must contain 'Moved config to', got:\n{out}"
+        );
+    }
+
+    #[test]
+    fn migrate_move_failure_emits_warning_and_returns_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let legacy = tmp.path().join("legacy");
+        // native already exists as a file — rename-over-existing fails on
+        // cross-device or non-empty-dir scenarios; a non-empty directory at the
+        // destination causes the OS move to fail reliably.
+        let native = tmp.path().join("native");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("cfgd.yaml"), b"x").unwrap();
+        // Pre-create native with a child so rename fails (can't merge dirs).
+        std::fs::create_dir_all(native.join("existing")).unwrap();
+
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        let result = migrate_move(&printer, &legacy, &native);
+
+        assert_eq!(result, None, "must return None on failure");
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.lines().any(|l| l.contains("Could not move config")),
+            "output must contain 'Could not move config', got:\n{out}"
+        );
+    }
+
+    // --- keep_at_dotconfig ---
+
+    #[test]
+    #[serial]
+    fn keep_at_dotconfig_sets_env_writes_rc_and_creates_sentinel() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+
+        // Route the state dir (for pin_sentinel) and shell rc into the tempdir.
+        let state_dir = tmp.path().join("state");
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let _state = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.to_str().unwrap());
+        let _shell = EnvVarGuard::set("SHELL", "/bin/zsh");
+        // Ensure XDG_CONFIG_HOME is unset before the call so set_var is observable.
+        let _xdg_prev = EnvVarGuard::unset("XDG_CONFIG_HOME");
+
+        let (printer, _buf) = Printer::for_test_at(Verbosity::Normal);
+        keep_at_dotconfig(&printer, home);
+
+        // Process env must now have XDG_CONFIG_HOME = <home>/.config
+        let xdg_val = std::env::var("XDG_CONFIG_HOME").expect("XDG_CONFIG_HOME must be set");
+        assert_eq!(
+            std::path::PathBuf::from(&xdg_val),
+            home.join(".config"),
+            "XDG_CONFIG_HOME must point at <home>/.config"
+        );
+
+        // The zshenv rc must contain the export line.
+        let zshenv = home.join(".zshenv");
+        assert!(zshenv.exists(), ".zshenv must have been created");
+        let body = std::fs::read_to_string(&zshenv).unwrap();
+        assert!(
+            body.contains(r#"export XDG_CONFIG_HOME="$HOME/.config""#),
+            ".zshenv must contain the export, got:\n{body}"
+        );
+
+        // The pin sentinel must exist under the state dir.
+        let sentinel = state_dir.join(MACOS_CONFIG_PINNED_SENTINEL);
+        assert!(
+            sentinel.exists(),
+            "pin sentinel must exist at {}",
+            sentinel.display()
+        );
+    }
+
+    // --- migrate_legacy_data_dirs (outer resolver) ---
+
+    #[test]
+    #[serial]
+    fn migrate_legacy_data_dirs_no_op_when_no_legacy_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        // with_test_home_guard routes legacy_data_dir() → <home>/.local/share/cfgd
+        let _home = cfgd_core::with_test_home_guard(tmp.path());
+        // Route state + cache to the same tempdir so default_state_dir / default_cache_dir
+        // don't touch the real machine.
+        let state_dir = tmp.path().join("state");
+        let cache_dir = tmp.path().join("cache");
+        let _state = EnvVarGuard::set("CFGD_STATE_DIR", state_dir.to_str().unwrap());
+        let _cache = EnvVarGuard::set("CFGD_CACHE_DIR", cache_dir.to_str().unwrap());
+
+        // The legacy dir does NOT exist — this is the clean no-op path.
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        migrate_legacy_data_dirs(&printer);
+
+        let out = buf.lock().unwrap().clone();
+        // No "Migrated" lines should appear — the outer resolver early-returned.
+        assert!(
+            !out.contains("Migrated"),
+            "no migration output expected when legacy dir is absent, got:\n{out}"
+        );
+        // State and cache dirs must not have been created either (nothing to do).
+        assert!(!state_dir.exists(), "state dir must not have been created");
+        assert!(!cache_dir.exists(), "cache dir must not have been created");
+    }
+
+    // --- migrate_legacy_data_dirs_at ---
 
     /// Seed a legacy data dir with a schema-bearing state DB and the allowlisted
     /// sidecar artifacts plus a `sources/foo/bar` cache tree.

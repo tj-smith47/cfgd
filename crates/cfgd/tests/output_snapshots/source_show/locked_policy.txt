@@ -1,0 +1,14 @@
+Source: locked-source
+  URL                 https://github.com/corp/locked
+  Branch              main
+  Priority            50
+  Accept Recommended  false
+  Sync Interval       1h
+  Auto Apply          false
+
+Manifest
+  Name  locked-source
+  Policy Summary
+    Locked
+      Count  1
+      env: CORP_PROXY

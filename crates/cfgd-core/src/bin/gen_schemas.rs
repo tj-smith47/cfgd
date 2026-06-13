@@ -199,6 +199,7 @@ fn rewrite_def_refs(value: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     /// Generate `T`'s schema as a `Value` (the same path `write_schema` uses,
     /// minus the metadata stamp) so tests assert against real schemars output.
@@ -368,4 +369,118 @@ mod tests {
             "expected #/$defs/ refs after migration"
         );
     }
+
+    #[test]
+    fn write_schema_writes_stamped_sorted_json_file() {
+        let dir = tempdir().expect("tempdir");
+        let meta = SchemaMeta {
+            file: "test-config.schema.json",
+            dialect: DRAFT_07,
+            id: "https://cfgd.io/schemas/test-config.schema.json",
+            title: "Test Config",
+            description: "Unit test config schema",
+        };
+
+        write_schema::<CfgdConfig>(dir.path(), meta).expect("write_schema succeeds");
+
+        let path = dir.path().join("test-config.schema.json");
+        let raw = std::fs::read_to_string(&path).expect("file written");
+
+        // Trailing newline requirement.
+        assert!(
+            raw.ends_with('\n'),
+            "schema file must end with a newline, got: {:?}",
+            &raw[raw.len().saturating_sub(4)..]
+        );
+
+        let v: serde_json::Value = serde_json::from_str(&raw).expect("file is valid JSON");
+
+        assert_eq!(
+            v.get("$schema").and_then(|s| s.as_str()),
+            Some(DRAFT_07),
+            "$schema must be the draft-07 URL"
+        );
+        assert_eq!(
+            v.get("$id").and_then(|s| s.as_str()),
+            Some("https://cfgd.io/schemas/test-config.schema.json"),
+            "$id must match the canonical id"
+        );
+        assert_eq!(
+            v.get("title").and_then(|s| s.as_str()),
+            Some("Test Config"),
+            "title must be stamped"
+        );
+        assert_eq!(
+            v.get("description").and_then(|s| s.as_str()),
+            Some("Unit test config schema"),
+            "description must be stamped"
+        );
+
+        // Determinism: a second call must produce byte-identical output.
+        let meta2 = SchemaMeta {
+            file: "test-config.schema.json",
+            dialect: DRAFT_07,
+            id: "https://cfgd.io/schemas/test-config.schema.json",
+            title: "Test Config",
+            description: "Unit test config schema",
+        };
+        write_schema::<CfgdConfig>(dir.path(), meta2).expect("second write_schema succeeds");
+        let raw2 = std::fs::read_to_string(&path).expect("file readable after second write");
+        assert_eq!(
+            raw, raw2,
+            "write_schema must be deterministic (byte-identical on repeat)"
+        );
+    }
+
+    #[test]
+    fn write_schema_2020_12_uses_defs_not_definitions() {
+        let dir = tempdir().expect("tempdir");
+        let meta = SchemaMeta {
+            file: "test-module.schema.json",
+            dialect: DRAFT_2020_12,
+            id: "https://cfgd.io/schemas/test-module.schema.json",
+            title: "Test Module",
+            description: "Unit test module schema",
+        };
+
+        write_schema::<ModuleDocument>(dir.path(), meta).expect("write_schema 2020-12 succeeds");
+
+        let raw = std::fs::read_to_string(dir.path().join("test-module.schema.json"))
+            .expect("file written");
+        let v: serde_json::Value = serde_json::from_str(&raw).expect("valid JSON");
+
+        // After 2020-12 migration, $defs must exist and definitions must not.
+        assert!(
+            v.get("$defs").is_some(),
+            "2020-12 schema must contain $defs key"
+        );
+        assert!(
+            v.get("definitions").is_none(),
+            "2020-12 schema must not contain draft-07 'definitions' key"
+        );
+
+        // No #/definitions/ refs must survive; only #/$defs/ refs.
+        assert!(
+            !raw.contains("#/definitions/"),
+            "no #/definitions/ refs should appear in 2020-12 output"
+        );
+        assert!(
+            raw.contains("#/$defs/"),
+            "2020-12 output must contain #/$defs/ refs"
+        );
+
+        // The $schema stamp must reflect 2020-12.
+        assert_eq!(
+            v.get("$schema").and_then(|s| s.as_str()),
+            Some(DRAFT_2020_12),
+            "$schema must be the 2020-12 URL"
+        );
+    }
+
+    // Test #3 (main_binary_writes_four_schema_files via assert_cmd) is SKIPPED:
+    // `assert_cmd` is not a dev-dependency of cfgd-core (confirmed in Cargo.toml).
+    // Adding it solely for this test is not warranted; the two unit tests above
+    // exercise write_schema end-to-end and cover the same code paths that main()
+    // composes. Integration coverage of the binary's arg handling can be added to
+    // cfgd-core's integration tests (tests/) if assert_cmd is ever introduced.
 }

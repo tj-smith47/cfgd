@@ -2954,6 +2954,112 @@ fn git_auto_commit_push_non_repo_returns_error() {
     );
 }
 
+// --- git_pull: libgit2 fetch fallback fires and surfaces the fetch error ---
+
+#[test]
+fn git_pull_falls_back_to_libgit2_and_reports_fetch_error_for_dead_remote() {
+    // When the git CLI fetch fails (here: origin points at a non-existent
+    // local bare repo), git_pull falls back to the libgit2 fetch path. That
+    // fetch also fails against the dead remote, so the libgit2 branch must
+    // surface a `fetch: ...` error — proving the fallback executed rather than
+    // the CLI path. Using a `file://` URL to a path that does not exist keeps
+    // this fully local and instant (no network, no SSH).
+    let tmp = tempfile::TempDir::new().unwrap();
+    let work_dir = tmp.path().join("work");
+    let dead_remote = tmp.path().join("does-not-exist.git");
+
+    // Build a real repo with one commit on master and an origin pointing at the
+    // missing bare repo.
+    let repo = git2::Repository::init(&work_dir).unwrap();
+    {
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "cfgd-test").unwrap();
+        config.set_str("user.email", "test@cfgd.io").unwrap();
+    }
+    std::fs::write(work_dir.join("README"), "v1\n").unwrap();
+    {
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("README")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = repo.signature().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+    }
+    let remote_url = crate::to_file_url(&dead_remote);
+    repo.remote("origin", &remote_url).unwrap();
+    drop(repo);
+
+    let err = git_pull(&work_dir).unwrap_err();
+    assert!(
+        err.starts_with("fetch: "),
+        "libgit2 fallback must surface a 'fetch: ...' error for the dead remote, got: {err}"
+    );
+}
+
+// --- git_auto_commit_push: libgit2 push fallback fires after committing ---
+
+#[test]
+fn git_auto_commit_push_falls_back_to_libgit2_and_reports_push_error_for_dead_remote() {
+    // With a working-tree change present and origin pointing at a non-existent
+    // bare repo, git_auto_commit_push stages + commits locally (which must
+    // succeed), then the git CLI push fails, so it falls back to the libgit2
+    // push path. That push also fails against the dead remote, surfacing a
+    // `push: ...` error — proving the fallback executed AND that the local
+    // commit was created before the push attempt.
+    let tmp = tempfile::TempDir::new().unwrap();
+    let work_dir = tmp.path().join("work");
+    let dead_remote = tmp.path().join("does-not-exist.git");
+
+    let repo = git2::Repository::init(&work_dir).unwrap();
+    {
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "cfgd-test").unwrap();
+        config.set_str("user.email", "test@cfgd.io").unwrap();
+    }
+    // Initial commit so HEAD exists.
+    std::fs::write(work_dir.join("README"), "v1\n").unwrap();
+    {
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("README")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = repo.signature().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+    }
+    let remote_url = crate::to_file_url(&dead_remote);
+    repo.remote("origin", &remote_url).unwrap();
+    drop(repo);
+
+    // Introduce an uncommitted change so the commit-and-push branch runs.
+    std::fs::write(work_dir.join("new_config.yaml"), "key: value\n").unwrap();
+
+    let err = git_auto_commit_push(&work_dir).unwrap_err();
+    assert!(
+        err.starts_with("push: "),
+        "libgit2 fallback must surface a 'push: ...' error for the dead remote, got: {err}"
+    );
+
+    // The auto-commit must have been created locally before the failed push,
+    // so the push fallback path operated on a real new commit.
+    let reopened = git2::Repository::open(&work_dir).unwrap();
+    let head_msg = reopened
+        .head()
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .message()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        head_msg, "cfgd: auto-commit configuration changes",
+        "the auto-commit must be created before the push fallback fails"
+    );
+}
+
 // --- handle_sync: updates daemon state timestamps ---
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

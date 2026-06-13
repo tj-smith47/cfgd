@@ -506,6 +506,43 @@ tokei v12.1.2:
             assert_eq!(v, None);
         }
 
+        #[test]
+        #[serial]
+        fn cargo_installed_packages_with_versions_parses_install_list() {
+            let stdout = "ripgrep v14.1.0:\n    rg\nfd-find v9.0.0:\n    fd\n";
+            let _s = ToolShim::install(SHIM_ENV, 0, stdout, "");
+            let pkgs = CargoManager.installed_packages_with_versions().expect("Ok");
+            let rg = pkgs
+                .iter()
+                .find(|p| p.name == "ripgrep")
+                .expect("ripgrep present");
+            assert_eq!(rg.version, "14.1.0");
+            let fd = pkgs
+                .iter()
+                .find(|p| p.name == "fd-find")
+                .expect("fd-find present");
+            assert_eq!(fd.version, "9.0.0");
+        }
+
+        use cfgd_core::test_helpers::EnvVarGuard;
+
+        /// Point the seam env-var at a non-existent path so the spawned
+        /// `Command` fails with ENOENT, exercising the `CommandFailed` map_err
+        /// arm in `available_version` (which calls `.output()` directly).
+        #[test]
+        #[serial]
+        fn cargo_available_version_spawn_failure_maps_to_command_failed() {
+            let _g = EnvVarGuard::set(SHIM_ENV, "/nonexistent/cfgd-cargo-shim-does-not-exist");
+            let err = CargoManager
+                .available_version("ripgrep")
+                .expect_err("ENOENT spawn must surface as CommandFailed, not a panic");
+            assert!(
+                matches!(err, cfgd_core::errors::CfgdError::Package(
+                    PackageError::CommandFailed { ref manager, .. }) if manager == "cargo"),
+                "spawn failure must be PackageError::CommandFailed{{manager:\"cargo\"}}, got: {err:?}"
+            );
+        }
+
         use cfgd_core::test_helpers::install_named_path_shim;
 
         #[test]

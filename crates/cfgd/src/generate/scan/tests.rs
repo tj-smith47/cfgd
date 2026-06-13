@@ -1929,3 +1929,89 @@ fn test_scan_dotfiles_counts_only_file_content_for_size() {
         .unwrap();
     assert_eq!(gitconfig.size_bytes, 0);
 }
+
+// ---- scan_system_settings: launch_agents discovery via test-home ----
+
+#[test]
+fn test_scan_system_settings_collects_and_sorts_launch_agent_plists() {
+    // The launch_agents block reads `~/Library/LaunchAgents` via expand_tilde,
+    // which honors the thread-local test-home override — so we can exercise it
+    // deterministically on any platform without touching the real HOME.
+    let tmp = TempDir::new().unwrap();
+    let agents = tmp.path().join("Library").join("LaunchAgents");
+    fs::create_dir_all(&agents).unwrap();
+    // Two plist files (out of alphabetical order) plus a non-plist that must be
+    // ignored.
+    fs::write(agents.join("com.zeta.agent.plist"), "<plist/>").unwrap();
+    fs::write(agents.join("com.alpha.agent.plist"), "<plist/>").unwrap();
+    fs::write(agents.join("README.txt"), "not a plist").unwrap();
+
+    let _home = cfgd_core::with_test_home_guard(tmp.path());
+    let result = scan_system_settings().unwrap();
+
+    assert_eq!(
+        result.launch_agents,
+        vec![
+            "com.alpha.agent.plist".to_string(),
+            "com.zeta.agent.plist".to_string(),
+        ],
+        "only .plist files, sorted alphabetically"
+    );
+}
+
+#[test]
+fn test_scan_system_settings_no_launch_agents_dir_yields_empty() {
+    // Test-home with no Library/LaunchAgents directory → empty launch_agents.
+    let tmp = TempDir::new().unwrap();
+    let _home = cfgd_core::with_test_home_guard(tmp.path());
+    let result = scan_system_settings().unwrap();
+    assert!(
+        result.launch_agents.is_empty(),
+        "absent LaunchAgents dir must yield no agents, got: {:?}",
+        result.launch_agents
+    );
+}
+
+// ---- scan_dotfiles: unreadable .config returns entries gathered so far ----
+
+#[cfg(unix)]
+#[test]
+fn test_scan_dotfiles_unreadable_config_dir_returns_home_entries() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Skip when running as root: root bypasses the 0000 permission and can
+    // still read the directory, so the early-return branch would not be hit.
+    if cfgd_core::is_root() {
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let home = tmp.path();
+    fs::write(home.join(".zshrc"), "# zsh").unwrap();
+
+    let config_dir = home.join(".config");
+    fs::create_dir_all(&config_dir).unwrap();
+    // Make .config unreadable so read_dir errors → the function returns the
+    // home-level entries already collected (the `Err(_) => return Ok(entries)`
+    // branch).
+    fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let entries = scan_dotfiles(home).unwrap();
+
+    // Restore perms so TempDir cleanup can remove the directory.
+    fs::set_permissions(&config_dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let paths: Vec<_> = entries.iter().map(|e| &e.path).collect();
+    assert!(
+        paths.contains(&&home.join(".zshrc")),
+        ".zshrc gathered before the unreadable .config short-circuit"
+    );
+    // .config itself appears as a home-level dotfile entry, but no children of
+    // it (since it could not be read).
+    assert!(
+        !paths
+            .iter()
+            .any(|p| p.starts_with(home.join(".config")) && p.as_path() != config_dir.as_path()),
+        "no .config children when the directory is unreadable"
+    );
+}

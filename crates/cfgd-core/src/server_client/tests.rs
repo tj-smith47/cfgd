@@ -513,6 +513,20 @@ fn checkin_connection_refused() {
 }
 
 #[test]
+fn submit_verification_connection_refused() {
+    // Drives the post_with_retry failure → map_err arm in submit_verification.
+    let client = ServerClient::new("http://127.0.0.1:1", None, "dev-1");
+    let printer = test_printer();
+    let result = client.submit_verification("ch-1", "sig", "ssh-ed25519", &printer);
+    assert!(result.is_err());
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("enrollment verification failed"),
+        "unexpected error: {err_msg}"
+    );
+}
+
+#[test]
 fn enroll_returns_err_on_500_response() {
     let mut server = mockito::Server::new();
     let _mock = server
@@ -685,6 +699,65 @@ fn save_credential_writes_file_with_restricted_perms() {
     let loaded: DeviceCredential =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     assert_eq!(loaded.api_key, "secret-key");
+}
+
+#[test]
+#[serial_test::serial]
+fn save_credential_real_path_roundtrips_through_state_dir() {
+    // Exercises the production `save_credential` + `load_credential` +
+    // `credential_path` functions by redirecting the state dir to a temp dir via
+    // CFGD_STATE_DIR (no real HOME or state dir touched). `#[serial]` because
+    // the env var is process-global.
+    use crate::test_helpers::EnvVarGuard;
+
+    let dir = tempfile::tempdir().unwrap();
+    let _guard = EnvVarGuard::set("CFGD_STATE_DIR", dir.path().to_str().unwrap());
+
+    let cred = DeviceCredential {
+        server_url: "https://cfgd.example.com".into(),
+        device_id: "real-dev".into(),
+        api_key: "cfgd_dev_realkey".into(),
+        username: "realuser".into(),
+        team: Some("platform".into()),
+        enrolled_at: "2026-06-13T00:00:00Z".into(),
+    };
+
+    let written = save_credential(&cred).expect("save_credential must succeed");
+    assert_eq!(written, dir.path().join(DEVICE_CREDENTIAL_FILENAME));
+    assert!(written.exists(), "credential file must exist on disk");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(&written).unwrap();
+        assert_eq!(
+            meta.permissions().mode() & 0o777,
+            0o600,
+            "saved credential must be 0600"
+        );
+    }
+
+    let loaded = load_credential()
+        .expect("load_credential must succeed")
+        .expect("a credential must be present after save");
+    assert_eq!(loaded.device_id, "real-dev");
+    assert_eq!(loaded.api_key, "cfgd_dev_realkey");
+    assert_eq!(loaded.username, "realuser");
+    assert_eq!(loaded.team.as_deref(), Some("platform"));
+    assert_eq!(loaded.enrolled_at, "2026-06-13T00:00:00Z");
+}
+
+#[test]
+#[serial_test::serial]
+fn load_credential_returns_none_when_absent_in_state_dir() {
+    // Real `load_credential` path with an empty state dir → Ok(None).
+    use crate::test_helpers::EnvVarGuard;
+
+    let dir = tempfile::tempdir().unwrap();
+    let _guard = EnvVarGuard::set("CFGD_STATE_DIR", dir.path().to_str().unwrap());
+
+    let loaded = load_credential().expect("load_credential must not error on empty dir");
+    assert!(loaded.is_none(), "no credential should be present");
 }
 
 // ===========================================================================

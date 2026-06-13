@@ -1885,4 +1885,261 @@ mod tests {
             "skip line should name the unless guard and reason: {out:?}"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // run_str resolution, spawn-failure mapping, exit-code error path
+    // -----------------------------------------------------------------------
+
+    // An absolute `run:` path that exists is executed directly as a file
+    // (scripts.rs:306-307, the non-relative branch), NOT joined against
+    // script_dir. `/bin/true` exits zero, so the script reports changed=true.
+    #[cfg(unix)]
+    #[test]
+    fn execute_script_absolute_run_path_runs_as_file() {
+        let printer = crate::test_helpers::test_printer();
+        let work = tempfile::tempdir().unwrap();
+        let script_dir = tempfile::tempdir().unwrap();
+        let true_bin = if std::path::Path::new("/usr/bin/true").exists() {
+            "/usr/bin/true"
+        } else {
+            "/bin/true"
+        };
+        let entry = ScriptEntry::Simple(true_bin.into());
+
+        let (label, changed, _captured) = execute_script(
+            &entry,
+            // A script_dir that does NOT contain `true` — proves the absolute
+            // path is used verbatim, never joined onto script_dir.
+            script_dir.path(),
+            work.path(),
+            &[],
+            std::time::Duration::from_secs(5),
+            &printer,
+            None,
+            None,
+        )
+        .expect("absolute executable run path must run directly");
+        assert!(changed, "a zero-exit file script reports changed=true");
+        assert!(
+            label.contains(true_bin),
+            "label should reference the absolute run path: {label}"
+        );
+    }
+
+    // A non-zero exit from the body surfaces a structured error naming the
+    // script and the exit code (scripts.rs:490-498). `/bin/false` exits 1.
+    #[cfg(unix)]
+    #[test]
+    fn execute_script_nonzero_exit_errors_with_exit_code() {
+        let printer = crate::test_helpers::test_printer();
+        let work = tempfile::tempdir().unwrap();
+        // Inline command that prints to stdout then exits non-zero, so the
+        // error message also folds in the captured output.
+        let entry = ScriptEntry::Simple("echo boom; exit 7".into());
+
+        let err = execute_script(
+            &entry,
+            work.path(),
+            work.path(),
+            &[],
+            std::time::Duration::from_secs(5),
+            &printer,
+            None,
+            None,
+        )
+        .expect_err("a non-zero exit must surface as Err");
+
+        match err {
+            CfgdError::Config(ConfigError::Invalid { message }) => {
+                assert!(
+                    message.contains("failed (exit 7)"),
+                    "message should name the real exit code: {message}"
+                );
+                assert!(
+                    message.contains("echo boom; exit 7"),
+                    "message should name the failing script: {message}"
+                );
+                assert!(
+                    message.contains("boom"),
+                    "message should fold in the script's captured output: {message}"
+                );
+            }
+            other => panic!("expected ConfigError::Invalid, got: {other:?}"),
+        }
+    }
+
+    // A spawn ENOENT (the interpreter binary cannot be resolved) is remapped to
+    // a targeted message pointing at a PATH-dropping spec.env as the usual
+    // cause, instead of a bare `os error 2` (scripts.rs:410-421). Exercised via
+    // the Pwsh interpreter when pwsh is not installed; skipped otherwise (the
+    // spawn would then succeed).
+    #[cfg(unix)]
+    #[test]
+    fn execute_script_spawn_enoent_maps_to_interpreter_hint() {
+        if crate::command_available("pwsh") {
+            return;
+        }
+        let printer = crate::test_helpers::test_printer();
+        let work = tempfile::tempdir().unwrap();
+        let entry = ScriptEntry::Full {
+            workdir: None,
+            run: "Write-Output hi".into(),
+            timeout: None,
+            idle_timeout: None,
+            continue_on_error: None,
+            shell: ScriptShell::Pwsh,
+            only_if: None,
+            unless: None,
+            creates: None,
+            interactive: false,
+        };
+
+        let err = execute_script(
+            &entry,
+            work.path(),
+            work.path(),
+            &[],
+            std::time::Duration::from_secs(5),
+            &printer,
+            None,
+            None,
+        )
+        .expect_err("a missing interpreter must surface as Err, not hang");
+
+        match err {
+            CfgdError::Config(ConfigError::Invalid { message }) => {
+                assert!(
+                    message.contains("could not spawn the script interpreter"),
+                    "ENOENT spawn must be remapped to the interpreter hint: {message}"
+                );
+                assert!(
+                    message.contains("spec.env PATH"),
+                    "hint should point at a PATH-dropping spec.env: {message}"
+                );
+            }
+            other => panic!("expected ConfigError::Invalid, got: {other:?}"),
+        }
+    }
+
+    // build_inline_command(Pwsh, ...): pwsh is invoked with -NoProfile -Command
+    // and the raw command, with no env-file preamble (cfgd_env_path_for returns
+    // None for non-bash/zsh shells). Asserts the exact argv shape
+    // (scripts.rs:630-633).
+    #[test]
+    fn pwsh_inline_command_argv_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cmd = build_inline_command(ScriptShell::Pwsh, "Get-Date", tmp.path(), None);
+        assert_eq!(
+            cmd.get_program().to_string_lossy(),
+            "pwsh",
+            "Pwsh shell must invoke the pwsh interpreter"
+        );
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            args,
+            vec!["-NoProfile", "-Command", "Get-Date"],
+            "pwsh argv must be -NoProfile -Command <cmd> with no preamble"
+        );
+    }
+
+    // cfgd_env_path_for returns None for every non-bash/zsh shell even when a
+    // `~/.cfgd.env` exists — only bash/zsh get the source preamble
+    // (scripts.rs:653-660).
+    #[test]
+    #[serial_test::serial]
+    fn cfgd_env_path_for_only_bash_and_zsh() {
+        let home = tempfile::tempdir().unwrap();
+        crate::with_test_home(home.path(), || {
+            // Create a real ~/.cfgd.env so the `exists()` check would pass.
+            std::fs::write(home.path().join(".cfgd.env"), "export X=1\n").unwrap();
+
+            assert!(
+                cfgd_env_path_for(ScriptShell::Bash).is_some(),
+                "bash must pick up an existing ~/.cfgd.env"
+            );
+            assert!(
+                cfgd_env_path_for(ScriptShell::Zsh).is_some(),
+                "zsh must pick up an existing ~/.cfgd.env"
+            );
+            assert!(
+                cfgd_env_path_for(ScriptShell::Sh).is_none(),
+                "sh must never source ~/.cfgd.env"
+            );
+            assert!(
+                cfgd_env_path_for(ScriptShell::Auto).is_none(),
+                "auto must never source ~/.cfgd.env"
+            );
+            assert!(
+                cfgd_env_path_for(ScriptShell::Pwsh).is_none(),
+                "pwsh must never source ~/.cfgd.env"
+            );
+        });
+    }
+
+    // resolve_script_workdir: a `$VAR` reference present in the script env is
+    // expanded; an unset reference expands to empty; a leading `~` expands to
+    // home AFTER var expansion (scripts.rs:134-142).
+    #[test]
+    #[serial_test::serial]
+    fn resolve_script_workdir_expands_vars_then_tilde() {
+        let home = tempfile::tempdir().unwrap();
+        crate::with_test_home(home.path(), || {
+            let env = vec![("DEPLOY".to_string(), "/srv/app".to_string())];
+
+            // $VAR present in env → expands to its value.
+            assert_eq!(
+                resolve_script_workdir("$DEPLOY/cfg", &env),
+                std::path::PathBuf::from("/srv/app/cfg")
+            );
+            // ${VAR} braced form too.
+            assert_eq!(
+                resolve_script_workdir("${DEPLOY}", &env),
+                std::path::PathBuf::from("/srv/app")
+            );
+            // Leading ~ expands to home.
+            assert_eq!(
+                resolve_script_workdir("~/sub", &env),
+                home.path().join("sub")
+            );
+            // Unset reference expands to empty (shell-like).
+            assert_eq!(
+                resolve_script_workdir("/a/${NOPE}/b", &env),
+                std::path::PathBuf::from("/a//b")
+            );
+        });
+    }
+
+    // build_script_env: the Reconcile context maps to the "reconcile" CFGD_CONTEXT
+    // value (the Apply arm is covered elsewhere), and module_dir is injected when
+    // provided. Asserts exact names+values and that module_name is omitted when
+    // None (scripts.rs:57-70).
+    #[test]
+    fn build_script_env_reconcile_context_and_module_dir() {
+        let env = build_script_env(
+            std::path::Path::new("/cfg"),
+            "node",
+            ReconcileContext::Reconcile,
+            &ScriptPhase::OnDrift,
+            None,
+            Some(std::path::Path::new("/mods/x")),
+        );
+        let lookup = |k: &str| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+
+        assert_eq!(lookup("CFGD_CONTEXT"), Some("reconcile"));
+        assert_eq!(lookup("CFGD_PROFILE"), Some("node"));
+        assert_eq!(
+            lookup("CFGD_PHASE"),
+            Some(ScriptPhase::OnDrift.display_name())
+        );
+        assert_eq!(lookup("CFGD_CONFIG_DIR"), Some("/cfg"));
+        assert_eq!(lookup("CFGD_MODULE_DIR"), Some("/mods/x"));
+        assert_eq!(
+            lookup("CFGD_MODULE_NAME"),
+            None,
+            "module name must be omitted when None"
+        );
+    }
 }

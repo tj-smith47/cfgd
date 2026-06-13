@@ -21,8 +21,8 @@ pub(super) use source::resolve_from;
 
 #[cfg(test)]
 use cmd_init::{
-    ApplyPlanOpts, apply_plan, check_prerequisites, is_module_only_apply, pick_profile, scaffold,
-    should_run_apply,
+    ApplyPlanOpts, apply_plan, check_prerequisites, ensure_dir_writable, is_module_only_apply,
+    pick_profile, scaffold, should_run_apply,
 };
 #[cfg(test)]
 use enroll::{

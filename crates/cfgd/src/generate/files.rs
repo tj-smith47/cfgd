@@ -647,6 +647,29 @@ mod tests {
         assert_eq!(entries[0].entry_type, "file");
     }
 
+    #[test]
+    fn list_directory_on_regular_file_returns_access_denied() {
+        // A regular file inside home passes is_path_allowed (canonicalize
+        // succeeds and the path is within home), but read_dir on a regular
+        // file fails with ENOTDIR. That OS error is mapped to FileAccessDenied.
+        //
+        // Not tested: the canonicalize-failure path (nonexistent path) is
+        // already covered by list_directory_nonexistent_within_home_returns_access_denied.
+        // The permission-denied (EACCES) path is unreachable without root or
+        // kernel fault injection on Linux, so it is also omitted here.
+        let (_home_dir, home) = make_home();
+        let (_repo_dir, repo) = make_repo();
+        let file = home.join("not-a-dir.txt");
+        fs::write(&file, "regular file content").unwrap();
+
+        let err = list_directory(&file, &home, &repo).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("access denied"),
+            "read_dir on a regular file must surface as access denied, got: {msg}"
+        );
+    }
+
     // ---------------------------------------------------------------------------
     // adopt_files — error paths
     // ---------------------------------------------------------------------------
@@ -702,5 +725,118 @@ mod tests {
         let written = adopt_files(&pairs, target.path()).unwrap();
         assert!(written[0].is_absolute());
         assert!(written[0].starts_with(target.path()));
+    }
+
+    #[test]
+    fn adopt_files_parent_create_dir_blocked_by_file_returns_access_denied() {
+        // A relative_dest whose parent path component is already a regular file
+        // makes create_dir_all fail with ENOTDIR — the error maps to
+        // FileAccessDenied referencing the offending parent directory path.
+        let (_home_dir, home) = make_home();
+        let target = TempDir::new().unwrap();
+        let src = home.join("src.toml");
+        fs::write(&src, "data").unwrap();
+
+        // Create a regular file at "blocker"; then ask to write under "blocker/child".
+        fs::write(target.path().join("blocker"), "i am a file").unwrap();
+
+        let pairs = vec![(src, PathBuf::from("blocker/child"))];
+        let err = adopt_files(&pairs, target.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("blocker") && msg.contains("access denied"),
+            "create_dir_all under a regular file must surface FileAccessDenied for the parent, got: {msg}"
+        );
+        // The destination must not have been created.
+        assert!(!target.path().join("blocker/child").exists());
+    }
+
+    #[test]
+    fn adopt_files_atomic_write_blocked_by_dir_at_destination_returns_access_denied() {
+        // The destination path itself is an existing directory — atomic_write's
+        // final rename onto a directory fails, surfacing FileAccessDenied for
+        // the destination path.
+        let (_home_dir, home) = make_home();
+        let target = TempDir::new().unwrap();
+        let src = home.join("src.toml");
+        fs::write(&src, "payload").unwrap();
+
+        // Pre-create a directory exactly where the file should land.
+        fs::create_dir_all(target.path().join("conf")).unwrap();
+
+        let pairs = vec![(src, PathBuf::from("conf"))];
+        let err = adopt_files(&pairs, target.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("conf") && msg.contains("access denied"),
+            "atomic_write onto an existing directory must surface FileAccessDenied, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn adopt_files_partial_progress_first_succeeds_then_second_fails() {
+        // The first pair writes successfully; the second targets a blocked
+        // destination. adopt_files short-circuits on the error, so the first
+        // file is on disk but the function returns Err (no Vec is returned).
+        let (_home_dir, home) = make_home();
+        let target = TempDir::new().unwrap();
+        let ok_src = home.join("ok.txt");
+        fs::write(&ok_src, "good").unwrap();
+        let bad_src = home.join("bad.txt");
+        fs::write(&bad_src, "also good").unwrap();
+        // Block the second destination with a directory at its path.
+        fs::create_dir_all(target.path().join("blocked")).unwrap();
+
+        let pairs = vec![
+            (ok_src, PathBuf::from("first.txt")),
+            (bad_src, PathBuf::from("blocked")),
+        ];
+        let err = adopt_files(&pairs, target.path()).unwrap_err();
+        assert!(err.to_string().contains("access denied"));
+        // First file was written before the second failed.
+        assert_eq!(
+            fs::read_to_string(target.path().join("first.txt")).unwrap(),
+            "good"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // read_file — invalid UTF-8 handling (lossy conversion path)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn read_file_invalid_utf8_is_lossily_decoded() {
+        // The small-file branch decodes via String::from_utf8_lossy. Invalid
+        // byte sequences must become U+FFFD rather than erroring.
+        let (_home_dir, home) = make_home();
+        let (_repo_dir, repo) = make_repo();
+        let file = home.join("binary.dat");
+        // 0xFF 0xFE is not valid UTF-8.
+        fs::write(&file, [b'h', b'i', 0xFF, 0xFE]).unwrap();
+
+        let result = read_file(&file, &home, &repo).unwrap();
+        assert!(!result.truncated);
+        assert_eq!(result.size_bytes, 4);
+        // "hi" preserved, the two invalid bytes each become the replacement char.
+        assert_eq!(result.content, "hi\u{FFFD}\u{FFFD}");
+    }
+
+    #[test]
+    fn read_file_truncated_invalid_utf8_decoded_lossily() {
+        // The >MAX_FILE_SIZE branch reads exactly MAX_FILE_SIZE bytes then
+        // lossily decodes. Place an invalid byte within the first window.
+        let (_home_dir, home) = make_home();
+        let (_repo_dir, repo) = make_repo();
+        let file = home.join("bigbinary.dat");
+        let mut content = vec![b'A'; MAX_FILE_SIZE as usize + 10];
+        content[0] = 0xFF; // invalid UTF-8 lead byte inside the read window
+        fs::write(&file, &content).unwrap();
+
+        let result = read_file(&file, &home, &repo).unwrap();
+        assert!(result.truncated);
+        assert_eq!(result.size_bytes, MAX_FILE_SIZE + 10);
+        // First char is the replacement, rest are 'A' up to the window length.
+        assert!(result.content.starts_with('\u{FFFD}'));
+        assert!(result.content.ends_with('A'));
     }
 }

@@ -322,3 +322,209 @@ pub(in crate::cli) fn get_secret_backend(
         .secret_backend
         .ok_or_else(|| anyhow::anyhow!("No secret backend configured"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cfgd_core::output::OutputFormat;
+
+    fn parse_config(yaml: &str) -> CfgdConfig {
+        config::parse_config(yaml, Path::new("cfgd.yaml")).expect("fixture config must parse")
+    }
+
+    fn cli_for(config: PathBuf) -> Cli {
+        Cli {
+            config,
+            profile: None,
+            verbose: 0,
+            quiet: true,
+            no_color: true,
+            output: crate::cli::OutputFormatArg(OutputFormat::Table),
+            list_envelope: false,
+            jsonpath: None,
+            state_dir: None,
+            config_dir: None,
+            cache_dir: None,
+            runtime_dir: None,
+            system: false,
+            command: None,
+        }
+    }
+
+    // --- secret_backend_from_config ---
+
+    #[test]
+    fn secret_backend_defaults_to_sops_with_no_key_when_config_absent() {
+        let (name, key) = secret_backend_from_config(None);
+        assert_eq!(name, "sops", "absent config must default to sops backend");
+        assert_eq!(key, None, "absent config must yield no age key path");
+    }
+
+    #[test]
+    fn secret_backend_defaults_to_sops_when_secrets_section_omitted() {
+        let cfg = parse_config(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        );
+        let (name, key) = secret_backend_from_config(Some(&cfg));
+        assert_eq!(name, "sops");
+        assert_eq!(key, None);
+    }
+
+    #[test]
+    fn secret_backend_extracts_named_backend_and_age_key() {
+        let cfg = parse_config(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  secrets:\n    backend: age\n    sops:\n      ageKey: /keys/age.txt\n",
+        );
+        let (name, key) = secret_backend_from_config(Some(&cfg));
+        assert_eq!(name, "age", "must surface the configured backend verbatim");
+        assert_eq!(
+            key,
+            Some(PathBuf::from("/keys/age.txt")),
+            "must surface the configured sops.ageKey"
+        );
+    }
+
+    #[test]
+    fn secret_backend_named_backend_without_sops_block_has_no_key() {
+        let cfg = parse_config(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  secrets:\n    backend: vault\n",
+        );
+        let (name, key) = secret_backend_from_config(Some(&cfg));
+        assert_eq!(name, "vault");
+        assert_eq!(key, None, "no sops block means no age key path");
+    }
+
+    // --- build_registry_with_config ---
+
+    #[test]
+    fn build_registry_registers_package_managers_and_secret_backend() {
+        let registry = build_registry_with_config(None);
+        assert!(
+            !registry.package_managers.is_empty(),
+            "registry must register at least one package manager"
+        );
+        let backend = registry
+            .secret_backend
+            .as_ref()
+            .expect("registry must always carry a secret backend");
+        assert_eq!(
+            backend.name(),
+            "sops",
+            "default registry backend must be sops"
+        );
+        assert!(
+            !registry.secret_providers.is_empty(),
+            "registry must register secret providers"
+        );
+    }
+
+    #[test]
+    fn build_registry_uses_age_backend_when_config_selects_age() {
+        let cfg = parse_config(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  secrets:\n    backend: age\n",
+        );
+        let registry = build_registry_with_config(Some(&cfg));
+        let backend = registry
+            .secret_backend
+            .as_ref()
+            .expect("registry must carry a secret backend");
+        assert_eq!(
+            backend.name(),
+            "age",
+            "config-selected age backend must win"
+        );
+    }
+
+    #[test]
+    fn build_registry_no_args_delegates_to_config_none() {
+        // build_registry() is the zero-arg convenience over build_registry_with_config(None).
+        let a = build_registry();
+        let b = build_registry_with_config(None);
+        assert_eq!(
+            a.package_managers.len(),
+            b.package_managers.len(),
+            "zero-arg build_registry must match build_registry_with_config(None)"
+        );
+        assert_eq!(
+            a.secret_providers.len(),
+            b.secret_providers.len(),
+            "secret provider count must match"
+        );
+    }
+
+    // --- cfgd_installed_packages ---
+
+    #[test]
+    fn cfgd_installed_packages_formats_manager_slash_package() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = StateStore::open_in_dir(dir.path()).expect("open state");
+        state
+            .upsert_package_resource("brew/ripgrep", "local", None, None)
+            .expect("track package");
+
+        let set = cfgd_installed_packages(&state).expect("collect installed");
+        assert!(
+            set.contains("brew/ripgrep"),
+            "installed set must contain the manager/package id, got: {set:?}"
+        );
+    }
+
+    #[test]
+    fn cfgd_installed_packages_empty_when_no_tracked_packages() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = StateStore::open_in_dir(dir.path()).expect("open state");
+        let set = cfgd_installed_packages(&state).expect("collect installed");
+        assert!(
+            set.is_empty(),
+            "no tracked packages must yield an empty set, got: {set:?}"
+        );
+    }
+
+    // --- resolve_secret_backend / get_secret_backend ---
+
+    #[test]
+    fn resolve_secret_backend_errors_when_file_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_for(dir.path().join("cfgd.yaml"));
+        let missing = dir.path().join("absent.enc");
+
+        // ProviderRegistry is not Debug, so match rather than expect_err.
+        let err = match resolve_secret_backend(&cli, &missing) {
+            Ok(_) => panic!("missing target file must error"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("File not found"),
+            "error must name the missing file, got: {err}"
+        );
+    }
+
+    #[test]
+    fn get_secret_backend_errors_when_file_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_for(dir.path().join("cfgd.yaml"));
+        let missing = dir.path().join("absent.enc");
+
+        // Box<dyn SecretBackend> is not Debug, so match rather than expect_err.
+        let err = match get_secret_backend(&cli, &missing) {
+            Ok(_) => panic!("missing target file must error"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("File not found"),
+            "error must name the missing file, got: {err}"
+        );
+    }
+
+    #[test]
+    fn open_state_store_honors_explicit_dir() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let state = open_state_store(Some(dir.path())).expect("open in explicit dir");
+        // Round-trip a write to prove the store at this dir is live and usable.
+        state
+            .upsert_package_resource("apt/curl", "local", None, None)
+            .expect("write to explicit-dir store");
+        let set = cfgd_installed_packages(&state).expect("read back");
+        assert!(set.contains("apt/curl"));
+    }
+}

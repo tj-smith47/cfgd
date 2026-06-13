@@ -938,4 +938,112 @@ spec:
             "expected key-not-found error, got: {err}"
         );
     }
+
+    // --- coverage: mapping/null rendering and parse-error paths ---
+
+    // (a) Getting a mapping key in human/Table mode renders the YAML block.
+    // The `theme` key in SAMPLE_CONFIG is a mapping (`{name: monokai}`).
+    // The `other` branch in cmd_config_get serialises it via serde_yaml and
+    // strips the leading "---\n" document marker, so the output should be a
+    // multi-line YAML block containing `name: monokai`.
+    #[test]
+    fn cmd_config_get_mapping_in_human_mode_renders_yaml_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = test_cli_for(write_sample_config(dir.path()));
+        let (printer, cap) = Printer::for_test_doc();
+
+        cmd_config_get(&cli, &printer, "theme").unwrap();
+        drop(printer);
+
+        let captured = cap.human();
+        assert!(
+            captured.contains("name: monokai"),
+            "expected YAML block with 'name: monokai', got: {captured:?}"
+        );
+    }
+
+    // (b) A key whose value is explicit YAML null produces empty stdout in human mode.
+    #[test]
+    fn cmd_config_get_null_value_produces_empty_output_in_human_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cfgd.yaml");
+        // `profile` is an explicit null here so the Null branch is exercised.
+        std::fs::write(
+            &path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: null\n",
+        )
+        .unwrap();
+        let cli = test_cli_for(path);
+        let (printer, cap) = Printer::for_test_doc();
+
+        cmd_config_get(&cli, &printer, "profile").unwrap();
+        drop(printer);
+
+        let captured = cap.human();
+        assert!(
+            captured.trim().is_empty(),
+            "null value should produce empty output, got: {captured:?}"
+        );
+    }
+
+    // (c) A syntactically broken YAML file fails serde_yaml parsing in
+    // cmd_config_get and returns an error with error_kind == "parse_failed".
+    #[test]
+    fn cmd_config_get_broken_yaml_yields_parse_failed_error_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.yaml");
+        // This is syntactically invalid YAML: a mapping value followed by a
+        // block sequence entry with an empty key, which serde_yaml rejects.
+        std::fs::write(&path, "spec:\n  - : :\n").unwrap();
+        let cli = test_cli_for(path);
+        let printer = test_printer();
+
+        let err = cmd_config_get(&cli, &printer, "profile").unwrap_err();
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("CliErrorMeta carrier on parse_failed");
+        assert_eq!(
+            meta.error_kind, "parse_failed",
+            "expected parse_failed error_kind, got: {:?}",
+            meta.error_kind
+        );
+    }
+
+    // Target 2: cmd_config_show with a broken YAML file yields parse_failed.
+    // `config show` uses `load_config` (the typed serde path), so a valid-YAML
+    // but schema-violating file hits a different code path than cmd_config_get.
+    // We use the same syntactically-invalid YAML to ensure the serde_yaml layer
+    // rejects it before schema validation is even reached.
+    #[test]
+    fn cmd_config_show_broken_yaml_yields_parse_failed_error_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.yaml");
+        std::fs::write(&path, "spec:\n  - : :\n").unwrap();
+        let cli = test_cli_for(path);
+        let printer = test_printer();
+
+        let err = cmd_config_show(&cli, &printer).unwrap_err();
+        let meta = err
+            .downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("CliErrorMeta carrier on parse_failed");
+        assert_eq!(
+            meta.error_kind, "parse_failed",
+            "expected parse_failed error_kind, got: {:?}",
+            meta.error_kind
+        );
+    }
+
+    // Target 3: walk_yaml_path_mut errors with "cannot traverse into non-mapping"
+    // when an intermediate segment resolves to a scalar.
+    // `a: 1` → attempting `a.b.c` finds `a` = scalar 1, not a mapping.
+    #[test]
+    fn walk_yaml_path_mut_non_mapping_intermediate_errs() {
+        let mut yaml: serde_yaml::Value = serde_yaml::from_str("a: 1\n").unwrap();
+        let err = walk_yaml_path_mut(&mut yaml, "a.b.c").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cannot traverse into non-mapping"),
+            "expected 'cannot traverse into non-mapping', got: {msg:?}"
+        );
+    }
 }

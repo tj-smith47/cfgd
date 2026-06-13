@@ -101,7 +101,7 @@ spec: {}
 }
 
 #[test]
-fn load_module_wrong_kind_errors() {
+fn load_modules_wrong_kind_errors() {
     let dir = tempfile::tempdir().unwrap();
     let mod_dir = dir.path().join("modules").join("bad");
     std::fs::create_dir_all(&mod_dir).unwrap();
@@ -5177,4 +5177,410 @@ mod git_fixture_tests {
         let unknown = latest_module_version(&registry, "ghost", cache.path()).unwrap();
         assert!(unknown.is_none());
     }
+}
+
+// ---------------------------------------------------------------------------
+// loader.rs — coverage for uncovered branches
+// ---------------------------------------------------------------------------
+
+/// Create a valid module.yaml at `mod_dir/module.yaml` for a module named `name`.
+fn write_valid_module_yaml(mod_dir: &Path, name: &str) {
+    std::fs::create_dir_all(mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec: {{}}\n"
+        ),
+    )
+    .unwrap();
+}
+
+/// `read_module_yaml_capped` must reject a file that exceeds MAX_MODULE_SIZE (10 MB).
+/// The error must contain "too large".
+#[test]
+fn load_module_oversized_file_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let mod_dir = dir.path().join("huge");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+
+    // Write a file of exactly 10 MB + 1 byte so meta.len() > MAX_MODULE_SIZE.
+    let oversized: Vec<u8> = vec![b'#'; 10 * 1024 * 1024 + 1];
+    std::fs::write(mod_dir.join("module.yaml"), &oversized).unwrap();
+
+    let result = load_module(&mod_dir);
+    assert!(result.is_err(), "oversized module.yaml must be rejected");
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("too large"),
+        "error must mention 'too large': {msg}"
+    );
+}
+
+/// `load_modules` with an oversized module.yaml inside the modules/ dir
+/// must propagate the same error through the scanning loop.
+#[test]
+fn load_modules_oversized_file_in_modules_dir_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let mod_dir = dir.path().join("modules").join("bloat");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+
+    let oversized: Vec<u8> = vec![b'#'; 10 * 1024 * 1024 + 1];
+    std::fs::write(mod_dir.join("module.yaml"), &oversized).unwrap();
+
+    let result = load_modules(dir.path());
+    assert!(
+        result.is_err(),
+        "oversized module.yaml must fail load_modules"
+    );
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("too large"),
+        "error must mention 'too large': {msg}"
+    );
+}
+
+/// `load_modules` must error with a message containing "cannot read modules directory"
+/// when the `modules/` directory itself is not readable (Unix only; skip as root).
+#[test]
+#[cfg(unix)]
+fn load_modules_unreadable_directory_errors() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // Running as root bypasses permission checks — skip to avoid false pass.
+    if crate::is_root() {
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let modules_dir = dir.path().join("modules");
+    std::fs::create_dir_all(&modules_dir).unwrap();
+
+    // Write one valid module so the dir isn't empty.
+    write_valid_module_yaml(&modules_dir.join("mod1"), "mod1");
+
+    // Remove read + execute permission from modules/ so read_dir fails.
+    std::fs::set_permissions(&modules_dir, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let result = load_modules(dir.path());
+
+    // Restore permissions before any assertion so tempdir cleanup doesn't panic.
+    std::fs::set_permissions(&modules_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(result.is_err(), "unreadable modules dir must error");
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("cannot read modules directory"),
+        "error must name the directory problem: {msg}"
+    );
+}
+
+/// `read_module_yaml_capped` error path (lines 37-41): file exists (so metadata
+/// succeeds) but cannot be read because permissions are removed (Unix only, non-root).
+#[test]
+#[cfg(unix)]
+fn load_module_unreadable_yaml_errors() {
+    use std::os::unix::fs::PermissionsExt;
+
+    if crate::is_root() {
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let mod_dir = dir.path().join("secret");
+    write_valid_module_yaml(&mod_dir, "secret");
+
+    // Remove read permission from module.yaml so fs::read_to_string fails.
+    let yaml = mod_dir.join("module.yaml");
+    std::fs::set_permissions(&yaml, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let result = load_module(&mod_dir);
+
+    // Restore before asserting so tempdir cleanup succeeds.
+    std::fs::set_permissions(&yaml, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert!(result.is_err(), "unreadable module.yaml must error");
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("cannot read module file"),
+        "error must say 'cannot read module file': {msg}"
+    );
+}
+
+/// `load_module` when the directory has no `module.yaml` must return
+/// `ModuleError::NotFound` with the directory base-name in the message.
+#[test]
+fn load_module_missing_yaml_returns_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let mod_dir = dir.path().join("mymod");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+
+    let result = load_module(&mod_dir);
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("not found") || msg.contains("mymod"),
+        "expected NotFound mentioning 'mymod': {msg}"
+    );
+}
+
+/// `load_module` with a malformed YAML file must return a parse error, not panic.
+#[test]
+fn load_module_malformed_yaml_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let mod_dir = dir.path().join("badmod");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        "this: is: not: valid: yaml: {{{",
+    )
+    .unwrap();
+
+    let result = load_module(&mod_dir);
+    assert!(result.is_err(), "malformed YAML must fail");
+    // The error must be a real parse error, not a NotFound.
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        !msg.contains("not found"),
+        "malformed YAML error must not say 'not found': {msg}"
+    );
+}
+
+/// `load_module` with a YAML file whose `kind` is wrong must propagate the
+/// parse error (kind mismatch), not silently succeed.
+#[test]
+fn load_module_wrong_kind_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let mod_dir = dir.path().join("wrongkind");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: wrongkind\nspec: {}\n",
+    )
+    .unwrap();
+
+    let result = load_module(&mod_dir);
+    assert!(result.is_err(), "wrong kind must fail");
+}
+
+/// `load_module` must populate `name`, `spec`, and `dir` from a valid file.
+#[test]
+fn load_module_populates_all_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let mod_dir = dir.path().join("fullmod");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+    std::fs::write(
+        mod_dir.join("module.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: fullmod\nspec:\n  depends: [base]\n  packages:\n    - name: ripgrep\n",
+    )
+    .unwrap();
+
+    let module = load_module(&mod_dir).unwrap();
+    assert_eq!(module.name, "fullmod");
+    assert_eq!(module.spec.depends, vec!["base"]);
+    assert_eq!(module.spec.packages.len(), 1);
+    assert_eq!(module.spec.packages[0].name, "ripgrep");
+    assert_eq!(module.dir, mod_dir);
+    assert!(module.origin.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// loader.rs — load_modules skip logic
+// ---------------------------------------------------------------------------
+
+/// `load_modules` must silently skip non-directory entries inside `modules/`.
+/// Only actual subdirectories with `module.yaml` should be loaded.
+#[test]
+fn load_modules_skips_plain_files_in_modules_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let modules_dir = dir.path().join("modules");
+    std::fs::create_dir_all(&modules_dir).unwrap();
+
+    // A plain file (not a directory) — must be ignored.
+    std::fs::write(modules_dir.join("not-a-module.yaml"), "ignored").unwrap();
+
+    // A valid module directory alongside it.
+    write_valid_module_yaml(&modules_dir.join("realmod"), "realmod");
+
+    let result = load_modules(dir.path()).unwrap();
+    assert_eq!(
+        result.len(),
+        1,
+        "only the directory module should be loaded"
+    );
+    assert!(result.contains_key("realmod"));
+}
+
+/// `load_modules` must silently skip subdirectories that have no `module.yaml`.
+#[test]
+fn load_modules_skips_dirs_without_module_yaml() {
+    let dir = tempfile::tempdir().unwrap();
+    let modules_dir = dir.path().join("modules");
+    std::fs::create_dir_all(&modules_dir).unwrap();
+
+    // A subdirectory without module.yaml.
+    std::fs::create_dir_all(modules_dir.join("empty-subdir")).unwrap();
+
+    // A valid module alongside it.
+    write_valid_module_yaml(&modules_dir.join("good"), "good");
+
+    let result = load_modules(dir.path()).unwrap();
+    assert_eq!(result.len(), 1);
+    assert!(result.contains_key("good"));
+}
+
+// ---------------------------------------------------------------------------
+// registry.rs — coverage for uncovered branches
+// ---------------------------------------------------------------------------
+
+/// `fetch_registry_modules` must use the fetch-existing path (lines ~180) when
+/// the cache directory is already populated from a previous clone.
+#[test]
+fn fetch_registry_modules_fetch_existing_path_on_second_call() {
+    use crate::config::ModuleRegistryEntry;
+    use crate::modules::registry::fetch_registry_modules;
+    use crate::output::Printer;
+    use crate::test_helpers::file_url;
+
+    let src_dir = tempfile::tempdir().unwrap();
+
+    // Initialise a git repo with one module.
+    let src_repo = git2::Repository::init(src_dir.path()).unwrap();
+    let module_rel = "modules/mytool/module.yaml";
+    std::fs::create_dir_all(src_dir.path().join("modules/mytool")).unwrap();
+    std::fs::write(
+        src_dir.path().join(module_rel),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: mytool\nspec: {}\n",
+    )
+    .unwrap();
+    let mut index = src_repo.index().unwrap();
+    index.add_path(std::path::Path::new(module_rel)).unwrap();
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let tree = src_repo.find_tree(tree_id).unwrap();
+    let sig = git2::Signature::now("t", "t@test.com").unwrap();
+    let commit_id = src_repo
+        .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+        .unwrap();
+    let commit = src_repo.find_commit(commit_id).unwrap();
+    src_repo
+        .tag_lightweight("mytool/v1.0.0", commit.as_object(), false)
+        .unwrap();
+    drop(tree);
+
+    let cache = tempfile::tempdir().unwrap();
+    let (printer, _) = Printer::for_test();
+    let registry = ModuleRegistryEntry {
+        name: "second-call".to_string(),
+        url: file_url(src_dir.path()),
+    };
+
+    // First call: clone path (else branch).
+    let first = fetch_registry_modules(&registry, cache.path(), &printer).unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].name, "mytool");
+
+    // Second call: the cache dir now contains a `.git` entry, so the
+    // `if cache_dir.join(".git").exists()` branch runs (line ~180).
+    let second = fetch_registry_modules(&registry, cache.path(), &printer).unwrap();
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].name, "mytool");
+    assert_eq!(second[0].tags, vec!["v1.0.0"]);
+}
+
+/// `fetch_registry_modules` must silently skip non-directory entries under
+/// `modules/` in the registry repo (line ~204).
+#[test]
+fn fetch_registry_modules_skips_non_dir_entries() {
+    use crate::config::ModuleRegistryEntry;
+    use crate::modules::registry::fetch_registry_modules;
+    use crate::output::Printer;
+    use crate::test_helpers::file_url;
+
+    let src_dir = tempfile::tempdir().unwrap();
+    let src_repo = git2::Repository::init(src_dir.path()).unwrap();
+
+    // `modules/` dir with a plain file and a valid module subdir.
+    std::fs::create_dir_all(src_dir.path().join("modules/real")).unwrap();
+    let module_rel = "modules/real/module.yaml";
+    std::fs::write(
+        src_dir.path().join(module_rel),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: real\nspec: {}\n",
+    )
+    .unwrap();
+    // A plain file inside modules/ — must be skipped.
+    let readme_rel = "modules/README.md";
+    std::fs::write(src_dir.path().join(readme_rel), "docs").unwrap();
+
+    let mut index = src_repo.index().unwrap();
+    index.add_path(std::path::Path::new(module_rel)).unwrap();
+    index.add_path(std::path::Path::new(readme_rel)).unwrap();
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let tree = src_repo.find_tree(tree_id).unwrap();
+    let sig = git2::Signature::now("t", "t@test.com").unwrap();
+    src_repo
+        .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+        .unwrap();
+    drop(tree);
+
+    let cache = tempfile::tempdir().unwrap();
+    let (printer, _) = Printer::for_test();
+    let registry = ModuleRegistryEntry {
+        name: "skip-files".to_string(),
+        url: file_url(src_dir.path()),
+    };
+
+    let modules = fetch_registry_modules(&registry, cache.path(), &printer).unwrap();
+    // Only the directory module should appear; the plain file must be skipped.
+    assert_eq!(modules.len(), 1);
+    assert_eq!(modules[0].name, "real");
+}
+
+/// `fetch_registry_modules` must silently skip subdirectories under `modules/`
+/// that contain no `module.yaml` (line ~208).
+#[test]
+fn fetch_registry_modules_skips_dirs_without_module_yaml() {
+    use crate::config::ModuleRegistryEntry;
+    use crate::modules::registry::fetch_registry_modules;
+    use crate::output::Printer;
+    use crate::test_helpers::file_url;
+
+    let src_dir = tempfile::tempdir().unwrap();
+    let src_repo = git2::Repository::init(src_dir.path()).unwrap();
+
+    // A directory without module.yaml + a valid one.
+    std::fs::create_dir_all(src_dir.path().join("modules/nospec")).unwrap();
+    std::fs::create_dir_all(src_dir.path().join("modules/valid")).unwrap();
+    let yaml_rel = "modules/valid/module.yaml";
+    std::fs::write(
+        src_dir.path().join(yaml_rel),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: valid\nspec: {}\n",
+    )
+    .unwrap();
+    // placeholder file so git has something to commit from the nospec dir.
+    let placeholder = "modules/nospec/.keep";
+    std::fs::write(src_dir.path().join(placeholder), "").unwrap();
+
+    let mut index = src_repo.index().unwrap();
+    index.add_path(std::path::Path::new(yaml_rel)).unwrap();
+    index.add_path(std::path::Path::new(placeholder)).unwrap();
+    index.write().unwrap();
+    let tree_id = index.write_tree().unwrap();
+    let tree = src_repo.find_tree(tree_id).unwrap();
+    let sig = git2::Signature::now("t", "t@test.com").unwrap();
+    src_repo
+        .commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+        .unwrap();
+    drop(tree);
+
+    let cache = tempfile::tempdir().unwrap();
+    let (printer, _) = Printer::for_test();
+    let registry = ModuleRegistryEntry {
+        name: "no-yaml".to_string(),
+        url: file_url(src_dir.path()),
+    };
+
+    let modules = fetch_registry_modules(&registry, cache.path(), &printer).unwrap();
+    assert_eq!(modules.len(), 1);
+    assert_eq!(modules[0].name, "valid");
 }

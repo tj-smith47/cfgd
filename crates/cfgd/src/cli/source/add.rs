@@ -301,3 +301,173 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cfgd_core::output::OutputFormat;
+
+    fn base_args(url: &str) -> SourceAddArgs {
+        SourceAddArgs {
+            url: url.to_string(),
+            name: None,
+            branch: None,
+            profile: None,
+            accept_recommended: false,
+            priority: None,
+            opt_in: Vec::new(),
+            sync_interval: None,
+            auto_apply: false,
+            pin_version: None,
+            yes: true,
+        }
+    }
+
+    fn cli_for(config: PathBuf) -> Cli {
+        Cli {
+            config,
+            profile: None,
+            verbose: 0,
+            quiet: true,
+            no_color: true,
+            output: crate::cli::OutputFormatArg(OutputFormat::Table),
+            list_envelope: false,
+            jsonpath: None,
+            state_dir: None,
+            config_dir: None,
+            cache_dir: None,
+            runtime_dir: None,
+            system: false,
+            command: None,
+        }
+    }
+
+    fn meta_of(err: &anyhow::Error) -> &crate::cli::CliErrorMeta {
+        err.downcast_ref::<crate::cli::CliErrorMeta>()
+            .expect("source add handler must return CliErrorMeta")
+    }
+
+    #[test]
+    fn add_rejects_branch_and_pin_version_together() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_for(dir.path().join("cfgd.yaml"));
+        let (printer, _cap) = Printer::for_test_doc();
+
+        let mut args = base_args("https://example.com/acme/dev.git");
+        args.branch = Some("main".into());
+        args.pin_version = Some("v1.0.0".into());
+
+        let err = cmd_source_add(&cli, &printer, &args)
+            .expect_err("branch + pin must be rejected before any clone");
+        drop(printer);
+
+        let meta = meta_of(&err);
+        assert_eq!(
+            meta.error_kind, "branch_pin_conflict",
+            "expected branch_pin_conflict, got: {meta:?}"
+        );
+        assert_eq!(
+            meta.name, "dev",
+            "error name must be the source name inferred from the URL's final path segment"
+        );
+    }
+
+    #[test]
+    fn add_rejects_pin_version_with_leading_dash() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_for(dir.path().join("cfgd.yaml"));
+        let (printer, _cap) = Printer::for_test_doc();
+
+        let mut args = base_args("https://example.com/acme/dev.git");
+        args.pin_version = Some("--upload-pack=evil".into());
+
+        let err = cmd_source_add(&cli, &printer, &args)
+            .expect_err("dash-leading pin is an argument-injection risk and must be rejected");
+        drop(printer);
+
+        let meta = meta_of(&err);
+        assert_eq!(
+            meta.error_kind, "invalid_pin_version",
+            "expected invalid_pin_version, got: {meta:?}"
+        );
+    }
+
+    #[test]
+    fn add_rejects_pin_version_with_leading_whitespace_dash() {
+        // The guard trims leading whitespace before the dash check, so a
+        // " -flag" pin must also be rejected.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cli = cli_for(dir.path().join("cfgd.yaml"));
+        let (printer, _cap) = Printer::for_test_doc();
+
+        let mut args = base_args("https://example.com/acme/dev.git");
+        args.pin_version = Some("  -x".into());
+
+        let err = cmd_source_add(&cli, &printer, &args).expect_err("whitespace+dash pin rejected");
+        drop(printer);
+
+        assert_eq!(meta_of(&err).error_kind, "invalid_pin_version");
+    }
+
+    #[test]
+    fn add_rejects_duplicate_source_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("cfgd.yaml");
+        // Seed a config that already subscribes to a source named "dev"
+        // (the name inferred from the URL below's final path segment).
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: dev\n      origin:\n        type: Git\n        url: https://example.com/acme/dev.git\n        branch: main\n",
+        )
+        .expect("write seed config");
+        let cli = cli_for(config_path);
+        let (printer, _cap) = Printer::for_test_doc();
+
+        let args = base_args("https://example.com/acme/dev.git");
+
+        let err = cmd_source_add(&cli, &printer, &args)
+            .expect_err("re-adding an existing source name must error before clone");
+        drop(printer);
+
+        let meta = meta_of(&err);
+        assert_eq!(
+            meta.error_kind, "already_exists",
+            "expected already_exists, got: {meta:?}"
+        );
+        assert_eq!(meta.name, "dev");
+        assert!(
+            meta.message.contains("cfgd source update"),
+            "already_exists message must point to 'source update', got: {}",
+            meta.message
+        );
+    }
+
+    #[test]
+    fn add_explicit_name_overrides_inferred_for_duplicate_check() {
+        // With --name set, the duplicate check keys off the explicit name, not
+        // the URL-inferred one.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_path = dir.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: custom\n      origin:\n        type: Git\n        url: https://example.com/acme/dev.git\n        branch: main\n",
+        )
+        .expect("write seed config");
+        let cli = cli_for(config_path);
+        let (printer, _cap) = Printer::for_test_doc();
+
+        let mut args = base_args("https://example.com/acme/dev.git");
+        args.name = Some("custom".into());
+
+        let err =
+            cmd_source_add(&cli, &printer, &args).expect_err("duplicate explicit name must error");
+        drop(printer);
+
+        let meta = meta_of(&err);
+        assert_eq!(meta.error_kind, "already_exists");
+        assert_eq!(
+            meta.name, "custom",
+            "duplicate check must use the explicit --name"
+        );
+    }
+}

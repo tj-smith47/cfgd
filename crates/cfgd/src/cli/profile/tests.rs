@@ -3743,3 +3743,180 @@ mod profile_update_remote_module_yes {
         );
     }
 }
+
+// =========================================================================
+// Coverage-gap tests — create.rs lines 163-186, 249-256 (--file path)
+// =========================================================================
+
+// create.rs lines 163-186: copy_files_to_dir is called when args.files is
+// non-empty. The function copies the source into
+// `profiles/<name>/files/<basename>`, replaces the source with a symlink,
+// and returns (basename, deploy_target) pairs. The caller then builds a
+// Vec<ManagedFileSpec> and sets `doc.spec.files = Some(FilesSpec { .. })`.
+// Lines 249-255 are the `files: Some(FilesSpec { managed: file_entries, .. })`
+// arm that is only reachable when at least one file entry exists.
+//
+// Neither path was exercised because every prior create test left
+// `args.files = vec![]`.
+
+#[cfg(unix)]
+#[test]
+fn profile_create_with_file_copies_source_and_populates_files_spec() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    // Source lives inside the tempdir (not in a system directory) so
+    // copy_files_to_dir accepts it.
+    let src = dir.path().join("myapp.conf");
+    std::fs::write(&src, b"setting=value").unwrap();
+
+    // Deploy target is an absolute path outside the config dir; the profile
+    // YAML records it for later apply.
+    let target = dir.path().join("out").join("myapp.conf");
+    let spec = format!("{}:{}", src.display(), target.display());
+
+    let mut args = make_profile_create_args("fileprof");
+    args.files = vec![spec];
+
+    cmd_profile_create(&cli, &printer, &args).unwrap();
+    drop(printer);
+
+    // The source path should now be a symlink pointing into the cfgd
+    // profiles directory (copy_files_to_dir replaces the original with a
+    // symlink after copying).
+    assert!(
+        src.is_symlink(),
+        "source file should have been replaced by a symlink: {}",
+        src.display()
+    );
+
+    // The profile YAML must contain a files.managed entry with the right
+    // source path (profiles/<name>/files/<basename>).
+    let profile_path = dir.path().join("profiles").join("fileprof.yaml");
+    assert!(profile_path.exists(), "profile YAML must be created");
+    let doc = config::load_profile(&profile_path).unwrap();
+    let files = doc
+        .spec
+        .files
+        .expect("files spec must be populated after --file flag");
+    assert_eq!(
+        files.managed.len(),
+        1,
+        "should have exactly one managed file"
+    );
+    assert!(
+        files.managed[0]
+            .source
+            .contains("fileprof/files/myapp.conf"),
+        "managed file source should be profiles/<name>/files/<basename>: {:?}",
+        files.managed[0].source
+    );
+    assert_eq!(
+        files.managed[0].target, target,
+        "managed file target should match the deploy target from the spec"
+    );
+    assert!(
+        !files.managed[0].private,
+        "private should default to false without --private-files"
+    );
+
+    // Output must confirm the profile was created.
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Created profile 'fileprof'"),
+        "should confirm creation: {output}"
+    );
+}
+
+// create.rs lines 179-186: when `is_private = true` and at least one file
+// was copied, the loop calls `add_to_gitignore` for each file entry. This
+// writes the relative source path into `.gitignore` so the private file is
+// excluded from version control.
+#[cfg(unix)]
+#[test]
+fn profile_create_with_file_private_writes_gitignore_entry() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let src = dir.path().join("secret.conf");
+    std::fs::write(&src, b"top-secret").unwrap();
+
+    let target = dir.path().join("out").join("secret.conf");
+    let spec = format!("{}:{}", src.display(), target.display());
+
+    let mut args = make_profile_create_args("private-prof");
+    args.files = vec![spec];
+    args.private = true;
+
+    cmd_profile_create(&cli, &printer, &args).unwrap();
+
+    // .gitignore must contain the relative path for the copied file.
+    let gitignore_path = dir.path().join(".gitignore");
+    assert!(gitignore_path.exists(), ".gitignore must be created");
+    let gitignore = std::fs::read_to_string(&gitignore_path).unwrap();
+    assert!(
+        gitignore.contains("profiles/private-prof/files/secret.conf"),
+        ".gitignore should contain the relative path for the private file: {gitignore}"
+    );
+
+    // The profile YAML must also mark the file as private.
+    let profile_path = dir.path().join("profiles").join("private-prof.yaml");
+    let doc = config::load_profile(&profile_path).unwrap();
+    let files = doc.spec.files.expect("files spec must be populated");
+    assert!(
+        files.managed[0].private,
+        "managed file should be marked private when --private-files is set"
+    );
+}
+
+// =========================================================================
+// Coverage-gap tests — update.rs (typed error on not_found, line 35-44)
+// =========================================================================
+
+// update.rs lines 32-44: the not_found branch wraps a typed
+// `CfgdError::Config(ConfigError::ProfileNotFound)` so the exit-code
+// downcast resolves to ExitCode::NotFound (6). The existing
+// `profile_update_nonexistent_fails` test only checks the string message;
+// this test asserts the typed error AND the structured CliErrorMeta payload.
+#[test]
+fn profile_update_not_found_error_is_typed_profile_not_found() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let args = make_profile_update_args();
+    let err = cmd_profile_update(&cli, &printer, "ghost-profile", &args)
+        .expect_err("updating a missing profile must error");
+
+    // The typed CfgdError must be present for exit-code downcast.
+    let cfgd_err = err
+        .downcast_ref::<cfgd_core::errors::CfgdError>()
+        .expect("error chain must carry a CfgdError");
+    assert!(
+        matches!(
+            cfgd_err,
+            cfgd_core::errors::CfgdError::Config(
+                cfgd_core::errors::ConfigError::ProfileNotFound { name }
+            ) if name == "ghost-profile"
+        ),
+        "should be ProfileNotFound for 'ghost-profile', got: {:?}",
+        cfgd_err
+    );
+
+    // CliErrorMeta must also be present for structured JSON error output.
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("error chain must carry CliErrorMeta");
+    assert_eq!(meta.error_kind, "not_found");
+    assert_eq!(meta.name, "ghost-profile");
+
+    // Exit code must resolve to NotFound (6) — uniform with every other
+    // missing-resource site.
+    assert_eq!(
+        crate::cli::exit_code_for_anyhow(&err),
+        cfgd_core::exit::ExitCode::NotFound,
+    );
+}

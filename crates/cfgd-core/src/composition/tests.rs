@@ -2662,6 +2662,119 @@ fn build_source_layers_optional_opt_in() {
 }
 
 #[test]
+fn compose_opted_in_optional_profile_with_script_rejected() {
+    // An opted-in optional profile delivers its content via `input.layers`
+    // (matched by name in build_source_layers). Every layer is validated by
+    // enforce_source_constraints up front, so an opted-in optional profile
+    // carrying a lifecycle script must still be rejected under no_scripts —
+    // the optional tier is NOT a bypass of the fail-closed constraint gate.
+    let local = make_local_profile();
+    let input = CompositionInput {
+        source_name: "corp".into(),
+        priority: 500,
+        policy: ConfigSourcePolicy {
+            optional: PolicyItems {
+                profiles: vec!["extra".into()],
+                ..Default::default()
+            },
+            constraints: SourceConstraints {
+                no_scripts: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        constraints: SourceConstraints {
+            no_scripts: true,
+            ..Default::default()
+        },
+        layers: vec![ProfileLayer {
+            source: "corp".into(),
+            profile_name: "extra".into(),
+            priority: 500,
+            policy: LayerPolicy::Optional,
+            spec: ProfileSpec {
+                scripts: Some(ScriptSpec {
+                    post_apply: vec![ScriptEntry::Simple("evil.sh".into())],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        }],
+        subscription: SubscriptionConfig {
+            accept_recommended: false,
+            opt_in: vec!["extra".into()],
+            ..Default::default()
+        },
+        allow_scripts: false,
+    };
+    let err = compose(&local, &[input]).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("corp") && msg.contains("scripts"),
+        "opted-in optional profile with a script must be rejected under no_scripts: {msg}"
+    );
+}
+
+#[test]
+fn compose_opted_in_optional_profile_out_of_bounds_path_rejected() {
+    // Same gate for path containment: an opted-in optional profile delivering a
+    // file outside allowed_target_paths must be rejected, not silently applied.
+    let local = make_local_profile();
+    let input = CompositionInput {
+        source_name: "corp".into(),
+        priority: 500,
+        policy: ConfigSourcePolicy {
+            optional: PolicyItems {
+                profiles: vec!["extra".into()],
+                ..Default::default()
+            },
+            constraints: SourceConstraints {
+                allowed_target_paths: vec!["~/.config/corp/".into()],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        constraints: SourceConstraints {
+            allowed_target_paths: vec!["~/.config/corp/".into()],
+            ..Default::default()
+        },
+        layers: vec![ProfileLayer {
+            source: "corp".into(),
+            profile_name: "extra".into(),
+            priority: 500,
+            policy: LayerPolicy::Optional,
+            spec: ProfileSpec {
+                files: Some(FilesSpec {
+                    managed: vec![ManagedFileSpec {
+                        source: "evil.sh".into(),
+                        target: "/etc/sudoers".into(),
+                        strategy: None,
+                        private: false,
+                        origin: None,
+                        encryption: None,
+                        permissions: None,
+                    }],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        }],
+        subscription: SubscriptionConfig {
+            accept_recommended: false,
+            opt_in: vec!["extra".into()],
+            ..Default::default()
+        },
+        allow_scripts: false,
+    };
+    let err = compose(&local, &[input]).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("corp") && msg.contains("/etc/sudoers"),
+        "opted-in optional profile with out-of-bounds path must be rejected: {msg}"
+    );
+}
+
+#[test]
 fn resolution_type_labels() {
     assert_eq!(ResolutionType::Locked.label(), "LOCKED");
     assert_eq!(ResolutionType::Required.label(), "REQUIRED");

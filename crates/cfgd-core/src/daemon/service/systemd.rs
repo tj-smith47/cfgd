@@ -538,4 +538,142 @@ mod tests {
         assert_eq!(disable, ["disable", "--now", "cfgd.service"]);
         assert_eq!(reload, ["daemon-reload"]);
     }
+
+    #[test]
+    fn install_systemd_service_canonicalizes_relative_config_path_in_unit() {
+        let home_dir = TempDir::new().expect("tempdir");
+        let _home_g = crate::with_test_home_guard(home_dir.path());
+
+        // A bare relative filename must land in the unit as an absolute path so
+        // the daemon resolves the same config regardless of its launch CWD.
+        let config = home_dir.path().join("relcfg.yaml");
+        std::fs::write(&config, "apiVersion: cfgd.io/v1alpha1\n").expect("write config");
+        let canon = std::fs::canonicalize(&config).expect("canonicalize config");
+
+        install_systemd_service(
+            &PathBuf::from("/usr/local/bin/cfgd"),
+            &config,
+            None,
+            crate::Scope::User,
+        )
+        .expect("install");
+
+        let unit_path = home_dir.path().join(SYSTEMD_USER_DIR).join("cfgd.service");
+        let unit = std::fs::read_to_string(&unit_path).expect("read unit");
+        assert!(
+            unit.contains(&format!(
+                "ExecStart=/usr/local/bin/cfgd --config {} --quiet daemon",
+                canon.display()
+            )),
+            "ExecStart must carry the canonicalized config path: {unit}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn start_systemd_service_user_scope_warns_and_hints_when_systemctl_missing() {
+        // Point PATH at an empty dir so `command_available("systemctl")` is false,
+        // driving the not-found branch without any real systemctl shell-out.
+        let empty = TempDir::new().expect("tempdir");
+        let empty_path = empty.path().display().to_string();
+        let _path_g = crate::test_helpers::EnvVarGuard::set("PATH", &empty_path);
+
+        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+        let started = start_systemd_service(&printer, crate::Scope::User).expect("ok(false)");
+        assert!(!started, "missing systemctl cannot start the service");
+
+        let out = buf.lock().expect("lock buf").clone();
+        assert!(
+            out.contains("systemctl not found — daemon installed but not started"),
+            "expected not-found warning: {out}"
+        );
+        assert!(
+            out.contains("Start it later with: systemctl --user enable --now cfgd.service"),
+            "user-scope hint must carry the --user form: {out}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn start_systemd_service_system_scope_hint_omits_user_flag_when_systemctl_missing() {
+        let empty = TempDir::new().expect("tempdir");
+        let empty_path = empty.path().display().to_string();
+        let _path_g = crate::test_helpers::EnvVarGuard::set("PATH", &empty_path);
+
+        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+        let started = start_systemd_service(&printer, crate::Scope::System).expect("ok(false)");
+        assert!(!started);
+
+        let out = buf.lock().expect("lock buf").clone();
+        assert!(
+            out.contains("Start it later with: systemctl enable --now cfgd.service"),
+            "system-scope hint must be the bare (no --user) form: {out}"
+        );
+        assert!(
+            !out.contains("--user"),
+            "system-scope hint must not contain --user: {out}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn stop_systemd_service_is_a_noop_under_test_home_override() {
+        // The test-home guard sets the override that makes stop_systemd_service
+        // skip the side-effecting systemctl call entirely — it must emit nothing.
+        let home_dir = TempDir::new().expect("tempdir");
+        let _home_g = crate::with_test_home_guard(home_dir.path());
+
+        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+        stop_systemd_service(&printer, crate::Scope::User);
+
+        let out = buf.lock().expect("lock buf").clone();
+        assert!(
+            out.is_empty(),
+            "stop under test-home override must produce no output, got: {out}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn stop_systemd_service_user_scope_warns_and_hints_when_systemctl_missing() {
+        // No test-home override (so the early-return is not taken) plus an empty
+        // PATH drives the systemctl-not-found branch without a real shell-out.
+        let empty = TempDir::new().expect("tempdir");
+        let empty_path = empty.path().display().to_string();
+        let _path_g = crate::test_helpers::EnvVarGuard::set("PATH", &empty_path);
+
+        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+        stop_systemd_service(&printer, crate::Scope::User);
+
+        let out = buf.lock().expect("lock buf").clone();
+        assert!(
+            out.contains("systemctl not found — unit file removed but daemon may still be running"),
+            "expected not-found warning: {out}"
+        );
+        assert!(
+            out.contains("Stop it manually with: systemctl --user disable --now cfgd.service"),
+            "user-scope hint must carry the --user form: {out}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn stop_systemd_service_system_scope_hint_omits_user_flag_when_systemctl_missing() {
+        let empty = TempDir::new().expect("tempdir");
+        let empty_path = empty.path().display().to_string();
+        let _path_g = crate::test_helpers::EnvVarGuard::set("PATH", &empty_path);
+
+        let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
+        stop_systemd_service(&printer, crate::Scope::System);
+
+        let out = buf.lock().expect("lock buf").clone();
+        assert!(
+            out.contains("Stop it manually with: systemctl disable --now cfgd.service"),
+            "system-scope hint must be the bare (no --user) form: {out}"
+        );
+        assert!(
+            !out.contains("--user"),
+            "system-scope hint must not contain --user: {out}"
+        );
+    }
 }

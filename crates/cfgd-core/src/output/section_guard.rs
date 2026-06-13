@@ -199,3 +199,135 @@ impl Drop for SectionGuard<'_> {
         self.renderer.render_section_close(self.sink.as_ref());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::output::{Printer, Role, Verbosity, strip_ansi};
+
+    // --- progress_bar (lines 156-171) ---
+
+    /// `SectionGuard::progress_bar` returns a usable `ProgressBar` (non-TTY path
+    /// returns a hidden bar; `inc` / `set_message` / `finish` must not panic).
+    #[test]
+    fn section_progress_bar_returns_usable_bar() {
+        let (p, _buf) = Printer::for_test_at(Verbosity::Normal);
+        let s = p.section("Work");
+        let bar = s.progress_bar(10, "loading");
+        bar.inc(3);
+        bar.set_position(5);
+        bar.set_message("half done");
+        bar.finish();
+        // The section itself must still render normally after the bar is finished.
+        s.bullet("done");
+        drop(s);
+        p.flush();
+    }
+
+    /// `progress_bar` on a section opened at depth > 0 (nested section) does
+    /// not panic and the outer/inner content renders correctly.
+    #[test]
+    fn nested_section_progress_bar_does_not_panic() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let outer = p.section("Outer");
+            {
+                let inner = outer.section("Inner");
+                let bar = inner.progress_bar(5, "downloading");
+                bar.inc(5);
+                bar.finish();
+                inner.bullet("complete");
+            }
+            outer.bullet("all done");
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Outer\n"), "outer header missing: {out:?}");
+        assert!(out.contains("Inner\n"), "inner header missing: {out:?}");
+        assert!(out.contains("complete"), "inner bullet missing: {out:?}");
+        assert!(out.contains("all done"), "outer bullet missing: {out:?}");
+    }
+
+    // --- run (lines 176-189) ---
+
+    /// `SectionGuard::run` executes an external command and returns its output.
+    /// Non-TTY path → streaming; the rendered output must include the label and
+    /// the section header must appear before it.
+    #[test]
+    fn section_run_captures_command_output() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let s = p.section("Build");
+            let result = s
+                .run(
+                    std::process::Command::new("echo").arg("hello-from-section-run"),
+                    "echo step",
+                )
+                .expect("echo must succeed");
+            assert!(
+                result.status.success(),
+                "echo should exit 0, got: {:?}",
+                result.status
+            );
+            // The captured stdout must contain what echo printed.
+            assert!(
+                result.stdout.contains("hello-from-section-run"),
+                "stdout missing: {:?}",
+                result.stdout
+            );
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        // Section header must appear in the rendered output.
+        assert!(out.contains("Build\n"), "section header missing: {out:?}");
+        // The streaming path emits the label as a Status(Running) line.
+        assert!(out.contains("echo step"), "run label missing: {out:?}");
+    }
+
+    /// `SectionGuard::run` for a failing command returns a non-success exit
+    /// status (does NOT propagate as Err; the command itself ran).
+    #[test]
+    fn section_run_non_zero_exit_is_not_io_error() {
+        let (p, _buf) = Printer::for_test_at(Verbosity::Normal);
+        let s = p.section("Fail");
+        // `false` exits 1 on all POSIX targets.
+        let result = s
+            .run(&mut std::process::Command::new("false"), "false step")
+            .expect("run itself must not return Err for a non-zero exit");
+        assert!(
+            !result.status.success(),
+            "false should exit non-zero, got: {:?}",
+            result.status
+        );
+    }
+
+    /// A section opened via `SectionGuard::section` (child of another guard)
+    /// receives its own `progress_bar` call without borrowing from the parent
+    /// and closes cleanly.
+    #[test]
+    fn child_section_progress_bar_depth_is_parent_plus_one() {
+        let (p, buf) = Printer::for_test_at(Verbosity::Normal);
+        {
+            let parent = p.section("Parent");
+            {
+                let child = parent.section("Child");
+                // progress_bar at depth == 2; must not panic.
+                let bar = child.progress_bar(1, "step");
+                bar.finish();
+                child.status_simple(Role::Ok, "child-status");
+            }
+            parent.status_simple(Role::Ok, "parent-status");
+        }
+        p.flush();
+        let out = strip_ansi(&buf.lock().unwrap());
+        assert!(out.contains("Parent\n"), "parent header missing: {out:?}");
+        assert!(out.contains("Child\n"), "child header missing: {out:?}");
+        assert!(
+            out.contains("child-status"),
+            "child status missing: {out:?}"
+        );
+        assert!(
+            out.contains("parent-status"),
+            "parent status missing: {out:?}"
+        );
+    }
+}

@@ -773,4 +773,128 @@ mod fake_cosign {
             other => panic!("expected AttestationError, got {other:?}"),
         }
     }
+
+    // --- attach_attestation failure (non-zero cosign exit) ---
+
+    #[test]
+    #[serial]
+    fn attach_attestation_propagates_failure_with_stderr() {
+        let _guard = CosignTestShim::builder()
+            .with_exit(1)
+            .with_stderr("predicate rejected")
+            .install();
+        let result = attach_attestation("ghcr.io/myorg/mod:v1", "/tmp/p.json", None);
+        let err = result.expect_err("non-zero attest must error");
+        match err {
+            OciError::AttestationError { message } => {
+                assert!(
+                    message.contains("predicate rejected"),
+                    "stderr surfaced in message: {message}"
+                );
+                assert!(
+                    message.contains("cosign attest failed"),
+                    "message prefixes with `cosign attest failed`: {message}"
+                );
+            }
+            other => panic!("expected AttestationError, got {other:?}"),
+        }
+    }
+
+    // --- IO spawn failure: CFGD_COSIGN_BIN points at a non-executable file ---
+    //
+    // `require_cosign()` only checks that the seam path is a regular file, so a
+    // non-executable file passes the availability gate but makes `cmd.output()`
+    // fail to spawn. These cover the `failed to run cosign: {e}` map_err arms
+    // that the happy-path shim tests never reach.
+
+    /// Create a regular but non-executable file and point CFGD_COSIGN_BIN at it.
+    /// Returns the guard (restores prior env on drop) and keeps the tempdir alive.
+    fn install_unspawnable_cosign() -> (EnvVarGuard, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bin = dir.path().join("fake-cosign-noexec");
+        // Mode 0o644 — a real file (passes require_cosign) that cannot be exec'd.
+        std::fs::write(&bin, "not an executable\n").expect("write file");
+        let guard = EnvVarGuard::set("CFGD_COSIGN_BIN", bin.to_str().unwrap());
+        (guard, dir)
+    }
+
+    #[test]
+    #[serial]
+    fn sign_artifact_maps_spawn_failure_to_signing_error() {
+        let (_g, _dir) = install_unspawnable_cosign();
+        let result = sign_artifact("ghcr.io/test/mod:v1", None);
+        match result {
+            Err(OciError::SigningError { message }) => {
+                assert!(
+                    message.contains("failed to run cosign"),
+                    "spawn failure must map to `failed to run cosign`: {message}"
+                );
+            }
+            other => panic!("expected SigningError from spawn failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn verify_signature_maps_spawn_failure_to_verification_error() {
+        let (_g, _dir) = install_unspawnable_cosign();
+        let result = verify_signature(
+            "ghcr.io/test/mod:v1",
+            &VerifyOptions {
+                key: Some("/keys/cosign.pub"),
+                identity: None,
+                issuer: None,
+            },
+        );
+        match result {
+            Err(OciError::VerificationFailed { reference, message }) => {
+                assert_eq!(reference, "ghcr.io/test/mod:v1");
+                assert!(
+                    message.contains("failed to run cosign"),
+                    "spawn failure must map to `failed to run cosign`: {message}"
+                );
+            }
+            other => panic!("expected VerificationFailed from spawn failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn attach_attestation_maps_spawn_failure_to_attestation_error() {
+        let (_g, _dir) = install_unspawnable_cosign();
+        let result = attach_attestation("ghcr.io/test/mod:v1", "/tmp/p.json", None);
+        match result {
+            Err(OciError::AttestationError { message }) => {
+                assert!(
+                    message.contains("failed to run cosign attest"),
+                    "spawn failure must map to `failed to run cosign attest`: {message}"
+                );
+            }
+            other => panic!("expected AttestationError from spawn failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn verify_attestation_maps_spawn_failure_to_attestation_error() {
+        let (_g, _dir) = install_unspawnable_cosign();
+        let result = verify_attestation(
+            "ghcr.io/test/mod:v1",
+            "slsaprovenance",
+            &VerifyOptions {
+                key: Some("/keys/cosign.pub"),
+                identity: None,
+                issuer: None,
+            },
+        );
+        match result {
+            Err(OciError::AttestationError { message }) => {
+                assert!(
+                    message.contains("failed to run cosign verify-attestation"),
+                    "spawn failure must map to `failed to run cosign verify-attestation`: {message}"
+                );
+            }
+            other => panic!("expected AttestationError from spawn failure, got {other:?}"),
+        }
+    }
 }

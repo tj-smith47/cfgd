@@ -1026,4 +1026,158 @@ mod tests {
             dir.path().join(".cache").join("cfgd").join("modules")
         );
     }
+
+    // --- fetch_existing_repo: actually transfers new upstream refs ---
+
+    #[test]
+    #[serial_test::serial]
+    fn fetch_existing_repo_pulls_new_tag_added_after_clone() {
+        // Proves fetch_existing_repo is not a no-op: a tag created on the bare
+        // upstream *after* the initial clone becomes resolvable on the second
+        // fetch, so a checkout against it succeeds. If fetch silently did
+        // nothing, the second checkout would fail with "cannot find ref".
+        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let bare = crate::test_helpers::BareGitRepo::builder()
+            .commit("init", &[("a.txt", "v1")])
+            .build();
+
+        let cache_base = tempfile::tempdir().unwrap();
+        let printer = crate::test_helpers::test_printer();
+
+        // First fetch: clone, no ref pinned (stays on default branch).
+        let plain = parse_git_source(&bare.url()).unwrap();
+        fetch_git_source(&plain, cache_base.path(), "evolving", &printer)
+            .expect("initial clone must succeed");
+
+        // Now add a brand-new lightweight tag to the bare upstream pointing at
+        // its current HEAD. The cached clone does not know about it yet.
+        let bare_repo = git2::Repository::open_bare(bare.path()).unwrap();
+        let head_oid = bare_repo
+            .refname_to_id(&format!("refs/heads/{}", bare.head_branch()))
+            .unwrap();
+        let head_obj = bare_repo.find_object(head_oid, None).unwrap();
+        bare_repo
+            .tag_lightweight("v-added-later", &head_obj, false)
+            .unwrap();
+        assert!(bare.has_tag("v-added-later"));
+
+        // Second fetch pinned to the new tag: only succeeds if fetch_existing_repo
+        // actually transferred the new ref into the cache.
+        let pinned = parse_git_source(&format!("{}@v-added-later", bare.url())).unwrap();
+        let path = fetch_git_source(&pinned, cache_base.path(), "evolving", &printer)
+            .expect("second fetch must transfer the new tag and check it out");
+        assert!(
+            path.join("a.txt").exists(),
+            "checked-out tree must contain the committed file"
+        );
+        assert_eq!(std::fs::read_to_string(path.join("a.txt")).unwrap(), "v1");
+    }
+
+    // --- checkout_ref: ref that does not peel to a commit ---
+
+    #[test]
+    fn checkout_ref_errors_when_ref_points_to_non_commit() {
+        // A tag pointing directly at a *tree* (not a commit) resolves via
+        // revparse_single but fails peel_to_commit. The error must name the ref
+        // and the "does not point to a commit" failure mode (git.rs:380-383).
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+
+        // Tag the bare *tree* object, not a commit.
+        let tree_obj = repo.find_object(tree_id, None).unwrap();
+        repo.tag_lightweight("tree-tag", &tree_obj, false).unwrap();
+
+        let git_src = GitSource {
+            repo_url: "file:///fixture".to_string(),
+            tag: Some("tree-tag".to_string()),
+            git_ref: None,
+            subdir: None,
+        };
+        let err = checkout_ref(dir.path(), &git_src, "treemod")
+            .expect_err("a tag pointing at a tree must fail to checkout");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("does not point to a commit"),
+            "error must describe the non-commit peel failure: {msg}"
+        );
+        assert!(
+            msg.contains("tree-tag"),
+            "error must name the offending ref: {msg}"
+        );
+    }
+
+    // --- checkout_ref: no ref pinned is a clean no-op (stays on default) ---
+
+    #[test]
+    fn checkout_ref_no_ref_is_noop() {
+        // With neither tag nor git_ref set, checkout_ref returns Ok without
+        // touching HEAD — the early-return arm (git.rs:360-363).
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "initial", &tree, &[])
+            .unwrap();
+        let head_before = repo.head().unwrap().target().unwrap();
+
+        let git_src = GitSource {
+            repo_url: "file:///fixture".to_string(),
+            tag: None,
+            git_ref: None,
+            subdir: None,
+        };
+        checkout_ref(dir.path(), &git_src, "noref").expect("no-ref checkout must be a clean no-op");
+
+        // HEAD is unchanged and still attached (not detached).
+        let head_after = repo.head().unwrap().target().unwrap();
+        assert_eq!(head_before, head_after, "HEAD must not move");
+        assert!(
+            !repo.head_detached().unwrap(),
+            "HEAD must remain attached when no ref is pinned"
+        );
+    }
+
+    // --- checkout_ref: tag takes precedence over git_ref ---
+
+    #[test]
+    #[serial_test::serial]
+    fn fetch_git_source_tag_precedence_over_ref() {
+        // When both a tag and a ?ref= are present, the tag wins (target_ref =
+        // tag.or(git_ref) at git.rs:358). The tag points at the root commit;
+        // the branch carries an extra commit with feature.txt. Pinning to the
+        // tag must yield the tag's tree (no feature.txt), proving precedence.
+        let _guard = crate::test_helpers::EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let bare = crate::test_helpers::BareGitRepo::builder()
+            .commit("root", &[("base.txt", "base")])
+            .tag("v1.0.0")
+            .branch("feature", &[("feature.txt", "feat")])
+            .build();
+
+        let cache_base = tempfile::tempdir().unwrap();
+        let printer = crate::test_helpers::test_printer();
+
+        // Both ?ref=feature AND @v1.0.0 — the tag must win. `?ref=` is parsed
+        // first, leaving `<url>@v1.0.0` for the @tag extractor.
+        let url = format!("{}@v1.0.0?ref=feature", bare.url());
+        let git_src = parse_git_source(&url).unwrap();
+        assert_eq!(git_src.tag.as_deref(), Some("v1.0.0"));
+        assert_eq!(git_src.git_ref.as_deref(), Some("feature"));
+
+        let path = fetch_git_source(&git_src, cache_base.path(), "prec", &printer)
+            .expect("fetch pinned to tag must succeed");
+        assert!(
+            path.join("base.txt").exists(),
+            "tag tree must contain the root file"
+        );
+        assert!(
+            !path.join("feature.txt").exists(),
+            "tag (root commit) must NOT contain the branch-only file — tag won over ref"
+        );
+    }
 }

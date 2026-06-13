@@ -505,6 +505,42 @@ mod tests {
         );
     }
 
+    // --- find_npm CFGD_NPM_BIN seam ---
+
+    #[test]
+    #[serial_test::serial]
+    fn find_npm_honors_cfgd_npm_bin_when_pointing_at_a_real_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("npm");
+        std::fs::write(&fake, b"#!/bin/sh\n").unwrap();
+        let _g = cfgd_core::test_helpers::EnvVarGuard::set(
+            "CFGD_NPM_BIN",
+            fake.to_str().expect("utf8 tempdir path"),
+        );
+        let found = find_npm().expect("a real CFGD_NPM_BIN file must short-circuit detection");
+        assert_eq!(
+            found, fake,
+            "find_npm must return the exact CFGD_NPM_BIN path when it is a file"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn find_npm_ignores_cfgd_npm_bin_when_path_is_not_a_file() {
+        // A dangling CFGD_NPM_BIN must NOT be returned — find_npm falls through
+        // to PATH / nvm detection instead of handing back a path that ENOENTs.
+        let _g = cfgd_core::test_helpers::EnvVarGuard::set(
+            "CFGD_NPM_BIN",
+            "/nonexistent/cfgd-npm-bin-not-a-file",
+        );
+        let found = find_npm();
+        assert_ne!(
+            found.as_deref(),
+            Some(std::path::Path::new("/nonexistent/cfgd-npm-bin-not-a-file")),
+            "a non-file CFGD_NPM_BIN must be ignored, not returned verbatim"
+        );
+    }
+
     // ---------------------------------------------------------------------
     // PackageManager-impl tests via CFGD_NPM_BIN ToolShim.
     // ---------------------------------------------------------------------
@@ -512,7 +548,7 @@ mod tests {
     #[cfg(unix)]
     mod npm_shim {
         use super::*;
-        use cfgd_core::test_helpers::{ToolShim, test_printer};
+        use cfgd_core::test_helpers::{EnvVarGuard, ToolShim, test_printer};
         use serial_test::serial;
 
         const SHIM_ENV: &str = "CFGD_NPM_BIN";
@@ -638,6 +674,71 @@ mod tests {
                 s.argv_log().contains("install node"),
                 "brew argv must include `install node`: {}",
                 s.argv_log()
+            );
+        }
+
+        /// Point the seam env-var at a non-existent path so the spawned
+        /// `Command` fails with ENOENT, exercising the `CommandFailed` map_err
+        /// arm rather than a non-zero exit (which the shim handles differently).
+        fn install_unspawnable() -> EnvVarGuard {
+            EnvVarGuard::set(SHIM_ENV, "/nonexistent/cfgd-npm-shim-does-not-exist")
+        }
+
+        #[test]
+        #[serial]
+        fn npm_installed_packages_spawn_failure_maps_to_command_failed() {
+            let _g = install_unspawnable();
+            let err = NpmManager
+                .installed_packages()
+                .expect_err("ENOENT spawn must surface as CommandFailed, not a panic");
+            assert!(
+                matches!(err, cfgd_core::errors::CfgdError::Package(
+                    PackageError::CommandFailed { ref manager, .. }) if manager == "npm"),
+                "spawn failure must be PackageError::CommandFailed{{manager:\"npm\"}}, got: {err:?}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn npm_available_version_spawn_failure_maps_to_command_failed() {
+            let _g = install_unspawnable();
+            let err = NpmManager
+                .available_version("typescript")
+                .expect_err("ENOENT spawn must surface as CommandFailed");
+            assert!(
+                matches!(err, cfgd_core::errors::CfgdError::Package(
+                    PackageError::CommandFailed { ref manager, .. }) if manager == "npm"),
+                "got: {err:?}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn npm_installed_packages_with_versions_spawn_failure_maps_to_command_failed() {
+            let _g = install_unspawnable();
+            let err = NpmManager
+                .installed_packages_with_versions()
+                .expect_err("ENOENT spawn must surface as CommandFailed");
+            assert!(
+                matches!(err, cfgd_core::errors::CfgdError::Package(
+                    PackageError::CommandFailed { ref manager, .. }) if manager == "npm"),
+                "got: {err:?}"
+            );
+        }
+
+        #[test]
+        #[serial]
+        fn npm_installed_packages_with_versions_invalid_json_maps_to_list_failed() {
+            // npm list exits 0 here but emits non-JSON; the version path must
+            // surface ListFailed with the parse-error context, not panic.
+            let _s = ToolShim::install(SHIM_ENV, 0, "this is not json", "");
+            let err = NpmManager
+                .installed_packages_with_versions()
+                .expect_err("invalid JSON must surface as ListFailed");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("npm") && msg.contains("failed to parse npm list output"),
+                "error must name npm + parse-failure context, got: {msg}"
             );
         }
     }

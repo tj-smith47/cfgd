@@ -883,3 +883,127 @@ fn get_bearer_token_handles_failed_http_call() {
     let result = get_bearer_token(&agent, www_auth, None);
     assert!(matches!(result, Err(OciError::AuthFailed { .. })));
 }
+
+// --- resolve_from_credential_helper (docker-credential-<helper> shim) ---
+//
+// `resolve_from_credential_helper` shells out to `docker-credential-<name>`,
+// writes the registry to its stdin, and parses `{"Username":..,"Secret":..}`
+// from stdout. These drive the real spawn/stdin/parse path via a fake helper
+// binary installed at the front of PATH. `#[serial]` because PATH mutation is
+// process-global.
+
+#[cfg(unix)]
+#[test]
+#[serial]
+fn credential_helper_parses_capitalized_username_secret() {
+    use crate::test_helpers::install_named_path_shim;
+    // Docker credential helpers emit capitalized keys; serde aliases map them.
+    let (_dir, _path) = install_named_path_shim(
+        "docker-credential-cfgdtesthelper",
+        0,
+        r#"{"ServerURL":"ghcr.io","Username":"helperuser","Secret":"helpersecret"}"#,
+        "",
+    );
+    let auth = resolve_from_credential_helper("cfgdtesthelper", "ghcr.io")
+        .expect("helper output must parse into credentials");
+    assert_eq!(auth.username, "helperuser");
+    assert_eq!(auth.password, "helpersecret");
+}
+
+#[cfg(unix)]
+#[test]
+#[serial]
+fn credential_helper_parses_lowercase_username_secret() {
+    use crate::test_helpers::install_named_path_shim;
+    // The lowercase form (no alias needed) must also parse.
+    let (_dir, _path) = install_named_path_shim(
+        "docker-credential-cfgdtesthelper",
+        0,
+        r#"{"username":"lc-user","secret":"lc-secret"}"#,
+        "",
+    );
+    let auth = resolve_from_credential_helper("cfgdtesthelper", "registry.example")
+        .expect("lowercase helper output must parse");
+    assert_eq!(auth.username, "lc-user");
+    assert_eq!(auth.password, "lc-secret");
+}
+
+#[cfg(unix)]
+#[test]
+#[serial]
+fn credential_helper_nonzero_exit_returns_none() {
+    use crate::test_helpers::install_named_path_shim;
+    // A helper exiting non-zero (e.g. "credentials not found") must yield None.
+    let (_dir, _path) = install_named_path_shim(
+        "docker-credential-cfgdtesthelper",
+        1,
+        "",
+        "credentials not found",
+    );
+    let result = resolve_from_credential_helper("cfgdtesthelper", "ghcr.io");
+    assert!(result.is_none(), "non-zero helper exit must return None");
+}
+
+#[cfg(unix)]
+#[test]
+#[serial]
+fn credential_helper_empty_username_returns_none() {
+    use crate::test_helpers::install_named_path_shim;
+    // Helper succeeds but returns an empty username — must be rejected.
+    let (_dir, _path) = install_named_path_shim(
+        "docker-credential-cfgdtesthelper",
+        0,
+        r#"{"Username":"","Secret":"some-secret"}"#,
+        "",
+    );
+    let result = resolve_from_credential_helper("cfgdtesthelper", "ghcr.io");
+    assert!(result.is_none(), "empty username must return None");
+}
+
+#[cfg(unix)]
+#[test]
+#[serial]
+fn credential_helper_invalid_json_returns_none() {
+    use crate::test_helpers::install_named_path_shim;
+    // Helper exits 0 but emits non-JSON — serde parse fails → None.
+    let (_dir, _path) =
+        install_named_path_shim("docker-credential-cfgdtesthelper", 0, "not json output", "");
+    let result = resolve_from_credential_helper("cfgdtesthelper", "ghcr.io");
+    assert!(
+        result.is_none(),
+        "invalid JSON from helper must return None"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial]
+fn resolve_uses_cred_helper_when_config_names_it() {
+    use crate::test_helpers::{EnvVarGuard, install_named_path_shim};
+    // End-to-end: env empty, docker config.json has no direct auth but names a
+    // credHelper for the registry; resolution must spawn the helper and return
+    // its credentials. This exercises the success arm of `resolve`'s cred-helper
+    // branch (the path that is otherwise only hit on a real machine).
+    let _user = EnvVarGuard::unset("REGISTRY_USERNAME");
+    let _pass = EnvVarGuard::unset("REGISTRY_PASSWORD");
+
+    let (_dir, _path) = install_named_path_shim(
+        "docker-credential-cfgdtesthelper",
+        0,
+        r#"{"Username":"viahelper","Secret":"viahelper-secret"}"#,
+        "",
+    );
+
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("config.json"),
+        r#"{"auths":{},"credHelpers":{"helper.registry.example":"cfgdtesthelper"}}"#,
+    )
+    .unwrap();
+    let _dc = EnvVarGuard::set("DOCKER_CONFIG", tmp.path().to_str().unwrap());
+
+    let auth = RegistryAuth::resolve("helper.registry.example")
+        .expect("resolve must use the named credential helper");
+    assert_eq!(auth.username, "viahelper");
+    assert_eq!(auth.password, "viahelper-secret");
+}

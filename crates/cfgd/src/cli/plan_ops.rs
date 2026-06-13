@@ -1711,6 +1711,24 @@ mod tests {
     }
 
     #[test]
+    fn print_apply_result_aborted_emits_warn_with_succeeded_count() {
+        let result = apply_result(ApplyStatus::Aborted, 3, 0);
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        let status = print_apply_result(&result, &printer, None);
+
+        assert_eq!(status, ApplyStatus::Aborted);
+        let out = buf.lock().unwrap().clone();
+        assert!(
+            out.contains("aborted by signal"),
+            "expected abort message in output, got: {out}"
+        );
+        assert!(
+            out.contains("3 action(s) applied"),
+            "expected succeeded count in abort output, got: {out}"
+        );
+    }
+
+    #[test]
     fn print_apply_result_partial_with_elapsed_attaches_duration_to_failed_line() {
         let result = apply_result(ApplyStatus::Partial, 1, 4);
         let (printer, buf) = Printer::for_test_at(Verbosity::Normal);

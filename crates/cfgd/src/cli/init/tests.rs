@@ -1627,6 +1627,31 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
     );
 }
 
+// ─── ensure_dir_writable — nonexistent path early return ─────
+
+#[test]
+fn ensure_dir_writable_nonexistent_path_returns_ok() {
+    // A path that does not yet exist is treated as writable-by-creation: the
+    // caller (create_dir_all) governs whether it can actually be made, not this
+    // probe.  The early-return at line ~553 must fire and return Ok without
+    // touching the filesystem.
+    let dir = tempfile::tempdir().unwrap();
+    let absent = dir.path().join("does-not-exist");
+    assert!(
+        !absent.exists(),
+        "precondition: path must not exist before the call"
+    );
+    let result = ensure_dir_writable(&absent);
+    assert!(
+        result.is_ok(),
+        "nonexistent path must yield Ok (early return): {result:?}"
+    );
+    assert!(
+        !absent.exists(),
+        "ensure_dir_writable must not create the missing path"
+    );
+}
+
 // ─── check_prerequisites — git availability ──────────────────
 
 #[test]

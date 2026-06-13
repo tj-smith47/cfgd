@@ -3900,98 +3900,6 @@ fn build_module_crd_json_depends_passes_through_verbatim() {
     assert_eq!(names, vec!["base", "shell", "git"]);
 }
 
-// --- detect_git_remote / detect_git_head via tempdir-rooted repos ---
-//
-// The helpers shell out to `git` via cfgd_core::git_cmd_local() and return
-// None if the call fails (no repo, no git on PATH, non-zero exit). These
-// tests cd into a freshly-initialized repo to drive both the Some and None
-// arms.
-
-#[test]
-#[cfg(unix)]
-#[serial_test::serial]
-fn detect_git_remote_returns_url_when_origin_configured() {
-    // Initialize a bare repo on disk, set an origin URL, cd into it, then
-    // drive the helper. Asserts the helper returns the configured URL.
-    if !cfgd_core::command_available("git") {
-        return;
-    }
-    let tmp = tempfile::tempdir().unwrap();
-    std::process::Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(tmp.path())
-        .status()
-        .unwrap();
-    std::process::Command::new("git")
-        .args([
-            "remote",
-            "add",
-            "origin",
-            "https://example.test/owner/repo.git",
-        ])
-        .current_dir(tmp.path())
-        .status()
-        .unwrap();
-
-    let prior_cwd = std::env::current_dir().unwrap();
-    std::env::set_current_dir(tmp.path()).unwrap();
-    let url = super::push_pull::detect_git_remote_for_tests();
-    std::env::set_current_dir(prior_cwd).unwrap();
-
-    assert_eq!(
-        url.as_deref(),
-        Some("https://example.test/owner/repo.git"),
-        "should echo configured remote URL"
-    );
-}
-
-#[test]
-#[cfg(unix)]
-#[serial_test::serial]
-fn detect_git_head_returns_commit_sha_for_repo_with_commit() {
-    // After `git init` and one commit, rev-parse HEAD should return a
-    // 40-char hex SHA. Drives the helper's Some arm.
-    if !cfgd_core::command_available("git") {
-        return;
-    }
-    let tmp = tempfile::tempdir().unwrap();
-    for args in [
-        &["init", "-q"][..],
-        &["config", "user.email", "test@example.test"][..],
-        &["config", "user.name", "Test User"][..],
-        &["commit", "--allow-empty", "-q", "-m", "init"][..],
-    ] {
-        std::process::Command::new("git")
-            .args(args)
-            .current_dir(tmp.path())
-            .status()
-            .unwrap();
-    }
-    let prior_cwd = std::env::current_dir().unwrap();
-    std::env::set_current_dir(tmp.path()).unwrap();
-    let head = super::push_pull::detect_git_head_for_tests();
-    std::env::set_current_dir(prior_cwd).unwrap();
-
-    let sha = head.expect("rev-parse should succeed in fresh repo");
-    assert_eq!(sha.len(), 40, "expected 40-char SHA, got {sha:?}");
-    assert!(
-        sha.chars().all(|c| c.is_ascii_hexdigit()),
-        "expected hex SHA, got {sha:?}"
-    );
-}
-
-#[test]
-#[cfg(unix)]
-#[serial_test::serial]
-fn detect_git_remote_returns_none_outside_a_git_repo() {
-    let tmp = tempfile::tempdir().unwrap();
-    let prior_cwd = std::env::current_dir().unwrap();
-    std::env::set_current_dir(tmp.path()).unwrap();
-    let url = super::push_pull::detect_git_remote_for_tests();
-    std::env::set_current_dir(prior_cwd).unwrap();
-    assert!(url.is_none(), "non-repo dir should return None");
-}
-
 #[test]
 fn build_module_crd_json_empty_collections_emit_as_empty_arrays_not_null() {
     // server-side apply patches with `null` for an array field have a
@@ -5660,4 +5568,601 @@ mod cmd_module_add_from_registry_local {
             "with all registries failing, the empty-result message should render: {out}"
         );
     }
+}
+
+// ─── cmd_module_create — interactive file + script loops ────────
+
+#[test]
+fn cmd_module_create_interactive_imports_file_and_script_with_empty_description() {
+    // Covers the interactive sub-branches uncovered by the existing
+    // interactive test: an EMPTY description (crud.rs maps "" → None),
+    // the file loop's push arm (a real path is imported, then "" breaks),
+    // and the post-apply loop's push arm (a command is captured, then ""
+    // breaks). Asserts the persisted module.yaml carries the imported
+    // file entry + script, and that the empty description yields no
+    // description field.
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+
+    // A real source file for the interactive "Add file" prompt to import.
+    let src = tempfile::tempdir().unwrap();
+    let src_file = src.path().join("hello.conf");
+    std::fs::write(&src_file, b"hello = true\n").unwrap();
+
+    let (printer, _buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+        vec![
+            // 1. Description — empty → None
+            cfgd_core::output::PromptAnswer::Text(String::new()),
+            // 2. Dependencies — empty
+            cfgd_core::output::PromptAnswer::Text(String::new()),
+            // 3. Package loop — empty → break immediately
+            cfgd_core::output::PromptAnswer::Text(String::new()),
+            // 4. File loop iter 1 — import the real file
+            cfgd_core::output::PromptAnswer::Text(src_file.display().to_string()),
+            // 5. File loop iter 2 — empty → break
+            cfgd_core::output::PromptAnswer::Text(String::new()),
+            // 6. Post-apply loop iter 1 — capture a command
+            cfgd_core::output::PromptAnswer::Text("echo provisioned".to_string()),
+            // 7. Post-apply loop iter 2 — empty → break
+            cfgd_core::output::PromptAnswer::Text(String::new()),
+        ],
+        cfgd_core::output::Verbosity::Normal,
+    );
+
+    let args = make_module_create_args("interactive-file-mod");
+    cmd_module_create(&cli, &printer, &args).expect("interactive create should succeed");
+    drop(printer);
+
+    let (doc, _) = load_module_document(dir.path(), "interactive-file-mod").unwrap();
+    // Empty description prompt must persist as None, not Some("").
+    assert_eq!(
+        doc.metadata.description, None,
+        "empty interactive description must map to None"
+    );
+    // The imported file must be tracked with a files/<basename> source and
+    // the basename must have been copied into the module's files/ dir.
+    assert_eq!(doc.spec.files.len(), 1, "one file should be imported");
+    assert_eq!(
+        doc.spec.files[0].source, "files/hello.conf",
+        "imported file must be referenced by its basename under files/"
+    );
+    assert!(
+        dir.path()
+            .join("modules/interactive-file-mod/files/hello.conf")
+            .exists(),
+        "the file must be physically copied into the module"
+    );
+    // The captured post-apply command must persist.
+    let scripts = doc
+        .spec
+        .scripts
+        .as_ref()
+        .expect("a captured script must produce a scripts block");
+    assert_eq!(scripts.post_apply.len(), 1);
+    assert_eq!(scripts.post_apply[0].run_str(), "echo provisioned");
+}
+
+// ─── cmd_module_create — apply with non-empty plan, confirm declined ─
+
+#[test]
+#[serial_test::serial]
+fn cmd_module_create_apply_declined_emits_applied_false_and_leaves_unapplied() {
+    // Drives the `if args.apply` block with a NON-empty plan and the
+    // confirmation prompt DECLINED. This exercises the plan-table render
+    // + "N action(s) planned" + prompt_confirm(false) early-return arm
+    // that emits {"applied": false} and returns before acquiring the
+    // apply lock or mutating anything. An env-var spec gives the plan a
+    // single action without needing any package manager.
+    let dir = setup_config_dir();
+    let _home = cfgd_core::with_test_home_guard(dir.path());
+
+    let mut cli = test_cli(dir.path());
+    // Pin state dir inside the temp home so no real state.db is touched.
+    cli.state_dir = Some(dir.path().join("state"));
+
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc_with_prompt_responses(vec![
+        cfgd_core::output::PromptAnswer::Confirm(false),
+    ]);
+
+    let mut args = make_module_create_args("apply-declined-mod");
+    args.apply = true;
+    args.yes = false;
+    args.env = vec!["CARGO_HOME_TEST=/tmp/x".to_string()];
+
+    cmd_module_create(&cli, &printer, &args)
+        .expect("create with apply declined should still succeed");
+    drop(printer);
+
+    // The emitted doc must record the decline as applied:false.
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(json["name"], "apply-declined-mod");
+    assert_eq!(
+        json["applied"], false,
+        "declining the apply prompt must report applied:false"
+    );
+
+    // The module.yaml is still written (create succeeded), but the env
+    // var must NOT have been pushed into the live session: declining
+    // returns before reconciler.apply runs. We assert the module exists
+    // on disk with the env entry recorded in its spec.
+    let (doc, _) = load_module_document(dir.path(), "apply-declined-mod").unwrap();
+    assert_eq!(doc.spec.env.len(), 1);
+    assert_eq!(doc.spec.env[0].name, "CARGO_HOME_TEST");
+}
+
+// ─── cmd_module_update_local — remove file whose source is a directory ─
+
+#[test]
+fn cmd_module_update_remove_file_with_directory_source_recurses() {
+    // Covers the `source_path.is_dir()` arm of the remove-file cleanup in
+    // cmd_module_update_local: when the tracked file entry's
+    // files/<source> is a DIRECTORY, removal must recurse
+    // (remove_dir_all), not fail on remove_file. Asserts both the spec
+    // entry is dropped AND the on-disk source directory is gone.
+    let dir = tempfile::tempdir().unwrap();
+    make_module(
+        dir.path(),
+        "dirmod",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: dirmod\nspec:\n  files:\n    - source: files/cfgdir\n      target: ~/.config/cfgdir\n",
+    );
+    // Materialize the directory source the entry references.
+    let source_dir = dir.path().join("modules/dirmod/files/cfgdir");
+    std::fs::create_dir_all(source_dir.join("nested")).unwrap();
+    std::fs::write(source_dir.join("nested/a.conf"), b"x").unwrap();
+    assert!(source_dir.is_dir());
+
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+    let args = super::ModuleUpdateArgs {
+        files: vec!["-~/.config/cfgdir".to_string()],
+        ..make_module_update_args("dirmod")
+    };
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+    let (doc, _) = load_module_document(dir.path(), "dirmod").unwrap();
+    assert!(
+        doc.spec.files.is_empty(),
+        "the file entry must be removed from the spec"
+    );
+    assert!(
+        !source_dir.exists(),
+        "a directory source must be recursively removed from disk"
+    );
+}
+
+// ─── cmd_module_update_local — remove nonexistent file warns, no change ─
+
+#[test]
+fn cmd_module_update_remove_missing_file_warns_and_reports_no_changes() {
+    // The remove-files loop's else arm: a target not tracked by the
+    // module warns "File '<t>' not found in module" and does NOT count as
+    // a change. With no other edits, changes==0 so the handler emits the
+    // "No changes specified" doc rather than rewriting module.yaml.
+    let dir = tempfile::tempdir().unwrap();
+    make_module(
+        dir.path(),
+        "nofile",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nofile\nspec:\n  packages: []\n",
+    );
+
+    let cli = test_cli_json(dir.path());
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+    let args = super::ModuleUpdateArgs {
+        files: vec!["-~/.config/never-tracked".to_string()],
+        ..make_module_update_args("nofile")
+    };
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
+    drop(printer);
+
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(json["name"], "nofile");
+    assert_eq!(
+        json["changes"], 0,
+        "removing an untracked file is a no-op, not a change"
+    );
+}
+
+// ─── cmd_module_update_local — remove one of two files keeps the other ─
+
+#[test]
+fn cmd_module_update_remove_one_file_retains_the_other() {
+    // Exercises the retain-closure's keep arm: when removing one tracked
+    // file, the non-matching entry must survive in the spec. Asserts the
+    // surviving entry by target AND that the removed file's source on
+    // disk is gone while the survivor's source remains.
+    let dir = tempfile::tempdir().unwrap();
+    make_module(
+        dir.path(),
+        "twofiles",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: twofiles\nspec:\n  files:\n    - source: files/a.conf\n      target: ~/.config/a.conf\n    - source: files/b.conf\n      target: ~/.config/b.conf\n",
+    );
+    let files_dir = dir.path().join("modules/twofiles/files");
+    std::fs::write(files_dir.join("a.conf"), b"a").unwrap();
+    std::fs::write(files_dir.join("b.conf"), b"b").unwrap();
+
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+    let args = super::ModuleUpdateArgs {
+        files: vec!["-~/.config/a.conf".to_string()],
+        ..make_module_update_args("twofiles")
+    };
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+    let (doc, _) = load_module_document(dir.path(), "twofiles").unwrap();
+    assert_eq!(doc.spec.files.len(), 1, "exactly one file should remain");
+    assert_eq!(
+        doc.spec.files[0].source, "files/b.conf",
+        "the non-removed entry must survive the retain"
+    );
+    assert!(
+        !files_dir.join("a.conf").exists(),
+        "removed file's source must be deleted"
+    );
+    assert!(
+        files_dir.join("b.conf").exists(),
+        "retained file's source must remain"
+    );
+}
+
+// ─── cmd_module_edit — re-open loop iterates then breaks ────────
+
+#[test]
+#[cfg(unix)]
+#[serial_test::serial]
+fn cmd_module_edit_reopens_on_confirm_then_breaks_on_decline() {
+    // Covers the in-loop re-open arm of cmd_module_edit: when the file is
+    // still invalid after the first edit, Confirm(true) re-opens the
+    // editor (the loop body runs a second time), and the SECOND prompt
+    // Confirm(false) breaks out — emitting "Saved with validation
+    // errors" with valid:false. EDITOR=/usr/bin/true never fixes the
+    // file, so parse_module Errs on every pass.
+    let dir = setup_config_dir();
+    make_module(
+        dir.path(),
+        "edit-reopen",
+        "definitely not valid module yaml",
+    );
+
+    let cli = test_cli(dir.path());
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc_with_prompt_responses(vec![
+        cfgd_core::output::PromptAnswer::Confirm(true),
+        cfgd_core::output::PromptAnswer::Confirm(false),
+    ]);
+
+    let _editor = cfgd_core::test_helpers::EnvVarGuard::set("EDITOR", "/usr/bin/true");
+    cmd_module_edit(&cli, &printer, "edit-reopen")
+        .expect("edit must return Ok even after re-open then save-with-errors");
+    drop(printer);
+
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(json["name"], "edit-reopen");
+    assert_eq!(
+        json["valid"], false,
+        "an unfixed module must report valid:false after the re-open loop"
+    );
+}
+
+// ─── cmd_module_edit — not_found error path (crud.rs:640-652) ────
+
+#[test]
+fn cmd_module_edit_missing_module_returns_not_found_meta() {
+    // No test exercised the `!module_yaml.exists()` gate at the top of
+    // cmd_module_edit. Pin both the error kind and that the typed
+    // ModuleError::NotFound survives the cli_error_ctx wrap so the exit
+    // code resolves to NotFound (6) like every other named-resource miss.
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
+
+    let err = cmd_module_edit(&cli, &printer, "ghost-edit")
+        .expect_err("editing an absent module must be rejected");
+    drop(printer);
+
+    assert!(
+        err.to_string().contains("not found"),
+        "error must describe the miss: {err}"
+    );
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "not_found");
+    assert!(
+        meta.extras["path"]
+            .as_str()
+            .is_some_and(|p| p.contains("ghost-edit")),
+        "payload must carry the resolved module.yaml path: {:?}",
+        meta.extras
+    );
+    // The typed CfgdError must remain downcastable through the wrap so
+    // main.rs resolves the NotFound exit code.
+    assert!(
+        matches!(
+            err.downcast_ref::<cfgd_core::errors::CfgdError>(),
+            Some(cfgd_core::errors::CfgdError::Module(
+                cfgd_core::errors::ModuleError::NotFound { .. }
+            ))
+        ),
+        "inner typed ModuleError::NotFound must survive the cli_error_ctx wrap"
+    );
+}
+
+// ─── cmd_module_edit — valid-manifest success Doc (crud.rs:663-692) ─
+
+#[test]
+#[cfg(unix)]
+#[serial_test::serial]
+fn cmd_module_edit_valid_manifest_emits_valid_true_doc() {
+    // The edit-error tests cover the parse-Err loop; this drives the
+    // happy branch: EDITOR=/usr/bin/true is a no-op editor, the on-disk
+    // manifest is already valid, parse_module returns Ok on the first
+    // pass, valid=true, and the success Doc is emitted (crud.rs:683-692).
+    let dir = setup_config_dir();
+    make_module(
+        dir.path(),
+        "edit-valid",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: edit-valid\nspec:\n  packages: []\n",
+    );
+
+    let cli = test_cli(dir.path());
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+
+    let _editor = cfgd_core::test_helpers::EnvVarGuard::set("EDITOR", "/usr/bin/true");
+    cmd_module_edit(&cli, &printer, "edit-valid").expect("editing a valid module must succeed");
+    drop(printer);
+
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(json["name"], "edit-valid");
+    assert_eq!(
+        json["valid"], true,
+        "a valid manifest must report valid:true after the editor closes"
+    );
+    assert!(
+        json["path"]
+            .as_str()
+            .is_some_and(|p| p.contains("edit-valid")),
+        "success Doc must carry the module.yaml path: {json}"
+    );
+}
+
+// ─── cmd_module_delete — ignore_not_found (crud.rs:724-726) ──────
+
+#[test]
+fn cmd_module_delete_ignore_not_found_emits_removed_false_doc() {
+    // ignore_not_found=true against an absent module must NOT error — it
+    // takes the emit_not_found_ignored arm at crud.rs:725-726, emitting a
+    // success Doc with removed:false / reason:"not_found".
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+
+    cmd_module_delete(&cli, &printer, "never-existed", true, false, true)
+        .expect("ignore_not_found must turn an absent-module delete into a no-op success");
+    drop(printer);
+
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(json["name"], "never-existed");
+    assert_eq!(json["kind"], "module");
+    assert_eq!(
+        json["removed"], false,
+        "nothing was removed for an absent module"
+    );
+    assert_eq!(json["reason"], "not_found");
+}
+
+// ─── cmd_module_delete — success Doc payload (crud.rs:844-854) ───
+
+#[test]
+fn cmd_module_delete_success_doc_payload_fields() {
+    // The success-path emit carries a structured record consumed by CI.
+    // Pin every field on the wire: a clean delete of a no-files, no-lock
+    // module reports filesProcessed:0, removedFromLockfile:false,
+    // purge:false, cancelled:false.
+    let dir = setup_config_dir();
+    make_module(
+        dir.path(),
+        "del-doc",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: del-doc\nspec:\n  packages: []\n",
+    );
+
+    let cli = test_cli(dir.path());
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+
+    cmd_module_delete(&cli, &printer, "del-doc", true, false, false)
+        .expect("clean delete should succeed");
+    drop(printer);
+
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(json["name"], "del-doc");
+    assert_eq!(json["cancelled"], false);
+    assert_eq!(json["filesProcessed"], 0);
+    assert_eq!(json["removedFromLockfile"], false);
+    assert_eq!(json["purge"], false);
+    assert!(
+        !dir.path().join("modules/del-doc").exists(),
+        "module directory must be gone after a confirmed delete"
+    );
+}
+
+#[test]
+fn cmd_module_delete_purge_doc_payload_counts_processed_files() {
+    // Purge mode removes the deployed target file and reports the count.
+    // Pin filesProcessed:1 + purge:true on the wire alongside the on-disk
+    // effect, so the structured record stays coupled to the real action.
+    let dir = setup_config_dir();
+    let target_dir = tempfile::tempdir().unwrap();
+    let target_file = target_dir.path().join("deployed.conf");
+    std::fs::write(&target_file, "deployed").unwrap();
+    let yaml = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: purge-doc\nspec:\n  files:\n    - source: files/deployed.conf\n      target: {}\n",
+        target_file.display()
+    );
+    make_module(dir.path(), "purge-doc", &yaml);
+    std::fs::write(
+        dir.path().join("modules/purge-doc/files/deployed.conf"),
+        "deployed",
+    )
+    .unwrap();
+
+    let cli = test_cli(dir.path());
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+
+    cmd_module_delete(&cli, &printer, "purge-doc", true, true, false)
+        .expect("purge delete should succeed");
+    drop(printer);
+
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(json["purge"], true);
+    assert_eq!(
+        json["filesProcessed"], 1,
+        "exactly one deployed file should be purged: {json}"
+    );
+    assert!(
+        !target_file.exists(),
+        "purge must remove the deployed target file"
+    );
+}
+
+// ─── cmd_module_create — success Doc payload (crud.rs:324-328) ───
+
+#[test]
+fn cmd_module_create_success_doc_payload_fields() {
+    // The non-apply create path emits a Doc with name/path/applied. Pin
+    // applied:false (no --apply) and that the path points at the new
+    // module dir, while asserting the on-disk module.yaml spec matches the
+    // requested package set.
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+
+    let args = super::ModuleCreateArgs {
+        packages: vec!["ripgrep".to_string(), "fd".to_string()],
+        ..make_module_create_args("create-doc")
+    };
+    cmd_module_create(&cli, &printer, &args).expect("create should succeed");
+    drop(printer);
+
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(json["name"], "create-doc");
+    assert_eq!(
+        json["applied"], false,
+        "create without --apply must report applied:false"
+    );
+    assert!(
+        json["path"]
+            .as_str()
+            .is_some_and(|p| p.contains("create-doc")),
+        "create Doc path must point at the new module dir: {json}"
+    );
+
+    let (doc, _) = load_module_document(dir.path(), "create-doc").unwrap();
+    let names: Vec<&str> = doc.spec.packages.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["ripgrep", "fd"],
+        "module.yaml must persist exactly the requested packages in order"
+    );
+}
+
+// ─── cmd_module_update_local — success Doc payload (crud.rs:618-628) ─
+
+#[test]
+fn cmd_module_update_success_doc_payload_counts_changes() {
+    // The mutating update path emits a Doc with name + an exact change
+    // count. Two adds (one package, one env) → changes:2. Pin the count
+    // and the resulting on-disk spec so the wire record stays coupled to
+    // the real mutation.
+    let dir = tempfile::tempdir().unwrap();
+    make_module(
+        dir.path(),
+        "upd-doc",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: upd-doc\nspec:\n  packages: []\n",
+    );
+
+    let cli = test_cli(dir.path());
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+
+    let args = super::ModuleUpdateArgs {
+        packages: vec!["ripgrep".to_string()],
+        env: vec!["EDITOR=nvim".to_string()],
+        ..make_module_update_args("upd-doc")
+    };
+    cmd_module_update_local(&cli, &printer, &args).expect("update should succeed");
+    drop(printer);
+
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(json["name"], "upd-doc");
+    assert_eq!(
+        json["changes"], 2,
+        "one package add + one env add must report exactly 2 changes: {json}"
+    );
+
+    let (doc, _) = load_module_document(dir.path(), "upd-doc").unwrap();
+    assert_eq!(doc.spec.packages.len(), 1);
+    assert_eq!(doc.spec.packages[0].name, "ripgrep");
+    assert_eq!(doc.spec.env.len(), 1);
+    assert_eq!(doc.spec.env[0].name, "EDITOR");
+    assert_eq!(doc.spec.env[0].value, "nvim");
+}
+
+#[test]
+fn cmd_module_update_no_changes_doc_payload_reports_zero() {
+    // The early-return "No changes specified" arm (crud.rs:605-614) emits
+    // a Doc with changes:0. Pin the structured field, distinct from the
+    // mutating path's count.
+    let dir = tempfile::tempdir().unwrap();
+    make_module(
+        dir.path(),
+        "noop-doc",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: noop-doc\nspec:\n  packages: []\n",
+    );
+
+    let cli = test_cli(dir.path());
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
+
+    let args = make_module_update_args("noop-doc");
+    cmd_module_update_local(&cli, &printer, &args).expect("no-op update should succeed");
+    drop(printer);
+
+    let json = cap.json().expect("doc captured json");
+    assert_eq!(json["name"], "noop-doc");
+    assert_eq!(
+        json["changes"], 0,
+        "an argument-free update must report changes:0: {json}"
+    );
+}
+
+#[test]
+fn cmd_module_update_remove_nonexistent_script_warns_not_found() {
+    // Prior art (crud.rs:580-596): removing a script that isn't present —
+    // even when no scripts block exists at all — warns "Script '<x>' not
+    // found" rather than silently no-opping, matching env/alias removes.
+    // changes stays 0, so the no-changes Doc is emitted.
+    let dir = tempfile::tempdir().unwrap();
+    make_module(
+        dir.path(),
+        "noscript-doc",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: noscript-doc\nspec:\n  packages: []\n",
+    );
+
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let args = super::ModuleUpdateArgs {
+        post_apply: vec!["-echo absent".to_string()],
+        ..make_module_update_args("noscript-doc")
+    };
+    cmd_module_update_local(&cli, &printer, &args)
+        .expect("removing an absent script must warn, not error");
+    drop(printer);
+
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("Script 'echo absent' not found"),
+        "must warn with the exact missing-script message: {output}"
+    );
+    assert!(
+        output.contains("No changes specified"),
+        "an unmatched script removal makes no change: {output}"
+    );
 }

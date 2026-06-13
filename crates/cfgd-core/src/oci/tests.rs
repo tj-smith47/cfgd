@@ -1,5 +1,6 @@
 use super::*;
 use crate::sha256_digest;
+use serde_json::Value;
 use serial_test::serial;
 
 // --- OCI Reference parsing ---
@@ -797,4 +798,67 @@ mod bridge {
 
         assert_snapshot("oci_push_clean.txt", &captured);
     }
+}
+
+// --- ImageConfig / RootFs / ImageRuntimeConfig serialization ---
+
+#[test]
+fn image_config_serializes_with_correct_oci_keys() {
+    let cfg = ImageConfig {
+        architecture: "amd64".to_string(),
+        os: "linux".to_string(),
+        created: Some("2026-01-01T00:00:00Z".to_string()),
+        config: Some(ImageRuntimeConfig {
+            entrypoint: Some(vec!["/app/server".to_string()]),
+            env: Some(vec!["PATH=/app/bin".to_string()]),
+            ..Default::default()
+        }),
+        rootfs: RootFs {
+            fs_type: "layers".to_string(),
+            diff_ids: vec!["sha256:abc".to_string()],
+        },
+    };
+
+    let val: Value = serde_json::to_value(&cfg).unwrap();
+
+    // Top-level keys are lowercase/snake_case.
+    assert_eq!(val["architecture"], "amd64");
+    assert_eq!(val["os"], "linux");
+    assert!(val.get("rootfs").is_some());
+
+    // rootfs uses snake_case: "type" and "diff_ids" (NOT "diffIds").
+    let rootfs = &val["rootfs"];
+    assert_eq!(rootfs["type"], "layers");
+    let diff_ids = rootfs["diff_ids"].as_array().unwrap();
+    assert_eq!(diff_ids.len(), 1);
+    assert_eq!(diff_ids[0], "sha256:abc");
+    assert!(
+        rootfs.get("diffIds").is_none(),
+        "diff_ids must not camelCase to diffIds"
+    );
+
+    // Inner config object uses PascalCase keys.
+    let config = &val["config"];
+    assert!(config.get("Entrypoint").is_some());
+    let entrypoint = config["Entrypoint"].as_array().unwrap();
+    assert_eq!(entrypoint[0], "/app/server");
+    assert!(config.get("Env").is_some());
+    let env = config["Env"].as_array().unwrap();
+    assert_eq!(env[0], "PATH=/app/bin");
+
+    // None fields are absent from the JSON.
+    assert!(config.get("Cmd").is_none(), "None Cmd must be absent");
+    assert!(config.get("User").is_none(), "None User must be absent");
+
+    // Round-trip: deserialize back and verify structural equality.
+    let round_tripped: ImageConfig = serde_json::from_value(val).unwrap();
+    assert_eq!(round_tripped.architecture, "amd64");
+    assert_eq!(round_tripped.os, "linux");
+    assert_eq!(round_tripped.rootfs.fs_type, "layers");
+    assert_eq!(round_tripped.rootfs.diff_ids, vec!["sha256:abc"]);
+    let rt_config = round_tripped.config.unwrap();
+    assert_eq!(rt_config.entrypoint.unwrap(), vec!["/app/server"]);
+    assert_eq!(rt_config.env.unwrap(), vec!["PATH=/app/bin"]);
+    assert!(rt_config.cmd.is_none());
+    assert!(rt_config.user.is_none());
 }

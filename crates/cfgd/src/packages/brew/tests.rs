@@ -826,6 +826,79 @@ mod brew_shim {
         );
     }
 
+    /// Non-root (and macOS) bootstrap runs the `bash -c "<curl install.sh>"`
+    /// branch. A passing `bash` PATH shim drives it to Ok without contacting
+    /// Homebrew. This path is skipped on Linux-as-root (that branch is covered
+    /// by the linuxbrew tests below).
+    #[test]
+    #[serial]
+    fn brew_manager_bootstrap_non_root_runs_bash_install_pipeline_ok() {
+        if cfg!(target_os = "linux") && cfgd_core::is_root() {
+            return;
+        }
+        let (_tmp, _guard) = cfgd_core::test_helpers::install_named_path_shim("bash", 0, "", "");
+        let p = test_printer();
+        BrewManager
+            .bootstrap(&p)
+            .expect("non-root bootstrap Ok with passing bash shim");
+    }
+
+    #[test]
+    #[serial]
+    fn brew_manager_bootstrap_non_root_propagates_bash_failure() {
+        if cfg!(target_os = "linux") && cfgd_core::is_root() {
+            return;
+        }
+        let (_tmp, _guard) =
+            cfgd_core::test_helpers::install_named_path_shim("bash", 1, "", "boom");
+        let p = test_printer();
+        let err = BrewManager
+            .bootstrap(&p)
+            .expect_err("a non-zero bash install script must surface as BootstrapFailed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("brew"),
+            "error must reference the brew manager: {msg}"
+        );
+    }
+
+    /// `available_version` calls `.output()` directly, so a spawn failure
+    /// (env-var seam pointing at a non-existent path) exercises the
+    /// `CommandFailed` map_err arm rather than a non-zero exit.
+    #[test]
+    #[serial]
+    fn brew_available_version_spawn_failure_maps_to_command_failed() {
+        let _g = cfgd_core::test_helpers::EnvVarGuard::set(
+            SHIM_ENV,
+            "/nonexistent/cfgd-brew-shim-does-not-exist",
+        );
+        let err = BrewManager
+            .available_version("git")
+            .expect_err("ENOENT spawn must surface as CommandFailed");
+        assert!(
+            matches!(err, cfgd_core::errors::CfgdError::Package(
+                PackageError::CommandFailed { ref manager, .. }) if manager == "brew"),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn brew_cask_available_version_spawn_failure_maps_to_command_failed() {
+        let _g = cfgd_core::test_helpers::EnvVarGuard::set(
+            SHIM_ENV,
+            "/nonexistent/cfgd-brew-cask-shim-does-not-exist",
+        );
+        let err = BrewCaskManager
+            .available_version("firefox")
+            .expect_err("ENOENT spawn must surface as CommandFailed");
+        assert!(
+            matches!(err, cfgd_core::errors::CfgdError::Package(
+                PackageError::CommandFailed { ref manager, .. }) if manager == "brew-cask"),
+            "got: {err:?}"
+        );
+    }
+
     #[test]
     #[serial]
     fn brew_manager_bootstrap_linux_root_path_success() {

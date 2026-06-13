@@ -715,3 +715,105 @@ pub(super) fn check_prerequisites(printer: &Printer) -> bool {
     }
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Helper: write a minimal valid cfgd.yaml into `dir` and return the config path.
+    fn write_minimal_config(dir: &std::path::Path) -> std::path::PathBuf {
+        let config_path = dir.join("cfgd.yaml");
+        let content =
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: original\nspec: {}\n";
+        cfgd_core::atomic_write_str(&config_path, content).unwrap();
+        config_path
+    }
+
+    // ─── apply_clone_overrides — both-None no-op ──────────────────
+
+    #[test]
+    fn apply_clone_overrides_both_none_is_noop() {
+        // When both name and theme are None the function returns immediately
+        // without touching the filesystem; calling it on an absent path is safe.
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("cfgd.yaml");
+        // File intentionally absent — the both-None early return must fire first.
+        let result = apply_clone_overrides(&config_path, None, None);
+        assert!(result.is_ok(), "both-None must return Ok: {result:?}");
+        assert!(
+            !config_path.exists(),
+            "both-None must not create the config file"
+        );
+    }
+
+    // ─── apply_clone_overrides — file-absent no-op ────────────────
+
+    #[test]
+    fn apply_clone_overrides_absent_file_is_noop() {
+        // When at least one override is supplied but cfgd.yaml does not exist
+        // (clone produced no config) the function silently returns Ok.
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("cfgd.yaml");
+        // File intentionally absent.
+        let result = apply_clone_overrides(&config_path, Some("new-name"), Some("minimal"));
+        assert!(
+            result.is_ok(),
+            "absent config file must return Ok: {result:?}"
+        );
+        assert!(
+            !config_path.exists(),
+            "absent-file no-op must not create the config file"
+        );
+    }
+
+    // ─── apply_clone_overrides — name override ────────────────────
+
+    #[test]
+    fn apply_clone_overrides_name_override_mutates_metadata_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = write_minimal_config(dir.path());
+
+        apply_clone_overrides(&config_path, Some("overridden-name"), None).unwrap();
+
+        let cfg = config::load_config(&config_path).unwrap();
+        assert_eq!(
+            cfg.metadata.name, "overridden-name",
+            "metadata.name must equal the supplied --name override"
+        );
+    }
+
+    // ─── apply_clone_overrides — theme override ───────────────────
+
+    #[test]
+    fn apply_clone_overrides_theme_override_mutates_spec_theme() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = write_minimal_config(dir.path());
+
+        apply_clone_overrides(&config_path, None, Some("catppuccin")).unwrap();
+
+        let cfg = config::load_config(&config_path).unwrap();
+        let theme = cfg
+            .spec
+            .theme
+            .expect("spec.theme must be set after override");
+        assert_eq!(
+            theme.name, "catppuccin",
+            "spec.theme.name must equal the supplied --theme override"
+        );
+    }
+
+    // ─── apply_clone_overrides — both overrides ───────────────────
+
+    #[test]
+    fn apply_clone_overrides_both_overrides_applied_atomically() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = write_minimal_config(dir.path());
+
+        apply_clone_overrides(&config_path, Some("my-machine"), Some("minimal")).unwrap();
+
+        let cfg = config::load_config(&config_path).unwrap();
+        assert_eq!(cfg.metadata.name, "my-machine");
+        let theme = cfg.spec.theme.expect("spec.theme must be set");
+        assert_eq!(theme.name, "minimal");
+    }
+}
