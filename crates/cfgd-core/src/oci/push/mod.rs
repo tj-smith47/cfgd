@@ -8,11 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::errors::OciError;
 use crate::output::Printer;
-use crate::sha256_digest;
 
 use super::archive::create_tar_gz;
 use super::auth::RegistryAuth;
-use super::transport::{authenticated_request, upload_blob};
+use super::transport::{authenticated_request, resolve_pushed_digest, upload_blob};
 use super::{
     MEDIA_TYPE_MODULE_CONFIG, MEDIA_TYPE_MODULE_LAYER, MEDIA_TYPE_OCI_MANIFEST, OciDescriptor,
     OciManifest, OciReference, ReferenceKind,
@@ -113,7 +112,7 @@ pub(super) fn push_module_inner(
         oci_ref.reference_str(),
     );
 
-    authenticated_request(
+    let manifest_resp = authenticated_request(
         agent,
         "PUT",
         &manifest_url,
@@ -127,7 +126,7 @@ pub(super) fn push_module_inner(
     })?;
 
     let manifest_size = manifest_json.len() as u64;
-    let manifest_digest = sha256_digest(&manifest_json);
+    let manifest_digest = resolve_pushed_digest(&manifest_resp, &manifest_json);
     tracing::info!(
         reference = %oci_ref,
         digest = %manifest_digest,
@@ -257,7 +256,7 @@ pub fn push_module_multiplatform(
         oci_ref.reference_str(),
     );
 
-    authenticated_request(
+    let index_resp = authenticated_request(
         &agent,
         "PUT",
         &index_url,
@@ -270,7 +269,7 @@ pub fn push_module_multiplatform(
         message: format!("index push failed: {e}"),
     })?;
 
-    let index_digest = sha256_digest(&index_json);
+    let index_digest = resolve_pushed_digest(&index_resp, &index_json);
 
     if let Some(s) = spinner {
         let _ = s.finish_ok(format!("Pushed multi-platform module to {artifact_ref}"));

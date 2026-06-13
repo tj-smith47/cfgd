@@ -99,6 +99,22 @@ pub(super) fn authenticated_request(
     }
 }
 
+/// Resolve the authoritative digest of a just-PUT manifest/index.
+///
+/// Prefers the registry's `Docker-Content-Digest` response header, falling back
+/// to hashing the exact bytes we sent. A conformant registry echoes the digest
+/// of those bytes — but one that re-canonicalizes the manifest stores (and
+/// addresses) a different digest, so the value a caller pins (e.g. a Kubernetes
+/// `volume.image` reference) must come from the registry whenever it provides one.
+pub(super) fn resolve_pushed_digest(resp: &ureq::Response, sent_bytes: &[u8]) -> String {
+    resp.header("Docker-Content-Digest")
+        .or_else(|| resp.header("docker-content-digest"))
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| sha256_digest(sent_bytes))
+}
+
 /// Upload a blob to the registry via the monolithic upload flow.
 /// POST /v2/{name}/blobs/uploads/ → PUT with digest.
 pub(super) fn upload_blob(
@@ -454,6 +470,55 @@ mod tests {
         );
         let resp = result.expect("PUT with body should succeed");
         assert_eq!(resp.status(), 201);
+    }
+
+    fn put_response_with(headers: &[(&str, &str)]) -> ureq::Response {
+        let mut server = mockito::Server::new();
+        let mut m = server
+            .mock("PUT", "/v2/test/repo/manifests/v1")
+            .with_status(201);
+        for (k, v) in headers {
+            m = m.with_header(*k, v);
+        }
+        m.create();
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(10))
+            .build();
+        let url = format!("{}/v2/test/repo/manifests/v1", server.url());
+        authenticated_request(&agent, "PUT", &url, None, None, None, Some(b"x"))
+            .expect("PUT should succeed")
+    }
+
+    #[test]
+    fn resolve_pushed_digest_prefers_registry_header() {
+        let resp = put_response_with(&[("Docker-Content-Digest", "sha256:deadbeef")]);
+        // Header value wins over the local hash of the sent bytes.
+        assert_eq!(
+            resolve_pushed_digest(&resp, b"different bytes"),
+            "sha256:deadbeef"
+        );
+    }
+
+    #[test]
+    fn resolve_pushed_digest_falls_back_when_header_absent() {
+        let resp = put_response_with(&[]);
+        // Pin a precomputed digest (not `sha256_digest(sent)`) so the test fails
+        // if the fallback ever hashes the wrong bytes or the algorithm drifts.
+        assert_eq!(
+            resolve_pushed_digest(&resp, b"manifest bytes"),
+            "sha256:66444334cfc47d81840f88c1e690564d3c130e9237482a58d7631124e9b9a815"
+        );
+    }
+
+    #[test]
+    fn resolve_pushed_digest_falls_back_when_header_empty() {
+        let resp = put_response_with(&[("Docker-Content-Digest", "")]);
+        // An empty header must be ignored, not returned — fall back to the
+        // precomputed digest of the sent bytes.
+        assert_eq!(
+            resolve_pushed_digest(&resp, b"manifest bytes"),
+            "sha256:66444334cfc47d81840f88c1e690564d3c130e9237482a58d7631124e9b9a815"
+        );
     }
 
     #[test]
