@@ -24,7 +24,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  ANODIZER_VERSION: v0.8.1
+  ANODIZER_VERSION: v0.9.1
 
 jobs:
   tag:
@@ -227,6 +227,14 @@ jobs:
         with:
           version: ${{ env.ANODIZER_VERSION }}
           auto-install: 'true'
+          # cfgd publishes a snap (snapcrafts: publisher, nested under the
+          # per-crate workspaces.cfgd block) and runs `alejandra` to format the
+          # nix derivation (nix.formatter, same nesting). Neither tool ships on
+          # GitHub runner images, and v0.9 env-preflight + v0.9.1's fail-loud
+          # alejandra abort the release if either is missing. Install them
+          # explicitly; additive with auto-install (harmless if it already
+          # covers them).
+          install: snapcraft,alejandra
           # Artifacts already in dist/ from the step above; action's built-in
           # download (which matches dist-* globally) is intentionally skipped.
           download-dist: 'false'

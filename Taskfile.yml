@@ -160,6 +160,32 @@ tasks:
       - bash .claude/scripts/coverage-percent.sh cobertura.xml
       - bash .claude/scripts/publish-coverage.sh cobertura.xml
 
+  coverage:gate:
+    desc: "Coverage floor gate: run the instrumented suite quietly (full output in target/coverage-gate.log), then fail below the floor (default 93; override via COVERAGE_FLOOR)."
+    deps: [_check:tmp-headroom]
+    cmds:
+      # The instrumented run spews thousands of compile/test lines; keep the
+      # terminal to percent + verdict and park the rest in a logfile.
+      - mkdir -p target
+      - |
+        if ! cargo llvm-cov nextest --cobertura --output-path cobertura.xml --no-fail-fast > target/coverage-gate.log 2>&1; then
+          echo "instrumented test run failed — tail of target/coverage-gate.log:" >&2
+          tail -n 40 target/coverage-gate.log >&2
+          exit 1
+        fi
+      - |
+        # --raw gives the unrounded percent so a 92.99 can't pass as the
+        # badge's rounded 93; the badge form is shown alongside for context.
+        floor="${COVERAGE_FLOOR:-93}"
+        pct=$(bash .claude/scripts/coverage-percent.sh --raw cobertura.xml)
+        badge=$(bash .claude/scripts/coverage-percent.sh cobertura.xml)
+        if awk -v p="$pct" -v f="$floor" 'BEGIN { exit !(p + 0 >= f + 0) }'; then
+          echo "coverage ${pct}% (badge ${badge}) meets floor ${floor}% — PASS"
+        else
+          echo "coverage ${pct}% (badge ${badge}) below floor ${floor}% — FAIL" >&2
+          exit 1
+        fi
+
   audit:test:
     desc: Validate audit.sh's banned-pattern rules against paired fixtures
     cmds:
@@ -240,6 +266,17 @@ tasks:
           printf '%s\n' '{{.MODIFIED_LIST}}' | grep -qxF -- "$f" && continue
           git add -- "$f"
         done
+
+  push:
+    desc: "Coverage-gated push. Usage: task push [-- <git push args>] (defaults to origin master)."
+    preconditions:
+      # Uncommitted changes must not ride along on a push decision — gate the
+      # coverage run and the push on a clean tree.
+      - sh: git diff --quiet && git diff --cached --quiet
+        msg: "Working tree is dirty — commit your changes before task push."
+    cmds:
+      - task: coverage:gate
+      - git push {{.CLI_ARGS | default "origin master"}}
 
   ci:
     desc: Run all CI checks (everything except cross-platform builds)
@@ -351,17 +388,17 @@ tasks:
     cmds:
       - docker build -f Dockerfile.operator -t {{.REGISTRY}}/cfgd-operator:latest -t {{.REGISTRY}}/cfgd-operator:{{.VERSION_NUM}} .
 
-  push:
+  image:push:
     desc: Push all Docker images to registry
-    deps: [push:cli, push:operator]
+    deps: [image:push:cli, image:push:operator]
 
-  push:cli:
+  image:push:cli:
     desc: Push cfgd CLI image to registry
     cmds:
       - docker push {{.REGISTRY}}/cfgd:latest
       - docker push {{.REGISTRY}}/cfgd:{{.VERSION_NUM}}
 
-  push:operator:
+  image:push:operator:
     desc: Push cfgd-operator image to registry
     cmds:
       - docker push {{.REGISTRY}}/cfgd-operator:latest
@@ -383,6 +420,6 @@ tasks:
     desc: Build, push, and deploy cfgd-operator to k3s
     cmds:
       - task: docker:operator
-      - task: push:operator
+      - task: image:push:operator
       - kustomize build --enable-alpha-plugins --enable-exec "${CFGD_DEPLOY_MANIFESTS:?Set CFGD_DEPLOY_MANIFESTS to your kustomize directory}" | kubectl apply -f -
       - kubectl rollout restart deployment/cfgd-operator -n cfgd-system

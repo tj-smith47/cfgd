@@ -789,8 +789,6 @@ signs:
       - "{{ Signature }}"
       - "--detach-sig"
       - "{{ Artifact }}"
-    env:
-      - "GPG_TTY={{ Env.GPG_TTY }}"
     if: "{{ not .IsSnapshot }}"
   - id: checksum-cosign
     artifacts: checksum
@@ -815,8 +813,6 @@ signs:
       - "{{ Signature }}"
       - "--detach-sig"
       - "{{ Artifact }}"
-    env:
-      - "GPG_TTY={{ Env.GPG_TTY }}"
     if: "{{ not .IsSnapshot }}"
 
 # Cosign-based binary signing for the cfgd CLI binary.

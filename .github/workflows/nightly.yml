@@ -11,7 +11,7 @@ permissions:
   attestations: write # mint SLSA build provenance (attestations.enabled, subjects mode)
 
 env:
-  ANODIZER_VERSION: v0.8.1
+  ANODIZER_VERSION: v0.9.1
 
 jobs:
   nightly:
