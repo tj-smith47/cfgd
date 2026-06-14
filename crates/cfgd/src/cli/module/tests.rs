@@ -252,7 +252,7 @@ spec:
         config_dir: None,
         cache_dir: None,
         runtime_dir: None,
-        system: false,
+        scope_arg: crate::cli::ScopeArg::User,
     };
 
     let result = super::export_devcontainer(
@@ -300,7 +300,7 @@ fn test_cli(dir: &std::path::Path) -> super::Cli {
         config_dir: None,
         cache_dir: None,
         runtime_dir: None,
-        system: false,
+        scope_arg: crate::cli::ScopeArg::User,
     }
 }
 

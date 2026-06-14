@@ -255,14 +255,14 @@ The service is configured to start at login (macOS/Linux) or at system boot (Win
 
 ### System scope
 
-Pass `--system` (or `CFGD_SYSTEM=1`) to install cfgd as a privileged, machine-wide
-daemon using FHS paths. This is the right choice for servers, k8s nodes, and any
-host where cfgd is managed by infrastructure tooling rather than a personal login.
+Pass `--scope system` (or `CFGD_SCOPE=system`) to install cfgd as a privileged,
+machine-wide daemon using FHS paths. This is the right choice for servers, k8s nodes,
+and any host where cfgd is managed by infrastructure tooling rather than a personal login.
 
 ```bash
-sudo cfgd --system daemon install    # install the system service
-sudo cfgd --system daemon uninstall  # stop and remove it
-cfgd --system daemon status          # check state (no root needed)
+sudo cfgd --scope system daemon install    # install the system service
+sudo cfgd --scope system daemon uninstall  # stop and remove it
+cfgd --scope system daemon status          # check state (no root needed)
 ```
 
 `install` and `uninstall` require root (`sudo` on Linux/macOS). Running without root
@@ -282,8 +282,8 @@ On **macOS** the plist is written to `/Library/LaunchDaemons/com.cfgd.daemon.pli
 and loaded with `launchctl bootstrap system`. Logs go to `/var/log/cfgd.log` and
 `/var/log/cfgd.err`.
 
-The generated service bakes `--system` into `ExecStart` (Linux) and `ProgramArguments`
-(macOS), so the daemon and any `cfgd --system <command>` admin-CLI invocations resolve
+The generated service bakes `--scope system` into `ExecStart` (Linux) and `ProgramArguments`
+(macOS), so the daemon and any `cfgd --scope system <command>` admin-CLI invocations resolve
 the same roots. Path defaults under system scope:
 
 | Root | Linux | macOS |
@@ -295,7 +295,7 @@ the same roots. Path defaults under system scope:
 
 All four roots can still be relocated with `--<role>-dir` flags or `CFGD_<ROLE>_DIR`
 env vars, or via the systemd `$*_DIRECTORY` injection described above. Use
-`cfgd --system paths` to confirm the resolved roots on any host.
+`cfgd --scope system paths` to confirm the resolved roots on any host.
 
 ### Headless installs on Linux
 

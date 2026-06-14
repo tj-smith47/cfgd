@@ -500,7 +500,7 @@ fn test_cli(dir: &Path) -> super::super::Cli {
         config_dir: None,
         cache_dir: None,
         runtime_dir: None,
-        system: false,
+        scope_arg: crate::cli::ScopeArg::User,
         command: Some(super::super::Command::Status {
             module: None,
             exit_code: false,
@@ -2763,7 +2763,7 @@ mod profile_update_module_cleanup {
             // resolving to the real `~/.cache/cfgd`.
             cache_dir: Some(state_dir.to_path_buf()),
             runtime_dir: None,
-            system: false,
+            scope_arg: crate::cli::ScopeArg::User,
             command: Some(super::super::Command::Status {
                 module: None,
                 exit_code: false,

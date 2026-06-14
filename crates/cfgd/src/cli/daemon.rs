@@ -189,7 +189,7 @@ pub(super) fn cmd_daemon_install(cli: &Cli, printer: &Printer) -> anyhow::Result
 
     if scope == cfgd_core::Scope::System && !cfgd_core::is_root() {
         printer.status_simple(Role::Fail, "system-scope install requires root privileges");
-        printer.hint("Re-run with sudo: sudo cfgd --system daemon install");
+        printer.hint("Re-run with sudo: sudo cfgd --scope system daemon install");
         return Err(anyhow::anyhow!(
             "insufficient privileges for system-scope install"
         ));
@@ -334,7 +334,7 @@ pub(super) fn cmd_daemon_uninstall(cli: &Cli, printer: &Printer) -> anyhow::Resu
             Role::Fail,
             "system-scope uninstall requires root privileges",
         );
-        printer.hint("Re-run with sudo: sudo cfgd --system daemon uninstall");
+        printer.hint("Re-run with sudo: sudo cfgd --scope system daemon uninstall");
         return Err(anyhow::anyhow!(
             "insufficient privileges for system-scope uninstall"
         ));
@@ -446,7 +446,7 @@ mod tests {
             config_dir: None,
             cache_dir: None,
             runtime_dir: None,
-            system: false,
+            scope_arg: crate::cli::ScopeArg::User,
             command: None,
         }
     }

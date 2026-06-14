@@ -1069,7 +1069,7 @@ mod cmd_generate_mockito {
             config_dir: None,
             cache_dir: None,
             runtime_dir: None,
-            system: false,
+            scope_arg: crate::cli::ScopeArg::User,
         }
     }
 
@@ -1573,7 +1573,7 @@ mod cmd_generate_mockito {
             config_dir: None,
             cache_dir: None,
             runtime_dir: None,
-            system: false,
+            scope_arg: crate::cli::ScopeArg::User,
         };
         let (printer, buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
         let args = GenerateArgs {
@@ -1860,7 +1860,7 @@ mod cmd_generate_mockito {
             config_dir: None,
             cache_dir: None,
             runtime_dir: None,
-            system: false,
+            scope_arg: crate::cli::ScopeArg::User,
         };
         let (printer, buf) = Printer::for_test_with_prompt_responses_at(
             vec![

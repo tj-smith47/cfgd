@@ -203,7 +203,7 @@ const WINDOWS_PIPE_PATH: &str = r"\\.\pipe\cfgd";
 /// `runtime_over` is the explicit `--runtime-dir` override; pass `None` to take
 /// the env/default. `scope` selects the per-user vs system runtime root so the
 /// system socket lives under `/run/cfgd`. Bind and connect agree automatically
-/// under env/default; a user passing `--runtime-dir`/`--system` must pass it
+/// under env/default; a user passing `--runtime-dir`/`--scope system` must pass it
 /// consistently to both sides.
 pub fn resolve_default_ipc_path(runtime_over: Option<&Path>, scope: crate::Scope) -> PathBuf {
     if let Some(override_path) = std::env::var_os("CFGD_DAEMON_IPC_PATH") {

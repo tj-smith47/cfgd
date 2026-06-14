@@ -429,7 +429,7 @@ mod tests {
             config_dir: None,
             cache_dir,
             runtime_dir: None,
-            system: false,
+            scope_arg: crate::cli::ScopeArg::User,
             command: None,
         }
     }

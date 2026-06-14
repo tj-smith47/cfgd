@@ -188,7 +188,7 @@ config dir on any platform — and is the supported way to keep config under
 
 ### System scope
 
-Pass `--system` (or `CFGD_SYSTEM=1`) to switch all four roots to their
+Pass `--scope system` (or `CFGD_SCOPE=system`) to switch all four roots to their
 machine-wide FHS / `/Library` equivalents:
 
 | Root | Linux system | macOS system |
@@ -198,10 +198,10 @@ machine-wide FHS / `/Library` equivalents:
 | Cache | `/var/cache/cfgd` | `/Library/Caches/cfgd` |
 | Runtime | `/run/cfgd` | `/Library/Application Support/cfgd/runtime` |
 
-Windows is always system-scope; `--system` is a no-op there.
+Windows is always system-scope; `--scope system` is a no-op there.
 
 ```console
-$ cfgd --system paths
+$ cfgd --scope system paths
 cfgd directories (scope: system)
 
 Config
@@ -439,7 +439,7 @@ These flags work with any subcommand:
 | `--no-color` | | `NO_COLOR` | Disable colored terminal output |
 | `--output <format>` | `-o` | | Output format: `table` (default), `wide`, `json`, `yaml`, `name`, `jsonpath=EXPR`, `template=TMPL`, `template-file=PATH` |
 | `--list-envelope` | | `CFGD_LIST_ENVELOPE` | Under `-o json`/`-o yaml`, wrap a top-level array in a KRM `List` envelope (`{apiVersion, kind: List, items}`) |
-| `--system` | | `CFGD_SYSTEM` | Switch all four directory roots to system/FHS defaults (`/etc/cfgd`, `/var/lib/cfgd`, …). See [System scope](configuration.md#system-scope). |
+| `--scope <user\|system>` | | `CFGD_SCOPE` | Installation scope: `user` (default) or `system`. `system` switches all four directory roots to system/FHS defaults (`/etc/cfgd`, `/var/lib/cfgd`, …). See [System scope](configuration.md#system-scope). |
 
 Boolean env vars accept shell-truthy spellings, not just `true`/`false`. The
 accept-set matches `CFGD_YES`: `1`/`y`/`yes`/`t`/`true`/`on` (case-insensitive)

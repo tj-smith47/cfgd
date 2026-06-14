@@ -71,7 +71,7 @@ pub enum Scope {
 }
 
 impl Scope {
-    /// Map a `--system` flag to a scope: `true` → [`Scope::System`], `false` →
+    /// Map a system-scope bool to a scope: `true` → [`Scope::System`], `false` →
     /// [`Scope::User`].
     pub fn from_system_flag(system: bool) -> Self {
         if system { Scope::System } else { Scope::User }

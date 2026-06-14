@@ -349,12 +349,20 @@ pub struct Cli {
     #[arg(long, global = true, env = "CFGD_RUNTIME_DIR")]
     pub runtime_dir: Option<PathBuf>,
 
-    /// Operate on the system-wide (root) installation: FHS roots on Linux
-    /// (/etc/cfgd, /var/lib/cfgd, /var/cache/cfgd, /run/cfgd), the /Library
-    /// mirror on macOS, %ProgramData%\cfgd on Windows. Default is the per-user
-    /// installation.
-    #[arg(long, global = true, env = "CFGD_SYSTEM")]
-    pub system: bool,
+    /// Installation scope: `user` (per-user XDG / `~/...` roots — the default) or
+    /// `system` (machine-wide roots: FHS on Linux — /etc/cfgd, /var/lib/cfgd,
+    /// /var/cache/cfgd, /run/cfgd — the /Library mirror on macOS, %ProgramData%\cfgd
+    /// on Windows; cfgd runs as root). Selects the directory family for every
+    /// config/state/cache/runtime root. Matches the `.scope` field of `cfgd paths -o json`.
+    #[arg(
+        long = "scope",
+        global = true,
+        value_enum,
+        value_name = "SCOPE",
+        default_value = "user",
+        env = "CFGD_SCOPE"
+    )]
+    pub scope_arg: ScopeArg,
 
     // Optional so `cfgd` with no args prints help and exits 0. A required
     // subcommand (non-Option) makes clap emit a "usage" error and exit with
@@ -366,11 +374,11 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// Installation scope selected by `--system` (`CFGD_SYSTEM`): system-wide
-    /// when set, per-user otherwise. Threaded into every directory resolver so
-    /// the whole CLI surface agrees on one root.
+    /// Installation scope selected by `--scope` (`CFGD_SCOPE`): [`Scope::System`]
+    /// for `system`, [`Scope::User`] otherwise. Threaded into every directory
+    /// resolver so the whole CLI surface agrees on one root.
     pub fn scope(&self) -> cfgd_core::Scope {
-        cfgd_core::Scope::from_system_flag(self.system)
+        self.scope_arg.into()
     }
 }
 
@@ -1512,6 +1520,25 @@ pub enum ModuleKeysCommand {
 pub enum ExportFormat {
     /// DevContainer Feature (install.sh + devcontainer-feature.json)
     Devcontainer,
+}
+
+/// Clap-facing installation-scope selector for the global `--scope` flag.
+/// Maps to [`cfgd_core::Scope`]; defined in the CLI layer so clap stays out of
+/// `cfgd-core`. Variant names render as `user` / `system`, matching the `.scope`
+/// field emitted by `cfgd paths -o json`.
+#[derive(Clone, Copy, Default, clap::ValueEnum)]
+pub enum ScopeArg {
+    /// Per-user directories (XDG / `~/...` / `%APPDATA%`). The default.
+    #[default]
+    User,
+    /// Machine-wide directories (FHS / `/Library` / `%ProgramData%`); cfgd runs as root.
+    System,
+}
+
+impl From<ScopeArg> for cfgd_core::Scope {
+    fn from(arg: ScopeArg) -> Self {
+        cfgd_core::Scope::from_system_flag(matches!(arg, ScopeArg::System))
+    }
 }
 
 /// Decide subcommand action.

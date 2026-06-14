@@ -20,7 +20,8 @@ pub(crate) fn generate_launchd_plist(
         args.push(format!("<string>{}</string>", p));
     }
     if scope == crate::Scope::System {
-        args.push("<string>--system</string>".to_string());
+        args.push("<string>--scope</string>".to_string());
+        args.push("<string>system</string>".to_string());
     }
     args.push("<string>--quiet</string>".to_string());
     args.push("<string>daemon</string>".to_string());
@@ -475,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn generate_launchd_plist_system_scope_adds_system_flag_and_system_log_paths() {
+    fn generate_launchd_plist_system_scope_adds_scope_flag_and_system_log_paths() {
         let plist = generate_launchd_plist(
             &PathBuf::from("/usr/local/bin/cfgd"),
             &PathBuf::from("/etc/cfgd/config.yaml"),
@@ -483,7 +484,8 @@ mod tests {
             &PathBuf::from("/root"),
             crate::Scope::System,
         );
-        assert!(plist.contains("<string>--system</string>"));
+        assert!(plist.contains("<string>--scope</string>"));
+        assert!(plist.contains("<string>system</string>"));
         assert!(plist.contains("/var/log/cfgd.log"));
         assert!(plist.contains("/var/log/cfgd.err"));
         assert!(!plist.contains("/root/Library/Logs"));

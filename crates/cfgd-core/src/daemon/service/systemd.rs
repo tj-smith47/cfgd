@@ -19,7 +19,8 @@ pub(crate) fn generate_systemd_unit(
         args.push(p.to_string());
     }
     if scope == crate::Scope::System {
-        args.push("--system".to_string());
+        args.push("--scope".to_string());
+        args.push("system".to_string());
     }
     args.push("--quiet".to_string());
     args.push("daemon".to_string());
@@ -507,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn generate_systemd_unit_system_scope_adds_system_flag_and_resource_dirs() {
+    fn generate_systemd_unit_system_scope_adds_scope_flag_and_resource_dirs() {
         let unit = generate_systemd_unit(
             &PathBuf::from("/usr/local/bin/cfgd"),
             &PathBuf::from("/etc/cfgd/config.yaml"),
@@ -515,7 +516,7 @@ mod tests {
             crate::Scope::System,
         );
         assert!(unit.contains(
-            "ExecStart=/usr/local/bin/cfgd --config /etc/cfgd/config.yaml --system --quiet daemon"
+            "ExecStart=/usr/local/bin/cfgd --config /etc/cfgd/config.yaml --scope system --quiet daemon"
         ));
         assert!(unit.contains("ConfigurationDirectory=cfgd"));
         assert!(unit.contains("StateDirectory=cfgd"));

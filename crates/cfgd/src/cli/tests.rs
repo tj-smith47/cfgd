@@ -178,7 +178,7 @@ impl CliTestHarness {
             config_dir: None,
             cache_dir: Some(self.cache_dir.path().to_path_buf()),
             runtime_dir: None,
-            system: false,
+            scope_arg: crate::cli::ScopeArg::User,
             command: Some(Command::Status {
                 module: None,
                 exit_code: false,
@@ -1139,7 +1139,7 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
         config_dir: None,
         cache_dir,
         runtime_dir: None,
-        system: false,
+        scope_arg: crate::cli::ScopeArg::User,
         command: Some(Command::Status {
             module: None,
             exit_code: false,
@@ -3869,7 +3869,7 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
         config_dir: None,
         cache_dir: None,
         runtime_dir: None,
-        system: false,
+        scope_arg: crate::cli::ScopeArg::User,
         command: Some(Command::Status {
             module: None,
             exit_code: false,
@@ -4361,7 +4361,7 @@ fn execute_with_no_subcommand_prints_help_and_returns_ok() {
         config_dir: None,
         cache_dir: None,
         runtime_dir: None,
-        system: false,
+        scope_arg: crate::cli::ScopeArg::User,
         command: None,
     };
     // The contract: exit 0 (Ok). winget/chocolatey treat any non-zero exit
@@ -9925,7 +9925,7 @@ fn execute_decide_accept_all() {
         config_dir: None,
         cache_dir: None,
         runtime_dir: None,
-        system: false,
+        scope_arg: crate::cli::ScopeArg::User,
         ..test_cli(dir.path())
     };
     let (printer, buf) =

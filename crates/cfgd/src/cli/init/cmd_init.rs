@@ -434,7 +434,7 @@ pub(super) struct ApplyPlanOpts<'a> {
     pub yes: bool,
     /// `--state-dir` override for the apply mutex (see `helpers::apply_lock_dir`).
     pub state_dir: Option<&'a Path>,
-    /// Installation scope for the apply mutex (`--system` vs per-user).
+    /// Installation scope for the apply mutex (`--scope system` vs per-user).
     pub scope: cfgd_core::Scope,
 }
 

@@ -105,7 +105,7 @@ pub fn config_dir_source(
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PathsOutput {
-    /// Active installation scope: `"system"` (`--system`) or `"user"`.
+    /// Active installation scope: `"system"` (`--scope system`) or `"user"`.
     pub scope: &'static str,
     pub config: ConfigPaths,
     pub state: StatePaths,
@@ -600,7 +600,7 @@ mod tests {
 
     // --- scope ---
 
-    // Default (no --system): scope label is user and the human Doc surfaces it.
+    // Default (no --scope system): scope label is user and the human Doc surfaces it.
     #[test]
     #[serial]
     fn default_scope_is_user_in_payload_and_doc() {
@@ -623,7 +623,7 @@ mod tests {
         assert!(out.contains("user"), "scope value missing: {out}");
     }
 
-    // `--system` flips the scope label and resolves the FHS system roots (no
+    // `--scope system` flips the scope label and resolves the FHS system roots (no
     // state/cache override; systemd dir vars unset so the scope default wins).
     #[test]
     #[serial]
@@ -631,7 +631,7 @@ mod tests {
         let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
         let _systemd = unset_systemd_dir_vars();
         let mut cli = test_cli(None, None);
-        cli.system = true;
+        cli.scope_arg = crate::cli::ScopeArg::System;
         let output =
             collect_paths_output(&cli, &DirSources::all_default()).expect("collect must succeed");
 
@@ -656,7 +656,7 @@ mod tests {
         let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
         let _systemd = unset_systemd_dir_vars();
         let mut cli = test_cli(None, None);
-        cli.system = true;
+        cli.scope_arg = crate::cli::ScopeArg::System;
         let output =
             collect_paths_output(&cli, &DirSources::all_default()).expect("collect must succeed");
 

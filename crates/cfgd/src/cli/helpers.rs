@@ -866,7 +866,7 @@ mod tests {
             config_dir: None,
             cache_dir: None,
             runtime_dir: None,
-            system: false,
+            scope_arg: crate::cli::ScopeArg::User,
             command: None,
         }
     }

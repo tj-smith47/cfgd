@@ -249,7 +249,7 @@ where
 
 /// Connect to the daemon IPC endpoint. Returns `None` if the daemon is not
 /// reachable. `runtime_over` carries the `--runtime-dir` override and `scope`
-/// the `--system` selection so the client resolves the same socket the server
+/// the `--scope system` selection so the client resolves the same socket the server
 /// bound; pass `None`/[`crate::Scope::User`] for env/default.
 pub(crate) fn connect_daemon_ipc(
     runtime_over: Option<&std::path::Path>,
@@ -316,7 +316,7 @@ impl std::io::Write for IpcStream {
 }
 
 /// Query the running daemon's status over IPC. `runtime_over` carries the
-/// `--runtime-dir` override and `scope` the `--system` selection so the socket
+/// `--runtime-dir` override and `scope` the `--scope system` selection so the socket
 /// is resolved identically to the server's bind; pass `None`/[`crate::Scope::User`]
 /// for env/default.
 pub fn query_daemon_status(

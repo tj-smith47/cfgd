@@ -107,7 +107,7 @@ pub fn cli_for(config_dir: &std::path::Path, state_dir: &std::path::Path) -> Cli
         // already normalize) rather than resolving to the real `~/.cache/cfgd`.
         cache_dir: Some(state_dir.to_path_buf()),
         runtime_dir: None,
-        system: false,
+        scope_arg: cfgd::cli::ScopeArg::User,
         command: Some(Command::Status {
             module: None,
             exit_code: false,
