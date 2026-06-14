@@ -234,13 +234,19 @@ strict mode is not requested:
 Show schema and field documentation for resource types.
 
 ```sh
-cfgd explain module                        # show Module spec
+cfgd explain module                        # show local Module spec
+cfgd explain module-crd                    # show cluster-side Module CRD spec
 cfgd explain profile                       # show Profile spec
 cfgd explain profile.spec.packages         # show specific field
 cfgd explain --recursive machineconfig     # expand all fields
 ```
 
-Resource types: `module`, `profile`, `cfgdconfig`, `configsource`, `machineconfig`, `configpolicy`, `driftalert`, `teamconfig`.
+Schemas are derived from the live resource types (the `cfgd-core` kind
+registry), so `explain` always matches what cfgd actually accepts.
+
+Resource types: `module`, `profile`, `configsource`, `config` (aliases:
+`cfgdconfig`, `cfgd`), `machineconfig`, `configpolicy`, `clusterconfigpolicy`,
+`driftalert`, `module-crd` (the cluster-side Module CRD), `teamconfig`.
 
 ### `cfgd paths`
 

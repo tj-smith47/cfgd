@@ -1,9 +1,29 @@
 {
   "apiVersion": "cfgd.io/v1alpha1",
-  "description": "Self-contained, portable configuration unit. Defines packages, files, and scripts with cross-platform resolution and dependency management.",
+  "description": "A reusable unit of packages, files, scripts, and environment.",
   "fields": [
     {
-      "description": "Module dependencies (resolved via topological sort)",
+      "children": [
+        {
+          "description": "",
+          "name": "command",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "name",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "description": "",
+      "name": "aliases",
+      "required": false,
+      "type": "[]object"
+    },
+    {
+      "description": "",
       "name": "depends",
       "required": false,
       "type": "[]string"
@@ -11,90 +31,202 @@
     {
       "children": [
         {
-          "description": "Canonical package name",
+          "description": "",
           "name": "name",
           "required": true,
           "type": "string"
         },
         {
-          "description": "Minimum required version (semver)",
-          "name": "minVersion",
-          "required": false,
+          "description": "",
+          "name": "value",
+          "required": true,
           "type": "string"
-        },
-        {
-          "description": "Preferred package managers in order (e.g., [brew, apt, script])",
-          "name": "prefer",
-          "required": false,
-          "type": "[]string"
-        },
-        {
-          "description": "Manager-specific package names (e.g., {apt: fd-find})",
-          "name": "aliases",
-          "required": false,
-          "type": "map[string]string"
-        },
-        {
-          "description": "Inline install script or path (used when prefer includes 'script')",
-          "name": "script",
-          "required": false,
-          "type": "string"
-        },
-        {
-          "description": "Platform filter: linux, macos, freebsd, ubuntu, arch, x86_64, aarch64",
-          "name": "platforms",
-          "required": false,
-          "type": "[]string"
         }
       ],
-      "description": "Platform-agnostic package declarations",
-      "name": "packages",
+      "description": "",
+      "name": "env",
       "required": false,
       "type": "[]object"
     },
     {
       "children": [
         {
-          "description": "Source path (local relative or git URL with @tag, ?ref=, //subdir)",
+          "children": [
+            {
+              "description": "The encryption backend to use (e.g. \"sops\", \"age\").",
+              "name": "backend",
+              "required": true,
+              "type": "string"
+            },
+            {
+              "description": "When encryption must be enforced. Defaults to `InRepo`.",
+              "name": "mode",
+              "required": false,
+              "type": "object"
+            }
+          ],
+          "description": "Encryption settings for this module file.",
+          "name": "encryption",
+          "required": false,
+          "type": "object"
+        },
+        {
+          "description": "Unix permission bits (e.g. \"600\", \"644\") to apply after deployment.",
+          "name": "permissions",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "description": "When true, the source file is local-only: auto-added to .gitignore, silently skipped on machines where it doesn't exist.",
+          "name": "private",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "description": "",
           "name": "source",
           "required": true,
           "type": "string"
         },
         {
-          "description": "Target path on the machine",
+          "description": "Per-file deployment strategy override. If None, uses the global default.",
+          "name": "strategy",
+          "required": false,
+          "type": "object"
+        },
+        {
+          "description": "",
           "name": "target",
           "required": true,
           "type": "string"
         }
       ],
-      "description": "Files to manage (local or git sources)",
+      "description": "",
       "name": "files",
       "required": false,
       "type": "[]object"
     },
     {
-      "description": "Environment variables merged with profile env (module wins on conflict by name)",
-      "name": "env",
+      "children": [
+        {
+          "description": "",
+          "name": "aliases",
+          "required": false,
+          "type": "object"
+        },
+        {
+          "description": "Skip the install script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks. Only meaningful for a `prefer: [script]` install; ignored otherwise.",
+          "name": "creates",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "deny",
+          "required": false,
+          "type": "[]string"
+        },
+        {
+          "description": "",
+          "name": "minVersion",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "name",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "description": "Run the install script only if this command exits zero. A non-zero exit skips the install (the condition for installing was not met). Only meaningful for a `prefer: [script]` install; ignored for manager-backed installs (those are idempotent via the manager's installed-package query).",
+          "name": "onlyIf",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "platforms",
+          "required": false,
+          "type": "[]string"
+        },
+        {
+          "description": "",
+          "name": "prefer",
+          "required": false,
+          "type": "[]string"
+        },
+        {
+          "description": "",
+          "name": "script",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "description": "Run the install script only if this command exits NON-zero. A zero exit (success) skips the install (the package already appears present). Only meaningful for a `prefer: [script]` install; ignored otherwise.",
+          "name": "unless",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "description": "",
+      "name": "packages",
       "required": false,
-      "type": "list[{name, value}]"
+      "type": "[]object"
     },
     {
-      "description": "Shell aliases merged with profile aliases (module wins on conflict by name)",
-      "name": "aliases",
+      "description": "Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a Skipped action rather than vanishing). Tags are matched against OS / distro / arch via `Platform::matches_any`; the canonical macOS token is `macos`.",
+      "name": "platforms",
       "required": false,
-      "type": "list[{name, command}]"
+      "type": "[]string"
     },
     {
       "children": [
         {
-          "description": "Scripts to run after module is applied",
+          "description": "",
+          "name": "onChange",
+          "required": false,
+          "type": "[]object"
+        },
+        {
+          "description": "",
+          "name": "onDrift",
+          "required": false,
+          "type": "[]object"
+        },
+        {
+          "description": "",
           "name": "postApply",
           "required": false,
-          "type": "[]string"
+          "type": "[]object"
+        },
+        {
+          "description": "",
+          "name": "postReconcile",
+          "required": false,
+          "type": "[]object"
+        },
+        {
+          "description": "",
+          "name": "preApply",
+          "required": false,
+          "type": "[]object"
+        },
+        {
+          "description": "",
+          "name": "preReconcile",
+          "required": false,
+          "type": "[]object"
         }
       ],
-      "description": "Lifecycle scripts",
+      "description": "",
       "name": "scripts",
+      "required": false,
+      "type": "object"
+    },
+    {
+      "description": "System configurator settings contributed by this module. Deep-merged into the profile system map; module values override profile values at leaf level.",
+      "name": "system",
       "required": false,
       "type": "object"
     }

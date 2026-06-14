@@ -1,15 +1,17 @@
 Module (Module)
 
-Self-contained, portable configuration unit. Defines packages, files, and scripts with cross-platform resolution and dependency management.
+A reusable unit of packages, files, scripts, and environment.
 
 apiVersion  cfgd.io/v1alpha1
 kind        Module
 location    modules/<name>/module.yaml
 
 FIELDS (under spec)
-  depends <[]string>              — Module dependencies (resolved via topological sort)
-  packages <[]object> [+]         — Platform-agnostic package declarations
-  files <[]object> [+]            — Files to manage (local or git sources)
-  env <list[{name, value}]>       — Environment variables merged with profile env (module wins on conflict by name)
-  aliases <list[{name, command}]> — Shell aliases merged with profile aliases (module wins on conflict by name)
-  scripts <object> [+]            — Lifecycle scripts
+  aliases <[]object> [+]  — 
+  depends <[]string>      — 
+  env <[]object> [+]      — 
+  files <[]object> [+]    — 
+  packages <[]object> [+] — 
+  platforms <[]string>    — Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a Skipped action rather than vanishing). Tags are matched against OS / distro / arch via `Platform::matches_any`; the canonical macOS token is `macos`.
+  scripts <object> [+]    — 
+  system <object>         — System configurator settings contributed by this module. Deep-merged into the profile system map; module values override profile values at leaf level.

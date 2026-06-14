@@ -37,8 +37,8 @@ fn explain_index_json() {
     );
     assert_eq!(
         actual.as_array().map(|a| a.len()),
-        Some(8),
-        "explain index must list 8 schemas, got: {actual}"
+        Some(10),
+        "explain index must list 10 schemas (9 registry kinds incl. Module CRD + TeamConfig), got: {actual}"
     );
     cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "explain/index.json");
 }
@@ -47,7 +47,7 @@ fn explain_index_json() {
 fn explain_module_human() {
     let schema = find_schema("module").expect("module schema is registered");
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_explain_schema_doc(schema, false));
+    printer.emit(build_explain_schema_doc(&schema, false));
     drop(printer);
     cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "explain/module.txt");
 }
@@ -56,7 +56,7 @@ fn explain_module_human() {
 fn explain_module_json() {
     let schema = find_schema("module").expect("module schema is registered");
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_explain_schema_doc(schema, false));
+    printer.emit(build_explain_schema_doc(&schema, false));
     drop(printer);
     let actual = cap.json().expect("doc captured json");
     assert!(
@@ -78,7 +78,7 @@ fn explain_recursive_drops_plus_marker() {
     // shape.
     let schema = find_schema("profile").expect("profile schema is registered");
     let (printer, cap) = Printer::for_test_doc();
-    printer.emit(build_explain_schema_doc(schema, true));
+    printer.emit(build_explain_schema_doc(&schema, true));
     drop(printer);
     let human = cap.human();
     assert!(

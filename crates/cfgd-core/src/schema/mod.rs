@@ -322,17 +322,24 @@ fn field_node(
     root: &RootSchema,
     visited: &mut std::collections::BTreeSet<String>,
 ) -> FieldNode {
-    let descent = RefDescent::enter(schema, visited);
-    let resolved = resolve_ref(schema, root);
+    let unwrapped = unwrap_single_subschema(schema);
+    let descent = RefDescent::enter(&unwrapped, visited);
+    let resolved = resolve_ref(&unwrapped, root);
     let description = schema_description(schema)
+        .or_else(|| schema_description(&unwrapped))
         .or_else(|| schema_description(&Schema::Object(resolved.clone())))
         .unwrap_or_default();
     let type_desc = type_description(&resolved, root, visited);
-    // A `$ref` re-entry (cycle) stops here: emit the field as a leaf.
-    let children = if is_object(&resolved) && descent.safe() {
+    // Children come from the field's own object properties, or — for an array
+    // field — from its element type's object properties so `[]object` entries
+    // stay drillable (e.g. `packages[].name`). A `$ref` re-entry (cycle) stops
+    // here, emitting the field as a leaf.
+    let children = if !descent.safe() {
+        Vec::new()
+    } else if is_object(&resolved) {
         object_fields(&resolved, root, visited)
     } else {
-        Vec::new()
+        array_element_fields(&resolved, root, visited)
     };
     descent.leave(visited);
     FieldNode {
@@ -342,6 +349,82 @@ fn field_node(
         description,
         children,
     }
+}
+
+/// Unwrap a schema that wraps a single subschema via `allOf`/`anyOf`/`oneOf`
+/// (with at most an accompanying `null`), as `schemars` emits for an
+/// `Option<T>` whose `T` is a `$ref`. Returns the inner schema so its `$ref`
+/// resolves and its object fields recurse; returns the input unchanged when it
+/// is not such a single-subschema wrapper.
+fn unwrap_single_subschema(schema: &Schema) -> Schema {
+    let Schema::Object(obj) = schema else {
+        return schema.clone();
+    };
+    // A direct `$ref` or inline object needs no unwrapping.
+    if obj.reference.is_some() || obj.object.is_some() || obj.array.is_some() {
+        return schema.clone();
+    }
+    let Some(sub) = &obj.subschemas else {
+        return schema.clone();
+    };
+    let variants = sub
+        .all_of
+        .as_ref()
+        .or(sub.any_of.as_ref())
+        .or(sub.one_of.as_ref());
+    let Some(variants) = variants else {
+        return schema.clone();
+    };
+    let non_null: Vec<&Schema> = variants.iter().filter(|s| !is_null_schema(s)).collect();
+    match non_null.as_slice() {
+        [single] => (*single).clone(),
+        _ => schema.clone(),
+    }
+}
+
+/// True for the schemars `null` variant emitted in an `Option<T>`'s `anyOf`.
+fn is_null_schema(schema: &Schema) -> bool {
+    let Schema::Object(obj) = schema else {
+        return false;
+    };
+    matches!(
+        &obj.instance_type,
+        Some(SingleOrVec::Single(t)) if matches!(**t, schemars::schema::InstanceType::Null)
+    )
+}
+
+/// For an array (resolved) schema whose element type is an object, return the
+/// element's object fields so `[]object` entries stay drillable. Returns an
+/// empty vec for non-arrays or arrays of scalars. Guards the element `$ref`
+/// against a cycle.
+fn array_element_fields(
+    schema: &SchemaObject,
+    root: &RootSchema,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Vec<FieldNode> {
+    let Some(array) = &schema.array else {
+        return Vec::new();
+    };
+    let Some(items) = &array.items else {
+        return Vec::new();
+    };
+    let item = match items {
+        SingleOrVec::Single(item) => item.as_ref(),
+        SingleOrVec::Vec(items) => match items.first() {
+            Some(item) => item,
+            None => return Vec::new(),
+        },
+    };
+    let item = unwrap_single_subschema(item);
+    let descent = RefDescent::enter(&item, visited);
+    let resolved = resolve_ref(&item, root);
+    let fields = if descent.safe() && is_object(&resolved) {
+        object_fields(&resolved, root, visited)
+    } else {
+        Vec::new()
+    };
+    descent.leave(visited);
+    fields
 }
 
 /// Pull a `description` out of a schema's metadata, if present.

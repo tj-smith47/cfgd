@@ -4,6 +4,36 @@ use cfgd_core::output::{Printer, Verbosity};
 // --- explain tests ---
 
 #[test]
+fn explain_covers_every_kind_incl_clusterpolicy_and_module_crd() {
+    for k in [
+        "Module",
+        "Profile",
+        "ConfigSource",
+        "Config",
+        "TeamConfig",
+        "MachineConfig",
+        "ConfigPolicy",
+        "ClusterConfigPolicy",
+        "DriftAlert",
+    ] {
+        assert!(find_schema(k).is_some(), "explain missing {k}");
+    }
+    // CRD Module variant disambiguated
+    assert!(find_schema("Module").is_some());
+}
+
+#[test]
+fn explain_module_fields_match_schemars() {
+    let live = find_schema("Module").unwrap().field_tree();
+    let from_schema = cfgd_core::schema::KIND_REGISTRY
+        .iter()
+        .find(|e| e.kind == "Module" && !e.crd)
+        .unwrap()
+        .field_tree();
+    assert_eq!(live.len(), from_schema.len());
+}
+
+#[test]
 fn explain_find_schema_by_kind() {
     assert!(find_schema("Module").is_some());
     assert!(find_schema("Profile").is_some());
@@ -32,7 +62,8 @@ fn explain_find_schema_unknown_returns_none() {
 
 #[test]
 fn explain_resolve_field_path_top_level() {
-    let fields = resolve_field_path(SCHEMA_MODULE.fields, &[]);
+    let module = find_schema("Module").unwrap();
+    let fields = resolve_field_path(&module.fields, &[]);
     assert!(fields.is_some());
     let fields = fields.unwrap();
     // Module has depends, packages, files, scripts
@@ -41,7 +72,8 @@ fn explain_resolve_field_path_top_level() {
 
 #[test]
 fn explain_resolve_field_path_nested() {
-    let fields = resolve_field_path(SCHEMA_MODULE.fields, &["packages"]);
+    let module = find_schema("Module").unwrap();
+    let fields = resolve_field_path(&module.fields, &["packages"]);
     assert!(fields.is_some());
     let children = fields.unwrap();
     // Module packages entries have name, minVersion, prefer, aliases, script, platforms
@@ -50,7 +82,8 @@ fn explain_resolve_field_path_nested() {
 
 #[test]
 fn explain_resolve_field_path_deep() {
-    let fields = resolve_field_path(SCHEMA_PROFILE.fields, &["packages", "brew"]);
+    let profile = find_schema("Profile").unwrap();
+    let fields = resolve_field_path(&profile.fields, &["packages", "brew"]);
     assert!(fields.is_some());
     let children = fields.unwrap();
     // Brew has file, taps, formulae, casks
@@ -59,7 +92,8 @@ fn explain_resolve_field_path_deep() {
 
 #[test]
 fn explain_resolve_field_path_leaf() {
-    let fields = resolve_field_path(SCHEMA_PROFILE.fields, &["packages", "brew", "taps"]);
+    let profile = find_schema("Profile").unwrap();
+    let fields = resolve_field_path(&profile.fields, &["packages", "brew", "taps"]);
     assert!(fields.is_some());
     let children = fields.unwrap();
     assert_eq!(children.len(), 1);
@@ -68,13 +102,14 @@ fn explain_resolve_field_path_leaf() {
 
 #[test]
 fn explain_resolve_field_path_unknown() {
-    let fields = resolve_field_path(SCHEMA_MODULE.fields, &["nonexistent"]);
+    let module = find_schema("Module").unwrap();
+    let fields = resolve_field_path(&module.fields, &["nonexistent"]);
     assert!(fields.is_none());
 }
 
 #[test]
 fn explain_all_schemas_have_fields() {
-    for schema in ALL_SCHEMAS {
+    for schema in all_schemas() {
         assert!(
             !schema.fields.is_empty(),
             "Schema {} has no fields",
@@ -107,8 +142,8 @@ fn explain_cmd_no_args_lists_types() {
         "expected Profile in resource list, got: {output}"
     );
     assert!(
-        output.contains("CfgdConfig"),
-        "expected CfgdConfig in resource list, got: {output}"
+        output.contains("Config"),
+        "expected Config in resource list, got: {output}"
     );
 }
 
@@ -142,10 +177,10 @@ fn explain_cmd_field_path() {
         output.contains("module.spec.packages"),
         "expected field path header, got: {output}"
     );
-    // packages has children like brew, apt, cargo etc.
+    // packages[] entries drill into their object fields (name, minVersion, …).
     assert!(
-        output.contains("brew") || output.contains("apt") || output.contains("cargo"),
-        "expected package manager children in output, got: {output}"
+        output.contains("name") && output.contains("minVersion"),
+        "expected package-entry children in output, got: {output}"
     );
 }
 
@@ -219,7 +254,8 @@ fn explain_cmd_unknown_field_path() {
 #[test]
 fn explain_theme_overrides_complete() {
     // ThemeOverrides has 19 fields (12 styles + 7 icons) — verify schema matches
-    let fields = resolve_field_path(SCHEMA_CONFIG.fields, &["theme", "overrides"]);
+    let config = find_schema("Config").unwrap();
+    let fields = resolve_field_path(&config.fields, &["theme", "overrides"]);
     let children = fields.unwrap();
     assert_eq!(
         children.len(),
@@ -233,13 +269,14 @@ fn explain_theme_overrides_complete() {
 fn explain_source_alias() {
     assert!(find_schema("source").is_some());
     assert!(find_schema("cfgd-source").is_some());
-    assert_eq!(find_schema("source").unwrap().name, "ConfigSource");
+    assert_eq!(find_schema("source").unwrap().kind, "ConfigSource");
 }
 
 #[test]
 fn explain_sources_origin_has_children() {
     // sources[].origin should have drillable children
-    let fields = resolve_field_path(SCHEMA_CONFIG.fields, &["sources", "origin"]);
+    let config = find_schema("Config").unwrap();
+    let fields = resolve_field_path(&config.fields, &["sources", "origin"]);
     let children = fields.unwrap();
     assert!(
         children.len() >= 3,
