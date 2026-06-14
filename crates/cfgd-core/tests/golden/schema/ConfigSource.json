@@ -1,0 +1,905 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ConfigSourceSpec",
+  "type": "object",
+  "properties": {
+    "policy": {
+      "default": {
+        "constraints": {
+          "allowSystemChanges": false,
+          "allowedTargetPaths": [],
+          "noScripts": true,
+          "noSecretsRead": true,
+          "requireSignedCommits": false
+        },
+        "locked": {
+          "aliases": [],
+          "env": [],
+          "files": [],
+          "modules": [],
+          "packages": null,
+          "profiles": [],
+          "secrets": [],
+          "system": {}
+        },
+        "optional": {
+          "aliases": [],
+          "env": [],
+          "files": [],
+          "modules": [],
+          "packages": null,
+          "profiles": [],
+          "secrets": [],
+          "system": {}
+        },
+        "recommended": {
+          "aliases": [],
+          "env": [],
+          "files": [],
+          "modules": [],
+          "packages": null,
+          "profiles": [],
+          "secrets": [],
+          "system": {}
+        },
+        "required": {
+          "aliases": [],
+          "env": [],
+          "files": [],
+          "modules": [],
+          "packages": null,
+          "profiles": [],
+          "secrets": [],
+          "system": {}
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/ConfigSourcePolicy"
+        }
+      ]
+    },
+    "provides": {
+      "default": {
+        "modules": [],
+        "platformProfiles": {},
+        "profileDetails": [],
+        "profiles": []
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/ConfigSourceProvides"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "AptSpec": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "packages": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "BrewSpec": {
+      "type": "object",
+      "properties": {
+        "casks": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "file": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "formulae": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "taps": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "CargoSpec": {
+      "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`) and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
+      "type": "object",
+      "properties": {
+        "file": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "packages": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "ConfigSourcePolicy": {
+      "type": "object",
+      "properties": {
+        "constraints": {
+          "default": {
+            "allowSystemChanges": false,
+            "allowedTargetPaths": [],
+            "noScripts": true,
+            "noSecretsRead": true,
+            "requireSignedCommits": false
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/SourceConstraints"
+            }
+          ]
+        },
+        "locked": {
+          "default": {
+            "aliases": [],
+            "env": [],
+            "files": [],
+            "modules": [],
+            "packages": null,
+            "profiles": [],
+            "secrets": [],
+            "system": {}
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/PolicyItems"
+            }
+          ]
+        },
+        "optional": {
+          "default": {
+            "aliases": [],
+            "env": [],
+            "files": [],
+            "modules": [],
+            "packages": null,
+            "profiles": [],
+            "secrets": [],
+            "system": {}
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/PolicyItems"
+            }
+          ]
+        },
+        "recommended": {
+          "default": {
+            "aliases": [],
+            "env": [],
+            "files": [],
+            "modules": [],
+            "packages": null,
+            "profiles": [],
+            "secrets": [],
+            "system": {}
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/PolicyItems"
+            }
+          ]
+        },
+        "required": {
+          "default": {
+            "aliases": [],
+            "env": [],
+            "files": [],
+            "modules": [],
+            "packages": null,
+            "profiles": [],
+            "secrets": [],
+            "system": {}
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/PolicyItems"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ConfigSourceProfileEntry": {
+      "description": "Detailed profile entry in a ConfigSource manifest. When present, provides richer info than the flat `profiles` list.",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "description": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "inherits": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ConfigSourceProvides": {
+      "type": "object",
+      "properties": {
+        "modules": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "platformProfiles": {
+          "default": {},
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "profileDetails": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ConfigSourceProfileEntry"
+          }
+        },
+        "profiles": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "CustomManagerSpec": {
+      "type": "object",
+      "required": [
+        "check",
+        "install",
+        "listInstalled",
+        "name",
+        "uninstall"
+      ],
+      "properties": {
+        "check": {
+          "type": "string"
+        },
+        "install": {
+          "type": "string"
+        },
+        "listInstalled": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "packages": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "uninstall": {
+          "type": "string"
+        },
+        "update": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "EncryptionConstraint": {
+      "description": "Encryption constraint applied to files from a config source.",
+      "type": "object",
+      "properties": {
+        "backend": {
+          "description": "If set, restrict which backend is acceptable.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mode": {
+          "description": "If set, restrict which encryption mode is acceptable.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EncryptionMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requiredTargets": {
+          "description": "Glob patterns or explicit paths that must be encrypted.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "EncryptionMode": {
+      "description": "Controls when encryption is required for a managed file.",
+      "oneOf": [
+        {
+          "description": "File must be encrypted when stored in the repository.",
+          "type": "string",
+          "enum": [
+            "InRepo"
+          ]
+        },
+        {
+          "description": "File must always be encrypted, including at rest on disk.",
+          "type": "string",
+          "enum": [
+            "Always"
+          ]
+        }
+      ]
+    },
+    "EncryptionSpec": {
+      "description": "Encryption settings for a managed file.",
+      "type": "object",
+      "required": [
+        "backend"
+      ],
+      "properties": {
+        "backend": {
+          "description": "The encryption backend to use (e.g. \"sops\", \"age\").",
+          "type": "string"
+        },
+        "mode": {
+          "description": "When encryption must be enforced. Defaults to `InRepo`.",
+          "default": "InRepo",
+          "allOf": [
+            {
+              "$ref": "#/definitions/EncryptionMode"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "EnvVar": {
+      "type": "object",
+      "required": [
+        "name",
+        "value"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      }
+    },
+    "FileStrategy": {
+      "description": "File deployment strategy.",
+      "oneOf": [
+        {
+          "description": "Create a symbolic link from target to source (default).",
+          "type": "string",
+          "enum": [
+            "Symlink"
+          ]
+        },
+        {
+          "description": "Copy source content to target.",
+          "type": "string",
+          "enum": [
+            "Copy"
+          ]
+        },
+        {
+          "description": "Render a Tera template and write the output (auto-selected for .tera files).",
+          "type": "string",
+          "enum": [
+            "Template"
+          ]
+        },
+        {
+          "description": "Create a hard link from target to source.",
+          "type": "string",
+          "enum": [
+            "Hardlink"
+          ]
+        }
+      ]
+    },
+    "FlatpakSpec": {
+      "type": "object",
+      "properties": {
+        "packages": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "remote": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ManagedFileSpec": {
+      "type": "object",
+      "required": [
+        "source",
+        "target"
+      ],
+      "properties": {
+        "encryption": {
+          "description": "Encryption settings for this file.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EncryptionSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "permissions": {
+          "description": "Unix permission bits (e.g. \"600\", \"644\") to apply after deployment.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "private": {
+          "description": "When true, the source file is local-only: auto-added to .gitignore, silently skipped on machines where it doesn't exist.",
+          "type": "boolean"
+        },
+        "source": {
+          "type": "string"
+        },
+        "strategy": {
+          "description": "Per-file deployment strategy override. If None, uses the global default.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FileStrategy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "NpmSpec": {
+      "type": "object",
+      "properties": {
+        "file": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "global": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "PackagesSpec": {
+      "type": "object",
+      "properties": {
+        "apk": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "apt": {
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AptSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "brew": {
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BrewSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cargo": {
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CargoSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "chocolatey": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "custom": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/CustomManagerSpec"
+          }
+        },
+        "dnf": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "flatpak": {
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FlatpakSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "go": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "nix": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "npm": {
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NpmSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pacman": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pipx": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "pkg": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scoop": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "snap": {
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SnapSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "winget": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "yum": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "zypper": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "PolicyItems": {
+      "type": "object",
+      "properties": {
+        "aliases": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ShellAlias"
+          }
+        },
+        "env": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/EnvVar"
+          }
+        },
+        "files": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ManagedFileSpec"
+          }
+        },
+        "modules": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "packages": {
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PackagesSpec"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "profiles": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "secrets": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SecretSpec"
+          }
+        },
+        "system": {
+          "default": {},
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "SecretSpec": {
+      "type": "object",
+      "required": [
+        "source"
+      ],
+      "properties": {
+        "backend": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "envs": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "source": {
+          "type": "string"
+        },
+        "target": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "template": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "ShellAlias": {
+      "type": "object",
+      "required": [
+        "command",
+        "name"
+      ],
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      }
+    },
+    "SnapSpec": {
+      "type": "object",
+      "properties": {
+        "classic": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "packages": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "SourceConstraints": {
+      "type": "object",
+      "properties": {
+        "allowSystemChanges": {
+          "default": false,
+          "type": "boolean"
+        },
+        "allowedTargetPaths": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "encryption": {
+          "description": "Encryption requirements imposed on files delivered by this source.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EncryptionConstraint"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "noScripts": {
+          "default": true,
+          "type": "boolean"
+        },
+        "noSecretsRead": {
+          "default": true,
+          "type": "boolean"
+        },
+        "requireSignedCommits": {
+          "description": "Require that the HEAD commit in this source's git repo has a valid GPG or SSH signature. Subscribers can bypass with `security.allow-unsigned`.",
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -171,6 +171,12 @@ tasks:
           done
           echo "schemas up to date"
 
+  schema:bless:
+    desc: Regenerate the committed golden schema snapshots (tests/golden/schema/*.json) after an intentional schema change. The golden TEST (every_kind_schema_matches_its_committed_golden, run by `task test`) is the drift gate; this target is its bless writer.
+    deps: [_check:tmp-headroom]
+    cmds:
+      - CFGD_BLESS_SCHEMA=1 cargo test -p cfgd-core --features cfgd-core/test-helpers --test schema_golden every_kind_schema_matches_its_committed_golden
+
   coverage:check:
     desc: Run workspace test coverage and write cobertura.xml. Prints the same percentage the README badge shows. No branch switching, no push.
     cmds:

@@ -1,0 +1,76 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DriftAlertSpec",
+  "type": "object",
+  "required": [
+    "deviceId",
+    "machineConfigRef",
+    "severity"
+  ],
+  "properties": {
+    "deviceId": {
+      "type": "string"
+    },
+    "driftDetails": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/DriftDetail"
+      }
+    },
+    "machineConfigRef": {
+      "$ref": "#/definitions/MachineConfigReference"
+    },
+    "severity": {
+      "$ref": "#/definitions/DriftSeverity"
+    }
+  },
+  "definitions": {
+    "DriftDetail": {
+      "type": "object",
+      "required": [
+        "actual",
+        "expected",
+        "field"
+      ],
+      "properties": {
+        "actual": {
+          "type": "string"
+        },
+        "expected": {
+          "type": "string"
+        },
+        "field": {
+          "type": "string"
+        }
+      }
+    },
+    "DriftSeverity": {
+      "type": "string",
+      "enum": [
+        "Low",
+        "Medium",
+        "High",
+        "Critical"
+      ]
+    },
+    "MachineConfigReference": {
+      "description": "Typed reference to a MachineConfig resource.",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "namespace": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

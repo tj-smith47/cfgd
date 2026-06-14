@@ -66,11 +66,27 @@ impl KindEntry {
         field_tree_from_schema(&(self.schema_fn)())
     }
 
-    /// Serialize this kind's schema as a JSON string. Empty on serialization
-    /// failure (schemars schemas are infallibly serializable, so this never
-    /// observably empties in practice).
+    /// Serialize this kind's schema as a compact JSON string. Empty on
+    /// serialization failure (schemars schemas are infallibly serializable, so
+    /// this never observably empties in practice).
+    ///
+    /// Compact form: consumed by the embedded [`snapshot::SchemaSnapshot`], so
+    /// keep it one-line to avoid bloating the binary. For a human-readable
+    /// diffable form (the golden schema gate), use [`KindEntry::pretty_schema`].
     pub fn json_schema(&self) -> String {
         serde_json::to_string(&(self.schema_fn)()).unwrap_or_default()
+    }
+
+    /// Serialize this kind's schema as a pretty-printed JSON string. Empty on
+    /// serialization failure (schemars schemas are infallibly serializable, so
+    /// this never observably empties in practice).
+    ///
+    /// Deterministic: schemars 0.8 backs schema maps with `BTreeMap`, so keys
+    /// are sorted and the output is stable across runs. This is the form the
+    /// committed golden snapshots use, so a CI diff pinpoints exactly which
+    /// schema field changed.
+    pub fn pretty_schema(&self) -> String {
+        serde_json::to_string_pretty(&(self.schema_fn)()).unwrap_or_default()
     }
 }
 
