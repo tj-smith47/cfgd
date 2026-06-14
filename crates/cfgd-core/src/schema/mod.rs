@@ -648,4 +648,96 @@ mod tests {
             inner_edge.children
         );
     }
+
+    // A type whose element type is itself — the array-recursion path.
+    // `kids: Vec<TreeNode>` makes `array_element_fields` descend TreeNode ->
+    // kids[](TreeNode) -> kids[](TreeNode) ... so without the `RefDescent`
+    // guard on the element `$ref` the walk overflows the stack.
+    #[derive(schemars::JsonSchema)]
+    #[allow(dead_code)]
+    struct TreeNode {
+        name: String,
+        kids: Vec<TreeNode>,
+    }
+
+    #[test]
+    fn self_referential_array_terminates_with_bounded_tree() {
+        let schema = schema_for!(TreeNode);
+        // Termination: returns instead of overflowing on the recursive `kids`
+        // element `$ref`.
+        let tree = field_tree_from_schema(&schema);
+
+        let names: Vec<&str> = tree.iter().map(|f| f.name.as_str()).collect();
+        assert!(names.contains(&"name"), "expected `name`, got {names:?}");
+        assert!(names.contains(&"kids"), "expected `kids`, got {names:?}");
+
+        // `kids` is an array of TreeNode; its element fields expand one level
+        // (the element's own `name`/`kids`), where the recursive `kids` is cut.
+        let kids = tree
+            .iter()
+            .find(|f| f.name == "kids")
+            .expect("kids present");
+        assert!(
+            kids.type_desc.starts_with("[]"),
+            "kids should be a slice type, got {}",
+            kids.type_desc
+        );
+
+        let inner_kids = kids
+            .children
+            .iter()
+            .find(|f| f.name == "kids")
+            .expect("kids[].kids present");
+        // The guard fired: the recursive element is cut to a leaf, proving the
+        // walk did not descend infinitely.
+        assert!(
+            inner_kids.children.is_empty(),
+            "recursive kids element must be cut to a leaf, got {:?}",
+            inner_kids.children
+        );
+    }
+
+    // A type with an `Option<Box<Self>>` field — the option-wrapped self-ref
+    // path. `schemars` renders `Option<RefType>` as an `allOf`/`anyOf` wrapper
+    // around the `$ref`, which `unwrap_single_subschema` peels before
+    // `field_node` follows the ref. Without the guard on that unwrapped ref the
+    // walk recurses ListNode -> next(ListNode) -> next(ListNode) ... forever.
+    #[derive(schemars::JsonSchema)]
+    #[allow(dead_code)]
+    struct ListNode {
+        value: String,
+        next: Option<Box<ListNode>>,
+    }
+
+    #[test]
+    fn option_wrapped_self_ref_terminates_with_bounded_tree() {
+        let schema = schema_for!(ListNode);
+        // Termination: returns instead of overflowing on the recursive,
+        // option-wrapped `next` ref.
+        let tree = field_tree_from_schema(&schema);
+
+        let names: Vec<&str> = tree.iter().map(|f| f.name.as_str()).collect();
+        assert!(names.contains(&"value"), "expected `value`, got {names:?}");
+        assert!(names.contains(&"next"), "expected `next`, got {names:?}");
+
+        // `next` unwraps to the ListNode object and expands one level (its own
+        // `value`/`next`), where the recursive `next` is finally cut to a leaf.
+        let next = tree
+            .iter()
+            .find(|f| f.name == "next")
+            .expect("next present");
+        assert_eq!(next.type_desc, "object");
+
+        let inner_next = next
+            .children
+            .iter()
+            .find(|f| f.name == "next")
+            .expect("next.next present");
+        // The guard fired on the unwrapped ref: the recursive `next` is a leaf.
+        assert!(
+            inner_next.children.is_empty(),
+            "recursive next must be cut to a leaf, got {:?}",
+            inner_next.children
+        );
+    }
 }
