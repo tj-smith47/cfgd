@@ -14,6 +14,7 @@ pub mod platform;
 pub mod providers;
 pub mod reconciler;
 pub mod retry;
+pub mod schema;
 pub mod server_client;
 pub mod sources;
 pub mod state;
