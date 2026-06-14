@@ -65,6 +65,8 @@ jobs:
         run: task clippy
       - name: Schema drift guard
         run: task schema:check
+      - name: Chart CRD drift guard
+        run: task gen:crds:check
 
   test:
     name: Tests (${{ matrix.os }})
