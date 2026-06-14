@@ -3,14 +3,14 @@
 # Uses block-aware test filtering: an awk pass strips #[cfg(test)] blocks
 # by tracking brace depth, so violations inside test modules are correctly ignored.
 #
-# Workspace layout: crates/{cfgd-core,cfgd,cfgd-operator}/src/
+# Workspace layout: crates/{cfgd-crd,cfgd-core,cfgd,cfgd-csi,cfgd-operator}/src/
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 ERRORS=0
 WARNINGS=0
 
-SRC_ROOTS=(crates/cfgd-core/src crates/cfgd/src crates/cfgd-operator/src)
+SRC_ROOTS=(crates/cfgd-crd/src crates/cfgd-core/src crates/cfgd/src crates/cfgd-csi/src crates/cfgd-operator/src)
 
 # --- Formatting helpers ---
 

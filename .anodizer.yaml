@@ -82,7 +82,7 @@ defaults:
         - "echo packed {{ ProjectName }} {{ Tag }} format={{ Format }}"
   checksum:
     algorithm: sha256
-  # All four workspaces opt into crates.io publishing with the same
+  # All five workspaces opt into crates.io publishing with the same
   # 600s index timeout. Per-crate `publish.cargo: { skip: true }` would
   # suppress inheritance for that crate (DEC-9).
   publish:
@@ -141,6 +141,22 @@ after:
 
 # Independent workspaces for per-component release cadences.
 workspaces:
+  # --- cfgd-crd: CRD spec types + schemars (crates.io only) ---
+  # Publishes ahead of cfgd-core: cfgd-core's `crd` feature depends on cfgd-crd,
+  # so the sparse index must carry the pinned cfgd-crd version before cfgd-core
+  # publishes (cfgd-core's wait_for_workspace_deps poll then resolves promptly).
+  - name: cfgd-crd
+    skip:
+      - announce
+    crates:
+      - name: cfgd-crd
+        path: crates/cfgd-crd
+        tag_template: "crd-v{{ Version }}"
+        version_sync:
+          enabled: true
+          mode: cargo
+        # Inherits `publish.cargo: { index_timeout: 600 }` from defaults.
+
   # --- cfgd-core: shared library (crates.io only) ---
   - name: cfgd-core
     skip:
@@ -149,6 +165,7 @@ workspaces:
       - name: cfgd-core
         path: crates/cfgd-core
         tag_template: "core-v{{ Version }}"
+        depends_on: [cfgd-crd]
         version_sync:
           enabled: true
           mode: cargo

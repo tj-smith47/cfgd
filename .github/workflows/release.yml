@@ -106,21 +106,99 @@ jobs:
       head_sha: ${{ needs.tag.outputs.head_sha }}
     secrets: inherit
 
-  # cfgd-core publishes FIRST and in isolation (--crate cfgd-core). The three
-  # downstream crates depend on cfgd-core and each polls crates.io for its
+  # cfgd-crd publishes FIRST and in isolation (--crate cfgd-crd). cfgd-core's
+  # `crd` feature depends on cfgd-crd and polls crates.io for its pinned
+  # cfgd-crd version via `publish.cargo.wait_for_workspace_deps` (enabled in
+  # .anodizer.yaml); ordering the crd publish ahead of cfgd-core means that
+  # poll resolves promptly instead of racing the sparse-index propagation.
+  # Gated on cfgd-crd actually being in this release's tag set — a release that
+  # bumps only cfgd-core / cfgd / cfgd-csi / cfgd-operator skips this job, and
+  # publish-core's `needs: publish-crd` then resolves as skipped (publish-core's
+  # `if:` does not require publish-crd success, so it still runs).
+  publish-crd:
+    name: Publish cfgd-crd
+    needs: [tag, determinism-check]
+    # Run even when determinism-check was skipped (cfgd-crd is library-only and
+    # produces no binaries to determinism-check).
+    if: ${{ !cancelled() && needs.tag.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd-crd') && (needs.determinism-check.result == 'success' || needs.determinism-check.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.tag.outputs.head_sha }}
+
+      - uses: ./.github/actions/setup-protoc
+        with:
+          version: "25.9"
+
+      - name: Download all dist artifacts
+        uses: actions/download-artifact@v8
+        with:
+          # All crates' shards merge into dist/<crate>/... — each crate's
+          # tarball is self-contained in its <crate>/ subdir thanks to the
+          # harness's per-crate preserve layout (--crate <name> on
+          # check determinism). No context.json collision.
+          pattern: dist-*
+          path: dist/
+          merge-multiple: true
+
+      - name: Run anodizer release (cfgd-crd)
+        id: release
+        uses: tj-smith47/anodizer-action@v1
+        with:
+          version: ${{ env.ANODIZER_VERSION }}
+          auto-install: 'true'
+          # Artifacts already in dist/ from the step above; action's built-in
+          # download (which matches dist-* globally) is intentionally skipped.
+          download-dist: 'false'
+          docker-registry: 'ghcr.io'
+          docker-password: ${{ secrets.GITHUB_TOKEN }}
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
+          args: release --publish-only --crate cfgd-crd
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+          CLOUDSMITH_TOKEN: ${{ secrets.CLOUDSMITH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          KREW_INDEX_TOKEN: ${{ secrets.KREW_INDEX_TOKEN }}
+          NIX_PKGS_TOKEN: ${{ secrets.NIX_PKGS_TOKEN }}
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+          WINGET_PKGS_TOKEN: ${{ secrets.WINGET_PKGS_TOKEN }}
+
+      - name: Rollback on release failure
+        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+        run: anodizer tag rollback "${{ needs.tag.outputs.head_sha }}"
+
+  # cfgd-core publishes after cfgd-crd and in isolation (--crate cfgd-core). The
+  # three binary crates depend on cfgd-core and each polls crates.io for its
   # pinned cfgd-core version via `publish.cargo.wait_for_workspace_deps`
   # (enabled in .anodizer.yaml); ordering the core publish ahead of the trio
   # means that poll resolves promptly instead of racing the sparse-index
   # propagation. Gated on cfgd-core actually being in this release's tag set —
   # a release that bumps only cfgd / cfgd-csi / cfgd-operator skips this job,
   # and the trio's `needs: publish-core` then resolves as skipped (the trio's
-  # `if:` does not require publish-core success, so it still runs).
+  # `if:` does not require publish-core success, so it still runs). `needs:
+  # publish-crd` orders core after crd but does NOT require its success in the
+  # `if:` — a cfgd-core-only release (no cfgd-crd bump) skips publish-crd and
+  # this job still runs (the already-published cfgd-crd on crates.io satisfies
+  # the dependency poll).
   publish-core:
     name: Publish cfgd-core
-    needs: [tag, determinism-check]
+    needs: [tag, determinism-check, publish-crd]
     # Run even when determinism-check was skipped (cfgd-core is library-only and
-    # produces no binaries to determinism-check).
-    if: ${{ !cancelled() && needs.tag.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd-core') && (needs.determinism-check.result == 'success' || needs.determinism-check.result == 'skipped') }}
+    # produces no binaries to determinism-check) and when publish-crd was skipped
+    # (a cfgd-core-only release does not bump cfgd-crd).
+    if: ${{ !cancelled() && needs.tag.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd-core') && (needs.determinism-check.result == 'success' || needs.determinism-check.result == 'skipped') && (needs.publish-crd.result == 'success' || needs.publish-crd.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
