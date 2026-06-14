@@ -28,6 +28,28 @@ fn parse_config_without_origin() {
 }
 
 #[test]
+fn parse_config_rejects_unknown_apiversion() {
+    let yaml = "apiVersion: cfgd.io/v1alpha2\nkind: Config\nmetadata:\n  name: m\nspec:\n  profile: default\n";
+    let err = parse_config(yaml, Path::new("cfgd.yaml")).unwrap_err();
+    assert!(err.to_string().contains("apiVersion"));
+    assert!(err.to_string().contains("cfgd.io/v1alpha1")); // names the supported version
+}
+
+#[test]
+fn load_profile_rejects_unknown_apiversion() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("default.yaml");
+    std::fs::write(
+        &path,
+        "apiVersion: cfgd.io/v1alpha2\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+    let err = load_profile(&path).unwrap_err();
+    assert!(err.to_string().contains("apiVersion"));
+    assert!(err.to_string().contains("cfgd.io/v1alpha1")); // names the supported version
+}
+
+#[test]
 fn parse_profile_yaml() {
     let doc: ProfileDocument = serde_yaml::from_str(SAMPLE_PROFILE_YAML).unwrap();
     assert_eq!(doc.metadata.name, "base");
