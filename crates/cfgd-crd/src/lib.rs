@@ -664,17 +664,20 @@ pub fn is_valid_oci_reference(reference: &str) -> bool {
     };
 
     // The repository component (everything after a registry host, if present)
-    // must be non-empty.
+    // must be non-empty. This mirrors the parser exactly: a single-segment name
+    // (no '/') is always non-empty because the parser prefixes it with
+    // `library/` (so even an empty name part, e.g. `@sha256:...`, resolves to a
+    // valid `library/` repository); only the registry-host case (`host/rest`)
+    // can yield an empty repository when `rest` is empty.
     let parts: Vec<&str> = name_part.splitn(2, '/').collect();
-    let repository = if parts.len() == 1 {
-        parts[0]
+    if parts.len() == 1 {
+        return true;
+    }
+    let first = parts[0];
+    let repository = if first.contains('.') || first.contains(':') || first == "localhost" {
+        parts[1]
     } else {
-        let first = parts[0];
-        if first.contains('.') || first.contains(':') || first == "localhost" {
-            parts[1]
-        } else {
-            name_part
-        }
+        name_part
     };
 
     !repository.is_empty()
