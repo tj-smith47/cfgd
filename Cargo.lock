@@ -530,6 +530,7 @@ dependencies = [
  "assert_cmd",
  "brontes",
  "cfgd-core",
+ "cfgd-crd",
  "clap",
  "clap_complete",
  "clap_mangen",
