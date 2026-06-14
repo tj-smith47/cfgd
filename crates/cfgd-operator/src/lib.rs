@@ -5,6 +5,7 @@ pub mod crds;
 pub mod env;
 pub mod errors;
 pub mod gateway;
+pub mod gen_crds;
 pub mod health;
 pub mod leader;
 pub mod metrics;

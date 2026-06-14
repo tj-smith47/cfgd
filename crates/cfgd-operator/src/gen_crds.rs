@@ -1,47 +1,73 @@
-//! CRD YAML generator — writes serialized CRDs to stdout for the Helm chart.
+//! CRD YAML generation for the Helm chart.
 //!
-//! # Hard-Rule #1 exemption
-//!
-//! This is a standalone build-tool binary whose entire contract is
-//! "emit well-formed YAML on stdout so the caller can `> file.yaml`".
-//! The `output::Printer` abstraction is a structured terminal interface
-//! (headers, spinners, styling) and cannot produce raw YAML on stdout
-//! without corrupting the output. The direct `print!` below is therefore
-//! the correct tool, documented here so future audits / reviewers don't
-//! re-flag it as a Hard-Rule #1 violation.
-//!
-//! This file is the ONLY `print!`/`println!` use outside of the
-//! `output` module in the cfgd workspace.
+//! Sources the five CRD spec types from `cfgd-crd` (via the operator re-export)
+//! and renders kube's `CustomResourceExt::crd()` output to YAML, injecting the
+//! `x-kubernetes-list-type` / CEL structural-merge annotations that schemars
+//! cannot express. [`render_all`] is the testable library entry point; the
+//! `cfgd-gen-crds` binary wraps it for stdout / file-tree emission.
 
 use kube::CustomResourceExt;
+use thiserror::Error;
 
-use cfgd_operator::crds::{ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig, Module};
+use crate::crds::{ClusterConfigPolicy, ConfigPolicy, DriftAlert, MachineConfig, Module};
 
-fn main() {
-    let mut mc_crd =
-        serde_json::to_value(MachineConfig::crd()).expect("serialize MachineConfig CRD");
-    inject_cel_rules(&mut mc_crd);
-    inject_smd_annotations(&mut mc_crd);
-    let mc = serde_yaml::to_string(&mc_crd).expect("MachineConfig CRD to YAML");
+/// Failure rendering a CRD to YAML. Both arms are infallible in practice (the
+/// CRD shapes are derived, not user-supplied) but the rule against `expect` in
+/// library code is absolute, so the serde errors propagate as a typed result.
+#[derive(Debug, Error)]
+pub enum GenCrdsError {
+    #[error("serialize CRD to JSON: {0}")]
+    Json(#[from] serde_json::Error),
 
-    let mut cp_crd = serde_json::to_value(ConfigPolicy::crd()).expect("serialize ConfigPolicy CRD");
-    inject_smd_annotations(&mut cp_crd);
-    let cp = serde_yaml::to_string(&cp_crd).expect("ConfigPolicy CRD to YAML");
+    #[error("serialize CRD to YAML: {0}")]
+    Yaml(#[from] serde_yaml::Error),
+}
 
-    let mut da_crd = serde_json::to_value(DriftAlert::crd()).expect("serialize DriftAlert CRD");
-    inject_smd_annotations(&mut da_crd);
-    let da = serde_yaml::to_string(&da_crd).expect("DriftAlert CRD to YAML");
+/// A single rendered CRD: its `metadata.name` (e.g. `machineconfigs.cfgd.io`)
+/// and its serialized YAML document.
+pub struct RenderedCrd {
+    pub name: String,
+    pub yaml: String,
+}
 
-    let mut ccp_crd = serde_json::to_value(ClusterConfigPolicy::crd())
-        .expect("serialize ClusterConfigPolicy CRD");
-    inject_smd_annotations(&mut ccp_crd);
-    let ccp = serde_yaml::to_string(&ccp_crd).expect("ClusterConfigPolicy CRD to YAML");
+/// Render one CRD value to YAML after injecting structural-merge / CEL metadata.
+fn render_crd(mut crd: serde_json::Value, inject_cel: bool) -> Result<RenderedCrd, GenCrdsError> {
+    if inject_cel {
+        inject_cel_rules(&mut crd);
+    }
+    inject_smd_annotations(&mut crd);
+    let name = crd
+        .pointer("/metadata/name")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let yaml = serde_yaml::to_string(&crd)?;
+    Ok(RenderedCrd { name, yaml })
+}
 
-    let mut mod_crd = serde_json::to_value(Module::crd()).expect("serialize Module CRD");
-    inject_smd_annotations(&mut mod_crd);
-    let modl = serde_yaml::to_string(&mod_crd).expect("Module CRD to YAML");
+/// Render all five CRDs, each as a [`RenderedCrd`], in the chart's canonical
+/// order (MachineConfig, ConfigPolicy, DriftAlert, ClusterConfigPolicy, Module).
+pub fn render_each() -> Result<Vec<RenderedCrd>, GenCrdsError> {
+    Ok(vec![
+        // MachineConfig is the only kind carrying the hostname / files CEL rules.
+        render_crd(serde_json::to_value(MachineConfig::crd())?, true)?,
+        render_crd(serde_json::to_value(ConfigPolicy::crd())?, false)?,
+        render_crd(serde_json::to_value(DriftAlert::crd())?, false)?,
+        render_crd(serde_json::to_value(ClusterConfigPolicy::crd())?, false)?,
+        render_crd(serde_json::to_value(Module::crd())?, false)?,
+    ])
+}
 
-    print!("{mc}---\n{cp}---\n{da}---\n{ccp}---\n{modl}");
+/// Render all five CRDs into a single `---\n`-joined YAML document — the exact
+/// bytes the `cfgd-gen-crds` binary emits on stdout for the Helm chart.
+pub fn render_all() -> Result<String, GenCrdsError> {
+    let docs = render_each()?;
+    let joined = docs
+        .iter()
+        .map(|c| c.yaml.as_str())
+        .collect::<Vec<_>>()
+        .join("---\n");
+    Ok(joined)
 }
 
 fn inject_smd_annotations(crd: &mut serde_json::Value) {
@@ -149,8 +175,32 @@ fn inject_cel_rules(crd: &mut serde_json::Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::{inject_cel_rules, inject_smd_annotations};
+    use super::{inject_cel_rules, inject_smd_annotations, render_all};
     use serde_json::{Value, json};
+
+    #[test]
+    fn render_all_covers_all_five_crds() {
+        let yaml = render_all().expect("render CRDs");
+        for k in [
+            "machineconfigs",
+            "configpolicies",
+            "clusterconfigpolicies",
+            "driftalerts",
+            "modules",
+        ] {
+            assert!(
+                yaml.contains(&format!("name: {k}.cfgd.io")),
+                "missing CRD {k}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_all_preserves_dashed_document_separator() {
+        let yaml = render_all().expect("render CRDs");
+        // Five CRDs joined by `---\n` => exactly four separators.
+        assert_eq!(yaml.matches("---\n").count(), 4);
+    }
 
     // Build a fully-populated CRD-shaped serde_json::Value that exercises every
     // pointer_mut path in inject_smd_annotations + inject_cel_rules. Each

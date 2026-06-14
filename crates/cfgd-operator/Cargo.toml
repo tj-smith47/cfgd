@@ -21,7 +21,7 @@ path = "src/main.rs"
 
 [[bin]]
 name = "cfgd-gen-crds"
-path = "src/gen_crds.rs"
+path = "src/bin/gen-crds.rs"
 
 [dependencies]
 serde_yaml = "0.9"

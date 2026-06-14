@@ -145,7 +145,7 @@ spec:
             nullable: true
             properties:
               attestations:
-                description: Attestation types found on the artifact (e.g. "slsaprovenance").
+                description: Attestation types found on the artifact (e.g. "slsaprovenance1").
                 items:
                   type: string
                 type: array

@@ -123,6 +123,12 @@ tasks:
     cmds:
       - bash .claude/scripts/audit.sh
 
+  gen:crds:
+    desc: Regenerate the Helm chart CRD manifests (chart/cfgd/crds/*.yaml) from the cfgd-crd spec types.
+    deps: [_check:tmp-headroom]
+    cmds:
+      - cargo run -q -p cfgd-operator --bin cfgd-gen-crds -- --out-dir chart/cfgd/crds
+
   schema:generate:
     desc: Regenerate the published editor-config JSON schemas (schemas/*.schema.json) from the Rust config structs.
     deps: [_check:tmp-headroom]
