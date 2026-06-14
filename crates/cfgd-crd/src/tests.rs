@@ -3,6 +3,18 @@ use super::*;
 const TEST_PEM_KEY: &str =
     "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE\n-----END PUBLIC KEY-----";
 
+#[test]
+fn crd_specs_and_validate_are_exposed() {
+    use kube::CustomResourceExt;
+    // types resolve from cfgd-crd, not cfgd-operator
+    let _ = MachineConfig::crd();
+    let bad = MachineConfigSpec::example_with_traversal_path();
+    assert!(
+        bad.validate().is_err(),
+        "cross-field validate must reject `..` in file paths"
+    );
+}
+
 fn minimal_mc_spec(hostname: &str, profile: &str) -> MachineConfigSpec {
     MachineConfigSpec {
         hostname: hostname.to_string(),
