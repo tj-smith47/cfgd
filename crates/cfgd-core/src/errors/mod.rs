@@ -65,6 +65,12 @@ pub enum ConfigError {
     #[error("invalid config: {message}")]
     Invalid { message: String },
 
+    #[error(
+        "unsupported apiVersion {found:?}; this build supports {}",
+        crate::API_VERSION
+    )]
+    UnsupportedApiVersion { found: String },
+
     #[error("circular profile inheritance: {chain:?}")]
     CircularInheritance { chain: Vec<String> },
 

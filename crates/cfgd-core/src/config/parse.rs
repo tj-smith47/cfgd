@@ -99,6 +99,24 @@ pub(super) fn warn_on_legacy_theme_keys(raw_yaml: &str) {
     }
 }
 
+/// Reject a document whose `apiVersion` is not the version this build understands.
+///
+/// Every document parse path ([`parse_config`], [`load_profile`], `parse_module`,
+/// [`parse_config_source`]) routes through this single check so an unknown version
+/// (e.g. a future `cfgd.io/v1alpha2`) fails loudly with a typed
+/// [`ConfigError::UnsupportedApiVersion`] instead of silently deserializing under
+/// the current schema. The typed variant is the matchable hook a future
+/// version-migration path plugs into.
+pub(super) fn validate_api_version(api_version: &str) -> Result<()> {
+    if api_version != crate::API_VERSION {
+        return Err(ConfigError::UnsupportedApiVersion {
+            found: api_version.to_string(),
+        }
+        .into());
+    }
+    Ok(())
+}
+
 /// Parse a ConfigSource manifest from YAML content.
 pub fn parse_config_source(contents: &str) -> Result<ConfigSourceDocument> {
     check_yaml_anchor_limit(contents, Path::new("ConfigSource"))?;
@@ -110,6 +128,7 @@ pub fn parse_config_source(contents: &str) -> Result<ConfigSourceDocument> {
         }
         .into());
     }
+    validate_api_version(&doc.api_version)?;
 
     Ok(doc)
 }
@@ -197,6 +216,8 @@ pub fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {
         "toml" => toml::from_str(contents).map_err(ConfigError::from)?,
         _ => serde_yaml::from_str(contents).map_err(ConfigError::from)?,
     };
+
+    validate_api_version(&raw.api_version)?;
 
     // Normalize origin to Vec
     let origin = match raw.spec.origin {
@@ -287,6 +308,7 @@ pub fn load_profile(path: &Path) -> Result<ProfileDocument> {
 
     check_yaml_anchor_limit(&contents, path)?;
     let doc: ProfileDocument = serde_yaml::from_str(&contents).map_err(ConfigError::from)?;
+    validate_api_version(&doc.api_version)?;
     Ok(doc)
 }
 

@@ -285,6 +285,7 @@ pub fn parse_module(contents: &str) -> Result<ModuleDocument> {
         }
         .into());
     }
+    super::parse::validate_api_version(&doc.api_version)?;
 
     Ok(doc)
 }
@@ -317,6 +318,23 @@ spec: {}
             msg.contains("unknown field") && msg.contains("bogusField"),
             "expected unknown-field error mentioning bogusField, got: {msg}"
         );
+    }
+
+    #[test]
+    fn unknown_apiversion_is_rejected_with_actionable_error() {
+        let yaml = "apiVersion: cfgd.io/v1alpha2\nkind: Module\nmetadata:\n  name: m\nspec: {}\n";
+        let err = crate::config::parse_module(yaml).unwrap_err();
+        assert!(err.to_string().contains("apiVersion"));
+        assert!(err.to_string().contains("cfgd.io/v1alpha1")); // tells the user the supported version
+    }
+
+    #[test]
+    fn unknown_apiversion_is_rejected_for_config_source() {
+        let yaml =
+            "apiVersion: cfgd.io/v1alpha2\nkind: ConfigSource\nmetadata:\n  name: s\nspec: {}\n";
+        let err = crate::config::parse_config_source(yaml).unwrap_err();
+        assert!(err.to_string().contains("apiVersion"));
+        assert!(err.to_string().contains("cfgd.io/v1alpha1"));
     }
 
     #[test]

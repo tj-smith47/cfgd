@@ -2,6 +2,8 @@
 
 cfgd config files follow a structure inspired by the [Kubernetes Resource Model](https://github.com/kubernetes/design-proposals-archive/blob/main/architecture/resource-management.md): every document has `apiVersion`, `kind`, `metadata`, and `spec` fields. This gives a consistent shape across configs, profiles, modules, and sources. TOML is also supported (use `.toml` extension).
 
+The only supported `apiVersion` is `cfgd.io/v1alpha1`. Any other value (e.g. a future `cfgd.io/v1alpha2`) is rejected at parse time with an error naming the supported version, rather than being silently loaded under the current schema.
+
 For the complete field-by-field reference, see the [Config spec reference](spec/config.md).
 
 ## Editor Support
