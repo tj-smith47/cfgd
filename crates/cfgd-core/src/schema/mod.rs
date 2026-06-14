@@ -74,13 +74,6 @@ impl KindEntry {
     }
 }
 
-#[cfg(feature = "crd")]
-macro_rules! crd_schema {
-    ($ty:ty) => {
-        || schema_for!($ty)
-    };
-}
-
 /// Every cfgd resource kind. Local kinds derive their schema from the local
 /// config structs; CRD kinds (behind the `crd` feature) derive theirs from the
 /// `cfgd_crd::*Spec` types, so webhook and CLI validate against one schema.
@@ -124,7 +117,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         location: "MachineConfig CRD (cfgd.io/v1alpha1)",
         description: "Per-machine desired state reconciled by the cfgd operator.",
         crd: true,
-        schema_fn: crd_schema!(cfgd_crd::MachineConfigSpec),
+        schema_fn: || schema_for!(cfgd_crd::MachineConfigSpec),
     },
     #[cfg(feature = "crd")]
     KindEntry {
@@ -133,7 +126,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         location: "ConfigPolicy CRD (cfgd.io/v1alpha1)",
         description: "Namespace-scoped policy of required modules, packages, and settings.",
         crd: true,
-        schema_fn: crd_schema!(cfgd_crd::ConfigPolicySpec),
+        schema_fn: || schema_for!(cfgd_crd::ConfigPolicySpec),
     },
     #[cfg(feature = "crd")]
     KindEntry {
@@ -142,7 +135,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         location: "ClusterConfigPolicy CRD (cfgd.io/v1alpha1)",
         description: "Cluster-scoped policy fanned out across selected namespaces.",
         crd: true,
-        schema_fn: crd_schema!(cfgd_crd::ClusterConfigPolicySpec),
+        schema_fn: || schema_for!(cfgd_crd::ClusterConfigPolicySpec),
     },
     #[cfg(feature = "crd")]
     KindEntry {
@@ -151,7 +144,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         location: "DriftAlert CRD (cfgd.io/v1alpha1)",
         description: "A recorded drift event between desired and observed machine state.",
         crd: true,
-        schema_fn: crd_schema!(cfgd_crd::DriftAlertSpec),
+        schema_fn: || schema_for!(cfgd_crd::DriftAlertSpec),
     },
     #[cfg(feature = "crd")]
     KindEntry {
@@ -160,7 +153,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         location: "Module CRD (cfgd.io/v1alpha1)",
         description: "Cluster-side Module CRD: an OCI-packaged module injected via CSI.",
         crd: true,
-        schema_fn: crd_schema!(cfgd_crd::ModuleSpec),
+        schema_fn: || schema_for!(cfgd_crd::ModuleSpec),
     },
 ];
 
@@ -173,16 +166,83 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
 /// are unwrapped to a `[]<inner>` type description. Required-ness and
 /// descriptions come from the schema. Pure — no I/O.
 pub fn field_tree_from_schema(root: &RootSchema) -> Vec<FieldNode> {
+    let mut visited = std::collections::BTreeSet::new();
     let top = object_properties(&root.schema);
     // KRM document schemas (Config) wrap authoring fields under `spec`; CRD and
     // bare-spec schemas already start at the spec object. Descend into `spec`
     // when present so every kind presents its authoring fields uniformly.
-    if let Some(spec) = top.iter().find(|(name, _)| name.as_str() == "spec") {
-        let (_, spec_schema) = spec;
+    if let Some((_, spec_schema)) = top.iter().find(|(name, _)| name.as_str() == "spec") {
+        let descent = RefDescent::enter(spec_schema, &mut visited);
         let resolved = resolve_ref(spec_schema, root);
-        return object_fields(&resolved, root);
+        let props = object_properties(&resolved);
+        let fields = fields_from_properties(&props, &required_set(&resolved), root, &mut visited);
+        descent.leave(&mut visited);
+        return fields;
     }
-    fields_from_properties(&top, &required_set(&root.schema), root)
+    fields_from_properties(&top, &required_set(&root.schema), root, &mut visited)
+}
+
+/// Tracks one `$ref` name on the current descent path so a self-referential
+/// schema (a type whose field `$ref`s back to itself, directly or through a
+/// `Vec`/`Box`) stops descending instead of recursing forever. Removing the
+/// name on the way back up renders the field tree as a tree, not a collapsed
+/// DAG: sibling branches that legitimately reference the same type still
+/// expand.
+struct RefDescent {
+    /// The `$ref` name to retire on `leave`, set only when this descent is the
+    /// one that inserted it. `None` for an inline (ref-less) schema or for a
+    /// re-entry into an already-tracked name (the outer descent owns removal).
+    owned: Option<String>,
+    /// `false` only when the schema `$ref`s a name already on the descent path
+    /// — a cycle the caller must not recurse into.
+    safe: bool,
+}
+
+impl RefDescent {
+    /// Record the schema's `$ref` target (if any) as on the descent path.
+    fn enter(schema: &Schema, visited: &mut std::collections::BTreeSet<String>) -> Self {
+        match ref_name(schema) {
+            // Inline schema: always safe, nothing to track.
+            None => RefDescent {
+                owned: None,
+                safe: true,
+            },
+            // First time on this path: track it and allow descent.
+            Some(name) if visited.insert(name.clone()) => RefDescent {
+                owned: Some(name),
+                safe: true,
+            },
+            // Already on the path: a cycle — do not descend, do not own removal.
+            Some(_) => RefDescent {
+                owned: None,
+                safe: false,
+            },
+        }
+    }
+
+    /// Whether descending into this schema's children is safe (not a cycle).
+    fn safe(&self) -> bool {
+        self.safe
+    }
+
+    /// Retire the `$ref` name if this descent owns it.
+    fn leave(self, visited: &mut std::collections::BTreeSet<String>) {
+        if let Some(name) = self.owned {
+            visited.remove(&name);
+        }
+    }
+}
+
+/// The definition name a schema `$ref`s (`#/definitions/<Name>` → `<Name>`),
+/// or `None` for an inline schema carrying no `$ref`.
+fn ref_name(schema: &Schema) -> Option<String> {
+    let Schema::Object(obj) = schema else {
+        return None;
+    };
+    obj.reference
+        .as_ref()
+        .and_then(|r| r.strip_prefix("#/definitions/"))
+        .map(str::to_string)
 }
 
 /// Resolve a `$ref` (`#/definitions/<Name>`) against the root's `definitions`,
@@ -225,39 +285,56 @@ fn required_set(schema: &SchemaObject) -> std::collections::BTreeSet<String> {
 }
 
 /// Build [`FieldNode`]s for every property of a (already `$ref`-resolved)
-/// object schema.
-fn object_fields(schema: &SchemaObject, root: &RootSchema) -> Vec<FieldNode> {
+/// object schema. `visited` carries the `$ref` names on the current descent
+/// path for cycle protection.
+fn object_fields(
+    schema: &SchemaObject,
+    root: &RootSchema,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> Vec<FieldNode> {
     let props = object_properties(schema);
-    fields_from_properties(&props, &required_set(schema), root)
+    fields_from_properties(&props, &required_set(schema), root, visited)
 }
 
 fn fields_from_properties(
     props: &[(String, Schema)],
     required: &std::collections::BTreeSet<String>,
     root: &RootSchema,
+    visited: &mut std::collections::BTreeSet<String>,
 ) -> Vec<FieldNode> {
     let mut fields: Vec<FieldNode> = props
         .iter()
         .filter(|(name, _)| !matches!(name.as_str(), "apiVersion" | "kind" | "metadata" | "status"))
-        .map(|(name, schema)| field_node(name, schema, required.contains(name), root))
+        .map(|(name, schema)| field_node(name, schema, required.contains(name), root, visited))
         .collect();
     fields.sort_by(|a, b| a.name.cmp(&b.name));
     fields
 }
 
 /// Build a single [`FieldNode`] from a property's schema, resolving `$ref`,
-/// mapping its type, and recursing into nested object fields.
-fn field_node(name: &str, schema: &Schema, required: bool, root: &RootSchema) -> FieldNode {
+/// mapping its type, and recursing into nested object fields. Descending into a
+/// `$ref` already on the path renders it as a leaf (its type description) rather
+/// than recursing, so a self-referential schema terminates.
+fn field_node(
+    name: &str,
+    schema: &Schema,
+    required: bool,
+    root: &RootSchema,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> FieldNode {
+    let descent = RefDescent::enter(schema, visited);
     let resolved = resolve_ref(schema, root);
     let description = schema_description(schema)
         .or_else(|| schema_description(&Schema::Object(resolved.clone())))
         .unwrap_or_default();
-    let type_desc = type_description(&resolved, root);
-    let children = if is_object(&resolved) {
-        object_fields(&resolved, root)
+    let type_desc = type_description(&resolved, root, visited);
+    // A `$ref` re-entry (cycle) stops here: emit the field as a leaf.
+    let children = if is_object(&resolved) && descent.safe() {
+        object_fields(&resolved, root, visited)
     } else {
         Vec::new()
     };
+    descent.leave(visited);
     FieldNode {
         name: name.to_string(),
         type_desc,
@@ -291,21 +368,19 @@ fn is_object(schema: &SchemaObject) -> bool {
 /// `object` for objects/maps, otherwise the JSON instance type (`string`,
 /// `integer`, `boolean`, …). Falls back to `object` when no type is declared
 /// (e.g. enums, untyped maps).
-fn type_description(schema: &SchemaObject, root: &RootSchema) -> String {
+fn type_description(
+    schema: &SchemaObject,
+    root: &RootSchema,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> String {
     if let Some(array) = &schema.array
         && let Some(items) = &array.items
     {
         let inner = match items {
-            SingleOrVec::Single(item) => {
-                let resolved = resolve_ref(item, root);
-                type_description(&resolved, root)
-            }
+            SingleOrVec::Single(item) => array_inner_type(item, root, visited),
             SingleOrVec::Vec(items) => items
                 .first()
-                .map(|item| {
-                    let resolved = resolve_ref(item, root);
-                    type_description(&resolved, root)
-                })
+                .map(|item| array_inner_type(item, root, visited))
                 .unwrap_or_else(|| "string".to_string()),
         };
         return format!("[]{inner}");
@@ -322,6 +397,25 @@ fn type_description(schema: &SchemaObject, root: &RootSchema) -> String {
             .unwrap_or_else(|| "object".to_string()),
         None => "object".to_string(),
     }
+}
+
+/// Type description of an array element, guarding the element `$ref` against a
+/// cycle (a `Vec` whose element type `$ref`s back onto the descent path renders
+/// as `object` rather than recursing).
+fn array_inner_type(
+    item: &Schema,
+    root: &RootSchema,
+    visited: &mut std::collections::BTreeSet<String>,
+) -> String {
+    let descent = RefDescent::enter(item, visited);
+    let resolved = resolve_ref(item, root);
+    let desc = if descent.safe() {
+        type_description(&resolved, root, visited)
+    } else {
+        "object".to_string()
+    };
+    descent.leave(visited);
+    desc
 }
 
 fn instance_type_name(t: &schemars::schema::InstanceType) -> String {
@@ -409,6 +503,66 @@ mod tests {
             packages.type_desc.starts_with("[]"),
             "packages should be a slice type, got {}",
             packages.type_desc
+        );
+    }
+
+    // A deliberately self-referential pair of types. `edge` and `target` are
+    // bare (non-optional) `$ref`s — exactly the shape `resolve_ref` follows —
+    // so the walk recurses Node -> Edge -> Node -> Edge ... Without a cycle
+    // guard this overflows the stack and aborts the process.
+    #[derive(schemars::JsonSchema)]
+    #[allow(dead_code)]
+    struct Node {
+        name: String,
+        edge: Edge,
+    }
+
+    #[derive(schemars::JsonSchema)]
+    #[allow(dead_code)]
+    struct Edge {
+        target: Box<Node>,
+    }
+
+    #[test]
+    fn self_referential_schema_terminates_with_bounded_tree() {
+        let schema = schema_for!(Node);
+        // The contract under test is termination: this returns instead of
+        // overflowing the stack on the recursive `edge`/`target` refs.
+        let tree = field_tree_from_schema(&schema);
+
+        let names: Vec<&str> = tree.iter().map(|f| f.name.as_str()).collect();
+        assert!(names.contains(&"name"), "expected `name`, got {names:?}");
+        assert!(names.contains(&"edge"), "expected `edge`, got {names:?}");
+
+        // The descent unrolls Node -> edge(Edge) -> target(Node) -> edge(Edge),
+        // and the second Edge re-entry is cut: that inner `edge` renders as a
+        // leaf rather than recursing forever. A tree, not a collapsed DAG — the
+        // first `edge` and `target` still expand their one level.
+        let edge = tree
+            .iter()
+            .find(|f| f.name == "edge")
+            .expect("edge present");
+        assert_eq!(edge.type_desc, "object");
+
+        let target = edge
+            .children
+            .iter()
+            .find(|f| f.name == "target")
+            .expect("edge.target present");
+        assert_eq!(target.type_desc, "object");
+
+        // `target` re-enters Node and expands one level (its own `edge`/`name`),
+        // where the recursive `edge` is finally cut to a leaf.
+        let inner_edge = target
+            .children
+            .iter()
+            .find(|f| f.name == "edge")
+            .expect("target.edge present");
+        assert_eq!(inner_edge.type_desc, "object");
+        assert!(
+            inner_edge.children.is_empty(),
+            "recursive edge must be cut to a leaf, got {:?}",
+            inner_edge.children
         );
     }
 }
