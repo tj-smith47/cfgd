@@ -320,6 +320,32 @@ spec: {}
     }
 
     #[test]
+    fn module_spec_emits_json_schema() {
+        let schema = schemars::schema_for!(ModuleSpec);
+        let json = serde_json::to_value(&schema).unwrap();
+        assert!(
+            json["properties"].get("packages").is_some(),
+            "ModuleSpec schema missing packages property: {json}"
+        );
+    }
+
+    #[test]
+    fn script_entry_untagged_renders_anyof() {
+        // ScriptEntry is `#[serde(untagged)]`; schemars 0.8 must render it as an
+        // anyOf covering both the Simple(String) and Full{..} shapes, or the
+        // field would vanish from the generated schema.
+        let schema = schemars::schema_for!(ScriptEntry);
+        let json = serde_json::to_value(&schema).unwrap();
+        let any_of = json["anyOf"]
+            .as_array()
+            .expect("untagged ScriptEntry must render a top-level anyOf");
+        assert!(
+            any_of.len() >= 2,
+            "anyOf must cover Simple + Full variants, got: {json}"
+        );
+    }
+
+    #[test]
     fn module_spec_platforms_deserializes() {
         let yaml = "platforms: [macos]\n";
         let spec: ModuleSpec = serde_yaml::from_str(yaml).unwrap();
