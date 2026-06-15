@@ -46,10 +46,15 @@ pub fn render_skill_body(model: &SkillModel) -> String {
     );
     let _ = writeln!(out);
 
-    // The field-walk command lines, pulled from the model so the explain token
-    // is single-sourced.
+    // The field-walk command line, pulled from the model so the explain token
+    // is single-sourced. The drill-down clause is gated on `drill_hint` per the
+    // FieldWalkSpec contract.
     let explain_kind = format!("cfgd explain {token}");
-    let explain_field = format!("cfgd explain {token}.<field>");
+    let drill_clause = if model.field_walk.drill_hint {
+        format!(", and `{explain_kind}.<field> -o json` to drill into nested objects")
+    } else {
+        String::new()
+    };
 
     let _ = writeln!(out, "## Protocol");
     let _ = writeln!(out);
@@ -62,9 +67,8 @@ if it is older than {min}, warn and prefer the embedded fallback schema below."
     let _ = writeln!(
         out,
         "1. **Enumerate every field for this kind (live-first, snapshot-fallback).** \
-Run `{explain_kind} -o json` for the authoritative live schema, and `{explain_field} -o json` \
-to drill into nested objects. If cfgd is absent or older than the stamp, use the embedded \
-fallback schema below (stamped {cfgd_version})."
+Run `{explain_kind} -o json` for the authoritative live schema{drill_clause}. If cfgd is \
+absent or older than the stamp, use the embedded fallback schema below (stamped {cfgd_version})."
     );
     let _ = writeln!(
         out,
@@ -97,7 +101,7 @@ did I skip, and was that deliberate?\" Iterate until the answer holds."
 
     render_exemplar(&mut out, model);
     render_examples(&mut out, model);
-    render_fallback_schema(&mut out, model);
+    render_fallback_schema(&mut out, model, &explain_kind);
 
     out
 }
@@ -142,14 +146,16 @@ fn render_examples(out: &mut String, model: &SkillModel) {
 
 /// Append the embedded fallback schema block under the pinned heading every
 /// provider body carries. The heading and the ```json fence shape are a stable
-/// contract providers depend on.
-fn render_fallback_schema(out: &mut String, model: &SkillModel) {
+/// contract providers depend on. `explain_kind` is the same `cfgd explain <kind>`
+/// command spelling used by protocol step 1, threaded through so the explain
+/// command has one source.
+fn render_fallback_schema(out: &mut String, model: &SkillModel, explain_kind: &str) {
     let _ = writeln!(out, "## Fallback schema (if cfgd is unavailable)");
     let _ = writeln!(out);
     let _ = writeln!(
         out,
-        "Generated against cfgd {}. Live `cfgd explain {}` is authoritative when present.",
-        model.schema_snapshot.cfgd_version, model.field_walk.explain_kind
+        "Generated against cfgd {}. Live `{explain_kind}` is authoritative when present.",
+        model.schema_snapshot.cfgd_version
     );
     let _ = writeln!(out);
     write_fence(out, "json", &model.schema_snapshot.json_schema);
@@ -192,10 +198,16 @@ mod tests {
     fn version_stamp_carries_both_rendering_and_floor_versions() {
         let model = skill_model_for(SkillKind::Module);
         let body = render_skill_body(&model);
-        let stamp = format!(
-            "<!-- cfgd-version: {} · cfgd-min-version: {} -->",
-            model.schema_snapshot.cfgd_version, model.min_cfgd_version
-        );
+        // Assemble the expected stamp from literal fragments — with the real
+        // middot baked into the literal — rather than the renderer's own format
+        // string, so a middot->hyphen (or any separator) drift fails the test
+        // instead of passing silently.
+        let stamp = String::new()
+            + "<!-- cfgd-version: "
+            + &model.schema_snapshot.cfgd_version
+            + " · cfgd-min-version: "
+            + &model.min_cfgd_version.to_string()
+            + " -->";
         assert!(body.contains(&stamp), "missing exact stamp: {stamp}");
     }
 
