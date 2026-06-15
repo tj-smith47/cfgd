@@ -148,7 +148,7 @@ case_insensitive_enum!(SkillUpdatePolicy {
 });
 
 /// Configuration for cfgd self-update checks and authored-skill updates.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateConfig {
     /// How update checks for the cfgd binary behave. Defaults to `Prompt`.
@@ -168,6 +168,21 @@ pub struct UpdateConfig {
     /// Update policy for authored skills. Defaults to inheriting `policy`.
     #[serde(default)]
     pub skills: SkillUpdateConfig,
+}
+
+impl Default for UpdateConfig {
+    /// Mirrors deserializing an empty `update:` block: serde field defaults
+    /// fire on deserialize but not on a derived `Default`, so `interval` must
+    /// be set to `default_update_interval()` here or `Default::default()`
+    /// yields an empty interval that fails to parse as a duration.
+    fn default() -> Self {
+        Self {
+            policy: UpdatePolicy::default(),
+            interval: default_update_interval(),
+            channel: None,
+            skills: SkillUpdateConfig::default(),
+        }
+    }
 }
 
 impl UpdateConfig {
@@ -366,6 +381,24 @@ mod tests {
         let u = UpdateConfig::default();
         assert!(matches!(u.policy, UpdatePolicy::Prompt));
         assert!(matches!(u.skills.policy, SkillUpdatePolicy::Inherit));
+    }
+
+    #[test]
+    fn update_config_default_matches_empty_deserialize() {
+        // Default::default() must equal deserialize-of-empty: serde field
+        // defaults only fire on deserialize, so a derived Default leaves
+        // `interval` empty and the update check warns spuriously on every run.
+        let from_empty: UpdateConfig = serde_yaml::from_str("{}").unwrap();
+        let from_default = UpdateConfig::default();
+        assert_eq!(
+            from_default.interval, from_empty.interval,
+            "Default must match deserialize-of-empty"
+        );
+        assert!(
+            !from_default.interval.is_empty(),
+            "default interval must not be empty"
+        );
+        assert_eq!(from_default.interval, "24h");
     }
 
     #[test]

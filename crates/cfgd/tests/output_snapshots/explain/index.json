@@ -3265,6 +3265,46 @@
         "name": "theme",
         "required": false,
         "type": "object"
+      },
+      {
+        "children": [
+          {
+            "description": "Release channel to track (e.g. `stable`, `beta`). When unset, cfgd uses its built-in default channel.",
+            "name": "channel",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "description": "How often to check for updates, as a duration string (e.g. `24h`, `7d`, `30m`) or a plain number of seconds. Defaults to `24h`.",
+            "name": "interval",
+            "required": false,
+            "type": "string"
+          },
+          {
+            "description": "How update checks for the cfgd binary behave. Defaults to `Prompt`.",
+            "name": "policy",
+            "required": false,
+            "type": "object"
+          },
+          {
+            "children": [
+              {
+                "description": "How skill update checks behave. Defaults to `Inherit` (defer to the binary-level policy).",
+                "name": "policy",
+                "required": false,
+                "type": "object"
+              }
+            ],
+            "description": "Update policy for authored skills. Defaults to inheriting `policy`.",
+            "name": "skills",
+            "required": false,
+            "type": "object"
+          }
+        ],
+        "description": "Update policy for the cfgd binary and authored skills.",
+        "name": "update",
+        "required": false,
+        "type": "object"
       }
     ],
     "kind": "Config",
