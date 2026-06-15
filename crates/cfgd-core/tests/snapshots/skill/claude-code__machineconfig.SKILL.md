@@ -1,0 +1,63 @@
+---
+name: cfgd-machineconfig
+description: Investigate thoroughly and author a complete, validated cfgd MachineConfig resource.
+user-invocable: true
+cfgd-version: <CFGD_VERSION>
+cfgd-min-version: <CFGD_VERSION>
+---
+
+<!-- cfgd-version: <CFGD_VERSION> · cfgd-min-version: <CFGD_VERSION> -->
+
+# Author a high-quality cfgd MachineConfig
+
+Follow this protocol on every invocation. The quality bar is NOT "valid YAML". It is exhaustive field evaluation, external research, and a documented rationale for every choice. A box-checking resource (every field technically present, no investigation behind it) fails this bar. Evaluate EVERY field the kind exposes; for each, either populate it with a justified value or omit it only after investigating enough to conclude it does not apply. Ground every version, ordering, and strategy choice in evidence, never a guess.
+
+## Protocol
+
+0. **Precondition — confirm the toolchain is usable.** Run `command -v cfgd`; if it is absent, STOP and tell the user to install cfgd >= <CFGD_VERSION>. Run `cfgd --version`; if it is older than <CFGD_VERSION>, warn and prefer the embedded fallback schema below.
+1. **Enumerate every field for this kind (live-first, snapshot-fallback).** Run `cfgd explain machineconfig -o json` for the authoritative live schema, and `cfgd explain machineconfig.<field> -o json` to drill into nested objects. If cfgd is absent or older than the stamp, use the embedded fallback schema below (stamped <CFGD_VERSION>).
+2. **Research best practices externally for THIS subject.** For each field, consult external best practice before settling a value: the tool's own docs, the package managers that ship it, and community conventions. Record what you verified and your confidence level when a source was unavailable. Prefer live evidence over training-knowledge recall, and state explicitly when you could not confirm a claim.
+3. **For EVERY field, decide include OR omit, and justify with a WHY comment.** Box-checking is a failure; meeting the rubric above is the target.
+4. **Draft thoroughly:** transitive deps explicit, version constraints set, platforms scoped, multi-step scripts idempotent (timeout + continueOnError), comments-as-specification.
+5. **Validate against the schema:** `cfgd machineconfig validate <file>` — fix until clean (validate against the embedded snapshot if cfgd is unavailable).
+6. **Self-critique against the rubric:** "Box-checking or thorough? Which field did I skip, and was that deliberate?" Iterate until the answer holds.
+
+## Ground-truth examples
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: MachineConfig
+metadata:
+  name: alice-workstation
+  namespace: team-platform
+spec:
+  hostname: alice-mbp
+  profile: work
+  moduleRefs:
+    - name: kubectl
+      required: true
+    - name: terraform
+      required: false
+  packages:
+    - name: ripgrep
+    - name: fd
+    - name: kubectl
+      version: "1.28.3"
+    - name: terraform
+      version: "1.6.0"
+  files:
+    - path: /etc/hosts.local
+      content: "10.0.1.5  internal.acme.com\n"
+      mode: "0644"
+  systemSettings:
+    net.ipv4.ip_forward: "1"
+```
+
+## Fallback schema (if cfgd is unavailable)
+
+Generated against cfgd <CFGD_VERSION>. Live `cfgd explain machineconfig` is authoritative when present.
+
+```json
+{"$schema":"http://json-schema.org/draft-07/schema#","title":"MachineConfigSpec","type":"object","required":["hostname","profile"],"properties":{"files":{"default":[],"type":"array","items":{"$ref":"#/definitions/FileSpec"}},"hostname":{"type":"string"},"moduleRefs":{"default":[],"type":"array","items":{"$ref":"#/definitions/ModuleRef"}},"packages":{"default":[],"type":"array","items":{"$ref":"#/definitions/PackageRef"}},"profile":{"type":"string"},"systemSettings":{"default":{},"type":"object","additionalProperties":true}},"definitions":{"FileSpec":{"type":"object","required":["path"],"properties":{"content":{"type":["string","null"]},"mode":{"default":"0644","type":"string"},"path":{"type":"string"},"source":{"type":["string","null"]}}},"ModuleRef":{"description":"Reference to a module that should be installed on the machine.","type":"object","required":["name"],"properties":{"name":{"type":"string"},"required":{"default":false,"type":"boolean"}}},"PackageRef":{"description":"Reference to a package with optional version pin.","type":"object","required":["name"],"properties":{"name":{"type":"string"},"version":{"type":["string","null"]}}}}}
+```
+

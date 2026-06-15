@@ -177,6 +177,12 @@ tasks:
     cmds:
       - CFGD_BLESS_SCHEMA=1 cargo test -p cfgd-core --features cfgd-core/test-helpers --test schema_golden every_kind_schema_matches_its_committed_golden
 
+  skill:bless:
+    desc: Regenerate the committed golden rendered skills (tests/snapshots/skill/*.SKILL.md) after an intentional provider-envelope change. The golden TEST (run by `task test`) is the drift gate; this target is its bless writer.
+    deps: [_check:tmp-headroom]
+    cmds:
+      - CFGD_BLESS_SKILL=1 cargo test -p cfgd-core --features cfgd-core/test-helpers --test skill_golden
+
   coverage:check:
     desc: Run workspace test coverage and write cobertura.xml. Prints the same percentage the README badge shows. No branch switching, no push.
     cmds:
