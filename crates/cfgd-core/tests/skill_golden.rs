@@ -18,7 +18,9 @@
 //! not the version literal.
 
 use cfgd_core::generate::{SkillKind, skill_model_for};
-use cfgd_core::providers::skill::{ClaudeCodeProvider, GeminiProvider, SkillProvider};
+use cfgd_core::providers::skill::{
+    ClaudeCodeProvider, CopilotProvider, GeminiProvider, SkillProvider,
+};
 
 /// Every author-facing kind, in the registry's stable order.
 const ALL_KINDS: [SkillKind; 6] = [
@@ -78,8 +80,13 @@ fn normalize_version(rendered: &str) -> String {
 /// provider's snapshot reads with its real extension (`*.SKILL.md`, `*.toml`).
 fn golden_suffix(provider: &str) -> &'static str {
     match provider {
+        "claude-code" => "SKILL.md",
         "gemini" => "toml",
-        _ => "SKILL.md",
+        "copilot" => "prompt.md",
+        // An unmapped provider would otherwise write a mislabeled fixture; fail
+        // loudly so a new provider's goldens cannot silently land under the wrong
+        // extension.
+        other => panic!("golden_suffix: unmapped provider {other:?}"),
     }
 }
 
@@ -123,4 +130,9 @@ fn claude_code_renders_match_committed_goldens() {
 #[test]
 fn gemini_renders_match_committed_goldens() {
     check_provider_goldens(&GeminiProvider);
+}
+
+#[test]
+fn copilot_renders_match_committed_goldens() {
+    check_provider_goldens(&CopilotProvider);
 }
