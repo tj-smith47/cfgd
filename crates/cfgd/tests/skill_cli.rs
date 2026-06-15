@@ -167,3 +167,175 @@ fn install_reports_failure_and_exits_nonzero_on_partial() {
     let gemini = result_for(&payload, "gemini");
     assert_eq!(gemini["status"], "installed", "gemini must still succeed");
 }
+
+/// Spawn `cfgd skill <subcommand...>` with a hermetic HOME and pinned CWD.
+fn skill_in(repo: &std::path::Path, home: &std::path::Path, args: &[&str]) -> assert_cmd::Command {
+    let mut cmd = Command::cargo_bin("cfgd").unwrap();
+    cmd.env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .current_dir(repo)
+        .args(["skill"])
+        .args(args);
+    cmd
+}
+
+/// `skill list` reports installed skills and flags one whose stamped
+/// `cfgd-version` predates the running version as `stale`, while a freshly
+/// installed skill (current stamp) reports `stale == false`.
+#[test]
+fn list_shows_installed_with_stale_flag() {
+    let repo = tempfile::tempdir().expect("repo tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+    std::fs::create_dir_all(repo.path().join(".claude")).expect("mk .claude");
+
+    // Fresh install of `profile` → current version stamp → stale == false.
+    skill_in(
+        repo.path(),
+        home.path(),
+        &["install", "profile", "--provider", "claude-code"],
+    )
+    .assert()
+    .success();
+
+    // Hand-write a `module` SKILL.md with an OLDER stamp (0.0.1) → stale == true.
+    let module_path = repo.path().join(".claude/skills/cfgd-module/SKILL.md");
+    std::fs::create_dir_all(module_path.parent().unwrap()).expect("mk skill dir");
+    std::fs::write(
+        &module_path,
+        "---\nname: cfgd-module\ndescription: x\nuser-invocable: true\ncfgd-version: 0.0.1\ncfgd-min-version: 0.0.1\n---\n\nbody\n",
+    )
+    .expect("write stale skill");
+
+    let assert = skill_in(repo.path(), home.path(), &["list", "-o", "json"])
+        .assert()
+        .success();
+    let out = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    let payload: Value = serde_json::from_str(&out).expect("json payload");
+
+    assert_eq!(payload["scope"], "project");
+
+    let entries = payload["installed"].as_array().expect("installed array");
+    let module = entries
+        .iter()
+        .find(|e| e["kind"] == "Module" && e["provider"] == "claude-code")
+        .unwrap_or_else(|| panic!("no module entry in {payload}"));
+    assert_eq!(module["stale"], true, "0.0.1 stamp must be stale: {module}");
+
+    let profile = entries
+        .iter()
+        .find(|e| e["kind"] == "Profile" && e["provider"] == "claude-code")
+        .unwrap_or_else(|| panic!("no profile entry in {payload}"));
+    assert_eq!(
+        profile["stale"], false,
+        "freshly installed skill must not be stale: {profile}"
+    );
+}
+
+/// `skill remove --provider codex` excises only the cfgd-managed block from a
+/// user-co-owned `AGENTS.md`, preserving the surrounding user prose verbatim.
+#[test]
+fn remove_excises_only_managed_block_in_agents_md() {
+    let repo = tempfile::tempdir().expect("repo tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+
+    // Codex detects via a project-root AGENTS.md; seed it with user prose so the
+    // managed block splices BETWEEN the leading and trailing bytes.
+    let agents = repo.path().join("AGENTS.md");
+    let lead = "# My AGENTS.md\n\nLeading user prose.\n";
+    std::fs::write(&agents, lead).expect("seed AGENTS.md");
+
+    skill_in(
+        repo.path(),
+        home.path(),
+        &["install", "module", "--provider", "codex"],
+    )
+    .assert()
+    .success();
+
+    let after_install = std::fs::read_to_string(&agents).expect("read AGENTS.md");
+    assert!(
+        after_install.contains("cfgd:skill:module"),
+        "install must splice the managed block: {after_install}"
+    );
+    assert!(
+        after_install.contains("Leading user prose."),
+        "user prose must survive install: {after_install}"
+    );
+
+    skill_in(
+        repo.path(),
+        home.path(),
+        &["remove", "module", "--provider", "codex", "--yes"],
+    )
+    .assert()
+    .success();
+
+    let after_remove = std::fs::read_to_string(&agents).expect("read AGENTS.md");
+    assert!(
+        !after_remove.contains("cfgd:skill:module"),
+        "remove must excise the managed block: {after_remove}"
+    );
+    assert!(
+        after_remove.contains("# My AGENTS.md") && after_remove.contains("Leading user prose."),
+        "surrounding user bytes must survive verbatim: {after_remove}"
+    );
+}
+
+/// `skill update --all` re-renders every installed skill at scope, bumping each
+/// stale on-disk stamp to the running version and reporting `updated` per row.
+#[test]
+fn update_all_rerenders_every_installed_skill_at_scope() {
+    let repo = tempfile::tempdir().expect("repo tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+    std::fs::create_dir_all(repo.path().join(".claude")).expect("mk .claude");
+
+    // Seed two installed claude-code skills with an OLDER (0.0.1) stamp by hand,
+    // so a real re-render (current stamp) is observable.
+    for token in ["module", "profile"] {
+        let p = repo
+            .path()
+            .join(format!(".claude/skills/cfgd-{token}/SKILL.md"));
+        std::fs::create_dir_all(p.parent().unwrap()).expect("mk skill dir");
+        std::fs::write(
+            &p,
+            format!("---\nname: cfgd-{token}\ndescription: x\nuser-invocable: true\ncfgd-version: 0.0.1\ncfgd-min-version: 0.0.1\n---\n\nbody\n"),
+        )
+        .expect("write stale skill");
+    }
+
+    let running = env!("CARGO_PKG_VERSION");
+
+    let assert = skill_in(repo.path(), home.path(), &["update", "--all", "-o", "json"])
+        .assert()
+        .success();
+    let out = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    let payload: Value = serde_json::from_str(&out).expect("json payload");
+
+    for token in ["module", "profile"] {
+        let p = repo
+            .path()
+            .join(format!(".claude/skills/cfgd-{token}/SKILL.md"));
+        let content = std::fs::read_to_string(&p).expect("read updated skill");
+        assert!(
+            content.contains(&format!("cfgd-version: {running}")),
+            "{token} must be re-rendered to running version: {content}"
+        );
+        assert!(
+            !content.contains("cfgd-version: 0.0.1"),
+            "{token} stale stamp must be gone: {content}"
+        );
+    }
+
+    // Both kinds report `updated` in the per-target `results[]` (the wire shape
+    // shared with install/remove).
+    let updated_count = payload["results"]
+        .as_array()
+        .expect("results is an array")
+        .iter()
+        .filter(|r| r["status"] == "updated")
+        .count();
+    assert!(
+        updated_count >= 2,
+        "both seeded skills must report updated: {payload}"
+    );
+}

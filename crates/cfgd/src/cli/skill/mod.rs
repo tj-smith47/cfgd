@@ -10,7 +10,9 @@ use std::path::PathBuf;
 
 use anyhow::anyhow;
 use cfgd_core::output::{Doc, Printer, Role, collapse_to_subject_line};
-use cfgd_core::providers::skill::{Detection, SkillScope, all_skill_providers};
+use cfgd_core::providers::skill::{
+    Detection, InstalledSkill, SkillProvider, SkillScope, all_skill_providers,
+};
 use serde::Serialize;
 
 /// The author-facing resource kinds a skill can teach, as a clap positional
@@ -50,6 +52,10 @@ impl SkillKind {
 enum SkillResultStatus {
     #[serde(rename = "installed")]
     Installed,
+    #[serde(rename = "removed")]
+    Removed,
+    #[serde(rename = "updated")]
+    Updated,
     #[serde(rename = "skipped")]
     Skipped,
     #[serde(rename = "failed")]
@@ -61,6 +67,8 @@ impl SkillResultStatus {
     fn role(self) -> Role {
         match self {
             Self::Installed => Role::Ok,
+            Self::Removed => Role::Ok,
+            Self::Updated => Role::Ok,
             Self::Failed => Role::Fail,
             Self::Skipped => Role::Skipped,
         }
@@ -86,6 +94,26 @@ impl SkillInstallResult {
             provider,
             path: Some(path.display().to_string()),
             status: SkillResultStatus::Installed,
+            reason: None,
+        }
+    }
+
+    /// A provider whose installed skill was excised from `path`.
+    fn removed(provider: String, path: PathBuf) -> Self {
+        Self {
+            provider,
+            path: Some(path.display().to_string()),
+            status: SkillResultStatus::Removed,
+            reason: None,
+        }
+    }
+
+    /// A provider whose installed skill was re-rendered in place at `path`.
+    fn updated(provider: String, path: PathBuf) -> Self {
+        Self {
+            provider,
+            path: Some(path.display().to_string()),
+            status: SkillResultStatus::Updated,
             reason: None,
         }
     }
@@ -136,6 +164,82 @@ fn install_failure_reason(err: &cfgd_core::errors::CfgdError) -> String {
     collapse_to_subject_line(err)
 }
 
+/// Resolve the install/remove/update scope from the `--global` flag.
+fn resolve_scope(global: bool) -> SkillScope {
+    if global {
+        SkillScope::User
+    } else {
+        SkillScope::Project
+    }
+}
+
+/// Validate an explicit `--provider` list against the registry. Every named id
+/// must exist, else it is a user error (never silently ignored). An empty list
+/// (auto mode) always passes.
+fn validate_provider_ids(
+    all: &[Box<dyn SkillProvider>],
+    providers: &[String],
+) -> anyhow::Result<()> {
+    for name in providers {
+        if !all.iter().any(|p| p.id() == name) {
+            let valid: Vec<&str> = all.iter().map(|p| p.id()).collect();
+            return Err(anyhow!(
+                "unknown provider '{name}'; valid providers: {}",
+                valid.join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Whether a provider is a target given an explicit `--provider` selection: in
+/// auto mode (`providers` empty) every provider is a candidate; with explicit
+/// names only the named ones are.
+fn is_target(id: &str, providers: &[String]) -> bool {
+    providers.is_empty() || providers.iter().any(|n| n == id)
+}
+
+/// The structured payload shape shared by remove/update (and reused for any
+/// per-provider operation that isn't an install). `kind` is `None` for the
+/// `update --all` enumeration, which spans every installed kind.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SkillOpPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    scope: SkillScope,
+    cfgd_version: String,
+    results: Vec<SkillInstallResult>,
+}
+
+/// The human word for a scope, for headings.
+fn scope_word(scope: SkillScope) -> &'static str {
+    match scope {
+        SkillScope::Project => "project",
+        SkillScope::User => "user",
+    }
+}
+
+/// Build the contiguous status-row section shared by every skill command's Doc.
+/// A section renders its rows kubectl-tight (no blank-line separators); bare
+/// top-level status rows would each gain a blank line.
+fn results_section(heading: String, results: &[SkillInstallResult]) -> Doc {
+    Doc::new().section(heading, |mut sec| {
+        for r in results {
+            let role = r.status.role();
+            let subject = match &r.path {
+                Some(path) => format!("{}: {path}", r.provider),
+                None => r.provider.clone(),
+            };
+            sec = sec.status_with(role, subject, |f| match &r.reason {
+                Some(reason) => f.detail(reason.clone()),
+                None => f,
+            });
+        }
+        sec
+    })
+}
+
 /// Install an agent skill for one author kind across detected providers.
 pub fn cmd_skill_install(
     printer: &Printer,
@@ -145,28 +249,11 @@ pub fn cmd_skill_install(
     force: bool,
     yes: bool,
 ) -> anyhow::Result<()> {
-    let scope = if global {
-        SkillScope::User
-    } else {
-        SkillScope::Project
-    };
+    let scope = resolve_scope(global);
     let model = cfgd_core::generate::skill_model_for(kind.to_core());
 
     let all = all_skill_providers();
-
-    // An explicit `--provider` list is a hard contract: every named id must
-    // exist, else it is a user error (never silently ignored).
-    if !providers.is_empty() {
-        for name in providers {
-            if !all.iter().any(|p| p.id() == name) {
-                let valid: Vec<&str> = all.iter().map(|p| p.id()).collect();
-                return Err(anyhow!(
-                    "unknown provider '{name}'; valid providers: {}",
-                    valid.join(", ")
-                ));
-            }
-        }
-    }
+    validate_provider_ids(&all, providers)?;
 
     let explicit = !providers.is_empty();
     let mut results: Vec<SkillInstallResult> = Vec::new();
@@ -174,7 +261,7 @@ pub fn cmd_skill_install(
 
     for provider in &all {
         let id = provider.id().to_string();
-        if explicit && !providers.iter().any(|n| n == &id) {
+        if explicit && !is_target(&id, providers) {
             continue;
         }
 
@@ -220,30 +307,12 @@ pub fn cmd_skill_install(
         }
     }
 
-    let scope_word = match scope {
-        SkillScope::Project => "project",
-        SkillScope::User => "user",
-    };
     let heading = format!(
-        "Installing skill {} ({scope_word} scope)",
-        kind.to_core().as_str()
+        "Installing skill {} ({} scope)",
+        kind.to_core().as_str(),
+        scope_word(scope)
     );
-    // A section renders its rows contiguously (kubectl/docker spacing); bare
-    // top-level status rows would each get a blank-line separator.
-    let doc = Doc::new().section(heading, |mut sec| {
-        for r in &results {
-            let role = r.status.role();
-            let subject = match &r.path {
-                Some(path) => format!("{}: {path}", r.provider),
-                None => r.provider.clone(),
-            };
-            sec = sec.status_with(role, subject, |f| match &r.reason {
-                Some(reason) => f.detail(reason.clone()),
-                None => f,
-            });
-        }
-        sec
-    });
+    let doc = results_section(heading, &results);
 
     let payload = SkillInstallPayload {
         kind: kind.to_core().as_str().to_string(),
@@ -277,29 +346,255 @@ fn skill_already_installed(
         .unwrap_or(false)
 }
 
-/// List installed agent skills.
-pub fn cmd_skill_list(_printer: &Printer, _global: bool) -> anyhow::Result<()> {
+/// The structured payload emitted by `cmd_skill_list`.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SkillListPayload {
+    scope: SkillScope,
+    cfgd_version: String,
+    installed: Vec<InstalledSkill>,
+}
+
+/// List installed agent skills across every provider at the resolved scope.
+///
+/// A provider with nothing installed contributes no rows (empty is not an
+/// error); a provider whose `list` errors surfaces as a failed-listing
+/// propagation rather than a silent drop.
+pub fn cmd_skill_list(printer: &Printer, global: bool) -> anyhow::Result<()> {
+    let scope = resolve_scope(global);
+    let mut installed: Vec<InstalledSkill> = Vec::new();
+    for provider in &all_skill_providers() {
+        let listed = provider.list(scope).map_err(|e| {
+            anyhow!(
+                "listing {} skills failed: {}",
+                provider.id(),
+                collapse_to_subject_line(&e)
+            )
+        })?;
+        installed.extend(listed);
+    }
+
+    let heading = format!("Installed skills ({} scope)", scope_word(scope));
+    let doc = if installed.is_empty() {
+        Doc::new().section(heading, |sec| {
+            sec.status_with(Role::Info, "no skills installed".to_string(), |f| f)
+        })
+    } else {
+        Doc::new().section(heading, |mut sec| {
+            for s in &installed {
+                let version = s.cfgd_version.as_deref().unwrap_or("unknown");
+                let subject = format!(
+                    "{}/{}: {} ({})",
+                    s.provider,
+                    s.kind.as_str(),
+                    s.path.display(),
+                    version
+                );
+                let role = if s.stale { Role::Warn } else { Role::Ok };
+                sec = sec.status_with(role, subject, |f| {
+                    if s.stale {
+                        f.detail("stale — run `cfgd skill update`".to_string())
+                    } else {
+                        f
+                    }
+                });
+            }
+            sec
+        })
+    };
+
+    let payload = SkillListPayload {
+        scope,
+        cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+        installed,
+    };
+    printer.emit(doc.with_data(&payload));
     Ok(())
 }
 
-/// Remove an installed agent skill for one author kind.
+/// Remove an installed agent skill for one author kind across target providers.
 pub fn cmd_skill_remove(
-    _printer: &Printer,
-    _kind: SkillKind,
-    _global: bool,
-    _providers: &[String],
-    _yes: bool,
+    printer: &Printer,
+    kind: SkillKind,
+    global: bool,
+    providers: &[String],
+    yes: bool,
 ) -> anyhow::Result<()> {
+    let scope = resolve_scope(global);
+    let core_kind = kind.to_core();
+
+    let all = all_skill_providers();
+    validate_provider_ids(&all, providers)?;
+
+    // Only the targeted providers that actually have the skill installed; an
+    // empty set means nothing to remove (no prompt, clean exit 0).
+    let targets: Vec<&Box<dyn SkillProvider>> = all
+        .iter()
+        .filter(|p| is_target(p.id(), providers))
+        .filter(|p| skill_already_installed(p.as_ref(), kind, scope))
+        .collect();
+
+    // Confirm before excising, unless opted out. Prompting only when something is
+    // actually installed avoids a phantom confirm on a no-op; the prompt errs in
+    // structured/non-TTY mode (matching `source rm`) rather than silently
+    // proceeding, so a scripted removal without `--yes` fails loudly.
+    if !yes
+        && !targets.is_empty()
+        && !printer.prompt_confirm(&format!(
+            "Remove the {} skill from {} provider(s)?",
+            core_kind.as_str(),
+            targets.len()
+        ))?
+    {
+        let doc = results_section(
+            format!(
+                "Removing skill {} ({} scope)",
+                core_kind.as_str(),
+                scope_word(scope)
+            ),
+            &[],
+        );
+        let payload = SkillOpPayload {
+            kind: Some(core_kind.as_str().to_string()),
+            scope,
+            cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+            results: Vec::new(),
+        };
+        printer.emit(doc.with_data(&payload));
+        return Ok(());
+    }
+
+    let mut results: Vec<SkillInstallResult> = Vec::new();
+    let mut any_failure = false;
+    for provider in all.iter().filter(|p| is_target(p.id(), providers)) {
+        let id = provider.id().to_string();
+        // Gate `remove` on a prior `list` check: a managed-section provider's
+        // `remove` acquires the advisory lock (creating an `apply.lock` in the
+        // file's dir) before it can decide nothing is installed — so probe with
+        // the lock-free `list` first and skip a never-installed provider without
+        // ever taking the lock or leaving a lock file behind.
+        if !skill_already_installed(provider.as_ref(), kind, scope) {
+            results.push(SkillInstallResult::skipped(id, "not installed"));
+            continue;
+        }
+        match provider.remove(core_kind, scope) {
+            Ok(Some(path)) => results.push(SkillInstallResult::removed(id, path)),
+            Ok(None) => results.push(SkillInstallResult::skipped(id, "not installed")),
+            Err(e) => {
+                any_failure = true;
+                results.push(SkillInstallResult::failed(id, install_failure_reason(&e)));
+            }
+        }
+    }
+
+    let heading = format!(
+        "Removing skill {} ({} scope)",
+        core_kind.as_str(),
+        scope_word(scope)
+    );
+    let doc = results_section(heading, &results);
+    let payload = SkillOpPayload {
+        kind: Some(core_kind.as_str().to_string()),
+        scope,
+        cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+        results,
+    };
+    printer.emit(doc.with_data(&payload));
+
+    if any_failure {
+        cfgd_core::exit::ExitCode::Error.exit();
+    }
     Ok(())
+}
+
+/// Re-render and re-install one already-installed (provider, kind) pair, mapping
+/// the outcome to an `Updated`/`Failed` result row. Update never installs into a
+/// provider that didn't already have the kind — callers gate on `list` first.
+fn update_one(
+    provider: &dyn SkillProvider,
+    core_kind: cfgd_core::generate::SkillKind,
+    scope: SkillScope,
+) -> SkillInstallResult {
+    let id = provider.id().to_string();
+    let model = cfgd_core::generate::skill_model_for(core_kind);
+    match provider.install(&model, scope) {
+        Ok(path) => SkillInstallResult::updated(id, path),
+        Err(e) => SkillInstallResult::failed(id, install_failure_reason(&e)),
+    }
 }
 
 /// Update one or all installed agent skills to the current rendering.
+///
+/// `--all` re-renders every currently-installed (provider, kind) pair at scope;
+/// a single `<kind>` re-renders that kind only where it is already installed.
+/// Update never freshly installs a kind into a provider that lacked it.
 pub fn cmd_skill_update(
-    _printer: &Printer,
-    _kind: Option<SkillKind>,
-    _all: bool,
-    _global: bool,
-    _providers: &[String],
+    printer: &Printer,
+    kind: Option<SkillKind>,
+    all: bool,
+    global: bool,
+    providers: &[String],
 ) -> anyhow::Result<()> {
+    let scope = resolve_scope(global);
+
+    let registry = all_skill_providers();
+    validate_provider_ids(&registry, providers)?;
+
+    let mut results: Vec<SkillInstallResult> = Vec::new();
+    let mut any_failure = false;
+
+    if all {
+        // Enumerate currently-installed skills and re-render each in place.
+        for provider in registry.iter().filter(|p| is_target(p.id(), providers)) {
+            let listed = provider.list(scope).map_err(|e| {
+                anyhow!(
+                    "listing {} skills failed: {}",
+                    provider.id(),
+                    collapse_to_subject_line(&e)
+                )
+            })?;
+            for s in listed {
+                let r = update_one(provider.as_ref(), s.kind, scope);
+                if matches!(r.status, SkillResultStatus::Failed) {
+                    any_failure = true;
+                }
+                results.push(r);
+            }
+        }
+    } else {
+        // Exactly one kind (clap guarantees `kind` is set when `--all` is not).
+        let kind = kind.ok_or_else(|| anyhow!("skill update requires a <kind> or --all"))?;
+        let core_kind = kind.to_core();
+        for provider in registry.iter().filter(|p| is_target(p.id(), providers)) {
+            let id = provider.id().to_string();
+            if !skill_already_installed(provider.as_ref(), kind, scope) {
+                results.push(SkillInstallResult::skipped(id, "not installed"));
+                continue;
+            }
+            let r = update_one(provider.as_ref(), core_kind, scope);
+            if matches!(r.status, SkillResultStatus::Failed) {
+                any_failure = true;
+            }
+            results.push(r);
+        }
+    }
+
+    let target = match kind {
+        Some(k) => k.to_core().as_str().to_string(),
+        None => "all".to_string(),
+    };
+    let heading = format!("Updating skill {target} ({} scope)", scope_word(scope));
+    let doc = results_section(heading, &results);
+    let payload = SkillOpPayload {
+        kind: kind.map(|k| k.to_core().as_str().to_string()),
+        scope,
+        cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+        results,
+    };
+    printer.emit(doc.with_data(&payload));
+
+    if any_failure {
+        cfgd_core::exit::ExitCode::Error.exit();
+    }
     Ok(())
 }
