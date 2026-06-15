@@ -113,7 +113,8 @@ metadata:
   namespace: team-platform
 spec:
   deviceId: "node-42"
-  machineConfigRef: alice-k8s-worker
+  machineConfigRef:
+    name: alice-k8s-worker
   severity: High
   driftDetails:
     - field: spec.systemSettings.net.ipv4.ip_forward

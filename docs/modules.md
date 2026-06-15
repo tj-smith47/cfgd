@@ -412,11 +412,12 @@ kind: Config
 metadata:
   name: my-workstation
 spec:
-  module-sources:
-    - name: community
-      url: https://github.com/cfgd-community/modules.git
-    - name: myorg
-      url: https://github.com/myorg/modules.git
+  modules:
+    registries:
+      - name: community
+        url: https://github.com/cfgd-community/modules.git
+      - name: myorg
+        url: https://github.com/myorg/modules.git
 ```
 
 The source name defaults to the GitHub org or user name extracted from the URL. Override with the `name` field or `--name` flag on the CLI.

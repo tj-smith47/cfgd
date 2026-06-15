@@ -41,9 +41,9 @@ spec:
   profile: work
 
   origin:
-    type: Git
-    url: git@github.com:me/machine-config.git
-    branch: master
+    - type: Git
+      url: git@github.com:me/machine-config.git
+      branch: master
 
   daemon:
     enabled: true

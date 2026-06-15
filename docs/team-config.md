@@ -212,7 +212,9 @@ spec:
       required: true
     - name: corp-certs
       required: true
-  packages: [git-secrets, pre-commit]
+  packages:
+    - name: git-secrets
+    - name: pre-commit
 ```
 
 **1 ConfigPolicy**:
@@ -222,10 +224,16 @@ kind: ConfigPolicy
 metadata:
   name: backend-team-policy
 spec:
-  requiredModules: [corp-vpn, corp-certs]
-  packages: [git-secrets, pre-commit]
+  requiredModules:
+    - name: corp-vpn
+      required: true
+    - name: corp-certs
+  packages:
+    - name: git-secrets
+    - name: pre-commit
   targetSelector:
-    cfgd.io/team: backend
+    matchLabels:
+      cfgd.io/team: backend
 ```
 
 ## Resource Lifecycle
