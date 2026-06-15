@@ -126,8 +126,8 @@ pub fn cmd_upgrade(
         }
     }
 
-    let report = upgrade::download_and_install(release, asset, require_cosign, Some(printer))
-        .map_err(|e| {
+    let applied =
+        upgrade::install_release(release, asset, require_cosign, Some(printer)).map_err(|e| {
             // Strict-cosign failures get a distinct error kind so structured
             // consumers can route them differently from generic install
             // failures (network, disk, archive corruption).
@@ -154,12 +154,7 @@ pub fn cmd_upgrade(
                 }),
             )
         })?;
-
-    // Invalidate version cache since we just upgraded
-    upgrade::invalidate_cache();
-
-    // Restart daemon if running
-    let daemon_restarted = upgrade::restart_daemon_if_running();
+    let report = &applied.report;
 
     printer.emit(
         Doc::new()
@@ -171,7 +166,7 @@ pub fn cmd_upgrade(
                 "downloaded": true,
                 "installed": true,
                 "verified": true,
-                "daemonRestarted": daemon_restarted,
+                "daemonRestarted": applied.daemon_restarted,
                 "installedPath": report.installed_path.display().to_string(),
                 "verificationMode": report.verification_mode.as_wire_str(),
             })),
@@ -274,10 +269,9 @@ fn apply_startup_update(printer: &Printer, check: &cfgd_core::upgrade::UpdateChe
             return false;
         }
     };
-    match upgrade::download_and_install(release, asset, false, Some(printer)) {
-        Ok(report) => {
-            upgrade::invalidate_cache();
-            let daemon_restarted = upgrade::restart_daemon_if_running();
+    match upgrade::install_release(release, asset, false, Some(printer)) {
+        Ok(applied) => {
+            let report = &applied.report;
             printer.emit(
                 Doc::new()
                     .status(Role::Ok, format!("cfgd upgraded to {}", check.latest))
@@ -286,7 +280,7 @@ fn apply_startup_update(printer: &Printer, check: &cfgd_core::upgrade::UpdateChe
                         "currentVersion": check.current.to_string(),
                         "targetVersion": check.latest.to_string(),
                         "installed": true,
-                        "daemonRestarted": daemon_restarted,
+                        "daemonRestarted": applied.daemon_restarted,
                         "verificationMode": report.verification_mode.as_wire_str(),
                     })),
             );

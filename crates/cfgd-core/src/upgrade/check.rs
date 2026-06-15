@@ -415,7 +415,7 @@ mod tests {
         );
     }
 
-    // ----- orchestration (task-named tests) -----
+    // ----- orchestration -----
 
     #[test]
     fn manual_policy_skips_check_entirely() {

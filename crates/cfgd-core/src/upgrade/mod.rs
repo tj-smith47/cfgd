@@ -721,6 +721,42 @@ pub(crate) fn download_and_install_to(
     })
 }
 
+/// Outcome of [`install_release`]: the underlying [`InstallReport`] plus
+/// whether a running daemon was terminated so the service manager restarts it
+/// on the new binary.
+#[derive(Debug, Clone)]
+pub struct AppliedUpdate {
+    pub report: InstallReport,
+    pub daemon_restarted: bool,
+}
+
+/// Apply an available update: download + verify + install the resolved `asset`,
+/// then run the post-install invariant tail — invalidate the version cache so
+/// the next check re-queries, and restart a running daemon onto the new binary.
+///
+/// This is the single owner of the install-then-cache-then-restart ordering;
+/// every apply site (CLI `upgrade`, CLI startup check, daemon auto-update)
+/// calls it so the invariant cannot drift. Callers resolve their own `asset`
+/// (so each keeps its distinct no-asset error/presentation) and supply only
+/// their own success/failure surface around the returned [`AppliedUpdate`].
+pub fn install_release(
+    release: &ReleaseInfo,
+    asset: &ReleaseAsset,
+    require_cosign: bool,
+    printer: Option<&Printer>,
+) -> Result<AppliedUpdate> {
+    let report = download_and_install(release, asset, require_cosign, printer)?;
+    // Ordering invariant: invalidate the cache before restarting, so a daemon
+    // that comes back up does not read a stale "update available" entry for the
+    // version it just installed.
+    invalidate_cache();
+    let daemon_restarted = restart_daemon_if_running();
+    Ok(AppliedUpdate {
+        report,
+        daemon_restarted,
+    })
+}
+
 /// Atomically replace `target` with `source`.
 /// Copies source to a NamedTempFile in the target directory, then persists it
 /// over the target (atomic rename on the same filesystem).

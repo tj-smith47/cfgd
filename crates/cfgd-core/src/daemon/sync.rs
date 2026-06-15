@@ -215,19 +215,28 @@ async fn apply_daemon_update(
     let install = tokio::task::spawn_blocking(move || {
         let _guard = test_home.as_deref().map(crate::with_test_home_guard);
         let asset = crate::upgrade::find_asset_for_platform(&release)?;
-        crate::upgrade::download_and_install(&release, asset, false, None)
+        // Shared apply path: install + invalidate cache + restart a running
+        // daemon onto the new binary (one owner of that ordering invariant).
+        crate::upgrade::install_release(&release, asset, false, None)
     })
     .await;
 
     match install {
-        Ok(Ok(_report)) => {
-            tracing::info!(version = %version_str, "auto-update installed");
-            crate::upgrade::invalidate_cache();
+        Ok(Ok(applied)) => {
+            tracing::info!(
+                version = %version_str,
+                daemon_restarted = applied.daemon_restarted,
+                "auto-update installed",
+            );
+            let restart_note = if applied.daemon_restarted {
+                "; restarting daemon."
+            } else {
+                "."
+            };
             notifier.notify(
                 "cfgd: updated",
-                &format!("Auto-updated to {version_str}; restarting daemon."),
+                &format!("Auto-updated to {version_str}{restart_note}"),
             );
-            crate::upgrade::restart_daemon_if_running();
         }
         Ok(Err(e)) => {
             tracing::warn!(error = %e, "auto-update install failed; surfacing instead");
