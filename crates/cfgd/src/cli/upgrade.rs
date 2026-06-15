@@ -3,9 +3,11 @@ use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_upgrade(
     printer: &Printer,
+    config_path: &std::path::Path,
     check_only: bool,
     require_cosign: bool,
 ) -> anyhow::Result<()> {
+    use cfgd_core::config;
     use cfgd_core::upgrade;
 
     if check_only {
@@ -126,34 +128,42 @@ pub fn cmd_upgrade(
         }
     }
 
+    // The effective update config gates the user-scope skill ride-along that
+    // `install_release` runs after a successful install (no second prompt).
+    let update_cfg = config::load_config(config_path)
+        .ok()
+        .and_then(|c| c.spec.update)
+        .unwrap_or_default();
+
     let applied =
-        upgrade::install_release(release, asset, require_cosign, Some(printer)).map_err(|e| {
-            // Strict-cosign failures get a distinct error kind so structured
-            // consumers can route them differently from generic install
-            // failures (network, disk, archive corruption).
-            let kind = if matches!(
-                &e,
-                cfgd_core::errors::CfgdError::Upgrade(
-                    cfgd_core::errors::UpgradeError::CosignRequired { .. }
+        upgrade::install_release(release, asset, require_cosign, &update_cfg, Some(printer))
+            .map_err(|e| {
+                // Strict-cosign failures get a distinct error kind so structured
+                // consumers can route them differently from generic install
+                // failures (network, disk, archive corruption).
+                let kind = if matches!(
+                    &e,
+                    cfgd_core::errors::CfgdError::Upgrade(
+                        cfgd_core::errors::UpgradeError::CosignRequired { .. }
+                    )
+                ) {
+                    "cosign_required"
+                } else {
+                    "install_failed"
+                };
+                let msg = format!("download/install failed: {e}");
+                crate::cli::cli_error_ctx(
+                    e.into(),
+                    check.latest.to_string(),
+                    kind,
+                    msg,
+                    serde_json::json!({
+                        "currentVersion": check.current.to_string(),
+                        "latestVersion": check.latest.to_string(),
+                        "requireCosign": require_cosign,
+                    }),
                 )
-            ) {
-                "cosign_required"
-            } else {
-                "install_failed"
-            };
-            let msg = format!("download/install failed: {e}");
-            crate::cli::cli_error_ctx(
-                e.into(),
-                check.latest.to_string(),
-                kind,
-                msg,
-                serde_json::json!({
-                    "currentVersion": check.current.to_string(),
-                    "latestVersion": check.latest.to_string(),
-                    "requireCosign": require_cosign,
-                }),
-            )
-        })?;
+            })?;
     let report = &applied.report;
 
     printer.emit(
@@ -234,7 +244,7 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
                     .hint("Run 'cfgd upgrade' to install"),
             );
         }),
-        apply: Box::new(|c| apply_startup_update(printer, c)),
+        apply: Box::new(|c| apply_startup_update(printer, &update_cfg, c)),
         record_checked: Box::new(upgrade::record_check_at),
     };
 
@@ -256,7 +266,11 @@ fn unwrap_upgrade_err(e: cfgd_core::errors::CfgdError) -> cfgd_core::errors::Upg
 /// Drive the apply path for an available update during the startup check,
 /// emitting the same success surface as `cfgd upgrade`. Returns whether the
 /// install succeeded.
-fn apply_startup_update(printer: &Printer, check: &cfgd_core::upgrade::UpdateCheck) -> bool {
+fn apply_startup_update(
+    printer: &Printer,
+    update_cfg: &cfgd_core::config::UpdateConfig,
+    check: &cfgd_core::upgrade::UpdateCheck,
+) -> bool {
     use cfgd_core::upgrade;
 
     let Some(release) = check.release.as_ref() else {
@@ -269,7 +283,7 @@ fn apply_startup_update(printer: &Printer, check: &cfgd_core::upgrade::UpdateChe
             return false;
         }
     };
-    match upgrade::install_release(release, asset, false, Some(printer)) {
+    match upgrade::install_release(release, asset, false, update_cfg, Some(printer)) {
         Ok(applied) => {
             let report = &applied.report;
             printer.emit(
@@ -415,7 +429,12 @@ mod tests {
         let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, _cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(&printer, true, false);
+        let result = cmd_upgrade(
+            &printer,
+            std::path::Path::new("/nonexistent/cfgd.yaml"),
+            true,
+            false,
+        );
 
         let err = result.expect_err("API 500 must return Err");
         let meta = upgrade_error_meta(&err);
@@ -443,7 +462,12 @@ mod tests {
         let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, _cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(&printer, true, false);
+        let result = cmd_upgrade(
+            &printer,
+            std::path::Path::new("/nonexistent/cfgd.yaml"),
+            true,
+            false,
+        );
 
         let err = result.expect_err("API 404 must return Err");
         assert_eq!(
@@ -467,7 +491,12 @@ mod tests {
         let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(&printer, true, false);
+        let result = cmd_upgrade(
+            &printer,
+            std::path::Path::new("/nonexistent/cfgd.yaml"),
+            true,
+            false,
+        );
 
         assert!(
             result.is_ok(),
@@ -544,7 +573,12 @@ mod tests {
         let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, _cap) = Printer::for_test_doc();
-        let _ = cmd_upgrade(&printer, true, false);
+        let _ = cmd_upgrade(
+            &printer,
+            std::path::Path::new("/nonexistent/cfgd.yaml"),
+            true,
+            false,
+        );
     }
 
     /// GitHub returns 500 during the full upgrade flow → returns Err and emits
@@ -560,7 +594,12 @@ mod tests {
         let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, _cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(&printer, false, false);
+        let result = cmd_upgrade(
+            &printer,
+            std::path::Path::new("/nonexistent/cfgd.yaml"),
+            false,
+            false,
+        );
 
         let err = result.expect_err("API 500 during full upgrade must return Err");
         assert_eq!(
@@ -584,7 +623,12 @@ mod tests {
         let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(&printer, false, false);
+        let result = cmd_upgrade(
+            &printer,
+            std::path::Path::new("/nonexistent/cfgd.yaml"),
+            false,
+            false,
+        );
 
         assert!(
             result.is_ok(),
@@ -637,7 +681,12 @@ mod tests {
         let _guard = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
         let (printer, _cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(&printer, false, false);
+        let result = cmd_upgrade(
+            &printer,
+            std::path::Path::new("/nonexistent/cfgd.yaml"),
+            false,
+            false,
+        );
 
         let err = result.expect_err("missing platform asset must return Err");
         assert_eq!(
@@ -695,7 +744,12 @@ mod tests {
         let _home_guard = cfgd_core::with_test_home_guard(home.path());
 
         let (printer, _cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(&printer, false, false);
+        let result = cmd_upgrade(
+            &printer,
+            std::path::Path::new("/nonexistent/cfgd.yaml"),
+            false,
+            false,
+        );
 
         let err = result.expect_err("asset download 500 must return Err");
         let meta = upgrade_error_meta(&err);
@@ -787,7 +841,12 @@ mod tests {
         let _home_guard = cfgd_core::with_test_home_guard(home.path());
 
         let (printer, _cap) = Printer::for_test_doc();
-        let result = cmd_upgrade(&printer, false, true);
+        let result = cmd_upgrade(
+            &printer,
+            std::path::Path::new("/nonexistent/cfgd.yaml"),
+            false,
+            true,
+        );
 
         let err = result.expect_err("strict cosign + missing bundle must return Err");
         let meta = upgrade_error_meta(&err);

@@ -158,7 +158,7 @@ pub(crate) async fn handle_version_check(
 
     match crate::upgrade::resolve_action(policy, false, false) {
         UpdateAction::Apply if policy == UpdatePolicy::Auto => {
-            apply_daemon_update(&check, &version_str, state, notifier).await;
+            apply_daemon_update(update_cfg, &check, &version_str, state, notifier).await;
         }
         // Interactive Prompt cannot apply in the daemon; resolve_action already
         // degraded a non-interactive Prompt to Surface, so this arm only covers
@@ -200,6 +200,7 @@ async fn notify_update_available(
 /// restart the daemon so the new binary takes over. Records the version in
 /// `state.update_available` so a failed install still surfaces once.
 async fn apply_daemon_update(
+    update_cfg: &config::UpdateConfig,
     check: &crate::upgrade::UpdateCheck,
     version_str: &str,
     state: &Arc<Mutex<DaemonState>>,
@@ -212,12 +213,16 @@ async fn apply_daemon_update(
     };
 
     let test_home = crate::test_home_override();
+    // Clone to cross the spawn_blocking boundary; the shared apply path runs the
+    // user-scope skill ride-along gated by this config's effective skills policy.
+    let cfg = update_cfg.clone();
     let install = tokio::task::spawn_blocking(move || {
         let _guard = test_home.as_deref().map(crate::with_test_home_guard);
         let asset = crate::upgrade::find_asset_for_platform(&release)?;
-        // Shared apply path: install + invalidate cache + restart a running
-        // daemon onto the new binary (one owner of that ordering invariant).
-        crate::upgrade::install_release(&release, asset, false, None)
+        // Shared apply path: install + invalidate cache + ride-along skill
+        // refresh + restart a running daemon onto the new binary (one owner of
+        // that ordering invariant).
+        crate::upgrade::install_release(&release, asset, false, &cfg, None)
     })
     .await;
 

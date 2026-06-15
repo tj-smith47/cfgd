@@ -2140,7 +2140,7 @@ pub fn execute(
         Command::Upgrade {
             check,
             require_cosign,
-        } => upgrade::cmd_upgrade(printer, *check, *require_cosign),
+        } => upgrade::cmd_upgrade(printer, &cli.config, *check, *require_cosign),
         Command::Decide {
             action,
             resource,

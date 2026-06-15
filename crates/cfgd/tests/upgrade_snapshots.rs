@@ -80,7 +80,10 @@ fn upgrade_check_up_to_date_human() {
     let (printer, cap) = Printer::for_test_doc();
 
     upgrade::cmd_upgrade(
-        &printer, /*check_only=*/ true, /*require_cosign=*/ false,
+        &printer,
+        std::path::Path::new("/nonexistent/cfgd.yaml"),
+        /*check_only=*/ true,
+        /*require_cosign=*/ false,
     )
     .unwrap();
     drop(printer);
@@ -104,7 +107,10 @@ fn upgrade_check_up_to_date_json() {
     let (printer, cap) = Printer::for_test_doc_with_format(OutputFormat::Json);
 
     upgrade::cmd_upgrade(
-        &printer, /*check_only=*/ true, /*require_cosign=*/ false,
+        &printer,
+        std::path::Path::new("/nonexistent/cfgd.yaml"),
+        /*check_only=*/ true,
+        /*require_cosign=*/ false,
     )
     .unwrap();
     drop(printer);

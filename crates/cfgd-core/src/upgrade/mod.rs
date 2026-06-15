@@ -12,9 +12,13 @@ use crate::errors::{Result, UpgradeError};
 use crate::output::{Printer, Role};
 
 mod check;
+mod dedup;
 pub use check::{
     UpdateAction, UpdateCheckEffects, UpdateCheckOutcome, resolve_action, resolved_interval,
     run_update_check, should_check,
+};
+pub use dedup::{
+    RideAlongOutcome, UpdateSurfaces, compute_update_surfaces, refresh_user_scope_skills,
 };
 
 const GITHUB_API_BASE: &str = "https://api.github.com";
@@ -728,6 +732,8 @@ pub(crate) fn download_and_install_to(
 pub struct AppliedUpdate {
     pub report: InstallReport,
     pub daemon_restarted: bool,
+    /// Outcome of the user-scope skill ride-along run as part of this apply.
+    pub skill_refresh: RideAlongOutcome,
 }
 
 /// Apply an available update: download + verify + install the resolved `asset`,
@@ -739,10 +745,17 @@ pub struct AppliedUpdate {
 /// calls it so the invariant cannot drift. Callers resolve their own `asset`
 /// (so each keeps its distinct no-asset error/presentation) and supply only
 /// their own success/failure surface around the returned [`AppliedUpdate`].
+///
+/// `cfg` carries the effective [`UpdateConfig`] so the **ride-along** skill
+/// refresh ([spec §9] rule 2) runs here, in the single apply owner: every apply
+/// site inherits it, making a separate skill prompt after a binary upgrade
+/// unrepresentable. The refresh touches **user-scope skills only** and only
+/// those already installed — never a tracked project file, never a new kind.
 pub fn install_release(
     release: &ReleaseInfo,
     asset: &ReleaseAsset,
     require_cosign: bool,
+    cfg: &crate::config::UpdateConfig,
     printer: Option<&Printer>,
 ) -> Result<AppliedUpdate> {
     let report = download_and_install(release, asset, require_cosign, printer)?;
@@ -750,10 +763,16 @@ pub fn install_release(
     // that comes back up does not read a stale "update available" entry for the
     // version it just installed.
     invalidate_cache();
+    // Ride-along: refresh already-present user-scope skills as part of this same
+    // applied upgrade (no second prompt). Gated by the effective skills policy;
+    // project scope is never touched. Best-effort — a refresh failure must not
+    // unwind a binary upgrade that already succeeded.
+    let skill_refresh = refresh_user_scope_skills(cfg);
     let daemon_restarted = restart_daemon_if_running();
     Ok(AppliedUpdate {
         report,
         daemon_restarted,
+        skill_refresh,
     })
 }
 
