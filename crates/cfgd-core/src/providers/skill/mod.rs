@@ -13,12 +13,14 @@ use crate::errors::{Result, SkillError};
 use crate::generate::{SkillKind, SkillModel};
 use crate::{ApplyLockGuard, acquire_apply_lock, atomic_write_str};
 
+mod body;
 mod claude_code;
 mod codex;
 mod copilot;
 mod cursor;
 mod gemini;
 
+pub use body::render_skill_body;
 pub use claude_code::ClaudeCodeProvider;
 pub use codex::CodexProvider;
 pub use copilot::CopilotProvider;
