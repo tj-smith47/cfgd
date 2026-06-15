@@ -246,10 +246,10 @@ fn exemplar_for(kind: SkillKind) -> Exemplar {
         SkillKind::Module => Exemplar {
             before: include_str!("../../tests/fixtures/exemplar_nvim_before.yaml").to_string(),
             after: include_str!("../../tests/fixtures/exemplar_nvim_after.yaml").to_string(),
-            note: "The before lists a single package and a couple of dotfiles — every \
-field technically valid, but no investigation behind it. The after pins LSP \
-servers, treesitter parsers, plugin sources and managed config with a documented \
-rationale for each, demonstrating the exhaustive-evaluation quality bar."
+            note: "The before is a box-checking module: one prefer-list, no version \
+investigation, no documented rationale. The after is the thorough version — every \
+field evaluated, external best-practice research, and a documented reason for each \
+choice — demonstrating the quality bar a skill must reach for."
                 .to_string(),
         },
         _ => Exemplar::default(),
