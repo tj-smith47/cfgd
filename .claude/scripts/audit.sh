@@ -577,15 +577,55 @@ log_section "CLI long_about/Examples coverage (every top-level Command variant)"
 # by brace depth. At depth 1, accumulate the pending `#[command(...)]`
 # attribute (multi-line — tracked by paren balance) and, on reaching a variant
 # declaration (a depth-1 `Pascal` line), assert that pending attribute carried
-# `long_about` AND that the long_about text contained the literal `Examples:`.
-# A variant with no `#[command(...)]`, no `long_about`, or a `long_about`
-# lacking `Examples:` is flagged by name + source line. Only the top-level
-# enum is scanned — nested subcommand enums are out of scope for the convention.
+# `long_about` whose VALUE (isolated from other keys like `about`/`name`) is an
+# inline string literal containing the literal `Examples:`.
+#
+# Enforced constraints (each mis-shape gets a DISTINCT, accurate message):
+#   - no `#[command(...)]` / no `long_about=`        → "missing long_about"
+#   - `long_about` value is not an inline `"..."`    → "must be an inline string
+#     literal …" (include_str!/const are rejected so the Examples: block stays
+#     greppable — the whole point of this gate; do not relax this).
+#   - inline `long_about` value lacks `Examples:`    → "long_about lacks …"
+#
+# Two loud failure modes (never a silent/vacuous pass — this IS the guard):
+#   - if `pub enum Command {` is never found (renamed / brace reflowed onto its
+#     own line), awk emits `__ENUM_NOT_FOUND__` → wrapper hard-errors.
+#   - the walker's depth-1 variant count is cross-checked against a naive grep
+#     of PascalCase lines in the enum body; a mismatch (e.g. rustfmt changes the
+#     4-space indent the variant regex assumes) → `__COUNT_MISMATCH__:w:g`.
+#
+# Only the top-level enum is scanned — nested subcommand enums are out of scope.
+# Assumes rustfmt's default 4-space indent for variants; the count cross-check
+# is the tripwire if that assumption ever drifts.
 cli_mod="crates/cfgd/src/cli/mod.rs"
 if [[ -f "$cli_mod" ]]; then
-    long_about_gaps=$(awk '
+    # Naive ground-truth variant count: PascalCase tokens at the start of an
+    # indented line inside the enum body, counted independently of the walker.
+    grep_variant_count=$(awk '
+        !in_enum && /^pub enum Command[[:space:]]*\{/ { in_enum = 1; depth = 1; next }
+        !in_enum { next }
+        {
+            line = $0
+            opens  = gsub(/{/, "{", line)
+            closes = gsub(/}/, "}", line)
+        }
+        # Count a variant only at depth 1 and only when not inside a still-open
+        # multi-line attribute (those carry no leading-PascalCase variant token).
+        depth == 1 && !collecting && /^[[:space:]]*#\[command\(/ { collecting = 1; paren = 0 }
+        collecting {
+            paren += gsub(/\(/, "(")
+            paren -= gsub(/\)/, ")")
+            if (paren <= 0) { collecting = 0 }
+            depth += opens - closes
+            next
+        }
+        depth == 1 && /^[[:space:]]+[A-Z][A-Za-z0-9]*([[:space:]]*[({,]|[[:space:]]*$)/ { n++ }
+        { depth += opens - closes; if (in_enum && depth <= 0) in_enum = 0 }
+        END { print n + 0 }
+    ' "$cli_mod")
+    long_about_gaps=$(awk -v gnt="$grep_variant_count" '
     # Locate the top-level command enum opening brace.
-    !in_enum && /^pub enum Command[[:space:]]*\{/ { in_enum = 1; depth = 1; next }
+    !in_enum && /^pub enum Command[[:space:]]*\{/ { in_enum = 1; entered = 1; depth = 1; next }
     !in_enum { next }
 
     {
@@ -612,17 +652,25 @@ if [[ -f "$cli_mod" ]]; then
         next
     }
 
-    # A depth-1 PascalCase token starting a line is a variant declaration.
+    # A depth-1 PascalCase token starting a line is a variant declaration. The
+    # 4-space anchor matches the actual variants; the count cross-check (END)
+    # catches any indent drift that would make this regex skip variants.
     depth == 1 && /^[[:space:]]{4}[A-Z][A-Za-z0-9]*([[:space:]]*[({,]|[[:space:]]*$)/ {
+        seen++
         match($0, /[A-Z][A-Za-z0-9]*/)
         variant = substr($0, RSTART, RLENGTH)
         has_la = (attr ~ /long_about[[:space:]]*=/)
-        # Examples: must appear inside the long_about string, which is the only
-        # multi-line prose the attribute carries; a plain substring test on the
-        # buffered attribute is sufficient and conservative.
-        has_ex = (attr ~ /Examples:/)
+        # Isolate the long_about VALUE so Examples: is tested against IT, not
+        # against some other key (e.g. about = "… Examples: …"). Strip up to and
+        # including the `long_about =`, leaving the value as the head of `la`.
+        la = attr
+        sub(/.*long_about[[:space:]]*=[[:space:]]*/, "", la)
+        is_inline = (la ~ /^"/)
+        has_ex = (la ~ /Examples:/)
         if (!has_la) {
             printf "  %s:%d: %s — missing long_about\n", FILENAME, NR, variant
+        } else if (!is_inline) {
+            printf "  %s:%d: %s — long_about must be an inline string literal containing an Examples: block (found include_str!/const)\n", FILENAME, NR, variant
         } else if (!has_ex) {
             printf "  %s:%d: %s — long_about lacks an \"Examples:\" block\n", FILENAME, NR, variant
         }
@@ -636,8 +684,18 @@ if [[ -f "$cli_mod" ]]; then
         depth += opens - closes
         if (in_enum && depth <= 0) { in_enum = 0 }
     }
+    END {
+        if (!entered) { print "__ENUM_NOT_FOUND__"; exit }
+        if (seen != gnt) { printf "__COUNT_MISMATCH__:%d:%d\n", seen, gnt }
+    }
     ' "$cli_mod")
-    if [[ -n "$long_about_gaps" ]]; then
+    if grep -q '__ENUM_NOT_FOUND__' <<<"$long_about_gaps"; then
+        log_error "long_about gate could not locate 'pub enum Command {' in $cli_mod (renamed or brace reflowed?); gate did not run"
+    elif mismatch=$(grep -o '__COUNT_MISMATCH__:[0-9]*:[0-9]*' <<<"$long_about_gaps"); then
+        log_error "long_about gate variant count mismatch ($mismatch = walker:grep) in $cli_mod — formatting drift may hide variants from the gate"
+        # Still surface any concrete gaps the walker did find alongside the mismatch.
+        printf "%s\n" "$long_about_gaps" | grep -v '__COUNT_MISMATCH__' | grep -v '^$' || true
+    elif [[ -n "$long_about_gaps" ]]; then
         log_error "Top-level Command variants missing long_about/Examples: (CLAUDE.md CLI convention):"
         printf "%s\n" "$long_about_gaps"
     else
