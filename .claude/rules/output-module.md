@@ -44,12 +44,14 @@ missing from the table.
 | alias_list                   | yes               | alias inventory                                    |
 | apply                        | yes               | apply-result records consumed by CI                |
 | checkin                      | yes               | machine identity exposed to gateway                |
+| clusterconfigpolicy_validate | yes               | validation result consumed by scripts/CI           |
 | compliance_diff              | yes               | drift reporting                                    |
 | compliance_export            | yes               | compliance data exported to scripts                |
 | compliance_history           | yes               | drift history queried by scripts                   |
 | compliance_snapshot          | yes               | snapshot consumed by scripts                       |
 | config_edit                  | no                | opens $EDITOR; no data output                      |
 | config_get                   | yes               | key/value queried by scripts                       |
+| configpolicy_validate        | yes               | validation result consumed by scripts/CI           |
 | config_set                   | yes               | mutation records                                   |
 | config_show                  | yes               | inspector consumed by scripts                      |
 | config_unset                 | yes               | mutation records                                   |
@@ -74,6 +76,7 @@ missing from the table.
 | inject                       | no                | kubectl plugin; pod mutation                       |
 | log                          | no                | already a streaming log surface                    |
 | log_show_output              | no                | streaming log display helper                       |
+| machineconfig_validate       | yes               | validation result consumed by scripts/CI           |
 | module_add_from_registry     | yes               | add-result records                                 |
 | module_add_remote            | yes               | add-result records                                 |
 | module_build                 | yes               | build artifact records                             |
@@ -95,6 +98,7 @@ missing from the table.
 | module_show                  | yes               | introspection                                      |
 | module_update_local          | yes               | update records                                     |
 | module_upgrade               | yes               | upgrade result records                             |
+| module_validate              | yes               | validation result consumed by scripts/CI           |
 | paths                        | yes               | resolved directory roots consumed by scripts       |
 | plan                         | yes               | plan output consumed by CI                         |
 | profile_create               | yes               | new profile metadata                               |
@@ -104,6 +108,7 @@ missing from the table.
 | profile_show                 | yes               | introspection                                      |
 | profile_switch               | yes               | switch records                                     |
 | profile_update               | yes               | update records                                     |
+| profile_validate             | yes               | validation result consumed by scripts/CI           |
 | pull                         | yes               | pull result records                                |
 | rollback                     | yes               | rollback result records                            |
 | secret_decrypt               | no                | plaintext via data_line; not a structured payload  |
@@ -120,6 +125,7 @@ missing from the table.
 | source_replace               | yes               | replacement records                                |
 | source_show                  | yes               | introspection                                      |
 | source_update                | yes               | update result records                              |
+| source_validate              | yes               | validation result consumed by scripts/CI           |
 | status                       | yes               | drift + last-apply queried by scripts              |
 | status_module                | yes               | per-module status queried by scripts               |
 | sync                         | yes               | sync result records                                |

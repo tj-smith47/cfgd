@@ -32,6 +32,7 @@ pub mod source;
 pub mod status;
 pub mod sync;
 pub mod upgrade;
+pub mod validate;
 pub mod verify;
 pub mod workflow;
 
@@ -684,6 +685,39 @@ pub enum Command {
         recursive: bool,
     },
 
+    /// Author and validate MachineConfig CRD documents
+    // `name` pins the one-word noun (the registry kind lower-cased); clap would
+    // otherwise kebab-case the variant to `machine-config`, diverging from the
+    // `cfgd <kind> validate` surface the skill teaches.
+    #[command(
+        name = "machineconfig",
+        long_about = "Work with MachineConfig CRD documents (the cluster-side per-machine config resource).\n\nExamples:\n  cfgd machineconfig validate machineconfig.yaml\n  cat machineconfig.yaml | cfgd machineconfig validate -\n  cfgd machineconfig validate mc.yaml -o json"
+    )]
+    MachineConfig {
+        #[command(subcommand)]
+        command: MachineConfigCommand,
+    },
+
+    /// Author and validate ConfigPolicy CRD documents
+    #[command(
+        name = "configpolicy",
+        long_about = "Work with ConfigPolicy CRD documents (namespaced config-convergence policy).\n\nExamples:\n  cfgd configpolicy validate configpolicy.yaml\n  cat configpolicy.yaml | cfgd configpolicy validate -\n  cfgd configpolicy validate cp.yaml -o json"
+    )]
+    ConfigPolicy {
+        #[command(subcommand)]
+        command: ConfigPolicyCommand,
+    },
+
+    /// Author and validate ClusterConfigPolicy CRD documents
+    #[command(
+        name = "clusterconfigpolicy",
+        long_about = "Work with ClusterConfigPolicy CRD documents (cluster-scoped config-convergence policy).\n\nExamples:\n  cfgd clusterconfigpolicy validate clusterconfigpolicy.yaml\n  cat clusterconfigpolicy.yaml | cfgd clusterconfigpolicy validate -\n  cfgd clusterconfigpolicy validate ccp.yaml -o json"
+    )]
+    ClusterConfigPolicy {
+        #[command(subcommand)]
+        command: ClusterConfigPolicyCommand,
+    },
+
     /// View or edit the cfgd configuration
     #[command(
         long_about = "Show, edit, get, set, or unset config values.\n\nExamples:\n  cfgd config show\n  cfgd config ls\n  cfgd config get theme\n  cfgd config set theme dracula\n  cfgd config unset theme\n  cfgd config rm theme"
@@ -1028,6 +1062,13 @@ pub enum SourceCommand {
         #[arg(long)]
         version: Option<String>,
     },
+
+    /// Validate a ConfigSource document against the schema
+    Validate {
+        /// Path to a ConfigSource YAML document, or `-` to read from stdin
+        #[arg(value_hint = clap::ValueHint::FilePath)]
+        source: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1274,6 +1315,12 @@ pub enum ProfileCommand {
         #[arg(long)]
         ignore_not_found: bool,
     },
+    /// Validate a Profile document against the schema
+    Validate {
+        /// Path to a Profile YAML document, or `-` to read from stdin
+        #[arg(value_hint = clap::ValueHint::FilePath)]
+        source: String,
+    },
 }
 
 #[derive(Parser)]
@@ -1492,6 +1539,12 @@ pub enum ModuleCommand {
         #[command(subcommand)]
         command: ModuleKeysCommand,
     },
+    /// Validate a Module document against the schema
+    Validate {
+        /// Path to a Module YAML document, or `-` to read from stdin
+        #[arg(value_hint = clap::ValueHint::FilePath)]
+        source: String,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -1513,6 +1566,39 @@ pub enum ModuleKeysCommand {
         /// OCI artifact references to re-sign with the new key
         #[arg(long)]
         artifacts: Vec<String>,
+    },
+}
+
+/// CRD-kind subcommand container: a verb-last noun tree currently holding only
+/// `validate`, leaving room to grow (mirrors `module`/`source`). One enum per
+/// CRD kind keeps each kind's help text and future verbs independent.
+#[derive(Subcommand)]
+pub enum MachineConfigCommand {
+    /// Validate a MachineConfig document against the schema
+    Validate {
+        /// Path to a MachineConfig YAML document, or `-` to read from stdin
+        #[arg(value_hint = clap::ValueHint::FilePath)]
+        source: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ConfigPolicyCommand {
+    /// Validate a ConfigPolicy document against the schema
+    Validate {
+        /// Path to a ConfigPolicy YAML document, or `-` to read from stdin
+        #[arg(value_hint = clap::ValueHint::FilePath)]
+        source: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ClusterConfigPolicyCommand {
+    /// Validate a ClusterConfigPolicy document against the schema
+    Validate {
+        /// Path to a ClusterConfigPolicy YAML document, or `-` to read from stdin
+        #[arg(value_hint = clap::ValueHint::FilePath)]
+        source: String,
     },
 }
 
@@ -1720,6 +1806,7 @@ pub fn execute(
                 yes,
                 ignore_not_found,
             } => profile::cmd_profile_delete(cli, printer, name, *yes, *ignore_not_found),
+            ProfileCommand::Validate { source } => validate::cmd_profile_validate(printer, source),
         },
         Command::Doctor => doctor::cmd_doctor(cli, printer),
         Command::Paths => paths::cmd_paths(cli, printer, dir_sources),
@@ -1865,6 +1952,7 @@ pub fn execute(
                     module::cmd_module_keys_rotate(printer, dir.as_deref(), artifacts)
                 }
             },
+            ModuleCommand::Validate { source } => validate::cmd_module_validate(printer, source),
         },
         Command::Sync => sync::cmd_sync(cli, printer),
         Command::Pull => pull::cmd_pull(cli, printer),
@@ -1920,11 +2008,27 @@ pub fn execute(
                 description.as_deref(),
                 version.as_deref(),
             ),
+            SourceCommand::Validate { source } => validate::cmd_source_validate(printer, source),
         },
         Command::Explain {
             resource,
             recursive,
         } => explain::cmd_explain(printer, resource.as_deref(), *recursive),
+        Command::MachineConfig { command } => match command {
+            MachineConfigCommand::Validate { source } => {
+                validate::cmd_machineconfig_validate(printer, source)
+            }
+        },
+        Command::ConfigPolicy { command } => match command {
+            ConfigPolicyCommand::Validate { source } => {
+                validate::cmd_configpolicy_validate(printer, source)
+            }
+        },
+        Command::ClusterConfigPolicy { command } => match command {
+            ClusterConfigPolicyCommand::Validate { source } => {
+                validate::cmd_clusterconfigpolicy_validate(printer, source)
+            }
+        },
         Command::Upgrade {
             check,
             require_cosign,
