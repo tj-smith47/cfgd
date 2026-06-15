@@ -1628,7 +1628,7 @@ pub enum SkillCommand {
         global: bool,
 
         /// Restrict to named providers (repeatable); default is all detected providers
-        #[arg(long)]
+        #[arg(long, value_name = "NAME")]
         provider: Vec<String>,
 
         /// Write even when a provider's agent is not detected, or overwrite an existing skill
@@ -1636,7 +1636,7 @@ pub enum SkillCommand {
         force: bool,
 
         /// Skip confirmation prompts
-        #[arg(long, env = "CFGD_YES")]
+        #[arg(long, short, env = "CFGD_YES")]
         yes: bool,
     },
 
@@ -1660,18 +1660,18 @@ pub enum SkillCommand {
         global: bool,
 
         /// Restrict to named providers (repeatable); default is all detected providers
-        #[arg(long)]
+        #[arg(long, value_name = "NAME")]
         provider: Vec<String>,
 
         /// Skip confirmation prompts
-        #[arg(long, env = "CFGD_YES")]
+        #[arg(long, short, env = "CFGD_YES")]
         yes: bool,
     },
 
     /// Update one or all installed agent skills to the current rendering
     Update {
         /// The author kind to update; omit and pass --all to update every installed kind
-        #[arg(value_enum)]
+        #[arg(value_enum, required_unless_present = "all", conflicts_with = "all")]
         kind: Option<skill::SkillKind>,
 
         /// Update every installed kind
@@ -1683,7 +1683,7 @@ pub enum SkillCommand {
         global: bool,
 
         /// Restrict to named providers (repeatable); default is all detected providers
-        #[arg(long)]
+        #[arg(long, value_name = "NAME")]
         provider: Vec<String>,
     },
 }
