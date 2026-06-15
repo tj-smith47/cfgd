@@ -40,9 +40,9 @@ pub enum SkillScope {
 
 /// The result of probing whether a provider's agent is present at a scope.
 ///
-/// Detection never shells out: it combines filesystem checks with
-/// [`command_available`](crate::util::process::command_available) (a PATH lookup,
-/// no fork).
+/// Detection never shells out: it uses filesystem checks and/or a PATH lookup via
+/// [`command_available`](crate::util::process::command_available) (never a fork).
+/// A given provider may use either or both (claude-code is filesystem-only).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Detection {
     /// The agent is detected at this scope.

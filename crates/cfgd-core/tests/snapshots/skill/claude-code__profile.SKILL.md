@@ -3,10 +3,10 @@ name: cfgd-profile
 description: Investigate thoroughly and author a complete, validated cfgd Profile resource.
 user-invocable: true
 cfgd-version: <CFGD_VERSION>
-cfgd-min-version: <CFGD_VERSION>
+cfgd-min-version: <CFGD_MIN_VERSION>
 ---
 
-<!-- cfgd-version: <CFGD_VERSION> · cfgd-min-version: <CFGD_VERSION> -->
+<!-- cfgd-version: <CFGD_VERSION> · cfgd-min-version: <CFGD_MIN_VERSION> -->
 
 # Author a high-quality cfgd Profile
 
@@ -14,7 +14,7 @@ Follow this protocol on every invocation. The quality bar is NOT "valid YAML". I
 
 ## Protocol
 
-0. **Precondition — confirm the toolchain is usable.** Run `command -v cfgd`; if it is absent, STOP and tell the user to install cfgd >= <CFGD_VERSION>. Run `cfgd --version`; if it is older than <CFGD_VERSION>, warn and prefer the embedded fallback schema below.
+0. **Precondition — confirm the toolchain is usable.** Run `command -v cfgd`; if it is absent, STOP and tell the user to install cfgd >= <CFGD_MIN_VERSION>. Run `cfgd --version`; if it is older than <CFGD_MIN_VERSION>, warn and prefer the embedded fallback schema below.
 1. **Enumerate every field for this kind (live-first, snapshot-fallback).** Run `cfgd explain profile -o json` for the authoritative live schema, and `cfgd explain profile.<field> -o json` to drill into nested objects. If cfgd is absent or older than the stamp, use the embedded fallback schema below (stamped <CFGD_VERSION>).
 2. **Research best practices externally for THIS subject.** For each field, consult external best practice before settling a value: the tool's own docs, the package managers that ship it, and community conventions. Record what you verified and your confidence level when a source was unavailable. Prefer live evidence over training-knowledge recall, and state explicitly when you could not confirm a claim.
 3. **For EVERY field, decide include OR omit, and justify with a WHY comment.** Box-checking is a failure; meeting the rubric above is the target.

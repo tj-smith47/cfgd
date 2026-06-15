@@ -31,15 +31,39 @@ const ALL_KINDS: [SkillKind; 6] = [
 ];
 
 /// Replace the running cfgd version and its `major.minor.0` floor with stable
-/// placeholders so a version bump cannot flip the goldens. Order matters: the
-/// full version is replaced first so a `0.4.0`-style floor that is a substring of
-/// the full version is not clobbered mid-string.
+/// placeholders so a version bump cannot flip the goldens.
+///
+/// Order is load-bearing. At a `*.*.0` release the running version EQUALS its
+/// floor (e.g. `0.4.0` == `0.4.0`), so a bare `replace(version)` first would
+/// consume the min-version stamps too — collapsing both into `<CFGD_VERSION>` and
+/// leaving the gate unable to catch a `cfgd-version`↔`cfgd-min-version` swap, the
+/// exact runtime-guard bug class these skills exist to prevent. So the floor is
+/// replaced *by position* first, in every context the min-version literal appears
+/// (frontmatter key, body middot stamp, step-0 prose), THEN the bare version, THEN
+/// a trailing bare-floor catch-all for any straggler. `<CFGD_MIN_VERSION>` stays
+/// distinct from `<CFGD_VERSION>` even when the two version values are identical.
 fn normalize_version(rendered: &str) -> String {
     let version = env!("CARGO_PKG_VERSION");
     let parts: Vec<&str> = version.split('.').collect();
     let floor = format!("{}.{}.0", parts[0], parts.get(1).copied().unwrap_or("0"));
     rendered
+        // Positional min-version sites first, so they survive the equal-value case.
+        .replace(
+            &format!("cfgd-min-version: {floor}"),
+            "cfgd-min-version: <CFGD_MIN_VERSION>",
+        )
+        .replace(
+            &format!("install cfgd >= {floor}"),
+            "install cfgd >= <CFGD_MIN_VERSION>",
+        )
+        .replace(
+            &format!("older than {floor}"),
+            "older than <CFGD_MIN_VERSION>",
+        )
+        // The bare running version everywhere else (cfgd-version key, body stamp
+        // left half, fallback-schema preamble).
         .replace(version, "<CFGD_VERSION>")
+        // Any remaining floor literal that was a genuine min-version occurrence.
         .replace(&floor, "<CFGD_MIN_VERSION>")
 }
 
