@@ -256,6 +256,19 @@ fn main() -> anyhow::Result<()> {
         cli.config = cfgd_core::config::resolve_config_path(&new_config);
     }
 
+    // Policy-driven self-update check (interval-gated, cheap when within
+    // interval). Skipped for the daemon (its own loop runs the check), for
+    // `upgrade` itself (which checks explicitly), and when no subcommand was
+    // given (bare `cfgd` / `--version`). `startup_update_check` additionally
+    // short-circuits under structured output and `Manual` policy.
+    let skip_startup_check = matches!(
+        cli.command,
+        Some(cli::Command::Daemon { .. }) | Some(cli::Command::Upgrade { .. }) | None
+    );
+    if !skip_startup_check {
+        cli::upgrade::startup_update_check(&printer, std::path::Path::new(&cli.config), assume_yes);
+    }
+
     if let Err(e) = cli::execute(&cli, &printer, &dir_sources) {
         cli::error::render_cli_error(&printer, &e).exit();
     }

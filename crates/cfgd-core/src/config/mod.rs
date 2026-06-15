@@ -55,7 +55,8 @@ pub use resolve::{
     desired_packages_for, desired_packages_for_spec, resolve_profile,
 };
 pub use root::{
-    CfgdConfig, ConfigMetadata, ConfigSpec, for_each_yaml_file, is_yaml_ext, minimal_config,
+    CfgdConfig, ConfigMetadata, ConfigSpec, SkillUpdateConfig, SkillUpdatePolicy, UpdateConfig,
+    UpdatePolicy, for_each_yaml_file, is_yaml_ext, minimal_config,
 };
 pub use security::{ModuleSecurityConfig, ModulesConfig, SecurityConfig};
 pub use source::{

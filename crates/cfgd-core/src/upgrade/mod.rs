@@ -11,6 +11,12 @@ use crate::PathDisplayExt;
 use crate::errors::{Result, UpgradeError};
 use crate::output::{Printer, Role};
 
+mod check;
+pub use check::{
+    UpdateAction, UpdateCheckEffects, UpdateCheckOutcome, resolve_action, resolved_interval,
+    run_update_check, should_check,
+};
+
 const GITHUB_API_BASE: &str = "https://api.github.com";
 const GITHUB_API_BASE_ENV: &str = "CFGD_GITHUB_API_BASE";
 const DEFAULT_REPO: &str = "tj-smith47/cfgd";
@@ -953,6 +959,41 @@ fn write_version_cache(cache: &VersionCache) -> std::result::Result<(), UpgradeE
     })?;
 
     Ok(())
+}
+
+/// Unix-seconds timestamp of the last recorded version check, read from the
+/// persisted version cache. `None` when no check has ever run (no cache file).
+///
+/// This is the `last_checked` input to [`run_update_check`]'s interval gate,
+/// shared by the CLI startup hook and the daemon so both gate against one
+/// persisted timestamp rather than each tracking its own.
+pub fn last_checked_secs() -> Option<u64> {
+    read_version_cache().map(|c| c.checked_at_secs)
+}
+
+/// Record that a version check ran at `now` (Unix seconds), updating only the
+/// timestamp on the persisted cache. Best-effort: a write failure is logged and
+/// swallowed so a non-writable cache dir never fails a normal command.
+///
+/// Preserves the cached version strings when a prior cache exists; otherwise it
+/// stamps the timestamp against the running version with empty latest fields
+/// (which a subsequent real check overwrites via [`check_with_cache`]).
+pub fn record_check_at(now: u64) {
+    let cache = match read_version_cache() {
+        Some(mut c) => {
+            c.checked_at_secs = now;
+            c
+        }
+        None => VersionCache {
+            checked_at_secs: now,
+            latest_tag: String::new(),
+            latest_version: current_version().map(|v| v.to_string()).unwrap_or_default(),
+            current_version: env!("CARGO_PKG_VERSION").to_string(),
+        },
+    };
+    if let Err(e) = write_version_cache(&cache) {
+        tracing::warn!(error = %e, "failed to record update-check timestamp");
+    }
 }
 
 /// Invalidate the version check cache so the next check queries the API.

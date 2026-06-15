@@ -9399,35 +9399,32 @@ mod harness {
         assert!(hash.is_none());
     }
 
-    // ----- handle_version_check: cache-hit coverage -----
+    // ----- handle_version_check: policy-driven coverage -----
     //
-    // `check_with_cache` reads/writes the version cache under
-    // `test_home_override().join(".cache/cfgd/")`. Pre-seeding the cache
-    // with a non-expired entry skips the network call entirely.
+    // The policy-driven check interval-gates against the persisted version
+    // cache timestamp, then hits the releases API for the value. The persisted
+    // cache here is left absent (no `version-check.json`) so the gate opens and
+    // the API mock supplies the latest release. `CFGD_GITHUB_API_BASE` redirects
+    // `check_latest` at a mockito server (process-global env → `#[serial]`).
 
-    fn write_version_cache(home: &std::path::Path, latest: &str, current: &str) {
-        let dir = home.join(".cache").join("cfgd");
-        std::fs::create_dir_all(&dir).unwrap();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        // VersionCache uses serde rename_all=camelCase.
-        let body = format!(
-            r#"{{"checkedAtSecs":{},"latestTag":"v{}","latestVersion":"{}","currentVersion":"{}"}}"#,
-            now, latest, latest, current
-        );
-        std::fs::write(dir.join("version-check.json"), body).unwrap();
+    fn notify_update_cfg() -> config::UpdateConfig {
+        config::UpdateConfig {
+            policy: config::UpdatePolicy::Notify,
+            ..Default::default()
+        }
     }
 
     // The test_home thread-local is installed on the calling thread; the
     // version-check helper propagates that override into its spawn_blocking
     // closure so the cache lookup sees the tempdir.
-    async fn drive_version_check(home: std::path::PathBuf) -> Arc<Mutex<DaemonState>> {
+    async fn drive_version_check(
+        home: std::path::PathBuf,
+        cfg: &config::UpdateConfig,
+    ) -> Arc<Mutex<DaemonState>> {
         let state = Arc::new(Mutex::new(DaemonState::new()));
         let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
         let _g = crate::with_test_home_guard(&home);
-        super::super::sync::handle_version_check(&state, &notifier).await;
+        super::super::sync::handle_version_check(cfg, &state, &notifier).await;
         state
     }
 
@@ -9435,28 +9432,57 @@ mod harness {
     // `drive_version_check` survives across the `.await` — multi_thread can
     // migrate the future to a different worker thread mid-poll.
     #[tokio::test(flavor = "current_thread")]
-    async fn handle_version_check_records_update_available_from_fresh_cache() {
+    #[serial_test::serial]
+    async fn handle_version_check_notify_records_update_available() {
         let tmp = tempfile::TempDir::new().unwrap();
-        // Pre-seed a cache entry advertising a version far ahead of any current.
-        write_version_cache(tmp.path(), "999.0.0", "0.0.0");
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"tag_name": "v999.0.0", "assets": []}"#)
+            .create_async()
+            .await;
+        let _api = crate::test_helpers::EnvVarGuard::set("CFGD_GITHUB_API_BASE", &server.url());
 
-        let state = drive_version_check(tmp.path().to_path_buf()).await;
+        let state = drive_version_check(tmp.path().to_path_buf(), &notify_update_cfg()).await;
 
         let st = state.lock().await;
         assert_eq!(st.update_available.as_deref(), Some("999.0.0"));
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn handle_version_check_leaves_state_clean_when_cache_says_up_to_date() {
+    #[serial_test::serial]
+    async fn handle_version_check_leaves_state_clean_when_up_to_date() {
         let tmp = tempfile::TempDir::new().unwrap();
-        // Pre-seed a cache entry whose version is well below current. Since
-        // `check_with_cache` returns `update_available = cached > current`
-        // and the test binary's current version exceeds 0.0.0, no update is
-        // reported.
-        write_version_cache(tmp.path(), "0.0.0", "0.0.0");
+        let tag = format!("v{}", env!("CARGO_PKG_VERSION"));
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(r#"{{"tag_name": "{tag}", "assets": []}}"#))
+            .create_async()
+            .await;
+        let _api = crate::test_helpers::EnvVarGuard::set("CFGD_GITHUB_API_BASE", &server.url());
 
-        let state = drive_version_check(tmp.path().to_path_buf()).await;
+        let state = drive_version_check(tmp.path().to_path_buf(), &notify_update_cfg()).await;
 
+        let st = state.lock().await;
+        assert!(st.update_available.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn handle_version_check_manual_policy_skips_entirely() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // No mock server: a network call would error. Manual must not check, so
+        // state stays clean regardless.
+        let cfg = config::UpdateConfig {
+            policy: config::UpdatePolicy::Manual,
+            ..Default::default()
+        };
+        let state = drive_version_check(tmp.path().to_path_buf(), &cfg).await;
         let st = state.lock().await;
         assert!(st.update_available.is_none());
     }

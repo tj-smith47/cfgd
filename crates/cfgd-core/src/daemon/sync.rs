@@ -90,23 +90,51 @@ pub(crate) async fn handle_sync(
 
 // --- Version Check Handler ---
 
+/// Policy-driven self-update check for the daemon's periodic version tick.
+///
+/// The daemon is non-interactive, so the policy collapses to: `Manual` skips
+/// the check entirely; `Auto` downloads + installs the update and restarts the
+/// daemon; `Notify` and `Prompt` both surface a desktop notification (once per
+/// version) without applying — `Prompt` degrades to notify because there is no
+/// TTY to confirm against in the background.
+///
 /// Async because state mutation goes through `tokio::sync::Mutex` and the
-/// blocking HTTP probe is dispatched via `spawn_blocking` internally.
+/// blocking HTTP/install work is dispatched via `spawn_blocking` internally.
 pub(crate) async fn handle_version_check(
+    update_cfg: &config::UpdateConfig,
     state: &Arc<Mutex<DaemonState>>,
     notifier: &Arc<Notifier>,
 ) {
+    use crate::config::UpdatePolicy;
+    use crate::upgrade::UpdateAction;
+
+    let policy = update_cfg.policy;
+    let interval = crate::upgrade::resolved_interval(update_cfg);
+    let now = crate::unix_secs_now();
+
+    // Interval/Manual-gate first so a Manual policy or within-interval tick is a
+    // no-op with no network call (the pump cadence is the upper bound; the
+    // persisted timestamp gates across daemon restarts).
+    if !crate::upgrade::should_check(policy, interval, now, crate::upgrade::last_checked_secs()) {
+        tracing::debug!(?policy, "version check gated (Manual or within interval)");
+        return;
+    }
+
     tracing::info!("checking for cfgd updates");
 
     // Propagate the test-home thread-local across the spawn_blocking boundary;
-    // the cache lookup in `check_with_cache` reads it to redirect $HOME away
-    // from real filesystem during tests. No-op in production.
+    // the cache lookup reads it to redirect $HOME away from the real filesystem
+    // during tests. No-op in production.
+    let channel = update_cfg.channel.clone();
     let test_home = crate::test_home_override();
     let check_result = tokio::task::spawn_blocking(move || {
         let _guard = test_home.as_deref().map(crate::with_test_home_guard);
-        crate::upgrade::check_with_cache(None, None)
+        let _ = channel; // cfgd has a single release stream today; threaded for parity
+        crate::upgrade::check_latest(None, None)
     })
     .await;
+
+    crate::upgrade::record_check_at(now);
 
     let check = match check_result {
         Ok(Ok(c)) => c,
@@ -121,25 +149,39 @@ pub(crate) async fn handle_version_check(
     };
 
     if !check.update_available {
-        tracing::debug!(
-            version = %check.current,
-            "cfgd is up to date"
-        );
+        tracing::debug!(version = %check.current, "cfgd is up to date");
         return;
     }
 
     let version_str = check.latest.to_string();
-    tracing::info!(
-        current = %check.current,
-        latest = %check.latest,
-        "update available"
-    );
+    tracing::info!(current = %check.current, latest = %check.latest, "update available");
 
-    // Check if we already notified about this version + record it.
+    match crate::upgrade::resolve_action(policy, false, false) {
+        UpdateAction::Apply if policy == UpdatePolicy::Auto => {
+            apply_daemon_update(&check, &version_str, state, notifier).await;
+        }
+        // Interactive Prompt cannot apply in the daemon; resolve_action already
+        // degraded a non-interactive Prompt to Surface, so this arm only covers
+        // the defensive case — surface rather than silently apply.
+        UpdateAction::Apply | UpdateAction::Surface => {
+            notify_update_available(&check, &version_str, state, notifier).await;
+        }
+        UpdateAction::Skip => {}
+    }
+}
+
+/// Surface an available update via the notifier, deduped so the daemon notifies
+/// at most once per version (tracked in `state.update_available`).
+async fn notify_update_available(
+    check: &crate::upgrade::UpdateCheck,
+    version_str: &str,
+    state: &Arc<Mutex<DaemonState>>,
+    notifier: &Arc<Notifier>,
+) {
     let already_notified = {
         let mut st = state.lock().await;
-        let already = st.update_available.as_deref() == Some(version_str.as_str());
-        st.update_available = Some(version_str.clone());
+        let already = st.update_available.as_deref() == Some(version_str);
+        st.update_available = Some(version_str.to_string());
         already
     };
 
@@ -151,6 +193,49 @@ pub(crate) async fn handle_version_check(
                 version_str, check.current
             ),
         );
+    }
+}
+
+/// Download, verify, and install an available update under `Auto` policy, then
+/// restart the daemon so the new binary takes over. Records the version in
+/// `state.update_available` so a failed install still surfaces once.
+async fn apply_daemon_update(
+    check: &crate::upgrade::UpdateCheck,
+    version_str: &str,
+    state: &Arc<Mutex<DaemonState>>,
+    notifier: &Arc<Notifier>,
+) {
+    let Some(release) = check.release.clone() else {
+        tracing::warn!("auto-update: release info unavailable; surfacing instead");
+        notify_update_available(check, version_str, state, notifier).await;
+        return;
+    };
+
+    let test_home = crate::test_home_override();
+    let install = tokio::task::spawn_blocking(move || {
+        let _guard = test_home.as_deref().map(crate::with_test_home_guard);
+        let asset = crate::upgrade::find_asset_for_platform(&release)?;
+        crate::upgrade::download_and_install(&release, asset, false, None)
+    })
+    .await;
+
+    match install {
+        Ok(Ok(_report)) => {
+            tracing::info!(version = %version_str, "auto-update installed");
+            crate::upgrade::invalidate_cache();
+            notifier.notify(
+                "cfgd: updated",
+                &format!("Auto-updated to {version_str}; restarting daemon."),
+            );
+            crate::upgrade::restart_daemon_if_running();
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "auto-update install failed; surfacing instead");
+            notify_update_available(check, version_str, state, notifier).await;
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "auto-update task panicked");
+        }
     }
 }
 

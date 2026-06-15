@@ -180,6 +180,125 @@ pub fn cmd_upgrade(
     Ok(())
 }
 
+/// Run the policy-driven self-update check at CLI startup.
+///
+/// Cheap by construction: it returns immediately for structured-output mode
+/// (so it never pollutes the `-o json` stdout channel), and otherwise
+/// interval-gates against the persisted last-checked timestamp *before* any
+/// network call — a within-interval startup makes no API request. `Manual`
+/// short-circuits inside [`run_update_check`].
+///
+/// Best-effort: any error is swallowed (logged via tracing) so a self-update
+/// check never fails a normal command.
+pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, assume_yes: bool) {
+    use cfgd_core::config;
+    use cfgd_core::upgrade::{self, UpdateCheckEffects};
+
+    // Never interfere with machine-readable output.
+    if printer.is_structured() {
+        return;
+    }
+
+    let update_cfg = config::load_config(config_path)
+        .ok()
+        .and_then(|c| c.spec.update)
+        .unwrap_or_default();
+
+    // Cheap interval/Manual gate before constructing any effects.
+    let now = cfgd_core::unix_secs_now();
+    let interval = upgrade::resolved_interval(&update_cfg);
+    if !upgrade::should_check(
+        update_cfg.policy,
+        interval,
+        now,
+        upgrade::last_checked_secs(),
+    ) {
+        return;
+    }
+
+    let interactive = std::io::IsTerminal::is_terminal(&std::io::stdin()) && !assume_yes;
+    let mut effects = UpdateCheckEffects {
+        interactive,
+        assume_yes,
+        fetch: Box::new(|_channel| upgrade::check_latest(None, None).map_err(unwrap_upgrade_err)),
+        confirm: Box::new(|c| {
+            printer
+                .prompt_confirm(&format!(
+                    "Update available: {} -> {}. Install now?",
+                    c.current, c.latest
+                ))
+                .unwrap_or(false)
+        }),
+        surface: Box::new(|c| {
+            printer.emit(
+                Doc::new()
+                    .status(
+                        Role::Info,
+                        format!("Update available: {} -> {}", c.current, c.latest),
+                    )
+                    .hint("Run 'cfgd upgrade' to install"),
+            );
+        }),
+        apply: Box::new(|c| apply_startup_update(printer, c)),
+        record_checked: Box::new(upgrade::record_check_at),
+    };
+
+    let _ = upgrade::run_update_check(&update_cfg, now, None, &mut effects);
+}
+
+/// Extract the inner [`UpgradeError`] from a [`CfgdError`] for the startup
+/// check's fetch closure, which must yield the module-level error type that
+/// [`run_update_check`] threads.
+fn unwrap_upgrade_err(e: cfgd_core::errors::CfgdError) -> cfgd_core::errors::UpgradeError {
+    match e {
+        cfgd_core::errors::CfgdError::Upgrade(u) => u,
+        other => cfgd_core::errors::UpgradeError::ApiError {
+            message: other.to_string(),
+        },
+    }
+}
+
+/// Drive the apply path for an available update during the startup check,
+/// emitting the same success surface as `cfgd upgrade`. Returns whether the
+/// install succeeded.
+fn apply_startup_update(printer: &Printer, check: &cfgd_core::upgrade::UpdateCheck) -> bool {
+    use cfgd_core::upgrade;
+
+    let Some(release) = check.release.as_ref() else {
+        return false;
+    };
+    let asset = match upgrade::find_asset_for_platform(release) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!(error = %e, "startup update: no asset for platform");
+            return false;
+        }
+    };
+    match upgrade::download_and_install(release, asset, false, Some(printer)) {
+        Ok(report) => {
+            upgrade::invalidate_cache();
+            let daemon_restarted = upgrade::restart_daemon_if_running();
+            printer.emit(
+                Doc::new()
+                    .status(Role::Ok, format!("cfgd upgraded to {}", check.latest))
+                    .kv("Installed to", report.installed_path.display_posix())
+                    .with_data(serde_json::json!({
+                        "currentVersion": check.current.to_string(),
+                        "targetVersion": check.latest.to_string(),
+                        "installed": true,
+                        "daemonRestarted": daemon_restarted,
+                        "verificationMode": report.verification_mode.as_wire_str(),
+                    })),
+            );
+            true
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "startup update: install failed");
+            false
+        }
+    }
+}
+
 fn format_bytes(bytes: u64) -> String {
     if bytes >= 1024 * 1024 {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))

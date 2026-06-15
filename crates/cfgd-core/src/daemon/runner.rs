@@ -350,7 +350,14 @@ pub(super) async fn handle_sync_tick(
 
 pub(super) async fn handle_version_check_tick(ctx: &DaemonLoopContext) -> Result<()> {
     tracing::trace!("version check tick");
-    handle_version_check(&ctx.state, &ctx.notifier).await;
+    // Load the live config so the check honors `spec.update.policy`. A load
+    // failure degrades to the default policy (Prompt → Notify in the daemon's
+    // non-interactive context) rather than skipping the check entirely.
+    let update_cfg = config::load_config(&ctx.config_path)
+        .ok()
+        .and_then(|c| c.spec.update)
+        .unwrap_or_default();
+    handle_version_check(&update_cfg, &ctx.state, &ctx.notifier).await;
     Ok(())
 }
 
