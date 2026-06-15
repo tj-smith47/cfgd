@@ -54,14 +54,20 @@ fn every_example_matches_its_on_disk_source() {
 
 #[test]
 fn every_embedded_example_validates_clean() {
-    for kind in [
-        SkillKind::Module,
-        SkillKind::Profile,
-        SkillKind::Source,
+    // CRD kinds register in KIND_REGISTRY only under the default-on `crd`
+    // feature; with it off (the CSI build) they are absent, so validate them
+    // only when the registry can resolve them.
+    let local_kinds = [SkillKind::Module, SkillKind::Profile, SkillKind::Source];
+    #[cfg(feature = "crd")]
+    let crd_kinds = [
         SkillKind::MachineConfig,
         SkillKind::ConfigPolicy,
         SkillKind::ClusterConfigPolicy,
-    ] {
+    ];
+    #[cfg(not(feature = "crd"))]
+    let crd_kinds: [SkillKind; 0] = [];
+
+    for kind in local_kinds.into_iter().chain(crd_kinds) {
         let model = skill_model_for(kind);
         for ex in &model.examples {
             let result = validate_document(&ex.contents);
@@ -74,6 +80,24 @@ fn every_embedded_example_validates_clean() {
             );
         }
     }
+}
+
+/// With the `crd` feature off, a CRD kind has no registry entry, so its embedded
+/// schema snapshot falls back to an empty `json_schema` while still carrying the
+/// current cfgd version stamp.
+#[cfg(not(feature = "crd"))]
+#[test]
+fn crd_kind_snapshot_falls_back_to_empty_schema_when_crd_off() {
+    let model = skill_model_for(SkillKind::ClusterConfigPolicy);
+    assert!(
+        model.schema_snapshot.json_schema.is_empty(),
+        "CRD-kind snapshot should be empty when the crd feature is off"
+    );
+    assert_eq!(
+        model.schema_snapshot.cfgd_version,
+        env!("CARGO_PKG_VERSION"),
+        "snapshot must still carry the version stamp in the fallback path"
+    );
 }
 
 #[test]
