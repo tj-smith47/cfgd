@@ -10,7 +10,8 @@ use cfgd_core::generate::{SkillKind, skill_model_for};
 use cfgd_core::providers::skill::{ClaudeCodeProvider, SkillProvider, SkillScope};
 use cfgd_core::test_helpers::{CwdGuard, EnvVarGuard};
 use cfgd_core::upgrade::{
-    aggregate_skill_staleness, compute_update_surfaces, refresh_user_scope_skills,
+    SkillStaleness, StandaloneSkillOutcome, aggregate_skill_staleness, compute_update_surfaces,
+    refresh_user_scope_skills, run_standalone_skill_action,
 };
 use cfgd_core::with_test_home;
 
@@ -54,8 +55,7 @@ fn seed_stale_skill(kind: SkillKind, scope: SkillScope) -> std::path::PathBuf {
 fn rule1_binary_pending_suppresses_skill_surface() {
     // Skills stale AND a newer binary available → only the binary surface; the
     // skill surface is suppressed (≤1 surface, binary wins).
-    let c = cfg(UpdatePolicy::Prompt, SkillUpdatePolicy::Inherit);
-    let s = compute_update_surfaces(true, true, &c);
+    let s = compute_update_surfaces(true, true);
     assert!(
         s.shows_binary && !s.shows_skills,
         "binary outranks; ≤1 surface: {s:?}"
@@ -69,8 +69,7 @@ fn rule1_binary_pending_suppresses_skill_surface() {
 fn rule3_standalone_stale_shows_one_consolidated_skill_surface() {
     // Binary current, user+project skills both stale → exactly ONE skill notice
     // (not one per scope).
-    let c = cfg(UpdatePolicy::Notify, SkillUpdatePolicy::Inherit);
-    let s = compute_update_surfaces(false, true, &c);
+    let s = compute_update_surfaces(false, true);
     assert!(
         s.shows_skills && !s.shows_binary,
         "skill surface only: {s:?}"
@@ -83,8 +82,7 @@ fn rule3_standalone_stale_shows_one_consolidated_skill_surface() {
 
 #[test]
 fn neither_pending_shows_no_surface() {
-    let c = cfg(UpdatePolicy::Auto, SkillUpdatePolicy::Inherit);
-    let s = compute_update_surfaces(false, false, &c);
+    let s = compute_update_surfaces(false, false);
     assert!(!s.shows_binary && !s.shows_skills && s.skill_surface_count == 0);
 }
 
@@ -243,12 +241,10 @@ fn binary_pending_suppresses_wired_skill_surface() {
 
     with_test_home(home.path(), || {
         seed_stale_skill(SkillKind::Module, SkillScope::User);
-        let c = cfg(UpdatePolicy::Notify, SkillUpdatePolicy::Inherit);
 
         let staleness = aggregate_skill_staleness();
         assert!(staleness.any(), "skill is stale");
-        let surfaces =
-            compute_update_surfaces(/*binary_available=*/ true, staleness.any(), &c);
+        let surfaces = compute_update_surfaces(/*binary_available=*/ true, staleness.any());
         assert!(
             surfaces.shows_binary && !surfaces.shows_skills,
             "binary pending suppresses the skill surface: {surfaces:?}"
@@ -291,5 +287,148 @@ fn auto_standalone_refresh_clears_user_staleness_only() {
             project_before, project_after,
             "project-scope skill bytes unchanged by Auto standalone refresh"
         );
+    });
+}
+
+// ----- Single-sourced orchestration: run_standalone_skill_action -----
+
+#[test]
+#[serial_test::serial]
+fn run_action_notify_yields_one_consolidated_notice_both_scopes() {
+    let home = tempfile::tempdir().expect("home tempdir");
+    let project = tempfile::tempdir().expect("project tempdir");
+    let runtime = tempfile::tempdir().expect("runtime tempdir");
+    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+    let _cwd = CwdGuard::set(project.path()).expect("set cwd to project dir");
+
+    with_test_home(home.path(), || {
+        seed_stale_skill(SkillKind::Module, SkillScope::User);
+        seed_stale_skill(SkillKind::Module, SkillScope::Project);
+
+        let result = run_standalone_skill_action(
+            &cfg(UpdatePolicy::Notify, SkillUpdatePolicy::Inherit),
+            false,
+        );
+        assert_eq!(
+            result,
+            StandaloneSkillOutcome::NoticeNeeded(SkillStaleness {
+                user: 1,
+                project: 1
+            }),
+            "Notify standalone-stale → one consolidated both-scopes notice"
+        );
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn run_action_binary_pending_suppresses() {
+    let home = tempfile::tempdir().expect("home tempdir");
+    let runtime = tempfile::tempdir().expect("runtime tempdir");
+    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+
+    with_test_home(home.path(), || {
+        seed_stale_skill(SkillKind::Module, SkillScope::User);
+        // Rule 1: a binary update is pending → suppressed regardless of staleness.
+        let result = run_standalone_skill_action(
+            &cfg(UpdatePolicy::Notify, SkillUpdatePolicy::Inherit),
+            true,
+        );
+        assert_eq!(result, StandaloneSkillOutcome::Suppressed);
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn run_action_auto_refreshes_user_then_notices_project_only() {
+    let home = tempfile::tempdir().expect("home tempdir");
+    let project = tempfile::tempdir().expect("project tempdir");
+    let runtime = tempfile::tempdir().expect("runtime tempdir");
+    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+    let _cwd = CwdGuard::set(project.path()).expect("set cwd to project dir");
+
+    with_test_home(home.path(), || {
+        seed_stale_skill(SkillKind::Module, SkillScope::User);
+        let project_path = seed_stale_skill(SkillKind::Module, SkillScope::Project);
+        let project_before = std::fs::read(&project_path).expect("read project skill");
+
+        let result = run_standalone_skill_action(
+            &cfg(UpdatePolicy::Auto, SkillUpdatePolicy::Inherit),
+            false,
+        );
+        // User-scope refreshed in place → remaining notice covers project only.
+        assert_eq!(
+            result,
+            StandaloneSkillOutcome::NoticeNeeded(SkillStaleness {
+                user: 0,
+                project: 1
+            }),
+            "Auto refreshes user-scope, leaves a project-only notice"
+        );
+        let project_after = std::fs::read(&project_path).expect("re-read project skill");
+        assert_eq!(
+            project_before, project_after,
+            "project-scope skill bytes unchanged"
+        );
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn run_action_auto_with_only_user_stale_is_refreshed_no_notice() {
+    let home = tempfile::tempdir().expect("home tempdir");
+    let runtime = tempfile::tempdir().expect("runtime tempdir");
+    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+
+    with_test_home(home.path(), || {
+        seed_stale_skill(SkillKind::Module, SkillScope::User);
+        let result = run_standalone_skill_action(
+            &cfg(UpdatePolicy::Auto, SkillUpdatePolicy::Inherit),
+            false,
+        );
+        assert_eq!(
+            result,
+            StandaloneSkillOutcome::Refreshed,
+            "Auto with only user-scope stale → refreshed, no notice needed"
+        );
+        assert_eq!(
+            aggregate_skill_staleness().user,
+            0,
+            "user staleness cleared"
+        );
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn run_action_manual_is_silent() {
+    let home = tempfile::tempdir().expect("home tempdir");
+    let runtime = tempfile::tempdir().expect("runtime tempdir");
+    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+
+    with_test_home(home.path(), || {
+        seed_stale_skill(SkillKind::Module, SkillScope::User);
+        let result = run_standalone_skill_action(
+            &cfg(UpdatePolicy::Manual, SkillUpdatePolicy::Inherit),
+            false,
+        );
+        assert_eq!(result, StandaloneSkillOutcome::Silent);
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn run_action_nothing_stale_is_suppressed() {
+    let home = tempfile::tempdir().expect("home tempdir");
+    let runtime = tempfile::tempdir().expect("runtime tempdir");
+    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+
+    with_test_home(home.path(), || {
+        // Nothing installed → nothing stale → suppressed even under Notify.
+        let result = run_standalone_skill_action(
+            &cfg(UpdatePolicy::Notify, SkillUpdatePolicy::Inherit),
+            false,
+        );
+        assert_eq!(result, StandaloneSkillOutcome::Suppressed);
     });
 }

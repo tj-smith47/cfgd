@@ -153,7 +153,7 @@ pub(crate) async fn handle_version_check(
         // Binary current → the §9 consolidated skill-stale surface may apply
         // (rule 3). Rule 1 means this only runs when no binary update is
         // pending, so the two surfaces can never both fire.
-        surface_stale_skills(update_cfg, state, notifier);
+        surface_stale_skills(update_cfg, state, notifier).await;
         return;
     }
 
@@ -204,70 +204,53 @@ async fn notify_update_available(
 }
 
 /// Emit the §9 consolidated skill-stale surface in the daemon when the binary is
-/// current (rule 3), honoring the effective skills policy per the §9 scope table:
+/// current (rule 3). The decision + effectful orchestration (the scope table,
+/// `Auto` refresh → re-aggregate → project-only remainder) is single-sourced in
+/// [`run_standalone_skill_action`](crate::upgrade::run_standalone_skill_action);
+/// this function only renders the returned outcome via the notifier:
 ///
-/// * **Auto / Inherit→Auto** → re-render USER-scope skills directly (the
-///   ride-along refresh); project-scope is never written, only notified if still
-///   stale afterward.
+/// * **Auto / Inherit→Auto** → user-scope already re-rendered; a project-only
+///   remainder is notified (project-scope is never written).
 /// * **Notify / Prompt** → one consolidated notifier message covering both
-///   scopes; no write (`Prompt` cannot prompt in the daemon, so it surfaces like
-///   `Notify` per the §9 "≤1 surface" headline).
+///   scopes (`Prompt` cannot prompt in the daemon, so it surfaces like `Notify`
+///   per the §9 "≤1 surface" headline).
 /// * **Manual** → silent.
 ///
 /// Deduped via `state.skills_stale_notified` so the notice fires at most once per
 /// distinct staleness signature, not on every check tick.
-fn surface_stale_skills(
+async fn surface_stale_skills(
     update_cfg: &config::UpdateConfig,
     state: &Arc<Mutex<DaemonState>>,
     notifier: &Arc<Notifier>,
 ) {
-    use crate::upgrade::{self, StandaloneSkillAction};
+    use crate::upgrade::StandaloneSkillOutcome;
 
-    let staleness = upgrade::aggregate_skill_staleness();
     // Binary is current here (caller gates on `!update_available`), so
     // binary_available is false and rule 3 governs.
-    let surfaces = upgrade::compute_update_surfaces(false, staleness.any(), update_cfg);
-    if !surfaces.shows_skills {
-        return;
-    }
-
-    match upgrade::resolve_standalone_skill_action(update_cfg) {
-        StandaloneSkillAction::RefreshUserThenNoticeProject => {
-            // Auto: re-render user-scope in place; project-scope is never written.
-            let _ = upgrade::refresh_user_scope_skills(update_cfg);
-            let remaining = upgrade::aggregate_skill_staleness();
-            if remaining.project > 0 {
-                notify_stale_skills_once(remaining, state, notifier);
-            }
-        }
-        StandaloneSkillAction::ConsolidatedNotice => {
-            notify_stale_skills_once(staleness, state, notifier);
-        }
-        StandaloneSkillAction::Silent => {}
+    if let StandaloneSkillOutcome::NoticeNeeded(staleness) =
+        crate::upgrade::run_standalone_skill_action(update_cfg, false)
+    {
+        notify_stale_skills_once(staleness, state, notifier).await;
     }
 }
 
 /// Send the consolidated skill-stale notifier message, deduped per distinct
-/// staleness signature via `state.skills_stale_notified`.
-fn notify_stale_skills_once(
+/// staleness signature via `state.skills_stale_notified`. Async like
+/// [`notify_update_available`] so the dedup bookkeeping runs under
+/// `.lock().await` and is never skipped on lock contention.
+async fn notify_stale_skills_once(
     staleness: crate::upgrade::SkillStaleness,
     state: &Arc<Mutex<DaemonState>>,
     notifier: &Arc<Notifier>,
 ) {
     let signature = format!("user:{},project:{}", staleness.user, staleness.project);
-    let already = {
-        // try_lock avoids blocking a sync fn on the async mutex; a contended
-        // tick simply skips dedup bookkeeping and re-notifies next cycle.
-        match state.try_lock() {
-            Ok(mut st) => {
-                let seen = st.skills_stale_notified.as_deref() == Some(signature.as_str());
-                st.skills_stale_notified = Some(signature);
-                seen
-            }
-            Err(_) => false,
-        }
+    let already_notified = {
+        let mut st = state.lock().await;
+        let already = st.skills_stale_notified.as_deref() == Some(signature.as_str());
+        st.skills_stale_notified = Some(signature);
+        already
     };
-    if !already {
+    if !already_notified {
         notifier.notify(
             "cfgd: skills are stale",
             &crate::upgrade::consolidated_skill_stale_message(staleness),

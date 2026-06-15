@@ -49,13 +49,7 @@ pub struct UpdateSurfaces {
 ///
 /// Pure and side-effect-free: the caller supplies the two booleans (a binary
 /// check and an aggregate staleness flag) and renders per the returned flags.
-/// `_cfg` is accepted so the signature stays stable as policy-dependent surface
-/// shaping is layered on, without forcing callers to thread it later.
-pub fn compute_update_surfaces(
-    binary_available: bool,
-    skills_stale: bool,
-    _cfg: &UpdateConfig,
-) -> UpdateSurfaces {
+pub fn compute_update_surfaces(binary_available: bool, skills_stale: bool) -> UpdateSurfaces {
     if binary_available {
         // Rule 1: the binary surface wins outright; the skill surface is
         // suppressed so the two can never both show.
@@ -189,10 +183,17 @@ impl SkillStaleness {
 fn count_stale_skills(scope: SkillScope) -> usize {
     all_skill_providers()
         .iter()
-        .map(|p| {
-            p.list(scope)
-                .map(|skills| skills.iter().filter(|s| s.stale).count())
-                .unwrap_or(0)
+        .map(|p| match p.list(scope) {
+            Ok(skills) => skills.iter().filter(|s| s.stale).count(),
+            Err(e) => {
+                tracing::debug!(
+                    error = %e,
+                    scope = ?scope,
+                    provider = p.id(),
+                    "skill staleness probe failed; treating as 0",
+                );
+                0
+            }
         })
         .sum()
 }
@@ -243,5 +244,75 @@ pub fn resolve_standalone_skill_action(cfg: &UpdateConfig) -> StandaloneSkillAct
         UpdatePolicy::Auto => StandaloneSkillAction::RefreshUserThenNoticeProject,
         UpdatePolicy::Notify | UpdatePolicy::Prompt => StandaloneSkillAction::ConsolidatedNotice,
         UpdatePolicy::Manual => StandaloneSkillAction::Silent,
+    }
+}
+
+/// What the §9 skill-surface orchestration decided, as a pure value for a
+/// consumer to render. At most ONE consolidated notice is ever indicated
+/// ([`StandaloneSkillOutcome::NoticeNeeded`] carries the single staleness it
+/// covers); every other variant indicates no notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StandaloneSkillOutcome {
+    /// No skill surface: a binary update is pending (rule 1) or nothing is stale.
+    Suppressed,
+    /// `Auto` re-rendered the stale user-scope skills and no project-scope skill
+    /// remains stale, so no notice is needed.
+    Refreshed,
+    /// Exactly one consolidated notice is needed, covering these per-scope counts
+    /// (both scopes for `Notify`/`Prompt`; the project-only remainder for `Auto`).
+    NoticeNeeded(SkillStaleness),
+    /// `Manual`: silent — nothing emitted or written.
+    Silent,
+}
+
+/// Run the §9 skill-surface orchestration end to end and return a pure outcome
+/// for the consumer to render (CLI Doc or daemon notifier).
+///
+/// This is the SINGLE owner of the effectful "how the standalone-stale action
+/// runs" — both the CLI and daemon consumers call it and render off the returned
+/// [`StandaloneSkillOutcome`], so the *decision* and the *orchestration* (refresh
+/// → re-aggregate → notice-iff-project-remains) can never drift between them.
+///
+/// Sequence:
+/// 1. Aggregate stale-skill counts and apply [`compute_update_surfaces`]: a
+///    pending binary update (`binary_available`) suppresses skills (rule 1), and
+///    nothing-stale yields no surface.
+/// 2. Otherwise dispatch on [`resolve_standalone_skill_action`] (the §9 scope
+///    table): `Auto` re-renders USER-scope skills via [`refresh_user_scope_skills`]
+///    then re-aggregates — a non-zero project remainder needs a notice, else
+///    `Refreshed`; `Notify`/`Prompt` need one consolidated both-scopes notice with
+///    no write; `Manual` is silent.
+///
+/// Project-scope is never written under any policy (the refresh only ever touches
+/// [`SkillScope::User`]).
+pub fn run_standalone_skill_action(
+    cfg: &UpdateConfig,
+    binary_available: bool,
+) -> StandaloneSkillOutcome {
+    let staleness = aggregate_skill_staleness();
+    let surfaces = compute_update_surfaces(binary_available, staleness.any());
+    if !surfaces.shows_skills {
+        // Rule 1 (binary pending) or nothing stale.
+        return StandaloneSkillOutcome::Suppressed;
+    }
+
+    match resolve_standalone_skill_action(cfg) {
+        StandaloneSkillAction::RefreshUserThenNoticeProject => {
+            // Auto: re-render user-scope in place; project-scope is never written.
+            let _ = refresh_user_scope_skills(cfg);
+            // After refreshing user-scope, only project-scope skills can remain
+            // stale — surface those (and only those) so the user can
+            // `cfgd skill update` and commit deliberately.
+            let remaining = aggregate_skill_staleness();
+            if remaining.project > 0 {
+                StandaloneSkillOutcome::NoticeNeeded(remaining)
+            } else {
+                StandaloneSkillOutcome::Refreshed
+            }
+        }
+        StandaloneSkillAction::ConsolidatedNotice => {
+            StandaloneSkillOutcome::NoticeNeeded(staleness)
+        }
+        StandaloneSkillAction::Silent => StandaloneSkillOutcome::Silent,
     }
 }

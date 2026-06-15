@@ -261,79 +261,33 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
     }
 }
 
-/// What [`surface_stale_skills`] actually did — the testable shape of the §9
-/// skill surface (so tests assert the decision, not a substring of rendered
-/// text). At most ONE skill notice is ever emitted (`NoticeEmitted` carries the
-/// single staleness it surfaced); the other variants emit nothing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SkillSurface {
-    /// Rule 1 (binary update pending) or nothing stale → no skill surface.
-    Suppressed,
-    /// Auto refreshed user-scope skills; no notice was needed (no project skills
-    /// left stale afterward).
-    Refreshed,
-    /// Exactly one consolidated skill notice was emitted for this staleness.
-    NoticeEmitted(cfgd_core::upgrade::SkillStaleness),
-    /// `Manual` → silent, nothing emitted or written.
-    Silent,
-}
-
-/// Emit the §9 consolidated skill-stale surface (rule 3) when the binary is
-/// current and installed skills are stale, honoring the effective skills policy
-/// per the §9 scope table:
+/// Render the §9 consolidated skill-stale surface for the CLI startup check.
 ///
-/// * **Auto / Inherit→Auto** → re-render USER-scope skills directly (reusing the
-///   ride-along refresh); project-scope is never written, only noticed if still
-///   stale afterward.
-/// * **Notify / Prompt** → a single consolidated notice covering both scopes; no
-///   write (`Prompt` standalone-stale has no binary upgrade to ride along, so per
-///   the §9 "≤1 surface" headline it surfaces exactly like `Notify`).
-/// * **Manual** → silent.
+/// The §9 decision + effectful orchestration (rule 1 suppression, the scope
+/// table, `Auto` refresh → re-aggregate → project-only remainder) is single-
+/// sourced in [`run_standalone_skill_action`]; this function only renders the
+/// returned [`StandaloneSkillOutcome`] as a `Printer` Doc. It returns that
+/// outcome so tests assert the decision SHAPE, not rendered text.
 ///
-/// Rule 1 is enforced by [`compute_update_surfaces`]: a pending binary update
-/// returns `shows_skills == false`, so this function emits nothing and only the
-/// binary surface (already shown by the check effects) remains.
+/// Only [`StandaloneSkillOutcome::NoticeNeeded`] emits — exactly one consolidated
+/// notice covering both scopes. `Refreshed`/`Suppressed`/`Silent` emit nothing.
 fn surface_stale_skills(
     printer: &Printer,
     update_cfg: &cfgd_core::config::UpdateConfig,
     outcome: &cfgd_core::upgrade::UpdateCheckOutcome,
-) -> SkillSurface {
-    use cfgd_core::upgrade::{self, StandaloneSkillAction};
+) -> cfgd_core::upgrade::StandaloneSkillOutcome {
+    use cfgd_core::upgrade::{self, StandaloneSkillOutcome};
 
     let binary_available = outcome
         .update
         .as_ref()
         .map(|u| u.update_available)
         .unwrap_or(false);
-    let staleness = upgrade::aggregate_skill_staleness();
-    let surfaces = upgrade::compute_update_surfaces(binary_available, staleness.any(), update_cfg);
-    if !surfaces.shows_skills {
-        // Rule 1 (binary pending) or nothing stale → no skill surface.
-        return SkillSurface::Suppressed;
+    let result = upgrade::run_standalone_skill_action(update_cfg, binary_available);
+    if let StandaloneSkillOutcome::NoticeNeeded(staleness) = result {
+        emit_skill_stale_notice(printer, staleness);
     }
-
-    match upgrade::resolve_standalone_skill_action(update_cfg) {
-        StandaloneSkillAction::RefreshUserThenNoticeProject => {
-            // Auto: re-render user-scope in place; project-scope is never written.
-            let _ = upgrade::refresh_user_scope_skills(update_cfg);
-            // After refreshing user-scope, the only stale skills left are
-            // project-scope — surface those (and only those) so the user can
-            // `cfgd skill update` and commit deliberately.
-            let remaining = upgrade::aggregate_skill_staleness();
-            if remaining.project > 0 {
-                emit_skill_stale_notice(printer, remaining);
-                SkillSurface::NoticeEmitted(remaining)
-            } else {
-                SkillSurface::Refreshed
-            }
-        }
-        StandaloneSkillAction::ConsolidatedNotice => {
-            // Notify / Prompt: one consolidated notice, both scopes, no write.
-            emit_skill_stale_notice(printer, staleness);
-            SkillSurface::NoticeEmitted(staleness)
-        }
-        StandaloneSkillAction::Silent => SkillSurface::Silent,
-    }
+    result
 }
 
 /// Emit the single consolidated skill-stale notice, carrying the per-scope
@@ -969,7 +923,9 @@ mod tests {
     use cfgd_core::generate::{SkillKind, skill_model_for};
     use cfgd_core::providers::skill::{ClaudeCodeProvider, SkillProvider, SkillScope};
     use cfgd_core::test_helpers::CwdGuard;
-    use cfgd_core::upgrade::{SkillStaleness, UpdateCheck, UpdateCheckOutcome};
+    use cfgd_core::upgrade::{
+        SkillStaleness, StandaloneSkillOutcome, UpdateCheck, UpdateCheckOutcome,
+    };
     use cfgd_core::with_test_home;
 
     fn update_cfg(policy: UpdatePolicy, skills: SkillUpdatePolicy) -> UpdateConfig {
@@ -1044,7 +1000,7 @@ mod tests {
             // Exactly ONE consolidated notice covering both scopes (user:1,project:1).
             assert_eq!(
                 surface,
-                SkillSurface::NoticeEmitted(SkillStaleness {
+                StandaloneSkillOutcome::NoticeNeeded(SkillStaleness {
                     user: 1,
                     project: 1
                 }),
@@ -1070,7 +1026,7 @@ mod tests {
 
             assert_eq!(
                 surface,
-                SkillSurface::Suppressed,
+                StandaloneSkillOutcome::Suppressed,
                 "rule 1 suppresses skills"
             );
             assert!(
@@ -1102,7 +1058,7 @@ mod tests {
             // single remaining notice covers project only (user:0, project:1).
             assert_eq!(
                 surface,
-                SkillSurface::NoticeEmitted(SkillStaleness {
+                StandaloneSkillOutcome::NoticeNeeded(SkillStaleness {
                     user: 0,
                     project: 1
                 }),
@@ -1133,7 +1089,7 @@ mod tests {
 
             assert_eq!(
                 surface,
-                SkillSurface::Silent,
+                StandaloneSkillOutcome::Silent,
                 "Manual standalone-stale is silent"
             );
             assert!(
