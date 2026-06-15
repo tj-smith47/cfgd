@@ -1,0 +1,29 @@
+# Announce-integration fragment, composed into .anodizer.yaml via `includes:`.
+# Kept separate so the release-notification matrix (webhook + email endpoints,
+# templates, transport security) can be reviewed and edited without scrolling
+# the 1k-line root config. anodizer merges includes as defaults under the root
+# config, so the root may still override any value here.
+announce:
+  webhook:
+    enabled: true
+    endpoint_url: "https://tj.jarvispro.io/webhooks/anodizer"
+    content_type: application/json
+    message_template: '{"project":"{{ ProjectName }}","tag":"{{ Tag }}","url":"{{ ReleaseURL }}"}'
+    headers:
+      X-Anodizer-Source: "release"
+    skip_tls_verify: false
+    expected_status_codes:
+      - 200
+      - 202
+  email:
+    enabled: true
+    host: smtp.gmail.com
+    port: 587
+    username: toss45@gmail.com
+    from: toss45@gmail.com
+    to:
+      - "tj@jarvispro.io"
+    subject_template: "{{ ProjectName }} {{ Tag }} released"
+    message_template: "{{ ProjectName }} {{ Tag }} is now available at {{ ReleaseURL }}"
+    encryption: starttls
+    insecure_skip_verify: false

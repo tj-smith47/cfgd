@@ -41,6 +41,8 @@
 
 # CI, tasks, and release config
 !.anodizer.yaml
+!.anodizer/
+!.anodizer/**
 !cfgd.spec
 !cliff.toml
 /dist/

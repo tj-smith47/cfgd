@@ -7,6 +7,12 @@ version: 2
 project_name: cfgd
 dist: ./dist
 
+# Compose self-contained config fragments. The announce matrix lives in its own
+# file; anodizer merges includes as defaults beneath this root config.
+includes:
+  - from_file:
+      path: .anodizer/announce.yaml
+
 report_sizes: true
 
 env:
@@ -1004,28 +1010,3 @@ retry:
 # defaults false, so a missing milestone never breaks a release).
 milestones:
   - close: true
-
-announce:
-  webhook:
-    enabled: true
-    endpoint_url: "https://tj.jarvispro.io/webhooks/anodizer"
-    content_type: application/json
-    message_template: '{"project":"{{ ProjectName }}","tag":"{{ Tag }}","url":"{{ ReleaseURL }}"}'
-    headers:
-      X-Anodizer-Source: "release"
-    skip_tls_verify: false
-    expected_status_codes:
-      - 200
-      - 202
-  email:
-    enabled: true
-    host: smtp.gmail.com
-    port: 587
-    username: toss45@gmail.com
-    from: toss45@gmail.com
-    to:
-      - "tj@jarvispro.io"
-    subject_template: "{{ ProjectName }} {{ Tag }} released"
-    message_template: "{{ ProjectName }} {{ Tag }} is now available at {{ ReleaseURL }}"
-    encryption: starttls
-    insecure_skip_verify: false
