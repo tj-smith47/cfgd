@@ -38,6 +38,7 @@ pub use module::{
     ModulePackageEntry, ModuleRegistryEntry, ModuleSpec, ScriptEntry, ScriptShell, parse_module,
 };
 pub use origin::{OriginSpec, OriginType, SshHostKeyPolicy};
+pub(crate) use parse::validate_api_version;
 pub use parse::{
     CONFIG_FILENAME, CONFIG_FILENAME_TOML, load_config, load_profile, parse_config,
     parse_config_source, resolve_config_path,

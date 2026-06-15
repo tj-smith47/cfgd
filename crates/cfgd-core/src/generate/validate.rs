@@ -1,19 +1,72 @@
-use crate::config::{CfgdConfig, ModuleDocument, ProfileDocument};
 use crate::generate::{SchemaKind, ValidationResult};
+use crate::schema::{KIND_REGISTRY, KindEntry};
 
+/// Look up the registry entry for a `kind` string, preferring the local
+/// document entry when a CRD entry shares the same `kind` (both a local and a
+/// CRD `Module` exist; local documents are what these validators receive).
+fn entry_for_kind(kind: &str) -> Option<&'static KindEntry> {
+    KIND_REGISTRY
+        .iter()
+        .find(|e| e.kind == kind && !e.crd)
+        .or_else(|| KIND_REGISTRY.iter().find(|e| e.kind == kind))
+}
+
+/// Validate a YAML document, reading its `kind` and dispatching to the matching
+/// [`KIND_REGISTRY`] entry's validator. An unknown or missing `kind` is an
+/// error; the per-kind validator covers unknown fields and `apiVersion`.
+pub fn validate_document(yaml: &str) -> ValidationResult {
+    let value: serde_yaml::Value = match serde_yaml::from_str(yaml) {
+        Ok(v) => v,
+        Err(e) => {
+            return ValidationResult {
+                valid: false,
+                errors: vec![format!("YAML syntax error: {e}")],
+            };
+        }
+    };
+
+    let Some(kind) = value.get("kind").and_then(|v| v.as_str()) else {
+        return ValidationResult {
+            valid: false,
+            errors: vec!["document is missing a 'kind' field".to_string()],
+        };
+    };
+
+    let Some(entry) = entry_for_kind(kind) else {
+        return ValidationResult {
+            valid: false,
+            errors: vec![format!("unknown kind '{kind}'")],
+        };
+    };
+
+    match (entry.validate_fn)(yaml) {
+        Ok(()) => ValidationResult {
+            valid: true,
+            errors: vec![],
+        },
+        Err(errors) => ValidationResult {
+            valid: false,
+            errors,
+        },
+    }
+}
+
+/// Validate YAML against an expected [`SchemaKind`], preserving the
+/// expected-vs-found kind diagnostic for callers that already know the kind
+/// (the generate session and the AI tool dispatcher). The actual deserialization
+/// is delegated to the unified [`KIND_REGISTRY`] so there is one validation
+/// implementation across `validate` paths.
 pub fn validate_yaml(content: &str, kind: SchemaKind) -> ValidationResult {
-    // Parse as generic YAML to check syntax.
     let value: serde_yaml::Value = match serde_yaml::from_str(content) {
         Ok(v) => v,
         Err(e) => {
             return ValidationResult {
                 valid: false,
-                errors: vec![format!("YAML syntax error: {}", e)],
+                errors: vec![format!("YAML syntax error: {e}")],
             };
         }
     };
 
-    // Check kind field matches expected.
     if let Some(doc_kind) = value.get("kind").and_then(|v| v.as_str())
         && doc_kind != kind.as_str()
     {
@@ -27,21 +80,20 @@ pub fn validate_yaml(content: &str, kind: SchemaKind) -> ValidationResult {
         };
     }
 
-    // Attempt deserialization into the concrete type.
-    let deser_result = match kind {
-        SchemaKind::Module => serde_yaml::from_str::<ModuleDocument>(content).map(|_| ()),
-        SchemaKind::Profile => serde_yaml::from_str::<ProfileDocument>(content).map(|_| ()),
-        SchemaKind::Config => serde_yaml::from_str::<CfgdConfig>(content).map(|_| ()),
-    };
-
-    match deser_result {
-        Ok(()) => ValidationResult {
-            valid: true,
-            errors: vec![],
+    match entry_for_kind(kind.as_str()) {
+        Some(entry) => match (entry.validate_fn)(content) {
+            Ok(()) => ValidationResult {
+                valid: true,
+                errors: vec![],
+            },
+            Err(errors) => ValidationResult {
+                valid: false,
+                errors,
+            },
         },
-        Err(e) => ValidationResult {
+        None => ValidationResult {
             valid: false,
-            errors: vec![format!("Deserialization error: {}", e)],
+            errors: vec![format!("unknown kind '{}'", kind.as_str())],
         },
     }
 }
@@ -49,6 +101,43 @@ pub fn validate_yaml(content: &str, kind: SchemaKind) -> ValidationResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_rejects_unknown_field_for_configsource() {
+        let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: ConfigSource\nmetadata:\n  name: x\nspec:\n  bogusField: 1\n";
+        let r = validate_document(yaml);
+        assert!(!r.valid);
+        assert!(
+            r.errors
+                .iter()
+                .any(|e| e.to_lowercase().contains("bogusfield")),
+            "error must name the unknown field, got: {:?}",
+            r.errors
+        );
+    }
+
+    #[test]
+    fn validate_accepts_minimal_module() {
+        let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: m\nspec: {}\n";
+        assert!(validate_document(yaml).valid);
+    }
+
+    #[test]
+    fn validate_document_rejects_unknown_api_version() {
+        let yaml = "apiVersion: cfgd.io/v1alpha2\nkind: Module\nmetadata:\n  name: m\nspec: {}\n";
+        let r = validate_document(yaml);
+        assert!(!r.valid);
+        assert!(
+            r.errors.iter().any(|e| e.contains("apiVersion")),
+            "error must mention apiVersion, got: {:?}",
+            r.errors
+        );
+        assert!(
+            r.errors.iter().any(|e| e.contains("cfgd.io/v1alpha1")),
+            "error must name the supported version, got: {:?}",
+            r.errors
+        );
+    }
 
     #[test]
     fn test_validate_valid_module() {

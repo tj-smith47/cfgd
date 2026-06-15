@@ -107,7 +107,7 @@ pub(super) fn warn_on_legacy_theme_keys(raw_yaml: &str) {
 /// [`ConfigError::UnsupportedApiVersion`] instead of silently deserializing under
 /// the current schema. The typed variant is the matchable hook a future
 /// version-migration path plugs into.
-pub(super) fn validate_api_version(api_version: &str) -> Result<()> {
+pub(crate) fn validate_api_version(api_version: &str) -> Result<()> {
     if api_version != crate::API_VERSION {
         return Err(ConfigError::UnsupportedApiVersion {
             found: api_version.to_string(),

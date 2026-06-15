@@ -57,6 +57,11 @@ pub struct KindEntry {
     pub crd: bool,
     /// Returns the kind's `schemars`-derived root schema.
     pub schema_fn: fn() -> RootSchema,
+    /// Validate a full YAML document of this kind, returning the offending
+    /// messages on failure. Local kinds deserialize into their document type
+    /// (leaning on `deny_unknown_fields`) and reject an unknown `apiVersion`;
+    /// CRD kinds deserialize the `spec` into the matching `cfgd_crd::*Spec`.
+    pub validate_fn: fn(&str) -> Result<(), Vec<String>>,
 }
 
 impl KindEntry {
@@ -90,6 +95,41 @@ impl KindEntry {
     }
 }
 
+/// Deserialize a full local document into `D`, rejecting unknown fields (every
+/// local document type carries `deny_unknown_fields`) and an unrecognized
+/// `apiVersion`. The single error is wrapped in a `Vec` so it joins the
+/// registry's uniform `Result<(), Vec<String>>` validation contract.
+fn validate_local<D: serde::de::DeserializeOwned>(yaml: &str) -> Result<(), Vec<String>> {
+    serde_yaml::from_str::<D>(yaml).map_err(|e| vec![e.to_string()])?;
+    let value: serde_yaml::Value =
+        serde_yaml::from_str(yaml).map_err(|e| vec![format!("YAML syntax error: {e}")])?;
+    if let Some(api_version) = value.get("apiVersion").and_then(|v| v.as_str()) {
+        crate::config::validate_api_version(api_version).map_err(|e| vec![e.to_string()])?;
+    }
+    Ok(())
+}
+
+/// Validate a CRD document by deserializing its `spec` into `S`. CRD specs
+/// intentionally omit `deny_unknown_fields` (schemars maps that to
+/// `additionalProperties: false`, which Kubernetes rejects for structural
+/// schemas), so this confirms the spec is well-typed and the `apiVersion` is
+/// recognized, without the strict-field guard. Cross-field invariants enforced
+/// by `cfgd_crd::*Spec::validate()` are out of scope for this type check.
+#[cfg(feature = "crd")]
+fn validate_crd_spec<S: serde::de::DeserializeOwned>(yaml: &str) -> Result<(), Vec<String>> {
+    let value: serde_yaml::Value =
+        serde_yaml::from_str(yaml).map_err(|e| vec![format!("YAML syntax error: {e}")])?;
+    if let Some(api_version) = value.get("apiVersion").and_then(|v| v.as_str()) {
+        crate::config::validate_api_version(api_version).map_err(|e| vec![e.to_string()])?;
+    }
+    let spec = value
+        .get("spec")
+        .cloned()
+        .unwrap_or(serde_yaml::Value::Null);
+    serde_yaml::from_value::<S>(spec).map_err(|e| vec![e.to_string()])?;
+    Ok(())
+}
+
 /// Every cfgd resource kind. Local kinds derive their schema from the local
 /// config structs; CRD kinds (behind the `crd` feature) derive theirs from the
 /// `cfgd_crd::*Spec` types, so webhook and CLI validate against one schema.
@@ -101,6 +141,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         description: "A reusable unit of packages, files, scripts, and environment.",
         crd: false,
         schema_fn: || schema_for!(crate::config::ModuleSpec),
+        validate_fn: validate_local::<crate::config::ModuleDocument>,
     },
     KindEntry {
         kind: "Profile",
@@ -109,6 +150,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         description: "A composable layer of modules, packages, files, and settings.",
         crd: false,
         schema_fn: || schema_for!(crate::config::ProfileSpec),
+        validate_fn: validate_local::<crate::config::ProfileDocument>,
     },
     KindEntry {
         kind: "ConfigSource",
@@ -117,6 +159,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         description: "A published source of modules and profiles for multi-source config.",
         crd: false,
         schema_fn: || schema_for!(crate::config::ConfigSourceSpec),
+        validate_fn: validate_local::<crate::config::ConfigSourceDocument>,
     },
     KindEntry {
         kind: "Config",
@@ -125,6 +168,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         description: "The root cfgd configuration: active profile, sources, daemon, theme.",
         crd: false,
         schema_fn: || schema_for!(crate::config::CfgdConfig),
+        validate_fn: validate_local::<crate::config::CfgdConfig>,
     },
     #[cfg(feature = "crd")]
     KindEntry {
@@ -134,6 +178,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         description: "Per-machine desired state reconciled by the cfgd operator.",
         crd: true,
         schema_fn: || schema_for!(cfgd_crd::MachineConfigSpec),
+        validate_fn: validate_crd_spec::<cfgd_crd::MachineConfigSpec>,
     },
     #[cfg(feature = "crd")]
     KindEntry {
@@ -143,6 +188,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         description: "Namespace-scoped policy of required modules, packages, and settings.",
         crd: true,
         schema_fn: || schema_for!(cfgd_crd::ConfigPolicySpec),
+        validate_fn: validate_crd_spec::<cfgd_crd::ConfigPolicySpec>,
     },
     #[cfg(feature = "crd")]
     KindEntry {
@@ -152,6 +198,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         description: "Cluster-scoped policy fanned out across selected namespaces.",
         crd: true,
         schema_fn: || schema_for!(cfgd_crd::ClusterConfigPolicySpec),
+        validate_fn: validate_crd_spec::<cfgd_crd::ClusterConfigPolicySpec>,
     },
     #[cfg(feature = "crd")]
     KindEntry {
@@ -161,6 +208,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         description: "A recorded drift event between desired and observed machine state.",
         crd: true,
         schema_fn: || schema_for!(cfgd_crd::DriftAlertSpec),
+        validate_fn: validate_crd_spec::<cfgd_crd::DriftAlertSpec>,
     },
     #[cfg(feature = "crd")]
     KindEntry {
@@ -170,6 +218,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
         description: "Cluster-side Module CRD: an OCI-packaged module injected via CSI.",
         crd: true,
         schema_fn: || schema_for!(cfgd_crd::ModuleSpec),
+        validate_fn: validate_crd_spec::<cfgd_crd::ModuleSpec>,
     },
 ];
 
