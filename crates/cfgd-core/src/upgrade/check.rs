@@ -386,6 +386,28 @@ mod tests {
     }
 
     #[test]
+    fn resolved_interval_parses_valid_string() {
+        let mut cfg = config(UpdatePolicy::Notify);
+        cfg.interval = "1h".to_string();
+        assert_eq!(
+            resolved_interval(&cfg),
+            Duration::from_secs(HOUR),
+            "a well-formed interval must parse to its duration"
+        );
+    }
+
+    #[test]
+    fn resolved_interval_falls_back_to_24h_on_garbage() {
+        let mut cfg = config(UpdatePolicy::Notify);
+        cfg.interval = "not-a-duration".to_string();
+        assert_eq!(
+            resolved_interval(&cfg),
+            Duration::from_secs(24 * HOUR),
+            "a malformed interval must degrade to the 24h default, never crash"
+        );
+    }
+
+    #[test]
     fn resolve_action_maps_each_policy() {
         assert_eq!(
             resolve_action(UpdatePolicy::Auto, true, false),

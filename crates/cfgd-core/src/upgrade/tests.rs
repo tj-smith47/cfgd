@@ -762,6 +762,36 @@ fn extract_tarball_invalid_gz_fails() {
 
 #[test]
 #[cfg(unix)]
+fn extract_tarball_valid_gzip_invalid_tar_fails_on_entry_read() {
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().unwrap();
+    let archive_path = dir.path().join("validgz-badtar.tar.gz");
+    let dest = dir.path().join("out");
+    std::fs::create_dir_all(&dest).unwrap();
+
+    // A well-formed gzip stream whose decompressed payload is NOT a valid tar
+    // archive. GzDecoder opens lazily, so the failure surfaces when the tar
+    // entry iterator reads/parses the bogus payload (the per-entry read arm).
+    {
+        let file = std::fs::File::create(&archive_path).unwrap();
+        let mut enc = GzEncoder::new(file, Compression::default());
+        enc.write_all(b"this decompresses fine but is not a tar header at all")
+            .unwrap();
+        enc.finish().unwrap();
+    }
+
+    let result = extract_tarball(&archive_path, &dest);
+    assert!(
+        result.is_err(),
+        "valid gzip wrapping a non-tar payload must fail at entry read"
+    );
+}
+
+#[test]
+#[cfg(unix)]
 fn extract_tarball_skips_symlink_entries_without_failing() {
     use flate2::Compression;
     use flate2::write::GzEncoder;
@@ -938,6 +968,55 @@ fn invalidate_cache_no_panic_when_no_file() {
     // Ensure calling invalidate when no cache file exists does not panic.
     invalidate_cache();
     invalidate_cache(); // double-call should be safe
+}
+
+#[test]
+#[serial_test::serial]
+fn record_check_at_creates_cache_when_none_exists() {
+    let home = tempfile::tempdir().unwrap();
+    let _guard = crate::with_test_home_guard(home.path());
+
+    // No prior cache → the None branch stamps a fresh entry at `now`.
+    assert!(
+        last_checked_secs().is_none(),
+        "precondition: no cache means no recorded check"
+    );
+    record_check_at(1_700_000_000);
+    assert_eq!(
+        last_checked_secs(),
+        Some(1_700_000_000),
+        "record_check_at must persist the timestamp on a fresh cache"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn record_check_at_updates_timestamp_on_existing_cache() {
+    let home = tempfile::tempdir().unwrap();
+    let _guard = crate::with_test_home_guard(home.path());
+
+    // Seed a cache with real version fields, then re-stamp the timestamp.
+    let seeded = VersionCache {
+        checked_at_secs: 1_700_000_000,
+        latest_tag: "v9.9.0".into(),
+        latest_version: "9.9.0".into(),
+        current_version: env!("CARGO_PKG_VERSION").into(),
+    };
+    write_version_cache(&seeded).expect("seed cache write must succeed");
+
+    record_check_at(1_700_009_999);
+    assert_eq!(
+        last_checked_secs(),
+        Some(1_700_009_999),
+        "the Some branch must update the timestamp in place"
+    );
+    // Re-stamping preserves the version fields from the prior cache.
+    let after = read_version_cache().expect("cache must still parse after update");
+    assert_eq!(
+        after.latest_version, "9.9.0",
+        "record_check_at must preserve the cached version fields"
+    );
+    assert_eq!(after.latest_tag, "v9.9.0");
 }
 
 #[test]
@@ -1703,6 +1782,42 @@ fn atomic_replace_target_parent_must_exist() {
     assert!(
         result.is_err(),
         "should fail when target parent doesn't exist"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn atomic_replace_missing_source_fails_at_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    // Source never created → the staging temp file is made, but fs::copy of a
+    // missing source fails, exercising the copy-to-staging error arm.
+    let src = dir.path().join("does-not-exist-source");
+    let tgt = dir.path().join("target");
+
+    let result = atomic_replace(&src, &tgt);
+    assert!(
+        result.is_err(),
+        "a missing source must fail at the copy-to-staging step"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn atomic_replace_target_is_a_directory_fails_at_persist() {
+    let dir = tempfile::tempdir().unwrap();
+    let src = dir.path().join("source");
+    std::fs::write(&src, "content").unwrap();
+
+    // Target path is an existing DIRECTORY: the staging temp file is created in
+    // the parent and the copy succeeds, but persist's rename of a file over a
+    // directory fails, exercising the atomic-rename error arm.
+    let tgt = dir.path().join("target-is-dir");
+    std::fs::create_dir(&tgt).unwrap();
+
+    let result = atomic_replace(&src, &tgt);
+    assert!(
+        result.is_err(),
+        "renaming the staged file over an existing directory must fail at persist"
     );
 }
 
@@ -2578,6 +2693,98 @@ mod download_and_install_to {
             msg.to_ascii_lowercase().contains("checksum") && msg.contains(asset_name),
             "error names asset and surfaces checksum mismatch: {msg}"
         );
+    }
+
+    /// Same checksum-mismatch failure as the None-printer case, but with a real
+    /// printer wired in so the `finish_fail` arm of the "Verifying checksum..."
+    /// spinner executes (the success-path printer test never reaches it).
+    #[test]
+    #[serial]
+    fn checksum_mismatch_with_printer_drives_verify_finish_fail() {
+        let _shim = CosignTestShim::builder().with_argv_logging(false).install();
+        let tarball = build_tarball(b"actual-binary");
+        let bogus_sha = "0".repeat(64);
+        let checksums = checksum_body(&bogus_sha);
+
+        let mut server = mockito::Server::new();
+        let _m_archive = server
+            .mock("GET", "/download/cfgd.tar.gz")
+            .with_status(200)
+            .with_body(&tarball)
+            .create();
+        let _m_checksums = server
+            .mock("GET", "/download/cfgd.tar.gz.sha256")
+            .with_status(200)
+            .with_body(checksums)
+            .create();
+        let _m_bundle = server
+            .mock("GET", "/download/cosign.bundle")
+            .with_status(200)
+            .with_body("{}")
+            .create();
+
+        let release = release_with_full_signature_chain(&server.url());
+        let asset = release.assets[0].clone();
+        let target_dir = tempfile::tempdir().unwrap();
+        let target = target_dir.path().join("cfgd");
+
+        let printer = crate::test_helpers::test_printer();
+        let err = download_and_install_to(&release, &asset, &target, false, Some(&printer))
+            .expect_err("checksum mismatch with printer → Err");
+        let msg = err.to_string();
+        assert!(
+            msg.to_ascii_lowercase().contains("checksum") && msg.contains(ARCHIVE),
+            "error names asset and surfaces checksum mismatch: {msg}"
+        );
+        assert!(!target.exists(), "target must not be created on failure");
+    }
+
+    /// Same cosign-verify failure as the None-printer case, but with a real
+    /// printer so the `finish_fail` arm of the "Verifying cosign signature..."
+    /// spinner executes.
+    #[test]
+    #[serial]
+    fn cosign_failure_with_printer_drives_cosign_finish_fail() {
+        let _shim = CosignTestShim::builder()
+            .with_argv_logging(false)
+            .with_exit(1)
+            .with_stderr("tampered checksums file")
+            .install();
+        let tarball = build_tarball(b"binary");
+        let sha = crate::sha256_hex(&tarball);
+        let checksums = checksum_body(&sha);
+
+        let mut server = mockito::Server::new();
+        let _m_archive = server
+            .mock("GET", "/download/cfgd.tar.gz")
+            .with_status(200)
+            .with_body(&tarball)
+            .create();
+        let _m_checksums = server
+            .mock("GET", "/download/cfgd.tar.gz.sha256")
+            .with_status(200)
+            .with_body(checksums)
+            .create();
+        let _m_bundle = server
+            .mock("GET", "/download/cosign.bundle")
+            .with_status(200)
+            .with_body("{}")
+            .create();
+
+        let release = release_with_full_signature_chain(&server.url());
+        let asset = release.assets[0].clone();
+        let target_dir = tempfile::tempdir().unwrap();
+        let target = target_dir.path().join("cfgd");
+
+        let printer = crate::test_helpers::test_printer();
+        let err = download_and_install_to(&release, &asset, &target, false, Some(&printer))
+            .expect_err("cosign exit 1 with printer → Err");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cosign verify-blob failed") && msg.contains("tampered checksums file"),
+            "error surfaces cosign-verify failure with stderr message: {msg}"
+        );
+        assert!(!target.exists(), "target must not be created on failure");
     }
 
     #[test]
@@ -3803,6 +4010,98 @@ mod api_base_env_shim {
         assert_eq!(
             result.release.as_ref().map(|r| r.tag.as_str()),
             Some("v9.9.0")
+        );
+    }
+
+    /// Prerelease list whose body is not valid JSON surfaces the `invalid JSON`
+    /// ApiError rather than panicking or silently succeeding.
+    #[test]
+    #[serial]
+    fn channel_prerelease_invalid_json_errors() {
+        let mut server = mockito::Server::new();
+        let _list_mock = server
+            .mock("GET", "/repos/test/repo/releases")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("not json")
+            .create();
+        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+
+        let err = check_latest(Some("test/repo"), Some("prerelease"), None)
+            .expect_err("invalid JSON body must surface as an error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid JSON"),
+            "error must name the JSON parse failure, got: {msg}"
+        );
+    }
+
+    /// A JSON object (not an array) at the list endpoint is rejected with the
+    /// "not a JSON array" ApiError.
+    #[test]
+    #[serial]
+    fn channel_prerelease_non_array_body_errors() {
+        let mut server = mockito::Server::new();
+        let _list_mock = server
+            .mock("GET", "/repos/test/repo/releases")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("{}")
+            .create();
+        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+
+        let err = check_latest(Some("test/repo"), Some("prerelease"), None)
+            .expect_err("a JSON object is not a releases array");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("releases list response was not a JSON array"),
+            "error must name the non-array shape, got: {msg}"
+        );
+    }
+
+    /// An empty releases array has no parseable release → the "no parseable
+    /// release" ApiError.
+    #[test]
+    #[serial]
+    fn channel_prerelease_empty_array_errors() {
+        let mut server = mockito::Server::new();
+        let _list_mock = server
+            .mock("GET", "/repos/test/repo/releases")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body("[]")
+            .create();
+        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+
+        let err = check_latest(Some("test/repo"), Some("prerelease"), None)
+            .expect_err("an empty releases array yields no parseable release");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no parseable release found"),
+            "empty array must yield the no-parseable-release error, got: {msg}"
+        );
+    }
+
+    /// Every element has an unparseable tag, so the `filter_map(...).ok()` skips
+    /// them all → the same "no parseable release" ApiError as an empty array.
+    #[test]
+    #[serial]
+    fn channel_prerelease_all_unparseable_tags_errors() {
+        let mut server = mockito::Server::new();
+        let _list_mock = server
+            .mock("GET", "/repos/test/repo/releases")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"[{"tag_name": "not-a-version", "assets": []}]"#)
+            .create();
+        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+
+        let err = check_latest(Some("test/repo"), Some("prerelease"), None)
+            .expect_err("all-unparseable tags leave no selectable release");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no parseable release found"),
+            "unparseable tags must be skipped, leaving no release, got: {msg}"
         );
     }
 }
