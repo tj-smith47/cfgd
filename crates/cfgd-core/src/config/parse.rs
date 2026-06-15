@@ -8,7 +8,7 @@ use super::compliance::ComplianceConfig;
 use super::daemon::DaemonConfig;
 use super::origin::OriginSpec;
 use super::profile_spec::{FileStrategy, ProfileDocument};
-use super::root::{CfgdConfig, ConfigMetadata, ConfigSpec};
+use super::root::{CfgdConfig, ConfigMetadata, ConfigSpec, UpdateConfig};
 use super::security::{ModulesConfig, SecurityConfig};
 use super::source::{ConfigSourceDocument, SourceSpec};
 use super::sync_secrets::SecretsConfig;
@@ -243,6 +243,7 @@ pub fn parse_config(contents: &str, path: &Path) -> Result<CfgdConfig> {
             aliases: raw.spec.aliases,
             ai: raw.spec.ai,
             compliance: raw.spec.compliance,
+            update: raw.spec.update,
         },
     })
 }
@@ -284,6 +285,8 @@ struct RawConfigSpec {
     ai: Option<AiConfig>,
     #[serde(default)]
     compliance: Option<ComplianceConfig>,
+    #[serde(default)]
+    update: Option<UpdateConfig>,
 }
 
 #[derive(Debug, Deserialize)]

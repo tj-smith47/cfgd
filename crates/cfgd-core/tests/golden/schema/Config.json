@@ -310,6 +310,18 @@
               "type": "null"
             }
           ]
+        },
+        "update": {
+          "description": "Update policy for the cfgd binary and authored skills.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UpdateConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -704,6 +716,62 @@
       },
       "additionalProperties": false
     },
+    "SkillUpdateConfig": {
+      "description": "Update configuration specific to authored skills.",
+      "type": "object",
+      "properties": {
+        "policy": {
+          "description": "How skill update checks behave. Defaults to `Inherit` (defer to the binary-level policy).",
+          "default": "Inherit",
+          "allOf": [
+            {
+              "$ref": "#/definitions/SkillUpdatePolicy"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "SkillUpdatePolicy": {
+      "description": "Per-skill update policy. Mirrors [`UpdatePolicy`] but adds `Inherit`, which defers to the binary-level [`UpdateConfig::policy`].",
+      "oneOf": [
+        {
+          "description": "Defer to the binary-level update policy ([`UpdateConfig::policy`]).",
+          "type": "string",
+          "enum": [
+            "Inherit"
+          ]
+        },
+        {
+          "description": "Apply skill updates automatically without prompting.",
+          "type": "string",
+          "enum": [
+            "Auto"
+          ]
+        },
+        {
+          "description": "Ask before applying an available skill update.",
+          "type": "string",
+          "enum": [
+            "Prompt"
+          ]
+        },
+        {
+          "description": "Report that a skill update is available, but take no action.",
+          "type": "string",
+          "enum": [
+            "Notify"
+          ]
+        },
+        {
+          "description": "Disable automatic skill update checks; the user updates manually.",
+          "type": "string",
+          "enum": [
+            "Manual"
+          ]
+        }
+      ]
+    },
     "SopsConfig": {
       "type": "object",
       "properties": {
@@ -998,6 +1066,78 @@
           ]
         }
       }
+    },
+    "UpdateConfig": {
+      "description": "Configuration for cfgd self-update checks and authored-skill updates.",
+      "type": "object",
+      "properties": {
+        "channel": {
+          "description": "Release channel to track (e.g. `stable`, `beta`). When unset, cfgd uses its built-in default channel.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval": {
+          "description": "How often to check for updates, as a duration string (e.g. `24h`, `7d`, `30m`) or a plain number of seconds. Defaults to `24h`.",
+          "default": "24h",
+          "type": "string"
+        },
+        "policy": {
+          "description": "How update checks for the cfgd binary behave. Defaults to `Prompt`.",
+          "default": "Prompt",
+          "allOf": [
+            {
+              "$ref": "#/definitions/UpdatePolicy"
+            }
+          ]
+        },
+        "skills": {
+          "description": "Update policy for authored skills. Defaults to inheriting `policy`.",
+          "default": {
+            "policy": "Inherit"
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/SkillUpdateConfig"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "UpdatePolicy": {
+      "description": "Update policy governing how cfgd self-update checks behave.\n\n`Auto` applies updates without prompting, `Prompt` asks before applying, `Notify` only reports that an update is available, and `Manual` disables automatic checks entirely (the user runs `cfgd upgrade` themselves).",
+      "oneOf": [
+        {
+          "description": "Apply updates automatically without prompting.",
+          "type": "string",
+          "enum": [
+            "Auto"
+          ]
+        },
+        {
+          "description": "Ask before applying an available update.",
+          "type": "string",
+          "enum": [
+            "Prompt"
+          ]
+        },
+        {
+          "description": "Report that an update is available, but take no action.",
+          "type": "string",
+          "enum": [
+            "Notify"
+          ]
+        },
+        {
+          "description": "Disable automatic update checks; the user upgrades manually.",
+          "type": "string",
+          "enum": [
+            "Manual"
+          ]
+        }
+      ]
     }
   }
 }

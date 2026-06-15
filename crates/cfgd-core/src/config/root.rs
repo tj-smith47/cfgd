@@ -91,6 +91,111 @@ pub struct ConfigSpec {
     /// Compliance snapshot configuration.
     #[serde(default)]
     pub compliance: Option<ComplianceConfig>,
+
+    /// Update policy for the cfgd binary and authored skills.
+    #[serde(default)]
+    pub update: Option<UpdateConfig>,
+}
+
+/// Update policy governing how cfgd self-update checks behave.
+///
+/// `Auto` applies updates without prompting, `Prompt` asks before applying,
+/// `Notify` only reports that an update is available, and `Manual` disables
+/// automatic checks entirely (the user runs `cfgd upgrade` themselves).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub enum UpdatePolicy {
+    /// Apply updates automatically without prompting.
+    Auto,
+    /// Ask before applying an available update.
+    #[default]
+    Prompt,
+    /// Report that an update is available, but take no action.
+    Notify,
+    /// Disable automatic update checks; the user upgrades manually.
+    Manual,
+}
+
+case_insensitive_enum!(UpdatePolicy {
+    "Auto" => UpdatePolicy::Auto,
+    "Prompt" => UpdatePolicy::Prompt,
+    "Notify" => UpdatePolicy::Notify,
+    "Manual" => UpdatePolicy::Manual,
+});
+
+/// Per-skill update policy. Mirrors [`UpdatePolicy`] but adds `Inherit`, which
+/// defers to the binary-level [`UpdateConfig::policy`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, schemars::JsonSchema)]
+pub enum SkillUpdatePolicy {
+    /// Defer to the binary-level update policy ([`UpdateConfig::policy`]).
+    #[default]
+    Inherit,
+    /// Apply skill updates automatically without prompting.
+    Auto,
+    /// Ask before applying an available skill update.
+    Prompt,
+    /// Report that a skill update is available, but take no action.
+    Notify,
+    /// Disable automatic skill update checks; the user updates manually.
+    Manual,
+}
+
+case_insensitive_enum!(SkillUpdatePolicy {
+    "Inherit" => SkillUpdatePolicy::Inherit,
+    "Auto" => SkillUpdatePolicy::Auto,
+    "Prompt" => SkillUpdatePolicy::Prompt,
+    "Notify" => SkillUpdatePolicy::Notify,
+    "Manual" => SkillUpdatePolicy::Manual,
+});
+
+/// Configuration for cfgd self-update checks and authored-skill updates.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateConfig {
+    /// How update checks for the cfgd binary behave. Defaults to `Prompt`.
+    #[serde(default)]
+    pub policy: UpdatePolicy,
+
+    /// How often to check for updates, as a duration string (e.g. `24h`, `7d`,
+    /// `30m`) or a plain number of seconds. Defaults to `24h`.
+    #[serde(default = "default_update_interval")]
+    pub interval: String,
+
+    /// Release channel to track (e.g. `stable`, `beta`). When unset, cfgd uses
+    /// its built-in default channel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+
+    /// Update policy for authored skills. Defaults to inheriting `policy`.
+    #[serde(default)]
+    pub skills: SkillUpdateConfig,
+}
+
+impl UpdateConfig {
+    /// Resolve the effective update policy for authored skills, collapsing
+    /// `SkillUpdatePolicy::Inherit` to the binary-level [`UpdateConfig::policy`].
+    pub fn effective_skill_policy(&self) -> UpdatePolicy {
+        match self.skills.policy {
+            SkillUpdatePolicy::Inherit => self.policy,
+            SkillUpdatePolicy::Auto => UpdatePolicy::Auto,
+            SkillUpdatePolicy::Prompt => UpdatePolicy::Prompt,
+            SkillUpdatePolicy::Notify => UpdatePolicy::Notify,
+            SkillUpdatePolicy::Manual => UpdatePolicy::Manual,
+        }
+    }
+}
+
+/// Update configuration specific to authored skills.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillUpdateConfig {
+    /// How skill update checks behave. Defaults to `Inherit` (defer to the
+    /// binary-level policy).
+    #[serde(default)]
+    pub policy: SkillUpdatePolicy,
+}
+
+fn default_update_interval() -> String {
+    "24h".to_string()
 }
 
 /// Returns `true` if `path` has a YAML extension (`.yaml` or `.yml`,
@@ -245,6 +350,31 @@ mod tests {
             msg.contains("unknown field") && msg.contains("securty"),
             "expected unknown-field error mentioning securty, got: {msg}"
         );
+    }
+
+    #[test]
+    fn update_config_parses_explicit_skill_override() {
+        let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: c\nspec:\n  profile: base\n  update:\n    policy: Notify\n    skills:\n      policy: Manual\n";
+        let cfg: CfgdConfig = serde_yaml::from_str(yaml).unwrap();
+        let u = cfg.spec.update.unwrap();
+        assert!(matches!(u.policy, UpdatePolicy::Notify));
+        assert!(matches!(u.skills.policy, SkillUpdatePolicy::Manual));
+    }
+
+    #[test]
+    fn update_defaults_are_prompt_and_inherit() {
+        let u = UpdateConfig::default();
+        assert!(matches!(u.policy, UpdatePolicy::Prompt));
+        assert!(matches!(u.skills.policy, SkillUpdatePolicy::Inherit));
+    }
+
+    #[test]
+    fn inherit_resolves_to_binary_policy() {
+        let u = UpdateConfig {
+            policy: UpdatePolicy::Auto,
+            ..Default::default()
+        }; // skills = Inherit
+        assert!(matches!(u.effective_skill_policy(), UpdatePolicy::Auto));
     }
 
     #[test]

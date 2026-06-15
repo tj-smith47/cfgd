@@ -119,6 +119,7 @@ fn happy_config() -> CfgdConfig {
             aliases: HashMap::new(),
             ai: None,
             compliance: None,
+            update: None,
         },
     }
 }

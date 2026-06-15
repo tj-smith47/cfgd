@@ -265,6 +265,7 @@ fn find_server_url_returns_none_for_git_origin() {
             file_strategy: crate::config::FileStrategy::default(),
             ai: None,
             compliance: None,
+            update: None,
         },
     };
     assert!(find_server_url(&config).is_none());
@@ -298,6 +299,7 @@ fn find_server_url_returns_url_for_server_origin() {
             file_strategy: crate::config::FileStrategy::default(),
             ai: None,
             compliance: None,
+            update: None,
         },
     };
     assert_eq!(
@@ -1307,6 +1309,7 @@ fn find_server_url_picks_server_among_multiple_origins() {
             file_strategy: crate::config::FileStrategy::default(),
             ai: None,
             compliance: None,
+            update: None,
         },
     };
     assert_eq!(
@@ -1337,6 +1340,7 @@ fn find_server_url_returns_none_for_empty_origins() {
             file_strategy: crate::config::FileStrategy::default(),
             ai: None,
             compliance: None,
+            update: None,
         },
     };
     assert!(find_server_url(&config).is_none());
@@ -1553,6 +1557,7 @@ fn find_server_url_picks_first_server_among_duplicates() {
             file_strategy: crate::config::FileStrategy::default(),
             ai: None,
             compliance: None,
+            update: None,
         },
     };
     assert_eq!(
@@ -3642,6 +3647,7 @@ fn try_server_checkin_no_server_origin_returns_false() {
             file_strategy: FileStrategy::default(),
             ai: None,
             compliance: None,
+            update: None,
         },
     };
     let resolved = ResolvedProfile {
@@ -3698,6 +3704,7 @@ fn try_server_checkin_with_server_origin_calls_checkin() {
             file_strategy: FileStrategy::default(),
             ai: None,
             compliance: None,
+            update: None,
         },
     };
     let resolved = ResolvedProfile {
