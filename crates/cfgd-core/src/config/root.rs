@@ -378,6 +378,38 @@ mod tests {
     }
 
     #[test]
+    fn update_policy_parses_case_insensitively() {
+        for (token, expected) in [
+            ("auto", UpdatePolicy::Auto),
+            ("PROMPT", UpdatePolicy::Prompt),
+            ("notify", UpdatePolicy::Notify),
+            ("Manual", UpdatePolicy::Manual),
+        ] {
+            let p: UpdatePolicy = serde_yaml::from_str(token)
+                .unwrap_or_else(|e| panic!("`{token}` should parse: {e}"));
+            assert_eq!(p, expected, "token {token}");
+        }
+        serde_yaml::from_str::<UpdatePolicy>("sometimes").expect_err("garbage must error");
+    }
+
+    #[test]
+    fn skill_update_policy_parses_case_insensitively() {
+        for (token, expected) in [
+            ("inherit", SkillUpdatePolicy::Inherit),
+            ("Inherit", SkillUpdatePolicy::Inherit),
+            ("auto", SkillUpdatePolicy::Auto),
+            ("PROMPT", SkillUpdatePolicy::Prompt),
+            ("notify", SkillUpdatePolicy::Notify),
+            ("Manual", SkillUpdatePolicy::Manual),
+        ] {
+            let p: SkillUpdatePolicy = serde_yaml::from_str(token)
+                .unwrap_or_else(|e| panic!("`{token}` should parse: {e}"));
+            assert_eq!(p, expected, "token {token}");
+        }
+        serde_yaml::from_str::<SkillUpdatePolicy>("sometimes").expect_err("garbage must error");
+    }
+
+    #[test]
     fn for_each_yaml_file_visits_yaml_files() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.yaml"), "").unwrap();
