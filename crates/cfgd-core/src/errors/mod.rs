@@ -48,6 +48,9 @@ pub enum CfgdError {
     #[error("oci error: {0}")]
     Oci(#[from] OciError),
 
+    #[error("skill error: {0}")]
+    Skill(#[from] SkillError),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -469,6 +472,24 @@ pub enum GenerateError {
 
     #[error("API key not found in environment variable '{env_var}'")]
     ApiKeyNotFound { env_var: String },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SkillError {
+    #[error("failed to render skill for provider '{provider}': {message}")]
+    Render { provider: String, message: String },
+
+    #[error("provider detection failed for '{provider}': {message}")]
+    Detect { provider: String, message: String },
+
+    #[error("failed to write skill file: {0}")]
+    Write(#[source] std::io::Error),
+
+    #[error("malformed managed section in {path}: {message}")]
+    ManagedSection { path: PathBuf, message: String },
+
+    #[error("failed to acquire skill-file lock: {0}")]
+    Lock(#[source] Box<CfgdError>),
 }
 
 #[derive(Debug, thiserror::Error)]

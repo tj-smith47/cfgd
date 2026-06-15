@@ -1,5 +1,7 @@
 // Provider traits and registry — consumed by packages/, files/, secrets/, reconciler/
 
+pub mod skill;
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
