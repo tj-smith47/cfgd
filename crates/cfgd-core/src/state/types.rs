@@ -49,6 +49,25 @@ impl ApplyStatus {
     }
 }
 
+#[cfg(test)]
+mod apply_status_tests {
+    use super::ApplyStatus;
+
+    #[test]
+    fn from_str_round_trips_known_and_defaults_unknown_to_failed() {
+        assert_eq!(ApplyStatus::from_str("success"), ApplyStatus::Success);
+        assert_eq!(ApplyStatus::from_str("partial"), ApplyStatus::Partial);
+        assert_eq!(
+            ApplyStatus::from_str("in_progress"),
+            ApplyStatus::InProgress
+        );
+        assert_eq!(ApplyStatus::from_str("aborted"), ApplyStatus::Aborted);
+        assert_eq!(ApplyStatus::from_str("failed"), ApplyStatus::Failed);
+        // An unrecognized status conservatively maps to Failed.
+        assert_eq!(ApplyStatus::from_str("bogus-status"), ApplyStatus::Failed);
+    }
+}
+
 /// A recorded apply operation.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

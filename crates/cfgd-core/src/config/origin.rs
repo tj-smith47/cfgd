@@ -42,6 +42,18 @@ impl SshHostKeyPolicy {
     }
 }
 
+#[cfg(test)]
+mod ssh_host_key_policy_tests {
+    use super::SshHostKeyPolicy;
+
+    #[test]
+    fn as_ssh_option_maps_every_policy() {
+        assert_eq!(SshHostKeyPolicy::AcceptNew.as_ssh_option(), "accept-new");
+        assert_eq!(SshHostKeyPolicy::Yes.as_ssh_option(), "yes");
+        assert_eq!(SshHostKeyPolicy::No.as_ssh_option(), "no");
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub enum OriginType {
     Git,

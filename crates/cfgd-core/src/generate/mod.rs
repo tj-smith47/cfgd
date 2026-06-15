@@ -40,6 +40,18 @@ impl SchemaKind {
     }
 }
 
+#[cfg(test)]
+mod schema_kind_tests {
+    use super::SchemaKind;
+
+    #[test]
+    fn as_str_names_every_kind() {
+        assert_eq!(SchemaKind::Module.as_str(), "Module");
+        assert_eq!(SchemaKind::Profile.as_str(), "Profile");
+        assert_eq!(SchemaKind::Config.as_str(), "Config");
+    }
+}
+
 /// Request to present YAML for user review.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PresentYamlRequest {

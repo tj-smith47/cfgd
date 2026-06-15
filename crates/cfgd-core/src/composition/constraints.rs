@@ -157,3 +157,20 @@ pub fn check_locked_violations(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod find_matching_pattern_tests {
+    use super::find_matching_pattern;
+
+    #[test]
+    fn falls_back_to_literal_equality_for_invalid_glob() {
+        // `a[b` is not a valid glob (unclosed class), so the glob branch is
+        // skipped and the literal-equality arm matches the identical path.
+        let patterns = vec!["a[b".to_string()];
+        assert_eq!(
+            find_matching_pattern("a[b", &patterns),
+            Some("a[b".to_string())
+        );
+        assert_eq!(find_matching_pattern("other", &patterns), None);
+    }
+}
