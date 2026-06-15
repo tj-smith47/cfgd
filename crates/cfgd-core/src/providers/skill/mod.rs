@@ -89,7 +89,8 @@ pub struct ManagedSection {
 
 impl ManagedSection {
     /// Build the standard HTML-comment delimiters for a kind and pair them with a
-    /// body. The markers match `<!-- cfgd:skill:<kind> -->` … `<!-- /cfgd:skill:<kind> -->`.
+    /// body. The markers match `<!-- cfgd:skill:<token> -->` … `<!-- /cfgd:skill:<token> -->`,
+    /// where `<token>` is the kind's [`command_token`](SkillKind::command_token).
     pub fn for_kind(kind: SkillKind, body: impl Into<String>) -> Self {
         let token = kind.command_token();
         Self {
@@ -338,16 +339,22 @@ fn block_span(haystack: &str, section: &ManagedSection) -> Option<(usize, usize)
     Some((start, end))
 }
 
-/// Extract the `cfgd-version: <X.Y.Z>` stamp from a rendered file body, scanning
-/// frontmatter keys, TOML keys, and `AGENTS.md` comment lines uniformly.
+/// Extract the `cfgd-version` stamp from a rendered file body, scanning
+/// frontmatter keys (`cfgd-version: X`), TOML keys (`cfgd-version = "X"`), and
+/// `AGENTS.md` comment lines uniformly. Accepts either a `:` or `=` separator so
+/// every provider's native metadata shape is read by the same parser.
 fn parse_version_stamp(contents: &str) -> Option<String> {
     for line in contents.lines() {
         let line = line.trim().trim_start_matches(['#', '-', ' ']).trim();
-        if let Some(rest) = line.strip_prefix("cfgd-version:") {
-            let value = rest.trim().trim_matches(['"', '\'']);
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
+        let Some(rest) = line.strip_prefix("cfgd-version") else {
+            continue;
+        };
+        let Some(value) = rest.trim_start().strip_prefix([':', '=']) else {
+            continue;
+        };
+        let value = value.trim().trim_matches(['"', '\'']);
+        if !value.is_empty() {
+            return Some(value.to_string());
         }
     }
     None
@@ -388,5 +395,77 @@ mod tests {
         for id in ["claude-code", "gemini", "copilot", "codex", "cursor"] {
             assert!(ids.contains(&id), "missing provider {id}");
         }
+    }
+
+    fn module_section() -> ManagedSection {
+        ManagedSection::for_kind(SkillKind::Module, "MODULE GUIDANCE")
+    }
+
+    #[test]
+    fn splice_block_is_idempotent() {
+        let section = module_section();
+        let user = "# My AGENTS.md\n\nSome existing guidance.\n";
+        let once = splice_block(Some(user), &section);
+        let twice = splice_block(Some(&once), &section);
+        assert_eq!(once, twice, "re-splicing the same block must be a no-op");
+        assert!(once.contains(&section.begin) && once.contains(&section.end));
+        assert!(once.contains("MODULE GUIDANCE"));
+    }
+
+    #[test]
+    fn splice_then_excise_preserves_surrounding_bytes() {
+        let section = module_section();
+        let user = "# My AGENTS.md\n\nSome existing guidance.\n";
+        let spliced = splice_block(Some(user), &section);
+        let restored = excise_block(&spliced, &section).expect("block was present");
+        // Surrounding non-block bytes survive verbatim (modulo the deliberate
+        // trailing-whitespace collapse, which normalizes to a single newline).
+        assert_eq!(restored, "# My AGENTS.md\n\nSome existing guidance.\n");
+        assert!(!restored.contains(&section.begin));
+        assert!(!restored.contains("MODULE GUIDANCE"));
+    }
+
+    #[test]
+    fn splice_into_empty_then_excise_yields_empty() {
+        let section = module_section();
+        let spliced = splice_block(None, &section);
+        assert!(spliced.contains("MODULE GUIDANCE"));
+        let restored = excise_block(&spliced, &section).expect("block was present");
+        assert_eq!(restored, "", "removing the only content empties the file");
+    }
+
+    #[test]
+    fn excise_and_span_on_absent_block_return_none() {
+        let section = module_section();
+        let user = "# My AGENTS.md\n\nNo cfgd block here.\n";
+        assert!(block_span(user, &section).is_none());
+        assert!(excise_block(user, &section).is_none());
+    }
+
+    #[test]
+    fn parse_version_stamp_well_formed() {
+        // Frontmatter / TOML key shapes.
+        assert_eq!(
+            parse_version_stamp("---\ncfgd-version: 0.4.0\nname: x\n---\n"),
+            Some("0.4.0".to_string())
+        );
+        assert_eq!(
+            parse_version_stamp("cfgd-version = \"1.2.3\"\n"),
+            Some("1.2.3".to_string())
+        );
+        // AGENTS.md comment-line shape.
+        assert_eq!(
+            parse_version_stamp("# cfgd-version: 9.9.0\n"),
+            Some("9.9.0".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_version_stamp_missing_or_garbled_is_none() {
+        assert_eq!(parse_version_stamp(""), None);
+        assert_eq!(parse_version_stamp("no stamp anywhere\n"), None);
+        // Key present but no value.
+        assert_eq!(parse_version_stamp("cfgd-version:\n"), None);
+        assert_eq!(parse_version_stamp("cfgd-version: \"\"\n"), None);
     }
 }
