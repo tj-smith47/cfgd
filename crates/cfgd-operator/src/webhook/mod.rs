@@ -17,7 +17,7 @@ use tracing::{info, warn};
 
 use crate::crds::{
     ClusterConfigPolicy, ClusterConfigPolicySpec, ConfigPolicy, ConfigPolicySpec, DriftAlertSpec,
-    MachineConfigSpec, Module, ModuleSpec, MountPolicy,
+    MachineConfigSpec, Module, ModuleSpec, MountPolicy, Validatable,
 };
 use crate::errors::OperatorError;
 use crate::metrics::{Metrics, WebhookLabels};
@@ -147,7 +147,7 @@ fn build_webhook_router(state: WebhookState) -> Router {
 // ---------------------------------------------------------------------------
 
 /// Generic webhook validation handler — shared logic for all CRD types.
-fn handle_validate<S: Validatable + 'static>(
+fn handle_validate<S: Validatable + serde::de::DeserializeOwned + 'static>(
     operation: &'static str,
     metrics: &Metrics,
     review: AdmissionReview<DynamicObject>,
@@ -338,43 +338,12 @@ fn record_webhook_metrics(
         .observe(start.elapsed().as_secs_f64());
 }
 
-/// Trait for CRD specs that have a validate method.
-trait Validatable: serde::de::DeserializeOwned {
-    fn validate(&self) -> Result<(), Vec<String>>;
-}
-
-impl Validatable for MachineConfigSpec {
-    fn validate(&self) -> Result<(), Vec<String>> {
-        MachineConfigSpec::validate(self)
-    }
-}
-
-impl Validatable for ConfigPolicySpec {
-    fn validate(&self) -> Result<(), Vec<String>> {
-        ConfigPolicySpec::validate(self)
-    }
-}
-
-impl Validatable for ClusterConfigPolicySpec {
-    fn validate(&self) -> Result<(), Vec<String>> {
-        ClusterConfigPolicySpec::validate(self)
-    }
-}
-
-impl Validatable for DriftAlertSpec {
-    fn validate(&self) -> Result<(), Vec<String>> {
-        DriftAlertSpec::validate(self)
-    }
-}
-
-impl Validatable for ModuleSpec {
-    fn validate(&self) -> Result<(), Vec<String>> {
-        ModuleSpec::validate(self)
-    }
-}
-
 /// Extract spec from a DynamicObject admission request and validate it.
-fn validate_object_spec<S: Validatable>(
+///
+/// The cross-field rules come from [`cfgd_crd::Validatable`], the single impl
+/// the CLI registry validator also dispatches through — admission and `cfgd
+/// <kind> validate` can never diverge.
+fn validate_object_spec<S: Validatable + serde::de::DeserializeOwned>(
     req: &AdmissionRequest<DynamicObject>,
 ) -> Result<(), String> {
     let Some(obj) = &req.object else {

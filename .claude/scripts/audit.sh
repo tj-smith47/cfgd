@@ -339,13 +339,16 @@ fi
 log_section "Config Parsing Boundary"
 # CLAUDE.md rule #5: all config parsing must live in config/.
 # Check cfgd-core for serde_yaml::from_* calls outside config/, generate/, and lib.rs.
-# generate/ legitimately validates YAML (not loading application config) so it is excluded.
+# generate/ and schema/ legitimately validate YAML documents (not loading
+# application config) so both are excluded — they are two halves of one
+# validation pipeline (schema/ parses raw YAML to extract apiVersion/spec for the
+# KIND_REGISTRY validators; generate/validate.rs delegates straight into schema/).
 # modules/ legitimately parses lockfiles (not application config) so it is excluded.
 # Test blocks are stripped before checking.
 config_parse_violations=""
 while IFS= read -r -d '' rsfile; do
     case "$rsfile" in
-        */config/*|*/generate/*|*/modules/*|*/lib.rs) continue ;;
+        */config/*|*/generate/*|*/modules/*|*/schema/*|*/lib.rs) continue ;;
     esac
     violations=$(strip_test_blocks_from_file "$rsfile" \
         | grep -E 'serde_yaml::from_(str|reader|value)' \
@@ -355,10 +358,10 @@ while IFS= read -r -d '' rsfile; do
     fi
 done < <(find crates/cfgd-core/src -name '*.rs' -print0 2>/dev/null)
 if [[ -n "$config_parse_violations" ]]; then
-    log_warn "serde_yaml::from_* found in cfgd-core outside config/, generate/, or modules/ (CLAUDE.md rule #5):"
+    log_warn "serde_yaml::from_* found in cfgd-core outside config/, generate/, schema/, or modules/ (CLAUDE.md rule #5):"
     printf "%s" "$config_parse_violations" | head -10
 else
-    log_ok "Config parsing confined to config/, generate/, and modules/ in cfgd-core"
+    log_ok "Config parsing confined to config/, generate/, schema/, and modules/ in cfgd-core"
 fi
 
 log_section "Effective-state routing (module↔profile coherence)"

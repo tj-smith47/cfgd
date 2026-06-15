@@ -109,14 +109,18 @@ fn validate_local<D: serde::de::DeserializeOwned>(yaml: &str) -> Result<(), Vec<
     Ok(())
 }
 
-/// Validate a CRD document by deserializing its `spec` into `S`. CRD specs
-/// intentionally omit `deny_unknown_fields` (schemars maps that to
-/// `additionalProperties: false`, which Kubernetes rejects for structural
-/// schemas), so this confirms the spec is well-typed and the `apiVersion` is
-/// recognized, without the strict-field guard. Cross-field invariants enforced
-/// by `cfgd_crd::*Spec::validate()` are out of scope for this type check.
+/// Validate a CRD document by deserializing its `spec` into `S`, then running
+/// `S`'s cross-field [`cfgd_crd::Validatable::validate`]. CRD specs intentionally
+/// omit `deny_unknown_fields` (schemars maps that to `additionalProperties:
+/// false`, which Kubernetes rejects for structural schemas), so the type check
+/// confirms the spec is well-typed and the `apiVersion` is recognized without
+/// the strict-field guard. The cross-field rules are the SAME impl the admission
+/// webhook enforces, so a violation rejected at admission is rejected identically
+/// here.
 #[cfg(feature = "crd")]
-fn validate_crd_spec<S: serde::de::DeserializeOwned>(yaml: &str) -> Result<(), Vec<String>> {
+fn validate_crd_spec<S: serde::de::DeserializeOwned + cfgd_crd::Validatable>(
+    yaml: &str,
+) -> Result<(), Vec<String>> {
     let value: serde_yaml::Value =
         serde_yaml::from_str(yaml).map_err(|e| vec![format!("YAML syntax error: {e}")])?;
     if let Some(api_version) = value.get("apiVersion").and_then(|v| v.as_str()) {
@@ -126,8 +130,8 @@ fn validate_crd_spec<S: serde::de::DeserializeOwned>(yaml: &str) -> Result<(), V
         .get("spec")
         .cloned()
         .unwrap_or(serde_yaml::Value::Null);
-    serde_yaml::from_value::<S>(spec).map_err(|e| vec![e.to_string()])?;
-    Ok(())
+    let spec: S = serde_yaml::from_value(spec).map_err(|e| vec![e.to_string()])?;
+    spec.validate()
 }
 
 /// Every cfgd resource kind. Local kinds derive their schema from the local

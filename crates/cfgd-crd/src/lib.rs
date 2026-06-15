@@ -627,6 +627,47 @@ impl ModuleSpec {
     }
 }
 
+/// Cross-field validation contract shared across CRD spec types.
+///
+/// Every spec type carries an inherent `validate()` that enforces its
+/// cross-field invariants; this trait exposes that single implementation behind
+/// one bound so generic dispatchers (the admission webhook and the unified
+/// resource-kind registry) validate against the same logic and cannot diverge.
+pub trait Validatable {
+    /// Validate the spec, returning every cross-field error found.
+    fn validate(&self) -> Result<(), Vec<String>>;
+}
+
+impl Validatable for MachineConfigSpec {
+    fn validate(&self) -> Result<(), Vec<String>> {
+        MachineConfigSpec::validate(self)
+    }
+}
+
+impl Validatable for ConfigPolicySpec {
+    fn validate(&self) -> Result<(), Vec<String>> {
+        ConfigPolicySpec::validate(self)
+    }
+}
+
+impl Validatable for ClusterConfigPolicySpec {
+    fn validate(&self) -> Result<(), Vec<String>> {
+        ClusterConfigPolicySpec::validate(self)
+    }
+}
+
+impl Validatable for DriftAlertSpec {
+    fn validate(&self) -> Result<(), Vec<String>> {
+        DriftAlertSpec::validate(self)
+    }
+}
+
+impl Validatable for ModuleSpec {
+    fn validate(&self) -> Result<(), Vec<String>> {
+        ModuleSpec::validate(self)
+    }
+}
+
 /// Validate the syntactic shape of an OCI artifact reference.
 ///
 /// This is a self-contained validity predicate — the full parser that extracts

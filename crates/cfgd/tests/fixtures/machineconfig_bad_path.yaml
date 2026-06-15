@@ -1,0 +1,15 @@
+apiVersion: cfgd.io/v1alpha1
+kind: MachineConfig
+metadata:
+  name: bad-path
+spec:
+  files:
+  - content: data
+    mode: '0644'
+    path: /etc/../shadow
+    source: null
+  hostname: host1
+  moduleRefs: []
+  packages: []
+  profile: default
+  systemSettings: {}
