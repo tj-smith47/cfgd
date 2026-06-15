@@ -85,6 +85,13 @@ struct SkillInstallResult {
     status: SkillResultStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
+    /// Render this skip as a visible warning rather than a quiet skip. Human-only:
+    /// elevates the row's [`Role`] without changing the wire `status` (the JSON
+    /// stays `"skipped"`; a structured consumer reads the severity off `reason`).
+    /// Set only for an unsupported-at-this-scope skip — where the user's explicit
+    /// request cannot be honored for that provider, unlike a routine "not detected".
+    #[serde(skip)]
+    warn: bool,
 }
 
 impl SkillInstallResult {
@@ -95,6 +102,7 @@ impl SkillInstallResult {
             path: Some(path.display().to_string()),
             status: SkillResultStatus::Installed,
             reason: None,
+            warn: false,
         }
     }
 
@@ -105,6 +113,7 @@ impl SkillInstallResult {
             path: Some(path.display().to_string()),
             status: SkillResultStatus::Removed,
             reason: None,
+            warn: false,
         }
     }
 
@@ -115,17 +124,34 @@ impl SkillInstallResult {
             path: Some(path.display().to_string()),
             status: SkillResultStatus::Updated,
             reason: None,
+            warn: false,
         }
     }
 
-    /// A provider deliberately not written (undetected, unsupported scope, or a
-    /// declined overwrite), carrying the human-readable `reason`.
+    /// A provider deliberately not written (undetected or a declined overwrite),
+    /// carrying the human-readable `reason`. A quiet skip — for an
+    /// unsupported-at-this-scope skip use [`unsupported`](Self::unsupported).
     fn skipped(provider: String, reason: impl Into<String>) -> Self {
         Self {
             provider,
             path: None,
             status: SkillResultStatus::Skipped,
             reason: Some(reason.into()),
+            warn: false,
+        }
+    }
+
+    /// A provider that has no primitive at the requested scope (`reason` explains
+    /// why). The wire `status` is `"skipped"` like any other skip, but `warn` is
+    /// set so the human row renders as a visible warning: the user's explicit
+    /// scope request cannot be honored for this provider.
+    fn unsupported(provider: String, reason: impl Into<String>) -> Self {
+        Self {
+            provider,
+            path: None,
+            status: SkillResultStatus::Skipped,
+            reason: Some(reason.into()),
+            warn: true,
         }
     }
 
@@ -137,6 +163,7 @@ impl SkillInstallResult {
             path: None,
             status: SkillResultStatus::Failed,
             reason: Some(reason.into()),
+            warn: false,
         }
     }
 }
@@ -226,7 +253,7 @@ fn scope_word(scope: SkillScope) -> &'static str {
 fn results_section(heading: String, results: &[SkillInstallResult]) -> Doc {
     Doc::new().section(heading, |mut sec| {
         for r in results {
-            let role = r.status.role();
+            let role = if r.warn { Role::Warn } else { r.status.role() };
             let subject = match &r.path {
                 Some(path) => format!("{}: {path}", r.provider),
                 None => r.provider.clone(),
@@ -272,8 +299,10 @@ pub fn cmd_skill_install(
         match detection {
             Detection::Unsupported(reason) => {
                 // Never fabricate a path for a scope the provider has no
-                // primitive at — even when forced or explicitly named.
-                results.push(SkillInstallResult::skipped(id, reason));
+                // primitive at — even when forced or explicitly named. Surface it
+                // as a visible warning: the user's explicit scope request cannot be
+                // honored for this provider, unlike a routine "not detected" skip.
+                results.push(SkillInstallResult::unsupported(id, reason));
                 continue;
             }
             Detection::Absent if !targeted => {

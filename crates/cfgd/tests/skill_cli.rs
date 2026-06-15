@@ -168,6 +168,60 @@ fn install_reports_failure_and_exits_nonzero_on_partial() {
     assert_eq!(gemini["status"], "installed", "gemini must still succeed");
 }
 
+/// At user scope (`-g`), cursor and copilot have no user-scope primitive: each is
+/// reported `skipped` with the provider's "no user-scope primitive" reason (never
+/// a fabricated path), exit 0 (a scope-skip is not a failure). The wire `status`
+/// stays `"skipped"` — a structured consumer distinguishes the severity via the
+/// `reason`, and the JSON must NOT carry the human-only `warn` field.
+#[test]
+fn global_scope_skips_cursor_and_copilot_with_warning() {
+    let repo = tempfile::tempdir().expect("repo tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+
+    let assert = install_in(repo.path(), home.path(), &["module", "-g", "-o", "json"])
+        .assert()
+        .success();
+    let out = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    let payload: Value = serde_json::from_str(&out).expect("json payload");
+
+    assert_eq!(payload["scope"], "user");
+
+    for provider in ["cursor", "copilot"] {
+        let row = result_for(&payload, provider);
+        assert_eq!(
+            row["status"], "skipped",
+            "{provider} has no user-scope primitive → skipped: {row}"
+        );
+        assert!(
+            row["reason"]
+                .as_str()
+                .expect("reason string")
+                .contains("no user-scope primitive"),
+            "unexpected {provider} reason: {row}"
+        );
+        assert!(
+            row.get("warn").is_none(),
+            "warn is human-only and must not reach the JSON wire: {row}"
+        );
+        assert!(
+            row.get("path").is_none(),
+            "an unsupported-scope skip must never fabricate a path: {row}"
+        );
+    }
+
+    // The human render carries the reason text as a visible warning detail. The
+    // human Doc renders on the Printer's stderr channel (structured payloads use
+    // stdout); assert the reason text appears, not ANSI/role styling bytes.
+    let human = install_in(repo.path(), home.path(), &["module", "-g"])
+        .assert()
+        .success();
+    let human_err = String::from_utf8(human.get_output().stderr.clone()).expect("utf8 stderr");
+    assert!(
+        human_err.contains("no user-scope primitive"),
+        "human output must surface the unsupported-scope reason: {human_err}"
+    );
+}
+
 /// Spawn `cfgd skill <subcommand...>` with a hermetic HOME and pinned CWD.
 fn skill_in(repo: &std::path::Path, home: &std::path::Path, args: &[&str]) -> assert_cmd::Command {
     let mut cmd = Command::cargo_bin("cfgd").unwrap();
