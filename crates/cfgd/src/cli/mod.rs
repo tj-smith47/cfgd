@@ -28,6 +28,7 @@ pub mod pull;
 mod registry;
 pub mod rollback;
 pub mod secret;
+pub mod skill;
 pub mod source;
 pub mod status;
 pub mod sync;
@@ -716,6 +717,15 @@ pub enum Command {
     ClusterConfigPolicy {
         #[command(subcommand)]
         command: ClusterConfigPolicyCommand,
+    },
+
+    /// Install, list, update, or remove agent skills for authoring cfgd resources
+    #[command(
+        long_about = "Install, list, update, or remove agent skills that teach a coding agent (Claude Code, Gemini, Copilot, Codex, Cursor) how to author cfgd resources.\n\nEach author kind (module, profile, source, machineconfig, configpolicy, clusterconfigpolicy) renders to every detected provider's native skill primitive.\n\nExamples:\n  cfgd skill install module\n  cfgd skill install profile --global\n  cfgd skill install source --provider claude-code --provider gemini\n  cfgd skill ls\n  cfgd skill update --all\n  cfgd skill rm module"
+    )]
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommand,
     },
 
     /// View or edit the cfgd configuration
@@ -1602,6 +1612,82 @@ pub enum ClusterConfigPolicyCommand {
     },
 }
 
+#[derive(Subcommand)]
+pub enum SkillCommand {
+    /// Install an agent skill for one author kind across detected providers
+    #[command(
+        long_about = "Install an agent skill for one author kind (module, profile, source, machineconfig, configpolicy, clusterconfigpolicy) across every detected coding-agent provider.\n\nExamples:\n  cfgd skill install module\n  cfgd skill install profile --global\n  cfgd skill install source --provider claude-code --provider gemini\n  cfgd skill install module --force"
+    )]
+    Install {
+        /// The author kind the skill teaches
+        #[arg(value_enum)]
+        kind: skill::SkillKind,
+
+        /// Install under the user's home configuration instead of the current project
+        #[arg(short, long)]
+        global: bool,
+
+        /// Restrict to named providers (repeatable); default is all detected providers
+        #[arg(long)]
+        provider: Vec<String>,
+
+        /// Write even when a provider's agent is not detected, or overwrite an existing skill
+        #[arg(long)]
+        force: bool,
+
+        /// Skip confirmation prompts
+        #[arg(long, env = "CFGD_YES")]
+        yes: bool,
+    },
+
+    /// List installed agent skills
+    #[command(alias = "ls")]
+    List {
+        /// List skills under the user's home configuration instead of the current project
+        #[arg(short, long)]
+        global: bool,
+    },
+
+    /// Remove an installed agent skill for one author kind
+    #[command(alias = "rm")]
+    Remove {
+        /// The author kind whose skill to remove
+        #[arg(value_enum)]
+        kind: skill::SkillKind,
+
+        /// Remove from the user's home configuration instead of the current project
+        #[arg(short, long)]
+        global: bool,
+
+        /// Restrict to named providers (repeatable); default is all detected providers
+        #[arg(long)]
+        provider: Vec<String>,
+
+        /// Skip confirmation prompts
+        #[arg(long, env = "CFGD_YES")]
+        yes: bool,
+    },
+
+    /// Update one or all installed agent skills to the current rendering
+    Update {
+        /// The author kind to update; omit and pass --all to update every installed kind
+        #[arg(value_enum)]
+        kind: Option<skill::SkillKind>,
+
+        /// Update every installed kind
+        #[arg(long)]
+        all: bool,
+
+        /// Update skills under the user's home configuration instead of the current project
+        #[arg(short, long)]
+        global: bool,
+
+        /// Restrict to named providers (repeatable); default is all detected providers
+        #[arg(long)]
+        provider: Vec<String>,
+    },
+}
+
 #[derive(Clone, clap::ValueEnum)]
 pub enum ExportFormat {
     /// DevContainer Feature (install.sh + devcontainer-feature.json)
@@ -2028,6 +2114,28 @@ pub fn execute(
             ClusterConfigPolicyCommand::Validate { source } => {
                 validate::cmd_clusterconfigpolicy_validate(printer, source)
             }
+        },
+        Command::Skill { command } => match command {
+            SkillCommand::Install {
+                kind,
+                global,
+                provider,
+                force,
+                yes,
+            } => skill::cmd_skill_install(printer, *kind, *global, provider, *force, *yes),
+            SkillCommand::List { global } => skill::cmd_skill_list(printer, *global),
+            SkillCommand::Remove {
+                kind,
+                global,
+                provider,
+                yes,
+            } => skill::cmd_skill_remove(printer, *kind, *global, provider, *yes),
+            SkillCommand::Update {
+                kind,
+                all,
+                global,
+                provider,
+            } => skill::cmd_skill_update(printer, *kind, *all, *global, provider),
         },
         Command::Upgrade {
             check,
