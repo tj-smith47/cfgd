@@ -176,7 +176,13 @@ pub trait SkillProvider: Send + Sync {
     fn target_path(&self, kind: SkillKind, scope: SkillScope) -> Option<PathBuf>;
 
     /// Render a model to this provider's native file format. Pure: no I/O.
-    fn render(&self, model: &SkillModel) -> RenderedSkill;
+    ///
+    /// Fallible because a provider may serialize through a format crate (gemini
+    /// uses `toml`): a serialization failure must surface as a [`SkillError`]
+    /// rather than degrade to an empty file that would silently install a broken
+    /// skill. Whole-file providers that only `format!` are infallible and return
+    /// `Ok`.
+    fn render(&self, model: &SkillModel) -> Result<RenderedSkill>;
 
     /// Render and write the skill for `model.kind` at `scope`, returning the
     /// absolute path written.
@@ -192,7 +198,7 @@ pub trait SkillProvider: Send + Sync {
                 provider: self.id().to_string(),
                 message: format!("no target path for {} at {scope:?}", model.kind.as_str()),
             })?;
-        let rendered = self.render(model);
+        let rendered = self.render(model)?;
 
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(SkillError::Write)?;
@@ -222,7 +228,7 @@ pub trait SkillProvider: Send + Sync {
         let Some(target) = self.target_path(kind, scope) else {
             return Ok(None);
         };
-        let rendered = self.render(&crate::generate::skill_model_for(kind));
+        let rendered = self.render(&crate::generate::skill_model_for(kind))?;
 
         match &rendered.managed_section {
             None => {
@@ -258,7 +264,7 @@ pub trait SkillProvider: Send + Sync {
             let Some(target) = self.target_path(kind, scope) else {
                 continue;
             };
-            let rendered = self.render(&crate::generate::skill_model_for(kind));
+            let rendered = self.render(&crate::generate::skill_model_for(kind))?;
             let present = match &rendered.managed_section {
                 None => target.exists(),
                 Some(section) => read_to_string_optional(&target)?
@@ -409,6 +415,29 @@ fn parse_version_stamp(contents: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Wrap `body` in a `---`-delimited frontmatter envelope: the provider's native
+/// keys (`native_lines`, each WITHOUT a trailing newline), then the shared
+/// `cfgd-version` / `cfgd-min-version` stamp keys that `parse_version_stamp` reads
+/// back. Single-sources the stamp-key spelling for the frontmatter providers
+/// (gemini stamps via TOML, codex via the body comment — neither uses this).
+pub(super) fn frontmatter_envelope(
+    model: &SkillModel,
+    native_lines: &[String],
+    body: &str,
+) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::from("---\n");
+    for line in native_lines {
+        out.push_str(line);
+        out.push('\n');
+    }
+    let _ = writeln!(out, "cfgd-version: {}", model.schema_snapshot.cfgd_version);
+    let _ = writeln!(out, "cfgd-min-version: {}", model.min_cfgd_version);
+    out.push_str("---\n\n");
+    out.push_str(body);
+    out
 }
 
 /// Delete an emptied `cfgd-<kind>` skill directory left after removing a

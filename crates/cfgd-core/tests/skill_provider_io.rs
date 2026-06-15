@@ -35,7 +35,13 @@ fn install_then_remove_is_clean_roundtrip() {
         );
         assert!(path.ends_with(".claude/skills/cfgd-module/SKILL.md"));
         let on_disk = std::fs::read_to_string(&path).expect("read installed file");
-        assert_eq!(on_disk, provider.render(&model).contents);
+        assert_eq!(
+            on_disk,
+            provider
+                .render(&model)
+                .expect("render is infallible for these fixtures")
+                .contents
+        );
 
         let parent = path.parent().expect("file has a parent dir");
         assert!(parent.is_dir(), "cfgd-module dir created");
@@ -183,6 +189,7 @@ fn agents_md_inplace_block_preserves_trailing_user_content() {
         );
         let fresh_body = provider
             .render(&model)
+            .expect("render is infallible for these fixtures")
             .managed_section
             .expect("codex renders a managed section")
             .body;
@@ -329,11 +336,13 @@ fn concurrent_installs_of_different_kinds_dont_corrupt_delimiters() {
     with_test_home(home.path(), || {
         let profile_body = CodexProvider
             .render(&skill_model_for(SkillKind::Profile))
+            .expect("render is infallible for these fixtures")
             .managed_section
             .expect("profile section")
             .body;
         let source_body = CodexProvider
             .render(&skill_model_for(SkillKind::Source))
+            .expect("render is infallible for these fixtures")
             .managed_section
             .expect("source section")
             .body;

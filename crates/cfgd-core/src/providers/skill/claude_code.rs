@@ -3,7 +3,10 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{Detection, RenderedSkill, SkillProvider, SkillScope, render_skill_body};
+use super::{
+    Detection, RenderedSkill, SkillProvider, SkillScope, frontmatter_envelope, render_skill_body,
+};
+use crate::errors::Result;
 use crate::expand_tilde;
 use crate::generate::{SkillKind, SkillModel};
 
@@ -39,28 +42,22 @@ impl SkillProvider for ClaudeCodeProvider {
         }
     }
 
-    fn render(&self, model: &SkillModel) -> RenderedSkill {
+    fn render(&self, model: &SkillModel) -> Result<RenderedSkill> {
         let token = model.kind.command_token();
-        let contents = format!(
-            "---\n\
-             name: cfgd-{token}\n\
-             description: {description}\n\
-             user-invocable: true\n\
-             cfgd-version: {version}\n\
-             cfgd-min-version: {min}\n\
-             ---\n\
-             \n\
-             {body}",
-            description = model.description,
-            version = model.schema_snapshot.cfgd_version,
-            min = model.min_cfgd_version,
-            body = render_skill_body(model),
+        let contents = frontmatter_envelope(
+            model,
+            &[
+                format!("name: cfgd-{token}"),
+                format!("description: {}", model.description),
+                "user-invocable: true".to_string(),
+            ],
+            &render_skill_body(model),
         );
-        RenderedSkill {
+        Ok(RenderedSkill {
             relative_path: relative_skill_path(token),
             contents,
             managed_section: None,
-        }
+        })
     }
 }
 
@@ -72,7 +69,9 @@ mod tests {
     #[test]
     fn claude_code_renders_valid_skill_md() {
         let model = skill_model_for(SkillKind::Module);
-        let r = ClaudeCodeProvider.render(&model);
+        let r = ClaudeCodeProvider
+            .render(&model)
+            .expect("render is infallible for these fixtures");
         assert!(r.relative_path.ends_with("cfgd-module/SKILL.md"));
         assert!(r.contents.starts_with("---\n"));
         assert!(r.contents.contains("name: cfgd-module"));
@@ -83,7 +82,9 @@ mod tests {
     #[test]
     fn frontmatter_carries_version_stamp_keys_that_parse() {
         let model = skill_model_for(SkillKind::Profile);
-        let r = ClaudeCodeProvider.render(&model);
+        let r = ClaudeCodeProvider
+            .render(&model)
+            .expect("render is infallible for these fixtures");
         assert!(r.contents.contains(&format!(
             "cfgd-version: {}",
             model.schema_snapshot.cfgd_version

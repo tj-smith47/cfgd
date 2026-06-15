@@ -114,7 +114,12 @@ fn check_provider_goldens(provider: &dyn SkillProvider) {
         // `effective_fresh_install` routes through the same `splice_block` writer
         // `install` uses, keeping the golden byte-faithful instead of vacuously
         // snapshotting an empty file.
-        let rendered = normalize_version(&provider.render(&model).effective_fresh_install());
+        let rendered = normalize_version(
+            &provider
+                .render(&model)
+                .expect("render is infallible for these fixtures")
+                .effective_fresh_install(),
+        );
         let path = golden_path(provider.id(), kind.command_token());
         if bless {
             std::fs::write(&path, &rendered)

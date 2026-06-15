@@ -485,9 +485,6 @@ pub enum SkillError {
     #[error("failed to write skill file: {0}")]
     Write(#[source] std::io::Error),
 
-    #[error("malformed managed section in {path}: {message}")]
-    ManagedSection { path: PathBuf, message: String },
-
     #[error("failed to acquire skill-file lock: {0}")]
     Lock(#[source] Box<CfgdError>),
 }

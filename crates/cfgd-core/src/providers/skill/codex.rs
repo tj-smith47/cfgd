@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use super::{
     Detection, ManagedSection, RenderedSkill, SkillProvider, SkillScope, render_skill_body,
 };
+use crate::errors::Result;
 use crate::generate::{SkillKind, SkillModel};
 use crate::{command_available, expand_tilde};
 
@@ -49,21 +50,21 @@ impl SkillProvider for CodexProvider {
         }
     }
 
-    fn render(&self, model: &SkillModel) -> RenderedSkill {
+    fn render(&self, model: &SkillModel) -> Result<RenderedSkill> {
         // The skill payload rides in the managed section, not `contents`: the
         // default `install` splices `managed_section` into the existing file and
         // ignores `contents` when a section is present, so leaving `contents`
         // empty is the honest representation of what this provider writes. The
         // shared body already carries the `<!-- cfgd-version: … · cfgd-min-version: … -->`
         // stamp that `parse_version_stamp` reads back out of the block.
-        RenderedSkill {
+        Ok(RenderedSkill {
             relative_path: relative_agents_path(),
             contents: String::new(),
             managed_section: Some(ManagedSection::for_kind(
                 model.kind,
                 render_skill_body(model),
             )),
-        }
+        })
     }
 }
 
@@ -75,7 +76,9 @@ mod tests {
     #[test]
     fn codex_renders_managed_section_with_delimiters() {
         let model = skill_model_for(SkillKind::Module);
-        let r = CodexProvider.render(&model);
+        let r = CodexProvider
+            .render(&model)
+            .expect("render is infallible for these fixtures");
         assert!(r.relative_path.ends_with("AGENTS.md"));
         let section = r.managed_section.expect("codex uses a managed section");
         assert!(section.begin.contains("cfgd:skill:module"));
@@ -86,7 +89,9 @@ mod tests {
     #[test]
     fn contents_is_empty_and_payload_rides_in_the_block() {
         let model = skill_model_for(SkillKind::Profile);
-        let r = CodexProvider.render(&model);
+        let r = CodexProvider
+            .render(&model)
+            .expect("render is infallible for these fixtures");
         // `contents` is empty by design (default `install` ignores it for a
         // managed-section provider); the on-disk bytes come from the spliced
         // block, which carries the body and a parser-readable version stamp.

@@ -8,6 +8,7 @@
 use std::path::{Path, PathBuf};
 
 use super::{Detection, RenderedSkill, SkillProvider, SkillScope, render_skill_body};
+use crate::errors::Result;
 use crate::generate::{SkillKind, SkillModel};
 use crate::{command_available, expand_tilde};
 
@@ -51,7 +52,7 @@ impl SkillProvider for GeminiProvider {
         }
     }
 
-    fn render(&self, model: &SkillModel) -> RenderedSkill {
+    fn render(&self, model: &SkillModel) -> Result<RenderedSkill> {
         let token = model.kind.command_token();
         // `description` and `prompt` are the native fields the Gemini CLI reads;
         // the two `cfgd-*` keys are ignored by Gemini but let
@@ -79,22 +80,20 @@ impl SkillProvider for GeminiProvider {
             toml::Value::String(model.min_cfgd_version.to_string()),
         );
         // The table holds only `String` values under fixed keys, so TOML
-        // serialization is total — the `Err` arm is unreachable. The trait's
-        // `render` is infallible by signature, so rather than `unwrap` (Hard Rule
-        // 2) the impossible error is logged and degraded to an empty (still valid)
-        // TOML document, keeping the surface infallible without a silent panic.
-        let contents = match toml::to_string(&toml::Value::Table(table)) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(provider = "gemini", error = %e, "gemini TOML serialization failed (unreachable for String-only values)");
-                String::new()
+        // serialization is total in practice; the error is surfaced rather than
+        // swallowed so a serialization failure can never silently install a broken
+        // empty skill file (the fallible `render` contract exists for exactly this).
+        let contents = toml::to_string(&toml::Value::Table(table)).map_err(|e| {
+            crate::errors::SkillError::Render {
+                provider: "gemini".to_string(),
+                message: e.to_string(),
             }
-        };
-        RenderedSkill {
+        })?;
+        Ok(RenderedSkill {
             relative_path: relative_command_path(token),
             contents,
             managed_section: None,
-        }
+        })
     }
 }
 
@@ -106,7 +105,9 @@ mod tests {
     #[test]
     fn gemini_renders_valid_toml_command() {
         let model = skill_model_for(SkillKind::Module);
-        let r = GeminiProvider.render(&model);
+        let r = GeminiProvider
+            .render(&model)
+            .expect("render is infallible for these fixtures");
         assert!(r.relative_path.ends_with("cfgd-module.toml"));
         assert!(r.managed_section.is_none());
         // round-trips as TOML and carries the body + description
@@ -124,7 +125,9 @@ mod tests {
     #[test]
     fn toml_carries_version_stamp_keys_that_parse() {
         let model = skill_model_for(SkillKind::Profile);
-        let r = GeminiProvider.render(&model);
+        let r = GeminiProvider
+            .render(&model)
+            .expect("render is infallible for these fixtures");
         let parsed: toml::Value = toml::from_str(&r.contents).expect("valid TOML");
         assert_eq!(
             parsed.get("cfgd-version").and_then(|v| v.as_str()),
