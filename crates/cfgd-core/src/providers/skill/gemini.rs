@@ -26,7 +26,7 @@ impl SkillProvider for GeminiProvider {
     }
 
     fn detect(&self, scope: SkillScope) -> Detection {
-        let present = match scope {
+        let found = match scope {
             SkillScope::Project => std::env::current_dir()
                 .ok()
                 .is_some_and(|d| d.join(".gemini").exists()),
@@ -34,11 +34,7 @@ impl SkillProvider for GeminiProvider {
                 expand_tilde(Path::new("~/.gemini")).exists() || command_available("gemini")
             }
         };
-        if present {
-            Detection::Present
-        } else {
-            Detection::Absent
-        }
+        Detection::present(found)
     }
 
     fn target_path(&self, kind: SkillKind, scope: SkillScope) -> Option<PathBuf> {

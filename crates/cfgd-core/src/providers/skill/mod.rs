@@ -55,6 +55,19 @@ pub enum Detection {
     Unsupported(String),
 }
 
+impl Detection {
+    /// `Present` when the agent's config root exists (or its CLI is on PATH),
+    /// `Absent` otherwise. The shared reduction every provider's `detect` funnels
+    /// its presence check through.
+    pub fn present(found: bool) -> Detection {
+        if found {
+            Detection::Present
+        } else {
+            Detection::Absent
+        }
+    }
+}
+
 /// A skill rendered into one provider's native format.
 ///
 /// `managed_section` distinguishes the two write strategies: `None` means the

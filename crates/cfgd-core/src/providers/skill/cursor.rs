@@ -22,26 +22,22 @@ impl SkillProvider for CursorProvider {
     }
 
     fn detect(&self, scope: SkillScope) -> Detection {
-        match scope {
+        let found = match scope {
             // `.cursor/` is the project-local marker; pure fs check, no shell-out.
-            SkillScope::Project => {
-                let present = std::env::current_dir()
-                    .ok()
-                    .is_some_and(|d| d.join(".cursor").exists());
-                if present {
-                    Detection::Present
-                } else {
-                    Detection::Absent
-                }
-            }
+            SkillScope::Project => std::env::current_dir()
+                .ok()
+                .is_some_and(|d| d.join(".cursor").exists()),
             // Cursor rules are a project-only primitive (`.cursor/rules`); there is
             // no user-global location, so `-g` should skip with a reported warning
             // rather than fabricate a target.
-            SkillScope::User => Detection::Unsupported(
-                "cursor rules are project-only (.cursor/rules); no user-scope primitive"
-                    .to_string(),
-            ),
-        }
+            SkillScope::User => {
+                return Detection::Unsupported(
+                    "cursor rules are project-only (.cursor/rules); no user-scope primitive"
+                        .to_string(),
+                );
+            }
+        };
+        Detection::present(found)
     }
 
     fn target_path(&self, kind: SkillKind, scope: SkillScope) -> Option<PathBuf> {

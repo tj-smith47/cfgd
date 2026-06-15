@@ -30,7 +30,7 @@ impl SkillProvider for CodexProvider {
     }
 
     fn detect(&self, scope: SkillScope) -> Detection {
-        let present = match scope {
+        let found = match scope {
             SkillScope::Project => {
                 std::env::current_dir()
                     .ok()
@@ -39,11 +39,7 @@ impl SkillProvider for CodexProvider {
             }
             SkillScope::User => expand_tilde(Path::new("~/.codex")).exists(),
         };
-        if present {
-            Detection::Present
-        } else {
-            Detection::Absent
-        }
+        Detection::present(found)
     }
 
     fn target_path(&self, _kind: SkillKind, scope: SkillScope) -> Option<PathBuf> {

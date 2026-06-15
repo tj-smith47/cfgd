@@ -22,25 +22,21 @@ impl SkillProvider for CopilotProvider {
     }
 
     fn detect(&self, scope: SkillScope) -> Detection {
-        match scope {
+        let found = match scope {
             // `.github/` is the project-local marker; pure fs check, no shell-out.
-            SkillScope::Project => {
-                let present = std::env::current_dir()
-                    .ok()
-                    .is_some_and(|d| d.join(".github").exists());
-                if present {
-                    Detection::Present
-                } else {
-                    Detection::Absent
-                }
-            }
+            SkillScope::Project => std::env::current_dir()
+                .ok()
+                .is_some_and(|d| d.join(".github").exists()),
             // Copilot prompt files are an IDE/project primitive only — there is no
             // user-global location to install into.
-            SkillScope::User => Detection::Unsupported(
-                "copilot prompt files are project-only (.github/prompts); no user-scope primitive"
-                    .to_string(),
-            ),
-        }
+            SkillScope::User => {
+                return Detection::Unsupported(
+                    "copilot prompt files are project-only (.github/prompts); no user-scope primitive"
+                        .to_string(),
+                );
+            }
+        };
+        Detection::present(found)
     }
 
     fn target_path(&self, kind: SkillKind, scope: SkillScope) -> Option<PathBuf> {

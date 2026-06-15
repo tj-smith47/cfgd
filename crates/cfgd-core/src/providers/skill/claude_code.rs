@@ -22,14 +22,13 @@ impl SkillProvider for ClaudeCodeProvider {
     }
 
     fn detect(&self, scope: SkillScope) -> Detection {
-        let root = match scope {
-            SkillScope::Project => std::env::current_dir().ok().map(|d| d.join(".claude")),
-            SkillScope::User => Some(expand_tilde(Path::new("~/.claude"))),
+        let found = match scope {
+            SkillScope::Project => std::env::current_dir()
+                .ok()
+                .is_some_and(|d| d.join(".claude").exists()),
+            SkillScope::User => expand_tilde(Path::new("~/.claude")).exists(),
         };
-        match root {
-            Some(dir) if dir.exists() => Detection::Present,
-            _ => Detection::Absent,
-        }
+        Detection::present(found)
     }
 
     fn target_path(&self, kind: SkillKind, scope: SkillScope) -> Option<PathBuf> {
