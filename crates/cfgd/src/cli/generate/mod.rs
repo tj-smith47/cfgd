@@ -130,7 +130,11 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
     let mut session = cfgd_core::generate::session::GenerateSession::new(repo_root.clone());
 
     // 5. Build system prompt
-    let skill = generate::GENERATE_SKILL.as_str();
+    let skill = cfgd_core::generate::skill_model_for(match &args.target {
+        Some(GenerateTarget::Profile { .. }) => cfgd_core::generate::SkillKind::Profile,
+        _ => cfgd_core::generate::SkillKind::Module,
+    })
+    .render_system_prompt();
     let mode_context = match &args.target {
         None => "Mode: full — scan system, propose structure, generate all profiles and modules."
             .to_string(),
