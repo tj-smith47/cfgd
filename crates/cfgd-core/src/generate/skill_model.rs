@@ -10,8 +10,21 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::schema::KIND_REGISTRY;
+use crate::generate::validate::entry_for_kind;
 use crate::schema::snapshot::{SchemaSnapshot, snapshot_for};
+
+/// The per-variant string and flag facts for one [`SkillKind`], kept in a single
+/// table so adding a kind is one new row rather than edits across several
+/// `match`es.
+struct KindDescriptor {
+    /// The PascalCase kind token (matches `kind:` in resource YAML).
+    pascal: &'static str,
+    /// The lowercase token passed to `cfgd <kind> validate` / `cfgd explain <kind>`.
+    command_token: &'static str,
+    /// The `kind` string this maps to in `KIND_REGISTRY`. The local `Source`
+    /// document kind registers under `ConfigSource`, so it differs from `pascal`.
+    registry_kind: &'static str,
+}
 
 /// The author-facing resource kinds a skill can teach.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,42 +38,51 @@ pub enum SkillKind {
 }
 
 impl SkillKind {
+    /// The single source of per-variant string/flag facts. Every other
+    /// string-mapping accessor delegates here.
+    fn descriptor(self) -> KindDescriptor {
+        match self {
+            Self::Module => KindDescriptor {
+                pascal: "Module",
+                command_token: "module",
+                registry_kind: "Module",
+            },
+            Self::Profile => KindDescriptor {
+                pascal: "Profile",
+                command_token: "profile",
+                registry_kind: "Profile",
+            },
+            Self::Source => KindDescriptor {
+                pascal: "Source",
+                command_token: "source",
+                registry_kind: "ConfigSource",
+            },
+            Self::MachineConfig => KindDescriptor {
+                pascal: "MachineConfig",
+                command_token: "machineconfig",
+                registry_kind: "MachineConfig",
+            },
+            Self::ConfigPolicy => KindDescriptor {
+                pascal: "ConfigPolicy",
+                command_token: "configpolicy",
+                registry_kind: "ConfigPolicy",
+            },
+            Self::ClusterConfigPolicy => KindDescriptor {
+                pascal: "ClusterConfigPolicy",
+                command_token: "clusterconfigpolicy",
+                registry_kind: "ClusterConfigPolicy",
+            },
+        }
+    }
+
     /// The PascalCase kind token (matches `kind:` in resource YAML).
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Module => "Module",
-            Self::Profile => "Profile",
-            Self::Source => "Source",
-            Self::MachineConfig => "MachineConfig",
-            Self::ConfigPolicy => "ConfigPolicy",
-            Self::ClusterConfigPolicy => "ClusterConfigPolicy",
-        }
+        self.descriptor().pascal
     }
 
     /// The lowercase command token passed to `cfgd <kind> validate` / `cfgd explain <kind>`.
     pub fn command_token(self) -> &'static str {
-        match self {
-            Self::Module => "module",
-            Self::Profile => "profile",
-            Self::Source => "source",
-            Self::MachineConfig => "machineconfig",
-            Self::ConfigPolicy => "configpolicy",
-            Self::ClusterConfigPolicy => "clusterconfigpolicy",
-        }
-    }
-
-    /// The `kind` string this maps to in [`KIND_REGISTRY`], and whether it is a
-    /// cluster-side CRD kind. The local `Source` document kind registers under
-    /// `ConfigSource`; the three policy/machine kinds resolve to CRD entries.
-    fn registry_kind(self) -> (&'static str, bool) {
-        match self {
-            Self::Module => ("Module", false),
-            Self::Profile => ("Profile", false),
-            Self::Source => ("ConfigSource", false),
-            Self::MachineConfig => ("MachineConfig", true),
-            Self::ConfigPolicy => ("ConfigPolicy", true),
-            Self::ClusterConfigPolicy => ("ClusterConfigPolicy", true),
-        }
+        self.descriptor().command_token
     }
 }
 
@@ -256,17 +278,14 @@ choice — demonstrating the quality bar a skill must reach for."
     }
 }
 
-/// Capture the embedded fallback schema for `kind` from [`KIND_REGISTRY`].
+/// Capture the embedded fallback schema for `kind` from the unified registry,
+/// resolved through the canonical [`entry_for_kind`] lookup.
 ///
 /// CRD entries only exist when the default-on `crd` feature is enabled, so a
 /// missing entry yields a snapshot with an empty `json_schema` (stamped with the
 /// current version) rather than panicking.
 fn schema_snapshot_for(kind: SkillKind) -> SchemaSnapshot {
-    let (registry_kind, crd) = kind.registry_kind();
-    match KIND_REGISTRY
-        .iter()
-        .find(|e| e.kind == registry_kind && e.crd == crd)
-    {
+    match entry_for_kind(kind.descriptor().registry_kind) {
         Some(entry) => snapshot_for(entry),
         None => SchemaSnapshot {
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -297,6 +316,14 @@ mod tests {
     fn render_system_prompt_equals_embedded_legacy_prompt() {
         let model = skill_model_for(SkillKind::Module);
         assert_eq!(model.render_system_prompt(), LEGACY_GENERATE_PROMPT);
+    }
+
+    #[test]
+    fn render_system_prompt_is_kind_agnostic() {
+        assert_eq!(
+            skill_model_for(SkillKind::Profile).render_system_prompt(),
+            skill_model_for(SkillKind::Module).render_system_prompt()
+        );
     }
 
     #[test]

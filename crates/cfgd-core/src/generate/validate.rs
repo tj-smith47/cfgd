@@ -4,7 +4,7 @@ use crate::schema::{KIND_REGISTRY, KindEntry};
 /// Look up the registry entry for a `kind` string, preferring the local
 /// document entry when a CRD entry shares the same `kind` (both a local and a
 /// CRD `Module` exist; local documents are what these validators receive).
-fn entry_for_kind(kind: &str) -> Option<&'static KindEntry> {
+pub(crate) fn entry_for_kind(kind: &str) -> Option<&'static KindEntry> {
     KIND_REGISTRY
         .iter()
         .find(|e| e.kind == kind && !e.crd)
