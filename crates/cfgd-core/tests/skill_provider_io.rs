@@ -124,6 +124,232 @@ fn agents_md_managed_section_surgery_preserves_user_content() {
 
 #[test]
 #[serial_test::serial]
+fn agents_md_inplace_block_preserves_trailing_user_content() {
+    let home = tempfile::tempdir().expect("tempdir");
+    with_test_home(home.path(), || {
+        let provider = CodexProvider;
+        let model = skill_model_for(SkillKind::Module);
+
+        let target = provider
+            .target_path(SkillKind::Module, SkillScope::User)
+            .expect("user scope has a target");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir ~/.codex");
+
+        let begin = "<!-- cfgd:skill:module -->";
+        let end = "<!-- /cfgd:skill:module -->";
+        let leading = "# My AGENTS.md\n\nTop user guidance.\n\n";
+        // An already-present cfgd block with a STALE body, plus user prose AFTER the end
+        // marker. This forces install down `splice_block`'s in-place REPLACE path
+        // (block_span returns Some) rather than the append path — the only path that
+        // can drop or duplicate trailing bytes if the splice ever appended instead.
+        let trailing = "\n\n## My custom section\n\nTRAILING_SENTINEL line below the block.\n";
+        let seed = format!("{leading}{begin}\nSTALE BODY — must be replaced.\n{end}{trailing}");
+        std::fs::write(&target, &seed).expect("seed AGENTS.md with an existing block");
+
+        let path = provider
+            .install(&model, SkillScope::User)
+            .expect("codex install splices in place");
+        assert_eq!(path, target);
+
+        let after = std::fs::read_to_string(&target).expect("read after install");
+        // The block was replaced in place, not appended: exactly one begin/end pair.
+        assert_eq!(
+            after.matches(begin).count(),
+            1,
+            "in-place replace must not duplicate the begin marker, got:\n{after}"
+        );
+        assert_eq!(after.matches(end).count(), 1, "exactly one end marker");
+        // Leading user prose is byte-preserved as the file head.
+        assert!(
+            after.starts_with(leading),
+            "leading user bytes must survive verbatim, got:\n{after}"
+        );
+        // Trailing user prose after the end marker survives — the in-place splice
+        // re-emits `existing[end..]` unchanged, so the sentinel and its section header
+        // remain. This is the assertion that goes red if splice ever appended.
+        assert!(
+            after.contains("## My custom section"),
+            "trailing user section header must survive, got:\n{after}"
+        );
+        assert!(
+            after.contains("TRAILING_SENTINEL line below the block."),
+            "trailing user sentinel must survive in place, got:\n{after}"
+        );
+        // The block body was actually refreshed: the stale body is gone and the
+        // freshly-rendered guidance landed between the markers.
+        assert!(
+            !after.contains("STALE BODY — must be replaced."),
+            "stale block body must be replaced, got:\n{after}"
+        );
+        let fresh_body = provider
+            .render(&model)
+            .managed_section
+            .expect("codex renders a managed section")
+            .body;
+        assert!(
+            after.contains(&fresh_body),
+            "the rendered body must be spliced in, got:\n{after}"
+        );
+
+        // remove excises only the block; both halves of user prose round-trip
+        // (modulo the documented blank-line collapse around the excised span).
+        let removed = provider
+            .remove(SkillKind::Module, SkillScope::User)
+            .expect("codex remove succeeds");
+        assert_eq!(removed.as_deref(), Some(target.as_path()));
+        let after_remove = std::fs::read_to_string(&target).expect("file survives remove");
+        assert!(
+            !after_remove.contains(begin) && !after_remove.contains(end),
+            "block markers gone after remove, got:\n{after_remove}"
+        );
+        assert!(
+            after_remove.contains("Top user guidance."),
+            "leading user prose round-trips, got:\n{after_remove}"
+        );
+        assert!(
+            after_remove.contains("## My custom section")
+                && after_remove.contains("TRAILING_SENTINEL line below the block."),
+            "trailing user prose round-trips after excise, got:\n{after_remove}"
+        );
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn concurrent_installs_of_different_kinds_dont_corrupt_delimiters() {
+    // Spec §12: two concurrent installs of DIFFERENT kinds into the same AGENTS.md
+    // must not corrupt delimiters. The advisory lock (`acquire_apply_lock`) is
+    // non-blocking — a contending install fails fast with a lock-held error rather
+    // than racing into the read-modify-write, so the integrity guarantee holds by
+    // serialization. A real caller retries on that transient lock-held error; each
+    // thread does the same here, which is precisely what forces them to interleave
+    // on the flock. Spawned threads do NOT inherit the thread-local HOME guard, so
+    // each re-enters `with_test_home` to resolve the same user-scope target and
+    // contend on the real flock keyed off that file's parent dir.
+    let home = tempfile::tempdir().expect("tempdir");
+    let home_path = home.path().to_path_buf();
+
+    let begin_profile = "<!-- cfgd:skill:profile -->";
+    let end_profile = "<!-- /cfgd:skill:profile -->";
+    let begin_source = "<!-- cfgd:skill:source -->";
+    let end_source = "<!-- /cfgd:skill:source -->";
+
+    let target = with_test_home(home.path(), || {
+        let target = CodexProvider
+            .target_path(SkillKind::Profile, SkillScope::User)
+            .expect("user scope has a target");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir ~/.codex");
+        target
+    });
+
+    // Loop the contended spawn-join so the two installs reliably interleave on the
+    // lock; kept to a bound that runs well under a second.
+    const ROUNDS: usize = 200;
+    let install_kind = |kind: SkillKind, hp: std::path::PathBuf| {
+        std::thread::spawn(move || {
+            with_test_home(&hp, || {
+                let model = skill_model_for(kind);
+                loop {
+                    match CodexProvider.install(&model, SkillScope::User) {
+                        Ok(_) => break,
+                        // The non-blocking lock surfaces contention as a lock-held
+                        // error; a real caller retries, which is the contention this
+                        // test means to exercise. Any other error is a genuine fault.
+                        Err(e) if e.to_string().to_lowercase().contains("lock") => {
+                            std::thread::yield_now();
+                        }
+                        Err(e) => panic!("concurrent codex install failed: {e}"),
+                    }
+                }
+            });
+        })
+    };
+
+    for _ in 0..ROUNDS {
+        let t_profile = install_kind(SkillKind::Profile, home_path.clone());
+        let t_source = install_kind(SkillKind::Source, home_path.clone());
+        t_profile.join().expect("profile install thread");
+        t_source.join().expect("source install thread");
+    }
+
+    let final_contents = std::fs::read_to_string(&target).expect("read final AGENTS.md");
+
+    // Exactly one well-formed block per kind — no duplication from a lost-update race.
+    for (begin, end, label) in [
+        (begin_profile, end_profile, "profile"),
+        (begin_source, end_source, "source"),
+    ] {
+        assert_eq!(
+            final_contents.matches(begin).count(),
+            1,
+            "exactly one {label} begin marker, got:\n{final_contents}"
+        );
+        assert_eq!(
+            final_contents.matches(end).count(),
+            1,
+            "exactly one {label} end marker, got:\n{final_contents}"
+        );
+    }
+
+    // No torn/interleaved delimiters: each begin is immediately closed by its own end
+    // with no second begin opening before it closes. Walking the markers in document
+    // order must yield a strict begin→end→begin→end sequence with matching kinds.
+    let mut markers: Vec<(usize, &str, bool)> = Vec::new();
+    for (begin, end, _) in [
+        (begin_profile, end_profile, "profile"),
+        (begin_source, end_source, "source"),
+    ] {
+        let b = final_contents.find(begin).expect("begin present");
+        let e = final_contents.find(end).expect("end present");
+        markers.push((b, begin, true));
+        markers.push((e, end, false));
+    }
+    markers.sort_by_key(|(pos, _, _)| *pos);
+    let mut open_block: Option<&str> = None;
+    for (_, marker, is_begin) in &markers {
+        if *is_begin {
+            assert!(
+                open_block.is_none(),
+                "a block opened before the previous one closed (torn delimiters): {marker}"
+            );
+            // The matching end is the begin marker with a leading slash inserted.
+            open_block = Some(marker.trim_start_matches("<!-- cfgd:skill:"));
+        } else {
+            let opener = open_block.take().expect("an end marker with no open block");
+            let closing = marker.trim_start_matches("<!-- /cfgd:skill:");
+            assert_eq!(
+                opener, closing,
+                "end marker closes a different kind than was opened: {marker}"
+            );
+        }
+    }
+    assert!(open_block.is_none(), "unclosed block at end of file");
+
+    // Both kinds' bodies are present and the version stamp parses out of the file.
+    with_test_home(home.path(), || {
+        let profile_body = CodexProvider
+            .render(&skill_model_for(SkillKind::Profile))
+            .managed_section
+            .expect("profile section")
+            .body;
+        let source_body = CodexProvider
+            .render(&skill_model_for(SkillKind::Source))
+            .managed_section
+            .expect("source section")
+            .body;
+        assert!(
+            final_contents.contains(&profile_body),
+            "profile body present, got:\n{final_contents}"
+        );
+        assert!(
+            final_contents.contains(&source_body),
+            "source body present, got:\n{final_contents}"
+        );
+    });
+}
+
+#[test]
+#[serial_test::serial]
 fn reinstall_is_idempotent_noop_diff() {
     let home = tempfile::tempdir().expect("tempdir");
     with_test_home(home.path(), || {
