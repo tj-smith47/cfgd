@@ -34,7 +34,7 @@ impl SkillProvider for CodexProvider {
             SkillScope::Project => {
                 std::env::current_dir()
                     .ok()
-                    .is_some_and(|d| d.join("AGENTS.md").exists())
+                    .is_some_and(|d| d.join(relative_agents_path()).exists())
                     || command_available("codex")
             }
             SkillScope::User => expand_tilde(Path::new("~/.codex")).exists(),
