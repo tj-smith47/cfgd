@@ -426,13 +426,19 @@ pub fn cmd_skill_remove(
     let all = all_skill_providers();
     validate_provider_ids(&all, providers)?;
 
-    // Only the targeted providers that actually have the skill installed; an
-    // empty set means nothing to remove (no prompt, clean exit 0).
-    let targets: Vec<&Box<dyn SkillProvider>> = all
-        .iter()
-        .filter(|p| is_target(p.id(), providers))
-        .filter(|p| skill_already_installed(p.as_ref(), kind, scope))
-        .collect();
+    // Partition the targeted providers by install state in a single `list` pass
+    // each: those with the skill installed get a real `remove`; an
+    // explicitly-named provider with nothing installed still earns a `skipped`
+    // row (so a `--provider <id>` request is never silently dropped).
+    let mut targets: Vec<&Box<dyn SkillProvider>> = Vec::new();
+    let mut not_installed: Vec<&Box<dyn SkillProvider>> = Vec::new();
+    for provider in all.iter().filter(|p| is_target(p.id(), providers)) {
+        if skill_already_installed(provider.as_ref(), kind, scope) {
+            targets.push(provider);
+        } else {
+            not_installed.push(provider);
+        }
+    }
 
     // Confirm before excising, unless opted out. Prompting only when something is
     // actually installed avoids a phantom confirm on a no-op; the prompt errs in
@@ -466,17 +472,8 @@ pub fn cmd_skill_remove(
 
     let mut results: Vec<SkillInstallResult> = Vec::new();
     let mut any_failure = false;
-    for provider in all.iter().filter(|p| is_target(p.id(), providers)) {
+    for provider in &targets {
         let id = provider.id().to_string();
-        // Gate `remove` on a prior `list` check: a managed-section provider's
-        // `remove` acquires the advisory lock (creating an `apply.lock` in the
-        // file's dir) before it can decide nothing is installed — so probe with
-        // the lock-free `list` first and skip a never-installed provider without
-        // ever taking the lock or leaving a lock file behind.
-        if !skill_already_installed(provider.as_ref(), kind, scope) {
-            results.push(SkillInstallResult::skipped(id, "not installed"));
-            continue;
-        }
         match provider.remove(core_kind, scope) {
             Ok(Some(path)) => results.push(SkillInstallResult::removed(id, path)),
             Ok(None) => results.push(SkillInstallResult::skipped(id, "not installed")),
@@ -485,6 +482,12 @@ pub fn cmd_skill_remove(
                 results.push(SkillInstallResult::failed(id, install_failure_reason(&e)));
             }
         }
+    }
+    for provider in &not_installed {
+        results.push(SkillInstallResult::skipped(
+            provider.id().to_string(),
+            "not installed",
+        ));
     }
 
     let heading = format!(

@@ -197,12 +197,13 @@ fn list_shows_installed_with_stale_flag() {
     .assert()
     .success();
 
-    // Hand-write a `module` SKILL.md with an OLDER stamp (0.0.1) → stale == true.
+    // Hand-write a `module` SKILL.md with a mismatched stamp → stale == true.
+    // 9.9.x sentinel: any mismatch with the running version reads as stale.
     let module_path = repo.path().join(".claude/skills/cfgd-module/SKILL.md");
     std::fs::create_dir_all(module_path.parent().unwrap()).expect("mk skill dir");
     std::fs::write(
         &module_path,
-        "---\nname: cfgd-module\ndescription: x\nuser-invocable: true\ncfgd-version: 0.0.1\ncfgd-min-version: 0.0.1\n---\n\nbody\n",
+        "---\nname: cfgd-module\ndescription: x\nuser-invocable: true\ncfgd-version: 9.9.0\ncfgd-min-version: 9.9.0\n---\n\nbody\n",
     )
     .expect("write stale skill");
 
@@ -289,8 +290,9 @@ fn update_all_rerenders_every_installed_skill_at_scope() {
     let home = tempfile::tempdir().expect("home tempdir");
     std::fs::create_dir_all(repo.path().join(".claude")).expect("mk .claude");
 
-    // Seed two installed claude-code skills with an OLDER (0.0.1) stamp by hand,
-    // so a real re-render (current stamp) is observable.
+    // Seed two installed claude-code skills with a mismatched stamp by hand, so a
+    // real re-render (current stamp) is observable.
+    // 9.9.x sentinel: any mismatch with the running version reads as stale.
     for token in ["module", "profile"] {
         let p = repo
             .path()
@@ -298,7 +300,7 @@ fn update_all_rerenders_every_installed_skill_at_scope() {
         std::fs::create_dir_all(p.parent().unwrap()).expect("mk skill dir");
         std::fs::write(
             &p,
-            format!("---\nname: cfgd-{token}\ndescription: x\nuser-invocable: true\ncfgd-version: 0.0.1\ncfgd-min-version: 0.0.1\n---\n\nbody\n"),
+            format!("---\nname: cfgd-{token}\ndescription: x\nuser-invocable: true\ncfgd-version: 9.9.0\ncfgd-min-version: 9.9.0\n---\n\nbody\n"),
         )
         .expect("write stale skill");
     }
@@ -321,7 +323,7 @@ fn update_all_rerenders_every_installed_skill_at_scope() {
             "{token} must be re-rendered to running version: {content}"
         );
         assert!(
-            !content.contains("cfgd-version: 0.0.1"),
+            !content.contains("cfgd-version: 9.9.0"),
             "{token} stale stamp must be gone: {content}"
         );
     }
