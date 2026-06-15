@@ -153,19 +153,99 @@ pub fn fetch_latest_release(repo: &str, printer: Option<&Printer>) -> Result<Rel
     fetch_latest_release_from(&github_api_base(), repo, printer)
 }
 
-/// Query a releases API for the latest release (testable with custom base URL).
+/// Query a releases API for the latest *stable* release (testable with custom
+/// base URL). Hits `releases/latest`, which GitHub defines to exclude
+/// prereleases and drafts.
 fn fetch_latest_release_from(
     api_base: &str,
     repo: &str,
     printer: Option<&Printer>,
 ) -> Result<ReleaseInfo> {
     let url = format!("{}/repos/{}/releases/latest", api_base, repo);
+    let body = github_get(
+        &url,
+        printer,
+        "Checking for latest release...",
+        "Checked latest release",
+    )?;
+    parse_release_json(&body)
+}
 
-    let spinner = printer.map(|p| p.spinner("Checking for latest release..."));
+/// Query a releases API for the newest release *including prereleases*
+/// (testable with custom base URL). Hits the `releases` LIST endpoint and
+/// returns the entry with the highest semver version. Tags that don't parse as
+/// semver are skipped; if no parseable release exists, returns an `ApiError`.
+fn fetch_newest_release_from(
+    api_base: &str,
+    repo: &str,
+    printer: Option<&Printer>,
+) -> Result<ReleaseInfo> {
+    let url = format!("{}/repos/{}/releases", api_base, repo);
+    let body = github_get(
+        &url,
+        printer,
+        "Checking for newest release (incl. prereleases)...",
+        "Checked newest release",
+    )?;
+
+    let json: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| UpgradeError::ApiError {
+            message: format!("invalid JSON: {}", e),
+        })?;
+    let arr = json.as_array().ok_or_else(|| UpgradeError::ApiError {
+        message: "releases list response was not a JSON array".into(),
+    })?;
+
+    arr.iter()
+        .filter_map(|elem| parse_one_release(elem).ok())
+        .max_by(|a, b| a.version.cmp(&b.version))
+        .ok_or_else(|| {
+            UpgradeError::ApiError {
+                message: "no parseable release found in releases list".into(),
+            }
+            .into()
+        })
+}
+
+/// Dispatch the release fetch by channel. `None`, `"stable"`, and any
+/// unrecognized value resolve to the stable `releases/latest` path;
+/// `"prerelease"` resolves to the prerelease-inclusive list path. Matching is
+/// case-insensitive. An unrecognized non-stable channel logs a warning and
+/// falls back to stable.
+fn fetch_release_for_channel(
+    api_base: &str,
+    repo: &str,
+    channel: Option<&str>,
+    printer: Option<&Printer>,
+) -> Result<ReleaseInfo> {
+    match channel.map(str::to_ascii_lowercase).as_deref() {
+        Some("prerelease") => fetch_newest_release_from(api_base, repo, printer),
+        None | Some("stable") => fetch_latest_release_from(api_base, repo, printer),
+        Some(other) => {
+            tracing::warn!(
+                channel = other,
+                "unknown update channel; tracking stable releases"
+            );
+            fetch_latest_release_from(api_base, repo, printer)
+        }
+    }
+}
+
+/// Issue the GitHub GET with the upgrade agent + headers, surfacing the spinner
+/// when a printer is supplied, and return the response body. `start_label` is the
+/// in-flight spinner text; `finish_label` is the completion text — both reflect
+/// the release channel being queried so the wording stays accurate.
+fn github_get(
+    url: &str,
+    printer: Option<&Printer>,
+    start_label: &str,
+    finish_label: &str,
+) -> Result<String> {
+    let spinner = printer.map(|p| p.spinner(start_label.to_string()));
 
     let agent = crate::http::http_agent(crate::http::HTTP_UPGRADE_TIMEOUT);
     let response = agent
-        .get(&url)
+        .get(url)
         .set("Accept", "application/vnd.github+json")
         .set("User-Agent", "cfgd-self-update")
         .call()
@@ -178,10 +258,10 @@ fn fetch_latest_release_from(
     })?;
 
     if let Some(s) = spinner {
-        let _ = s.finish_ok("Checked latest release");
+        let _ = s.finish_ok(finish_label.to_string());
     }
 
-    parse_release_json(&body)
+    Ok(body)
 }
 
 fn parse_release_json(body: &str) -> Result<ReleaseInfo> {
@@ -189,7 +269,13 @@ fn parse_release_json(body: &str) -> Result<ReleaseInfo> {
         serde_json::from_str(body).map_err(|e| UpgradeError::ApiError {
             message: format!("invalid JSON: {}", e),
         })?;
+    parse_one_release(&json)
+}
 
+/// Parse a single GitHub release object (`{tag_name, assets}`) into a
+/// [`ReleaseInfo`], shared by the single-object (`releases/latest`) and
+/// list-element (`releases`) parse paths.
+fn parse_one_release(json: &serde_json::Value) -> Result<ReleaseInfo> {
     let tag = json["tag_name"]
         .as_str()
         .ok_or_else(|| UpgradeError::ApiError {
@@ -926,7 +1012,14 @@ pub fn cleanup_old_binary() {
 }
 
 /// Check for an update, using a 24h disk cache to avoid excessive API calls.
-pub fn check_with_cache(repo: Option<&str>, printer: Option<&Printer>) -> Result<UpdateCheck> {
+///
+/// `channel` selects which release stream to track on a cache miss (see
+/// [`check_latest`]).
+pub fn check_with_cache(
+    repo: Option<&str>,
+    channel: Option<&str>,
+    printer: Option<&Printer>,
+) -> Result<UpdateCheck> {
     let repo = repo.unwrap_or(DEFAULT_REPO);
     let current = current_version()?;
 
@@ -950,7 +1043,7 @@ pub fn check_with_cache(repo: Option<&str>, printer: Option<&Printer>) -> Result
     }
 
     // Cache miss or expired — fall through to fresh check + update cache
-    let check = check_latest(Some(repo), printer)?;
+    let check = check_latest(Some(repo), channel, printer)?;
 
     let _ = write_version_cache(&VersionCache {
         checked_at_secs: crate::unix_secs_now(),
@@ -967,10 +1060,19 @@ pub fn check_with_cache(repo: Option<&str>, printer: Option<&Printer>) -> Result
 }
 
 /// Check for an update without using cache. Always queries the API.
-pub fn check_latest(repo: Option<&str>, printer: Option<&Printer>) -> Result<UpdateCheck> {
+///
+/// `channel` selects which release stream to track: `None`, `Some("stable")`,
+/// or any unrecognized value tracks stable releases (`releases/latest`, which
+/// excludes prereleases); `Some("prerelease")` tracks the newest release
+/// including prereleases. Matching is case-insensitive.
+pub fn check_latest(
+    repo: Option<&str>,
+    channel: Option<&str>,
+    printer: Option<&Printer>,
+) -> Result<UpdateCheck> {
     let repo = repo.unwrap_or(DEFAULT_REPO);
     let current = current_version()?;
-    let release = fetch_latest_release(repo, printer)?;
+    let release = fetch_release_for_channel(&github_api_base(), repo, channel, printer)?;
     let update_available = release.version > current;
 
     Ok(UpdateCheck {

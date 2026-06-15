@@ -834,7 +834,7 @@ fn check_with_cache_returns_error_when_cached_version_is_unparseable() {
     })
     .expect("cache seed");
 
-    let err = check_with_cache(Some("does/not/matter"), None)
+    let err = check_with_cache(Some("does/not/matter"), None, None)
         .expect_err("unparseable cached version must surface as Err, not silent fallthrough");
     let msg = err.to_string();
     assert!(
@@ -2063,7 +2063,7 @@ fn check_with_cache_returns_cached_when_within_ttl() {
     write_version_cache(&cached).expect("cache seed must succeed in tempdir");
 
     // No mock server — if the call reaches the API it will fail loudly.
-    let result = check_with_cache(Some("does/not/matter"), None)
+    let result = check_with_cache(Some("does/not/matter"), None, None)
         .expect("cache hit must short-circuit to local data, never touch the network");
     assert_eq!(
         result.latest,
@@ -3506,7 +3506,7 @@ mod api_base_env_shim {
         let mock = mock_release_response(&mut server);
         let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_latest(Some("test/repo"), None)
+        let result = check_latest(Some("test/repo"), None, None)
             .expect("env-shim redirect should make the call succeed against mockito");
         mock.assert();
 
@@ -3537,7 +3537,7 @@ mod api_base_env_shim {
         let mock = mock_release_response(&mut server);
         let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_with_cache(Some("test/repo"), None)
+        let result = check_with_cache(Some("test/repo"), None, None)
             .expect("cache miss + env-shim redirect should succeed");
         mock.assert();
         assert_eq!(result.latest, Version::new(999, 0, 0));
@@ -3590,7 +3590,7 @@ mod api_base_env_shim {
             .create();
         let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_with_cache(Some("test/repo"), None)
+        let result = check_with_cache(Some("test/repo"), None, None)
             .expect("expired cache + API success should succeed");
         mock.assert();
         assert_eq!(
@@ -3622,7 +3622,7 @@ mod api_base_env_shim {
         let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
         let result =
-            check_latest(None, None).expect("None repo should use default and hit mockito");
+            check_latest(None, None, None).expect("None repo should use default and hit mockito");
         mock.assert();
         assert_eq!(result.latest, Version::new(777, 0, 0));
     }
@@ -3643,8 +3643,8 @@ mod api_base_env_shim {
             .create();
         let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let result =
-            check_with_cache(None, None).expect("None repo should use default and hit mockito");
+        let result = check_with_cache(None, None, None)
+            .expect("None repo should use default and hit mockito");
         mock.assert();
         assert_eq!(result.latest, Version::new(666, 0, 0));
     }
@@ -3668,6 +3668,142 @@ mod api_base_env_shim {
             .expect("env shim should redirect to mockito");
         mock.assert();
         assert_eq!(result.version, Version::new(555, 0, 0));
+    }
+
+    /// `channel: prerelease` hits the `releases` LIST endpoint and selects the
+    /// entry with the highest semver version — here the prerelease `v9.9.1-rc.1`
+    /// over the stable `v9.9.0` that also appears in the list.
+    #[test]
+    #[serial]
+    fn channel_prerelease_selects_highest_version_from_list() {
+        let mut server = mockito::Server::new();
+        let list_mock = server
+            .mock("GET", "/repos/test/repo/releases")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"[
+                    {"tag_name": "v9.9.1-rc.1", "assets": []},
+                    {"tag_name": "v9.9.0", "assets": []}
+                ]"#,
+            )
+            .expect(1)
+            .create();
+        let latest_mock = server
+            .mock("GET", "/repos/test/repo/releases/latest")
+            .with_status(200)
+            .with_body(r#"{"tag_name": "v9.9.0", "assets": []}"#)
+            .expect(0)
+            .create();
+        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+
+        let result = check_latest(Some("test/repo"), Some("prerelease"), None)
+            .expect("prerelease channel should hit the list endpoint");
+        list_mock.assert();
+        latest_mock.assert();
+
+        assert_eq!(
+            result.release.as_ref().map(|r| r.tag.as_str()),
+            Some("v9.9.1-rc.1"),
+            "prerelease channel must select the highest version in the list"
+        );
+        assert_eq!(
+            result.latest,
+            Version::parse("9.9.1-rc.1").unwrap(),
+            "prerelease semver must include the prerelease identifier"
+        );
+    }
+
+    /// `channel: stable` hits `releases/latest` (excludes prereleases) and never
+    /// touches the LIST endpoint.
+    #[test]
+    #[serial]
+    fn channel_stable_uses_releases_latest_endpoint() {
+        let mut server = mockito::Server::new();
+        let latest_mock = server
+            .mock("GET", "/repos/test/repo/releases/latest")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"tag_name": "v9.9.0", "assets": []}"#)
+            .expect(1)
+            .create();
+        let list_mock = server
+            .mock("GET", "/repos/test/repo/releases")
+            .with_status(200)
+            .with_body(r#"[{"tag_name": "v9.9.1-rc.1", "assets": []}]"#)
+            .expect(0)
+            .create();
+        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+
+        let result = check_latest(Some("test/repo"), Some("stable"), None)
+            .expect("stable channel should hit releases/latest");
+        latest_mock.assert();
+        list_mock.assert();
+        assert_eq!(
+            result.release.as_ref().map(|r| r.tag.as_str()),
+            Some("v9.9.0")
+        );
+    }
+
+    /// `channel: None` behaves like stable — hits `releases/latest` only.
+    #[test]
+    #[serial]
+    fn channel_none_uses_releases_latest_endpoint() {
+        let mut server = mockito::Server::new();
+        let latest_mock = server
+            .mock("GET", "/repos/test/repo/releases/latest")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"tag_name": "v9.9.0", "assets": []}"#)
+            .expect(1)
+            .create();
+        let list_mock = server
+            .mock("GET", "/repos/test/repo/releases")
+            .with_status(200)
+            .with_body(r#"[{"tag_name": "v9.9.1-rc.1", "assets": []}]"#)
+            .expect(0)
+            .create();
+        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+
+        let result = check_latest(Some("test/repo"), None, None)
+            .expect("None channel should hit releases/latest");
+        latest_mock.assert();
+        list_mock.assert();
+        assert_eq!(
+            result.release.as_ref().map(|r| r.tag.as_str()),
+            Some("v9.9.0")
+        );
+    }
+
+    /// An unrecognized channel falls back to stable (`releases/latest`) without
+    /// erroring, and does not touch the LIST endpoint.
+    #[test]
+    #[serial]
+    fn channel_unknown_falls_back_to_stable() {
+        let mut server = mockito::Server::new();
+        let latest_mock = server
+            .mock("GET", "/repos/test/repo/releases/latest")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"tag_name": "v9.9.0", "assets": []}"#)
+            .expect(1)
+            .create();
+        let list_mock = server
+            .mock("GET", "/repos/test/repo/releases")
+            .with_status(200)
+            .with_body(r#"[{"tag_name": "v9.9.1-rc.1", "assets": []}]"#)
+            .expect(0)
+            .create();
+        let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
+
+        let result = check_latest(Some("test/repo"), Some("nightly"), None)
+            .expect("unknown channel must fall back to stable, never error");
+        latest_mock.assert();
+        list_mock.assert();
+        assert_eq!(
+            result.release.as_ref().map(|r| r.tag.as_str()),
+            Some("v9.9.0")
+        );
     }
 }
 

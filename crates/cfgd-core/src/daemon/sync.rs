@@ -129,8 +129,7 @@ pub(crate) async fn handle_version_check(
     let test_home = crate::test_home_override();
     let check_result = tokio::task::spawn_blocking(move || {
         let _guard = test_home.as_deref().map(crate::with_test_home_guard);
-        let _ = channel; // cfgd has a single release stream today; threaded for parity
-        crate::upgrade::check_latest(None, None)
+        crate::upgrade::check_latest(None, channel.as_deref(), None)
     })
     .await;
 

@@ -10,8 +10,17 @@ pub fn cmd_upgrade(
     use cfgd_core::config;
     use cfgd_core::upgrade;
 
+    // The effective update config supplies the release channel for the version
+    // check and gates the user-scope skill ride-along that `install_release`
+    // runs after a successful install (no second prompt).
+    let update_cfg = config::load_config(config_path)
+        .ok()
+        .and_then(|c| c.spec.update)
+        .unwrap_or_default();
+    let channel = update_cfg.channel.as_deref();
+
     if check_only {
-        let check = upgrade::check_latest(None, Some(printer)).map_err(|e| {
+        let check = upgrade::check_latest(None, channel, Some(printer)).map_err(|e| {
             let msg = format!("Failed to check latest version: {e}");
             crate::cli::cli_error_ctx(
                 e.into(),
@@ -57,7 +66,7 @@ pub fn cmd_upgrade(
 
     printer.heading("Upgrade");
 
-    let check = upgrade::check_latest(None, Some(printer)).map_err(|e| {
+    let check = upgrade::check_latest(None, channel, Some(printer)).map_err(|e| {
         let msg = format!("Failed to check latest version: {e}");
         crate::cli::cli_error_ctx(
             e.into(),
@@ -127,13 +136,6 @@ pub fn cmd_upgrade(
             sec.kv("Size", format_bytes(asset.size));
         }
     }
-
-    // The effective update config gates the user-scope skill ride-along that
-    // `install_release` runs after a successful install (no second prompt).
-    let update_cfg = config::load_config(config_path)
-        .ok()
-        .and_then(|c| c.spec.update)
-        .unwrap_or_default();
 
     let applied =
         upgrade::install_release(release, asset, require_cosign, &update_cfg, Some(printer))
@@ -225,7 +227,9 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
     let mut effects = UpdateCheckEffects {
         interactive,
         assume_yes,
-        fetch: Box::new(|_channel| upgrade::check_latest(None, None).map_err(unwrap_upgrade_err)),
+        fetch: Box::new(|channel| {
+            upgrade::check_latest(None, channel, None).map_err(unwrap_upgrade_err)
+        }),
         confirm: Box::new(|c| {
             printer
                 .prompt_confirm(&format!(
