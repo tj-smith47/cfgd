@@ -567,6 +567,86 @@ if w4=$(rg --type rust -n '(tracing::(info|warn|error)!|anyhow!|bail!|printer\.(
   echo "$w4"
 fi
 
+log_section "CLI long_about/Examples coverage (every top-level Command variant)"
+# CLAUDE.md convention: "Every top-level Command variant carries long_about
+# with an Examples: block." This gate enforces it as a regression guard so the
+# `cfgd skill` / `cfgd <kind> validate` surfaces (and every future variant)
+# can't ship without a worked example in `--help`.
+#
+# Detection (robust, errs toward flagging): walk the `pub enum Command {` body
+# by brace depth. At depth 1, accumulate the pending `#[command(...)]`
+# attribute (multi-line — tracked by paren balance) and, on reaching a variant
+# declaration (a depth-1 `Pascal` line), assert that pending attribute carried
+# `long_about` AND that the long_about text contained the literal `Examples:`.
+# A variant with no `#[command(...)]`, no `long_about`, or a `long_about`
+# lacking `Examples:` is flagged by name + source line. Only the top-level
+# enum is scanned — nested subcommand enums are out of scope for the convention.
+cli_mod="crates/cfgd/src/cli/mod.rs"
+if [[ -f "$cli_mod" ]]; then
+    long_about_gaps=$(awk '
+    # Locate the top-level command enum opening brace.
+    !in_enum && /^pub enum Command[[:space:]]*\{/ { in_enum = 1; depth = 1; next }
+    !in_enum { next }
+
+    {
+        # Track brace depth across the enum body (ignores nested struct/enum
+        # bodies so only depth-1 lines are treated as variants).
+        line = $0
+        opens  = gsub(/{/, "{", line)
+        closes = gsub(/}/, "}", line)
+    }
+
+    # Accumulate a (possibly multi-line) #[command(...)] attribute at depth 1.
+    depth == 1 && !collecting && /^[[:space:]]*#\[command\(/ {
+        collecting = 1
+        attr = ""
+        paren = 0
+    }
+    collecting {
+        attr = attr "\n" $0
+        paren += gsub(/\(/, "(")
+        paren -= gsub(/\)/, ")")
+        if (paren <= 0) { collecting = 0 }
+        # advance depth AFTER buffering (attr lines carry no enum-body braces)
+        depth += opens - closes
+        next
+    }
+
+    # A depth-1 PascalCase token starting a line is a variant declaration.
+    depth == 1 && /^[[:space:]]{4}[A-Z][A-Za-z0-9]*([[:space:]]*[({,]|[[:space:]]*$)/ {
+        match($0, /[A-Z][A-Za-z0-9]*/)
+        variant = substr($0, RSTART, RLENGTH)
+        has_la = (attr ~ /long_about[[:space:]]*=/)
+        # Examples: must appear inside the long_about string, which is the only
+        # multi-line prose the attribute carries; a plain substring test on the
+        # buffered attribute is sufficient and conservative.
+        has_ex = (attr ~ /Examples:/)
+        if (!has_la) {
+            printf "  %s:%d: %s — missing long_about\n", FILENAME, NR, variant
+        } else if (!has_ex) {
+            printf "  %s:%d: %s — long_about lacks an \"Examples:\" block\n", FILENAME, NR, variant
+        }
+        attr = ""
+        depth += opens - closes
+        if (depth <= 0) { in_enum = 0 }
+        next
+    }
+
+    {
+        depth += opens - closes
+        if (in_enum && depth <= 0) { in_enum = 0 }
+    }
+    ' "$cli_mod")
+    if [[ -n "$long_about_gaps" ]]; then
+        log_error "Top-level Command variants missing long_about/Examples: (CLAUDE.md CLI convention):"
+        printf "%s\n" "$long_about_gaps"
+    else
+        log_ok "Every top-level Command variant has long_about with an Examples: block"
+    fi
+else
+    log_error "CLI enum file not found: $cli_mod (long_about gate could not run)"
+fi
+
 # --- Summary ---
 printf "\n"
 _bold; printf "=== Audit Complete: %d errors, %d warnings ===\n" "$ERRORS" "$WARNINGS"; _reset
