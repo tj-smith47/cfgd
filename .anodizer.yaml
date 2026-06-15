@@ -568,7 +568,13 @@ workspaces:
               version-controlled YAML; cfgd diffs desired against actual state,
               plans, and reconciles — one-shot or continuously via its daemon.
             grade: stable
-            confinement: strict
+            # classic: cfgd configures the whole machine — it reads hidden paths
+            # (.git, dotfiles), writes outside $HOME, and execs external binaries,
+            # all of which strict confinement plus the home/network plugs block.
+            # Classic is the devtool convention; it needs a one-time Snap Store
+            # manual review before upload. Plugs are omitted because classic snaps
+            # run unconfined (snapd ignores the interface system under classic).
+            confinement: classic
             license: MIT
             publish: true
             channel_templates:
@@ -576,10 +582,6 @@ workspaces:
             apps:
               cfgd:
                 command: cfgd
-                plugs:
-                  - home
-                  - network
-                  - network-bind
 
   # --- cfgd-operator: Kubernetes operator (Linux only, Docker + Helm) ---
   - name: cfgd-operator
