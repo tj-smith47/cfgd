@@ -1,0 +1,56 @@
+<!-- cfgd:skill:clusterconfigpolicy -->
+<!-- cfgd-version: <CFGD_VERSION> · cfgd-min-version: <CFGD_MIN_VERSION> -->
+
+# Author a high-quality cfgd ClusterConfigPolicy
+
+Follow this protocol on every invocation. The quality bar is NOT "valid YAML". It is exhaustive field evaluation, external research, and a documented rationale for every choice. A box-checking resource (every field technically present, no investigation behind it) fails this bar. Evaluate EVERY field the kind exposes; for each, either populate it with a justified value or omit it only after investigating enough to conclude it does not apply. Ground every version, ordering, and strategy choice in evidence, never a guess.
+
+## Protocol
+
+0. **Precondition — confirm the toolchain is usable.** Run `command -v cfgd`; if it is absent, STOP and tell the user to install cfgd >= <CFGD_MIN_VERSION>. Run `cfgd --version`; if it is older than <CFGD_MIN_VERSION>, warn and prefer the embedded fallback schema below.
+1. **Enumerate every field for this kind (live-first, snapshot-fallback).** Run `cfgd explain clusterconfigpolicy -o json` for the authoritative live schema, and `cfgd explain clusterconfigpolicy.<field> -o json` to drill into nested objects. If cfgd is absent or older than the stamp, use the embedded fallback schema below (stamped <CFGD_VERSION>).
+2. **Research best practices externally for THIS subject.** For each field, consult external best practice before settling a value: the tool's own docs, the package managers that ship it, and community conventions. Record what you verified and your confidence level when a source was unavailable. Prefer live evidence over training-knowledge recall, and state explicitly when you could not confirm a claim.
+3. **For EVERY field, decide include OR omit, and justify with a WHY comment.** Box-checking is a failure; meeting the rubric above is the target.
+4. **Draft thoroughly:** transitive deps explicit, version constraints set, platforms scoped, multi-step scripts idempotent (timeout + continueOnError), comments-as-specification.
+5. **Validate against the schema:** `cfgd clusterconfigpolicy validate <file>` — fix until clean (validate against the embedded snapshot if cfgd is unavailable).
+6. **Self-critique against the rubric:** "Box-checking or thorough? Which field did I skip, and was that deliberate?" Iterate until the answer holds.
+
+## Ground-truth examples
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: ClusterConfigPolicy
+metadata:
+  name: org-baseline
+spec:
+  namespaceSelector:
+    matchLabels:
+      cfgd.io/managed: "true"
+  requiredModules:
+    - name: compliance-tools
+      required: true
+    - name: corp-certs
+      required: true
+  packages:
+    - name: osquery
+    - name: falco
+      version: ">=0.37"
+  settings:
+    kernel.kptr_restrict: "2"
+  security:
+    trustedRegistries:
+      - ghcr.io/acme-corp/
+      - registry.acme.internal/
+    allowUnsigned: false
+```
+
+## Fallback schema (if cfgd is unavailable)
+
+Generated against cfgd <CFGD_VERSION>. Live `cfgd explain clusterconfigpolicy` is authoritative when present.
+
+```json
+{"$schema":"http://json-schema.org/draft-07/schema#","title":"ClusterConfigPolicySpec","type":"object","properties":{"debugModules":{"description":"Modules staged as debug-only across matching namespaces.","default":[],"type":"array","items":{"$ref":"#/definitions/ModuleRef"}},"namespaceSelector":{"description":"Select which namespaces this cluster policy applies to.","default":{"matchExpressions":[],"matchLabels":{}},"allOf":[{"$ref":"#/definitions/LabelSelector"}]},"packages":{"default":[],"type":"array","items":{"$ref":"#/definitions/PackageRef"}},"requiredModules":{"default":[],"type":"array","items":{"$ref":"#/definitions/ModuleRef"}},"security":{"default":{"allowUnsigned":false,"trustedRegistries":[]},"allOf":[{"$ref":"#/definitions/SecurityPolicy"}]},"settings":{"default":{},"type":"object","additionalProperties":true}},"definitions":{"LabelSelector":{"description":"Kubernetes-style label selector with match_labels and match_expressions.","type":"object","properties":{"matchExpressions":{"default":[],"type":"array","items":{"$ref":"#/definitions/LabelSelectorRequirement"}},"matchLabels":{"default":{},"type":"object","additionalProperties":{"type":"string"}}}},"LabelSelectorRequirement":{"description":"A single requirement for label selector expressions.","type":"object","required":["key","operator"],"properties":{"key":{"type":"string"},"operator":{"$ref":"#/definitions/SelectorOperator"},"values":{"default":[],"type":"array","items":{"type":"string"}}}},"ModuleRef":{"description":"Reference to a module that should be installed on the machine.","type":"object","required":["name"],"properties":{"name":{"type":"string"},"required":{"default":false,"type":"boolean"}}},"PackageRef":{"description":"Reference to a package with optional version pin.","type":"object","required":["name"],"properties":{"name":{"type":"string"},"version":{"type":["string","null"]}}},"SecurityPolicy":{"type":"object","properties":{"allowUnsigned":{"default":false,"type":"boolean"},"trustedRegistries":{"default":[],"type":"array","items":{"type":"string"}}}},"SelectorOperator":{"type":"string","enum":["In","NotIn","Exists","DoesNotExist"]}}}
+```
+
+
+<!-- /cfgd:skill:clusterconfigpolicy -->

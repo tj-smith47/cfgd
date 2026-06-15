@@ -73,6 +73,25 @@ pub struct RenderedSkill {
     pub managed_section: Option<ManagedSection>,
 }
 
+impl RenderedSkill {
+    /// The exact bytes this skill writes when installed into a *fresh* (absent or
+    /// empty) target — `contents` for a whole-file provider, or the spliced
+    /// managed block for a managed-section provider.
+    ///
+    /// A managed-section provider's `contents` is empty (its payload lives in the
+    /// managed block), so callers that need the on-disk content — the golden gate
+    /// in particular — must route through this method rather than reading
+    /// `contents` directly, or they would snapshot an empty file. The managed-block
+    /// form is produced by the same [`splice_block`] writer `install` uses, so the
+    /// returned bytes cannot drift from a real fresh install.
+    pub fn effective_fresh_install(&self) -> String {
+        match &self.managed_section {
+            None => self.contents.clone(),
+            Some(section) => splice_block(None, section),
+        }
+    }
+}
+
 /// The delimiters and body of a cfgd-managed block inside a file shared with
 /// other content.
 ///
@@ -345,16 +364,33 @@ fn block_span(haystack: &str, section: &ManagedSection) -> Option<(usize, usize)
 /// frontmatter keys (`cfgd-version: X`), TOML keys (`cfgd-version = "X"`), and
 /// `AGENTS.md` comment lines uniformly. Accepts either a `:` or `=` separator so
 /// every provider's native metadata shape is read by the same parser.
+///
+/// HTML comments are unwrapped first (`<!-- … -->`) so the body's combined
+/// `<!-- cfgd-version: X · cfgd-min-version: Y -->` stamp is read by the same
+/// parser as the frontmatter/TOML key forms — the codex provider has no native
+/// metadata block, so this body stamp is its only version source. Only the first
+/// whitespace-delimited token of the value is taken, so a single line carrying
+/// both the version and the min-version yields the version alone.
 fn parse_version_stamp(contents: &str) -> Option<String> {
     for line in contents.lines() {
-        let line = line.trim().trim_start_matches(['#', '-', ' ']).trim();
+        let line = line
+            .trim()
+            .trim_start_matches("<!--")
+            .trim_end_matches("-->")
+            .trim()
+            .trim_start_matches(['#', '-', ' '])
+            .trim();
         let Some(rest) = line.strip_prefix("cfgd-version") else {
             continue;
         };
         let Some(value) = rest.trim_start().strip_prefix([':', '=']) else {
             continue;
         };
-        let value = value.trim().trim_matches(['"', '\'']);
+        let value = value
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .trim_matches(['"', '\'']);
         if !value.is_empty() {
             return Some(value.to_string());
         }
@@ -458,6 +494,13 @@ mod tests {
         // AGENTS.md comment-line shape.
         assert_eq!(
             parse_version_stamp("# cfgd-version: 9.9.0\n"),
+            Some("9.9.0".to_string())
+        );
+        // The codex body stamp: an HTML comment carrying BOTH versions on one
+        // line. The HTML wrapper is unwrapped and only the first token taken, so
+        // the version (not the min-version that follows it) is returned.
+        assert_eq!(
+            parse_version_stamp("<!-- cfgd-version: 9.9.0 · cfgd-min-version: 9.9.0 -->\n"),
             Some("9.9.0".to_string())
         );
     }

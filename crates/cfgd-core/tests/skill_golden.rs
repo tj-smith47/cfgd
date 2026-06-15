@@ -19,7 +19,7 @@
 
 use cfgd_core::generate::{SkillKind, skill_model_for};
 use cfgd_core::providers::skill::{
-    ClaudeCodeProvider, CopilotProvider, GeminiProvider, SkillProvider,
+    ClaudeCodeProvider, CodexProvider, CopilotProvider, GeminiProvider, SkillProvider,
 };
 
 /// Every author-facing kind, in the registry's stable order.
@@ -83,6 +83,9 @@ fn golden_suffix(provider: &str) -> &'static str {
         "claude-code" => "SKILL.md",
         "gemini" => "toml",
         "copilot" => "prompt.md",
+        // codex snapshots the per-kind managed block as it is written into a fresh
+        // `AGENTS.md`, not a literal whole file — hence the real target's name.
+        "codex" => "AGENTS.md",
         // An unmapped provider would otherwise write a mislabeled fixture; fail
         // loudly so a new provider's goldens cannot silently land under the wrong
         // extension.
@@ -103,7 +106,13 @@ fn check_provider_goldens(provider: &dyn SkillProvider) {
     let bless = std::env::var("CFGD_BLESS_SKILL").is_ok();
     for kind in ALL_KINDS {
         let model = skill_model_for(kind);
-        let rendered = normalize_version(&provider.render(&model).contents);
+        // Snapshot the bytes the provider actually writes to a fresh target. A
+        // whole-file provider's are its `contents`; a managed-section provider's
+        // (codex) `contents` is empty — its payload is the spliced block — so
+        // `effective_fresh_install` routes through the same `splice_block` writer
+        // `install` uses, keeping the golden byte-faithful instead of vacuously
+        // snapshotting an empty file.
+        let rendered = normalize_version(&provider.render(&model).effective_fresh_install());
         let path = golden_path(provider.id(), kind.command_token());
         if bless {
             std::fs::write(&path, &rendered)
@@ -135,4 +144,9 @@ fn gemini_renders_match_committed_goldens() {
 #[test]
 fn copilot_renders_match_committed_goldens() {
     check_provider_goldens(&CopilotProvider);
+}
+
+#[test]
+fn codex_renders_match_committed_goldens() {
+    check_provider_goldens(&CodexProvider);
 }
