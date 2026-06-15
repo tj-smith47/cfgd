@@ -1,0 +1,61 @@
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+  description: Neovim editor configuration
+spec:
+  packages:
+  - name: neovim
+    min-version: '0.10'
+    prefer:
+    - brew
+    - snap
+    deny:
+    - apt
+  - name: ripgrep
+  - name: fd
+    aliases:
+      apt: fd-find
+  - name: node
+    prefer:
+    - brew
+    - apt
+    aliases:
+      apt: nodejs
+  - name: python3
+  - name: pip
+    aliases:
+      apt: python3-pip
+    platforms:
+    - linux
+  - name: go
+    prefer:
+    - brew
+    - apt
+  - name: curl
+  - name: gcc
+    aliases:
+      apt: build-essential
+      dnf: '@development-tools'
+    platforms:
+    - linux
+  files:
+  - source: files/init.lua
+    target: /root/.config/nvim/init.lua
+  - source: files/lazy-lock.json
+    target: /root/.config/nvim/lazy-lock.json
+  - source: files/stylua.toml
+    target: /root/.config/nvim/stylua.toml
+  - source: files/lua
+    target: /root/.config/nvim/lua
+  - source: files/after
+    target: /root/.config/nvim/after
+  env:
+  - name: EDITOR
+    value: nvim
+  aliases:
+  - name: v
+    command: nvim
+  scripts:
+    post-apply:
+    - nvim --headless '+Lazy! sync' '+MasonToolsInstallSync' +qa

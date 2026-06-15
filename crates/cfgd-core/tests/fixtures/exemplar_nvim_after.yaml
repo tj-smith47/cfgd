@@ -1,0 +1,212 @@
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+  description: Neovim editor — LazyVim-style plugin set with Mason-managed LSP, treesitter, copilot, sops.
+
+spec:
+  packages:
+  # --- Editor ---------------------------------------------------------------
+  - name: neovim
+    minVersion: '0.11'
+    prefer:
+    - brew
+    - snap
+    deny:
+    - apt                         # Ubuntu LTS apt nvim is too old for our plugin set
+
+  # --- Native build toolchain ---------------------------------------------
+  # LuaSnip (jsregexp), telescope-fzf-native, CopilotChat (tiktoken),
+  # nvim-treesitter parser compilation all shell out to `make` + a C compiler.
+  - name: gcc
+    aliases:
+      apt: build-essential
+      dnf: '@development-tools'
+    platforms:
+    - linux
+  - name: make
+    platforms:
+    - linux
+  - name: unzip                   # Mason unpacks language-server archives with unzip
+  - name: git                     # lazy.nvim cloning, fugitive, gitsigns, diffview
+  - name: curl
+
+  # --- CLI helpers used directly by plugins -------------------------------
+  - name: ripgrep                 # telescope live_grep, todo-comments
+  - name: fd                      # telescope find_files
+    # apt ships fd as `fdfind` (no symlink); brew + cargo install the binary
+    # as `fd` directly. Prefer those so telescope can find it without a manual
+    # alias on the user's PATH.
+    prefer:
+    - brew
+    - cargo
+    - apt
+    aliases:
+      apt: fd-find
+      cargo: fd-find
+  - name: zoxide                  # telescope-zoxide
+    prefer:
+    - brew
+    - cargo
+    - apt
+
+  # --- Linux desktop providers --------------------------------------------
+  # X11 / Wayland clipboard providers. Harmless on headless boxes; nvim's
+  # OSC52 fallback (configured in lua/config/options.lua under $SSH_TTY)
+  # covers SSH-only setups like Termius.
+  - name: xclip
+    platforms:
+    - linux
+  - name: wl-clipboard
+    platforms:
+    - linux
+  - name: xdg-utils               # url-open's `gx` → xdg-open
+    platforms:
+    - linux
+
+  # --- Node toolchain -----------------------------------------------------
+  # copilot.vim needs node ≥18. markdown-preview prefers yarn but falls back
+  # to npm. Mason pulls dozens of JS-based language servers via npm.
+  - name: node
+    minVersion: '18'
+    prefer:
+    - brew
+    - apt
+    aliases:
+      apt: nodejs
+  - name: npm                     # apt's nodejs package doesn't always include npm
+    platforms:
+    - linux
+  - name: yarn
+    prefer:
+    - npm
+    - brew
+  # Node provider for nvim — needed by remote/JS plugins. Without it,
+  # :checkhealth reports "Missing 'neovim' npm package". Same canonical
+  # `neovim` name as the editor entry above; cfgd's resolver treats per-manager
+  # entries independently.
+  - name: neovim
+    prefer:
+    - npm
+
+  # --- Python toolchain ---------------------------------------------------
+  # Mason installs many python-based linters/formatters via pip. dap-python
+  # needs a real venv. pynvim is the python provider (vim.python3_host_prog).
+  - name: python3
+  - name: pip
+    aliases:
+      apt: python3-pip
+    platforms:
+    - linux
+  - name: python3-venv            # pipx + debugpy + dap-python require venv
+    aliases:
+      dnf: python3-virtualenv
+    platforms:
+    - linux
+  - name: pipx
+    prefer:
+    - brew
+    - apt
+  - name: pynvim                  # vim.python3 provider for nvim
+    prefer:
+    - pipx
+
+  # --- Go toolchain -------------------------------------------------------
+  # go.nvim's :GoInstallBinaries calls `go install` for dlv, gotests, iferr,
+  # fillstruct, gomodifytags. Mason also installs gopls/gofumpt/golines via go.
+  - name: go
+    minVersion: '1.25'
+    prefer:
+    - brew
+    - apt
+
+  # --- Rust toolchain -----------------------------------------------------
+  # stylua is a Rust binary; cargo provides a reliable fallback when brew isn't
+  # available on the host.
+  - name: cargo
+    aliases:
+      brew: rust
+      apt: rustc
+  - name: stylua                  # Lua formatter used by conform.nvim
+    prefer:
+    - cargo
+    - brew
+
+  # --- Secrets ------------------------------------------------------------
+  - name: sops                    # sops.nvim + nvim-sops
+    prefer:
+    - brew
+    - apt
+  - name: age                     # sops age backend
+    prefer:
+    - brew
+    - apt
+
+  files:
+  - source: files/init.lua
+    target: ~/.config/nvim/init.lua
+  - source: files/lazy-lock.json
+    target: ~/.config/nvim/lazy-lock.json
+  - source: files/stylua.toml
+    target: ~/.config/nvim/stylua.toml
+  - source: files/lua
+    target: ~/.config/nvim/lua
+  - source: files/after
+    target: ~/.config/nvim/after
+
+  env:
+  - name: EDITOR
+    value: nvim
+  - name: VISUAL
+    value: nvim
+  - name: PATH
+    value: $HOME/.local/bin:$HOME/go/bin:$HOME/.cargo/bin:$PATH
+
+  aliases:
+  - name: v
+    command: nvim
+  - name: vim
+    command: nvim
+  - name: vi
+    command: nvim
+
+  scripts:
+    # First-run bootstrap. Each step is idempotent; cfgd will skip on second apply
+    # only via timestamp tracking, but the underlying commands handle re-runs.
+    # spec.env above (PATH, EDITOR, VISUAL) is injected into each step's process
+    # environment, so the nvim binary and ~/.local/bin, go/bin, cargo/bin
+    # toolchains are already on PATH — no per-step export needed.
+    postApply:
+    - run: |
+        if command -v pipx >/dev/null 2>&1; then
+          pipx install --force pynvim 2>&1 | tail -5 || true
+        fi
+      timeout: 120s
+      continueOnError: true
+    - run: |
+        nvim --headless "+Lazy! restore" +qa
+      timeout: 900s
+    - run: |
+        nvim --headless "+TSUpdateSync" +qa
+      timeout: 600s
+    - run: |
+        nvim --headless "+MasonToolsInstallSync" +qa
+      timeout: 900s
+    - run: |
+        nvim --headless "+GoInstallBinaries" +qa
+      timeout: 300s
+      continueOnError: true
+    # markdown-preview.nvim's `build` function is gated on `#ui > 0`, so headless
+    # installs skip the node-app install. Do it directly from the lazy plugin dir.
+    - run: |
+        mp="$HOME/.local/share/nvim/lazy/markdown-preview.nvim/app"
+        if [ -d "$mp" ]; then
+          cd "$mp"
+          if command -v yarn >/dev/null 2>&1; then
+            yarn install --frozen-lockfile
+          else
+            npm install --no-audit --no-fund
+          fi
+        fi
+      timeout: 180s
+      continueOnError: true

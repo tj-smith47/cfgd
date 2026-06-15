@@ -1,0 +1,32 @@
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: clift
+  description: clift framework for building custom CLIs with go-task
+
+spec:
+  packages:
+    - name: go-task
+      prefer: [brew, script]
+      aliases:
+        brew: go-task
+      script: |
+        sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b ~/.local/bin
+
+    - name: jq
+
+    - name: yq
+
+    - name: gum
+
+  files:
+    - source: https://github.com/tj-smith47/clift.git
+      target: ~/.local/share/clift
+
+  env:
+    - name: CLIFT_DIR
+      value: ~/.local/share/clift
+
+  scripts:
+    postApply:
+      - touch ~/.local/share/clift/.cfgd-managed

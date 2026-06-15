@@ -1,0 +1,26 @@
+apiVersion: cfgd.io/v1alpha1
+kind: ConfigPolicy
+metadata:
+  name: k8s-node-baseline
+  namespace: team-platform
+spec:
+  requiredModules:
+    - name: containerd
+      required: true
+    - name: kubelet
+      required: true
+    - name: apparmor
+      required: true
+  packages:
+    - name: socat
+    - name: conntrack
+    - name: kubectl
+      version: ">=1.28"
+    - name: containerd
+      version: ">=1.7"
+  settings:
+    net.ipv4.ip_forward: "1"
+    net.bridge.bridge-nf-call-iptables: "1"
+  targetSelector:
+    matchLabels:
+      cfgd.io/role: k8s-node

@@ -75,18 +75,20 @@ pub struct FieldWalkSpec {
 }
 
 /// A captured, ground-truth resource example for a kind. `contents` is captured
-/// from a real on-disk `examples/**` file; [`ResourceExample::source_path`]
-/// names that file so a test can pin the example to its source.
+/// from a real on-disk file via `include_str!`; [`ResourceExample::source_path`]
+/// names that same file as an absolute path so a test can pin the example to its
+/// source regardless of the working directory it runs from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceExample {
-    /// Repo-relative path of the source file the example was captured from.
+    /// Absolute path of the source file the example was captured from, built
+    /// from `CARGO_MANIFEST_DIR` so it resolves from any working directory.
     source: &'static str,
-    /// The captured file body.
+    /// The captured file body, embedded at compile time via `include_str!`.
     pub contents: String,
 }
 
 impl ResourceExample {
-    /// The source file the example was captured from.
+    /// The absolute path of the source file the example was captured from.
     pub fn source_path(&self) -> &'static str {
         self.source
     }
@@ -178,10 +180,79 @@ pub fn skill_model_for(kind: SkillKind) -> SkillModel {
             drill_hint: true,
         },
         schema_snapshot: schema_snapshot_for(kind),
-        examples: Vec::new(),
+        examples: examples_for(kind),
         validate_cmd: format!("cfgd {token} validate <file>"),
         min_cfgd_version: version_floor(&cfgd_version),
-        exemplar: Exemplar::default(),
+        exemplar: exemplar_for(kind),
+    }
+}
+
+/// Build a [`ResourceExample`] pairing an embedded file body with the absolute
+/// path it was captured from. `$rel` is the file path relative to the
+/// `cfgd-core` crate root; `include_str!` resolves it relative to this source
+/// file (hence the `../../` prefix back to the crate root), while `source_path`
+/// resolves it from `CARGO_MANIFEST_DIR` so a test reads the same file from any
+/// working directory.
+macro_rules! resource_example {
+    ($rel:literal) => {
+        ResourceExample {
+            source: concat!(env!("CARGO_MANIFEST_DIR"), "/", $rel),
+            contents: include_str!(concat!("../../", $rel)).to_string(),
+        }
+    };
+}
+
+/// Ground-truth examples per kind: the most complete real resource first, then a
+/// minimal one. `examples.first()` is always the complete example, which the
+/// drift test pins to its on-disk source.
+fn examples_for(kind: SkillKind) -> Vec<ResourceExample> {
+    match kind {
+        // Complete: the thorough nvim Module (the exemplar `after`). Minimal: the
+        // small-but-complete `clift` Module.
+        SkillKind::Module => vec![
+            resource_example!("tests/fixtures/exemplar_nvim_after.yaml"),
+            resource_example!("../../examples/modules/clift.yaml"),
+        ],
+        SkillKind::Profile => vec![
+            resource_example!("../../examples/profiles/base.yaml"),
+            resource_example!("../../examples/profiles/work.yaml"),
+        ],
+        SkillKind::Source => vec![resource_example!(
+            "../../examples/sources/acme-corp-dev.yaml"
+        )],
+        SkillKind::MachineConfig => {
+            vec![resource_example!(
+                "../../examples/cluster/machineconfig.yaml"
+            )]
+        }
+        SkillKind::ConfigPolicy => {
+            vec![resource_example!(
+                "../../examples/cluster/configpolicy.yaml"
+            )]
+        }
+        SkillKind::ClusterConfigPolicy => {
+            vec![resource_example!(
+                "../../examples/cluster/clusterconfigpolicy.yaml"
+            )]
+        }
+    }
+}
+
+/// The before/after worked exemplar. Only the Module kind ships one today: the
+/// nvim manifest at its box-checking revision (`before`) versus its thorough
+/// rewrite (`after`), both captured verbatim from real history.
+fn exemplar_for(kind: SkillKind) -> Exemplar {
+    match kind {
+        SkillKind::Module => Exemplar {
+            before: include_str!("../../tests/fixtures/exemplar_nvim_before.yaml").to_string(),
+            after: include_str!("../../tests/fixtures/exemplar_nvim_after.yaml").to_string(),
+            note: "The before lists a single package and a couple of dotfiles — every \
+field technically valid, but no investigation behind it. The after pins LSP \
+servers, treesitter parsers, plugin sources and managed config with a documented \
+rationale for each, demonstrating the exhaustive-evaluation quality bar."
+                .to_string(),
+        },
+        _ => Exemplar::default(),
     }
 }
 
