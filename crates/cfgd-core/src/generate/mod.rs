@@ -4,8 +4,8 @@ pub mod skill_model;
 pub mod validate;
 
 pub use skill_model::{
-    Exemplar, FieldWalkSpec, LEGACY_GENERATE_PROMPT, ResourceExample, SchemaSnapshot, SkillKind,
-    SkillModel, skill_model_for,
+    Exemplar, FieldWalkSpec, LEGACY_GENERATE_PROMPT, ResourceExample, SkillKind, SkillModel,
+    skill_model_for,
 };
 
 use serde::{Deserialize, Serialize};
