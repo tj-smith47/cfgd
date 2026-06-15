@@ -18,10 +18,9 @@ metadata:
   namespace: string
 
 spec:
-  name: string
-
   requiredModules:
-    - string
+    - name: string
+      required: bool
 
   packages:
     - name: string
@@ -31,7 +30,8 @@ spec:
     key: value
 
   targetSelector:
-    label-key: label-value
+    matchLabels:
+      label-key: label-value
 
 status:
   compliantCount: int
@@ -62,11 +62,11 @@ status:
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `name` | string | Yes | | Human-readable policy name. Must not be empty. Used in status output and violation reports. |
-| `requiredModules` | list of string | No | `[]` | Module names that must be present in every matched `MachineConfig`. |
+| `requiredModules` | list of ModuleRef | No | `[]` | Modules that must be present in every matched `MachineConfig`. Each entry has a `name` (required) and optional `required` bool. |
+| `debugModules` | list of ModuleRef | No | `[]` | Modules staged as debug-only (CSI volume without volumeMount on declared containers). Same entry shape as `requiredModules`. |
 | `packages` | list of PackageRef | No | `[]` | Required packages. Each entry has a `name` (required) and optional `version` constraint (semver range, e.g. `>=1.28`, `~2.40`). |
 | `settings` | map | No | `{}` | Key/value system settings that must be present in every matched `MachineConfig`'s `systemSettings`. Keys must not be empty. |
-| `targetSelector` | map | No | `{}` | Label selector applied to `MachineConfig` resources. Only matching resources are evaluated. An empty map matches all resources in the namespace. |
+| `targetSelector` | LabelSelector | No | `{}` | Kubernetes-style label selector applied to `MachineConfig` resources. Uses `matchLabels` (and optional `matchExpressions`); only matching resources are evaluated. An empty selector matches all resources in the namespace. |
 
 #### packages[].version format
 
@@ -129,11 +129,13 @@ metadata:
   name: k8s-node-baseline
   namespace: team-platform
 spec:
-  name: Kubernetes Node Baseline
   requiredModules:
-    - containerd
-    - kubelet
-    - apparmor
+    - name: containerd
+      required: true
+    - name: kubelet
+      required: true
+    - name: apparmor
+      required: true
   packages:
     - name: socat
     - name: conntrack
@@ -145,5 +147,6 @@ spec:
     net.ipv4.ip_forward: "1"
     net.bridge.bridge-nf-call-iptables: "1"
   targetSelector:
-    cfgd.io/role: k8s-node
+    matchLabels:
+      cfgd.io/role: k8s-node
 ```

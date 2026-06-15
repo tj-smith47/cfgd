@@ -33,10 +33,9 @@ spec:
     - name: corp-certs
       required: true
   packages:
-    - git-secrets
-    - pre-commit
-  packageVersions:
-    git-secrets: "1.3.0"
+    - name: git-secrets
+      version: "1.3.0"
+    - name: pre-commit
   files:
     - path: ~/.config/company/security-policy.yaml
       source: security-policy.yaml
@@ -52,10 +51,11 @@ spec:
 | `hostname` | string | Machine hostname |
 | `profile` | string | Active profile name |
 | `moduleRefs` | list | Module references with `name` and `required` flag |
-| `packages` | list of strings | Required packages |
-| `packageVersions` | map | Pinned package versions |
+| `packages` | list | Required packages — each entry an object with `name` and optional `version` constraint |
 | `files` | list | File specs with `path`, optional `content`, `source`, and `mode` (default `0644`) |
 | `systemSettings` | map | System configurator settings |
+
+> `status.packageVersions` (reported installed versions, keyed by package name) is written by the operator, not set in `spec`.
 
 ### ConfigPolicy
 
@@ -68,8 +68,11 @@ metadata:
   name: backend-policy
   namespace: backend-team
 spec:
-  name: backend-policy
-  requiredModules: [corp-vpn, corp-certs]
+  requiredModules:
+    - name: corp-vpn
+      required: true
+    - name: corp-certs
+      required: true
   packages:
     - name: git-secrets
       version: ">=1.3.0"
@@ -77,18 +80,18 @@ spec:
   settings:
     shell: /bin/zsh
   targetSelector:
-    cfgd.io/team: backend
+    matchLabels:
+      cfgd.io/team: backend
 ```
 
 #### ConfigPolicy Fields
 
 | Field | Type | Description |
 |---|---|---|
-| `name` | string | Policy name |
-| `requiredModules` | list of strings | Modules that all matching MachineConfigs must reference |
+| `requiredModules` | list of ModuleRef | Modules that all matching MachineConfigs must reference (each with `name` and optional `required` flag) |
 | `packages` | list of PackageRef | Required packages (each with `name` and optional `version` constraint) |
 | `settings` | map | Required system settings |
-| `targetSelector` | map | Label selector — policy applies to MachineConfigs with matching labels |
+| `targetSelector` | LabelSelector | Label selector (`matchLabels` / `matchExpressions`) — policy applies to MachineConfigs with matching labels |
 
 ### DriftAlert
 
@@ -102,8 +105,10 @@ metadata:
   namespace: teams
 spec:
   deviceId: "abc123"
-  machineConfigRef: dev-workstation-jdoe
-  severity: high
+  machineConfigRef:
+    name: dev-workstation-jdoe
+    namespace: teams
+  severity: High
   driftDetails:
     - field: module/corp-vpn
       expected: installed

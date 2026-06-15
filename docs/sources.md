@@ -62,7 +62,8 @@ spec:
       profiles: [acme-sre]
     locked:
       files:
-        - target: "~/.config/company/security-policy.yaml"
+        - source: "security/security-policy.yaml"
+          target: "~/.config/company/security-policy.yaml"
 
     constraints:
       noScripts: true

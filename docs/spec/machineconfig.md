@@ -26,10 +26,8 @@ spec:
       required: bool
 
   packages:
-    - string
-
-  packageVersions:
-    package-name: version-string
+    - name: string
+      version: semver-requirement  # optional
 
   files:
     - path: string
@@ -44,6 +42,9 @@ status:
   lastReconciled: string
   driftDetected: bool
   observedGeneration: int
+
+  packageVersions:
+    package-name: version-string
 
   conditions:
     - type: string
@@ -73,8 +74,7 @@ status:
 | `hostname` | string | Yes | | The hostname of the target machine. Must not be empty. |
 | `profile` | string | Yes | | The cfgd profile name that should be active on this machine. Must not be empty. |
 | `moduleRefs` | list | No | `[]` | Modules that should be installed on the machine. See [spec.moduleRefs[]](#specmodulerefs). |
-| `packages` | list of string | No | `[]` | Additional packages to install beyond those declared in modules. |
-| `packageVersions` | map | No | `{}` | Reported installed versions keyed by package name (e.g. `{"kubectl": "1.28.3"}`). Versions are loose semver: `1.28`, `1.28.3`. |
+| `packages` | list | No | `[]` | Additional packages to install beyond those declared in modules. Each entry is an object with `name` and an optional `version` constraint — see [spec.packages[]](#specpackages). |
 | `files` | list | No | `[]` | Files that should be present on the machine. See [spec.files[]](#specfiles). |
 | `systemSettings` | map | No | `{}` | Arbitrary key/value system settings to enforce (e.g. sysctl values, OS defaults). |
 
@@ -96,6 +96,25 @@ moduleRefs:
     required: true
   - name: k9s
     required: false
+```
+
+---
+
+### spec.packages[]
+
+Each entry names a package to install, with an optional version constraint.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | Yes | | Package name. |
+| `version` | string | No | | Optional version constraint (loose semver, e.g. `1.28.3` or `>=1.28`). When omitted, the latest available version is installed. |
+
+**Example:**
+```yaml
+packages:
+  - name: ripgrep
+  - name: kubectl
+    version: "1.28.3"
 ```
 
 ---
@@ -138,6 +157,7 @@ Written by the operator after each reconciliation pass. Do not set manually.
 | `lastReconciled` | string (ISO 8601) | Timestamp of the last successful reconciliation. |
 | `driftDetected` | bool | `true` if the last reconciliation found divergence between desired and actual state. |
 | `observedGeneration` | int | The `metadata.generation` that was last processed by the controller. |
+| `packageVersions` | map | Reported installed versions keyed by package name (e.g. `{"kubectl": "1.28.3"}`). Versions are loose semver: `1.28`, `1.28.3`. |
 | `conditions` | list | Standard Kubernetes condition list. See [status.conditions[]](#statusconditions). |
 
 ---
@@ -173,11 +193,12 @@ spec:
     - name: terraform
       required: false
   packages:
-    - ripgrep
-    - fd
-  packageVersions:
-    kubectl: "1.28.3"
-    terraform: "1.6.0"
+    - name: ripgrep
+    - name: fd
+    - name: kubectl
+      version: "1.28.3"
+    - name: terraform
+      version: "1.6.0"
   files:
     - path: /etc/hosts.local
       content: "10.0.1.5  internal.acme.com\n"
