@@ -289,6 +289,18 @@
             }
           ],
           "default": null
+        },
+        "update": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/UpdateConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Update policy for the cfgd binary and authored skills."
         }
       },
       "type": "object"
@@ -683,6 +695,62 @@
       },
       "type": "object"
     },
+    "SkillUpdateConfig": {
+      "additionalProperties": false,
+      "description": "Update configuration specific to authored skills.",
+      "properties": {
+        "policy": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SkillUpdatePolicy"
+            }
+          ],
+          "default": "Inherit",
+          "description": "How skill update checks behave. Defaults to `Inherit` (defer to the binary-level policy)."
+        }
+      },
+      "type": "object"
+    },
+    "SkillUpdatePolicy": {
+      "description": "Per-skill update policy. Mirrors [`UpdatePolicy`] but adds `Inherit`, which defers to the binary-level [`UpdateConfig::policy`].",
+      "oneOf": [
+        {
+          "description": "Defer to the binary-level update policy ([`UpdateConfig::policy`]).",
+          "enum": [
+            "Inherit"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Apply skill updates automatically without prompting.",
+          "enum": [
+            "Auto"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Ask before applying an available skill update.",
+          "enum": [
+            "Prompt"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Report that a skill update is available, but take no action.",
+          "enum": [
+            "Notify"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Disable automatic skill update checks; the user updates manually.",
+          "enum": [
+            "Manual"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "SopsConfig": {
       "additionalProperties": false,
       "properties": {
@@ -977,6 +1045,78 @@
         }
       },
       "type": "object"
+    },
+    "UpdateConfig": {
+      "additionalProperties": false,
+      "description": "Configuration for cfgd self-update checks and authored-skill updates.",
+      "properties": {
+        "channel": {
+          "description": "Release channel to track (e.g. `stable`, `beta`). When unset, cfgd uses its built-in default channel.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval": {
+          "default": "24h",
+          "description": "How often to check for updates, as a duration string (e.g. `24h`, `7d`, `30m`) or a plain number of seconds. Defaults to `24h`.",
+          "type": "string"
+        },
+        "policy": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/UpdatePolicy"
+            }
+          ],
+          "default": "Prompt",
+          "description": "How update checks for the cfgd binary behave. Defaults to `Prompt`."
+        },
+        "skills": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SkillUpdateConfig"
+            }
+          ],
+          "default": {
+            "policy": "Inherit"
+          },
+          "description": "Update policy for authored skills. Defaults to inheriting `policy`."
+        }
+      },
+      "type": "object"
+    },
+    "UpdatePolicy": {
+      "description": "Update policy governing how cfgd self-update checks behave.\n\n`Auto` applies updates without prompting, `Prompt` asks before applying, `Notify` only reports that an update is available, and `Manual` disables automatic checks entirely (the user runs `cfgd upgrade` themselves).",
+      "oneOf": [
+        {
+          "description": "Apply updates automatically without prompting.",
+          "enum": [
+            "Auto"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Ask before applying an available update.",
+          "enum": [
+            "Prompt"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Report that an update is available, but take no action.",
+          "enum": [
+            "Notify"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Disable automatic update checks; the user upgrades manually.",
+          "enum": [
+            "Manual"
+          ],
+          "type": "string"
+        }
+      ]
     }
   },
   "description": "Root configuration file for cfgd (cfgd.yaml)",
