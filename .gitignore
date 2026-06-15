@@ -80,7 +80,8 @@
 !/CONTRIBUTING.md
 !/CODE_OF_CONDUCT.md
 !/SECURITY.md
-!/LICENSE
+!/LICENSE-MIT
+!/LICENSE-APACHE
 
 # Re-ignore build artifacts inside allowed dirs
 target/

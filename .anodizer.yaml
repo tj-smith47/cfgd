@@ -50,7 +50,7 @@ tag:
 
 metadata:
   # homepage / license / maintainers are derived from [workspace.package]
-  # (repository=homepage fallback, license=MIT, authors=["TJ Smith"]) — all
+  # (repository=homepage fallback, license=MIT OR Apache-2.0, authors=["TJ Smith"]) — all
   # four crates resolve identically without restating them here. `description`
   # is retained because each crate's Cargo `description` differs from this
   # uniform project line; dropping it would let publishers without an explicit
@@ -225,7 +225,8 @@ workspaces:
               - os: windows
                 formats: [zip]
             files:
-              - LICENSE
+              - LICENSE-MIT
+              - LICENSE-APACHE
               - README.md
             # Generated once on the host binary (shell-/arch-agnostic) and
             # bundled into every archive. `cfgd completion <shell>` and
@@ -399,8 +400,9 @@ workspaces:
               owner: tj-smith47
               name: nix-pkgs
             # homepage / description / license derived from metadata + Cargo.
-            # The derived SPDX `MIT` maps to `lib.licenses.mit` via anodizer's
-            # nix license resolver, matching the former explicit `license: mit`.
+            # The derived dual SPDX `MIT OR Apache-2.0` maps to the nix list
+            # `with lib.licenses; [ mit asl20 ]` via anodizer's nix license
+            # resolver (the `OR` expression is parsed and each id mapped).
             skip_upload: false
             formatter: alejandra
             main_program: cfgd
@@ -471,7 +473,7 @@ workspaces:
             annotations:
               org.opencontainers.image.source: "https://github.com/tj-smith47/cfgd"
               org.opencontainers.image.description: "Declarative, GitOps-style machine configuration management"
-              org.opencontainers.image.licenses: "MIT"
+              org.opencontainers.image.licenses: "MIT OR Apache-2.0"
             build_args:
               VERSION: "{{ Version }}"
             sbom: true
@@ -514,8 +516,10 @@ workspaces:
             # (`conflicts: cfgd[cfgd]`), making the package uninstallable.
             file_name_template: "{{ ProjectName }}_{{ RawVersion }}_{{ Os }}_{{ Arch }}"
             contents:
-              - src: LICENSE
-                dst: /usr/share/doc/cfgd/LICENSE
+              - src: LICENSE-MIT
+                dst: /usr/share/doc/cfgd/LICENSE-MIT
+              - src: LICENSE-APACHE
+                dst: /usr/share/doc/cfgd/LICENSE-APACHE
               - src: README.md
                 dst: /usr/share/doc/cfgd/README.md
               # Man page + shell completions the archive stage generated into
@@ -575,7 +579,7 @@ workspaces:
             # manual review before upload. Plugs are omitted because classic snaps
             # run unconfined (snapd ignores the interface system under classic).
             confinement: classic
-            license: MIT
+            license: MIT OR Apache-2.0
             publish: true
             channel_templates:
               - "latest/stable"
@@ -616,7 +620,7 @@ workspaces:
             annotations:
               org.opencontainers.image.source: "https://github.com/tj-smith47/cfgd"
               org.opencontainers.image.description: "Kubernetes operator for cfgd"
-              org.opencontainers.image.licenses: "MIT"
+              org.opencontainers.image.licenses: "MIT OR Apache-2.0"
             build_args:
               VERSION: "{{ Version }}"
             sbom: true
@@ -678,7 +682,7 @@ workspaces:
             annotations:
               org.opencontainers.image.source: "https://github.com/tj-smith47/cfgd"
               org.opencontainers.image.description: "CSI Node plugin for cfgd module injection into Kubernetes pods"
-              org.opencontainers.image.licenses: "MIT"
+              org.opencontainers.image.licenses: "MIT OR Apache-2.0"
             build_args:
               VERSION: "{{ Version }}"
             sbom: true
@@ -875,7 +879,8 @@ source:
     - "crates/**/*.rs"
     - "Cargo.toml"
     - "Cargo.lock"
-    - "LICENSE"
+    - "LICENSE-MIT"
+    - "LICENSE-APACHE"
     - "README.md"
 
 sboms:
