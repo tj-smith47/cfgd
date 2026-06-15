@@ -274,7 +274,7 @@ fn list_shows_installed_with_stale_flag() {
         .iter()
         .find(|e| e["kind"] == "Module" && e["provider"] == "claude-code")
         .unwrap_or_else(|| panic!("no module entry in {payload}"));
-    assert_eq!(module["stale"], true, "0.0.1 stamp must be stale: {module}");
+    assert_eq!(module["stale"], true, "9.9.0 stamp must be stale: {module}");
 
     let profile = entries
         .iter()
@@ -393,5 +393,147 @@ fn update_all_rerenders_every_installed_skill_at_scope() {
     assert!(
         updated_count >= 2,
         "both seeded skills must report updated: {payload}"
+    );
+}
+
+/// An unknown `--provider` id is a hard user error (never silently ignored): the
+/// command exits non-zero and the structured error payload names the bogus id AND
+/// lists the valid provider ids (so the user can self-correct). Under `-o json`
+/// the CLI-boundary error renders as the canonical `{error, message, name}`
+/// payload on stdout.
+#[test]
+fn install_unknown_provider_is_hard_error() {
+    let repo = tempfile::tempdir().expect("repo tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+
+    let assert = install_in(
+        repo.path(),
+        home.path(),
+        &["module", "--provider", "bogus", "-o", "json"],
+    )
+    .assert()
+    .failure();
+    let out = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    let payload: Value = serde_json::from_str(&out).expect("json error payload");
+    let message = payload["message"].as_str().expect("error message string");
+    assert!(
+        message.contains("bogus"),
+        "error must name the unknown provider: {payload}"
+    );
+    assert!(
+        message.contains("claude-code"),
+        "error must list the valid provider ids: {payload}"
+    );
+}
+
+/// `--force` into an explicitly-named, UNDETECTED provider still installs: in a
+/// repo with no provider dirs, `--provider gemini --force` writes the gemini
+/// command file (force overrides the absent-detection skip). The result row
+/// reports `installed` and the `.gemini/commands/cfgd-module.toml` file lands on
+/// disk.
+#[test]
+fn install_force_into_undetected_provider_installs() {
+    let repo = tempfile::tempdir().expect("repo tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+    // No provider dirs seeded → gemini is undetected at project scope.
+
+    let assert = install_in(
+        repo.path(),
+        home.path(),
+        &["module", "--provider", "gemini", "--force", "-o", "json"],
+    )
+    .assert()
+    .success();
+    let out = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    let payload: Value = serde_json::from_str(&out).expect("json payload");
+
+    let gemini = result_for(&payload, "gemini");
+    assert_eq!(
+        gemini["status"], "installed",
+        "force must install into an undetected provider: {gemini}"
+    );
+    assert!(
+        repo.path()
+            .join(".gemini/commands/cfgd-module.toml")
+            .exists(),
+        "forced gemini command file must be on disk"
+    );
+}
+
+/// `update <kind>` when nothing is installed is a coherent no-op: every targeted
+/// provider reports `skipped` with reason "not installed", and the command exits
+/// 0 (an empty update is not a failure).
+#[test]
+fn update_kind_not_installed_skips_exit_zero() {
+    let repo = tempfile::tempdir().expect("repo tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+    // Nothing installed anywhere.
+
+    let assert = skill_in(
+        repo.path(),
+        home.path(),
+        &["update", "module", "-o", "json"],
+    )
+    .assert()
+    .success();
+    let out = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    let payload: Value = serde_json::from_str(&out).expect("json payload");
+
+    let results = payload["results"].as_array().expect("results is an array");
+    assert!(!results.is_empty(), "every provider gets a row: {payload}");
+    for row in results {
+        assert_eq!(
+            row["status"], "skipped",
+            "nothing installed → every row skipped: {row}"
+        );
+        assert!(
+            row["reason"]
+                .as_str()
+                .expect("reason string")
+                .contains("not installed"),
+            "skip reason must be 'not installed': {row}"
+        );
+    }
+}
+
+/// User-scope install (`-g`) writes under $HOME: with a hermetic home containing
+/// `~/.claude/` (which is claude-code's user-scope detection trigger), the
+/// claude-code skill installs at user scope and its `SKILL.md` lands under the
+/// home tempdir — proving the positive `-g` path, not just the cursor/copilot
+/// no-user-scope skip.
+#[test]
+fn install_global_scope_writes_under_home() {
+    let repo = tempfile::tempdir().expect("repo tempdir");
+    let home = tempfile::tempdir().expect("home tempdir");
+    // claude-code detects user scope via ~/.claude existing.
+    std::fs::create_dir_all(home.path().join(".claude")).expect("mk ~/.claude");
+
+    let assert = install_in(repo.path(), home.path(), &["module", "-g", "-o", "json"])
+        .assert()
+        .success();
+    let out = String::from_utf8(assert.get_output().stdout.clone()).expect("utf8 stdout");
+    let payload: Value = serde_json::from_str(&out).expect("json payload");
+
+    assert_eq!(payload["scope"], "user");
+
+    let claude = result_for(&payload, "claude-code");
+    assert_eq!(
+        claude["status"], "installed",
+        "claude-code must install at user scope: {claude}"
+    );
+    let written = claude["path"].as_str().expect("path string");
+    assert!(
+        written.ends_with(".claude/skills/cfgd-module/SKILL.md"),
+        "unexpected user-scope path: {claude}"
+    );
+    assert!(
+        std::path::Path::new(written).starts_with(home.path()),
+        "user-scope install must land under $HOME: {written}"
+    );
+    assert!(
+        home.path()
+            .join(".claude/skills/cfgd-module/SKILL.md")
+            .exists(),
+        "user-scope SKILL.md must be on disk under home"
     );
 }

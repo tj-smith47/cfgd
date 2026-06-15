@@ -3,8 +3,7 @@
 //! Codex, Cursor).
 //!
 //! Each author kind ([`SkillKind`]) renders to every provider's native primitive
-//! via [`cfgd_core::providers::skill`]. The command bodies are implemented in a
-//! later task; the variants and dispatch stubs here pin the CLI surface.
+//! via [`cfgd_core::providers::skill`].
 
 use std::path::PathBuf;
 
@@ -191,6 +190,11 @@ fn install_failure_reason(err: &cfgd_core::errors::CfgdError) -> String {
     collapse_to_subject_line(err)
 }
 
+/// The running cfgd version, stamped into every skill payload's `cfgdVersion`.
+fn cfgd_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 /// Resolve the install/remove/update scope from the `--global` flag.
 fn resolve_scope(global: bool) -> SkillScope {
     if global {
@@ -346,7 +350,7 @@ pub fn cmd_skill_install(
     let payload = SkillInstallPayload {
         kind: kind.to_core().as_str().to_string(),
         scope,
-        cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+        cfgd_version: cfgd_version(),
         results,
     };
     printer.emit(doc.with_data(&payload));
@@ -434,7 +438,7 @@ pub fn cmd_skill_list(printer: &Printer, global: bool) -> anyhow::Result<()> {
 
     let payload = SkillListPayload {
         scope,
-        cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+        cfgd_version: cfgd_version(),
         installed,
     };
     printer.emit(doc.with_data(&payload));
@@ -492,7 +496,7 @@ pub fn cmd_skill_remove(
         let payload = SkillOpPayload {
             kind: Some(core_kind.as_str().to_string()),
             scope,
-            cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+            cfgd_version: cfgd_version(),
             results: Vec::new(),
         };
         printer.emit(doc.with_data(&payload));
@@ -528,7 +532,7 @@ pub fn cmd_skill_remove(
     let payload = SkillOpPayload {
         kind: Some(core_kind.as_str().to_string()),
         scope,
-        cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+        cfgd_version: cfgd_version(),
         results,
     };
     printer.emit(doc.with_data(&payload));
@@ -620,7 +624,7 @@ pub fn cmd_skill_update(
     let payload = SkillOpPayload {
         kind: kind.map(|k| k.to_core().as_str().to_string()),
         scope,
-        cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+        cfgd_version: cfgd_version(),
         results,
     };
     printer.emit(doc.with_data(&payload));
