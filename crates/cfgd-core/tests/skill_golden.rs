@@ -18,7 +18,7 @@
 //! not the version literal.
 
 use cfgd_core::generate::{SkillKind, skill_model_for};
-use cfgd_core::providers::skill::{ClaudeCodeProvider, SkillProvider};
+use cfgd_core::providers::skill::{ClaudeCodeProvider, GeminiProvider, SkillProvider};
 
 /// Every author-facing kind, in the registry's stable order.
 const ALL_KINDS: [SkillKind; 6] = [
@@ -48,9 +48,16 @@ fn normalize_version(rendered: &str) -> String {
     let floor = format!("{}.{}.0", parts[0], parts.get(1).copied().unwrap_or("0"));
     rendered
         // Positional min-version sites first, so they survive the equal-value case.
+        // Both the frontmatter `key: value` shape and the TOML `key = "value"`
+        // shape are matched, so the gemini stamp's min-version is distinguished
+        // from its version even when the two literals are identical at a `*.*.0`.
         .replace(
             &format!("cfgd-min-version: {floor}"),
             "cfgd-min-version: <CFGD_MIN_VERSION>",
+        )
+        .replace(
+            &format!("cfgd-min-version = \"{floor}\""),
+            "cfgd-min-version = \"<CFGD_MIN_VERSION>\"",
         )
         .replace(
             &format!("install cfgd >= {floor}"),
@@ -67,14 +74,26 @@ fn normalize_version(rendered: &str) -> String {
         .replace(&floor, "<CFGD_MIN_VERSION>")
 }
 
-fn golden_path(provider: &str, token: &str) -> String {
-    format!("tests/snapshots/skill/{provider}__{token}.SKILL.md")
+/// The golden filename suffix for a provider's native file shape, so each
+/// provider's snapshot reads with its real extension (`*.SKILL.md`, `*.toml`).
+fn golden_suffix(provider: &str) -> &'static str {
+    match provider {
+        "gemini" => "toml",
+        _ => "SKILL.md",
+    }
 }
 
-#[test]
-fn claude_code_renders_match_committed_goldens() {
+fn golden_path(provider: &str, token: &str) -> String {
+    format!(
+        "tests/snapshots/skill/{provider}__{token}.{}",
+        golden_suffix(provider)
+    )
+}
+
+/// Bless or assert every (kind) golden for one provider, applying the shared
+/// version normalization so a version bump cannot flip the goldens.
+fn check_provider_goldens(provider: &dyn SkillProvider) {
     let bless = std::env::var("CFGD_BLESS_SKILL").is_ok();
-    let provider = ClaudeCodeProvider;
     for kind in ALL_KINDS {
         let model = skill_model_for(kind);
         let rendered = normalize_version(&provider.render(&model).contents);
@@ -89,9 +108,19 @@ fn claude_code_renders_match_committed_goldens() {
         assert_eq!(
             rendered.trim_end(),
             golden.trim_end(),
-            "{} {} SKILL.md changed. If intentional: `task skill:bless`, then review the diff.",
+            "{} {} skill changed. If intentional: `task skill:bless`, then review the diff.",
             provider.id(),
             kind.as_str(),
         );
     }
+}
+
+#[test]
+fn claude_code_renders_match_committed_goldens() {
+    check_provider_goldens(&ClaudeCodeProvider);
+}
+
+#[test]
+fn gemini_renders_match_committed_goldens() {
+    check_provider_goldens(&GeminiProvider);
 }
