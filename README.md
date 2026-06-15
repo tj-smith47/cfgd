@@ -168,6 +168,7 @@ Puppet is the closest philosophical match — declarative state, continuous enfo
 **For developers:**
 - [One-command bootstrap](docs/bootstrap.md) — `cfgd init --from <repo> --apply` on a new machine, done
 - [AI-guided generation](docs/ai-generate.md) — `cfgd generate` scans your system and builds profiles/modules; MCP server for AI editor integration
+- [Authoring skills](docs/skill.md) — `cfgd skill install` teaches your coding agent (Claude Code, Gemini, Copilot, Codex, Cursor) to author high-quality cfgd resources
 - [Shareable modules](docs/modules.md) — cross-platform dev environment packages with dependency resolution and registries
 - [15 package managers](docs/packages.md) — brew, apt, dnf, pacman, cargo, npm, pipx, snap, and more, with automatic platform-aware resolution
 - [Secrets](docs/secrets.md) — SOPS/age encryption + 1Password, Bitwarden, HashiCorp Vault; secret-backed environment variables
@@ -211,6 +212,7 @@ Puppet is the closest philosophical match — declarative state, continuous enfo
 | [Installation](docs/installation.md) | All install channels (Homebrew, install script, winget, scoop, chocolatey, cargo, direct download) |
 | [Bootstrap](docs/bootstrap.md) | `cfgd init` flow, apply options, install script |
 | [AI Generate](docs/ai-generate.md) | AI-guided config generation, MCP server setup |
+| [Authoring Skills](docs/skill.md) | `cfgd skill` installer, provider target matrix, the quality bar, generate-vs-skill |
 
 ## Distribution
 

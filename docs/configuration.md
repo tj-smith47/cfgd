@@ -68,6 +68,13 @@ spec:
       - name: bitwarden
       - name: vault
 
+  update:
+    policy: Prompt         # cfgd binary self-update behavior (default: Prompt)
+    interval: 24h          # check cadence when policy != Manual (default: 24h)
+    channel: stable        # release channel (default: cfgd's built-in channel)
+    skills:
+      policy: Inherit      # follows spec.update.policy unless overridden (default: Inherit)
+
   sources:
     - name: acme-corp
       origin:
@@ -95,6 +102,10 @@ spec:
 | `spec.daemon.sync.autoPull` | no | `false` | Auto-pull from remote |
 | `spec.daemon.sync.autoPush` | no | `false` | Auto-commit and push local changes |
 | `spec.daemon.notify.method` | no | `Desktop` | `Desktop`, `Stdout`, or `Webhook` |
+| `spec.update.policy` | no | `Prompt` | cfgd binary self-update behavior: `Auto`, `Prompt`, `Notify`, or `Manual` (see [Update behavior](#update-behavior-specupdate)) |
+| `spec.update.interval` | no | `24h` | Update-check cadence when `policy != Manual` (e.g. `30m`, `24h`, `7d`) |
+| `spec.update.channel` | no | — | Release channel to track (e.g. `stable`, `prerelease`); unset uses cfgd's built-in default channel |
+| `spec.update.skills.policy` | no | `Inherit` | Authored-skill refresh policy: `Inherit` (follow `spec.update.policy`), `Auto`, `Prompt`, `Notify`, or `Manual` |
 | `spec.secrets.backend` | no | `sops` | `sops` or `age` (see [secrets.md](secrets.md) for when to use which) |
 | `spec.theme` | no | `default` | Theme name (string) or object with `name` + `overrides` |
 | `spec.fileStrategy` | no | `Symlink` | `Symlink`, `Copy`, `Template`, or `Hardlink` (Windows: `Symlink` requires Developer Mode or elevation) |
@@ -104,6 +115,89 @@ spec:
 All fields can be read and written programmatically via `cfgd config get <key>` and `cfgd config set <key> <value>`. See the [CLI reference](cli-reference.md) for details.
 
 Enum-valued fields (e.g. `spec.fileStrategy`, `spec.daemon.driftPolicy`, `spec.daemon.notify.method`, `spec.env.scope`, `spec.compliance.export.format`) are parsed case-insensitively — `Symlink`, `symlink`, and `SYMLINK` are all accepted. The documented PascalCase form is canonical and is what cfgd writes back.
+
+## Update behavior (`spec.update`)
+
+cfgd can check for its own updates (it doesn't by default — `cfgd upgrade` is
+otherwise purely manual), and separately decide whether installed [authoring
+skills](skill.md) are re-rendered when cfgd moves. Both are governed by
+`spec.update`:
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: my-workstation
+spec:
+  profile: work
+  update:
+    policy: Prompt         # cfgd binary self-update behavior (default: Prompt)
+    interval: 24h          # check cadence when policy != Manual (default: 24h)
+    channel: stable        # release channel (default: cfgd's built-in channel)
+    skills:
+      policy: Inherit      # follows spec.update.policy unless overridden (default: Inherit)
+```
+
+`spec.update.policy` is the one posture knob; by default it governs both the
+binary and skill refresh. Override `spec.update.skills.policy` only to decouple
+skill refresh from the binary. "update" is the umbrella verb for keeping things
+current; "upgrade" is the specific binary-replacement action (`cfgd upgrade`),
+which `policy: Auto`/`Prompt` drives.
+
+### Update policies
+
+The binary policy (`spec.update.policy`) is an `UpdatePolicy`:
+
+| Policy | Meaning |
+|---|---|
+| `Auto` | on a detected newer version, apply it unattended |
+| `Prompt` | check, then ask before applying (interactive CLI); non-interactive falls back to `Notify` |
+| `Notify` | check and surface/record availability; never apply, never prompt |
+| `Manual` | cfgd does nothing automatically — no check, no notice; you drive it |
+
+The skill policy (`spec.update.skills.policy`) is a `SkillUpdatePolicy` — the
+same four values **plus** `Inherit`, which is its default:
+
+| Skill policy | Meaning |
+|---|---|
+| `Inherit` *(default)* | use the binary `spec.update.policy` value |
+| `Auto` / `Prompt` / `Notify` / `Manual` | as above, but for skill refresh only |
+
+### At most one update surface, ever
+
+Skill staleness is a *consequence* of a binary version change (a skill is stale
+only when the running cfgd is newer than its stamp), so the two surfaces are
+naturally serialized — binary first, skills after. Three rules dedup the only
+collision (skills left stale from a past skipped refresh *and* a newer binary
+now available), so you'll never see two update prompts:
+
+1. **Binary outranks skills.** While a binary update is pending/available, the
+   skill surface is suppressed — only the binary surface shows. (Refreshing
+   skills against a binary you're about to replace is wasted work.)
+2. **Ride-along.** When a binary upgrade actually happens (`Auto`, an accepted
+   `Prompt`, or a manual `cfgd upgrade`), the user-scope skill refresh is part of
+   **that same action and output block** — never a second prompt.
+3. **One consolidated skill surface.** When skills are surfaced standalone
+   (binary current, skills stale), a single notice covers both user- and
+   project-scope staleness — never one notice per scope.
+
+### Scope governs auto vs manual (the git-safety invariant)
+
+> **cfgd never auto-rewrites tracked project files.** Ride-along and
+> `Auto`/`Inherit→Auto` refresh touch **user-scope (home) skills only**.
+> **Project-scope skills are always manual** — regardless of policy — because
+> they are committed, and a surprise diff is unacceptable. The consolidated
+> surface (rule 3) tells you project skills are stale so you can run
+> `cfgd skill update` and commit deliberately.
+
+| Effective skills policy | User-scope on version change | Project-scope |
+|---|---|---|
+| `Auto` (incl. `Inherit→Auto`) | re-render (ride-along if same action) | notice only, never written |
+| `Prompt` / `Inherit→Prompt` | refresh rides along with the accepted binary upgrade; no separate prompt | notice only |
+| `Notify` / `Inherit→Notify` | a single stale notice (rule 3); no write | notice only |
+| `Manual` / `Inherit→Manual` | nothing (silent); you run `cfgd skill update` | nothing |
+
+In daemon context, `Notify` records a structured event rather than prompting.
 
 ## Repository Layout
 

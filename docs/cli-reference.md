@@ -273,6 +273,38 @@ A path argument reads that file; `-` reads from stdin. Exit code is `0` when the
 document is valid and `4` when it is invalid. With `-o json` the result is a
 `{"kind", "valid", "errors"}` payload for scripting.
 
+### `cfgd skill`
+
+Install a provider-native agent skill that teaches your coding agent (Claude
+Code, Gemini, Copilot, Codex, Cursor) to author a high-quality cfgd resource.
+
+```sh
+cfgd skill install module                 # install for every detected agent (project scope)
+cfgd skill install profile --global       # install under ~/ for cross-repo use
+cfgd skill install source --provider claude-code --provider gemini
+cfgd skill install module --force         # write even for an undetected agent / overwrite
+cfgd skill list                           # alias: ls; -g for user scope
+cfgd skill update --all                   # re-render every installed skill at the scope
+cfgd skill remove module                  # alias: rm
+```
+
+| Flag | Meaning |
+|---|---|
+| `-g` / `--global` | install/list/remove under the user's home dirs instead of the project |
+| `--provider <id>` | restrict to named providers, repeatable (`claude-code`, `gemini`, `copilot`, `codex`, `cursor`); default is every detected agent |
+| `--force` | write even for an undetected agent, and overwrite an existing skill |
+| `--yes` / `-y` | skip the overwrite confirmation (also `CFGD_YES=1`) |
+| `--all` | (on `update`) re-render every skill currently installed at the scope |
+
+The six author kinds are `module`, `profile`, `source`, `machineconfig`,
+`configpolicy`, `clusterconfigpolicy`. Install is continue-on-error: each
+provider's outcome (`installed` / `skipped` / `failed`) is reported and the
+command exits non-zero if any targeted provider failed. `copilot` and `cursor`
+have no user-scope primitive, so `-g` reports them skipped rather than writing.
+With `-o json`, each command emits a `{kind, scope, cfgdVersion, results[]}`
+payload. See [Authoring Skills](skill.md) for the provider target matrix, the
+quality bar, and when to use this instead of `cfgd generate`.
+
 ### `cfgd paths`
 
 Print the resolved config, state, cache, and runtime directories, each with its
