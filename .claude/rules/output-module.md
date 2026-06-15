@@ -115,6 +115,10 @@ missing from the table.
 | secret_edit                  | no                | opens $EDITOR; no data output                      |
 | secret_encrypt               | yes               | encryption result records                          |
 | secret_init                  | yes               | backend configuration records                      |
+| skill_install                | yes               | install-result records (paths written per provider) |
+| skill_list                   | yes               | installed-skill inventory                          |
+| skill_remove                 | yes               | removal records                                    |
+| skill_update                 | yes               | update-result records                              |
 | source_add                   | yes               | add-result records                                 |
 | source_create                | yes               | new source metadata                                |
 | source_edit                  | no                | opens $EDITOR; no data output                      |
