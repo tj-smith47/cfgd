@@ -9,6 +9,7 @@
 
 use cfgd_core::generate::{SkillKind, skill_model_for};
 use cfgd_core::providers::skill::{ClaudeCodeProvider, CodexProvider, SkillProvider, SkillScope};
+use cfgd_core::test_helpers::{CwdGuard, EnvVarGuard};
 use cfgd_core::with_test_home;
 
 #[test]
@@ -223,6 +224,100 @@ fn agents_md_inplace_block_preserves_trailing_user_content() {
 
 #[test]
 #[serial_test::serial]
+fn project_scope_install_leaves_no_lock_file_in_project_dir() {
+    // Regression: the managed-section advisory lock used to be taken in the
+    // target file's PARENT, which for codex Project scope is the user's project
+    // repo root (`<cwd>/AGENTS.md`). That littered a pid-stamped `apply.lock`
+    // beside the user's content. The lock must live in cfgd's owner-private
+    // runtime dir instead, keyed by a hash of the absolute target path — the
+    // project dir must stay clean.
+    let home = tempfile::tempdir().expect("home tempdir");
+    let project = tempfile::tempdir().expect("project tempdir");
+    let runtime = tempfile::tempdir().expect("runtime tempdir");
+
+    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+    let _cwd = CwdGuard::set(project.path()).expect("set cwd to project dir");
+
+    with_test_home(home.path(), || {
+        let provider = CodexProvider;
+        let model = skill_model_for(SkillKind::Module);
+
+        let target = provider
+            .target_path(SkillKind::Module, SkillScope::Project)
+            .expect("project scope has a target");
+        // The target is the project-root AGENTS.md (its parent is the cwd).
+        assert_eq!(
+            target.parent(),
+            Some(project.path()),
+            "codex Project target must be rooted at the project cwd: {target:?}"
+        );
+
+        let path = provider
+            .install(&model, SkillScope::Project)
+            .expect("codex project install splices the block");
+        assert_eq!(path, target);
+
+        // (a) AGENTS.md exists in the project dir with the managed block.
+        let on_disk = std::fs::read_to_string(&target).expect("read AGENTS.md");
+        assert!(
+            on_disk.contains("<!-- cfgd:skill:module -->"),
+            "managed block must be written, got:\n{on_disk}"
+        );
+
+        // (b) THE REGRESSION: no apply.lock litters the project dir.
+        let stray_lock = project.path().join("apply.lock");
+        assert!(
+            !stray_lock.exists(),
+            "install must not drop a lock file in the project repo: {stray_lock:?}"
+        );
+        // No stray files at all beyond AGENTS.md.
+        let entries: Vec<_> = std::fs::read_dir(project.path())
+            .expect("read project dir")
+            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .collect();
+        assert_eq!(
+            entries,
+            vec![std::ffi::OsString::from("AGENTS.md")],
+            "project dir must contain only AGENTS.md, got: {entries:?}"
+        );
+
+        // (c) The lock DID land under the runtime dir (relocation worked).
+        let locks_root = runtime.path().join("skill-locks");
+        assert!(
+            locks_root.is_dir(),
+            "lock must be relocated under <runtime>/skill-locks: {locks_root:?}"
+        );
+        let lock_files: Vec<_> = walk_files(&locks_root)
+            .into_iter()
+            .filter(|p| p.file_name() == Some(std::ffi::OsStr::new("apply.lock")))
+            .collect();
+        assert_eq!(
+            lock_files.len(),
+            1,
+            "exactly one relocated apply.lock under the runtime dir, got: {lock_files:?}"
+        );
+    });
+}
+
+/// Recursively collect every regular file under `root` (test helper).
+fn walk_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return out;
+    };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            out.extend(walk_files(&p));
+        } else {
+            out.push(p);
+        }
+    }
+    out
+}
+
+#[test]
+#[serial_test::serial]
 fn concurrent_installs_of_different_kinds_dont_corrupt_delimiters() {
     // Spec §12: two concurrent installs of DIFFERENT kinds into the same AGENTS.md
     // must not corrupt delimiters. The advisory lock (`acquire_apply_lock`) is
@@ -232,9 +327,17 @@ fn concurrent_installs_of_different_kinds_dont_corrupt_delimiters() {
     // thread does the same here, which is precisely what forces them to interleave
     // on the flock. Spawned threads do NOT inherit the thread-local HOME guard, so
     // each re-enters `with_test_home` to resolve the same user-scope target and
-    // contend on the real flock keyed off that file's parent dir.
+    // contend on the real flock — relocated into the runtime dir and keyed off a
+    // hash of that target's absolute path (same file → same key → one lock).
     let home = tempfile::tempdir().expect("tempdir");
     let home_path = home.path().to_path_buf();
+
+    // Hermetic: the managed-section lock lives in the runtime dir (keyed by the
+    // target-path hash), so point it at a tempdir for the duration. Both install
+    // threads inherit this process-global env var and thus contend on the same
+    // relocated lock — same target file → same hash → one lock.
+    let runtime = tempfile::tempdir().expect("runtime tempdir");
+    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
 
     let begin_profile = "<!-- cfgd:skill:profile -->";
     let end_profile = "<!-- /cfgd:skill:profile -->";

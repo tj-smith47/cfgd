@@ -308,12 +308,28 @@ fn running_cfgd_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-/// Acquire the advisory lock guarding a managed-section file's read-modify-write,
-/// keyed off the target's parent directory so the lock is colocated with the file
-/// it protects.
+/// Acquire the advisory lock guarding a managed-section file's read-modify-write.
+///
+/// The lock lives in cfgd's owner-private runtime dir — NOT beside the target —
+/// keyed by a hash of the absolute target path. Colocating the lock with the
+/// target would litter a pid-stamped `apply.lock` in the user's content tree (the
+/// codex Project target is `<cwd>/AGENTS.md`, so its parent is the project repo
+/// root). Hashing the absolute path means two processes editing the *same* file
+/// contend on one lock (preserving the no-delimiter-corruption guarantee) while
+/// distinct targets never falsely contend. The path is hashed verbatim, not
+/// canonicalized, because the target need not exist yet on a fresh install.
 fn lock_for(target: &Path) -> Result<ApplyLockGuard> {
-    let dir = target.parent().unwrap_or_else(|| Path::new("."));
-    acquire_apply_lock(dir).map_err(|e| SkillError::Lock(Box::new(e)).into())
+    let runtime = crate::default_runtime_dir_for(crate::Scope::User).ok_or_else(|| {
+        SkillError::Lock(Box::new(
+            crate::errors::ConfigError::HomeUnresolved {
+                path: target.to_path_buf(),
+            }
+            .into(),
+        ))
+    })?;
+    let key = crate::sha256_hex(target.to_string_lossy().as_bytes());
+    let dir = runtime.join("skill-locks").join(key);
+    acquire_apply_lock(&dir).map_err(|e| SkillError::Lock(Box::new(e)).into())
 }
 
 /// Read a file to a string, mapping a missing file to `None` and any other I/O
