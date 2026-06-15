@@ -112,6 +112,147 @@ fn cli_path_errors_match_webhook_path_errors() {
     );
 }
 
+/// Convergence proof across every CRD kind with a non-trivial rejection path.
+///
+/// For each kind a REJECTING spec is built in Rust and serialized into a full
+/// KRM document (producer-derived — the spec struct is the source of truth, not
+/// hand-authored YAML), then the registry-driven validation errors are asserted
+/// byte-equal to the webhook path (`<Spec>::validate()`), proving the two paths
+/// share one impl for ConfigPolicy, ClusterConfigPolicy, DriftAlert, and the CRD
+/// Module — not only MachineConfig.
+///
+/// The three policy/alert kinds dispatch through `validate_document`. The CRD
+/// `Module` shares its `kind` string with the LOCAL Module document, which
+/// `validate_document` deliberately prefers (local documents are what that path
+/// receives), so the CRD Module's validator is reached only through the
+/// registry's `crd` entry — the same dispatch the operator-side registry uses.
+/// That entry's `validate_fn` is the convergence target for the CRD Module.
+#[test]
+fn cli_path_errors_match_webhook_path_for_every_crd_kind() {
+    use cfgd_core::schema::KIND_REGISTRY;
+    fn doc_for(kind: &str, spec: serde_json::Value) -> String {
+        serde_yaml::to_string(&serde_json::json!({
+            "apiVersion": "cfgd.io/v1alpha1",
+            "kind": kind,
+            "metadata": {"name": "reject"},
+            "spec": spec,
+        }))
+        .expect("serialize rejecting document")
+    }
+
+    // ConfigPolicy: empty package name + empty required-module name.
+    let configpolicy_spec = cfgd_crd::ConfigPolicySpec {
+        packages: vec![cfgd_crd::PackageRef {
+            name: String::new(),
+            version: None,
+        }],
+        required_modules: vec![cfgd_crd::ModuleRef {
+            name: String::new(),
+            required: true,
+        }],
+        ..Default::default()
+    };
+
+    // ClusterConfigPolicy: same shared policy-field rejections.
+    let clusterconfigpolicy_spec = cfgd_crd::ClusterConfigPolicySpec {
+        packages: vec![cfgd_crd::PackageRef {
+            name: String::new(),
+            version: None,
+        }],
+        required_modules: vec![cfgd_crd::ModuleRef {
+            name: String::new(),
+            required: true,
+        }],
+        ..Default::default()
+    };
+
+    // DriftAlert: empty deviceId + empty machineConfigRef.name.
+    let driftalert_spec = cfgd_crd::DriftAlertSpec {
+        device_id: String::new(),
+        machine_config_ref: cfgd_crd::MachineConfigReference {
+            name: String::new(),
+            namespace: None,
+        },
+        drift_details: Vec::new(),
+        severity: cfgd_crd::DriftSeverity::High,
+    };
+
+    // CRD Module: empty package name + empty depends entry.
+    let module_spec = cfgd_crd::ModuleSpec {
+        packages: vec![cfgd_crd::PackageEntry {
+            name: String::new(),
+            ..Default::default()
+        }],
+        depends: vec![String::new()],
+        ..Default::default()
+    };
+
+    // Kinds with no local-document shadow: `validate_document` reaches their CRD
+    // validator directly.
+    let document_cases: Vec<(&str, String, Vec<String>)> = vec![
+        (
+            "ConfigPolicy",
+            doc_for(
+                "ConfigPolicy",
+                serde_json::to_value(&configpolicy_spec).expect("to value"),
+            ),
+            configpolicy_spec
+                .validate()
+                .expect_err("rejecting ConfigPolicy spec"),
+        ),
+        (
+            "ClusterConfigPolicy",
+            doc_for(
+                "ClusterConfigPolicy",
+                serde_json::to_value(&clusterconfigpolicy_spec).expect("to value"),
+            ),
+            clusterconfigpolicy_spec
+                .validate()
+                .expect_err("rejecting ClusterConfigPolicy spec"),
+        ),
+        (
+            "DriftAlert",
+            doc_for(
+                "DriftAlert",
+                serde_json::to_value(&driftalert_spec).expect("to value"),
+            ),
+            driftalert_spec
+                .validate()
+                .expect_err("rejecting DriftAlert spec"),
+        ),
+    ];
+
+    for (kind, doc, webhook_errors) in document_cases {
+        let cli_result = validate_document(&doc);
+        assert!(
+            !cli_result.valid,
+            "{kind} rejecting spec must be invalid via the registry, got: {cli_result:?}"
+        );
+        assert_eq!(
+            cli_result.errors, webhook_errors,
+            "{kind}: CLI-path errors must equal webhook-path errors (no fork)"
+        );
+    }
+
+    // CRD Module: reach the CRD validator through the registry's `crd` Module
+    // entry (the local Module shadows it in `validate_document`).
+    let module_doc = doc_for(
+        "Module",
+        serde_json::to_value(&module_spec).expect("to value"),
+    );
+    let module_webhook_errors = module_spec.validate().expect_err("rejecting Module spec");
+    let module_entry = KIND_REGISTRY
+        .iter()
+        .find(|e| e.kind == "Module" && e.crd)
+        .expect("registry carries a CRD Module entry");
+    let module_registry_errors = (module_entry.validate_fn)(&module_doc)
+        .expect_err("registry CRD Module validate_fn must reject the spec");
+    assert_eq!(
+        module_registry_errors, module_webhook_errors,
+        "Module: registry CRD-path errors must equal webhook-path errors (no fork)"
+    );
+}
+
 #[test]
 fn valid_crd_documents_pass_for_all_five_kinds() {
     for (label, doc) in [

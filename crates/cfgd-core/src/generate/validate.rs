@@ -52,10 +52,10 @@ pub fn validate_document(yaml: &str) -> ValidationResult {
 }
 
 /// Validate YAML against an expected [`SchemaKind`], preserving the
-/// expected-vs-found kind diagnostic for callers that already know the kind
-/// (the generate session and the AI tool dispatcher). The actual deserialization
-/// is delegated to the unified [`KIND_REGISTRY`] so there is one validation
-/// implementation across `validate` paths.
+/// expected-vs-found kind diagnostic for callers that already know which
+/// kind they want. Deserialization is delegated to the unified
+/// [`KIND_REGISTRY`], so there is one validation implementation across the
+/// validate paths.
 pub fn validate_yaml(content: &str, kind: SchemaKind) -> ValidationResult {
     let value: serde_yaml::Value = match serde_yaml::from_str(content) {
         Ok(v) => v,
@@ -209,5 +209,48 @@ spec: {}
         let result = validate_yaml(yaml, SchemaKind::Module);
         assert!(!result.valid);
         assert!(result.errors.iter().any(|e| e.contains("apiVersion")));
+    }
+
+    #[test]
+    fn validate_document_missing_kind_names_the_missing_field() {
+        let yaml = "apiVersion: cfgd.io/v1alpha1\nmetadata:\n  name: x\nspec: {}\n";
+        let r = validate_document(yaml);
+        assert!(!r.valid, "a document with no kind must be invalid");
+        assert!(
+            r.errors.iter().any(|e| e.to_lowercase().contains("kind")),
+            "error must name the missing 'kind' field, got: {:?}",
+            r.errors
+        );
+    }
+
+    #[test]
+    fn validate_document_empty_input_is_clear_error_no_panic() {
+        let r = validate_document("");
+        assert!(!r.valid, "empty input must be invalid");
+        assert!(
+            !r.errors.is_empty(),
+            "empty input must carry at least one error, got: {:?}",
+            r.errors
+        );
+        // An empty document parses to YAML null, which has no `kind`.
+        assert!(
+            r.errors.iter().any(|e| e.to_lowercase().contains("kind")),
+            "empty-input error must name the missing 'kind' field, got: {:?}",
+            r.errors
+        );
+    }
+
+    #[test]
+    fn validate_document_multi_document_stream_is_yaml_syntax_error() {
+        // serde_yaml rejects a stream of more than one document; the registry
+        // surfaces that as a YAML syntax error rather than panicking.
+        let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: a\nspec: {}\n---\napiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: b\nspec: {}\n";
+        let r = validate_document(yaml);
+        assert!(!r.valid, "a multi-document stream must be invalid");
+        assert!(
+            r.errors.iter().any(|e| e.contains("YAML syntax error")),
+            "multi-doc stream must report a YAML syntax error, got: {:?}",
+            r.errors
+        );
     }
 }

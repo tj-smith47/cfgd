@@ -95,17 +95,24 @@ impl KindEntry {
     }
 }
 
+/// Parse `yaml` and reject an unrecognized `apiVersion`, returning the parsed
+/// value so the caller reuses it without a second parse.
+fn check_api_version(yaml: &str) -> Result<serde_yaml::Value, Vec<String>> {
+    let value: serde_yaml::Value =
+        serde_yaml::from_str(yaml).map_err(|e| vec![format!("YAML syntax error: {e}")])?;
+    if let Some(av) = value.get("apiVersion").and_then(|v| v.as_str()) {
+        crate::config::validate_api_version(av).map_err(|e| vec![e.to_string()])?;
+    }
+    Ok(value)
+}
+
 /// Deserialize a full local document into `D`, rejecting unknown fields (every
 /// local document type carries `deny_unknown_fields`) and an unrecognized
 /// `apiVersion`. The single error is wrapped in a `Vec` so it joins the
 /// registry's uniform `Result<(), Vec<String>>` validation contract.
 fn validate_local<D: serde::de::DeserializeOwned>(yaml: &str) -> Result<(), Vec<String>> {
     serde_yaml::from_str::<D>(yaml).map_err(|e| vec![e.to_string()])?;
-    let value: serde_yaml::Value =
-        serde_yaml::from_str(yaml).map_err(|e| vec![format!("YAML syntax error: {e}")])?;
-    if let Some(api_version) = value.get("apiVersion").and_then(|v| v.as_str()) {
-        crate::config::validate_api_version(api_version).map_err(|e| vec![e.to_string()])?;
-    }
+    check_api_version(yaml)?;
     Ok(())
 }
 
@@ -121,11 +128,7 @@ fn validate_local<D: serde::de::DeserializeOwned>(yaml: &str) -> Result<(), Vec<
 fn validate_crd_spec<S: serde::de::DeserializeOwned + cfgd_crd::Validatable>(
     yaml: &str,
 ) -> Result<(), Vec<String>> {
-    let value: serde_yaml::Value =
-        serde_yaml::from_str(yaml).map_err(|e| vec![format!("YAML syntax error: {e}")])?;
-    if let Some(api_version) = value.get("apiVersion").and_then(|v| v.as_str()) {
-        crate::config::validate_api_version(api_version).map_err(|e| vec![e.to_string()])?;
-    }
+    let value = check_api_version(yaml)?;
     let spec = value
         .get("spec")
         .cloned()
