@@ -6,6 +6,8 @@
 //! via [`cfgd_core::providers::skill`]. The command bodies are implemented in a
 //! later task; the variants and dispatch stubs here pin the CLI surface.
 
+use std::path::PathBuf;
+
 use anyhow::anyhow;
 use cfgd_core::output::{Doc, Printer, Role, collapse_to_subject_line};
 use cfgd_core::providers::skill::{Detection, SkillScope, all_skill_providers};
@@ -38,6 +40,33 @@ impl SkillKind {
     }
 }
 
+/// The terminal outcome of one provider in a skill operation's structured
+/// payload. Single-sources the `results[].status` wire contract that scripts/CI
+/// parse and that the 5.3 list/remove/update bodies reuse. Each variant pins its
+/// exact lowercase wire token via an explicit `rename` (the codebase forbids a
+/// `rename_all` on enums; per-variant single-word renames are the sanctioned
+/// way to fix wire bytes — see `generate::AgentDecision`).
+#[derive(Debug, Clone, Copy, Serialize)]
+enum SkillResultStatus {
+    #[serde(rename = "installed")]
+    Installed,
+    #[serde(rename = "skipped")]
+    Skipped,
+    #[serde(rename = "failed")]
+    Failed,
+}
+
+impl SkillResultStatus {
+    /// The output [`Role`] that renders this status's human status line.
+    fn role(self) -> Role {
+        match self {
+            Self::Installed => Role::Ok,
+            Self::Failed => Role::Fail,
+            Self::Skipped => Role::Skipped,
+        }
+    }
+}
+
 /// One provider's outcome in the structured install payload.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -45,10 +74,43 @@ struct SkillInstallResult {
     provider: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
-    /// `"installed"`, `"skipped"`, or `"failed"`.
-    status: String,
+    status: SkillResultStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
+}
+
+impl SkillInstallResult {
+    /// A provider that wrote its skill file at `path`.
+    fn installed(provider: String, path: PathBuf) -> Self {
+        Self {
+            provider,
+            path: Some(path.display().to_string()),
+            status: SkillResultStatus::Installed,
+            reason: None,
+        }
+    }
+
+    /// A provider deliberately not written (undetected, unsupported scope, or a
+    /// declined overwrite), carrying the human-readable `reason`.
+    fn skipped(provider: String, reason: impl Into<String>) -> Self {
+        Self {
+            provider,
+            path: None,
+            status: SkillResultStatus::Skipped,
+            reason: Some(reason.into()),
+        }
+    }
+
+    /// A provider whose install was attempted but errored, carrying the
+    /// collapsed failure `reason`.
+    fn failed(provider: String, reason: impl Into<String>) -> Self {
+        Self {
+            provider,
+            path: None,
+            status: SkillResultStatus::Failed,
+            reason: Some(reason.into()),
+        }
+    }
 }
 
 /// The full structured payload emitted by `cmd_skill_install`.
@@ -124,21 +186,11 @@ pub fn cmd_skill_install(
             Detection::Unsupported(reason) => {
                 // Never fabricate a path for a scope the provider has no
                 // primitive at — even when forced or explicitly named.
-                results.push(SkillInstallResult {
-                    provider: id,
-                    path: None,
-                    status: "skipped".to_string(),
-                    reason: Some(reason),
-                });
+                results.push(SkillInstallResult::skipped(id, reason));
                 continue;
             }
             Detection::Absent if !targeted => {
-                results.push(SkillInstallResult {
-                    provider: id,
-                    path: None,
-                    status: "skipped".to_string(),
-                    reason: Some("not detected".to_string()),
-                });
+                results.push(SkillInstallResult::skipped(id, "not detected"));
                 continue;
             }
             Detection::Present | Detection::Absent => {}
@@ -155,30 +207,15 @@ pub fn cmd_skill_install(
             && skill_already_installed(provider.as_ref(), kind, scope)
             && !printer.prompt_confirm(&format!("Overwrite existing {id} skill?"))?
         {
-            results.push(SkillInstallResult {
-                provider: id,
-                path: None,
-                status: "skipped".to_string(),
-                reason: Some("declined overwrite".to_string()),
-            });
+            results.push(SkillInstallResult::skipped(id, "declined overwrite"));
             continue;
         }
 
         match provider.install(&model, scope) {
-            Ok(path) => results.push(SkillInstallResult {
-                provider: id,
-                path: Some(path.display().to_string()),
-                status: "installed".to_string(),
-                reason: None,
-            }),
+            Ok(path) => results.push(SkillInstallResult::installed(id, path)),
             Err(e) => {
                 any_targeted_failure = true;
-                results.push(SkillInstallResult {
-                    provider: id,
-                    path: None,
-                    status: "failed".to_string(),
-                    reason: Some(install_failure_reason(&e)),
-                });
+                results.push(SkillInstallResult::failed(id, install_failure_reason(&e)));
             }
         }
     }
@@ -195,11 +232,7 @@ pub fn cmd_skill_install(
     // top-level status rows would each get a blank-line separator.
     let doc = Doc::new().section(heading, |mut sec| {
         for r in &results {
-            let role = match r.status.as_str() {
-                "installed" => Role::Ok,
-                "failed" => Role::Fail,
-                _ => Role::Skipped,
-            };
+            let role = r.status.role();
             let subject = match &r.path {
                 Some(path) => format!("{}: {path}", r.provider),
                 None => r.provider.clone(),
