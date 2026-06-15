@@ -1,0 +1,569 @@
+---
+description: Investigate thoroughly and author a complete, validated cfgd Module resource.
+cfgd-version: <CFGD_VERSION>
+cfgd-min-version: <CFGD_MIN_VERSION>
+---
+
+<!-- cfgd-version: <CFGD_VERSION> · cfgd-min-version: <CFGD_MIN_VERSION> -->
+
+# Author a high-quality cfgd Module
+
+Follow this protocol on every invocation. The quality bar is NOT "valid YAML". It is exhaustive field evaluation, external research, and a documented rationale for every choice. A box-checking resource (every field technically present, no investigation behind it) fails this bar. Evaluate EVERY field the kind exposes; for each, either populate it with a justified value or omit it only after investigating enough to conclude it does not apply. Ground every version, ordering, and strategy choice in evidence, never a guess.
+
+## Protocol
+
+0. **Precondition — confirm the toolchain is usable.** Run `command -v cfgd`; if it is absent, STOP and tell the user to install cfgd >= <CFGD_MIN_VERSION>. Run `cfgd --version`; if it is older than <CFGD_MIN_VERSION>, warn and prefer the embedded fallback schema below.
+1. **Enumerate every field for this kind (live-first, snapshot-fallback).** Run `cfgd explain module -o json` for the authoritative live schema, and `cfgd explain module.<field> -o json` to drill into nested objects. If cfgd is absent or older than the stamp, use the embedded fallback schema below (stamped <CFGD_VERSION>).
+2. **Research best practices externally for THIS subject.** For each field, consult external best practice before settling a value: the tool's own docs, the package managers that ship it, and community conventions. Record what you verified and your confidence level when a source was unavailable. Prefer live evidence over training-knowledge recall, and state explicitly when you could not confirm a claim.
+3. **For EVERY field, decide include OR omit, and justify with a WHY comment.** Box-checking is a failure; meeting the rubric above is the target.
+4. **Draft thoroughly:** transitive deps explicit, version constraints set, platforms scoped, multi-step scripts idempotent (timeout + continueOnError), comments-as-specification.
+5. **Validate against the schema:** `cfgd module validate <file>` — fix until clean (validate against the embedded snapshot if cfgd is unavailable).
+6. **Self-critique against the rubric:** "Box-checking or thorough? Which field did I skip, and was that deliberate?" Iterate until the answer holds.
+
+## Worked exemplar (the quality bar)
+
+The before is a box-checking module: one prefer-list, no version investigation, no documented rationale. The after is the thorough version — every field evaluated, external best-practice research, and a documented reason for each choice — demonstrating the quality bar a skill must reach for.
+
+Before (box-checking):
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+  description: Neovim editor configuration
+spec:
+  packages:
+  - name: neovim
+    min-version: '0.10'
+    prefer:
+    - brew
+    - snap
+    deny:
+    - apt
+  - name: ripgrep
+  - name: fd
+    aliases:
+      apt: fd-find
+  - name: node
+    prefer:
+    - brew
+    - apt
+    aliases:
+      apt: nodejs
+  - name: python3
+  - name: pip
+    aliases:
+      apt: python3-pip
+    platforms:
+    - linux
+  - name: go
+    prefer:
+    - brew
+    - apt
+  - name: curl
+  - name: gcc
+    aliases:
+      apt: build-essential
+      dnf: '@development-tools'
+    platforms:
+    - linux
+  files:
+  - source: files/init.lua
+    target: /root/.config/nvim/init.lua
+  - source: files/lazy-lock.json
+    target: /root/.config/nvim/lazy-lock.json
+  - source: files/stylua.toml
+    target: /root/.config/nvim/stylua.toml
+  - source: files/lua
+    target: /root/.config/nvim/lua
+  - source: files/after
+    target: /root/.config/nvim/after
+  env:
+  - name: EDITOR
+    value: nvim
+  aliases:
+  - name: v
+    command: nvim
+  scripts:
+    post-apply:
+    - nvim --headless '+Lazy! sync' '+MasonToolsInstallSync' +qa
+```
+
+After (thorough):
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+  description: Neovim editor — LazyVim-style plugin set with Mason-managed LSP, treesitter, copilot, sops.
+
+spec:
+  packages:
+  # --- Editor ---------------------------------------------------------------
+  - name: neovim
+    minVersion: '0.11'
+    prefer:
+    - brew
+    - snap
+    deny:
+    - apt                         # Ubuntu LTS apt nvim is too old for our plugin set
+
+  # --- Native build toolchain ---------------------------------------------
+  # LuaSnip (jsregexp), telescope-fzf-native, CopilotChat (tiktoken),
+  # nvim-treesitter parser compilation all shell out to `make` + a C compiler.
+  - name: gcc
+    aliases:
+      apt: build-essential
+      dnf: '@development-tools'
+    platforms:
+    - linux
+  - name: make
+    platforms:
+    - linux
+  - name: unzip                   # Mason unpacks language-server archives with unzip
+  - name: git                     # lazy.nvim cloning, fugitive, gitsigns, diffview
+  - name: curl
+
+  # --- CLI helpers used directly by plugins -------------------------------
+  - name: ripgrep                 # telescope live_grep, todo-comments
+  - name: fd                      # telescope find_files
+    # apt ships fd as `fdfind` (no symlink); brew + cargo install the binary
+    # as `fd` directly. Prefer those so telescope can find it without a manual
+    # alias on the user's PATH.
+    prefer:
+    - brew
+    - cargo
+    - apt
+    aliases:
+      apt: fd-find
+      cargo: fd-find
+  - name: zoxide                  # telescope-zoxide
+    prefer:
+    - brew
+    - cargo
+    - apt
+
+  # --- Linux desktop providers --------------------------------------------
+  # X11 / Wayland clipboard providers. Harmless on headless boxes; nvim's
+  # OSC52 fallback (configured in lua/config/options.lua under $SSH_TTY)
+  # covers SSH-only setups like Termius.
+  - name: xclip
+    platforms:
+    - linux
+  - name: wl-clipboard
+    platforms:
+    - linux
+  - name: xdg-utils               # url-open's `gx` → xdg-open
+    platforms:
+    - linux
+
+  # --- Node toolchain -----------------------------------------------------
+  # copilot.vim needs node ≥18. markdown-preview prefers yarn but falls back
+  # to npm. Mason pulls dozens of JS-based language servers via npm.
+  - name: node
+    minVersion: '18'
+    prefer:
+    - brew
+    - apt
+    aliases:
+      apt: nodejs
+  - name: npm                     # apt's nodejs package doesn't always include npm
+    platforms:
+    - linux
+  - name: yarn
+    prefer:
+    - npm
+    - brew
+  # Node provider for nvim — needed by remote/JS plugins. Without it,
+  # :checkhealth reports "Missing 'neovim' npm package". Same canonical
+  # `neovim` name as the editor entry above; cfgd's resolver treats per-manager
+  # entries independently.
+  - name: neovim
+    prefer:
+    - npm
+
+  # --- Python toolchain ---------------------------------------------------
+  # Mason installs many python-based linters/formatters via pip. dap-python
+  # needs a real venv. pynvim is the python provider (vim.python3_host_prog).
+  - name: python3
+  - name: pip
+    aliases:
+      apt: python3-pip
+    platforms:
+    - linux
+  - name: python3-venv            # pipx + debugpy + dap-python require venv
+    aliases:
+      dnf: python3-virtualenv
+    platforms:
+    - linux
+  - name: pipx
+    prefer:
+    - brew
+    - apt
+  - name: pynvim                  # vim.python3 provider for nvim
+    prefer:
+    - pipx
+
+  # --- Go toolchain -------------------------------------------------------
+  # go.nvim's :GoInstallBinaries calls `go install` for dlv, gotests, iferr,
+  # fillstruct, gomodifytags. Mason also installs gopls/gofumpt/golines via go.
+  - name: go
+    minVersion: '1.25'
+    prefer:
+    - brew
+    - apt
+
+  # --- Rust toolchain -----------------------------------------------------
+  # stylua is a Rust binary; cargo provides a reliable fallback when brew isn't
+  # available on the host.
+  - name: cargo
+    aliases:
+      brew: rust
+      apt: rustc
+  - name: stylua                  # Lua formatter used by conform.nvim
+    prefer:
+    - cargo
+    - brew
+
+  # --- Secrets ------------------------------------------------------------
+  - name: sops                    # sops.nvim + nvim-sops
+    prefer:
+    - brew
+    - apt
+  - name: age                     # sops age backend
+    prefer:
+    - brew
+    - apt
+
+  files:
+  - source: files/init.lua
+    target: ~/.config/nvim/init.lua
+  - source: files/lazy-lock.json
+    target: ~/.config/nvim/lazy-lock.json
+  - source: files/stylua.toml
+    target: ~/.config/nvim/stylua.toml
+  - source: files/lua
+    target: ~/.config/nvim/lua
+  - source: files/after
+    target: ~/.config/nvim/after
+
+  env:
+  - name: EDITOR
+    value: nvim
+  - name: VISUAL
+    value: nvim
+  - name: PATH
+    value: $HOME/.local/bin:$HOME/go/bin:$HOME/.cargo/bin:$PATH
+
+  aliases:
+  - name: v
+    command: nvim
+  - name: vim
+    command: nvim
+  - name: vi
+    command: nvim
+
+  scripts:
+    # First-run bootstrap. Each step is idempotent; cfgd will skip on second apply
+    # only via timestamp tracking, but the underlying commands handle re-runs.
+    # spec.env above (PATH, EDITOR, VISUAL) is injected into each step's process
+    # environment, so the nvim binary and ~/.local/bin, go/bin, cargo/bin
+    # toolchains are already on PATH — no per-step export needed.
+    postApply:
+    - run: |
+        if command -v pipx >/dev/null 2>&1; then
+          pipx install --force pynvim 2>&1 | tail -5 || true
+        fi
+      timeout: 120s
+      continueOnError: true
+    - run: |
+        nvim --headless "+Lazy! restore" +qa
+      timeout: 900s
+    - run: |
+        nvim --headless "+TSUpdateSync" +qa
+      timeout: 600s
+    - run: |
+        nvim --headless "+MasonToolsInstallSync" +qa
+      timeout: 900s
+    - run: |
+        nvim --headless "+GoInstallBinaries" +qa
+      timeout: 300s
+      continueOnError: true
+    # markdown-preview.nvim's `build` function is gated on `#ui > 0`, so headless
+    # installs skip the node-app install. Do it directly from the lazy plugin dir.
+    - run: |
+        mp="$HOME/.local/share/nvim/lazy/markdown-preview.nvim/app"
+        if [ -d "$mp" ]; then
+          cd "$mp"
+          if command -v yarn >/dev/null 2>&1; then
+            yarn install --frozen-lockfile
+          else
+            npm install --no-audit --no-fund
+          fi
+        fi
+      timeout: 180s
+      continueOnError: true
+```
+
+## Ground-truth examples
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: nvim
+  description: Neovim editor — LazyVim-style plugin set with Mason-managed LSP, treesitter, copilot, sops.
+
+spec:
+  packages:
+  # --- Editor ---------------------------------------------------------------
+  - name: neovim
+    minVersion: '0.11'
+    prefer:
+    - brew
+    - snap
+    deny:
+    - apt                         # Ubuntu LTS apt nvim is too old for our plugin set
+
+  # --- Native build toolchain ---------------------------------------------
+  # LuaSnip (jsregexp), telescope-fzf-native, CopilotChat (tiktoken),
+  # nvim-treesitter parser compilation all shell out to `make` + a C compiler.
+  - name: gcc
+    aliases:
+      apt: build-essential
+      dnf: '@development-tools'
+    platforms:
+    - linux
+  - name: make
+    platforms:
+    - linux
+  - name: unzip                   # Mason unpacks language-server archives with unzip
+  - name: git                     # lazy.nvim cloning, fugitive, gitsigns, diffview
+  - name: curl
+
+  # --- CLI helpers used directly by plugins -------------------------------
+  - name: ripgrep                 # telescope live_grep, todo-comments
+  - name: fd                      # telescope find_files
+    # apt ships fd as `fdfind` (no symlink); brew + cargo install the binary
+    # as `fd` directly. Prefer those so telescope can find it without a manual
+    # alias on the user's PATH.
+    prefer:
+    - brew
+    - cargo
+    - apt
+    aliases:
+      apt: fd-find
+      cargo: fd-find
+  - name: zoxide                  # telescope-zoxide
+    prefer:
+    - brew
+    - cargo
+    - apt
+
+  # --- Linux desktop providers --------------------------------------------
+  # X11 / Wayland clipboard providers. Harmless on headless boxes; nvim's
+  # OSC52 fallback (configured in lua/config/options.lua under $SSH_TTY)
+  # covers SSH-only setups like Termius.
+  - name: xclip
+    platforms:
+    - linux
+  - name: wl-clipboard
+    platforms:
+    - linux
+  - name: xdg-utils               # url-open's `gx` → xdg-open
+    platforms:
+    - linux
+
+  # --- Node toolchain -----------------------------------------------------
+  # copilot.vim needs node ≥18. markdown-preview prefers yarn but falls back
+  # to npm. Mason pulls dozens of JS-based language servers via npm.
+  - name: node
+    minVersion: '18'
+    prefer:
+    - brew
+    - apt
+    aliases:
+      apt: nodejs
+  - name: npm                     # apt's nodejs package doesn't always include npm
+    platforms:
+    - linux
+  - name: yarn
+    prefer:
+    - npm
+    - brew
+  # Node provider for nvim — needed by remote/JS plugins. Without it,
+  # :checkhealth reports "Missing 'neovim' npm package". Same canonical
+  # `neovim` name as the editor entry above; cfgd's resolver treats per-manager
+  # entries independently.
+  - name: neovim
+    prefer:
+    - npm
+
+  # --- Python toolchain ---------------------------------------------------
+  # Mason installs many python-based linters/formatters via pip. dap-python
+  # needs a real venv. pynvim is the python provider (vim.python3_host_prog).
+  - name: python3
+  - name: pip
+    aliases:
+      apt: python3-pip
+    platforms:
+    - linux
+  - name: python3-venv            # pipx + debugpy + dap-python require venv
+    aliases:
+      dnf: python3-virtualenv
+    platforms:
+    - linux
+  - name: pipx
+    prefer:
+    - brew
+    - apt
+  - name: pynvim                  # vim.python3 provider for nvim
+    prefer:
+    - pipx
+
+  # --- Go toolchain -------------------------------------------------------
+  # go.nvim's :GoInstallBinaries calls `go install` for dlv, gotests, iferr,
+  # fillstruct, gomodifytags. Mason also installs gopls/gofumpt/golines via go.
+  - name: go
+    minVersion: '1.25'
+    prefer:
+    - brew
+    - apt
+
+  # --- Rust toolchain -----------------------------------------------------
+  # stylua is a Rust binary; cargo provides a reliable fallback when brew isn't
+  # available on the host.
+  - name: cargo
+    aliases:
+      brew: rust
+      apt: rustc
+  - name: stylua                  # Lua formatter used by conform.nvim
+    prefer:
+    - cargo
+    - brew
+
+  # --- Secrets ------------------------------------------------------------
+  - name: sops                    # sops.nvim + nvim-sops
+    prefer:
+    - brew
+    - apt
+  - name: age                     # sops age backend
+    prefer:
+    - brew
+    - apt
+
+  files:
+  - source: files/init.lua
+    target: ~/.config/nvim/init.lua
+  - source: files/lazy-lock.json
+    target: ~/.config/nvim/lazy-lock.json
+  - source: files/stylua.toml
+    target: ~/.config/nvim/stylua.toml
+  - source: files/lua
+    target: ~/.config/nvim/lua
+  - source: files/after
+    target: ~/.config/nvim/after
+
+  env:
+  - name: EDITOR
+    value: nvim
+  - name: VISUAL
+    value: nvim
+  - name: PATH
+    value: $HOME/.local/bin:$HOME/go/bin:$HOME/.cargo/bin:$PATH
+
+  aliases:
+  - name: v
+    command: nvim
+  - name: vim
+    command: nvim
+  - name: vi
+    command: nvim
+
+  scripts:
+    # First-run bootstrap. Each step is idempotent; cfgd will skip on second apply
+    # only via timestamp tracking, but the underlying commands handle re-runs.
+    # spec.env above (PATH, EDITOR, VISUAL) is injected into each step's process
+    # environment, so the nvim binary and ~/.local/bin, go/bin, cargo/bin
+    # toolchains are already on PATH — no per-step export needed.
+    postApply:
+    - run: |
+        if command -v pipx >/dev/null 2>&1; then
+          pipx install --force pynvim 2>&1 | tail -5 || true
+        fi
+      timeout: 120s
+      continueOnError: true
+    - run: |
+        nvim --headless "+Lazy! restore" +qa
+      timeout: 900s
+    - run: |
+        nvim --headless "+TSUpdateSync" +qa
+      timeout: 600s
+    - run: |
+        nvim --headless "+MasonToolsInstallSync" +qa
+      timeout: 900s
+    - run: |
+        nvim --headless "+GoInstallBinaries" +qa
+      timeout: 300s
+      continueOnError: true
+    # markdown-preview.nvim's `build` function is gated on `#ui > 0`, so headless
+    # installs skip the node-app install. Do it directly from the lazy plugin dir.
+    - run: |
+        mp="$HOME/.local/share/nvim/lazy/markdown-preview.nvim/app"
+        if [ -d "$mp" ]; then
+          cd "$mp"
+          if command -v yarn >/dev/null 2>&1; then
+            yarn install --frozen-lockfile
+          else
+            npm install --no-audit --no-fund
+          fi
+        fi
+      timeout: 180s
+      continueOnError: true
+```
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: Module
+metadata:
+  name: clift
+  description: clift framework for building custom CLIs with go-task
+
+spec:
+  packages:
+    - name: go-task
+      prefer: [brew, script]
+      aliases:
+        brew: go-task
+      script: |
+        sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b ~/.local/bin
+
+    - name: jq
+
+    - name: yq
+
+    - name: gum
+
+  files:
+    - source: https://github.com/tj-smith47/clift.git
+      target: ~/.local/share/clift
+
+  env:
+    - name: CLIFT_DIR
+      value: ~/.local/share/clift
+
+  scripts:
+    postApply:
+      - touch ~/.local/share/clift/.cfgd-managed
+```
+
+## Fallback schema (if cfgd is unavailable)
+
+Generated against cfgd <CFGD_VERSION>. Live `cfgd explain module` is authoritative when present.
+
+```json
+{"$schema":"http://json-schema.org/draft-07/schema#","title":"ModuleSpec","type":"object","properties":{"aliases":{"type":"array","items":{"$ref":"#/definitions/ShellAlias"}},"depends":{"type":"array","items":{"type":"string"}},"env":{"type":"array","items":{"$ref":"#/definitions/EnvVar"}},"files":{"type":"array","items":{"$ref":"#/definitions/ModuleFileEntry"}},"packages":{"type":"array","items":{"$ref":"#/definitions/ModulePackageEntry"}},"platforms":{"description":"Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a Skipped action rather than vanishing). Tags are matched against OS / distro / arch via `Platform::matches_any`; the canonical macOS token is `macos`.","type":"array","items":{"type":"string"}},"scripts":{"anyOf":[{"$ref":"#/definitions/ScriptSpec"},{"type":"null"}]},"system":{"description":"System configurator settings contributed by this module. Deep-merged into the profile system map; module values override profile values at leaf level.","type":"object","additionalProperties":true}},"additionalProperties":false,"definitions":{"EncryptionMode":{"description":"Controls when encryption is required for a managed file.","oneOf":[{"description":"File must be encrypted when stored in the repository.","type":"string","enum":["InRepo"]},{"description":"File must always be encrypted, including at rest on disk.","type":"string","enum":["Always"]}]},"EncryptionSpec":{"description":"Encryption settings for a managed file.","type":"object","required":["backend"],"properties":{"backend":{"description":"The encryption backend to use (e.g. \"sops\", \"age\").","type":"string"},"mode":{"description":"When encryption must be enforced. Defaults to `InRepo`.","default":"InRepo","allOf":[{"$ref":"#/definitions/EncryptionMode"}]}},"additionalProperties":false},"EnvVar":{"type":"object","required":["name","value"],"properties":{"name":{"type":"string"},"value":{"type":"string"}}},"FileStrategy":{"description":"File deployment strategy.","oneOf":[{"description":"Create a symbolic link from target to source (default).","type":"string","enum":["Symlink"]},{"description":"Copy source content to target.","type":"string","enum":["Copy"]},{"description":"Render a Tera template and write the output (auto-selected for .tera files).","type":"string","enum":["Template"]},{"description":"Create a hard link from target to source.","type":"string","enum":["Hardlink"]}]},"ModuleFileEntry":{"type":"object","required":["source","target"],"properties":{"encryption":{"description":"Encryption settings for this module file.","anyOf":[{"$ref":"#/definitions/EncryptionSpec"},{"type":"null"}]},"permissions":{"description":"Unix permission bits (e.g. \"600\", \"644\") to apply after deployment.","type":["string","null"]},"private":{"description":"When true, the source file is local-only: auto-added to .gitignore, silently skipped on machines where it doesn't exist.","type":"boolean"},"source":{"type":"string"},"strategy":{"description":"Per-file deployment strategy override. If None, uses the global default.","anyOf":[{"$ref":"#/definitions/FileStrategy"},{"type":"null"}]},"target":{"type":"string"}},"additionalProperties":false},"ModulePackageEntry":{"type":"object","properties":{"aliases":{"type":"object","additionalProperties":{"type":"string"}},"creates":{"description":"Skip the install script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks. Only meaningful for a `prefer: [script]` install; ignored otherwise.","type":["string","null"]},"deny":{"type":"array","items":{"type":"string"}},"minVersion":{"type":["string","null"]},"name":{"default":"","type":"string"},"onlyIf":{"description":"Run the install script only if this command exits zero. A non-zero exit skips the install (the condition for installing was not met). Only meaningful for a `prefer: [script]` install; ignored for manager-backed installs (those are idempotent via the manager's installed-package query).","type":["string","null"]},"platforms":{"type":"array","items":{"type":"string"}},"prefer":{"type":"array","items":{"type":"string"}},"script":{"type":["string","null"]},"unless":{"description":"Run the install script only if this command exits NON-zero. A zero exit (success) skips the install (the package already appears present). Only meaningful for a `prefer: [script]` install; ignored otherwise.","type":["string","null"]}},"additionalProperties":false},"ScriptEntry":{"anyOf":[{"type":"string"},{"type":"object","required":["run"],"properties":{"continueOnError":{"type":["boolean","null"]},"creates":{"description":"Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.","type":["string","null"]},"idleTimeout":{"description":"Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.","type":["string","null"]},"interactive":{"description":"Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.","type":"boolean"},"onlyIf":{"description":"Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.","type":["string","null"]},"run":{"type":"string"},"shell":{"description":"Interpreter to use for inline commands. Ignored (and rejected) on file scripts.","allOf":[{"$ref":"#/definitions/ScriptShell"}]},"timeout":{"type":["string","null"]},"unless":{"description":"Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.","type":["string","null"]},"workdir":{"description":"Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.","type":["string","null"]}}}]},"ScriptShell":{"description":"Interpreter for inline lifecycle scripts.","oneOf":[{"type":"string","enum":["sh","bash","zsh","pwsh","cmd"]},{"description":"Platform default: `sh` on Unix, `cmd.exe` on Windows.","type":"string","enum":["auto"]}]},"ScriptSpec":{"type":"object","properties":{"onChange":{"default":[],"type":"array","items":{"$ref":"#/definitions/ScriptEntry"}},"onDrift":{"default":[],"type":"array","items":{"$ref":"#/definitions/ScriptEntry"}},"postApply":{"default":[],"type":"array","items":{"$ref":"#/definitions/ScriptEntry"}},"postReconcile":{"default":[],"type":"array","items":{"$ref":"#/definitions/ScriptEntry"}},"preApply":{"default":[],"type":"array","items":{"$ref":"#/definitions/ScriptEntry"}},"preReconcile":{"default":[],"type":"array","items":{"$ref":"#/definitions/ScriptEntry"}}},"additionalProperties":false},"ShellAlias":{"type":"object","required":["command","name"],"properties":{"command":{"type":"string"},"name":{"type":"string"}}}}}
+```
+

@@ -19,7 +19,8 @@
 
 use cfgd_core::generate::{SkillKind, skill_model_for};
 use cfgd_core::providers::skill::{
-    ClaudeCodeProvider, CodexProvider, CopilotProvider, GeminiProvider, SkillProvider,
+    ClaudeCodeProvider, CodexProvider, CopilotProvider, CursorProvider, GeminiProvider,
+    SkillProvider,
 };
 
 /// Every author-facing kind, in the registry's stable order.
@@ -86,6 +87,7 @@ fn golden_suffix(provider: &str) -> &'static str {
         // codex snapshots the per-kind managed block as it is written into a fresh
         // `AGENTS.md`, not a literal whole file — hence the real target's name.
         "codex" => "AGENTS.md",
+        "cursor" => "mdc",
         // An unmapped provider would otherwise write a mislabeled fixture; fail
         // loudly so a new provider's goldens cannot silently land under the wrong
         // extension.
@@ -149,4 +151,9 @@ fn copilot_renders_match_committed_goldens() {
 #[test]
 fn codex_renders_match_committed_goldens() {
     check_provider_goldens(&CodexProvider);
+}
+
+#[test]
+fn cursor_renders_match_committed_goldens() {
+    check_provider_goldens(&CursorProvider);
 }
