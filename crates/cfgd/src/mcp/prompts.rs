@@ -32,7 +32,7 @@ pub fn list() -> Value {
 
 /// Get an MCP prompt by name, returning a prompts/get response.
 pub fn get(name: &str, arguments: &Value) -> Value {
-    let skill = crate::generate::GENERATE_SKILL;
+    let skill = crate::generate::GENERATE_SKILL.as_str();
 
     let mode_context = match name {
         "cfgd_generate" => {

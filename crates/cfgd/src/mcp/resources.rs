@@ -39,7 +39,7 @@ pub fn read(uri: &str) -> Result<Value, String> {
         "cfgd://skill/generate" => vec![json!({
             "uri": uri,
             "mimeType": "text/markdown",
-            "text": crate::generate::GENERATE_SKILL
+            "text": crate::generate::GENERATE_SKILL.as_str()
         })],
         "cfgd://schema/module" => vec![json!({
             "uri": uri,
