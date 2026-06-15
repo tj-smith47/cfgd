@@ -248,7 +248,108 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
         record_checked: Box::new(upgrade::record_check_at),
     };
 
-    let _ = upgrade::run_update_check(&update_cfg, now, None, &mut effects);
+    let outcome = upgrade::run_update_check(&update_cfg, now, None, &mut effects);
+
+    // §9 consolidated skill-stale surface. The binary surface (above) and this
+    // skill surface are deduped to AT MOST ONE: `compute_update_surfaces`
+    // suppresses skills whenever a binary update is pending (rule 1), and when
+    // the binary is current it yields exactly ONE consolidated skill notice
+    // covering both scopes (rule 3). Gated on `checked` so it rides the periodic
+    // check cadence rather than firing on every command.
+    if outcome.checked {
+        surface_stale_skills(printer, &update_cfg, &outcome);
+    }
+}
+
+/// What [`surface_stale_skills`] actually did — the testable shape of the §9
+/// skill surface (so tests assert the decision, not a substring of rendered
+/// text). At most ONE skill notice is ever emitted (`NoticeEmitted` carries the
+/// single staleness it surfaced); the other variants emit nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkillSurface {
+    /// Rule 1 (binary update pending) or nothing stale → no skill surface.
+    Suppressed,
+    /// Auto refreshed user-scope skills; no notice was needed (no project skills
+    /// left stale afterward).
+    Refreshed,
+    /// Exactly one consolidated skill notice was emitted for this staleness.
+    NoticeEmitted(cfgd_core::upgrade::SkillStaleness),
+    /// `Manual` → silent, nothing emitted or written.
+    Silent,
+}
+
+/// Emit the §9 consolidated skill-stale surface (rule 3) when the binary is
+/// current and installed skills are stale, honoring the effective skills policy
+/// per the §9 scope table:
+///
+/// * **Auto / Inherit→Auto** → re-render USER-scope skills directly (reusing the
+///   ride-along refresh); project-scope is never written, only noticed if still
+///   stale afterward.
+/// * **Notify / Prompt** → a single consolidated notice covering both scopes; no
+///   write (`Prompt` standalone-stale has no binary upgrade to ride along, so per
+///   the §9 "≤1 surface" headline it surfaces exactly like `Notify`).
+/// * **Manual** → silent.
+///
+/// Rule 1 is enforced by [`compute_update_surfaces`]: a pending binary update
+/// returns `shows_skills == false`, so this function emits nothing and only the
+/// binary surface (already shown by the check effects) remains.
+fn surface_stale_skills(
+    printer: &Printer,
+    update_cfg: &cfgd_core::config::UpdateConfig,
+    outcome: &cfgd_core::upgrade::UpdateCheckOutcome,
+) -> SkillSurface {
+    use cfgd_core::upgrade::{self, StandaloneSkillAction};
+
+    let binary_available = outcome
+        .update
+        .as_ref()
+        .map(|u| u.update_available)
+        .unwrap_or(false);
+    let staleness = upgrade::aggregate_skill_staleness();
+    let surfaces = upgrade::compute_update_surfaces(binary_available, staleness.any(), update_cfg);
+    if !surfaces.shows_skills {
+        // Rule 1 (binary pending) or nothing stale → no skill surface.
+        return SkillSurface::Suppressed;
+    }
+
+    match upgrade::resolve_standalone_skill_action(update_cfg) {
+        StandaloneSkillAction::RefreshUserThenNoticeProject => {
+            // Auto: re-render user-scope in place; project-scope is never written.
+            let _ = upgrade::refresh_user_scope_skills(update_cfg);
+            // After refreshing user-scope, the only stale skills left are
+            // project-scope — surface those (and only those) so the user can
+            // `cfgd skill update` and commit deliberately.
+            let remaining = upgrade::aggregate_skill_staleness();
+            if remaining.project > 0 {
+                emit_skill_stale_notice(printer, remaining);
+                SkillSurface::NoticeEmitted(remaining)
+            } else {
+                SkillSurface::Refreshed
+            }
+        }
+        StandaloneSkillAction::ConsolidatedNotice => {
+            // Notify / Prompt: one consolidated notice, both scopes, no write.
+            emit_skill_stale_notice(printer, staleness);
+            SkillSurface::NoticeEmitted(staleness)
+        }
+        StandaloneSkillAction::Silent => SkillSurface::Silent,
+    }
+}
+
+/// Emit the single consolidated skill-stale notice, carrying the per-scope
+/// counts as a structured payload for `-o json` consumers.
+fn emit_skill_stale_notice(printer: &Printer, staleness: cfgd_core::upgrade::SkillStaleness) {
+    use cfgd_core::upgrade::consolidated_skill_stale_message;
+    printer.emit(
+        Doc::new()
+            .status(Role::Warn, consolidated_skill_stale_message(staleness))
+            .with_data(serde_json::json!({
+                "skillsStale": {
+                    "user": staleness.user,
+                    "project": staleness.project,
+                },
+            })),
+    );
 }
 
 /// Extract the inner [`UpgradeError`] from a [`CfgdError`] for the startup
@@ -860,5 +961,185 @@ mod tests {
             "error payload must carry requireCosign=true for downstream consumers: {:?}",
             meta.extras
         );
+    }
+
+    // ----- §9 wired skill surface (rule 1 / rule 3 / Auto refresh) -----
+
+    use cfgd_core::config::{SkillUpdateConfig, SkillUpdatePolicy, UpdateConfig, UpdatePolicy};
+    use cfgd_core::generate::{SkillKind, skill_model_for};
+    use cfgd_core::providers::skill::{ClaudeCodeProvider, SkillProvider, SkillScope};
+    use cfgd_core::test_helpers::CwdGuard;
+    use cfgd_core::upgrade::{SkillStaleness, UpdateCheck, UpdateCheckOutcome};
+    use cfgd_core::with_test_home;
+
+    fn update_cfg(policy: UpdatePolicy, skills: SkillUpdatePolicy) -> UpdateConfig {
+        UpdateConfig {
+            policy,
+            interval: "24h".to_string(),
+            channel: None,
+            skills: SkillUpdateConfig { policy: skills },
+        }
+    }
+
+    /// An [`UpdateCheckOutcome`] reporting a check that ran, with `available`
+    /// flagging whether a newer binary is pending.
+    fn outcome(available: bool) -> UpdateCheckOutcome {
+        let current = semver::Version::new(1, 0, 0);
+        let latest = if available {
+            semver::Version::new(2, 0, 0)
+        } else {
+            current.clone()
+        };
+        UpdateCheckOutcome {
+            checked: true,
+            surfaced: false,
+            applied: false,
+            update: Some(UpdateCheck {
+                current,
+                latest,
+                update_available: available,
+                release: None,
+            }),
+        }
+    }
+
+    /// Install a claude-code skill at `scope`, then stale its version stamp.
+    fn seed_stale(kind: SkillKind, scope: SkillScope) -> std::path::PathBuf {
+        let path = ClaudeCodeProvider
+            .install(&skill_model_for(kind), scope)
+            .expect("install skill");
+        let body = std::fs::read_to_string(&path).expect("read skill");
+        let staled = body
+            .lines()
+            .map(|l| {
+                if l.trim_start().starts_with("cfgd-version:") {
+                    "cfgd-version: 0.0.1".to_string()
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&path, staled).expect("write staled skill");
+        path
+    }
+
+    #[test]
+    #[serial]
+    fn wired_notify_standalone_stale_emits_one_consolidated_notice() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let _rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+        let _cwd = CwdGuard::set(project.path()).unwrap();
+
+        with_test_home(home.path(), || {
+            seed_stale(SkillKind::Module, SkillScope::User);
+            seed_stale(SkillKind::Module, SkillScope::Project);
+
+            let (printer, _cap) = Printer::for_test_doc();
+            let cfg = update_cfg(UpdatePolicy::Notify, SkillUpdatePolicy::Inherit);
+            let surface = surface_stale_skills(&printer, &cfg, &outcome(false));
+
+            // Exactly ONE consolidated notice covering both scopes (user:1,project:1).
+            assert_eq!(
+                surface,
+                SkillSurface::NoticeEmitted(SkillStaleness {
+                    user: 1,
+                    project: 1
+                }),
+                "binary current + both scopes stale → one consolidated notice"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn wired_binary_pending_suppresses_skill_surface() {
+        let home = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let _rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+
+        with_test_home(home.path(), || {
+            seed_stale(SkillKind::Module, SkillScope::User);
+
+            let (printer, cap) = Printer::for_test_doc();
+            let cfg = update_cfg(UpdatePolicy::Notify, SkillUpdatePolicy::Inherit);
+            // Rule 1: a binary update is pending → skill surface suppressed.
+            let surface = surface_stale_skills(&printer, &cfg, &outcome(true));
+
+            assert_eq!(
+                surface,
+                SkillSurface::Suppressed,
+                "rule 1 suppresses skills"
+            );
+            assert!(
+                strip_ansi(&cap.human()).is_empty(),
+                "no skill notice emitted when binary is pending"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn wired_auto_standalone_refreshes_user_leaves_project() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let _rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+        let _cwd = CwdGuard::set(project.path()).unwrap();
+
+        with_test_home(home.path(), || {
+            seed_stale(SkillKind::Module, SkillScope::User);
+            let project_path = seed_stale(SkillKind::Module, SkillScope::Project);
+            let project_before = std::fs::read(&project_path).unwrap();
+
+            let (printer, _cap) = Printer::for_test_doc();
+            let cfg = update_cfg(UpdatePolicy::Auto, SkillUpdatePolicy::Inherit);
+            let surface = surface_stale_skills(&printer, &cfg, &outcome(false));
+
+            // User-scope refreshed in place; project-scope still stale → the
+            // single remaining notice covers project only (user:0, project:1).
+            assert_eq!(
+                surface,
+                SkillSurface::NoticeEmitted(SkillStaleness {
+                    user: 0,
+                    project: 1
+                }),
+                "Auto refreshes user-scope, leaves a project-only notice"
+            );
+            // Project bytes byte-identical — never auto-written.
+            let project_after = std::fs::read(&project_path).unwrap();
+            assert_eq!(
+                project_before, project_after,
+                "Auto must not rewrite the tracked project skill"
+            );
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn wired_manual_standalone_stale_is_silent() {
+        let home = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let _rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+
+        with_test_home(home.path(), || {
+            seed_stale(SkillKind::Module, SkillScope::User);
+
+            let (printer, cap) = Printer::for_test_doc();
+            let cfg = update_cfg(UpdatePolicy::Manual, SkillUpdatePolicy::Inherit);
+            let surface = surface_stale_skills(&printer, &cfg, &outcome(false));
+
+            assert_eq!(
+                surface,
+                SkillSurface::Silent,
+                "Manual standalone-stale is silent"
+            );
+            assert!(
+                strip_ansi(&cap.human()).is_empty(),
+                "Manual emits no skill notice"
+            );
+        });
     }
 }

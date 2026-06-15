@@ -150,12 +150,19 @@ pub(crate) async fn handle_version_check(
 
     if !check.update_available {
         tracing::debug!(version = %check.current, "cfgd is up to date");
+        // Binary current → the §9 consolidated skill-stale surface may apply
+        // (rule 3). Rule 1 means this only runs when no binary update is
+        // pending, so the two surfaces can never both fire.
+        surface_stale_skills(update_cfg, state, notifier);
         return;
     }
 
     let version_str = check.latest.to_string();
     tracing::info!(current = %check.current, latest = %check.latest, "update available");
 
+    // Binary update pending → binary surface only (rule 1 suppresses the skill
+    // surface). The Auto apply path's ride-along refreshes user-scope skills in
+    // the same action via `install_release`.
     match crate::upgrade::resolve_action(policy, false, false) {
         UpdateAction::Apply if policy == UpdatePolicy::Auto => {
             apply_daemon_update(update_cfg, &check, &version_str, state, notifier).await;
@@ -192,6 +199,78 @@ async fn notify_update_available(
                 "Version {} is available (current: {}). Run 'cfgd upgrade' to update.",
                 version_str, check.current
             ),
+        );
+    }
+}
+
+/// Emit the §9 consolidated skill-stale surface in the daemon when the binary is
+/// current (rule 3), honoring the effective skills policy per the §9 scope table:
+///
+/// * **Auto / Inherit→Auto** → re-render USER-scope skills directly (the
+///   ride-along refresh); project-scope is never written, only notified if still
+///   stale afterward.
+/// * **Notify / Prompt** → one consolidated notifier message covering both
+///   scopes; no write (`Prompt` cannot prompt in the daemon, so it surfaces like
+///   `Notify` per the §9 "≤1 surface" headline).
+/// * **Manual** → silent.
+///
+/// Deduped via `state.skills_stale_notified` so the notice fires at most once per
+/// distinct staleness signature, not on every check tick.
+fn surface_stale_skills(
+    update_cfg: &config::UpdateConfig,
+    state: &Arc<Mutex<DaemonState>>,
+    notifier: &Arc<Notifier>,
+) {
+    use crate::upgrade::{self, StandaloneSkillAction};
+
+    let staleness = upgrade::aggregate_skill_staleness();
+    // Binary is current here (caller gates on `!update_available`), so
+    // binary_available is false and rule 3 governs.
+    let surfaces = upgrade::compute_update_surfaces(false, staleness.any(), update_cfg);
+    if !surfaces.shows_skills {
+        return;
+    }
+
+    match upgrade::resolve_standalone_skill_action(update_cfg) {
+        StandaloneSkillAction::RefreshUserThenNoticeProject => {
+            // Auto: re-render user-scope in place; project-scope is never written.
+            let _ = upgrade::refresh_user_scope_skills(update_cfg);
+            let remaining = upgrade::aggregate_skill_staleness();
+            if remaining.project > 0 {
+                notify_stale_skills_once(remaining, state, notifier);
+            }
+        }
+        StandaloneSkillAction::ConsolidatedNotice => {
+            notify_stale_skills_once(staleness, state, notifier);
+        }
+        StandaloneSkillAction::Silent => {}
+    }
+}
+
+/// Send the consolidated skill-stale notifier message, deduped per distinct
+/// staleness signature via `state.skills_stale_notified`.
+fn notify_stale_skills_once(
+    staleness: crate::upgrade::SkillStaleness,
+    state: &Arc<Mutex<DaemonState>>,
+    notifier: &Arc<Notifier>,
+) {
+    let signature = format!("user:{},project:{}", staleness.user, staleness.project);
+    let already = {
+        // try_lock avoids blocking a sync fn on the async mutex; a contended
+        // tick simply skips dedup bookkeeping and re-notifies next cycle.
+        match state.try_lock() {
+            Ok(mut st) => {
+                let seen = st.skills_stale_notified.as_deref() == Some(signature.as_str());
+                st.skills_stale_notified = Some(signature);
+                seen
+            }
+            Err(_) => false,
+        }
+    };
+    if !already {
+        notifier.notify(
+            "cfgd: skills are stale",
+            &crate::upgrade::consolidated_skill_stale_message(staleness),
         );
     }
 }

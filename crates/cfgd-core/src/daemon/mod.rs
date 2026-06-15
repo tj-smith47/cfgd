@@ -310,6 +310,10 @@ pub(super) struct DaemonState {
     drift_count: u32,
     sources: Vec<SourceStatus>,
     update_available: Option<String>,
+    // The stale-skill signature ("user:N,project:M") last surfaced via the
+    // notifier, so the §9 consolidated skill-stale notice fires at most once per
+    // distinct staleness state (not on every check tick).
+    skills_stale_notified: Option<String>,
     module_last_reconcile: HashMap<String, String>,
     // State DB path the `/drift` endpoint should read. `None` means "no store"
     // (used in tests so endpoint returns empty events without touching the
@@ -332,6 +336,7 @@ impl DaemonState {
                 status: "active".to_string(),
             }],
             update_available: None,
+            skills_stale_notified: None,
             module_last_reconcile: HashMap::new(),
             store_path: None,
         }

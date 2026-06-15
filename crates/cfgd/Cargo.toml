@@ -71,6 +71,9 @@ cfgd-core = { path = "../cfgd-core", version = "0.4.0", features = ["test-helper
 cfgd-crd = { path = "../cfgd-crd", version = "0.4.0" }
 serial_test = "3"
 mockito = "1"
+# Test-only: build `UpdateCheck` fixtures (its public `current`/`latest` fields
+# are `semver::Version`) for the §9 wired skill-surface tests.
+semver = "1"
 tempfile = "3"
 pretty_assertions = "1"
 tower = { version = "0.5", features = ["util"] }

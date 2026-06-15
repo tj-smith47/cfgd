@@ -548,6 +548,7 @@ dependencies = [
  "rustls",
  "schemars 0.8.22",
  "secrecy",
+ "semver",
  "serde",
  "serde_json",
  "serde_yaml",

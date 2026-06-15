@@ -163,3 +163,85 @@ pub fn refresh_user_scope_skills(cfg: &UpdateConfig) -> RideAlongOutcome {
         prompt_count: 0,
     }
 }
+
+/// Aggregate count of stale installed skills at each scope, across every
+/// provider. Drives the rule-3 consolidated surface (a single notice covering
+/// both scopes) — the per-scope counts are reported in the notice, never as
+/// separate surfaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SkillStaleness {
+    /// Number of stale user-scope (home) skills across all providers.
+    pub user: usize,
+    /// Number of stale project-scope (CWD) skills across all providers.
+    pub project: usize,
+}
+
+impl SkillStaleness {
+    /// Whether any skill at either scope is stale (the rule-3 trigger).
+    pub fn any(self) -> bool {
+        self.user > 0 || self.project > 0
+    }
+}
+
+/// Count stale installed skills at `scope` across every provider. A provider
+/// whose `list` errors contributes zero (best-effort: a transient read hiccup
+/// must not fabricate a phantom stale surface).
+fn count_stale_skills(scope: SkillScope) -> usize {
+    all_skill_providers()
+        .iter()
+        .map(|p| {
+            p.list(scope)
+                .map(|skills| skills.iter().filter(|s| s.stale).count())
+                .unwrap_or(0)
+        })
+        .sum()
+}
+
+/// Aggregate stale-skill counts at both scopes — the input the rule-3 path feeds
+/// into [`compute_update_surfaces`] (as `skills_stale = staleness.any()`) and
+/// reports in the single consolidated notice.
+pub fn aggregate_skill_staleness() -> SkillStaleness {
+    SkillStaleness {
+        user: count_stale_skills(SkillScope::User),
+        project: count_stale_skills(SkillScope::Project),
+    }
+}
+
+/// The single consolidated rule-3 notice covering BOTH scopes (never one per
+/// scope). Single-sources the wording so the CLI human surface and the daemon
+/// notifier message cannot drift.
+pub fn consolidated_skill_stale_message(staleness: SkillStaleness) -> String {
+    format!(
+        "cfgd skills are stale (user: {}, project: {}); run `cfgd skill update`",
+        staleness.user, staleness.project
+    )
+}
+
+/// What the standalone-stale path (binary current, skills stale) should do,
+/// resolved from the effective skills policy per the [spec §9] scope table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StandaloneSkillAction {
+    /// `Auto` / `Inherit→Auto`: re-render USER-scope skills directly, then a
+    /// notice if project-scope skills remain stale (project is never written).
+    RefreshUserThenNoticeProject,
+    /// `Notify` / `Prompt` (and their `Inherit` resolutions): emit the single
+    /// consolidated notice covering both scopes; write nothing.
+    ///
+    /// `Prompt` standalone-stale has no binary upgrade to ride along, so per the
+    /// §9 headline "at most ONE surface" it shows the consolidated notice exactly
+    /// like `Notify` — never a separate skill prompt and never an auto-write.
+    ConsolidatedNotice,
+    /// `Manual` / `Inherit→Manual`: silent — the user runs `cfgd skill update`.
+    Silent,
+}
+
+/// Resolve the standalone-stale action from the effective skills policy. Pure:
+/// the caller performs the I/O (refresh / notice / nothing). Keeps the §9 scope
+/// table in one place so the CLI and daemon consumers cannot diverge.
+pub fn resolve_standalone_skill_action(cfg: &UpdateConfig) -> StandaloneSkillAction {
+    match cfg.effective_skill_policy() {
+        UpdatePolicy::Auto => StandaloneSkillAction::RefreshUserThenNoticeProject,
+        UpdatePolicy::Notify | UpdatePolicy::Prompt => StandaloneSkillAction::ConsolidatedNotice,
+        UpdatePolicy::Manual => StandaloneSkillAction::Silent,
+    }
+}

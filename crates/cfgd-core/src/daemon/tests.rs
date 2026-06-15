@@ -9453,6 +9453,67 @@ mod harness {
 
     #[tokio::test(flavor = "current_thread")]
     #[serial_test::serial]
+    async fn handle_version_check_surfaces_consolidated_skill_stale_when_up_to_date() {
+        // Binary current (tag == running) + a stale user-scope skill under Notify
+        // → the §9 consolidated skill-stale notice fires once, recorded in state
+        // by its per-scope signature. Rule 3 wired through `handle_version_check`.
+        use crate::generate::{SkillKind, skill_model_for};
+        use crate::providers::skill::{ClaudeCodeProvider, SkillProvider, SkillScope};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let runtime = tempfile::TempDir::new().unwrap();
+        let _rt = crate::test_helpers::EnvVarGuard::set(
+            "CFGD_RUNTIME_DIR",
+            &runtime.path().to_string_lossy(),
+        );
+
+        // Seed a stale user-scope skill inside the test home before driving.
+        {
+            let _g = crate::with_test_home_guard(tmp.path());
+            let path = ClaudeCodeProvider
+                .install(&skill_model_for(SkillKind::Module), SkillScope::User)
+                .expect("install user skill");
+            let body = std::fs::read_to_string(&path).unwrap();
+            let staled = body
+                .lines()
+                .map(|l| {
+                    if l.trim_start().starts_with("cfgd-version:") {
+                        "cfgd-version: 0.0.1".to_string()
+                    } else {
+                        l.to_string()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            std::fs::write(&path, staled).unwrap();
+        }
+
+        let tag = format!("v{}", env!("CARGO_PKG_VERSION"));
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(r#"{{"tag_name": "{tag}", "assets": []}}"#))
+            .create_async()
+            .await;
+        let _api = crate::test_helpers::EnvVarGuard::set("CFGD_GITHUB_API_BASE", &server.url());
+
+        let state = drive_version_check(tmp.path().to_path_buf(), &notify_update_cfg()).await;
+
+        let st = state.lock().await;
+        // No binary update (rule 1 not triggered); exactly one consolidated skill
+        // surface recorded — project count is 0 (cwd has no skill), user is 1.
+        assert_eq!(
+            st.skills_stale_notified.as_deref(),
+            Some("user:1,project:0"),
+            "consolidated skill-stale notice fires once with per-scope counts"
+        );
+        assert!(st.update_available.is_none(), "no binary update pending");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
     async fn handle_version_check_leaves_state_clean_when_up_to_date() {
         let tmp = tempfile::TempDir::new().unwrap();
         let tag = format!("v{}", env!("CARGO_PKG_VERSION"));

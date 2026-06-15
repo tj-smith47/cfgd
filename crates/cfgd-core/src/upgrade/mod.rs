@@ -18,7 +18,9 @@ pub use check::{
     run_update_check, should_check,
 };
 pub use dedup::{
-    RideAlongOutcome, UpdateSurfaces, compute_update_surfaces, refresh_user_scope_skills,
+    RideAlongOutcome, SkillStaleness, StandaloneSkillAction, UpdateSurfaces,
+    aggregate_skill_staleness, compute_update_surfaces, consolidated_skill_stale_message,
+    refresh_user_scope_skills, resolve_standalone_skill_action,
 };
 
 const GITHUB_API_BASE: &str = "https://api.github.com";

@@ -9,7 +9,9 @@ use cfgd_core::config::{SkillUpdateConfig, SkillUpdatePolicy, UpdateConfig, Upda
 use cfgd_core::generate::{SkillKind, skill_model_for};
 use cfgd_core::providers::skill::{ClaudeCodeProvider, SkillProvider, SkillScope};
 use cfgd_core::test_helpers::{CwdGuard, EnvVarGuard};
-use cfgd_core::upgrade::{compute_update_surfaces, refresh_user_scope_skills};
+use cfgd_core::upgrade::{
+    aggregate_skill_staleness, compute_update_surfaces, refresh_user_scope_skills,
+};
 use cfgd_core::with_test_home;
 
 /// An [`UpdateConfig`] with the given binary policy and skills policy.
@@ -20,6 +22,30 @@ fn cfg(policy: UpdatePolicy, skills: SkillUpdatePolicy) -> UpdateConfig {
         channel: None,
         skills: SkillUpdateConfig { policy: skills },
     }
+}
+
+/// Install a claude-code skill for `kind` at `scope`, then rewrite its stamped
+/// `cfgd-version` to `0.0.1` so `list` flags it stale (stamp != running). The
+/// whole-file claude provider carries the stamp on a `cfgd-version:` frontmatter
+/// line, so a line rewrite faithfully reproduces an old install.
+fn seed_stale_skill(kind: SkillKind, scope: SkillScope) -> std::path::PathBuf {
+    let path = ClaudeCodeProvider
+        .install(&skill_model_for(kind), scope)
+        .expect("install skill");
+    let body = std::fs::read_to_string(&path).expect("read installed skill");
+    let staled = body
+        .lines()
+        .map(|l| {
+            if l.trim_start().starts_with("cfgd-version:") {
+                "cfgd-version: 0.0.1".to_string()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&path, staled).expect("rewrite stale stamp");
+    path
 }
 
 // ----- Rule 1: binary outranks skills (pure) -----
@@ -176,6 +202,94 @@ fn project_scope_skills_are_never_auto_rewritten() {
         assert_eq!(
             before, after,
             "project-scope skill bytes must be unchanged by a ride-along refresh"
+        );
+    });
+}
+
+// ----- Wired aggregation: staleness → compute_update_surfaces → action -----
+
+#[test]
+#[serial_test::serial]
+fn aggregate_counts_stale_skills_per_scope() {
+    let home = tempfile::tempdir().expect("home tempdir");
+    let project = tempfile::tempdir().expect("project tempdir");
+    let runtime = tempfile::tempdir().expect("runtime tempdir");
+    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+    let _cwd = CwdGuard::set(project.path()).expect("set cwd to project dir");
+
+    with_test_home(home.path(), || {
+        seed_stale_skill(SkillKind::Module, SkillScope::User);
+        seed_stale_skill(SkillKind::Profile, SkillScope::User);
+        seed_stale_skill(SkillKind::Module, SkillScope::Project);
+
+        let staleness = aggregate_skill_staleness();
+        assert_eq!(staleness.user, 2, "two stale user skills: {staleness:?}");
+        assert_eq!(
+            staleness.project, 1,
+            "one stale project skill: {staleness:?}"
+        );
+        assert!(staleness.any());
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn binary_pending_suppresses_wired_skill_surface() {
+    // Rule 1 wired: stale skills present AND a binary update pending →
+    // compute_update_surfaces fed the real aggregate yields binary-only.
+    let home = tempfile::tempdir().expect("home tempdir");
+    let runtime = tempfile::tempdir().expect("runtime tempdir");
+    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+
+    with_test_home(home.path(), || {
+        seed_stale_skill(SkillKind::Module, SkillScope::User);
+        let c = cfg(UpdatePolicy::Notify, SkillUpdatePolicy::Inherit);
+
+        let staleness = aggregate_skill_staleness();
+        assert!(staleness.any(), "skill is stale");
+        let surfaces =
+            compute_update_surfaces(/*binary_available=*/ true, staleness.any(), &c);
+        assert!(
+            surfaces.shows_binary && !surfaces.shows_skills,
+            "binary pending suppresses the skill surface: {surfaces:?}"
+        );
+    });
+}
+
+#[test]
+#[serial_test::serial]
+fn auto_standalone_refresh_clears_user_staleness_only() {
+    // Auto standalone-stale (binary current): refreshing user-scope clears user
+    // staleness; project staleness remains (never auto-written).
+    let home = tempfile::tempdir().expect("home tempdir");
+    let project = tempfile::tempdir().expect("project tempdir");
+    let runtime = tempfile::tempdir().expect("runtime tempdir");
+    let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+    let _cwd = CwdGuard::set(project.path()).expect("set cwd to project dir");
+
+    with_test_home(home.path(), || {
+        seed_stale_skill(SkillKind::Module, SkillScope::User);
+        let project_path = seed_stale_skill(SkillKind::Module, SkillScope::Project);
+        let project_before = std::fs::read(&project_path).expect("read project skill");
+
+        let before = aggregate_skill_staleness();
+        assert_eq!((before.user, before.project), (1, 1));
+
+        let outcome =
+            refresh_user_scope_skills(&cfg(UpdatePolicy::Auto, SkillUpdatePolicy::Inherit));
+        assert!(outcome.user_scope_skills_refreshed);
+
+        let after = aggregate_skill_staleness();
+        assert_eq!(
+            after.user, 0,
+            "user staleness cleared by refresh: {after:?}"
+        );
+        assert_eq!(after.project, 1, "project staleness untouched: {after:?}");
+        // Project bytes byte-identical — never auto-written.
+        let project_after = std::fs::read(&project_path).expect("re-read project skill");
+        assert_eq!(
+            project_before, project_after,
+            "project-scope skill bytes unchanged by Auto standalone refresh"
         );
     });
 }
