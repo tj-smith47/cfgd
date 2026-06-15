@@ -248,6 +248,31 @@ Resource types: `module`, `profile`, `configsource`, `config` (aliases:
 `cfgdconfig`, `cfgd`), `machineconfig`, `configpolicy`, `clusterconfigpolicy`,
 `driftalert`, `module-crd` (the cluster-side Module CRD), `teamconfig`.
 
+### `cfgd <kind> validate`
+
+Validate a resource document against its schema before committing or applying
+it. The validating kinds are the author-facing ones:
+
+```sh
+cfgd module validate module.yaml              # validate a file
+cfgd profile validate profiles/work.yaml
+cfgd source validate cfgd-source.yaml
+cfgd machineconfig validate mc.yaml
+cfgd configpolicy validate policy.yaml
+cfgd clusterconfigpolicy validate -           # read from stdin
+cat mc.yaml | cfgd machineconfig validate - -o json
+```
+
+Validation checks the document's `apiVersion`, rejects unknown fields, and runs
+the kind's cross-field rules. For the CRD kinds (`machineconfig`,
+`configpolicy`, `clusterconfigpolicy`) those rules are the *same* checks the
+operator's admission webhook enforces — one shared implementation, so a document
+that passes `validate` is one the cluster will admit.
+
+A path argument reads that file; `-` reads from stdin. Exit code is `0` when the
+document is valid and `4` when it is invalid. With `-o json` the result is a
+`{"kind", "valid", "errors"}` payload for scripting.
+
 ### `cfgd paths`
 
 Print the resolved config, state, cache, and runtime directories, each with its
