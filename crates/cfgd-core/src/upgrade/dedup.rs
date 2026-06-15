@@ -358,6 +358,19 @@ mod tests {
         std::fs::write(&path, staled).expect("rewrite codex stamp");
     }
 
+    /// Run `f` under a TRACE-level subscriber. `tracing` skips evaluating an
+    /// event's field expressions when no installed subscriber enables the level,
+    /// so the best-effort `warn!`/`debug!` diagnostics in the error arms only
+    /// execute their `provider.id()`/`kind.as_str()` field reads when a
+    /// subscriber is active — as it is in production.
+    fn with_trace_subscriber<T>(f: impl FnOnce() -> T) -> T {
+        let sub = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_test_writer()
+            .finish();
+        tracing::subscriber::with_default(sub, f)
+    }
+
     #[test]
     #[serial_test::serial]
     fn count_stale_skills_swallows_a_providers_list_error() {
@@ -373,7 +386,7 @@ mod tests {
             // Break the claude provider's `list` with the EISDIR idiom.
             make_claude_list_error(home.path());
 
-            let staleness = aggregate_skill_staleness();
+            let staleness = with_trace_subscriber(aggregate_skill_staleness);
             assert_eq!(
                 staleness.user, 1,
                 "claude list-error swallowed to 0; codex's stale skill still counted: {staleness:?}"
@@ -398,7 +411,7 @@ mod tests {
         crate::with_test_home(home.path(), || {
             make_claude_list_error(home.path());
 
-            let outcome = refresh_user_scope_skills(&auto_cfg());
+            let outcome = with_trace_subscriber(|| refresh_user_scope_skills(&auto_cfg()));
             assert!(
                 !outcome.user_scope_skills_refreshed,
                 "list-errored provider skipped; nothing else present to refresh"
@@ -432,7 +445,7 @@ mod tests {
             std::fs::write(&bad, b"not a dir").expect("write runtime-blocking file");
             let _bad_rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &bad.to_string_lossy());
 
-            refresh_user_scope_skills(&auto_cfg())
+            with_trace_subscriber(|| refresh_user_scope_skills(&auto_cfg()))
         });
 
         // The codex skill was present (list succeeds, no lock) but its re-render
