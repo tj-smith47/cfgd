@@ -9457,8 +9457,8 @@ mod harness {
         // Binary current (tag == running) + a stale user-scope skill under Notify
         // → the §9 consolidated skill-stale notice fires once, recorded in state
         // by its per-scope signature. Rule 3 wired through `handle_version_check`.
-        use crate::generate::{SkillKind, skill_model_for};
-        use crate::providers::skill::{ClaudeCodeProvider, SkillProvider, SkillScope};
+        use crate::generate::SkillKind;
+        use crate::providers::skill::SkillScope;
 
         let tmp = tempfile::TempDir::new().unwrap();
         let runtime = tempfile::TempDir::new().unwrap();
@@ -9470,22 +9470,7 @@ mod harness {
         // Seed a stale user-scope skill inside the test home before driving.
         {
             let _g = crate::with_test_home_guard(tmp.path());
-            let path = ClaudeCodeProvider
-                .install(&skill_model_for(SkillKind::Module), SkillScope::User)
-                .expect("install user skill");
-            let body = std::fs::read_to_string(&path).unwrap();
-            let staled = body
-                .lines()
-                .map(|l| {
-                    if l.trim_start().starts_with("cfgd-version:") {
-                        "cfgd-version: 0.0.1".to_string()
-                    } else {
-                        l.to_string()
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            std::fs::write(&path, staled).unwrap();
+            crate::test_helpers::seed_stale_skill(SkillKind::Module, SkillScope::User);
         }
 
         let tag = format!("v{}", env!("CARGO_PKG_VERSION"));
@@ -9546,6 +9531,73 @@ mod harness {
         let state = drive_version_check(tmp.path().to_path_buf(), &cfg).await;
         let st = state.lock().await;
         assert!(st.update_available.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn handle_version_check_manual_policy_mutates_no_update_state() {
+        // Manual returns before any network or skill-surface work, so BOTH update
+        // surfaces stay untouched even when a stale user-scope skill is present —
+        // the gate fires ahead of `surface_stale_skills`.
+        use crate::generate::SkillKind;
+        use crate::providers::skill::SkillScope;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let runtime = tempfile::TempDir::new().unwrap();
+        let _rt = crate::test_helpers::EnvVarGuard::set(
+            "CFGD_RUNTIME_DIR",
+            &runtime.path().to_string_lossy(),
+        );
+        {
+            let _g = crate::with_test_home_guard(tmp.path());
+            crate::test_helpers::seed_stale_skill(SkillKind::Module, SkillScope::User);
+        }
+
+        // No mock server: a network call would error, proving Manual never reaches it.
+        let cfg = config::UpdateConfig {
+            policy: config::UpdatePolicy::Manual,
+            ..Default::default()
+        };
+        let state = drive_version_check(tmp.path().to_path_buf(), &cfg).await;
+
+        let st = state.lock().await;
+        assert!(
+            st.update_available.is_none(),
+            "Manual must not record a binary update"
+        );
+        assert!(
+            st.skills_stale_notified.is_none(),
+            "Manual gates before the skill-stale surface, so no notice is recorded"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn handle_version_check_within_interval_gate_skips_check() {
+        // A recent recorded check + a long interval makes `should_check` false for
+        // a non-Manual policy, so the gate returns before any network or
+        // skill-surface work and leaves both update surfaces untouched.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+
+        // Stamp a check "now" into the test-home version cache; with the default
+        // 24h interval, the next tick is well within the window.
+        crate::upgrade::record_check_at(crate::unix_secs_now());
+
+        // No mock server: a network call would error, proving the gate short-circuits.
+        let state = Arc::new(Mutex::new(DaemonState::new()));
+        let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+        super::super::sync::handle_version_check(&notify_update_cfg(), &state, &notifier).await;
+
+        let st = state.lock().await;
+        assert!(
+            st.update_available.is_none(),
+            "within-interval tick must not record a binary update"
+        );
+        assert!(
+            st.skills_stale_notified.is_none(),
+            "within-interval tick gates before the skill-stale surface"
+        );
     }
 
     // ----- init_daemon_state tests -----

@@ -2029,6 +2029,35 @@ fn parse_profile_yaml_to_resolved(yaml: &str) -> crate::config::ResolvedProfile 
     }
 }
 
+/// Install a claude-code skill for `kind` at `scope`, then rewrite its stamped
+/// `cfgd-version` to `0.0.1` so `list` flags it stale (stamp != running). The
+/// whole-file claude provider carries the stamp on a `cfgd-version:` frontmatter
+/// line, so a line rewrite faithfully reproduces an old install.
+pub fn seed_stale_skill(
+    kind: crate::generate::SkillKind,
+    scope: crate::providers::skill::SkillScope,
+) -> std::path::PathBuf {
+    use crate::providers::skill::{ClaudeCodeProvider, SkillProvider};
+
+    let path = ClaudeCodeProvider
+        .install(&crate::generate::skill_model_for(kind), scope)
+        .expect("install skill");
+    let body = std::fs::read_to_string(&path).expect("read installed skill");
+    let staled = body
+        .lines()
+        .map(|l| {
+            if l.trim_start().starts_with("cfgd-version:") {
+                "cfgd-version: 0.0.1".to_string()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&path, staled).expect("rewrite stale stamp");
+    path
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

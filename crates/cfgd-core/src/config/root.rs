@@ -411,6 +411,35 @@ mod tests {
     }
 
     #[test]
+    fn effective_skill_policy_resolves_every_variant_against_two_binary_policies() {
+        // Inherit tracks the binary policy; each explicit variant passes through
+        // unchanged regardless of the binary policy. Exercising two distinct
+        // binary policies proves Inherit's binding is the live `policy`, not a
+        // hardcoded value, while the explicit arms stay binary-independent.
+        for binary in [UpdatePolicy::Auto, UpdatePolicy::Notify] {
+            let cases = [
+                (SkillUpdatePolicy::Inherit, binary),
+                (SkillUpdatePolicy::Auto, UpdatePolicy::Auto),
+                (SkillUpdatePolicy::Prompt, UpdatePolicy::Prompt),
+                (SkillUpdatePolicy::Notify, UpdatePolicy::Notify),
+                (SkillUpdatePolicy::Manual, UpdatePolicy::Manual),
+            ];
+            for (skills, expected) in cases {
+                let u = UpdateConfig {
+                    policy: binary,
+                    skills: SkillUpdateConfig { policy: skills },
+                    ..Default::default()
+                };
+                assert_eq!(
+                    u.effective_skill_policy(),
+                    expected,
+                    "binary={binary:?} skills={skills:?} must resolve to {expected:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn update_policy_parses_case_insensitively() {
         for (token, expected) in [
             ("auto", UpdatePolicy::Auto),

@@ -316,3 +316,132 @@ pub fn run_standalone_skill_action(
         StandaloneSkillAction::Silent => StandaloneSkillOutcome::Silent,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{SkillUpdateConfig, SkillUpdatePolicy};
+    use crate::generate::{SkillKind, skill_model_for};
+    use crate::providers::skill::{CodexProvider, SkillProvider, SkillScope};
+    use crate::test_helpers::EnvVarGuard;
+
+    /// An [`UpdateConfig`] with the given binary policy and inherited skills policy.
+    fn auto_cfg() -> UpdateConfig {
+        UpdateConfig {
+            policy: UpdatePolicy::Auto,
+            interval: "24h".to_string(),
+            channel: None,
+            skills: SkillUpdateConfig {
+                policy: SkillUpdatePolicy::Inherit,
+            },
+        }
+    }
+
+    /// Replace a whole-file provider's installed `SKILL.md` with a DIRECTORY at the
+    /// same path. `target.exists()` then reports present, but reading it yields
+    /// `EISDIR` (not `NotFound`), so the provider's `list` returns `Err` — the
+    /// exact condition the best-effort list-error arms must swallow.
+    fn make_claude_list_error(home: &std::path::Path) {
+        let target = home.join(".claude/skills/cfgd-module/SKILL.md");
+        std::fs::create_dir_all(&target).expect("replace SKILL.md with a directory");
+    }
+
+    /// Seed a codex skill at user scope, then stale its body version stamp so
+    /// `list` flags it stale. Codex carries the stamp in an `AGENTS.md` HTML
+    /// comment, so the running version is rewritten in place.
+    fn seed_stale_codex_user_skill() {
+        let path = CodexProvider
+            .install(&skill_model_for(SkillKind::Module), SkillScope::User)
+            .expect("install codex user skill");
+        let body = std::fs::read_to_string(&path).expect("read AGENTS.md");
+        let staled = body.replace(env!("CARGO_PKG_VERSION"), "0.0.1");
+        std::fs::write(&path, staled).expect("rewrite codex stamp");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn count_stale_skills_swallows_a_providers_list_error() {
+        // One provider whose `list` errors must contribute 0 (best-effort), never
+        // abort the aggregate — the other providers' stale counts still surface.
+        let home = tempfile::tempdir().expect("home tempdir");
+        let runtime = tempfile::tempdir().expect("runtime tempdir");
+        let _rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+
+        crate::with_test_home(home.path(), || {
+            // A genuinely-stale codex skill (a healthy provider with a real count).
+            seed_stale_codex_user_skill();
+            // Break the claude provider's `list` with the EISDIR idiom.
+            make_claude_list_error(home.path());
+
+            let staleness = aggregate_skill_staleness();
+            assert_eq!(
+                staleness.user, 1,
+                "claude list-error swallowed to 0; codex's stale skill still counted: {staleness:?}"
+            );
+            assert_eq!(
+                staleness.project, 0,
+                "no project-scope skills: {staleness:?}"
+            );
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn ride_along_skips_a_provider_whose_list_errors() {
+        // A provider whose user-scope `list` errors is skipped (warn + continue);
+        // with no other present user-scope skill, nothing is refreshed and the
+        // ride-along still returns a clean, non-prompting outcome.
+        let home = tempfile::tempdir().expect("home tempdir");
+        let runtime = tempfile::tempdir().expect("runtime tempdir");
+        let _rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+
+        crate::with_test_home(home.path(), || {
+            make_claude_list_error(home.path());
+
+            let outcome = refresh_user_scope_skills(&auto_cfg());
+            assert!(
+                !outcome.user_scope_skills_refreshed,
+                "list-errored provider skipped; nothing else present to refresh"
+            );
+            assert_eq!(outcome.prompt_count, 0, "ride-along never prompts");
+        });
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn ride_along_skips_a_skill_whose_install_errors() {
+        // A present user-scope skill whose re-render `install` errors is skipped
+        // (warn, leave stale) rather than aborting the post-upgrade tail. Codex
+        // takes a runtime-dir advisory lock during install; pointing
+        // `CFGD_RUNTIME_DIR` at a regular file makes that lock acquisition fail
+        // while `list` (which takes no lock) still reports the skill present.
+        let home = tempfile::tempdir().expect("home tempdir");
+        let runtime = tempfile::tempdir().expect("runtime tempdir");
+
+        let outcome = crate::with_test_home(home.path(), || {
+            // Install with a WORKING runtime dir so the skill is genuinely present.
+            let _rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
+            CodexProvider
+                .install(&skill_model_for(SkillKind::Module), SkillScope::User)
+                .expect("install codex user skill");
+            drop(_rt);
+
+            // Now point the runtime dir at a regular FILE so `lock_for` fails
+            // inside the re-render `install`, exercising the install-error arm.
+            let bad = runtime.path().join("runtime-is-a-file");
+            std::fs::write(&bad, b"not a dir").expect("write runtime-blocking file");
+            let _bad_rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &bad.to_string_lossy());
+
+            refresh_user_scope_skills(&auto_cfg())
+        });
+
+        // The codex skill was present (list succeeds, no lock) but its re-render
+        // install failed at lock acquisition, so nothing was refreshed and the
+        // ride-along returned without panicking or prompting.
+        assert!(
+            !outcome.user_scope_skills_refreshed,
+            "install-errored skill left stale; not counted as refreshed"
+        );
+        assert_eq!(outcome.prompt_count, 0, "ride-along never prompts");
+    }
+}

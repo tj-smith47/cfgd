@@ -8,7 +8,7 @@
 use cfgd_core::config::{SkillUpdateConfig, SkillUpdatePolicy, UpdateConfig, UpdatePolicy};
 use cfgd_core::generate::{SkillKind, skill_model_for};
 use cfgd_core::providers::skill::{ClaudeCodeProvider, SkillProvider, SkillScope};
-use cfgd_core::test_helpers::{CwdGuard, EnvVarGuard};
+use cfgd_core::test_helpers::{CwdGuard, EnvVarGuard, seed_stale_skill};
 use cfgd_core::upgrade::{
     SkillStaleness, StandaloneSkillOutcome, aggregate_skill_staleness, compute_update_surfaces,
     refresh_user_scope_skills, run_standalone_skill_action,
@@ -23,30 +23,6 @@ fn cfg(policy: UpdatePolicy, skills: SkillUpdatePolicy) -> UpdateConfig {
         channel: None,
         skills: SkillUpdateConfig { policy: skills },
     }
-}
-
-/// Install a claude-code skill for `kind` at `scope`, then rewrite its stamped
-/// `cfgd-version` to `0.0.1` so `list` flags it stale (stamp != running). The
-/// whole-file claude provider carries the stamp on a `cfgd-version:` frontmatter
-/// line, so a line rewrite faithfully reproduces an old install.
-fn seed_stale_skill(kind: SkillKind, scope: SkillScope) -> std::path::PathBuf {
-    let path = ClaudeCodeProvider
-        .install(&skill_model_for(kind), scope)
-        .expect("install skill");
-    let body = std::fs::read_to_string(&path).expect("read installed skill");
-    let staled = body
-        .lines()
-        .map(|l| {
-            if l.trim_start().starts_with("cfgd-version:") {
-                "cfgd-version: 0.0.1".to_string()
-            } else {
-                l.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    std::fs::write(&path, staled).expect("rewrite stale stamp");
-    path
 }
 
 // ----- Rule 1: binary outranks skills (pure) -----
