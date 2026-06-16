@@ -11368,14 +11368,15 @@ async fn handle_reconcile_compose_error_skips_tick_and_preserves_source_package(
     // package survives, last_reconcile is NOT advanced, and an alert is raised.
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
-    // The daemon's source cache resolves under the unified cache root
-    // (`$XDG_CACHE_HOME/cfgd` on Linux). reconcile runs on a `spawn_blocking`
-    // worker thread, where the thread-local test-home override does NOT apply —
-    // so drive the cache root via the process-global `XDG_CACHE_HOME` env var,
-    // which `directories::BaseDirs` honors across threads.
-    let xdg_cache = tmp.path().join("xdg-cache");
-    let _xdg = crate::test_helpers::EnvVarGuard::set("XDG_CACHE_HOME", xdg_cache.to_str().unwrap());
-    let cache_root = xdg_cache.join("cfgd");
+    // The daemon resolves its source cache via `default_cache_dir_for`, which
+    // short-circuits on the process-global `CFGD_CACHE_DIR` env var (verbatim,
+    // every platform). reconcile runs on a `spawn_blocking` worker thread where
+    // the thread-local test-home override does NOT apply, and `XDG_CACHE_HOME`
+    // is honored only by the Linux `directories` backend — so pin the cache root
+    // with `CFGD_CACHE_DIR` to stay correct on Linux, macOS, and Windows.
+    let cache_root = tmp.path().join("cache-root").join("cfgd");
+    let _cache =
+        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
     stage_constraint_violating_cached_source(&cache_root, "test-src");
 
     let state_dir = tmp.path().join("state");
@@ -11521,13 +11522,15 @@ async fn handle_reconcile_never_synced_source_reconciles_local_only() {
     // so reconcile proceeds local-only and completes (last_reconcile advances).
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
-    // Pin the unified cache root to an EMPTY `$XDG_CACHE_HOME` dir → the source
-    // is never-synced (cache-miss). reconcile runs on a `spawn_blocking` worker
-    // thread where the thread-local home override does not apply, so use the
-    // process-global env var (honored by `directories::BaseDirs` cross-thread).
-    let xdg_cache = tmp.path().join("xdg-cache-empty");
-    std::fs::create_dir_all(&xdg_cache).unwrap();
-    let _xdg = crate::test_helpers::EnvVarGuard::set("XDG_CACHE_HOME", xdg_cache.to_str().unwrap());
+    // Pin the unified cache root to an EMPTY dir → the source is never-synced
+    // (cache-miss). reconcile runs on a `spawn_blocking` worker thread where the
+    // thread-local home override does not apply; `XDG_CACHE_HOME` is honored only
+    // by the Linux `directories` backend, so pin with the process-global,
+    // every-platform `CFGD_CACHE_DIR` short-circuit instead.
+    let cache_root = tmp.path().join("cache-root-empty").join("cfgd");
+    std::fs::create_dir_all(&cache_root).unwrap();
+    let _cache =
+        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
 
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
@@ -11583,13 +11586,16 @@ async fn handle_reconcile_required_uncached_source_skips_tick_and_preserves_pack
     // but for the cache-only fail-OPEN gap the chokepoint fix closes.
     let tmp = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(tmp.path());
-    // Pin the unified cache root to an EMPTY `$XDG_CACHE_HOME` dir → the required
-    // source is never-synced (no cache), so compose must fail-closed. reconcile
-    // runs on a `spawn_blocking` worker thread where the thread-local home
-    // override does not apply, so use the process-global env var.
-    let xdg_cache = tmp.path().join("xdg-cache-empty");
-    std::fs::create_dir_all(&xdg_cache).unwrap();
-    let _xdg = crate::test_helpers::EnvVarGuard::set("XDG_CACHE_HOME", xdg_cache.to_str().unwrap());
+    // Pin the unified cache root to an EMPTY dir → the required source is
+    // never-synced (no cache), so compose must fail-closed. reconcile runs on a
+    // `spawn_blocking` worker thread where the thread-local home override does
+    // not apply; `XDG_CACHE_HOME` is honored only by the Linux `directories`
+    // backend, so pin with the process-global, every-platform `CFGD_CACHE_DIR`
+    // short-circuit instead.
+    let cache_root = tmp.path().join("cache-root-empty").join("cfgd");
+    std::fs::create_dir_all(&cache_root).unwrap();
+    let _cache =
+        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", cache_root.to_str().unwrap());
 
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();

@@ -636,14 +636,25 @@ mod tests {
             collect_paths_output(&cli, &DirSources::all_default()).expect("collect must succeed");
 
         assert_eq!(output.scope, "system");
+        // Assert the cross-platform invariant only (a `cfgd` path component);
+        // the exact FHS absolute roots are Linux-specific and pinned by
+        // `system_scope_fhs_absolute_roots_linux`. macOS scopes under
+        // `/Library/Application Support/cfgd/state` (ends with "state", not
+        // "cfgd"), so `ends_with("cfgd")` would false-fail there.
+        let state_dir = output.state.dir.as_deref().expect("state dir resolves");
         assert!(
-            output.state.dir.as_deref().unwrap().ends_with("cfgd"),
-            "state root: {:?}",
+            std::path::Path::new(state_dir)
+                .components()
+                .any(|c| c.as_os_str() == "cfgd"),
+            "state root must be cfgd-scoped: {:?}",
             output.state.dir
         );
+        let cache_dir = output.cache.dir.as_deref().expect("cache dir resolves");
         assert!(
-            output.cache.dir.as_deref().unwrap().ends_with("cfgd"),
-            "cache root: {:?}",
+            std::path::Path::new(cache_dir)
+                .components()
+                .any(|c| c.as_os_str() == "cfgd"),
+            "cache root must be cfgd-scoped: {:?}",
             output.cache.dir
         );
     }
