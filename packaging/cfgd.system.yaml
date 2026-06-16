@@ -1,0 +1,16 @@
+# cfgd system daemon configuration — /etc/cfgd/config.yaml
+#
+# Installed by the cfgd deb/rpm/apk package as a conffile (your edits survive
+# upgrades). The package ENABLES the cfgd service but does NOT start it, so the
+# daemon will not reconcile this machine until you review the settings below and
+# run: systemctl start cfgd
+apiVersion: cfgd.io/v1alpha1
+kind: Config
+metadata:
+  name: cfgd
+spec:
+  fileStrategy: Symlink
+  # profile: base
+  # sources: []
+  # modules:
+  #   registries: []

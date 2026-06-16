@@ -237,7 +237,10 @@ tasks:
     desc: Dry-run release pipeline (single target, no publish) using anodizer
     deps: [build]
     cmds:
-      - anodizer release --snapshot --single-target --clean --dry-run
+      # ANODIZER_BIN swaps in a specific anodizer binary (see `task commit:local`)
+      # when the installed release predates the .anodizer.yaml schema during a
+      # coordinated anodizer+cfgd version bump. Defaults to the installed binary.
+      - '${ANODIZER_BIN:-anodizer} release --snapshot --single-target --clean --dry-run'
 
   # --- Pre-commit pipeline (mirrors anodizer/Taskfile.yml) ---
 
@@ -280,6 +283,19 @@ tasks:
         msg: "Nothing staged. Stage files with `git add <path>` before running task commit:quick."
     cmds:
       - git commit {{.CLI_ARGS}}
+
+  commit:local:
+    desc: "Like `task commit`, but runs the snapshot dry-run with a locally-built anodizer instead of the installed one. Use during a coordinated anodizer+cfgd bump when the installed anodizer predates the .anodizer.yaml schema (e.g. new v0.10 fields the released binary rejects). Build it first (`cargo build --release -p anodizer` in the anodizer repo). Override the path with ANODIZER_LOCAL=... . Usage: `git add` first, then `task commit:local -- -m 'msg'`."
+    vars:
+      ANODIZER_LOCAL: '{{.ANODIZER_LOCAL | default "/opt/repos/anodizer/target/release/anodizer"}}'
+    preconditions:
+      - sh: test -x "{{.ANODIZER_LOCAL}}"
+        msg: "No local anodizer at {{.ANODIZER_LOCAL}}. Build it (`cargo build --release -p anodizer` in the anodizer repo) or pass ANODIZER_LOCAL=/path/to/anodizer."
+    cmds:
+      # Set ANODIZER_BIN in the process env of a fresh `task commit`; go-task
+      # propagates process env (not task-level env) to nested task calls, so the
+      # snapshot step inside the commit chain picks up the local binary.
+      - ANODIZER_BIN="{{.ANODIZER_LOCAL}}" task commit -- {{.CLI_ARGS}}
 
   _commit:restage:
     internal: true

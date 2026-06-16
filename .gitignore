@@ -50,6 +50,13 @@
 !scripts/**
 !Taskfile.yml
 
+# Native OS packaging consumed by the nfpm release stage: the systemd unit,
+# maintainer scripts (post/pre install/remove), and the default
+# /etc/cfgd/config.yaml conffile. Must be tracked or a CI checkout builds
+# deb/rpm/apk without the daemon service wiring.
+!packaging/
+!packaging/**
+
 # Claude project config — only files load-bearing for CI / hooks / planning are tracked.
 # Everything else under .claude/ stays on disk but is intentionally local-only.
 !.claude/

@@ -1,0 +1,16 @@
+[Unit]
+Description=cfgd configuration daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/cfgd --config /etc/cfgd/config.yaml --scope system --quiet daemon
+Restart=on-failure
+RestartSec=10
+ConfigurationDirectory=cfgd
+StateDirectory=cfgd
+CacheDirectory=cfgd
+RuntimeDirectory=cfgd
+
+[Install]
+WantedBy=multi-user.target

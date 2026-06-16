@@ -377,6 +377,30 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
+    /// The deb/rpm/apk packages ship `packaging/systemd/cfgd.service`, which must
+    /// stay byte-identical to what `generate_systemd_unit` emits for a system-scope
+    /// `/usr/bin/cfgd` install. If the generator gains a directive or changes the
+    /// ExecStart shape, this fails until the packaged unit is regenerated — the
+    /// packaged service and `cfgd daemon install` can never silently drift apart.
+    #[test]
+    fn packaged_systemd_unit_matches_generator() {
+        let generated = generate_systemd_unit(
+            &PathBuf::from("/usr/bin/cfgd"),
+            &PathBuf::from("/etc/cfgd/config.yaml"),
+            None,
+            crate::Scope::System,
+        );
+        let packaged_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../packaging/systemd/cfgd.service");
+        let packaged = std::fs::read_to_string(&packaged_path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", packaged_path.display()));
+        assert_eq!(
+            packaged.trim_end(),
+            generated.trim_end(),
+            "packaging/systemd/cfgd.service drifted from generate_systemd_unit(System); regenerate it"
+        );
+    }
+
     #[test]
     #[serial_test::serial]
     fn install_then_uninstall_systemd_service_writes_and_removes_unit() {

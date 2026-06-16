@@ -2,6 +2,8 @@
 name = "cfgd-csi"
 description = "CSI Node plugin for cfgd module injection into Kubernetes pods"
 version = "0.4.0"
+keywords = ["kubernetes", "csi", "config", "storage"]
+categories = ["config"]
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

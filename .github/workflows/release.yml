@@ -24,7 +24,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  ANODIZER_VERSION: v0.9.1
+  ANODIZER_VERSION: v0.10.0
 
 jobs:
   tag:

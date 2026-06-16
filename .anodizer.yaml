@@ -56,6 +56,8 @@ metadata:
   # uniform project line; dropping it would let publishers without an explicit
   # description fall through to per-crate Cargo descriptions and drift.
   description: "Declarative, GitOps-style machine configuration management"
+  # Hosted user-docs tree — surfaced by publishers that render a docs link.
+  documentation: "https://github.com/tj-smith47/cfgd/tree/master/docs"
   mod_timestamp: "{{ CommitTimestamp }}"
   full_description:
     from_file: README.md
@@ -328,6 +330,8 @@ workspaces:
               owner: tj-smith47
               name: scoop-bucket
             # description / homepage / license derived from metadata + Cargo.
+            # Let the scoop bucket auto-detect new releases from GitHub.
+            checkver: github
             depends:
               - git
             shortcuts:
@@ -365,6 +369,18 @@ workspaces:
               owner: tj-smith47
               name: winget-pkgs
             short_description: "GitOps-style machine config manager"
+            # Short invoke alias shown as the package Moniker (`winget install cfgd`).
+            moniker: "cfgd"
+            # Rendered as the manifest's Documentations[] block so the winget / MS
+            # Store UI links straight to the docs. silent_switch and upgrade_behavior
+            # are intentionally unset: cfgd ships to winget as a portable zip, for
+            # which InstallerSwitches.Silent does not apply and the default
+            # UpgradeBehavior (install/overwrite) is already correct.
+            documentations:
+              - label: "Documentation"
+                url: "https://github.com/tj-smith47/cfgd/tree/master/docs"
+              - label: "Configuration Reference"
+                url: "https://github.com/tj-smith47/cfgd/blob/master/docs/configuration.md"
             # description / homepage / license derived from metadata + Cargo.
             # `author` is kept: the winget renderer emits it verbatim with no
             # metadata fallback, so dropping it would omit the author entirely.
@@ -406,6 +422,19 @@ workspaces:
             skip_upload: false
             formatter: alejandra
             main_program: cfgd
+            # Long-form meta.longDescription (the one-line Cargo description remains
+            # the short meta.description). `maintainers` is intentionally unset:
+            # anodizer renders it as `with lib.maintainers; [ … ]`, which requires a
+            # handle registered in nixpkgs lib.maintainers and none applies to this
+            # personal overlay. `changelog` is left unset so anodizer derives the
+            # per-tag releases URL automatically.
+            long_description: |
+              cfgd manages machine configuration the way GitOps manages clusters:
+              declare packages, files, secrets, and system settings in
+              version-controlled YAML, and cfgd diffs desired against actual state,
+              plans the change set, and reconciles it — one-shot or continuously
+              via its daemon. The same binary drives both workstation and
+              Kubernetes-node providers.
             # Install the man page + shell completions that the archive stage
             # bundled (see the cfgd crate's archives.completions/manpages).
             # Paths are relative to the unpacked archive root.
@@ -474,6 +503,10 @@ workspaces:
               org.opencontainers.image.source: "https://github.com/tj-smith47/cfgd"
               org.opencontainers.image.description: "Declarative, GitOps-style machine configuration management"
               org.opencontainers.image.licenses: "MIT OR Apache-2.0"
+            # Inject the standard org.opencontainers.image.* labels (created,
+            # source, revision, version, …) on top of the explicit annotations
+            # above, so `docker inspect` and registry UIs show full provenance.
+            oci_labels: true
             build_args:
               VERSION: "{{ Version }}"
             sbom: true
@@ -534,6 +567,24 @@ workspaces:
                 dst: /usr/share/zsh/site-functions/_cfgd
               - src: dist/.completions/cfgd/cfgd.fish
                 dst: /usr/share/fish/vendor_completions.d/cfgd.fish
+              # System daemon unit (system scope). Byte-identical to what
+              # `cfgd daemon install --scope system` generates for a /usr/bin
+              # install — pinned by the systemd_unit_matches_packaged_unit guard
+              # test in cfgd-core so a generator change can't drift the package.
+              - src: packaging/systemd/cfgd.service
+                dst: /usr/lib/systemd/system/cfgd.service
+              # Default daemon config as a conffile: operator edits survive
+              # upgrades (deb conffile / rpm %config(noreplace)).
+              - src: packaging/cfgd.system.yaml
+                dst: /etc/cfgd/config.yaml
+                type: "config|noreplace"
+            # Lifecycle scripts enable the unit on install (NOT start — the
+            # operator reviews /etc/cfgd/config.yaml first) and disable+stop it
+            # on a real removal. No-op on non-systemd hosts.
+            scripts:
+              postinstall: packaging/nfpm/postinstall.sh
+              preremove: packaging/nfpm/preremove.sh
+              postremove: packaging/nfpm/postremove.sh
             # GPG signing for deb / rpm / apk packages.
             # Requires `GPG_KEY_PATH` env pointing at an exported secret key
             # file. anodizer-action wires this automatically when
@@ -586,6 +637,16 @@ workspaces:
             apps:
               cfgd:
                 command: cfgd
+              # System-scope reconcile daemon. install_mode: disable mirrors the
+              # deb/rpm policy — the unit is registered but never auto-started, so
+              # the snap can't reconcile the machine until the operator opts in
+              # (`snap start cfgd.daemon`). Classic confinement runs it unconfined
+              # as root, which machine reconciliation requires.
+              daemon:
+                command: cfgd --scope system --quiet daemon
+                daemon: simple
+                install_mode: disable
+                restart_condition: on-failure
 
   # --- cfgd-operator: Kubernetes operator (Linux only, Docker + Helm) ---
   - name: cfgd-operator
@@ -621,6 +682,10 @@ workspaces:
               org.opencontainers.image.source: "https://github.com/tj-smith47/cfgd"
               org.opencontainers.image.description: "Kubernetes operator for cfgd"
               org.opencontainers.image.licenses: "MIT OR Apache-2.0"
+            # Inject the standard org.opencontainers.image.* labels (created,
+            # source, revision, version, …) on top of the explicit annotations
+            # above, so `docker inspect` and registry UIs show full provenance.
+            oci_labels: true
             build_args:
               VERSION: "{{ Version }}"
             sbom: true
@@ -683,6 +748,10 @@ workspaces:
               org.opencontainers.image.source: "https://github.com/tj-smith47/cfgd"
               org.opencontainers.image.description: "CSI Node plugin for cfgd module injection into Kubernetes pods"
               org.opencontainers.image.licenses: "MIT OR Apache-2.0"
+            # Inject the standard org.opencontainers.image.* labels (created,
+            # source, revision, version, …) on top of the explicit annotations
+            # above, so `docker inspect` and registry UIs show full provenance.
+            oci_labels: true
             build_args:
               VERSION: "{{ Version }}"
             sbom: true
@@ -721,6 +790,12 @@ workspaces:
 # highSchemaVersion list automatically.
 schemastore:
   retain_on_rollback: true  # external catalog — retain even if a downstream publisher fails
+  # Vendor a version-suffixed copy of each schema (cfgd-config-v<ver>.schema.json)
+  # plus a `versions` map alongside the unversioned entry, so an editor can pin
+  # validation to the schema shipped with a specific cfgd release. cfgd is the
+  # only workspace here that registers editor-config schemas, so it is the sole
+  # place this can be dogfooded.
+  versioned: true
   repository:
     owner: tj-smith47
     name: schemastore
@@ -950,6 +1025,13 @@ homebrew_casks:
       owner: tj-smith47
       name: homebrew-tap
     directory: Casks
+    # Auto-detect new upstream versions from the GitHub releases feed so
+    # `brew livecheck` and bump bots see updates. skip: false opts out of the
+    # default skip anodizer applies to casks that declare no strategy.
+    livecheck:
+      strategy: github_latest
+      url: homepage
+      skip: false
     # description / homepage derived from metadata + Cargo. `license` dropped:
     # the Homebrew cask DSL has no license stanza, so the field never rendered.
     binaries:
