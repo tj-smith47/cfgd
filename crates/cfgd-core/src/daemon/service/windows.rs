@@ -13,6 +13,7 @@ pub(crate) fn install_windows_service(
     config_path: &Path,
     profile: Option<&str>,
     enable_event_log: bool,
+    scope: crate::Scope,
 ) -> Result<()> {
     let config_abs =
         std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
@@ -28,6 +29,9 @@ pub(crate) fn install_windows_service(
     );
     if let Some(p) = profile {
         bin_args.push_str(&format!(" --profile \"{}\"", p));
+    }
+    if scope == crate::Scope::System {
+        bin_args.push_str(" --scope system");
     }
     if enable_event_log {
         bin_args.push_str(" --enable-event-log");
@@ -315,6 +319,7 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
     let args: Vec<String> = std::env::args().collect();
     let mut config_path = crate::default_config_dir().join("config.yaml");
     let mut profile_override: Option<String> = None;
+    let mut scope = crate::Scope::User;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -324,6 +329,14 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
             }
             "--profile" if i + 1 < args.len() => {
                 profile_override = Some(args[i + 1].clone());
+                i += 2;
+            }
+            // `install_windows_service` bakes `--scope system` into the binPath
+            // for a machine-wide install (mirroring the systemd unit / launchd
+            // plist ExecStart), so the SCM-launched daemon resolves the same
+            // %ProgramData% roots the install registered against.
+            "--scope" if i + 1 < args.len() => {
+                scope = crate::Scope::from_system_flag(args[i + 1] == "system");
                 i += 2;
             }
             _ => {
@@ -345,7 +358,8 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
     // Spawn the daemon loop on the runtime
     rt.spawn(async move {
         // Windows service has no CLI runtime override; env/default socket.
-        if let Err(e) = run_daemon(config_path, profile_override, None, printer, hooks).await {
+        if let Err(e) = run_daemon(config_path, profile_override, None, printer, hooks, scope).await
+        {
             tracing::error!(error = %e, "daemon error");
         }
     });

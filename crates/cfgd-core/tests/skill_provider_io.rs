@@ -246,9 +246,15 @@ fn project_scope_install_leaves_no_lock_file_in_project_dir() {
             .target_path(SkillKind::Module, SkillScope::Project)
             .expect("project scope has a target");
         // The target is the project-root AGENTS.md (its parent is the cwd).
+        // `target_path` derives the parent from `std::env::current_dir()`, which
+        // returns the canonicalized cwd — on macOS `/var/folders/...` (the
+        // `TMPDIR` symlink) resolves to `/private/var/folders/...`, so canonicalize
+        // the expected base too. No-op on Linux/Windows where the temp root is
+        // already canonical.
+        let project_root = std::fs::canonicalize(project.path()).expect("canonicalize project dir");
         assert_eq!(
             target.parent(),
-            Some(project.path()),
+            Some(project_root.as_path()),
             "codex Project target must be rooted at the project cwd: {target:?}"
         );
 
