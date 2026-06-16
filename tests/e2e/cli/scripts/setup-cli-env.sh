@@ -122,5 +122,7 @@ YAML
         sed "s|TARGET_DIR|$CLI_SCRATCH/source-target|g" "$f" > "$SOURCE_REPO/profiles/$(basename "$f")"
     done
     cp -r "$FIXTURES/files/"* "$SOURCE_REPO/files/" 2>/dev/null || true
-    (cd "$SOURCE_REPO" && git init -q -b master && git add -A && git commit -qm "init source repo")
+    # Tag the repo so semver-range pins (e.g. SRC11 `>=1.0`) resolve against
+    # real git tags per docs/sources.md; `>=1.0` resolves to v1.2.0.
+    (cd "$SOURCE_REPO" && git init -q -b master && git add -A && git commit -qm "init source repo" && git tag v1.0.0 && git tag v1.2.0)
 fi

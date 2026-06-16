@@ -2,14 +2,16 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::config::{EnvVar, ProfileLayer, ResolvedProfile, validate_secret_specs};
-use crate::errors::Result;
+use crate::errors::{CfgdError, CompositionError, Result};
 
 use super::constraints::{check_locked_violations, validate_constraints};
 use super::layers::build_source_layers;
 use super::merge::merge_with_policy;
 use super::packages::validate_reject_keys;
 use super::policy::{has_content, policy_items_to_spec};
-use super::{CompositionInput, CompositionResult, ConflictResolution};
+use super::{
+    CompositionInput, CompositionResult, ConflictResolution, ConstraintMode, ConstraintViolation,
+};
 
 /// Compose multiple source configs with a local resolved profile.
 /// Local config is always priority 1000. Sources are merged according to policy tiers.
@@ -29,11 +31,25 @@ use super::{CompositionInput, CompositionResult, ConflictResolution};
 ///    - Apply optional items only if opted in
 /// 4. Apply subscriber overrides on top.
 /// 5. Validate secret specs from all sources.
-pub fn compose(local: &ResolvedProfile, sources: &[CompositionInput]) -> Result<CompositionResult> {
-    // Enforce source security constraints up front so apply/plan abort before any
-    // layer is built or merged. compose() is the sole fail-closed chokepoint.
+pub fn compose(
+    local: &ResolvedProfile,
+    sources: &[CompositionInput],
+    mode: ConstraintMode,
+) -> Result<CompositionResult> {
+    // Check source security constraints up front. In Enforce mode the first
+    // violation aborts before any layer is built or merged (apply/plan/daemon —
+    // compose() is the sole fail-closed chokepoint). In Report mode every source
+    // is still visited and its violations accumulated, so a read path can surface
+    // them without aborting.
+    let mut constraint_violations: Vec<ConstraintViolation> = Vec::new();
     for input in sources {
-        enforce_source_constraints(input, local)?;
+        match (mode, enforce_source_constraints(input, local)) {
+            (_, Ok(())) => {}
+            (ConstraintMode::Enforce, Err(e)) => return Err(e),
+            (ConstraintMode::Report, Err(e)) => {
+                constraint_violations.push(violation_from_error(&input.source_name, e));
+            }
+        }
     }
 
     let mut all_layers: Vec<ProfileLayer> = local.layers.clone();
@@ -98,11 +114,56 @@ pub fn compose(local: &ResolvedProfile, sources: &[CompositionInput]) -> Result<
         source_env,
         source_commits: HashMap::new(),
         source_module_roots: Vec::new(),
+        constraint_violations,
     })
 }
 
-/// Fail-closed enforcement of a single source's security policy. Returns the
-/// first violation as an error, aborting composition.
+/// Map a source-constraint `CfgdError` into a [`ConstraintViolation`] for Report
+/// mode. The `detail` is the error's Display verbatim, so reported wording is
+/// byte-identical to the fail-closed message; `kind`/`path` are extracted from
+/// the underlying `CompositionError` variant. A non-`CompositionError` (which
+/// `enforce_source_constraints` never produces) degrades to an `unknown` kind
+/// carrying the message, so no violation is ever silently dropped.
+fn violation_from_error(source_name: &str, err: CfgdError) -> ConstraintViolation {
+    let detail = err.to_string();
+    let (kind, path) = match &err {
+        CfgdError::Composition(boxed) => match boxed.as_ref() {
+            CompositionError::EncryptionRequired { path, .. } => {
+                ("encryption-required", Some(path.clone()))
+            }
+            CompositionError::EncryptionBackendMismatch { path, .. } => {
+                ("encryption-backend-mismatch", Some(path.clone()))
+            }
+            CompositionError::EncryptionModeMismatch { path, .. } => {
+                ("encryption-mode-mismatch", Some(path.clone()))
+            }
+            CompositionError::PathNotAllowed { path, .. } => {
+                ("path-not-allowed", Some(path.clone()))
+            }
+            CompositionError::ScriptsNotAllowed { .. } => ("scripts-not-allowed", None),
+            CompositionError::SystemChangeNotAllowed { setting, .. } => {
+                ("system-change-not-allowed", Some(setting.clone()))
+            }
+            CompositionError::LockedResource { resource, .. } => {
+                ("locked-violation", Some(resource.clone()))
+            }
+            CompositionError::InvalidReject { .. } => ("reject-key-invalid", None),
+            _ => ("source-constraint", None),
+        },
+        _ => ("source-constraint", None),
+    };
+    ConstraintViolation {
+        source_name: source_name.to_string(),
+        path,
+        kind: kind.to_string(),
+        detail,
+    }
+}
+
+/// Run a single source's security-policy checks. Returns the FIRST violation as
+/// an error (the caller decides — Enforce returns it, Report maps it to a
+/// [`ConstraintViolation`] and continues to the next source). Reject-key,
+/// per-layer/per-tier constraint, and locked-override checks are all covered.
 fn enforce_source_constraints(input: &CompositionInput, local: &ResolvedProfile) -> Result<()> {
     // Reject-key typos would silently fail to filter, applying the unwanted item.
     validate_reject_keys(&input.source_name, &input.subscription.reject)?;

@@ -266,7 +266,15 @@ pub(super) fn cmd_status(
     // Compose with sources (cache-only — read paths stay offline) and resolve the
     // effective module set once, so the module dashboard and the `-e` live scan
     // both reflect the same source-composed desired state that `apply` writes.
-    let desired = resolve_desired_state(cli, &cfg, &local_resolved, None, printer, false)?;
+    let desired = resolve_desired_state(
+        cli,
+        &cfg,
+        &local_resolved,
+        None,
+        printer,
+        false,
+        composition::ConstraintMode::Report,
+    )?;
     let mut resolved = desired.resolved;
     let resolved_modules = desired.modules;
 

@@ -80,7 +80,15 @@ pub fn cmd_plan(
 
     // Compose with sources (network refresh) and resolve modules through the one
     // shared desired-state resolver — same path apply takes.
-    let desired = resolve_desired_state(cli, &cfg, &resolved, module_filter, printer, true)?;
+    let desired = resolve_desired_state(
+        cli,
+        &cfg,
+        &resolved,
+        module_filter,
+        printer,
+        true,
+        composition::ConstraintMode::Enforce,
+    )?;
     let source_env = desired.source_env;
     let resolved_modules = desired.modules;
     let mut effective_resolved = desired.resolved;

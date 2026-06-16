@@ -31,6 +31,42 @@ pub use permissions::{PermissionChange, detect_permission_changes};
 #[cfg(test)]
 use {constraints::*, layers::*, packages::*, permissions::*, policy::*, record::*};
 
+/// Constraint-enforcement mode threaded from the command layer into [`compose`].
+///
+/// A source security-constraint violation is fatal on the mutating/reconcile
+/// paths but reportable on read paths: `apply`/`plan`/daemon must abort, while
+/// `compliance`/`status`/`diff`/`verify`/`checkin` exist to *surface* state and
+/// so collect violations as report data instead of aborting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConstraintMode {
+    /// Fail-closed: a source security-constraint violation aborts composition
+    /// (apply/plan/daemon — the mutating + reconcile paths).
+    Enforce,
+    /// Report: violations are collected into
+    /// [`CompositionResult::constraint_violations`] and composition CONTINUES
+    /// (compliance/status/diff/verify/checkin — read paths that exist to surface
+    /// state, not mutate it).
+    Report,
+}
+
+/// A source security-constraint violation surfaced as report data (Report mode).
+///
+/// Carries enough to render a compliance check: which source tripped, the file
+/// path (when the violation is file-scoped), a stable `kind` tag, and the human
+/// `detail` message (verbatim from the corresponding `CompositionError` Display
+/// so wording is identical to the fail-closed path).
+#[derive(Debug, Clone)]
+pub struct ConstraintViolation {
+    pub source_name: String,
+    pub path: Option<String>,
+    /// Stable machine tag, e.g. `encryption-required`,
+    /// `encryption-backend-mismatch`, `encryption-mode-mismatch`,
+    /// `path-not-allowed`, `scripts-not-allowed`, `system-change-not-allowed`,
+    /// `locked-violation`, `reject-key-invalid`.
+    pub kind: String,
+    pub detail: String,
+}
+
 /// Resolution record for conflict reporting.
 #[derive(Debug, Clone)]
 pub struct ConflictResolution {
@@ -114,4 +150,8 @@ pub struct CompositionResult {
     /// access. Threaded into `modules::resolve_modules` so a subscribed profile's
     /// module references resolve to bodies the source ships.
     pub source_module_roots: Vec<crate::modules::SourceModuleRoot>,
+    /// Source security-constraint violations collected when composing in
+    /// [`ConstraintMode::Report`]. Empty in [`ConstraintMode::Enforce`] (the
+    /// first violation aborts there). Read paths render these as compliance data.
+    pub constraint_violations: Vec<ConstraintViolation>,
 }

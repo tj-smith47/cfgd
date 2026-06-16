@@ -11849,6 +11849,25 @@ mod ipc_socket_security {
         assert_eq!(resolve_default_ipc_path(None, crate::Scope::User), expected);
     }
 
+    /// On Windows the named-pipe endpoint is scope-aware: a per-user daemon and
+    /// the system Windows Service must resolve to DIFFERENT pipe names, or a user
+    /// CLI would connect to the machine-wide service. Mirrors the Unix
+    /// `/run/cfgd` vs per-user-runtime split.
+    #[cfg(windows)]
+    #[test]
+    #[serial_test::serial]
+    fn resolve_default_ipc_path_windows_scope_selects_distinct_pipe() {
+        let _unset_override = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let user = resolve_default_ipc_path(None, crate::Scope::User);
+        let system = resolve_default_ipc_path(None, crate::Scope::System);
+        assert_eq!(user, std::path::PathBuf::from(r"\\.\pipe\cfgd"));
+        assert_eq!(system, std::path::PathBuf::from(r"\\.\pipe\cfgd-system"));
+        assert_ne!(
+            user, system,
+            "user and system scopes must not share a pipe name"
+        );
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     #[serial_test::serial]

@@ -40,7 +40,15 @@ pub(super) fn cmd_verify(
         // Compose with sources (cache-only — read paths stay offline) and resolve
         // the effective module set through the one shared resolver, so `verify`
         // checks the same source-composed desired state that `apply` writes.
-        let desired = resolve_desired_state(cli, &cfg, &local_resolved, None, printer, false)?;
+        let desired = resolve_desired_state(
+            cli,
+            &cfg,
+            &local_resolved,
+            None,
+            printer,
+            false,
+            composition::ConstraintMode::Report,
+        )?;
         let mut resolved = desired.resolved;
         let mods = desired.modules;
         packages::resolve_manifest_packages(&mut resolved.merged.packages, &config_dir)?;

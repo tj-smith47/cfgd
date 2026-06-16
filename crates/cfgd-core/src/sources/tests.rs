@@ -1098,7 +1098,11 @@ fn compose_fails_when_required_source_not_loaded() {
 
     let local = empty_local_profile();
     let err = mgr
-        .compose(&[required], &local)
+        .compose(
+            &[required],
+            &local,
+            crate::composition::ConstraintMode::Enforce,
+        )
         .expect_err("a required source absent from the loaded set must make compose fatal");
     assert!(
         matches!(
@@ -1141,8 +1145,12 @@ fn compose_succeeds_when_non_required_source_not_loaded() {
     };
 
     let local = empty_local_profile();
-    mgr.compose(&[optional], &local)
-        .expect("a non-required absent source must not make compose fatal");
+    mgr.compose(
+        &[optional],
+        &local,
+        crate::composition::ConstraintMode::Enforce,
+    )
+    .expect("a non-required absent source must not make compose fatal");
 }
 
 #[test]

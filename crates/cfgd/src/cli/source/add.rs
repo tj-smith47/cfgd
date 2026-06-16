@@ -186,7 +186,11 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
                 preview_layers,
             );
 
-            match composition::compose(&local_resolved, &[preview_input]) {
+            match composition::compose(
+                &local_resolved,
+                &[preview_input],
+                composition::ConstraintMode::Enforce,
+            ) {
                 Ok(result) => {
                     let lines = format_conflict_preview_lines(&result.conflicts);
                     if lines.is_empty() {

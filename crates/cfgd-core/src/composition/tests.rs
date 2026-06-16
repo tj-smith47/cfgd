@@ -96,7 +96,7 @@ fn make_source_input(name: &str, priority: u32) -> CompositionInput {
 #[test]
 fn compose_with_no_sources() {
     let local = make_local_profile();
-    let result = compose(&local, &[]).unwrap();
+    let result = compose(&local, &[], ConstraintMode::Enforce).unwrap();
     assert_eq!(
         result
             .resolved
@@ -114,7 +114,7 @@ fn compose_with_no_sources() {
 fn compose_applies_required_packages() {
     let local = make_local_profile();
     let input = make_source_input("acme", 500);
-    let result = compose(&local, &[input]).unwrap();
+    let result = compose(&local, &[input], ConstraintMode::Enforce).unwrap();
 
     let brew = result.resolved.merged.packages.brew.as_ref().unwrap();
     assert!(brew.formulae.contains(&"git-secrets".into()));
@@ -124,7 +124,7 @@ fn compose_applies_required_packages() {
 fn compose_applies_recommended_when_accepted() {
     let local = make_local_profile();
     let input = make_source_input("acme", 500);
-    let result = compose(&local, &[input]).unwrap();
+    let result = compose(&local, &[input], ConstraintMode::Enforce).unwrap();
 
     let brew = result.resolved.merged.packages.brew.as_ref().unwrap();
     assert!(brew.formulae.contains(&"k9s".into()));
@@ -136,7 +136,7 @@ fn compose_skips_recommended_when_not_accepted() {
     let local = make_local_profile();
     let mut input = make_source_input("acme", 500);
     input.subscription.accept_recommended = false;
-    let result = compose(&local, &[input]).unwrap();
+    let result = compose(&local, &[input], ConstraintMode::Enforce).unwrap();
 
     // k9s should NOT be present (recommended not accepted)
     let has_k9s = result
@@ -167,7 +167,7 @@ fn compose_rejects_recommended_packages() {
     .unwrap();
     input.subscription.reject = reject_yaml;
 
-    let result = compose(&local, &[input]).unwrap();
+    let result = compose(&local, &[input], ConstraintMode::Enforce).unwrap();
     let brew = result.resolved.merged.packages.brew.as_ref().unwrap();
     assert!(brew.formulae.contains(&"k9s".into()));
     assert!(!brew.formulae.contains(&"stern".into()));
@@ -177,7 +177,7 @@ fn compose_rejects_recommended_packages() {
 fn compose_records_locked_conflicts() {
     let local = make_local_profile();
     let input = make_source_input("acme", 500);
-    let result = compose(&local, &[input]).unwrap();
+    let result = compose(&local, &[input], ConstraintMode::Enforce).unwrap();
 
     let locked_conflicts: Vec<_> = result
         .conflicts
@@ -193,8 +193,8 @@ fn compose_is_deterministic() {
     let input1 = make_source_input("acme", 500);
     let input2 = make_source_input("acme", 500);
 
-    let result1 = compose(&local, &[input1]).unwrap();
-    let result2 = compose(&local, &[input2]).unwrap();
+    let result1 = compose(&local, &[input1], ConstraintMode::Enforce).unwrap();
+    let result2 = compose(&local, &[input2], ConstraintMode::Enforce).unwrap();
 
     // Same packages in same order
     assert_eq!(
@@ -529,7 +529,7 @@ fn multiple_sources_priority_ordering() {
         allow_scripts: false,
     };
 
-    let result = compose(&local, &[source_a, source_b]).unwrap();
+    let result = compose(&local, &[source_a, source_b], ConstraintMode::Enforce).unwrap();
     // Local (1000) wins over both sources, so "editor" = "vim" still
     assert_eq!(
         result
@@ -614,7 +614,7 @@ fn required_resource_cannot_be_overridden() {
         allow_scripts: false,
     };
 
-    let result = compose(&local, &[source, source_b]);
+    let result = compose(&local, &[source, source_b], ConstraintMode::Enforce);
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("required resource"));
@@ -677,7 +677,7 @@ fn file_conflict_between_sources_records_resolution() {
         allow_scripts: false,
     };
 
-    let result = compose(&local, &[source_a, source_b]).unwrap();
+    let result = compose(&local, &[source_a, source_b], ConstraintMode::Enforce).unwrap();
     // Beta wins (higher priority)
     let file = result
         .resolved
@@ -753,7 +753,7 @@ fn equal_priority_file_conflict_is_unresolvable() {
         allow_scripts: false,
     };
 
-    let result = compose(&local, &[source_a, source_b]);
+    let result = compose(&local, &[source_a, source_b], ConstraintMode::Enforce);
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("conflict"));
@@ -765,7 +765,7 @@ fn required_modules_always_included() {
     let local = make_local_profile();
     let mut source = make_source_input("acme", 500);
     source.policy.required.modules = vec!["corp-vpn".into(), "corp-certs".into()];
-    let result = compose(&local, &[source]).unwrap();
+    let result = compose(&local, &[source], ConstraintMode::Enforce).unwrap();
     assert!(
         result
             .resolved
@@ -788,7 +788,7 @@ fn recommended_modules_included_when_accepted() {
     let mut source = make_source_input("acme", 500);
     source.policy.recommended.modules = vec!["editor".into()];
     source.subscription.accept_recommended = true;
-    let result = compose(&local, &[source]).unwrap();
+    let result = compose(&local, &[source], ConstraintMode::Enforce).unwrap();
     assert!(
         result
             .resolved
@@ -805,7 +805,7 @@ fn recommended_modules_rejected() {
     source.policy.recommended.modules = vec!["editor".into()];
     source.subscription.accept_recommended = true;
     source.subscription.reject = serde_yaml::from_str("modules: [editor]").unwrap();
-    let result = compose(&local, &[source]).unwrap();
+    let result = compose(&local, &[source], ConstraintMode::Enforce).unwrap();
     assert!(
         !result
             .resolved
@@ -828,7 +828,7 @@ fn module_policy_conflicts_recorded() {
     let local = make_local_profile();
     let mut source = make_source_input("acme", 500);
     source.policy.required.modules = vec!["corp-vpn".into()];
-    let result = compose(&local, &[source]).unwrap();
+    let result = compose(&local, &[source], ConstraintMode::Enforce).unwrap();
     assert!(result.conflicts.iter().any(
         |c| c.resource_id == "module:corp-vpn" && c.resolution_type == ResolutionType::Required
     ));
@@ -841,7 +841,7 @@ fn local_modules_and_source_modules_union() {
     local.merged.modules = vec!["nvim".into()];
     let mut source = make_source_input("acme", 500);
     source.policy.required.modules = vec!["corp-vpn".into()];
-    let result = compose(&local, &[source]).unwrap();
+    let result = compose(&local, &[source], ConstraintMode::Enforce).unwrap();
     assert!(result.resolved.merged.modules.contains(&"nvim".to_string()));
     assert!(
         result
@@ -987,8 +987,8 @@ fn compose_is_deterministic_full_output() {
     let input1 = make_source_input("acme", 500);
     let input2 = make_source_input("acme", 500);
 
-    let result1 = compose(&local, &[input1]).unwrap();
-    let result2 = compose(&local, &[input2]).unwrap();
+    let result1 = compose(&local, &[input1], ConstraintMode::Enforce).unwrap();
+    let result2 = compose(&local, &[input2], ConstraintMode::Enforce).unwrap();
 
     // Serialize both merged profiles and compare the full output
     let yaml1 = serde_yaml::to_string(&result1.resolved.merged).unwrap();
@@ -1072,8 +1072,8 @@ fn compose_deterministic_with_multiple_sources() {
         ]
     };
 
-    let r1 = compose(&local, &mk()).unwrap();
-    let r2 = compose(&local, &mk()).unwrap();
+    let r1 = compose(&local, &mk(), ConstraintMode::Enforce).unwrap();
+    let r2 = compose(&local, &mk(), ConstraintMode::Enforce).unwrap();
     let yaml1 = serde_yaml::to_string(&r1.resolved.merged).unwrap();
     let yaml2 = serde_yaml::to_string(&r2.resolved.merged).unwrap();
     assert_eq!(yaml1, yaml2);
@@ -1136,7 +1136,7 @@ fn higher_priority_source_wins_env_var() {
         allow_scripts: false,
     };
 
-    let result = compose(&local, &[low, high]).unwrap();
+    let result = compose(&local, &[low, high], ConstraintMode::Enforce).unwrap();
     let theme = result
         .resolved
         .merged
@@ -1194,7 +1194,7 @@ fn local_env_wins_over_source_env_at_same_name() {
         allow_scripts: false,
     };
 
-    let result = compose(&local, &[source]).unwrap();
+    let result = compose(&local, &[source], ConstraintMode::Enforce).unwrap();
     let editor = result
         .resolved
         .merged
@@ -1273,7 +1273,7 @@ fn higher_priority_source_wins_file_content() {
         allow_scripts: false,
     };
 
-    let result = compose(&local, &[low, high]).unwrap();
+    let result = compose(&local, &[low, high], ConstraintMode::Enforce).unwrap();
     let file = result
         .resolved
         .merged
@@ -1291,7 +1291,7 @@ fn higher_priority_source_wins_file_content() {
 #[test]
 fn merging_with_empty_source_does_not_affect_result() {
     let local = make_local_profile();
-    let result_no_sources = compose(&local, &[]).unwrap();
+    let result_no_sources = compose(&local, &[], ConstraintMode::Enforce).unwrap();
 
     let empty_source = CompositionInput {
         source_name: "empty".into(),
@@ -1302,7 +1302,7 @@ fn merging_with_empty_source_does_not_affect_result() {
         subscription: SubscriptionConfig::default(),
         allow_scripts: false,
     };
-    let result_with_empty = compose(&local, &[empty_source]).unwrap();
+    let result_with_empty = compose(&local, &[empty_source], ConstraintMode::Enforce).unwrap();
 
     let yaml_without = serde_yaml::to_string(&result_no_sources.resolved.merged).unwrap();
     let yaml_with = serde_yaml::to_string(&result_with_empty.resolved.merged).unwrap();
@@ -1373,7 +1373,7 @@ fn single_source_merges_correctly() {
         allow_scripts: false,
     };
 
-    let result = compose(&local, &[source]).unwrap();
+    let result = compose(&local, &[source], ConstraintMode::Enforce).unwrap();
     let brew = result.resolved.merged.packages.brew.as_ref().unwrap();
     assert!(brew.formulae.contains(&"git".to_string()));
     assert!(brew.formulae.contains(&"fzf".to_string()));
@@ -1471,7 +1471,7 @@ fn overlapping_packages_are_unioned_not_duplicated() {
         allow_scripts: false,
     };
 
-    let result = compose(&local, &[source_a, source_b]).unwrap();
+    let result = compose(&local, &[source_a, source_b], ConstraintMode::Enforce).unwrap();
     let brew = result.resolved.merged.packages.brew.as_ref().unwrap();
 
     // All unique formulae present
@@ -1542,7 +1542,7 @@ fn source_env_tracks_per_source_env_vars() {
         allow_scripts: false,
     };
 
-    let result = compose(&local, &[source]).unwrap();
+    let result = compose(&local, &[source], ConstraintMode::Enforce).unwrap();
     let corp_env = result.source_env.get("corp").expect("corp env must exist");
     // source_env is built from input.layers (not policy), so it should contain LAYER_VAR
     assert!(corp_env.iter().any(|e| e.name == "LAYER_VAR"));
@@ -1556,7 +1556,7 @@ fn compose_with_empty_local_and_no_sources() {
         layers: vec![],
         merged: MergedProfile::default(),
     };
-    let result = compose(&local, &[]).unwrap();
+    let result = compose(&local, &[], ConstraintMode::Enforce).unwrap();
     assert!(result.resolved.merged.env.is_empty());
     assert!(result.resolved.merged.modules.is_empty());
     assert!(result.resolved.merged.files.managed.is_empty());
@@ -1611,7 +1611,7 @@ fn higher_priority_source_wins_alias() {
         allow_scripts: false,
     };
 
-    let result = compose(&local, &[source]).unwrap();
+    let result = compose(&local, &[source], ConstraintMode::Enforce).unwrap();
     let ll = result
         .resolved
         .merged
@@ -2252,7 +2252,7 @@ fn compose_scripts_appended_in_order() {
         allow_scripts: false,
     };
 
-    let result = compose(&local, &[source]).unwrap();
+    let result = compose(&local, &[source], ConstraintMode::Enforce).unwrap();
     let scripts = &result.resolved.merged.scripts.pre_apply;
     assert_eq!(scripts.len(), 2);
     // corp processed first (lower priority), then local
@@ -2318,7 +2318,7 @@ fn compose_secrets_deduplicated_by_source() {
         allow_scripts: false,
     };
 
-    let result = compose(&local, &[source]).unwrap();
+    let result = compose(&local, &[source], ConstraintMode::Enforce).unwrap();
     // Same source key — should be deduplicated (local wins, later layer)
     let secrets = &result.resolved.merged.secrets;
     let vault_secrets: Vec<_> = secrets
@@ -2383,7 +2383,7 @@ fn compose_system_deep_merges() {
         allow_scripts: false,
     };
 
-    let result = compose(&local, &[source]).unwrap();
+    let result = compose(&local, &[source], ConstraintMode::Enforce).unwrap();
     assert!(result.resolved.merged.system.contains_key("shell"));
     assert!(result.resolved.merged.system.contains_key("sysctl"));
 }
@@ -2486,7 +2486,7 @@ fn compose_file_origins_tagged_for_source_files() {
         allow_scripts: false,
     };
 
-    let result = compose(&local, &[source]).unwrap();
+    let result = compose(&local, &[source], ConstraintMode::Enforce).unwrap();
     let file = result
         .resolved
         .merged
@@ -2707,7 +2707,7 @@ fn compose_opted_in_optional_profile_with_script_rejected() {
         },
         allow_scripts: false,
     };
-    let err = compose(&local, &[input]).unwrap_err();
+    let err = compose(&local, &[input], ConstraintMode::Enforce).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("corp") && msg.contains("scripts"),
@@ -2766,7 +2766,7 @@ fn compose_opted_in_optional_profile_out_of_bounds_path_rejected() {
         },
         allow_scripts: false,
     };
-    let err = compose(&local, &[input]).unwrap_err();
+    let err = compose(&local, &[input], ConstraintMode::Enforce).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("corp") && msg.contains("/etc/sudoers"),
@@ -2943,7 +2943,12 @@ fn composition_error_variant_required_resource() {
         allow_scripts: false,
     };
 
-    let err = compose(&local, &[source_required, source_overrider]).unwrap_err();
+    let err = compose(
+        &local,
+        &[source_required, source_overrider],
+        ConstraintMode::Enforce,
+    )
+    .unwrap_err();
     let inner = unwrap_composition_err(err);
     assert!(matches!(
         inner,
@@ -3075,7 +3080,7 @@ fn composition_error_variant_unresolvable_conflict() {
         allow_scripts: false,
     };
 
-    let err = compose(&local, &[source_a, source_b]).unwrap_err();
+    let err = compose(&local, &[source_a, source_b], ConstraintMode::Enforce).unwrap_err();
     let inner = unwrap_composition_err(err);
     assert!(matches!(
         inner,
@@ -3306,7 +3311,7 @@ fn override_env_beats_sources_own_recommendation() {
         merged: MergedProfile::default(),
     };
     let input = override_test_input(500, "env:\n  EDITOR: nvim");
-    let result = compose(&local, &[input]).unwrap();
+    let result = compose(&local, &[input], ConstraintMode::Enforce).unwrap();
 
     assert_eq!(
         result
@@ -3340,7 +3345,7 @@ fn override_env_stays_below_local_config() {
         merged: MergedProfile::default(),
     };
     let input = override_test_input(500, "env:\n  EDITOR: nvim");
-    let result = compose(&local, &[input]).unwrap();
+    let result = compose(&local, &[input], ConstraintMode::Enforce).unwrap();
 
     assert_eq!(
         result
@@ -3363,7 +3368,7 @@ fn override_packages_union_does_not_replace_recommended() {
         merged: MergedProfile::default(),
     };
     let input = override_test_input(500, "packages:\n  npm:\n    global: [prettier]");
-    let result = compose(&local, &[input]).unwrap();
+    let result = compose(&local, &[input], ConstraintMode::Enforce).unwrap();
 
     let npm = result
         .resolved
@@ -3389,7 +3394,7 @@ fn override_unknown_field_errors() {
         merged: MergedProfile::default(),
     };
     let input = override_test_input(500, "bogusField: x");
-    let result = compose(&local, &[input]);
+    let result = compose(&local, &[input], ConstraintMode::Enforce);
     let err = result.unwrap_err();
     assert!(
         err.to_string().contains("invalid overrides"),
@@ -3408,7 +3413,7 @@ fn override_empty_or_null_builds_no_layer() {
     };
     for overrides_yaml in ["{}", "null"] {
         let input = override_test_input(500, overrides_yaml);
-        let result = compose(&local, &[input]).unwrap();
+        let result = compose(&local, &[input], ConstraintMode::Enforce).unwrap();
         assert!(
             !result
                 .resolved
@@ -3467,7 +3472,7 @@ fn compose_rejects_source_scripts_when_no_scripts() {
         },
         allow_scripts: false,
     };
-    let err = compose(&local, &[source]).unwrap_err();
+    let err = compose(&local, &[source], ConstraintMode::Enforce).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("corp") && msg.contains("scripts"),
@@ -3509,7 +3514,7 @@ fn compose_rejects_policy_tier_file_outside_allowed_paths() {
         },
         allow_scripts: false,
     };
-    let err = compose(&local, &[source]).unwrap_err();
+    let err = compose(&local, &[source], ConstraintMode::Enforce).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("/etc/sudoers") && msg.contains("corp"),
@@ -3548,7 +3553,7 @@ fn compose_rejects_required_tier_file_outside_allowed_paths() {
         subscription: SubscriptionConfig::default(),
         allow_scripts: false,
     };
-    let err = compose(&local, &[source]).unwrap_err();
+    let err = compose(&local, &[source], ConstraintMode::Enforce).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("/etc/profile.d/corp.sh") && msg.contains("corp"),
@@ -3606,7 +3611,7 @@ fn compose_rejects_local_override_of_locked_resource() {
         subscription: SubscriptionConfig::default(),
         allow_scripts: false,
     };
-    let err = compose(&local, &[source]).unwrap_err();
+    let err = compose(&local, &[source], ConstraintMode::Enforce).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("security-policy.yaml") && msg.contains("corp"),
@@ -3627,7 +3632,7 @@ fn compose_rejects_unknown_reject_key() {
         "#,
     )
     .unwrap();
-    let err = compose(&local, &[source]).unwrap_err();
+    let err = compose(&local, &[source], ConstraintMode::Enforce).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("packagess") && msg.contains("acme"),
@@ -3648,7 +3653,7 @@ fn compose_accepts_valid_reject_mapping() {
         "#,
     )
     .unwrap();
-    let result = compose(&local, &[source]).unwrap();
+    let result = compose(&local, &[source], ConstraintMode::Enforce).unwrap();
     let brew = result.resolved.merged.packages.brew.as_ref().unwrap();
     assert!(brew.formulae.contains(&"k9s".into()));
     assert!(!brew.formulae.contains(&"stern".into()));
@@ -3701,7 +3706,7 @@ fn compose_accepts_compliant_source() {
         },
         allow_scripts: false,
     };
-    let result = compose(&local, &[source]).unwrap();
+    let result = compose(&local, &[source], ConstraintMode::Enforce).unwrap();
     assert!(
         result
             .resolved
@@ -3759,5 +3764,144 @@ fn compose_max_priority_source_no_overflow_and_correct_rank() {
         required_layer.priority > 1000,
         "required layer rank must beat local config rank (1000), got {}",
         required_layer.priority
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Report mode collects source-constraint violations instead of aborting
+// ---------------------------------------------------------------------------
+
+#[test]
+fn compose_report_mode_collects_violation_and_still_composes() {
+    // The SAME no-scripts violation that aborts in Enforce mode must, in Report
+    // mode, return Ok with a populated constraint_violations and the violating
+    // source's layer still composed into the result.
+    let local = make_local_profile();
+    let source = CompositionInput {
+        source_name: "corp".into(),
+        priority: 500,
+        policy: ConfigSourcePolicy::default(),
+        constraints: SourceConstraints {
+            no_scripts: true,
+            ..Default::default()
+        },
+        layers: vec![ProfileLayer {
+            source: "corp".into(),
+            profile_name: "corp/base".into(),
+            priority: 500,
+            policy: LayerPolicy::Recommended,
+            spec: ProfileSpec {
+                scripts: Some(ScriptSpec {
+                    pre_apply: vec![ScriptEntry::Simple("evil.sh".into())],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        }],
+        subscription: SubscriptionConfig {
+            accept_recommended: true,
+            ..Default::default()
+        },
+        allow_scripts: false,
+    };
+
+    let result = compose(&local, &[source], ConstraintMode::Report)
+        .expect("Report mode must not abort on a constraint violation");
+
+    assert_eq!(
+        result.constraint_violations.len(),
+        1,
+        "the no-scripts violation must be collected, not dropped"
+    );
+    let v = &result.constraint_violations[0];
+    assert_eq!(v.source_name, "corp");
+    assert_eq!(v.kind, "scripts-not-allowed");
+    assert!(
+        v.detail.contains("corp") && v.detail.contains("scripts"),
+        "detail must reuse the CompositionError wording verbatim: {}",
+        v.detail
+    );
+    // The violating source's layer is still present — Report mode composes through.
+    assert!(
+        result.resolved.layers.iter().any(|l| l.source == "corp"),
+        "Report mode must still compose the violating source's layer"
+    );
+}
+
+#[test]
+fn compose_report_mode_visits_every_source() {
+    // Two sources each trip a distinct constraint. Report mode must visit BOTH
+    // (not stop at the first bad source) and surface one violation per source.
+    let local = make_local_profile();
+    let bad_scripts = CompositionInput {
+        source_name: "alpha".into(),
+        priority: 400,
+        policy: ConfigSourcePolicy::default(),
+        constraints: SourceConstraints {
+            no_scripts: true,
+            ..Default::default()
+        },
+        layers: vec![ProfileLayer {
+            source: "alpha".into(),
+            profile_name: "alpha/base".into(),
+            priority: 400,
+            policy: LayerPolicy::Recommended,
+            spec: ProfileSpec {
+                scripts: Some(ScriptSpec {
+                    pre_apply: vec![ScriptEntry::Simple("evil.sh".into())],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        }],
+        subscription: SubscriptionConfig {
+            accept_recommended: true,
+            ..Default::default()
+        },
+        allow_scripts: false,
+    };
+    let bad_path = CompositionInput {
+        source_name: "beta".into(),
+        priority: 500,
+        policy: ConfigSourcePolicy {
+            locked: PolicyItems {
+                files: vec![ManagedFileSpec {
+                    source: "x".into(),
+                    target: "/etc/sudoers".into(),
+                    strategy: None,
+                    private: false,
+                    origin: None,
+                    encryption: None,
+                    permissions: None,
+                }],
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        constraints: SourceConstraints {
+            allowed_target_paths: vec!["~/.config/beta/".into()],
+            ..Default::default()
+        },
+        layers: vec![],
+        subscription: SubscriptionConfig {
+            accept_recommended: true,
+            ..Default::default()
+        },
+        allow_scripts: false,
+    };
+
+    let result = compose(&local, &[bad_scripts, bad_path], ConstraintMode::Report)
+        .expect("Report mode must not abort");
+
+    let mut sources: Vec<&str> = result
+        .constraint_violations
+        .iter()
+        .map(|v| v.source_name.as_str())
+        .collect();
+    sources.sort_unstable();
+    assert_eq!(
+        sources,
+        vec!["alpha", "beta"],
+        "every source must be visited in Report mode, got: {sources:?}"
     );
 }

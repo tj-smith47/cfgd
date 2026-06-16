@@ -153,7 +153,15 @@ pub fn run_apply(
     // Compose with sources (network refresh) and resolve modules through the one
     // desired-state resolver every command shares, so apply and the read paths
     // compute an identical effective module set for the same config.
-    let desired = resolve_desired_state(cli, &cfg, &resolved, module_filter, printer, true)?;
+    let desired = resolve_desired_state(
+        cli,
+        &cfg,
+        &resolved,
+        module_filter,
+        printer,
+        true,
+        composition::ConstraintMode::Enforce,
+    )?;
     let source_env = desired.source_env;
     let source_commits = desired.source_commits;
     let resolved_modules = desired.modules;
