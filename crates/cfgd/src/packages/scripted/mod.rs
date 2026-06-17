@@ -97,9 +97,10 @@ impl ScriptedManager {
     }
 }
 
-/// Build the `sh -c` argument(s) ScriptedManager uses to invoke a custom
-/// package-manager template. Pure helper — split out so the substitution +
-/// shell-escaping contract is testable without spawning a shell.
+/// Build the command string(s) ScriptedManager passes to the platform shell
+/// (`sh -c` on Unix, `cmd.exe /C` on Windows via [`shell_command`]) to invoke a
+/// custom package-manager template. Pure helper — split out so the substitution
+/// + shell-escaping contract is testable without spawning a shell.
 ///
 /// Two modes:
 /// - **`{package}` placeholder**: one-at-a-time. Returns one command per

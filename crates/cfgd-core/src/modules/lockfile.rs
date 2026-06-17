@@ -55,7 +55,7 @@ pub fn hash_module_contents(module_dir: &Path) -> Result<String> {
     Ok(crate::sha256_digest(&hasher_input))
 }
 
-fn collect_files_for_hash(
+pub(super) fn collect_files_for_hash(
     base: &Path,
     current: &Path,
     entries: &mut Vec<(String, Vec<u8>)>,
@@ -88,11 +88,12 @@ fn collect_files_for_hash(
         if meta.is_dir() {
             collect_files_for_hash(base, &path, entries)?;
         } else {
-            let rel = path
-                .strip_prefix(base)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .to_string();
+            // The relative-path key feeds the integrity digest, so it must be
+            // byte-identical across operating systems. Fold `\` → `/` via the
+            // central helper; a native `to_string_lossy()` would key a nested
+            // file as `templates\foo.conf` on Windows vs `templates/foo.conf`
+            // on Linux, diverging the digest for identical module bytes.
+            let rel = crate::to_posix_string(path.strip_prefix(base).unwrap_or(&path));
             let content = std::fs::read(&path)?;
             entries.push((rel, content));
         }

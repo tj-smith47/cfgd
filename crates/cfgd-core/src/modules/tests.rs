@@ -4366,6 +4366,60 @@ fn hash_module_contents_nested_dirs() {
     assert_ne!(hash, hash3, "adding a file should change the hash");
 }
 
+#[test]
+fn hash_module_contents_nested_rel_keys_are_posix() {
+    // The integrity digest keys each file by its module-relative path. That key
+    // MUST be byte-identical across operating systems, so a nested file's key is
+    // always `/`-separated (`templates/x.conf`) — never `\`-separated. A native
+    // `to_string_lossy()` key would render `templates\x.conf` on Windows and
+    // silently fork the digest for identical module bytes; this test fails the
+    // moment the fold regresses.
+    use super::lockfile::collect_files_for_hash;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mod_dir = dir.path().join("nested");
+    std::fs::create_dir_all(mod_dir.join("templates")).unwrap();
+    std::fs::write(mod_dir.join("module.yaml"), "name: nested\n").unwrap();
+    std::fs::write(mod_dir.join("templates").join("x.conf"), "key = value\n").unwrap();
+
+    // Assert the exact rel-path key the digest is built from: the nested file
+    // keys with a forward slash on every platform, and no key contains `\`.
+    let mut entries: Vec<(String, Vec<u8>)> = Vec::new();
+    collect_files_for_hash(&mod_dir, &mod_dir, &mut entries).unwrap();
+    let keys: Vec<&str> = entries.iter().map(|(k, _)| k.as_str()).collect();
+    assert!(
+        keys.contains(&"templates/x.conf"),
+        "nested file must key as forward-slash `templates/x.conf` on all OSes, got {keys:?}"
+    );
+    assert!(
+        !keys.iter().any(|k| k.contains('\\')),
+        "no integrity key may contain a backslash separator, got {keys:?}"
+    );
+
+    // The resulting digest is stable AND equals the one computed from
+    // forward-slash keys — i.e. the fold is load-bearing, not incidental.
+    let hash = hash_module_contents(&mod_dir).unwrap();
+    assert_eq!(hash, hash_module_contents(&mod_dir).unwrap());
+
+    let mut expected_input = Vec::new();
+    // Sorted lexicographically, matching hash_module_contents: `module.yaml` <
+    // `templates/x.conf`.
+    for (rel, content) in [
+        ("module.yaml", "name: nested\n"),
+        ("templates/x.conf", "key = value\n"),
+    ] {
+        expected_input.extend_from_slice(rel.as_bytes());
+        expected_input.push(0);
+        expected_input.extend_from_slice(content.as_bytes());
+        expected_input.push(0);
+    }
+    assert_eq!(
+        hash,
+        crate::sha256_digest(&expected_input),
+        "digest must equal the one computed from forward-slash keys"
+    );
+}
+
 // -----------------------------------------------------------------------
 // verify_lockfile_integrity — subdir handling
 // -----------------------------------------------------------------------
