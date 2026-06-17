@@ -29,6 +29,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# REGISTRY is identical (vars.E2E_REGISTRY) for every job that needs it, so it
+# lives here. CFGD_E2E_SETUP_DONE and IMAGE_TAG stay per-job: cli-tests runs
+# natively without the cluster setup (must NOT signal setup done), and IMAGE_TAG
+# resolves `needs.setup.outputs.image-tag`, which is unavailable at workflow
+# scope.
+env:
+  REGISTRY: ${{ vars.E2E_REGISTRY }}
+
 jobs:
   # ---------- Shared setup: build images, apply CRDs, deploy operator ----------
   setup:
@@ -43,7 +51,6 @@ jobs:
     env:
       CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
-      REGISTRY: ${{ vars.E2E_REGISTRY }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-node
     steps:
       - uses: actions/checkout@v6
@@ -60,7 +67,6 @@ jobs:
     env:
       CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
-      REGISTRY: ${{ vars.E2E_REGISTRY }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-helm
     steps:
       - uses: actions/checkout@v6
@@ -78,7 +84,6 @@ jobs:
     env:
       CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
-      REGISTRY: ${{ vars.E2E_REGISTRY }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-srv
     steps:
       - uses: actions/checkout@v6
@@ -95,7 +100,6 @@ jobs:
     env:
       CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
-      REGISTRY: ${{ vars.E2E_REGISTRY }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-op
     steps:
       - uses: actions/checkout@v6
@@ -113,7 +117,6 @@ jobs:
     env:
       CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
-      REGISTRY: ${{ vars.E2E_REGISTRY }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-full
     steps:
       - uses: actions/checkout@v6
@@ -137,7 +140,6 @@ jobs:
     env:
       CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
-      REGISTRY: ${{ vars.E2E_REGISTRY }}
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
@@ -154,7 +156,6 @@ jobs:
     env:
       CFGD_E2E_SETUP_DONE: "1"
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
-      REGISTRY: ${{ vars.E2E_REGISTRY }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-gateway
     steps:
       - uses: actions/checkout@v6
@@ -167,8 +168,6 @@ jobs:
     name: "Exhaustive CLI (Native)"
     runs-on: arc-cfgd
     timeout-minutes: 25
-    env:
-      REGISTRY: ${{ vars.E2E_REGISTRY }}
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
