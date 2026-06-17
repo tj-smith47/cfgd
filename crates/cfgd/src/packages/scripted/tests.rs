@@ -771,6 +771,12 @@ fn prune_orphaned_packages_runs_persisted_script_and_returns_rows() {
 
     let tmp = tempfile::tempdir().unwrap();
     let marker = tmp.path().join("removed-{package}");
+    // Create the marker file via the OS-native shell the scripted manager
+    // resolves (`sh -c` on Unix, `cmd.exe /C` on Windows) so this exercises the
+    // real per-platform execution path rather than a Unix-only `touch`.
+    #[cfg(windows)]
+    let cmd = format!("type nul > \"{}\"", marker.display());
+    #[cfg(not(windows))]
     let cmd = format!("touch {}", marker.display());
     let orphans = vec![
         OrphanedPackage {

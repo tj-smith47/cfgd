@@ -692,7 +692,16 @@ pub fn make_bare_module_repo(
         module_name
     );
     std::fs::write(src.join("module.yaml"), yaml).expect("write module.yaml");
+    // `* -text` pins every file to binary line-ending semantics so a clone on a
+    // runner with `core.autocrlf=true` (the Windows default) checks the bytes
+    // out verbatim. Module integrity is a sha256 over the checked-out bytes;
+    // without this the Windows checkout converts LF→CRLF and the hash — and the
+    // snapshot's `Integrity` line — diverges from Linux/macOS.
+    std::fs::write(src.join(".gitattributes"), "* -text\n").expect("write .gitattributes");
     let mut index = src_repo.index().expect("index");
+    index
+        .add_path(std::path::Path::new(".gitattributes"))
+        .expect("add_path gitattributes");
     index
         .add_path(std::path::Path::new("module.yaml"))
         .expect("add_path");

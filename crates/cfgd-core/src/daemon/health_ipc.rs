@@ -476,7 +476,16 @@ mod tests {
             .write_all(b"GET /status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
             .await
             .unwrap();
-        client.shutdown().await.unwrap();
+        // Half-close the write side to signal end-of-request. The server keys
+        // off the blank-line header terminator (not EOF), so the response is
+        // produced regardless. On macOS `shutdown()` can race the connection
+        // setup and return ENOTCONN even though the request was already
+        // flushed; tolerate that — the subsequent read still gets the response.
+        match client.shutdown().await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotConnected => {}
+            Err(e) => panic!("unexpected shutdown error: {e}"),
+        }
 
         let mut raw = String::new();
         client.read_to_string(&mut raw).await.unwrap();

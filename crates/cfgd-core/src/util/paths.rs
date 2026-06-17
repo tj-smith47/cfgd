@@ -841,6 +841,19 @@ pub fn to_posix_string(path: impl AsRef<std::path::Path>) -> String {
     path.as_ref().to_string_lossy().replace('\\', "/")
 }
 
+/// Strip a leading Windows extended-length (`\\?\`) verbatim prefix from a
+/// path string, returning the rest unchanged.
+///
+/// `std::fs::canonicalize` on Windows returns verbatim paths
+/// (`\\?\C:\Users\...`); the prefix is correct for the Win32 API but leaks an
+/// implementation detail into anything a user reads or that another
+/// non-verbatim path (e.g. one derived from `std::env::current_dir`) must
+/// compare against. Fold it away wherever a canonicalized path becomes
+/// user-visible or comparable. No-op on non-verbatim and on POSIX inputs.
+pub fn strip_windows_verbatim(s: &str) -> &str {
+    s.strip_prefix(r"\\?\").unwrap_or(s)
+}
+
 /// Fold `\` → `/` in free-form text that may contain native-separator paths.
 /// `Cow` so the unix path stays borrowed; only Windows captures pay for the
 /// allocation.

@@ -3836,6 +3836,12 @@ fn cmd_apply_from_flag_parses() {
     }
 }
 
+// Unix-only: the literal-`~` clean-failure contract is a HOME semantic. On
+// Windows the config and state dirs resolve from the %APPDATA%/%LOCALAPPDATA%
+// known folders via `directories::BaseDirs`, independent of HOME, so unsetting
+// HOME does not strand resolution and apply does not error — a different (and
+// correct) Windows contract.
+#[cfg(unix)]
 #[test]
 #[serial_test::serial]
 fn run_apply_home_unset_errors_and_creates_no_state() {

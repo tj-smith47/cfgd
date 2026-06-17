@@ -68,8 +68,15 @@ fn collect_files_for_hash(
     for entry in dir_entries {
         let entry = entry?;
         let path = entry.path();
-        // Skip .git directory
-        if path.file_name().is_some_and(|n| n == ".git") {
+        // Skip git metadata. `.git` is the repo internals; `.gitattributes`
+        // controls checkout (e.g. line-ending normalization) and is tooling
+        // metadata, not deployable module content — hashing it would make the
+        // integrity digest depend on the author's checkout config rather than
+        // the module's bytes.
+        if path
+            .file_name()
+            .is_some_and(|n| n == ".git" || n == ".gitattributes")
+        {
             continue;
         }
         // Skip symlinks — only hash real files to avoid infinite recursion

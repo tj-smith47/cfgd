@@ -15,13 +15,21 @@ pub(crate) fn install_windows_service(
     enable_event_log: bool,
     scope: crate::Scope,
 ) -> Result<()> {
+    // A test with a scoped HOME override must never run real `sc.exe create`
+    // against the runner — that mutates the host's service database and
+    // collides when a `cfgd` service already exists there. The pure
+    // binPath/argv construction is unit-tested separately; skip the
+    // side-effecting calls. Mirrors the Unix seam in `start_service`.
+    if crate::test_home_override().is_some() {
+        return Ok(());
+    }
     let config_abs =
         std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
     let config_str = config_abs.display().to_string();
-    let config_str = config_str.strip_prefix(r"\\?\").unwrap_or(&config_str);
+    let config_str = crate::strip_windows_verbatim(&config_str);
 
     let binary_str = binary.display().to_string();
-    let binary_str = binary_str.strip_prefix(r"\\?\").unwrap_or(&binary_str);
+    let binary_str = crate::strip_windows_verbatim(&binary_str);
 
     let mut bin_args = format!(
         "\"{}\" daemon service --config \"{}\"",
@@ -145,6 +153,12 @@ fn register_event_source() {
 /// Uninstall cfgd Windows Service via sc.exe.
 #[cfg(windows)]
 pub(crate) fn uninstall_windows_service() -> Result<()> {
+    // A test with a scoped HOME override must never run real `sc.exe` against
+    // the runner — deleting a host `cfgd` service that the test did not create.
+    // Mirrors the install-side and Unix-side seam.
+    if crate::test_home_override().is_some() {
+        return Ok(());
+    }
     // Stop service first (best-effort — may not be running)
     if let Err(e) = std::process::Command::new("sc.exe")
         .args(["stop", "cfgd"])

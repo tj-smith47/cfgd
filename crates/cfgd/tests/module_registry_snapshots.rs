@@ -523,8 +523,15 @@ fn init_registry_source_for_test(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {module_name}\n  description: {description}\nspec: {{}}\n"
     );
     std::fs::write(mod_dir.join("module.yaml"), yaml).unwrap();
+    // `* -text` pins binary line-ending semantics so a clone on a runner with
+    // `core.autocrlf=true` (Windows default) checks bytes out verbatim — the
+    // module integrity sha256 is over the checked-out bytes, so without this the
+    // Windows checkout's LF→CRLF flip diverges the hash from Linux/macOS.
+    // `.gitattributes` itself is excluded from the integrity hash (git metadata).
+    std::fs::write(src.join(".gitattributes"), "* -text\n").unwrap();
 
     let mut index = repo.index().unwrap();
+    index.add_path(Path::new(".gitattributes")).unwrap();
     index
         .add_path(&Path::new("modules").join(module_name).join("module.yaml"))
         .unwrap();

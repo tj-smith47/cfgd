@@ -551,10 +551,16 @@ mod tests {
             output.runtime.dir.as_deref(),
             Some(rt.path().posix().to_string()).as_deref()
         );
+        // The socket sits under the runtime dir only on Unix (a UDS path). On
+        // Windows IPC is a named pipe — a kernel object, not a filesystem path
+        // under the runtime dir — so the per-user pipe name is the invariant.
+        #[cfg(unix)]
         assert_eq!(
             output.runtime.socket,
             rt.path().join("cfgd.sock").posix().to_string()
         );
+        #[cfg(windows)]
+        assert_eq!(output.runtime.socket, "//./pipe/cfgd");
         assert_eq!(output.runtime.source, DirSource::Flag);
     }
 
