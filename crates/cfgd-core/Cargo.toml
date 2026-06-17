@@ -23,6 +23,19 @@ categories = ["config", "command-line-utilities"]
 name = "cfgd-gen-schemas"
 path = "src/bin/gen_schemas.rs"
 
+# Cross-platform fake `cosign` for the hermetic signing tests. A single
+# host-target artifact replaces the prior Unix-only `/bin/sh` shim so Windows,
+# macOS, and Linux run identical sign/attest/verify coverage. `CosignTestShim`
+# resolves it relative to the running test binary; per-invocation behavior
+# (exit code, stderr, keygen, argv logging) flows in via env vars, never the
+# crate's published API. `test`/`doc` off keep it out of the test harness and
+# rustdoc.
+[[bin]]
+name = "fake-cosign"
+path = "src/bin/fake_cosign.rs"
+test = false
+doc = false
+
 [dependencies]
 # CRD spec types + schemars-derived schemas for the unified KIND_REGISTRY.
 # Optional + gated behind the default-on `crd` feature so the CSI node plugin

@@ -2228,10 +2228,10 @@ fn check_with_cache_ignores_expired_entry() {
 // ---------------------------------------------------------------------------
 // run_cosign_verify_blob — driven through the fake-cosign shim. Mirrors the
 // pattern in `oci/sign/tests.rs`: serial_test::serial gates env-var mutation,
-// a per-test /bin/sh shim records argv and chooses an exit status.
+// the compiled fake-cosign binary records argv and chooses an exit status.
+// Cross-platform — the shim is a host-target binary, not a /bin/sh script.
 // ---------------------------------------------------------------------------
 
-#[cfg(unix)]
 mod cosign_verify_blob {
     use super::*;
     use crate::test_helpers::CosignTestShim;
@@ -2362,9 +2362,10 @@ mod cosign_verify_blob {
 // whose assets resolve to mockito URLs, builds a tarball matching the
 // checksums.txt body, and exercises one branch of the install pipeline.
 //
-// Tests are #[cfg(unix)] because download_and_install_to extracts a
-// tarball on Unix (extract_zip on Windows takes a different path), and
-// because the fake-cosign shim is a /bin/sh script.
+// Tests are #[cfg(unix)] because download_and_install_to extracts a tarball on
+// Unix (extract_zip on Windows takes a different code path) and the module
+// builds fixtures with `std::os::unix::fs::PermissionsExt`. The fake-cosign
+// shim is cross-platform now, so it no longer contributes to this gate.
 // ---------------------------------------------------------------------------
 
 #[cfg(unix)]

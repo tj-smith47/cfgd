@@ -840,7 +840,6 @@ mod tests {
     /// missing bundle short-circuits with `CosignRequired` first. Avoids
     /// pulling in `flate2` + `tar` as dev-dependencies of the binary crate
     /// just to assemble a real tarball.
-    #[cfg(unix)]
     #[test]
     #[serial]
     fn cmd_upgrade_strict_cosign_fails_when_release_has_no_bundle() {

@@ -336,14 +336,12 @@ pub(crate) fn mask_value(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use cfgd_core::output::Printer;
-    #[cfg(unix)]
     use cfgd_core::test_helpers::EnvVarGuard;
     use cfgd_core::with_test_home_guard;
     use serial_test::serial;
 
     use super::mask_value;
     use crate::cli::module::keys::cmd_module_keys_list;
-    #[cfg(unix)]
     use crate::cli::module::keys::{cmd_module_keys_generate, cmd_module_keys_rotate};
 
     #[test]
@@ -368,7 +366,6 @@ mod tests {
         assert_eq!(result, "***bcd");
     }
 
-    #[cfg(unix)]
     #[test]
     #[serial]
     fn generate_cosign_missing_returns_error_meta() {
@@ -386,7 +383,6 @@ mod tests {
         assert_eq!(meta.name, "cosign");
     }
 
-    #[cfg(unix)]
     #[test]
     #[serial]
     fn generate_cosign_exits_nonzero_returns_err() {
@@ -406,7 +402,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     #[serial]
     fn generate_happy_path_writes_key_files() {
@@ -475,7 +470,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     #[serial]
     fn rotate_errors_when_no_existing_key() {
@@ -491,7 +485,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     #[serial]
     fn rotate_cosign_failure_surfaces_restore_failure_when_target_unrestorable() {
@@ -538,7 +531,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     #[serial]
     fn rotate_happy_path_backs_up_and_generates_new() {
@@ -577,7 +569,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     #[serial]
     fn rotate_happy_path_with_artifacts_attempts_resign() {
@@ -658,7 +649,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     #[serial]
     fn rotate_cosign_missing_returns_error_meta_and_bails() {
@@ -688,7 +678,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     #[serial]
     fn rotate_happy_path_without_old_pub_skips_pub_backup() {
