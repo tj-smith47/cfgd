@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-17
+
 ### Features
 
 * 7822dc009da9 add 'cfgd man' subcommand and build out release dogfooding (TJ Smith)
@@ -49,3 +51,6 @@
 * 1d38d7c8735f drop audit tag, first-person, and stale comment in drift code (TJ Smith)
 * 018a7ff7b259 migrate upgrade CLI test fixtures to split/keyless contract (TJ Smith)
 * a397277605a9 serialize LOCALAPPDATA env tests to fix full-suite flake (TJ Smith)
+
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/tj-smith47/cfgd/compare/v0.4.0...v0.5.0

@@ -92,7 +92,7 @@ assets are versioned and named `cfgd-<version>-<os>-<arch>.tar.gz`, where
 
 ```sh
 curl -L -o cfgd.tar.gz \
-  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.4.0-linux-amd64.tar.gz
+  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.5.0-linux-amd64.tar.gz
 tar -xzf cfgd.tar.gz
 install -m 0755 cfgd /usr/local/bin/cfgd
 ```
@@ -145,7 +145,7 @@ in CI runners or developer images). `choco upgrade cfgd` upgrades, and
 ### Direct download
 
 ```powershell
-Invoke-WebRequest -Uri https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.4.0-windows-amd64.zip -OutFile cfgd.zip
+Invoke-WebRequest -Uri https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.5.0-windows-amd64.zip -OutFile cfgd.zip
 Expand-Archive cfgd.zip -DestinationPath C:\Tools\cfgd
 # Add C:\Tools\cfgd to your PATH (System Properties → Environment Variables)
 ```
@@ -184,7 +184,7 @@ To verify the signature on a downloaded archive by hand, see
 
 Each release artifact is signed with **keyless cosign** (Fulcio/OIDC + Rekor) —
 there is no long-lived public key to trust. For every archive `<archive>` (for
-example `cfgd-0.4.0-linux-amd64.tar.gz`) the release publishes:
+example `cfgd-0.5.0-linux-amd64.tar.gz`) the release publishes:
 
 | Asset | Purpose |
 |---|---|
@@ -196,7 +196,7 @@ To verify a download, run the two steps below. This is exactly what
 `cfgd upgrade` performs internally:
 
 ```sh
-VER=0.4.0; ARCH=amd64; OS=linux          # adjust: amd64|arm64, linux|darwin|windows
+VER=0.5.0; ARCH=amd64; OS=linux          # adjust: amd64|arm64, linux|darwin|windows
 A="cfgd-${VER}-${OS}-${ARCH}.tar.gz"
 base="https://github.com/tj-smith47/cfgd/releases/download/v${VER}"
 curl -fsSLO "$base/$A"
@@ -320,18 +320,18 @@ lookup, that field degrades gracefully (`not connected` / `not deployed` /
 
 ```sh
 $ kubectl cfgd version
-Client        0.4.0
+Client        0.5.0
 Server (k8s)  1.31
-Operator      0.4.0
-CSI           0.4.0
+Operator      0.5.0
+CSI           0.5.0
 
 $ kubectl cfgd version --namespace cfgd-system -o json
 {
-  "version": "0.4.0",
+  "version": "0.5.0",
   "kubectl": "1.31",
-  "operator": "0.4.0",
-  "csi": "0.4.0",
-  "cfgd": "0.4.0"
+  "operator": "0.5.0",
+  "csi": "0.5.0",
+  "cfgd": "0.5.0"
 }
 ```
 

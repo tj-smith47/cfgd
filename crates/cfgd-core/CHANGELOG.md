@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-17
+
 ### Features
 
 * a5918e305254 include module resources and check file content (TJ Smith)
@@ -45,3 +47,6 @@
 * bd7061f4b922 add effective-state source of truth for profile-modules merge (TJ Smith)
 * b3a2b1383c79 drop orphaned OciError::SignatureRequired variant (TJ Smith)
 * 1dc200e1e6d6 pin client to real release manifest (ground-truth contract test) (TJ Smith)
+
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/core-v0.5.0...HEAD
+[0.5.0]: https://github.com/tj-smith47/cfgd/compare/core-v0.4.0...core-v0.5.0
