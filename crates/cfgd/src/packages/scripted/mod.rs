@@ -20,8 +20,15 @@ use super::shared::{run_pkg_cmd, run_pkg_cmd_msg};
 fn shell_command(cmd: &str) -> Command {
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
         let mut c = Command::new("cmd.exe");
-        c.args(["/C", cmd]);
+        // cmd.exe parses its own command line; Rust's MSVCRT argument escaping would
+        // rewrite embedded `"` as `\"`, which cmd.exe treats literally — corrupting
+        // quoted tokens (shell_escape_value wraps every {package} in `"`) and, worse,
+        // redirect targets (`>>"file"` became an unopenable `\"file\"`). raw_arg hands
+        // the string to cmd.exe unescaped so its native parse applies.
+        c.raw_arg("/C");
+        c.raw_arg(cmd);
         c
     }
     #[cfg(not(windows))]
