@@ -29,10 +29,13 @@ path = "src/bin/gen_schemas.rs"
 # resolves it relative to the running test binary; per-invocation behavior
 # (exit code, stderr, keygen, argv logging) flows in via env vars, never the
 # crate's published API. `test`/`doc` off keep it out of the test harness and
-# rustdoc.
+# rustdoc. `required-features = ["test-helpers"]` keeps this dev-only binary out
+# of a default `cargo install cfgd-core`; the Taskfile test targets always pass
+# `--features cfgd-core/test-helpers`, so the cosign tests still find it on disk.
 [[bin]]
 name = "fake-cosign"
 path = "src/bin/fake_cosign.rs"
+required-features = ["test-helpers"]
 test = false
 doc = false
 

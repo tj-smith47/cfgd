@@ -2234,7 +2234,7 @@ fn check_with_cache_ignores_expired_entry() {
 
 mod cosign_verify_blob {
     use super::*;
-    use crate::test_helpers::CosignTestShim;
+    use crate::test_helpers::{CosignTestShim, EnvVarGuard};
     use serial_test::serial;
 
     fn dummy_paths() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
@@ -2336,11 +2336,10 @@ mod cosign_verify_blob {
     fn run_cosign_verify_blob_surfaces_invocation_failure_when_binary_missing() {
         // CFGD_COSIGN_BIN points at a path that does not exist — Command spawn
         // fails with std::io::Error. The function maps that to DownloadFailed.
-        // SAFETY: serial.
-        unsafe {
-            std::env::set_var("CFGD_COSIGN_BIN", "/no/such/cosign/binary");
-            std::env::remove_var("CFGD_FAKE_COSIGN_LOG");
-        }
+        // RAII guards restore both vars even if an assertion below panics, so a
+        // failed run can't leak a stale CFGD_COSIGN_BIN into sibling tests.
+        let _bin = EnvVarGuard::set("CFGD_COSIGN_BIN", "/no/such/cosign/binary");
+        let _log = EnvVarGuard::unset("CFGD_FAKE_COSIGN_LOG");
         let (_dir, checksums, bundle) = dummy_paths();
         let err =
             run_cosign_verify_blob(&checksums, &bundle, None).expect_err("missing binary → Err");
@@ -2349,10 +2348,6 @@ mod cosign_verify_blob {
             msg.contains("cosign invocation failed"),
             "error prefixes with invocation context: {msg}"
         );
-        // SAFETY: serial.
-        unsafe {
-            std::env::remove_var("CFGD_COSIGN_BIN");
-        }
     }
 }
 

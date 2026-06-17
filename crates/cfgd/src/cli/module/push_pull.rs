@@ -439,7 +439,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     mod with_cosign_shim {
         use cfgd_core::output::Printer;
         use cfgd_core::test_helpers::CosignTestShim;
