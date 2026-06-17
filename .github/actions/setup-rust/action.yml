@@ -1,0 +1,55 @@
+name: "Setup Rust"
+description: "Install the Rust toolchain, sccache, rust-cache, protoc, and go-task — each gated so a job pulls only what it needs (composite, no Node runtime of its own)."
+
+inputs:
+  components:
+    description: "Comma-separated rustup components to add (e.g. rustfmt, clippy, llvm-tools-preview). Empty for a default toolchain."
+    required: false
+    default: ""
+  cache:
+    description: "When 'true', install sccache and Swatinem/rust-cache (the compile-cache layer). Set 'false' for jobs that do no compilation."
+    required: false
+    default: "true"
+  shared-key:
+    description: "rust-cache shared-key — folds with OS + Cargo.lock hash to form the final cache key. Only used when cache == 'true'."
+    required: false
+    default: "ci"
+  protoc:
+    description: "When 'true', install protoc via the setup-protoc composite."
+    required: false
+    default: "true"
+  protoc-version:
+    description: "protoc release version (without leading 'v'). Only used when protoc == 'true'."
+    required: false
+    default: "25.9"
+  task-token:
+    description: "Token passed to go-task/setup-task as repo-token (raises its GitHub API rate limit). Empty = unauthenticated, matching a job that omits the token."
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: ${{ inputs.components }}
+
+    - if: inputs.cache == 'true'
+      uses: mozilla-actions/sccache-action@v0.0.10
+
+    - if: inputs.cache == 'true'
+      uses: Swatinem/rust-cache@v2
+      with:
+        # shared-key shares one dependency cache across compatible jobs;
+        # rust-cache still folds the Cargo.lock hash + toolchain + OS into
+        # the final key, so the OS matrix auto-separates.
+        shared-key: ${{ inputs.shared-key }}
+
+    - if: inputs.protoc == 'true'
+      uses: ./.github/actions/setup-protoc
+      with:
+        version: ${{ inputs.protoc-version }}
+
+    - uses: go-task/setup-task@v2
+      with:
+        repo-token: ${{ inputs.task-token }}

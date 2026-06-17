@@ -30,12 +30,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
         with:
           components: rustfmt
-      - uses: go-task/setup-task@v2
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          cache: 'false'
+          protoc: 'false'
+          task-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Check formatting
         run: task fmt:check
 
@@ -44,23 +44,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
         with:
           components: clippy
-      - uses: mozilla-actions/sccache-action@v0.0.10
-      - uses: Swatinem/rust-cache@v2
-        with:
-          # shared-key shares one dependency cache across the clippy/test/
-          # package jobs (compatible build profiles); rust-cache still folds
-          # the Cargo.lock hash + toolchain + OS into the final key, so the
-          # OS matrix auto-separates.
-          shared-key: ci
-      - uses: ./.github/actions/setup-protoc
-        with:
-          version: "25.9"
-      - uses: go-task/setup-task@v2
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          task-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Clippy
         run: task clippy
       - name: Schema drift guard
@@ -77,20 +64,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.10
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
         with:
-          # Shares the dependency cache with clippy/package; the macos/windows
-          # matrix legs auto-separate because rust-cache folds the OS into the
-          # final key on top of shared-key.
-          shared-key: ci
-      - uses: ./.github/actions/setup-protoc
-        with:
-          version: "25.9"
-      - uses: go-task/setup-task@v2
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          task-token: ${{ secrets.GITHUB_TOKEN }}
       # nextest gives per-test process isolation + per-test timeout: a hung
       # test is killed and named in the failure output instead of stalling
       # the whole binary for the GHA 6h cutoff (cfgd master hit a 60+min
@@ -118,20 +94,13 @@ jobs:
     if: github.ref == 'refs/heads/master'
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
         with:
           components: llvm-tools-preview
-      - uses: mozilla-actions/sccache-action@v0.0.10
-      - uses: Swatinem/rust-cache@v2
-        with:
           # Separate shared-key: this job builds with llvm-tools-preview
           # instrumentation (different target/ artifacts), so it must not
           # share or pollute the plain `ci` dependency cache.
           shared-key: ci-coverage
-      - uses: ./.github/actions/setup-protoc
-        with:
-          version: "25.9"
-      - uses: go-task/setup-task@v2
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov,cargo-nextest
@@ -143,18 +112,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.10
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
         with:
-          # Shares the dependency cache with clippy/test (same build profile).
-          shared-key: ci
-      - uses: ./.github/actions/setup-protoc
-        with:
-          version: "25.9"
-      - uses: go-task/setup-task@v2
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          task-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Package all crates
         run: task package
 
