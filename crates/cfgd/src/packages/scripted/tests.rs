@@ -770,14 +770,21 @@ fn prune_orphaned_packages_runs_persisted_script_and_returns_rows() {
     use cfgd_core::providers::OrphanedPackage;
 
     let tmp = tempfile::tempdir().unwrap();
-    let marker = tmp.path().join("removed-{package}");
+    let dir = tmp.path().display().to_string();
     // Create the marker file via the OS-native shell the scripted manager
     // resolves (`sh -c` on Unix, `cmd.exe /C` on Windows) so this exercises the
     // real per-platform execution path rather than a Unix-only `touch`.
+    //
+    // `{package}` is substituted via cfgd_core::shell_escape_value, which wraps a
+    // bare name in DOUBLE quotes (`widget` → `"widget"`). Both shells concatenate
+    // adjacent quoted tokens (`removed-"widget"` → `removed-widget`), but only when
+    // the placeholder is a standalone redirect target — embedding it mid-way through
+    // an already-double-quoted absolute path breaks cmd.exe's quote parsing. So we
+    // cd into the dir first and redirect to a relative `removed-{package}` token.
     #[cfg(windows)]
-    let cmd = format!("type nul > \"{}\"", marker.display());
+    let cmd = format!("cd /d \"{dir}\" && type nul > removed-{{package}}");
     #[cfg(not(windows))]
-    let cmd = format!("touch {}", marker.display());
+    let cmd = format!("cd '{dir}' && touch removed-{{package}}");
     let orphans = vec![
         OrphanedPackage {
             manager: "widgetmgr".to_string(),
