@@ -129,4 +129,48 @@ if [ -n "$EDITED_FILE" ] && [ -f "$EDITED_FILE" ]; then
 fi
 # --- end output banned-patterns block ----------------------------------------
 
+# --- path-handling: fold to '/' at cross-OS string boundaries ----------------
+# A native-separator path render that becomes a resource-id / state key /
+# snapshot golden / effective path / env-file body silently breaks on Windows
+# (the '\' never matches its Unix-authored counterpart → drift never reconciles).
+# util/paths.rs folds to '/' in one place. See .claude/rules/path-handling.md.
+#
+# Enforced on the DELTA, not the baseline: only newly-added native renders trip
+# this, so the documented legacy uses (swept separately) don't block edits.
+# output/ owns terminal rendering (native correct); tests carry no cross-OS keys.
+if [ -n "${EDITED_FILE:-}" ] && [ -f "$EDITED_FILE" ]; then
+    case "$EDITED_FILE" in
+        */crates/cfgd-core/src/output/*|*tests.rs|*/tests/*) ;;
+        */crates/cfgd-core/src/*)
+            GITDIR=$(dirname "$EDITED_FILE")
+            if git -C "$GITDIR" ls-files --error-unmatch "$EDITED_FILE" >/dev/null 2>&1; then
+                # tracked: inspect only added lines, preserving the legacy baseline
+                LEAK=$(git -C "$GITDIR" diff -U0 HEAD -- "$EDITED_FILE" 2>/dev/null \
+                         | grep -E '^\+[^+]' \
+                         | grep -E '\.display\(\)|to_string_lossy\(\)' \
+                         | grep -v 'native-ok' || true)
+            else
+                # untracked new file: no legacy baseline, scan whole file
+                LEAK=$(grep -E '\.display\(\)|to_string_lossy\(\)' "$EDITED_FILE" \
+                         | grep -v 'native-ok' || true)
+            fi
+            if [ -n "$LEAK" ]; then
+                echo
+                echo "PATH-HANDLING in $EDITED_FILE"
+                echo "  New native path render in the cross-OS library core. A path that"
+                echo "  becomes a resource-id / state key / snapshot / env-file body must"
+                echo "  fold to '/', or it never matches its Unix counterpart on Windows:"
+                echo "    path.posix()           instead of  path.display()"
+                echo "    to_posix_string(path)  instead of  path.to_string_lossy()"
+                echo "    normalize_for_snapshot(captured, &[(p, label)])  for snapshot goldens"
+                echo "  Genuine terminal/log output: append  // native-ok: <why>"
+                echo "  See .claude/rules/path-handling.md"
+                echo "$LEAK"
+                exit 2
+            fi
+            ;;
+    esac
+fi
+# --- end path-handling block -------------------------------------------------
+
 exit 0
