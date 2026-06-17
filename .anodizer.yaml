@@ -789,7 +789,15 @@ workspaces:
 # cfgd-module is draft-2020-12, so its catalog entry is added to the
 # highSchemaVersion list automatically.
 schemastore:
-  retain_on_rollback: true  # external catalog — retain even if a downstream publisher fails
+  # Retain the SchemaStore registration even if a downstream required publisher
+  # fails and the release rolls back. Safe because the publisher is idempotent
+  # and self-healing: the next release's pre-clone probe re-renders the catalog,
+  # overwrites the same entry, and (with versioned: true) carries the version in
+  # the vendored filename while merging prior versions forward in `versions`. A
+  # stale entry from a rolled-back release is corrected on the next publish
+  # rather than left dangling, so undoing it on rollback (closing/reverting the
+  # upstream PR) would only churn the SchemaStore repo for no durability gain.
+  retain_on_rollback: true
   # Vendor a version-suffixed copy of each schema (cfgd-config-v<ver>.schema.json)
   # plus a `versions` map alongside the unversioned entry, so an editor can pin
   # validation to the schema shipped with a specific cfgd release. cfgd is the
@@ -975,7 +983,16 @@ sboms:
 # (github-oidc); the OCI package points at the multi-arch image already
 # pushed by `dockers_v2`.
 mcp:
-  retain_on_rollback: true  # external registry — retain even if a downstream publisher fails
+  # Retain the MCP registry entry even if a downstream required publisher fails
+  # and the release rolls back. Safe because the registry is strongly idempotent:
+  # a re-POST of an existing version is rejected (400 "duplicate version" →
+  # AlreadyPublished no-op), and the next release publishes the new version,
+  # overwriting the catalog pointer. The OCI package this entry references lives
+  # on ghcr (pushed by dockers_v2, immutable per tag), not in a deletable
+  # GitHub release asset, so a retained pointer from a rolled-back release still
+  # resolves and is superseded on the next publish — undoing it (PATCH version
+  # to "deleted") would only remove a self-healing entry for no durability gain.
+  retain_on_rollback: true
   name: io.github.tj-smith47/cfgd
   # description / homepage derived from the owning crate's (cfgd) metadata.
   repository:
@@ -1069,6 +1086,14 @@ verify_release:
   # run `cfgd --version`, proving the packages install and the binary runs.
   # Empty map = default images (debian:stable-slim / fedora:latest / alpine:latest).
   install_smoke: {}
+  # glibc regression guard. cfgd's deb/rpm/apk are built from the STATIC MUSL
+  # `cfgd-musl` build precisely so they install on every Linux distro down to
+  # EL7/AL2 (see the cfgd workspace's `cfgd-musl` build comment). A musl .deb
+  # carries no glibc dependency, so this check passes by skipping it — but it
+  # fails the release loudly if the package build ever silently regresses to the
+  # gnu binary (whose glibc floor would exceed EL7's 2.17), which would ship an
+  # unrunnable package to the old distros the musl split exists to support.
+  glibc_ceiling: "2.17"
 
 partial:
   by: os
