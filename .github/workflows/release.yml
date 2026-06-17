@@ -25,6 +25,22 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   ANODIZER_VERSION: v0.10.0
+  # Pinned + checksum-verified Crossplane CLI (crank). The crossplane/crossplane
+  # install.sh is unpinned (always "current") and performs NO checksum check on
+  # the raw `bin/` binary, so a network blip yields a truncated/empty
+  # `./crossplane` that the xpkg build+push steps then treat as a working CLI.
+  # Both crossplane jobs instead download the exact binary for CROSSPLANE_VERSION
+  # from the same CDN the official install.sh uses and verify it against
+  # CROSSPLANE_SHA256 below before running it.
+  #
+  # The hash is pinned HERE, not taken from the CDN's sidecar crank.sha256:
+  # that published file is the bundle/ tarball's manifest hash and matches
+  # neither the raw bin/ binary nor the tarball itself (upstream install.sh
+  # deletes it unchecked). Pinning the real binary hash in-repo is the only
+  # value that actually gates this download. Recompute on a version bump:
+  #   curl -fsSL https://releases.crossplane.io/stable/<ver>/bin/linux_amd64/crank | sha256sum
+  CROSSPLANE_VERSION: v2.3.2
+  CROSSPLANE_SHA256: 42ce17e97dff7ea28b624bf23cde836abb0783d07c5e02fc6de08f67dbd509eb
 
 jobs:
   tag:
@@ -347,13 +363,14 @@ jobs:
   helm-chart:
     name: Publish Helm chart
     needs: [tag, publish-trio]
-    # Gate on "publish-trio not failed/cancelled" rather than `== 'success'`:
-    # `contains(crates, cfgd)` already proves the cfgd leg was in the matrix
-    # and published, while `!= 'failure'` still blocks the chart if that leg
-    # errored. The looser check also tolerates `publish-trio` resolving to
-    # `skipped` (a core-only release shapes an empty trio matrix), where the
-    # `contains` guard keeps this job correctly skipped anyway.
-    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.publish-trio.result != 'failure' && needs.publish-trio.result != 'cancelled' && contains(fromJson(needs.tag.outputs.crates), 'cfgd') }}
+    # Require publish-trio to have actually succeeded: a Helm chart whose
+    # appVersion points at a cfgd crate version that never reached crates.io
+    # is a silently-broken release. `== 'success'` blocks both the failed-leg
+    # case AND the skipped-trio case (a core-only release shapes an empty trio
+    # matrix → publish-trio resolves `skipped` → this job must not push a chart
+    # for a release that did not bump cfgd). The `contains(crates, cfgd)` guard
+    # still scopes the chart push to releases that include the cfgd crate.
+    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.publish-trio.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -375,8 +392,11 @@ jobs:
   crossplane-function:
     name: Publish Crossplane function
     needs: [tag, publish-trio]
-    # See helm-chart's `if:` for why this is `!= 'failure'`, not `== 'success'`.
-    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.publish-trio.result != 'failure' && needs.publish-trio.result != 'cancelled' && contains(fromJson(needs.tag.outputs.crates), 'cfgd') }}
+    # See helm-chart's `if:` — require publish-trio `== 'success'` so the
+    # function image is never pushed for a release whose cfgd crate did not
+    # actually publish (failed leg) or that did not bump cfgd at all (empty
+    # trio matrix → skipped). The `contains(crates, cfgd)` guard scopes it.
+    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.publish-trio.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd') }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -398,7 +418,17 @@ jobs:
           cache-from: type=gha,scope=function-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=function-${{ matrix.arch }}
       - name: Install Crossplane CLI
-        run: curl -sL https://raw.githubusercontent.com/crossplane/crossplane/master/install.sh | sh
+        # Pinned + checksum-verified. Runner is ubuntu-latest (linux_amd64).
+        # -f makes curl fail the step on any HTTP error instead of writing an
+        # HTML/empty body; the explicit sha256sum -c against the in-repo
+        # CROSSPLANE_SHA256 then aborts on any truncated/corrupt download
+        # before the (non-functional) binary reaches the xpkg steps.
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://releases.crossplane.io/stable/${CROSSPLANE_VERSION}/bin/linux_amd64/crank" -o crossplane
+          echo "${CROSSPLANE_SHA256}  crossplane" | sha256sum -c -
+          chmod +x crossplane
+          ./crossplane version --client
       - name: Build xpkg
         run: |
           ./crossplane xpkg build \
@@ -421,7 +451,17 @@ jobs:
           pattern: xpkg-*
           merge-multiple: true
       - name: Install Crossplane CLI
-        run: curl -sL https://raw.githubusercontent.com/crossplane/crossplane/master/install.sh | sh
+        # Pinned + checksum-verified. Runner is ubuntu-latest (linux_amd64).
+        # -f makes curl fail the step on any HTTP error instead of writing an
+        # HTML/empty body; the explicit sha256sum -c against the in-repo
+        # CROSSPLANE_SHA256 then aborts on any truncated/corrupt download
+        # before the (non-functional) binary reaches the xpkg steps.
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://releases.crossplane.io/stable/${CROSSPLANE_VERSION}/bin/linux_amd64/crank" -o crossplane
+          echo "${CROSSPLANE_SHA256}  crossplane" | sha256sum -c -
+          chmod +x crossplane
+          ./crossplane version --client
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -438,8 +478,12 @@ jobs:
   olm-bundle:
     name: Publish OLM bundle
     needs: [tag, publish-trio]
-    # See helm-chart's `if:` for why this is `!= 'failure'`, not `== 'success'`.
-    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.publish-trio.result != 'failure' && needs.publish-trio.result != 'cancelled' && contains(fromJson(needs.tag.outputs.crates), 'cfgd-operator') }}
+    # See helm-chart's `if:` — require publish-trio `== 'success'` so the OLM
+    # bundle (whose CSV pins cfgd-operator:vX) is never pushed for a release
+    # whose cfgd-operator crate did not actually publish (failed leg) or that
+    # did not bump cfgd-operator at all (empty trio matrix → skipped). The
+    # `contains(crates, cfgd-operator)` guard scopes it.
+    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.publish-trio.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd-operator') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

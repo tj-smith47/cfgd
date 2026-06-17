@@ -1799,6 +1799,10 @@ fn generate_env_files_expand_leading_tilde() {
 // into a bogus extra PATH entry. A Linux home path *may* contain a literal `:`,
 // which stands in for the Windows drive colon and reproduces the exact shatter
 // on Linux: the colon-containing home segment must stay one quoted PATH part.
+// Unix-only: the `a:b` directory simulation requires a colon in a dir name,
+// which is illegal on Windows. Windows exercises the real drive-colon path
+// (`C:/...`) natively via `generate_env_files_expand_leading_tilde`.
+#[cfg(unix)]
 #[test]
 #[serial_test::serial]
 fn generate_fish_path_keeps_colon_containing_home_intact() {
