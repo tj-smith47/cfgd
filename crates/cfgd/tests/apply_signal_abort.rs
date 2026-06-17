@@ -49,6 +49,46 @@ fn send_sigint(pid: u32) {
     }
 }
 
+/// Recursively search `dir` for an `apply.lock` whose body is `pid`.
+///
+/// `cfgd apply` writes its own PID into the lock file as the final step of
+/// `acquire_apply_lock`, immediately before it registers the SIGINT handler.
+/// A lock file carrying the child's PID is therefore the observable proof that
+/// the child has reached the abortable region — far more reliable than a fixed
+/// sleep, which races the slower binary startup under llvm-cov instrumentation.
+fn lock_holds_pid(dir: &Path, pid: u32) -> bool {
+    let want = pid.to_string();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if lock_holds_pid(&path, pid) {
+                return true;
+            }
+        } else if path.file_name().and_then(|n| n.to_str()) == Some("apply.lock")
+            && std::fs::read_to_string(&path).is_ok_and(|s| s.trim() == want)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Block (bounded) until `cfgd apply` has acquired the lock for `pid`, proving
+/// it reached the abortable region with its signal handler installed.
+fn wait_for_lock(state_dir: &Path, pid: u32) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        if lock_holds_pid(state_dir, pid) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    panic!("cfgd apply never acquired the apply lock for pid {pid} within deadline");
+}
+
 #[test]
 fn apply_sigint_aborts_cleanly_releases_lock_and_exits_130() {
     let config_tmp = tempfile::tempdir().unwrap();
@@ -67,9 +107,11 @@ fn apply_sigint_aborts_cleanly_releases_lock_and_exits_130() {
         .spawn()
         .expect("spawn cfgd apply");
 
-    // Give the child time to acquire the lock and enter the sleeping preApply
-    // script before delivering the signal.
-    std::thread::sleep(Duration::from_millis(1500));
+    // Wait for the observable readiness signal — the child's own PID in the
+    // apply lock — before delivering SIGINT. A fixed sleep races the slower
+    // binary startup under llvm-cov instrumentation; the lock proves the child
+    // has acquired the lock and installed its handler (the very next statement).
+    wait_for_lock(state_tmp.path(), child.id());
     send_sigint(child.id());
 
     // Wait (bounded) for the child to exit cooperatively.
@@ -181,7 +223,7 @@ fn apply_second_sigint_force_quits_via_default_disposition() {
     //
     // Both outcomes are correct; the invariant is that cfgd exits well within the
     // 5 s window that the sleep would have consumed without the fix.
-    std::thread::sleep(Duration::from_millis(1500));
+    wait_for_lock(state_tmp.path(), child.id());
     send_sigint(child.id());
     std::thread::sleep(Duration::from_millis(300));
     send_sigint(child.id());
