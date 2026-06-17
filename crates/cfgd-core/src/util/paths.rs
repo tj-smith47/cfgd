@@ -722,9 +722,15 @@ pub fn expand_env_value_tilde(value: &str) -> String {
     value
         .split(':')
         .map(|seg| {
-            expand_tilde(std::path::Path::new(seg))
-                .display()
-                .to_string()
+            // Only a tilde segment is rewritten; the expanded home is folded to
+            // forward slashes so managed shell files never carry a host-native
+            // `\` on Windows. Every other segment stays byte-for-byte (a literal
+            // value like `C:\tools` is the user's, not ours to normalize).
+            if seg == "~" || seg.starts_with("~/") || seg.starts_with("~\\") {
+                to_posix_string(expand_tilde(std::path::Path::new(seg)))
+            } else {
+                seg.to_string()
+            }
         })
         .collect::<Vec<_>>()
         .join(":")

@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::str::FromStr;
 
+use crate::PathDisplayExt;
 use crate::config::*;
 use crate::providers::PackageManager;
 
@@ -1768,7 +1769,7 @@ fn generate_fish_env_splits_path() {
 fn generate_env_files_expand_leading_tilde() {
     let home = tempfile::tempdir().unwrap();
     crate::with_test_home(home.path(), || {
-        let h = home.path().display().to_string();
+        let h = home.path().posix().to_string();
         let env = vec![
             crate::config::EnvVar {
                 name: "CLIFT_DIR".into(),
@@ -12466,8 +12467,8 @@ fn target_keys(targets: &[EnvTarget]) -> Vec<String> {
     targets
         .iter()
         .map(|t| match t {
-            EnvTarget::ManagedFile { path, .. } => format!("file:{}", path.display()),
-            EnvTarget::SourceLine { rc_path, .. } => format!("src:{}", rc_path.display()),
+            EnvTarget::ManagedFile { path, .. } => format!("file:{}", path.posix()),
+            EnvTarget::SourceLine { rc_path, .. } => format!("src:{}", rc_path.posix()),
             EnvTarget::LiveSession { .. } => "session".to_string(),
         })
         .collect()
