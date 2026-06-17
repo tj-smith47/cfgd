@@ -1,0 +1,30 @@
+name: "Setup Crossplane CLI"
+description: "Download a pinned Crossplane CLI (crank) and verify it against a known SHA256 before use (composite, no Node runtime)."
+
+inputs:
+  version:
+    description: "Crossplane CLI version to install (with leading 'v', e.g. v2.3.2)."
+    required: true
+  sha256:
+    description: "Expected SHA256 of the linux_amd64 crank binary; the download is rejected on mismatch."
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install Crossplane CLI
+      # Pinned + checksum-verified. Runner is ubuntu-latest (linux_amd64).
+      # -f makes curl fail the step on any HTTP error instead of writing an
+      # HTML/empty body; the explicit sha256sum -c against the pinned
+      # sha256 then aborts on any truncated/corrupt download before the
+      # (non-functional) binary reaches the xpkg steps.
+      shell: bash
+      env:
+        CROSSPLANE_VERSION: ${{ inputs.version }}
+        CROSSPLANE_SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        curl -fsSL "https://releases.crossplane.io/stable/${CROSSPLANE_VERSION}/bin/linux_amd64/crank" -o crossplane
+        echo "${CROSSPLANE_SHA256}  crossplane" | sha256sum -c -
+        chmod +x crossplane
+        ./crossplane version --client

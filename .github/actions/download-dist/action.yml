@@ -1,0 +1,22 @@
+name: "Download all dist artifacts"
+description: "Download every per-crate/per-shard dist-* artifact and merge into dist/ (composite, no Node runtime of its own)."
+
+inputs:
+  path:
+    description: "Directory the merged artifacts are written to."
+    required: false
+    default: "dist/"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Download all dist artifacts
+      uses: actions/download-artifact@v8
+      with:
+        # All crates' shards merge into dist/<crate>/... — each crate's
+        # tarball is self-contained in its <crate>/ subdir thanks to the
+        # harness's per-crate preserve layout (--crate <name> on
+        # check determinism). No context.json collision.
+        pattern: dist-*
+        path: ${{ inputs.path }}
+        merge-multiple: true

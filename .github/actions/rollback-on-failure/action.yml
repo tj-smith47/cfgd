@@ -1,0 +1,24 @@
+name: "Rollback on release failure"
+description: "Roll back the freshly-pushed release tags when a publish job fails or is cancelled (composite, no Node runtime)."
+
+inputs:
+  head_sha:
+    description: "The SHA the freshly-pushed tags point at — passed to `anodizer tag rollback`."
+    required: true
+  gh_token:
+    description: "GitHub token with `contents: write` used to delete the release tags/refs."
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    # The decision to invoke this action (failure()/cancelled() + the release
+    # step's outcome) is made by the caller job's step `if:`, which can see the
+    # caller's `steps.*` context; this composite unconditionally runs the
+    # rollback once invoked.
+    - name: Rollback release tags
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.gh_token }}
+        GITHUB_TOKEN: ${{ inputs.gh_token }}
+      run: anodizer tag rollback "${{ inputs.head_sha }}"

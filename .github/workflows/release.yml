@@ -25,6 +25,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   ANODIZER_VERSION: v0.10.0
+  PROTOC_VERSION: "25.9"
   # Pinned + checksum-verified Crossplane CLI (crank). The crossplane/crossplane
   # install.sh is unpinned (always "current") and performs NO checksum check on
   # the raw `bin/` binary, so a network blip yields a truncated/empty
@@ -146,18 +147,9 @@ jobs:
 
       - uses: ./.github/actions/setup-protoc
         with:
-          version: "25.9"
+          version: ${{ env.PROTOC_VERSION }}
 
-      - name: Download all dist artifacts
-        uses: actions/download-artifact@v8
-        with:
-          # All crates' shards merge into dist/<crate>/... — each crate's
-          # tarball is self-contained in its <crate>/ subdir thanks to the
-          # harness's per-crate preserve layout (--crate <name> on
-          # check determinism). No context.json collision.
-          pattern: dist-*
-          path: dist/
-          merge-multiple: true
+      - uses: ./.github/actions/download-dist
 
       - name: Run anodizer release (cfgd-crd)
         id: release
@@ -190,10 +182,10 @@ jobs:
 
       - name: Rollback on release failure
         if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        run: anodizer tag rollback "${{ needs.tag.outputs.head_sha }}"
+        uses: ./.github/actions/rollback-on-failure
+        with:
+          head_sha: ${{ needs.tag.outputs.head_sha }}
+          gh_token: ${{ secrets.GH_PAT }}
 
   # cfgd-core publishes after cfgd-crd and in isolation (--crate cfgd-core). The
   # three binary crates depend on cfgd-core and each polls crates.io for its
@@ -224,18 +216,9 @@ jobs:
 
       - uses: ./.github/actions/setup-protoc
         with:
-          version: "25.9"
+          version: ${{ env.PROTOC_VERSION }}
 
-      - name: Download all dist artifacts
-        uses: actions/download-artifact@v8
-        with:
-          # All crates' shards merge into dist/<crate>/... — each crate's
-          # tarball is self-contained in its <crate>/ subdir thanks to the
-          # harness's per-crate preserve layout (--crate <name> on
-          # check determinism). No context.json collision.
-          pattern: dist-*
-          path: dist/
-          merge-multiple: true
+      - uses: ./.github/actions/download-dist
 
       - name: Run anodizer release (cfgd-core)
         id: release
@@ -268,10 +251,10 @@ jobs:
 
       - name: Rollback on release failure
         if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        run: anodizer tag rollback "${{ needs.tag.outputs.head_sha }}"
+        uses: ./.github/actions/rollback-on-failure
+        with:
+          head_sha: ${{ needs.tag.outputs.head_sha }}
+          gh_token: ${{ secrets.GH_PAT }}
 
   # cfgd / cfgd-csi / cfgd-operator publish IN PARALLEL after cfgd-core. Each
   # matrix leg runs a single-crate publish (--crate <name>) and is gated on
@@ -302,18 +285,9 @@ jobs:
 
       - uses: ./.github/actions/setup-protoc
         with:
-          version: "25.9"
+          version: ${{ env.PROTOC_VERSION }}
 
-      - name: Download all dist artifacts
-        uses: actions/download-artifact@v8
-        with:
-          # All crates' shards merge into dist/<crate>/... — each crate's
-          # tarball is self-contained in its <crate>/ subdir thanks to the
-          # harness's per-crate preserve layout (--crate <name> on
-          # check determinism). No context.json collision.
-          pattern: dist-*
-          path: dist/
-          merge-multiple: true
+      - uses: ./.github/actions/download-dist
 
       - name: Run anodizer release (${{ matrix.crate }})
         id: release
@@ -354,10 +328,10 @@ jobs:
 
       - name: Rollback on release failure
         if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        run: anodizer tag rollback "${{ needs.tag.outputs.head_sha }}"
+        uses: ./.github/actions/rollback-on-failure
+        with:
+          head_sha: ${{ needs.tag.outputs.head_sha }}
+          gh_token: ${{ secrets.GH_PAT }}
 
   # --- Helm chart publish ---
   helm-chart:
@@ -417,18 +391,10 @@ jobs:
           outputs: type=docker,dest=runtime-${{ matrix.arch }}.tar
           cache-from: type=gha,scope=function-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=function-${{ matrix.arch }}
-      - name: Install Crossplane CLI
-        # Pinned + checksum-verified. Runner is ubuntu-latest (linux_amd64).
-        # -f makes curl fail the step on any HTTP error instead of writing an
-        # HTML/empty body; the explicit sha256sum -c against the in-repo
-        # CROSSPLANE_SHA256 then aborts on any truncated/corrupt download
-        # before the (non-functional) binary reaches the xpkg steps.
-        run: |
-          set -euo pipefail
-          curl -fsSL "https://releases.crossplane.io/stable/${CROSSPLANE_VERSION}/bin/linux_amd64/crank" -o crossplane
-          echo "${CROSSPLANE_SHA256}  crossplane" | sha256sum -c -
-          chmod +x crossplane
-          ./crossplane version --client
+      - uses: ./.github/actions/setup-crossplane
+        with:
+          version: ${{ env.CROSSPLANE_VERSION }}
+          sha256: ${{ env.CROSSPLANE_SHA256 }}
       - name: Build xpkg
         run: |
           ./crossplane xpkg build \
@@ -450,18 +416,10 @@ jobs:
         with:
           pattern: xpkg-*
           merge-multiple: true
-      - name: Install Crossplane CLI
-        # Pinned + checksum-verified. Runner is ubuntu-latest (linux_amd64).
-        # -f makes curl fail the step on any HTTP error instead of writing an
-        # HTML/empty body; the explicit sha256sum -c against the in-repo
-        # CROSSPLANE_SHA256 then aborts on any truncated/corrupt download
-        # before the (non-functional) binary reaches the xpkg steps.
-        run: |
-          set -euo pipefail
-          curl -fsSL "https://releases.crossplane.io/stable/${CROSSPLANE_VERSION}/bin/linux_amd64/crank" -o crossplane
-          echo "${CROSSPLANE_SHA256}  crossplane" | sha256sum -c -
-          chmod +x crossplane
-          ./crossplane version --client
+      - uses: ./.github/actions/setup-crossplane
+        with:
+          version: ${{ env.CROSSPLANE_VERSION }}
+          sha256: ${{ env.CROSSPLANE_SHA256 }}
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
