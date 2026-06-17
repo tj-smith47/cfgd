@@ -2191,6 +2191,172 @@ mod tests {
     }
 
     #[test]
+    fn mock_file_manager_content_drift_reports_missing_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("present.txt");
+        std::fs::write(&target, "managed").unwrap();
+
+        let fm = MockFileManager::new();
+        let result = fm
+            .content_drift(&dir.path().join("absent-source.txt"), &target, None)
+            .unwrap();
+
+        assert!(!result.matches, "absent managed source must report drift");
+        assert_eq!(result.expected, "managed source present");
+        assert_eq!(result.actual, "source not found");
+    }
+
+    #[test]
+    fn mock_secret_backend_unavailable_and_records_write_calls() {
+        let backend = MockSecretBackend::new("age").unavailable();
+        assert_eq!(backend.name(), "age");
+        assert!(
+            !backend.is_available(),
+            "`unavailable()` must flip availability off"
+        );
+
+        backend.encrypt_file(Path::new("/tmp/plain.yaml")).unwrap();
+        backend.edit_file(Path::new("/tmp/edit.yaml")).unwrap();
+        assert_eq!(
+            backend.encrypt_calls.lock().unwrap().as_slice(),
+            &[PathBuf::from("/tmp/plain.yaml")]
+        );
+        assert_eq!(
+            backend.edit_calls.lock().unwrap().as_slice(),
+            &[PathBuf::from("/tmp/edit.yaml")]
+        );
+    }
+
+    #[test]
+    fn mock_system_configurator_failing_diff_errors() {
+        let cfg = MockSystemConfigurator::new("sysctl").failing();
+        match cfg.diff(&serde_yaml::Value::Null) {
+            Ok(_) => panic!("failing() must make diff error"),
+            Err(err) => assert!(format!("{err}").contains("mock diff failed")),
+        }
+    }
+
+    #[test]
+    fn test_env_builder_default_matches_new() {
+        // `default()` simply forwards to `new()`; building from it must yield a
+        // usable env with the same directory layout.
+        let env = TestEnvBuilder::default().build();
+        assert!(env.config_dir.exists());
+        assert!(env.profiles_dir.exists());
+        assert!(env.modules_dir.exists());
+        // `TestEnv::path` joins onto the root without touching disk.
+        let joined = env.path("sub/leaf.txt");
+        assert_eq!(joined, env.root.join("sub/leaf.txt"));
+        assert!(!env.file_exists("sub/leaf.txt"));
+    }
+
+    #[test]
+    fn assert_snapshot_golden_regenerates_missing_golden() {
+        let dir = tempfile::tempdir().unwrap();
+        let name = "nested/out.txt";
+        // Golden does not yet exist → the regen branch writes it and returns
+        // without asserting, creating the parent dir along the way.
+        assert_snapshot_golden(dir.path(), name, "regenerated body\n");
+        let written = std::fs::read_to_string(dir.path().join(name)).unwrap();
+        assert_eq!(written, "regenerated body\n");
+
+        // A matching second call now takes the compare branch without panicking.
+        assert_snapshot_golden(dir.path(), name, "regenerated body\n");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn editor_guard_drop_removes_var_when_no_prior() {
+        // SAFETY: serial gates env mutation across tests.
+        unsafe {
+            std::env::remove_var("EDITOR");
+        }
+        {
+            let _guard = EditorGuard::set("vi");
+            assert_eq!(std::env::var("EDITOR").as_deref(), Ok("vi"));
+        }
+        assert!(
+            std::env::var("EDITOR").is_err(),
+            "drop must remove EDITOR when none was set before"
+        );
+    }
+
+    #[test]
+    fn mock_package_manager_helpers_and_trait_methods() {
+        use crate::providers::PackageManager;
+
+        let mgr = MockPackageManager::new("pacman")
+            .with_installed(&["git"])
+            .unavailable()
+            .bootstrappable();
+        let printer = test_printer();
+
+        assert_eq!(mgr.name(), "pacman");
+        assert!(
+            !mgr.is_available(),
+            "`unavailable()` must flip availability"
+        );
+        assert!(
+            mgr.can_bootstrap(),
+            "`bootstrappable()` must enable bootstrap"
+        );
+        mgr.bootstrap(&printer).unwrap();
+
+        assert_eq!(
+            mgr.installed_packages().unwrap(),
+            std::collections::HashSet::from(["git".to_string()])
+        );
+
+        mgr.install(&["vim".to_string()], &printer).unwrap();
+        mgr.uninstall(&["nano".to_string()], &printer).unwrap();
+        mgr.update(&printer).unwrap();
+        assert_eq!(
+            mgr.install_calls.lock().unwrap().as_slice(),
+            &[vec!["vim".to_string()]]
+        );
+        assert_eq!(
+            mgr.uninstall_calls.lock().unwrap().as_slice(),
+            &[vec!["nano".to_string()]]
+        );
+
+        assert_eq!(mgr.available_version("anything").unwrap(), None);
+    }
+
+    #[test]
+    fn reconciler_harness_builder_accepts_custom_file_manager() {
+        // `file_manager()` overrides the default mock; the override must be wired
+        // into the registry such that a plan can be produced from it.
+        let harness = ReconcilerTestHarness::builder()
+            .file_manager(MockFileManager::new())
+            .build();
+        let plan = harness
+            .plan()
+            .expect("custom file manager must yield a plan");
+        assert!(
+            plan.is_empty(),
+            "empty profile must produce a plan with no actions"
+        );
+    }
+
+    #[test]
+    fn parse_profile_yaml_accepts_full_document_form() {
+        // The document branch (apiVersion/kind/metadata/spec) is taken before the
+        // bare-spec fallback; a full ProfileDocument must parse via `doc.spec`.
+        let harness = ReconcilerTestHarness::builder()
+            .profile_yaml(
+                "apiVersion: cfgd.io/v1\n\
+                 kind: Profile\n\
+                 metadata:\n  name: doc-form\n\
+                 spec:\n  modules: []\n",
+            )
+            .build();
+        assert!(
+            harness.resolved.merged.modules.is_empty(),
+            "document-form profile with no modules must resolve to an empty module set"
+        );
+    }
+
+    #[test]
     fn mock_secret_backend_tracks_decrypt() {
         let backend = MockSecretBackend::new("sops");
         let secret = backend.decrypt_file(Path::new("/tmp/secret.enc")).unwrap();
