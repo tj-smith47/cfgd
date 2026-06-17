@@ -825,17 +825,29 @@ pub(in crate::cli) fn sign_and_attest(
                 serde_json::json!({ "artifact": artifact, "digest": digest, "step": "provenance" }),
             )
         })?;
-        let tmp = tempfile::NamedTempFile::new()?;
-        cfgd_core::atomic_write_str(tmp.path(), &provenance)?;
-        cfgd_core::oci::attach_attestation(artifact, &tmp.path().display().to_string(), key)
-            .map_err(|e| {
-                cli_error(
-                    artifact,
-                    "attest_failed",
-                    cfgd_core::output::collapse_to_subject_line(&e),
-                    serde_json::json!({ "artifact": artifact, "step": "attach" }),
-                )
-            })?;
+        // Write the predicate into a fresh temp DIR rather than a NamedTempFile:
+        // atomic_write_str renames a sibling over the target, and on Windows you
+        // cannot replace a file that still has an open handle (NamedTempFile keeps
+        // one) → ERROR_ACCESS_DENIED. A dir-joined path carries no open handle.
+        let pred_dir = tempfile::tempdir()?;
+        let pred_path = pred_dir.path().join("provenance.json");
+        cfgd_core::atomic_write_str(&pred_path, &provenance)?;
+        cfgd_core::oci::attach_attestation(
+            artifact,
+            // native-ok: local predicate path for the co-located cosign subprocess
+            &pred_path.display().to_string(),
+            key,
+        )
+        .map_err(|e| {
+            cli_error(
+                artifact,
+                "attest_failed",
+                cfgd_core::output::collapse_to_subject_line(&e),
+                serde_json::json!({ "artifact": artifact, "step": "attach" }),
+            )
+        })?;
+        // pred_dir must outlive attach_attestation so the subprocess can read it.
+        drop(pred_dir);
         printer.status_simple(Role::Ok, "Attached SLSA provenance attestation");
         attested = true;
     }
