@@ -79,17 +79,25 @@ impl Renderer {
         }
         line.push_str(&style.apply_to(f.subject).to_string());
 
-        // Field order: subject — detail (target). Detail comes first (with
-        // em-dash glue), then target in parens. Duration trails last as its
-        // own (Ns) parens block.
+        // Detail may carry multi-line external tool stderr (e.g. a failed
+        // `cargo install` dumps a whole error chain). Pre-split it like
+        // render_note: the first physical line glues to the subject with the
+        // em-dash; any further lines render as indented continuation lines at
+        // the same depth. write_line forbids embedded newlines, so passing an
+        // unsplit multi-line detail would panic in debug builds.
+        let mut detail_tail: Vec<String> = Vec::new();
         if let Some(detail) = f.detail {
+            // Sanitize at the renderer boundary: detail may carry embedded ANSI
+            // escapes. A stray `\x1b[0m` would prematurely terminate the role
+            // styling above; foreign color escapes would paint subsequent
+            // terminal output until the next reset.
+            let clean = strip_ansi(detail);
+            let mut lines = clean.lines();
             line.push_str(" — ");
-            // Sanitize at the renderer boundary: detail may carry external
-            // tool stderr or `format!("{e}")` content with embedded ANSI
-            // escapes. A stray `\x1b[0m` would prematurely terminate the
-            // role styling above; foreign color escapes would paint
-            // subsequent terminal output until the next reset.
-            line.push_str(&strip_ansi(detail));
+            if let Some(first) = lines.next() {
+                line.push_str(first);
+            }
+            detail_tail.extend(lines.map(str::to_string));
         }
         if let Some(target) = f.target {
             let dim = self.theme.muted.apply_to(format!(" ({})", target.posix()));
@@ -101,6 +109,11 @@ impl Renderer {
             line.push_str(&dim.to_string());
         }
         self.write_line(w, depth, &line);
+        // Continuation lines indent one level past the subject so they read as
+        // belonging to this status rather than as new siblings.
+        for tail in detail_tail {
+            self.write_line(w, depth + 1, &tail);
+        }
     }
 
     /// Emit a Warn-styled diagnostic line that is shown regardless of verbosity
@@ -266,6 +279,46 @@ mod tests {
             },
         );
         assert!(buf.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn multiline_detail_renders_without_panic_and_splits_lines() {
+        // A failed subprocess (e.g. `cargo install`) yields a multi-line error
+        // chain in `detail`. The renderer must pre-split it instead of handing
+        // an embedded newline to write_line (which debug_asserts against it).
+        let (r, sink, buf) = capture();
+        let detail = "cargo install failed: exit code 101: \
+                      \x1b[31merror\x1b[0m: download of windows-sys failed\n\
+                      Caused by:\n  curl failed\n  [16] HTTP2 framing layer";
+        r.render_status(
+            &sink,
+            0,
+            &StatusFields {
+                role: Role::Fail,
+                subject: "[1/1] Failed: package:cargo:install:bat",
+                detail: Some(detail),
+                duration: None,
+                target: None,
+            },
+        );
+        let out = strip_ansi(&buf.lock().unwrap());
+        // First physical line glues subject to the first detail line.
+        assert!(
+            out.lines().next().unwrap().contains(
+                "✗ [1/1] Failed: package:cargo:install:bat — cargo install failed: exit code 101: error: download of windows-sys failed"
+            ),
+            "first line must glue subject + first detail line; got: {out:?}"
+        );
+        // Continuation lines render as indented siblings, never collapsed.
+        assert!(out.contains("Caused by:"), "got: {out:?}");
+        assert!(out.contains("curl failed"), "got: {out:?}");
+        assert!(out.contains("[16] HTTP2 framing layer"), "got: {out:?}");
+        // No embedded newline escaped into a single sink write (the panic case):
+        // the body is split into >= 4 physical lines.
+        assert!(
+            out.lines().filter(|l| !l.trim().is_empty()).count() >= 4,
+            "multi-line detail must produce multiple physical lines; got: {out:?}"
+        );
     }
 
     #[test]

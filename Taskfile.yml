@@ -8,6 +8,14 @@ vars:
 
 env:
   REGISTRY: '{{.REGISTRY}}'
+
+# Artifact-identity vars (version/os/arch) shared by the docker, image-push, and
+# release-archive tasks. Defined as a per-task `vars:` anchor rather than global
+# `env:`/`vars:` because Task evaluates global blocks eagerly for EVERY invocation:
+# the `grep`/`uname` shells aborted `task test:ci` on the Windows CI runner, which
+# never builds artifacts. Per-task `vars:` are evaluated lazily, only when one of
+# these Linux-only packaging tasks actually runs.
+x-artifact-vars: &artifact-vars
   # The CLI binary version comes from its own crate manifest, not `git describe --tags`:
   # the latter returns the newest monorepo tag (e.g. cfgd-core's `core-v0.4.0`), which
   # mis-names every artifact and diverges from the published `cfgd-<version>-linux-amd64`.
@@ -432,11 +440,13 @@ tasks:
 
   docker:cli:
     desc: Build cfgd CLI Docker image
+    vars: *artifact-vars
     cmds:
       - docker build -f Dockerfile -t {{.REGISTRY}}/cfgd:latest -t {{.REGISTRY}}/cfgd:{{.VERSION_NUM}} .
 
   docker:operator:
     desc: Build cfgd-operator Docker image
+    vars: *artifact-vars
     cmds:
       - docker build -f Dockerfile.operator -t {{.REGISTRY}}/cfgd-operator:latest -t {{.REGISTRY}}/cfgd-operator:{{.VERSION_NUM}} .
 
@@ -446,12 +456,14 @@ tasks:
 
   image:push:cli:
     desc: Push cfgd CLI image to registry
+    vars: *artifact-vars
     cmds:
       - docker push {{.REGISTRY}}/cfgd:latest
       - docker push {{.REGISTRY}}/cfgd:{{.VERSION_NUM}}
 
   image:push:operator:
     desc: Push cfgd-operator image to registry
+    vars: *artifact-vars
     cmds:
       - docker push {{.REGISTRY}}/cfgd-operator:latest
       - docker push {{.REGISTRY}}/cfgd-operator:{{.VERSION_NUM}}
@@ -461,6 +473,7 @@ tasks:
   release:local:
     desc: Build release archive locally
     deps: [_check:tmp-headroom]
+    vars: *artifact-vars
     cmds:
       - cargo build --release --bin cfgd
       - tar -czf "cfgd-{{.VERSION_NUM}}-{{.OS}}-{{.ARCH}}.tar.gz" -C target/release cfgd

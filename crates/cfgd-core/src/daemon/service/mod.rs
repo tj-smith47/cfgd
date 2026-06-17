@@ -76,6 +76,12 @@ pub fn start_service(printer: &crate::output::Printer, scope: crate::Scope) -> R
     {
         let _ = printer;
         let _ = scope;
+        // A test that scoped a HOME override skipped the real `sc.exe` install,
+        // so nothing was started — report not-started rather than over-claiming.
+        // Mirrors the Unix seam below.
+        if crate::test_home_override().is_some() {
+            return Ok(false);
+        }
         // `install_windows_service` already issues `sc start`, so the service
         // is running by the time this is reached.
         Ok(true)

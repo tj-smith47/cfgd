@@ -20,7 +20,15 @@ pub fn cmd_checkin(
     // Compose with sources (cache-only — read paths stay offline) and resolve the
     // effective module set through the one shared resolver, so the checkin
     // payload reflects the same source-composed desired state that `apply` writes.
-    let desired = resolve_desired_state(cli, &cfg, &local_resolved, None, printer, false)?;
+    let desired = resolve_desired_state(
+        cli,
+        &cfg,
+        &local_resolved,
+        None,
+        printer,
+        false,
+        composition::ConstraintMode::Report,
+    )?;
     let resolved = desired.resolved;
     let resolved_modules = desired.modules;
 

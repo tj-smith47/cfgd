@@ -19,6 +19,8 @@ COPY --from=planner /build/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json --bin cfgd-operator --bin cfgd-gen-crds
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+# cfgd-core's generate module embeds these repo-root manifests via include_str!.
+COPY examples/ examples/
 RUN cargo build --release --bin cfgd-operator --bin cfgd-gen-crds
 
 # Named stage that emits the generated CRD YAML. setup-cluster.sh extracts

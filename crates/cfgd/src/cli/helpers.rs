@@ -574,6 +574,10 @@ pub(in crate::cli) struct DesiredState {
     pub modules: Vec<cfgd_core::modules::ResolvedModule>,
     pub source_env: std::collections::HashMap<String, Vec<cfgd_core::config::EnvVar>>,
     pub source_commits: std::collections::HashMap<String, String>,
+    /// Source security-constraint violations surfaced when the caller composed in
+    /// [`ConstraintMode::Report`] (read paths). Empty for `Enforce` callers
+    /// (apply/plan), which abort on the first violation instead.
+    pub constraint_violations: Vec<cfgd_core::composition::ConstraintViolation>,
 }
 
 /// Compose the local profile with configured sources into an effective profile.
@@ -589,6 +593,7 @@ pub(in crate::cli) fn compose_with_sources(
     local_resolved: &ResolvedProfile,
     printer: &Printer,
     refresh: bool,
+    mode: composition::ConstraintMode,
 ) -> anyhow::Result<composition::CompositionResult> {
     if cfg.spec.sources.is_empty() {
         // No sources, return local profile as-is
@@ -598,6 +603,7 @@ pub(in crate::cli) fn compose_with_sources(
             source_env: std::collections::HashMap::new(),
             source_commits: std::collections::HashMap::new(),
             source_module_roots: Vec::new(),
+            constraint_violations: Vec::new(),
         });
     }
 
@@ -611,7 +617,7 @@ pub(in crate::cli) fn compose_with_sources(
         mgr.load_sources_cached(&cfg.spec.sources, printer)?;
     }
 
-    let result = mgr.compose(&cfg.spec.sources, local_resolved)?;
+    let result = mgr.compose(&cfg.spec.sources, local_resolved, mode)?;
     display_and_persist_conflicts(cli, &result, printer);
 
     // Surface the documented "scripts are shown in cfgd plan" promise: when a
@@ -703,13 +709,15 @@ pub(in crate::cli) fn resolve_desired_state(
     module_filter: Option<&str>,
     printer: &Printer,
     refresh: bool,
+    mode: composition::ConstraintMode,
 ) -> anyhow::Result<DesiredState> {
-    let composition = compose_with_sources(cli, cfg, local_resolved, printer, refresh)?;
+    let composition = compose_with_sources(cli, cfg, local_resolved, printer, refresh, mode)?;
     let composition::CompositionResult {
         resolved,
         source_env,
         source_commits,
         source_module_roots,
+        constraint_violations,
         ..
     } = composition;
 
@@ -759,6 +767,7 @@ pub(in crate::cli) fn resolve_desired_state(
         modules,
         source_env,
         source_commits,
+        constraint_violations,
     })
 }
 
@@ -816,17 +825,29 @@ pub(in crate::cli) fn sign_and_attest(
                 serde_json::json!({ "artifact": artifact, "digest": digest, "step": "provenance" }),
             )
         })?;
-        let tmp = tempfile::NamedTempFile::new()?;
-        cfgd_core::atomic_write_str(tmp.path(), &provenance)?;
-        cfgd_core::oci::attach_attestation(artifact, &tmp.path().display().to_string(), key)
-            .map_err(|e| {
-                cli_error(
-                    artifact,
-                    "attest_failed",
-                    cfgd_core::output::collapse_to_subject_line(&e),
-                    serde_json::json!({ "artifact": artifact, "step": "attach" }),
-                )
-            })?;
+        // Write the predicate into a fresh temp DIR rather than a NamedTempFile:
+        // atomic_write_str renames a sibling over the target, and on Windows you
+        // cannot replace a file that still has an open handle (NamedTempFile keeps
+        // one) → ERROR_ACCESS_DENIED. A dir-joined path carries no open handle.
+        let pred_dir = tempfile::tempdir()?;
+        let pred_path = pred_dir.path().join("provenance.json");
+        cfgd_core::atomic_write_str(&pred_path, &provenance)?;
+        cfgd_core::oci::attach_attestation(
+            artifact,
+            // native-ok: local predicate path for the co-located cosign subprocess
+            &pred_path.display().to_string(),
+            key,
+        )
+        .map_err(|e| {
+            cli_error(
+                artifact,
+                "attest_failed",
+                cfgd_core::output::collapse_to_subject_line(&e),
+                serde_json::json!({ "artifact": artifact, "step": "attach" }),
+            )
+        })?;
+        // pred_dir must outlive attach_attestation so the subprocess can read it.
+        drop(pred_dir);
         printer.status_simple(Role::Ok, "Attached SLSA provenance attestation");
         attested = true;
     }
@@ -1506,7 +1527,15 @@ mod tests {
         let local = empty_resolved_profile("my-module");
         let printer = quiet_printer();
 
-        let result = compose_with_sources(&cli, &cfg, &local, &printer, true).unwrap();
+        let result = compose_with_sources(
+            &cli,
+            &cfg,
+            &local,
+            &printer,
+            true,
+            composition::ConstraintMode::Enforce,
+        )
+        .unwrap();
 
         // No sources → resolved must equal the local profile we passed in.
         assert_eq!(result.resolved.merged.modules, local.merged.modules);
@@ -1631,7 +1660,15 @@ mod tests {
         let local = empty_resolved_profile("my-module");
         let printer = quiet_printer();
 
-        let result = compose_with_sources(&cli, &cfg, &local, &printer, true).unwrap();
+        let result = compose_with_sources(
+            &cli,
+            &cfg,
+            &local,
+            &printer,
+            true,
+            composition::ConstraintMode::Enforce,
+        )
+        .unwrap();
 
         // Source-commit field must be populated — proves the source was
         // cloned, parsed, and tracked by the composition.
@@ -1687,10 +1724,27 @@ mod tests {
 
         // Prime the cache with a refresh so the cache-only read path has a cache
         // dir to read (the daemon's sync task plays this role in production).
-        compose_with_sources(&cli, &cfg, &local, &printer, true).unwrap();
+        compose_with_sources(
+            &cli,
+            &cfg,
+            &local,
+            &printer,
+            true,
+            composition::ConstraintMode::Enforce,
+        )
+        .unwrap();
 
         // Read path: cache-only, no network.
-        let desired = resolve_desired_state(&cli, &cfg, &local, None, &printer, false).unwrap();
+        let desired = resolve_desired_state(
+            &cli,
+            &cfg,
+            &local,
+            None,
+            &printer,
+            false,
+            composition::ConstraintMode::Enforce,
+        )
+        .unwrap();
 
         // The source profile's cargo package must be in the effective desired state.
         let cargo_pkgs: Vec<String> = desired
@@ -1749,7 +1803,16 @@ mod tests {
         let printer = quiet_printer();
 
         // No prime: cache dir for 'test-src' does not exist.
-        let desired = resolve_desired_state(&cli, &cfg, &local, None, &printer, false).unwrap();
+        let desired = resolve_desired_state(
+            &cli,
+            &cfg,
+            &local,
+            None,
+            &printer,
+            false,
+            composition::ConstraintMode::Enforce,
+        )
+        .unwrap();
 
         // Falls back to local: source package absent, local package survives.
         let cargo_pkgs: Vec<String> = desired
@@ -1793,9 +1856,27 @@ mod tests {
         let printer = quiet_printer();
 
         // refresh = true (apply/plan path) primes the cache AND resolves.
-        let apply_side = resolve_desired_state(&cli, &cfg, &local, None, &printer, true).unwrap();
+        let apply_side = resolve_desired_state(
+            &cli,
+            &cfg,
+            &local,
+            None,
+            &printer,
+            true,
+            composition::ConstraintMode::Enforce,
+        )
+        .unwrap();
         // refresh = false (read path) on the now-primed cache.
-        let read_side = resolve_desired_state(&cli, &cfg, &local, None, &printer, false).unwrap();
+        let read_side = resolve_desired_state(
+            &cli,
+            &cfg,
+            &local,
+            None,
+            &printer,
+            false,
+            composition::ConstraintMode::Enforce,
+        )
+        .unwrap();
 
         let mut apply_modules: Vec<String> =
             apply_side.modules.iter().map(|m| m.name.clone()).collect();
@@ -1835,7 +1916,16 @@ mod tests {
         };
         let printer = quiet_printer();
 
-        let desired = resolve_desired_state(&cli, &cfg, &local, None, &printer, false).unwrap();
+        let desired = resolve_desired_state(
+            &cli,
+            &cfg,
+            &local,
+            None,
+            &printer,
+            false,
+            composition::ConstraintMode::Enforce,
+        )
+        .unwrap();
         assert!(desired.modules.is_empty());
         assert!(desired.source_env.is_empty());
         assert!(desired.source_commits.is_empty());
@@ -2013,6 +2103,7 @@ mod tests {
             source_env: HashMap::new(),
             source_commits: HashMap::new(),
             source_module_roots: Vec::new(),
+            constraint_violations: Vec::new(),
         };
 
         let (printer, cap) = Printer::for_test_at(Verbosity::Normal);

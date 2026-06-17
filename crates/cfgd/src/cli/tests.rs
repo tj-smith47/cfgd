@@ -3836,6 +3836,12 @@ fn cmd_apply_from_flag_parses() {
     }
 }
 
+// Unix-only: the literal-`~` clean-failure contract is a HOME semantic. On
+// Windows the config and state dirs resolve from the %APPDATA%/%LOCALAPPDATA%
+// known folders via `directories::BaseDirs`, independent of HOME, so unsetting
+// HOME does not strand resolution and apply does not error — a different (and
+// correct) Windows contract.
+#[cfg(unix)]
 #[test]
 #[serial_test::serial]
 fn run_apply_home_unset_errors_and_creates_no_state() {
@@ -11122,7 +11128,30 @@ fn cmd_log_structured_json_output() {
 
 #[test]
 fn cmd_apply_real_records_state() {
+    // A real (non-dry-run) apply must record state. The action is a hermetic
+    // file copy whose source and target both live inside the harness's config
+    // dir, so the full apply pipeline runs and records state without any
+    // network access or host mutation.
+    //
+    // The shared DEFAULT_PROFILE_YAML declares `cargo: [bat]`; a real apply of
+    // it runs `cargo install bat` over the network — flaky in CI (a crates.io
+    // HTTP2 blip once made this panic) and irrelevant to what this verifies.
     let h = CliTestHarness::builder().build();
+
+    let files_dir = h.config_path().join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join("seed.txt"), "applied content").unwrap();
+    let target = h.config_path().join("output").join("seed.txt");
+    let default_profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  files:\n    managed:\n      - source: files/seed.txt\n        target: {}\n        strategy: Copy\n",
+        target.display()
+    );
+    std::fs::write(
+        h.config_path().join("profiles").join("default.yaml"),
+        &default_profile,
+    )
+    .unwrap();
+
     let args = ApplyArgs {
         dry_run: false,
         yes: true,
@@ -11136,6 +11165,10 @@ fn cmd_apply_real_records_state() {
         shell: None,
     };
     super::apply::cmd_apply(&h.cli(), h.printer(), &args).unwrap();
+
+    // The hermetic file action actually ran.
+    assert!(target.exists(), "managed file should have been created");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "applied content");
 
     let state = StateStore::open(&h.state_path().join("state.db")).unwrap();
     let last = state.last_apply().unwrap();

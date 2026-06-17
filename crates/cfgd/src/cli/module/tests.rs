@@ -3978,7 +3978,6 @@ fn build_registry_module_url_handles_ssh_base_urls() {
 // ...) honors the seam, and cfgd_core::cosign_cmd() uses tool_cmd which
 // invokes the shim path.
 
-#[cfg(unix)]
 mod keys_with_fake_cosign {
     use super::*;
     use cfgd_core::test_helpers::CosignTestShim;
@@ -4059,6 +4058,9 @@ mod keys_with_fake_cosign {
         );
     }
 
+    // Unix-only: hand-rolls a `#!/bin/sh` shim and chmods it via
+    // `PermissionsExt::set_mode`; CosignTestShim can't compose this scenario.
+    #[cfg(unix)]
     #[test]
     #[serial]
     fn cmd_module_keys_rotate_restore_failure_surfaces_restorefailed_payload() {

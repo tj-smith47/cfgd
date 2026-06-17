@@ -722,9 +722,15 @@ pub fn expand_env_value_tilde(value: &str) -> String {
     value
         .split(':')
         .map(|seg| {
-            expand_tilde(std::path::Path::new(seg))
-                .display()
-                .to_string()
+            // Only a tilde segment is rewritten; the expanded home is folded to
+            // forward slashes so managed shell files never carry a host-native
+            // `\` on Windows. Every other segment stays byte-for-byte (a literal
+            // value like `C:\tools` is the user's, not ours to normalize).
+            if seg == "~" || seg.starts_with("~/") || seg.starts_with("~\\") {
+                to_posix_string(expand_tilde(std::path::Path::new(seg)))
+            } else {
+                seg.to_string()
+            }
         })
         .collect::<Vec<_>>()
         .join(":")
@@ -833,6 +839,19 @@ pub fn copy_dir_recursive(
 /// path-handling consolidation spec for the fold-policy rationale).
 pub fn to_posix_string(path: impl AsRef<std::path::Path>) -> String {
     path.as_ref().to_string_lossy().replace('\\', "/")
+}
+
+/// Strip a leading Windows extended-length (`\\?\`) verbatim prefix from a
+/// path string, returning the rest unchanged.
+///
+/// `std::fs::canonicalize` on Windows returns verbatim paths
+/// (`\\?\C:\Users\...`); the prefix is correct for the Win32 API but leaks an
+/// implementation detail into anything a user reads or that another
+/// non-verbatim path (e.g. one derived from `std::env::current_dir`) must
+/// compare against. Fold it away wherever a canonicalized path becomes
+/// user-visible or comparable. No-op on non-verbatim and on POSIX inputs.
+pub fn strip_windows_verbatim(s: &str) -> &str {
+    s.strip_prefix(r"\\?\").unwrap_or(s)
 }
 
 /// Fold `\` → `/` in free-form text that may contain native-separator paths.

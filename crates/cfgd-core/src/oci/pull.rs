@@ -310,7 +310,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn pull_module_with_require_key_fails_when_cosign_verify_rejects() {
@@ -340,7 +339,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn pull_module_with_require_key_proceeds_when_cosign_verify_succeeds() {

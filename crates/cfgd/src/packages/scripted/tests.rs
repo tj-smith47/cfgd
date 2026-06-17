@@ -770,8 +770,22 @@ fn prune_orphaned_packages_runs_persisted_script_and_returns_rows() {
     use cfgd_core::providers::OrphanedPackage;
 
     let tmp = tempfile::tempdir().unwrap();
-    let marker = tmp.path().join("removed-{package}");
-    let cmd = format!("touch {}", marker.display());
+    let marker = tmp.path().join("pruned.log");
+    let marker_s = marker.display().to_string();
+    // Append each package to a single fixed-name marker file via the OS-native
+    // shell the scripted manager resolves (`sh -c` on Unix, `cmd.exe /C` on
+    // Windows) so this exercises the real per-platform execution path.
+    //
+    // `{package}` is substituted via cfgd_core::shell_escape_value, which wraps a
+    // bare name in DOUBLE quotes (`widget` → `"widget"`). Quote chars are illegal
+    // in a Windows filename, so the substituted value must never reach the redirect
+    // TARGET — it goes into the echoed CONTENT instead. The marker filename stays a
+    // fixed, quote-free literal; the quotes land harmlessly inside the file.
+    // (Windows: no space before `>>` to dodge cmd.exe's trailing-space quirk.)
+    #[cfg(windows)]
+    let cmd = format!("echo {{package}}>>\"{marker_s}\"");
+    #[cfg(not(windows))]
+    let cmd = format!("echo {{package}} >> '{marker_s}'");
     let orphans = vec![
         OrphanedPackage {
             manager: "widgetmgr".to_string(),
@@ -796,8 +810,18 @@ fn prune_orphaned_packages_runs_persisted_script_and_returns_rows() {
             ("widgetmgr".to_string(), "widget".to_string()),
         ]
     );
-    assert!(tmp.path().join("removed-widget").exists());
-    assert!(tmp.path().join("removed-gadget").exists());
+    // The marker's contents prove per-package `{package}` substitution under the
+    // real shell. The substring check tolerates the cross-shell quote difference
+    // (`"widget"` on Windows vs `widget` after sh strips quotes on Unix).
+    let logged = std::fs::read_to_string(&marker).unwrap();
+    assert!(
+        logged.contains("widget"),
+        "marker missing widget: {logged:?}"
+    );
+    assert!(
+        logged.contains("gadget"),
+        "marker missing gadget: {logged:?}"
+    );
 }
 
 #[test]

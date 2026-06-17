@@ -20,17 +20,36 @@ use std::time::{Duration, Instant};
 
 use assert_cmd::cargo::CommandCargoExt;
 
-/// A profile whose `preApply` script sleeps, so the apply is reliably in-flight
-/// when we deliver the signal, plus a managed file action whose target must NOT
-/// be written once the abort takes effect.
+/// Fixed name of the readiness sentinel written by the `preApply` script,
+/// relative to the config `dir`. Resolve via [`sentinel_path`].
+const READY_SENTINEL: &str = "ready.sentinel";
+
+/// Absolute path of the readiness sentinel for a config `dir`.
+fn sentinel_path(dir: &Path) -> std::path::PathBuf {
+    dir.join(READY_SENTINEL)
+}
+
+/// A profile whose `preApply` script writes a readiness sentinel and then
+/// sleeps, so the apply is reliably in-flight when we deliver the signal, plus
+/// a managed file action whose target must NOT be written once the abort takes
+/// effect.
+///
+/// In `cmd_apply` the SIGINT handler is installed (apply.rs `register_abort_handlers`)
+/// *before* the reconciler runs the `preApply` script. The sentinel is therefore
+/// written only once the child is inside the abortable region with its handler
+/// installed — a true readiness proof, unlike the lock PID which is written a few
+/// statements earlier (before the handler) and could be observed in the
+/// handler-less window.
 fn sleeping_apply_config(dir: &Path) -> std::path::PathBuf {
     let files_dir = dir.join("files");
     std::fs::create_dir_all(&files_dir).unwrap();
     std::fs::write(files_dir.join("hello.txt"), "hello world").unwrap();
 
     let target = dir.join("out").join("hello.txt");
+    let sentinel = sentinel_path(dir);
     let profile = format!(
-        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  scripts:\n    preApply:\n      - run: \"sleep 5\"\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  scripts:\n    preApply:\n      - run: \"touch '{}' && sleep 5\"\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n",
+        sentinel.display(),
         target.display(),
     );
     let profiles_dir = dir.join("profiles");
@@ -47,6 +66,28 @@ fn send_sigint(pid: u32) {
     unsafe {
         libc::kill(pid as libc::pid_t, libc::SIGINT);
     }
+}
+
+/// Block (bounded) until the `preApply` readiness `sentinel` exists.
+///
+/// The script that writes it runs only after `cmd_apply` has installed the
+/// SIGINT handler (apply.rs registers handlers before invoking the reconciler),
+/// so the sentinel's existence proves the child is inside the abortable region
+/// *with its handler installed* — exactly the precondition for the cooperative
+/// lock-release assertions. This is robust against the slower binary startup
+/// under llvm-cov instrumentation that a fixed sleep would race.
+fn wait_for_sentinel(sentinel: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        if sentinel.exists() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    panic!(
+        "cfgd apply never wrote its readiness sentinel ({}) within deadline",
+        sentinel.display()
+    );
 }
 
 #[test]
@@ -67,9 +108,11 @@ fn apply_sigint_aborts_cleanly_releases_lock_and_exits_130() {
         .spawn()
         .expect("spawn cfgd apply");
 
-    // Give the child time to acquire the lock and enter the sleeping preApply
-    // script before delivering the signal.
-    std::thread::sleep(Duration::from_millis(1500));
+    // Wait for the readiness sentinel before delivering SIGINT. The preApply
+    // script writes it only after the handler is installed, so its presence
+    // proves the child is in the abortable region with its handler live — a
+    // fixed sleep would race the slower binary startup under llvm-cov.
+    wait_for_sentinel(&sentinel_path(config_tmp.path()));
     send_sigint(child.id());
 
     // Wait (bounded) for the child to exit cooperatively.
@@ -181,7 +224,7 @@ fn apply_second_sigint_force_quits_via_default_disposition() {
     //
     // Both outcomes are correct; the invariant is that cfgd exits well within the
     // 5 s window that the sleep would have consumed without the fix.
-    std::thread::sleep(Duration::from_millis(1500));
+    wait_for_sentinel(&sentinel_path(config_tmp.path()));
     send_sigint(child.id());
     std::thread::sleep(Duration::from_millis(300));
     send_sigint(child.id());

@@ -168,7 +168,13 @@ pub(crate) fn compose_daemon_desired_state(
     let mut mgr = crate::sources::SourceManager::new(&cache_dir);
     mgr.set_allow_unsigned(cfg.spec.security.as_ref().is_some_and(|s| s.allow_unsigned));
     mgr.load_sources_cached(&cfg.spec.sources, printer)?;
-    let result = mgr.compose(&cfg.spec.sources, local)?;
+    // The daemon's pruning reconcile must stay fail-closed: a source
+    // security-constraint violation aborts rather than reconciling phantom state.
+    let result = mgr.compose(
+        &cfg.spec.sources,
+        local,
+        crate::composition::ConstraintMode::Enforce,
+    )?;
     Ok((result.resolved, result.source_module_roots))
 }
 
@@ -177,11 +183,19 @@ const DEBOUNCE_MS: u64 = 500;
 /// Per-user socket name placed under the resolved runtime directory.
 pub const IPC_SOCKET_FILE: &str = "cfgd.sock";
 
-/// Windows IPC endpoint. Named pipes are kernel objects in the
+/// Windows IPC endpoint (user scope). Named pipes are kernel objects in the
 /// `\\.\pipe\` namespace — per-session, not file-system objects — so the
 /// per-user-directory dance Unix needs does not apply here.
 #[cfg(windows)]
 const WINDOWS_PIPE_PATH: &str = r"\\.\pipe\cfgd";
+
+/// Windows IPC endpoint (system scope). A system-scope daemon runs as a Windows
+/// Service and must NOT share a pipe name with a per-user daemon, or a user CLI
+/// would connect to (and control) the machine-wide service. A distinct global
+/// name keeps the two endpoints separate, mirroring the Unix `/run/cfgd` vs
+/// per-user-runtime-dir split.
+#[cfg(windows)]
+const WINDOWS_SYSTEM_PIPE_PATH: &str = r"\\.\pipe\cfgd-system";
 
 /// Resolve the daemon IPC endpoint.
 ///
@@ -197,8 +211,10 @@ const WINDOWS_PIPE_PATH: &str = r"\\.\pipe\cfgd";
 /// 3. Unix last-ditch `/tmp/cfgd.sock` only when home resolution fails entirely
 ///    (no `$HOME`, no override); the bind path later refuses to listen if the
 ///    parent dir is not owner-only.
-/// 4. Windows: the named-pipe path verbatim (per-session kernel object, so the
-///    per-user-directory dance does not apply).
+/// 4. Windows: a named-pipe path selected by `scope` (per-session kernel object,
+///    so the per-user-directory dance does not apply) — `\\.\pipe\cfgd` for user
+///    scope, `\\.\pipe\cfgd-system` for the system service so the two never
+///    collide.
 ///
 /// `runtime_over` is the explicit `--runtime-dir` override; pass `None` to take
 /// the env/default. `scope` selects the per-user vs system runtime root so the
@@ -217,10 +233,16 @@ pub fn resolve_default_ipc_path(runtime_over: Option<&Path>, scope: crate::Scope
     }
     #[cfg(windows)]
     {
-        // The runtime dir is irrelevant to named pipes; the parameter exists for
-        // signature parity with the Unix arm.
+        // The runtime dir is irrelevant to named pipes (kernel objects, not
+        // filesystem paths), but scope still selects the namespace: a system
+        // service and a per-user daemon must resolve to distinct pipe names so a
+        // user CLI never connects to the machine-wide service.
         let _ = runtime_over;
-        PathBuf::from(WINDOWS_PIPE_PATH)
+        if scope.is_system() {
+            PathBuf::from(WINDOWS_SYSTEM_PIPE_PATH)
+        } else {
+            PathBuf::from(WINDOWS_PIPE_PATH)
+        }
     }
 }
 const DEFAULT_RECONCILE_SECS: u64 = 300; // 5m

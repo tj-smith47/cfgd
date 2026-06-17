@@ -902,7 +902,9 @@ mod tests {
                 &module_env,
             );
             let lookup = |key: &str| env.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
-            let h = home.path().display().to_string();
+            // Env-file/injected values fold home to posix (the production contract):
+            // build the expectation through the same central API so Windows matches.
+            let h = home.path().posix().to_string();
             assert_eq!(
                 lookup("CLIFT_DIR"),
                 Some(format!("{h}/.local/share/clift").as_str())

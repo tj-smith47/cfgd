@@ -341,7 +341,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     mod sign_path {
         use super::*;
         use cfgd_core::test_helpers::CosignTestShim;

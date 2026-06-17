@@ -9,6 +9,29 @@ use cfgd_core::providers::PackageManager;
 
 use super::shared::{run_pkg_cmd, run_pkg_cmd_msg};
 
+/// Build the OS-native shell invocation for a user-authored package-manager
+/// command string: `sh -c <cmd>` on Unix, `cmd.exe /C <cmd>` on Windows.
+///
+/// Scripted-manager templates (`check` / `list` / `install` / `uninstall` /
+/// `update`) are free-form shell commands the user writes for their platform;
+/// hardcoding `sh` left every scripted manager dead on Windows (no `sh` on
+/// PATH). This mirrors the `ScriptShell::Auto` default the lifecycle-script
+/// runner already uses, so both surfaces resolve the same native shell.
+fn shell_command(cmd: &str) -> Command {
+    #[cfg(windows)]
+    {
+        let mut c = Command::new("cmd.exe");
+        c.args(["/C", cmd]);
+        c
+    }
+    #[cfg(not(windows))]
+    {
+        let mut c = Command::new("sh");
+        c.args(["-c", cmd]);
+        c
+    }
+}
+
 pub struct ScriptedManager {
     pub(super) mgr_name: String,
     pub(super) check_cmd: String,
@@ -63,29 +86,21 @@ impl ScriptedManager {
             // member of the batch failed.
             for (cmd, pkg) in invocations.iter().zip(packages) {
                 printer.status_simple(Role::Info, cmd.as_str());
-                run_pkg_cmd_msg(
-                    &self.mgr_name,
-                    Command::new("sh").args(["-c", cmd]),
-                    error_kind,
-                    pkg,
-                )?;
+                run_pkg_cmd_msg(&self.mgr_name, &mut shell_command(cmd), error_kind, pkg)?;
             }
         } else if let Some(cmd) = invocations.first() {
             // Batch mode — build_template_invocations emits a single command.
             printer.status_simple(Role::Info, cmd.as_str());
-            run_pkg_cmd(
-                &self.mgr_name,
-                Command::new("sh").args(["-c", cmd]),
-                error_kind,
-            )?;
+            run_pkg_cmd(&self.mgr_name, &mut shell_command(cmd), error_kind)?;
         }
         Ok(())
     }
 }
 
-/// Build the `sh -c` argument(s) ScriptedManager uses to invoke a custom
-/// package-manager template. Pure helper — split out so the substitution +
-/// shell-escaping contract is testable without spawning a shell.
+/// Build the command string(s) ScriptedManager passes to the platform shell
+/// (`sh -c` on Unix, `cmd.exe /C` on Windows via [`shell_command`]) to invoke a
+/// custom package-manager template. Pure helper — split out so the substitution
+/// + shell-escaping contract is testable without spawning a shell.
 ///
 /// Two modes:
 /// - **`{package}` placeholder**: one-at-a-time. Returns one command per
@@ -125,8 +140,7 @@ impl PackageManager for ScriptedManager {
     }
 
     fn is_available(&self) -> bool {
-        Command::new("sh")
-            .args(["-c", &self.check_cmd])
+        shell_command(&self.check_cmd)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status()
@@ -143,11 +157,7 @@ impl PackageManager for ScriptedManager {
     }
 
     fn installed_packages(&self) -> Result<HashSet<String>> {
-        let output = run_pkg_cmd(
-            &self.mgr_name,
-            Command::new("sh").args(["-c", &self.list_cmd]),
-            "list",
-        )?;
+        let output = run_pkg_cmd(&self.mgr_name, &mut shell_command(&self.list_cmd), "list")?;
         Ok(String::from_utf8_lossy(&output.stdout)
             .lines()
             .map(|l| l.trim().to_string())
@@ -168,7 +178,7 @@ impl PackageManager for ScriptedManager {
             printer.status_simple(Role::Info, cmd.as_str());
             run_pkg_cmd_msg(
                 &self.mgr_name,
-                Command::new("sh").args(["-c", cmd]),
+                &mut shell_command(cmd),
                 "update",
                 "update failed",
             )?;

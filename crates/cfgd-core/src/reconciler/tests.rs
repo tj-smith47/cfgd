@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::str::FromStr;
 
+use crate::PathDisplayExt;
 use crate::config::*;
 use crate::providers::PackageManager;
 
@@ -1768,7 +1769,7 @@ fn generate_fish_env_splits_path() {
 fn generate_env_files_expand_leading_tilde() {
     let home = tempfile::tempdir().unwrap();
     crate::with_test_home(home.path(), || {
-        let h = home.path().display().to_string();
+        let h = home.path().posix().to_string();
         let env = vec![
             crate::config::EnvVar {
                 name: "CLIFT_DIR".into(),
@@ -1789,6 +1790,36 @@ fn generate_env_files_expand_leading_tilde() {
 
         let ps = super::generate_powershell_env_content(&env, &[]);
         assert!(ps.contains(&format!("$env:CLIFT_DIR = '{h}/.local/share/clift'")));
+    });
+}
+
+// Regression: the fish PATH generator must split on the `:` separator of the
+// RAW value before tilde expansion. On Windows `~` expands to a drive-prefixed
+// home (`C:/Users/...`); splitting post-expansion shattered that drive colon
+// into a bogus extra PATH entry. A Linux home path *may* contain a literal `:`,
+// which stands in for the Windows drive colon and reproduces the exact shatter
+// on Linux: the colon-containing home segment must stay one quoted PATH part.
+// Unix-only: the `a:b` directory simulation requires a colon in a dir name,
+// which is illegal on Windows. Windows exercises the real drive-colon path
+// (`C:/...`) natively via `generate_env_files_expand_leading_tilde`.
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn generate_fish_path_keeps_colon_containing_home_intact() {
+    let home = tempfile::tempdir().unwrap();
+    let coloned = home.path().join("a:b");
+    std::fs::create_dir_all(&coloned).unwrap();
+    crate::with_test_home(&coloned, || {
+        let h = coloned.posix().to_string();
+        let env = vec![crate::config::EnvVar {
+            name: "PATH".into(),
+            value: "~/bin:/usr/bin".into(),
+        }];
+        let fish = super::generate_fish_env_content(&env, &[]);
+        assert!(
+            fish.contains(&format!("set -gx PATH '{h}/bin' '/usr/bin'")),
+            "drive/colon-containing home must stay one PATH part, got: {fish}"
+        );
     });
 }
 
@@ -12466,8 +12497,8 @@ fn target_keys(targets: &[EnvTarget]) -> Vec<String> {
     targets
         .iter()
         .map(|t| match t {
-            EnvTarget::ManagedFile { path, .. } => format!("file:{}", path.display()),
-            EnvTarget::SourceLine { rc_path, .. } => format!("src:{}", rc_path.display()),
+            EnvTarget::ManagedFile { path, .. } => format!("file:{}", path.posix()),
+            EnvTarget::SourceLine { rc_path, .. } => format!("src:{}", rc_path.posix()),
             EnvTarget::LiveSession { .. } => "session".to_string(),
         })
         .collect()

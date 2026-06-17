@@ -908,6 +908,7 @@ impl SourceManager {
         &self,
         cfg_sources: &[SourceSpec],
         local: &ResolvedProfile,
+        mode: crate::composition::ConstraintMode,
     ) -> Result<crate::composition::CompositionResult> {
         use crate::composition::{CompositionInput, SubscriptionConfig};
 
@@ -965,10 +966,11 @@ impl SourceManager {
                 source_env: HashMap::new(),
                 source_commits: HashMap::new(),
                 source_module_roots: Vec::new(),
+                constraint_violations: Vec::new(),
             });
         }
 
-        let mut result = crate::composition::compose(local, &inputs)?;
+        let mut result = crate::composition::compose(local, &inputs, mode)?;
 
         for spec in cfg_sources {
             if let Some(cached) = self.get(&spec.name)

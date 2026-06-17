@@ -19,6 +19,7 @@ use std::path::Path;
 
 use crate::config::{ManagedFileSpec, MergedProfile, PackageClaim, desired_packages_for_spec};
 use crate::modules::ResolvedModule;
+use crate::to_posix_string;
 
 /// Where a resource in the effective desired state originated.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,7 +172,7 @@ pub fn effective_files(
     for module in modules {
         for file in &module.files {
             files.push(EffectiveFile {
-                source: file.source.to_string_lossy().into_owned(),
+                source: to_posix_string(&file.source),
                 target: file.target.clone(),
                 strategy: file.strategy,
                 permissions: file.permissions.clone(),
@@ -189,10 +190,7 @@ pub fn effective_files(
 
 fn profile_file(spec: &ManagedFileSpec, config_dir: &Path) -> EffectiveFile {
     let resolved_source = crate::resolve_relative_path(Path::new(&spec.source), config_dir)
-        .map_or_else(
-            |_| spec.source.clone(),
-            |p| p.to_string_lossy().into_owned(),
-        );
+        .map_or_else(|_| spec.source.clone(), |p| to_posix_string(&p));
     EffectiveFile {
         source: resolved_source,
         target: spec.target.clone(),

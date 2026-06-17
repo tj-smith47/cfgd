@@ -271,7 +271,9 @@ spec:
     brew:
       formulae: [wget]
 PROFAEOF
-(cd "$MERGE_SRC_A" && git init -q -b master && git add -A && git commit -qm "init src-a")
+# Tag so the semver-range pin in SRC-MERGE-08 (`~1.0`) resolves against real git
+# tags per docs/sources.md; `~1.0` (= `~1.0.0`, i.e. >=1.0.0 <1.1.0) → v1.0.0.
+(cd "$MERGE_SRC_A" && git init -q -b master && git add -A && git commit -qm "init src-a" && git tag v1.0.0 && git tag v1.1.0)
 
 # Source B: provides curl via brew + env var + a conflicting file
 MERGE_SRC_B=$(mktemp -d "$SCRATCH/merge-src-b.XXXXXX")

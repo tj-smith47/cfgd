@@ -99,7 +99,7 @@ impl<'a> super::Reconciler<'a> {
                     }
                 };
                 if existing == *content {
-                    return Ok(format!("env:write:{}:skipped", path.display()));
+                    return Ok(format!("env:write:{}:skipped", path.posix()));
                 }
                 if let Some(parent) = path.parent()
                     && !parent.exists()
@@ -108,7 +108,7 @@ impl<'a> super::Reconciler<'a> {
                 }
                 crate::atomic_write_str(path, content)?;
                 printer.status_simple(Role::Ok, format!("Wrote {}", path.posix()));
-                Ok(format!("env:write:{}", path.display()))
+                Ok(format!("env:write:{}", path.posix()))
             }
             EnvAction::InjectSourceLine { rc_path, line } => {
                 let existing = match std::fs::read_to_string(rc_path) {
@@ -121,7 +121,7 @@ impl<'a> super::Reconciler<'a> {
                 };
                 if existing.contains(line) {
                     // Already injected
-                    return Ok(format!("env:inject:{}:skipped", rc_path.display()));
+                    return Ok(format!("env:inject:{}:skipped", rc_path.posix()));
                 }
                 if let Some(parent) = rc_path.parent()
                     && !parent.exists()
@@ -139,7 +139,7 @@ impl<'a> super::Reconciler<'a> {
                     Role::Ok,
                     format!("Injected source line into {}", rc_path.posix()),
                 );
-                Ok(format!("env:inject:{}", rc_path.display()))
+                Ok(format!("env:inject:{}", rc_path.posix()))
             }
             EnvAction::RefreshLiveSession { vars } => {
                 let changed = crate::refresh_session_env(vars, printer);

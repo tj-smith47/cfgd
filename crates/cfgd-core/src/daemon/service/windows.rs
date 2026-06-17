@@ -13,14 +13,23 @@ pub(crate) fn install_windows_service(
     config_path: &Path,
     profile: Option<&str>,
     enable_event_log: bool,
+    scope: crate::Scope,
 ) -> Result<()> {
+    // A test with a scoped HOME override must never run real `sc.exe create`
+    // against the runner — that mutates the host's service database and
+    // collides when a `cfgd` service already exists there. The pure
+    // binPath/argv construction is unit-tested separately; skip the
+    // side-effecting calls. Mirrors the Unix seam in `start_service`.
+    if crate::test_home_override().is_some() {
+        return Ok(());
+    }
     let config_abs =
         std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
     let config_str = config_abs.display().to_string();
-    let config_str = config_str.strip_prefix(r"\\?\").unwrap_or(&config_str);
+    let config_str = crate::strip_windows_verbatim(&config_str);
 
     let binary_str = binary.display().to_string();
-    let binary_str = binary_str.strip_prefix(r"\\?\").unwrap_or(&binary_str);
+    let binary_str = crate::strip_windows_verbatim(&binary_str);
 
     let mut bin_args = format!(
         "\"{}\" daemon service --config \"{}\"",
@@ -28,6 +37,9 @@ pub(crate) fn install_windows_service(
     );
     if let Some(p) = profile {
         bin_args.push_str(&format!(" --profile \"{}\"", p));
+    }
+    if scope == crate::Scope::System {
+        bin_args.push_str(" --scope system");
     }
     if enable_event_log {
         bin_args.push_str(" --enable-event-log");
@@ -141,6 +153,12 @@ fn register_event_source() {
 /// Uninstall cfgd Windows Service via sc.exe.
 #[cfg(windows)]
 pub(crate) fn uninstall_windows_service() -> Result<()> {
+    // A test with a scoped HOME override must never run real `sc.exe` against
+    // the runner — deleting a host `cfgd` service that the test did not create.
+    // Mirrors the install-side and Unix-side seam.
+    if crate::test_home_override().is_some() {
+        return Ok(());
+    }
     // Stop service first (best-effort — may not be running)
     if let Err(e) = std::process::Command::new("sc.exe")
         .args(["stop", "cfgd"])
@@ -315,6 +333,7 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
     let args: Vec<String> = std::env::args().collect();
     let mut config_path = crate::default_config_dir().join("config.yaml");
     let mut profile_override: Option<String> = None;
+    let mut scope = crate::Scope::User;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -324,6 +343,14 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
             }
             "--profile" if i + 1 < args.len() => {
                 profile_override = Some(args[i + 1].clone());
+                i += 2;
+            }
+            // `install_windows_service` bakes `--scope system` into the binPath
+            // for a machine-wide install (mirroring the systemd unit / launchd
+            // plist ExecStart), so the SCM-launched daemon resolves the same
+            // %ProgramData% roots the install registered against.
+            "--scope" if i + 1 < args.len() => {
+                scope = crate::Scope::from_system_flag(args[i + 1] == "system");
                 i += 2;
             }
             _ => {
@@ -345,7 +372,8 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
     // Spawn the daemon loop on the runtime
     rt.spawn(async move {
         // Windows service has no CLI runtime override; env/default socket.
-        if let Err(e) = run_daemon(config_path, profile_override, None, printer, hooks).await {
+        if let Err(e) = run_daemon(config_path, profile_override, None, printer, hooks, scope).await
+        {
             tracing::error!(error = %e, "daemon error");
         }
     });

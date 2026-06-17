@@ -451,14 +451,14 @@ fn apply_verify_args_keyless_defaults() {
 
 // ---------------------------------------------------------------------------
 // Fake-cosign shim tests — drive every cosign-shelling code path without a
-// real cosign on PATH. Each test sets `CFGD_COSIGN_BIN` to a generated shell
-// script that records its argv to a log file and exits with a chosen status.
+// real cosign on PATH. Each test sets `CFGD_COSIGN_BIN` to the compiled
+// fake-cosign binary, which records its argv to a log file and exits with a
+// chosen status.
 //
-// Tests are `#[cfg(unix)]` (the shim is a /bin/sh script) and `#[serial]`
-// because env-var mutation is process-global.
+// Tests are `#[serial]` because env-var mutation is process-global. The shim
+// is the host-target `fake-cosign` binary, so these run on every OS.
 // ---------------------------------------------------------------------------
 
-#[cfg(unix)]
 mod fake_cosign {
     use super::*;
     use crate::test_helpers::CosignTestShim;

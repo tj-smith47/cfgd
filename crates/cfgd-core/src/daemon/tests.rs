@@ -9681,7 +9681,13 @@ mod harness {
 
     // ----- system-scope directory resolution tests -----
 
-    #[cfg(unix)]
+    // System-scope IPC/state roots are platform-specific absolutes: Linux FHS
+    // (`/run/cfgd`, `/var/lib/cfgd`), the macOS `/Library/Application Support`
+    // mirror, and `%ProgramData%\cfgd` on Windows. Each platform pins its own
+    // root so a `unix`-wide assertion never false-fails on macOS (which is also
+    // `unix` but resolves under `/Library`).
+
+    #[cfg(target_os = "linux")]
     #[test]
     #[serial_test::serial]
     fn run_daemon_with_system_scope_ipc_resolves_fhs() {
@@ -9707,6 +9713,31 @@ mod harness {
         );
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[serial_test::serial]
+    fn run_daemon_with_system_scope_ipc_resolves_application_support() {
+        use crate::test_helpers::EnvVarGuard;
+        let _ipc = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let _runtime = EnvVarGuard::unset("CFGD_RUNTIME_DIR");
+
+        let overrides = super::super::DaemonRunOverrides {
+            scope: crate::Scope::System,
+            skip_health_server: true,
+            ..Default::default()
+        };
+        let ipc = overrides
+            .ipc_path
+            .clone()
+            .unwrap_or_else(|| super::super::resolve_default_ipc_path(None, overrides.scope));
+        assert!(
+            ipc.starts_with("/Library/Application Support/cfgd/runtime"),
+            "system-scope IPC path must be under the macOS runtime root, got: {}",
+            ipc.display()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     #[serial_test::serial]
     fn init_daemon_state_with_warning_system_scope_uses_fhs_state_dir() {
@@ -9723,6 +9754,42 @@ mod harness {
                 .map(|p| p.starts_with("/var/lib/cfgd"))
                 .unwrap_or(false),
             "system-scope state dir must be under /var/lib/cfgd"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[serial_test::serial]
+    fn init_daemon_state_with_warning_system_scope_uses_application_support_state_dir() {
+        use crate::test_helpers::EnvVarGuard;
+        let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
+
+        let (st, _warning) =
+            super::super::init_daemon_state_with_warning(None, crate::Scope::System);
+        assert!(
+            st.store_path_for_test()
+                .map(|p| p.starts_with("/Library/Application Support/cfgd/state"))
+                .unwrap_or(false),
+            "system-scope state dir must be under the macOS state root"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[serial_test::serial]
+    fn init_daemon_state_with_warning_system_scope_uses_program_data_state_dir() {
+        use crate::test_helpers::EnvVarGuard;
+        let _cfgd = EnvVarGuard::unset("CFGD_STATE_DIR");
+
+        let expected = crate::program_data_dir().join("cfgd").join("state");
+        let (st, _warning) =
+            super::super::init_daemon_state_with_warning(None, crate::Scope::System);
+        assert!(
+            st.store_path_for_test()
+                .map(|p| p.starts_with(&expected))
+                .unwrap_or(false),
+            "system-scope state dir must be under %ProgramData%\\cfgd\\state"
         );
     }
 
@@ -11780,6 +11847,25 @@ mod ipc_socket_security {
             .join("runtime")
             .join("cfgd.sock");
         assert_eq!(resolve_default_ipc_path(None, crate::Scope::User), expected);
+    }
+
+    /// On Windows the named-pipe endpoint is scope-aware: a per-user daemon and
+    /// the system Windows Service must resolve to DIFFERENT pipe names, or a user
+    /// CLI would connect to the machine-wide service. Mirrors the Unix
+    /// `/run/cfgd` vs per-user-runtime split.
+    #[cfg(windows)]
+    #[test]
+    #[serial_test::serial]
+    fn resolve_default_ipc_path_windows_scope_selects_distinct_pipe() {
+        let _unset_override = EnvVarGuard::unset("CFGD_DAEMON_IPC_PATH");
+        let user = resolve_default_ipc_path(None, crate::Scope::User);
+        let system = resolve_default_ipc_path(None, crate::Scope::System);
+        assert_eq!(user, std::path::PathBuf::from(r"\\.\pipe\cfgd"));
+        assert_eq!(system, std::path::PathBuf::from(r"\\.\pipe\cfgd-system"));
+        assert_ne!(
+            user, system,
+            "user and system scopes must not share a pipe name"
+        );
     }
 
     #[cfg(target_os = "macos")]

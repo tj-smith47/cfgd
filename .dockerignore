@@ -7,6 +7,12 @@
 !crates/
 !crates/**
 
+# cfgd-core embeds these repo-root example manifests via include_str! at
+# compile time, so every image that builds a cfgd-core-dependent binary needs
+# them in the build context.
+!examples/
+!examples/**
+
 # Allow build files
 !Dockerfile
 !Dockerfile.*
