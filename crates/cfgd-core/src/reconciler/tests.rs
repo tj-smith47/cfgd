@@ -1793,6 +1793,32 @@ fn generate_env_files_expand_leading_tilde() {
     });
 }
 
+// Regression: the fish PATH generator must split on the `:` separator of the
+// RAW value before tilde expansion. On Windows `~` expands to a drive-prefixed
+// home (`C:/Users/...`); splitting post-expansion shattered that drive colon
+// into a bogus extra PATH entry. A Linux home path *may* contain a literal `:`,
+// which stands in for the Windows drive colon and reproduces the exact shatter
+// on Linux: the colon-containing home segment must stay one quoted PATH part.
+#[test]
+#[serial_test::serial]
+fn generate_fish_path_keeps_colon_containing_home_intact() {
+    let home = tempfile::tempdir().unwrap();
+    let coloned = home.path().join("a:b");
+    std::fs::create_dir_all(&coloned).unwrap();
+    crate::with_test_home(&coloned, || {
+        let h = coloned.posix().to_string();
+        let env = vec![crate::config::EnvVar {
+            name: "PATH".into(),
+            value: "~/bin:/usr/bin".into(),
+        }];
+        let fish = super::generate_fish_env_content(&env, &[]);
+        assert!(
+            fish.contains(&format!("set -gx PATH '{h}/bin' '/usr/bin'")),
+            "drive/colon-containing home must stay one PATH part, got: {fish}"
+        );
+    });
+}
+
 #[test]
 fn plan_env_empty_when_no_env() {
     let tmp = tempfile::tempdir().unwrap();

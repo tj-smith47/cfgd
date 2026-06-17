@@ -70,19 +70,26 @@ pub(super) fn generate_fish_env_content(
             tracing::warn!("skipping env var with unsafe name: {}", ev.name);
             continue;
         }
-        // Expand a leading/`:`-prefixed `~` to home before single-quoting: fish
-        // single quotes suppress tilde expansion, so a literal `~` would break
-        // the path. (`$VAR` in a fish single-quoted value is a separate gap.)
-        let value = crate::expand_env_value_tilde(&ev.value);
         if ev.name == "PATH" {
-            // Fish uses space-separated list for PATH, not colon-separated.
-            // Each part is single-quoted to prevent expansion.
-            let parts: Vec<String> = value
+            // Fish uses a space-separated list for PATH, not colon-separated.
+            // Split the RAW value on the `:` separator before tilde expansion:
+            // on Windows `~` expands to a drive-prefixed path (`C:/Users/...`),
+            // and splitting post-expansion would shatter that drive colon into a
+            // bogus extra PATH entry. Each segment is then expanded and
+            // single-quoted to suppress fish expansion.
+            let parts: Vec<String> = ev
+                .value
                 .split(':')
+                .map(crate::expand_env_value_tilde)
                 .map(|p| format!("'{}'", p.replace('\'', "\\'")))
                 .collect();
             lines.push(format!("set -gx PATH {}", parts.join(" ")));
         } else {
+            // Expand a leading/`:`-prefixed `~` to home before single-quoting:
+            // fish single quotes suppress tilde expansion, so a literal `~` would
+            // break the path. (`$VAR` in a fish single-quoted value is a separate
+            // gap.)
+            let value = crate::expand_env_value_tilde(&ev.value);
             // Single-quote to prevent fish command substitution via ()
             lines.push(format!(
                 "set -gx {} '{}'",
