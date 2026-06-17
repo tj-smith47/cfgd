@@ -1949,6 +1949,8 @@ mod tests {
         );
     }
 
+    // CosignTestShim writes a /bin/sh fake-cosign script — Unix-only.
+    #[cfg(unix)]
     #[test]
     #[serial]
     fn sign_and_attest_attest_without_git_warns_and_records_unknown_source() {
@@ -1987,6 +1989,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     #[serial]
     fn sign_and_attest_sign_failure_maps_to_sign_failed_meta() {
@@ -2017,6 +2020,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     #[serial]
     fn sign_and_attest_attest_failure_maps_to_attest_failed_meta() {
