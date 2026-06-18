@@ -46,7 +46,7 @@ tag:
   tag_prefix: "v"
   release_branches:
     - master
-  initial_version: "0.3.5"
+  initial_version: "0.5.0"
 
 metadata:
   # homepage / license / maintainers are derived from [workspace.package]

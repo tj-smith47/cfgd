@@ -68,7 +68,7 @@ cfgd-core = { path = "../cfgd-core", version = "0.5.0", features = ["test-helper
 # validity predicate and the cfgd-core OCI parser, so the cross-crate agreement
 # guard (tests/oci_ref_agreement.rs) lives here. Dev-only keeps cfgd-crd at the
 # bottom of the runtime dependency graph (cfgd never links it at runtime).
-cfgd-crd = { path = "../cfgd-crd", version = "0.3.5" }
+cfgd-crd = { path = "../cfgd-crd", version = "0.5.0" }
 serial_test = "3"
 mockito = "1"
 # Test-only: build `UpdateCheck` fixtures (its public `current`/`latest` fields

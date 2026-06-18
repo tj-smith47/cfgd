@@ -23,7 +23,7 @@ permissions:
   packages: read
 
 env:
-  ANODIZER_VERSION: v0.10.0
+  ANODIZER_VERSION: v0.11.1
 
 jobs:
   shard:

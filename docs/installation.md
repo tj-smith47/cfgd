@@ -62,16 +62,16 @@ one matching your distro and install it with the native package manager:
 ```sh
 # Debian / Ubuntu (and derivatives)
 curl -L -o cfgd.deb \
-  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd_0.4.0_linux_amd64.deb
+  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd_0.5.0_linux_amd64.deb
 sudo dpkg -i cfgd.deb        # or: sudo apt install ./cfgd.deb
 
 # Fedora / RHEL / Alma / Rocky / Amazon Linux (dnf or yum)
 sudo dnf install \
-  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd_0.4.0_linux_amd64.rpm
+  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd_0.5.0_linux_amd64.rpm
 
 # Alpine
 curl -L -o cfgd.apk \
-  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd_0.4.0_linux_amd64.apk
+  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd_0.5.0_linux_amd64.apk
 sudo apk add --allow-untrusted cfgd.apk
 ```
 
