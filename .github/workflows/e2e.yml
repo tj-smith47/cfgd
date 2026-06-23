@@ -46,7 +46,7 @@ jobs:
       REGISTRY: ${{ vars.E2E_REGISTRY }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-node
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: go-task/setup-task@v2
       - name: Run node tests
         run: task e2e:node
@@ -63,7 +63,7 @@ jobs:
       REGISTRY: ${{ vars.E2E_REGISTRY }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-helm
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: go-task/setup-task@v2
       - name: Run Helm tests
         run: task e2e:node:helm
@@ -81,7 +81,7 @@ jobs:
       REGISTRY: ${{ vars.E2E_REGISTRY }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-srv
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: go-task/setup-task@v2
       - name: Run server integration tests
         run: task e2e:node:server
@@ -98,7 +98,7 @@ jobs:
       REGISTRY: ${{ vars.E2E_REGISTRY }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-op
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: go-task/setup-task@v2
       - name: Run operator tests
@@ -116,7 +116,7 @@ jobs:
       REGISTRY: ${{ vars.E2E_REGISTRY }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-full
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: go-task/setup-task@v2
       # cosign is required by test-oci-e2e.sh OCI-E2E-02/03 (and the
@@ -139,7 +139,7 @@ jobs:
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
       REGISTRY: ${{ vars.E2E_REGISTRY }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: go-task/setup-task@v2
       - name: Run Crossplane tests
@@ -157,7 +157,7 @@ jobs:
       REGISTRY: ${{ vars.E2E_REGISTRY }}
       E2E_NAMESPACE: cfgd-e2e-${{ github.run_id }}-gateway
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: go-task/setup-task@v2
       - name: Run gateway tests
         run: task e2e:gateway
@@ -170,7 +170,7 @@ jobs:
     env:
       REGISTRY: ${{ vars.E2E_REGISTRY }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: go-task/setup-task@v2
       # cosign-installer verifies the binary's keyless signature against

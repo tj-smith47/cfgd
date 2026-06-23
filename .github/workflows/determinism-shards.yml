@@ -38,7 +38,7 @@ jobs:
           - { os: windows-latest, label: windows-aarch64, targets: 'aarch64-pc-windows-msvc',   name: 'Windows aarch64' }
     runs-on: ${{ matrix.shard.os }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ inputs.head_sha }}
