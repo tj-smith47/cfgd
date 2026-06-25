@@ -363,19 +363,44 @@ mod tests {
     }
 
     #[test]
-    fn detect_default_branch_on_current_repo() {
-        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap();
-        let result = detect_default_branch(repo_root);
-        assert!(
-            result.is_some(),
-            "should detect default branch in the cfgd repo"
+    fn detect_default_branch_resolves_origin_head_on_detached_checkout() {
+        // Reproduces the CI checkout shape (actions/checkout = detached HEAD)
+        // and proves origin/HEAD still resolves the remote default branch. The
+        // local-HEAD fallback is covered by detect_default_branch_on_fresh_init_repo.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let upstream = tmp.path().join("upstream");
+        let work = tmp.path().join("work");
+        let git = |args: &[&str]| {
+            let ok = super::git_cmd_local()
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            assert!(ok, "git {args:?} must succeed");
+        };
+        let up = upstream.to_str().unwrap();
+        let wk = work.to_str().unwrap();
+        git(&["init", "-b", "trunk", up]);
+        git(&[
+            "-C",
+            up,
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "init",
+        ]);
+        git(&["clone", up, wk]);
+        git(&["-C", wk, "checkout", "--detach", "HEAD"]);
+        assert_eq!(
+            detect_default_branch(&work).as_deref(),
+            Some("trunk"),
+            "origin/HEAD must resolve the remote default branch on a detached checkout"
         );
-        let branch = result.unwrap();
-        assert!(!branch.is_empty(), "detected branch name must not be empty");
     }
 
     #[test]
