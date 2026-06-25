@@ -405,6 +405,9 @@ workspaces:
             # (exit code -1073741515).
             dependencies:
               - package_identifier: "Microsoft.VCRedist.2015+.x64"
+                architectures: ["x64"]
+              - package_identifier: "Microsoft.VCRedist.2015+.arm64"
+                architectures: ["arm64"]
             commit_author:
               name: "TJ Smith"
               email: "tj@jarvispro.io"
