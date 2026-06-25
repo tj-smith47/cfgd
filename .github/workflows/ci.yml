@@ -88,6 +88,16 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ripgrep
       - run: bash .claude/scripts/audit.sh
 
+  cargo-audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest

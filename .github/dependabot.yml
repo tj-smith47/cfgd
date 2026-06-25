@@ -1,5 +1,17 @@
 version: 2
 updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    # Group routine version bumps into one weekly PR; Dependabot security
+    # updates bypass grouping and arrive as individual PRs regardless.
+    groups:
+      cargo:
+        patterns: ["*"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
