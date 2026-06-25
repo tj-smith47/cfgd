@@ -51,15 +51,15 @@ cfgd-crd = { path = "../cfgd-crd", version = "0.5.0", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
-toml = "0.8"
+toml = "1.0"
 # JSON Schema generation for the published editor-config schemas
 # (schemas/*.schema.json). Derived on the config document types so the
 # schemas are generated from the Rust structs and can never silently drift.
-schemars = "0.8"
+schemars = "1.2"
 
 # Output & Theming
-console = "0.15"
-indicatif = { version = "0.17", features = ["tokio"] }
+console = "0.16"
+indicatif = { version = "0.18", features = ["tokio"] }
 syntect = "5"
 unicode-width = "0.2"
 
@@ -74,7 +74,7 @@ thiserror = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Filesystem watching (daemon)
-notify = "7"
+notify = "8"
 notify-rust = "4"
 
 # Async runtime
@@ -84,25 +84,25 @@ tokio = { version = "1", features = ["full"] }
 secrecy = "0.10"
 
 # Hashing
-sha2 = "0.10"
+sha2 = "0.11"
 
 # Diffing
-similar = "2"
+similar = "3"
 
 # Paths
-directories = "5"
+directories = "6"
 
 # Hostname detection
 hostname = "0.4"
 
 # Interactive prompts
-inquire = "0.7"
+inquire = "0.9"
 
 # HTTP client (daemon webhooks)
-ureq = "2"
+ureq = "3"
 
 # Git
-git2 = "0.19"
+git2 = "0.21"
 
 # Templating (output format)
 tera = "1"
@@ -123,7 +123,7 @@ tar = "0.4"
 libc = "0.2"
 
 # Zip extraction (upgrade on Windows)
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [target.'cfg(not(windows))'.dependencies]
 # Force vendored OpenSSL for git2/libgit2 on Linux and macOS; avoids needing
@@ -132,10 +132,10 @@ openssl = { version = "0.10", features = ["vendored"] }
 
 [target.'cfg(unix)'.dependencies]
 # Safe wrappers over libc for signals, process control, file locking
-nix = { version = "0.29", features = ["signal", "fs", "process", "user"] }
+nix = { version = "0.31", features = ["signal", "fs", "process", "user"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Storage_FileSystem",
@@ -145,7 +145,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Threading",
     "Win32_UI_Shell",
 ] }
-windows-service = "0.7"
+windows-service = "0.8"
 
 [features]
 default = ["crd"]
