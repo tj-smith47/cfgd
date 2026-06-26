@@ -1,8 +1,19 @@
+use std::fmt::Write as _;
+
 use sha2::Digest as _;
 
 /// Compute SHA256 hash of data and return as lowercase hex string.
 pub fn sha256_hex(data: &[u8]) -> String {
-    format!("{:x}", sha2::Sha256::digest(data))
+    // sha2 0.11's digest output is a `hybrid_array::Array` (derefs to `[u8]`)
+    // that no longer implements `LowerHex`; encode the bytes ourselves so the
+    // lowercase-hex output stays byte-identical to the `{:x}` formatting used
+    // before the bump.
+    let digest = sha2::Sha256::digest(data);
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest.iter() {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 /// Compute an OCI-style `sha256:<hex>` digest string from data.

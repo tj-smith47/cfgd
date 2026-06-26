@@ -160,9 +160,10 @@ fn push_module_inner_uploads_blobs_and_manifest() {
         .with_status(201)
         .create();
 
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(10))
-        .build();
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .build()
+        .new_agent();
 
     let result = push_module_inner(
         &agent,
@@ -194,7 +195,7 @@ fn push_module_inner_rejects_missing_module_yaml() {
         reference: ReferenceKind::Tag("v1".to_string()),
     };
 
-    let agent = ureq::AgentBuilder::new().build();
+    let agent = ureq::Agent::config_builder().build().new_agent();
     let result = push_module_inner(&agent, dir.path(), &oci_ref, None, None);
     assert!(matches!(result, Err(OciError::ModuleYamlNotFound { .. })));
 }

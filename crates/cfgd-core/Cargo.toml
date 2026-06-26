@@ -102,7 +102,11 @@ inquire = "0.9"
 ureq = "3"
 
 # Git
-git2 = "0.21"
+# git2 0.21 ships empty default features (0.19 enabled ssh/https by default).
+# Restore ssh + https explicitly so SSH-agent + key-file + credential-helper
+# auth (git_ssh_credentials) keeps working; both pull in the `cred` feature.
+# 0.21 folded the old `ssh_key_from_memory` feature into `ssh`.
+git2 = { version = "0.21", features = ["ssh", "https"] }
 
 # Templating (output format)
 tera = "1"

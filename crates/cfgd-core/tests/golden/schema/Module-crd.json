@@ -1,37 +1,33 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ModuleSpec",
   "type": "object",
   "properties": {
     "depends": {
-      "default": [],
       "type": "array",
+      "default": [],
       "items": {
         "type": "string"
       }
     },
     "env": {
-      "default": [],
       "type": "array",
+      "default": [],
       "items": {
-        "$ref": "#/definitions/ModuleEnvVar"
+        "$ref": "#/$defs/ModuleEnvVar"
       }
     },
     "files": {
-      "default": [],
       "type": "array",
+      "default": [],
       "items": {
-        "$ref": "#/definitions/ModuleFileSpec"
+        "$ref": "#/$defs/ModuleFileSpec"
       }
     },
     "mountPolicy": {
-      "description": "Controls how the module is mounted in pods. `Always` (default): CSI volume + volumeMount on all declared containers + env vars. `Debug`: CSI volume only — no volumeMount or env on declared containers. Only accessible via ephemeral debug containers (`kubectl cfgd debug`).",
-      "default": "Always",
-      "allOf": [
-        {
-          "$ref": "#/definitions/MountPolicy"
-        }
-      ]
+      "description": "Controls how the module is mounted in pods.\n`Always` (default): CSI volume + volumeMount on all declared containers + env vars.\n`Debug`: CSI volume only — no volumeMount or env on declared containers.\n  Only accessible via ephemeral debug containers (`kubectl cfgd debug`).",
+      "$ref": "#/$defs/MountPolicy",
+      "default": "Always"
     },
     "ociArtifact": {
       "type": [
@@ -40,24 +36,20 @@
       ]
     },
     "packages": {
-      "default": [],
       "type": "array",
+      "default": [],
       "items": {
-        "$ref": "#/definitions/PackageEntry"
+        "$ref": "#/$defs/PackageEntry"
       }
     },
     "scripts": {
-      "default": {},
-      "allOf": [
-        {
-          "$ref": "#/definitions/ModuleScripts"
-        }
-      ]
+      "$ref": "#/$defs/ModuleScripts",
+      "default": {}
     },
     "signature": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ModuleSignature"
+          "$ref": "#/$defs/ModuleSignature"
         },
         {
           "type": "null"
@@ -65,7 +57,7 @@
       ]
     }
   },
-  "definitions": {
+  "$defs": {
     "CosignSignature": {
       "description": "Cosign configuration for OCI artifact signature verification.",
       "type": "object",
@@ -86,8 +78,8 @@
         },
         "keyless": {
           "description": "Enable keyless verification via Fulcio/Rekor (OIDC identity-based).",
-          "default": false,
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "publicKey": {
           "description": "PEM-encoded public key for static key verification.",
@@ -101,14 +93,10 @@
     "ModuleEnvVar": {
       "description": "An environment variable set by a Module.",
       "type": "object",
-      "required": [
-        "name",
-        "value"
-      ],
       "properties": {
         "append": {
-          "default": false,
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "name": {
           "type": "string"
@@ -116,15 +104,15 @@
         "value": {
           "type": "string"
         }
-      }
+      },
+      "required": [
+        "name",
+        "value"
+      ]
     },
     "ModuleFileSpec": {
       "description": "A file managed by a Module.",
       "type": "object",
-      "required": [
-        "source",
-        "target"
-      ],
       "properties": {
         "source": {
           "type": "string"
@@ -132,7 +120,11 @@
         "target": {
           "type": "string"
         }
-      }
+      },
+      "required": [
+        "source",
+        "target"
+      ]
     },
     "ModuleScripts": {
       "description": "Scripts that run during module lifecycle.",
@@ -153,7 +145,7 @@
         "cosign": {
           "anyOf": [
             {
-              "$ref": "#/definitions/CosignSignature"
+              "$ref": "#/$defs/CosignSignature"
             },
             {
               "type": "null"
@@ -168,25 +160,18 @@
         {
           "description": "Mount into all declared containers with volumeMount and env vars.",
           "type": "string",
-          "enum": [
-            "Always"
-          ]
+          "const": "Always"
         },
         {
-          "description": "Stage the CSI volume on the pod but do not mount into declared containers. Only accessible via ephemeral debug containers.",
+          "description": "Stage the CSI volume on the pod but do not mount into declared containers.\nOnly accessible via ephemeral debug containers.",
           "type": "string",
-          "enum": [
-            "Debug"
-          ]
+          "const": "Debug"
         }
       ]
     },
     "PackageEntry": {
       "description": "An entry in a Module's package list with optional per-platform overrides.",
       "type": "object",
-      "required": [
-        "name"
-      ],
       "properties": {
         "name": {
           "type": "string"
@@ -198,7 +183,10 @@
             "type": "string"
           }
         }
-      }
+      },
+      "required": [
+        "name"
+      ]
     }
   }
 }

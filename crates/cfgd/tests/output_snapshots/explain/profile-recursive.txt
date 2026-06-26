@@ -1,0 +1,106 @@
+Profile (Profile)
+
+A composable layer of modules, packages, files, and settings.
+
+apiVersion  cfgd.io/v1alpha1
+kind        Profile
+location    profiles/<name>.yaml
+
+FIELDS (under spec)
+  aliases
+    command <string> (required) — 
+    name <string> (required)    — 
+  env
+    name <string> (required)  — 
+    value <string> (required) — 
+  files
+    managed
+      encryption
+        backend <string> (required) — The encryption backend to use (e.g. "sops", "age").
+        mode <object>               — When encryption must be enforced. Defaults to `InRepo`.
+      encryption <object>        — Encryption settings for this file.
+      permissions <string>       — Unix permission bits (e.g. "600", "644") to apply after deployment.
+      private <boolean>          — When true, the source file is local-only: auto-added to .gitignore,
+        silently skipped on machines where it doesn't exist.
+      source <string> (required) — 
+      strategy <object>          — Per-file deployment strategy override. If None, uses the global default.
+      target <string> (required) — 
+    managed <[]object>   — 
+    permissions <object> — 
+  packages
+    apt
+      file <string>       — 
+      packages <[]string> — 
+    brew
+      casks <[]string>    — 
+      file <string>       — 
+      formulae <[]string> — 
+      taps <[]string>     — 
+    cargo
+      file <string>       — 
+      packages <[]string> — 
+    custom
+      check <string> (required)         — 
+      install <string> (required)       — 
+      listInstalled <string> (required) — 
+      name <string> (required)          — 
+      packages <[]string>               — 
+      uninstall <string> (required)     — 
+      update <string>                   — 
+    flatpak
+      packages <[]string> — 
+      remote <string>     — 
+    npm
+      file <string>     — 
+      global <[]string> — 
+    snap
+      classic <[]string>  — 
+      packages <[]string> — 
+    apk <[]string>        — 
+    apt <object>          — 
+    brew <object>         — 
+    cargo <object>        — Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`)
+      and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the
+      shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.
+    chocolatey <[]string> — 
+    custom <[]object>     — 
+    dnf <[]string>        — 
+    flatpak <object>      — 
+    go <[]string>         — 
+    nix <[]string>        — 
+    npm <object>          — 
+    pacman <[]string>     — 
+    pipx <[]string>       — 
+    pkg <[]string>        — 
+    scoop <[]string>      — 
+    snap <object>         — 
+    winget <[]string>     — 
+    yum <[]string>        — 
+    zypper <[]string>     — 
+  scripts
+    onChange <[]object>      — 
+    onDrift <[]object>       — 
+    postApply <[]object>     — 
+    postReconcile <[]object> — 
+    preApply <[]object>      — 
+    preReconcile <[]object>  — 
+  secrets
+    backend <string>           — 
+    envs <[]string>            — 
+    source <string> (required) — 
+    target <string>            — 
+    template <string>          — 
+  aliases <[]object>  — 
+  env <[]object>      — 
+  envScope <object>   — How far `spec.env` exports reach across the current user's environment.
+    Omitted means "inherit" (a parent layer's value survives); the resolved
+    default when no layer sets it is [`EnvScope::All`] — every standard user
+    entry point cfgd can safely touch. Narrow it to `Login` or `Interactive`
+    to opt out of the broader session surfaces.
+  files <object>      — 
+  inherits <[]string> — 
+  modules <[]string>  — 
+  packages <object>   — 
+  scripts <object>    — 
+  secrets <[]object>  — 
+  system <object>     — 

@@ -162,6 +162,18 @@ mod tests {
             .inc();
         metrics.cache_size_bytes.set(42);
 
+        // Record a pull-duration observation: a histogram Family with no
+        // observed label set emits no series at all, so the metric name would
+        // be absent from the encoded text. Observe one so the assertion below
+        // exercises real output.
+        metrics
+            .pull_duration_seconds
+            .get_or_create(&PullLabels {
+                module: "nettools".to_string(),
+                cached: "false".to_string(),
+            })
+            .observe(0.5);
+
         let mut buf = String::new();
         prometheus_client::encoding::text::encode(&mut buf, &registry).unwrap();
         assert!(buf.contains("cfgd_csi_volume_publish_total"));

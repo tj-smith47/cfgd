@@ -100,7 +100,7 @@ async fn reconcile_machine_config_removes_finalizer_on_deletion_then_returns_awa
     let mut mc = machine_config("mc-deleting", NS);
     mc.metadata.finalizers = Some(vec![MACHINE_CONFIG_FINALIZER.to_string()]);
     mc.metadata.deletion_timestamp = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
-        chrono::Utc::now(),
+        k8s_openapi::jiff::Timestamp::now(),
     ));
 
     let (ctx, _registry, harness) = MockKubeHarness::new(vec![
@@ -134,7 +134,7 @@ async fn reconcile_machine_config_removes_finalizer_on_deletion_then_returns_awa
 async fn reconcile_machine_config_when_deletion_and_no_finalizer_skips_patch_and_proceeds() {
     let mut mc = machine_config("mc-deleted-clean", NS);
     mc.metadata.deletion_timestamp = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
-        chrono::Utc::now(),
+        k8s_openapi::jiff::Timestamp::now(),
     ));
     // No finalizer present — fall through to the normal flow but without
     // the add-finalizer patch (because deletion_timestamp is set).

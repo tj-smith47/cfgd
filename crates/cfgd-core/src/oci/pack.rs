@@ -433,9 +433,11 @@ fn get_base_doc(
     .map_err(|e| OciError::ManifestNotFound {
         reference: format!("{base}: {e}"),
     })?;
-    resp.into_string().map_err(|e| OciError::RequestFailed {
-        message: format!("cannot read base manifest body: {e}"),
-    })
+    resp.into_body()
+        .read_to_string()
+        .map_err(|e| OciError::RequestFailed {
+            message: format!("cannot read base manifest body: {e}"),
+        })
 }
 
 /// Resolve the base reference to a concrete single-platform [`OciManifest`],

@@ -462,8 +462,8 @@ impl Notifier {
         tokio::task::spawn_blocking(move || {
             match crate::http::http_agent(crate::http::HTTP_WEBHOOK_TIMEOUT)
                 .post(&url)
-                .set("Content-Type", "application/json")
-                .send_string(&body)
+                .header("Content-Type", "application/json")
+                .send(body.as_str())
             {
                 Ok(_) => tracing::debug!(url = %url, "webhook notification sent"),
                 Err(e) => tracing::warn!(error = %e, "webhook notification failed"),

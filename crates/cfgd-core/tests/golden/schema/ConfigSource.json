@@ -1,9 +1,10 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ConfigSourceSpec",
   "type": "object",
   "properties": {
     "policy": {
+      "$ref": "#/$defs/ConfigSourcePolicy",
       "default": {
         "constraints": {
           "allowSystemChanges": false,
@@ -52,42 +53,33 @@
           "secrets": [],
           "system": {}
         }
-      },
-      "allOf": [
-        {
-          "$ref": "#/definitions/ConfigSourcePolicy"
-        }
-      ]
+      }
     },
     "provides": {
+      "$ref": "#/$defs/ConfigSourceProvides",
       "default": {
         "modules": [],
         "platformProfiles": {},
         "profileDetails": [],
         "profiles": []
-      },
-      "allOf": [
-        {
-          "$ref": "#/definitions/ConfigSourceProvides"
-        }
-      ]
+      }
     }
   },
   "additionalProperties": false,
-  "definitions": {
+  "$defs": {
     "AptSpec": {
       "type": "object",
       "properties": {
         "file": {
-          "default": null,
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "default": null
         },
         "packages": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
@@ -99,29 +91,29 @@
       "type": "object",
       "properties": {
         "casks": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
         },
         "file": {
-          "default": null,
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "default": null
         },
         "formulae": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
         },
         "taps": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
@@ -130,7 +122,7 @@
       "additionalProperties": false
     },
     "CargoSpec": {
-      "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`) and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
+      "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`)\nand object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the\nshared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
       "type": "object",
       "properties": {
         "file": {
@@ -140,8 +132,8 @@
           ]
         },
         "packages": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
@@ -153,20 +145,17 @@
       "type": "object",
       "properties": {
         "constraints": {
+          "$ref": "#/$defs/SourceConstraints",
           "default": {
             "allowSystemChanges": false,
             "allowedTargetPaths": [],
             "noScripts": true,
             "noSecretsRead": true,
             "requireSignedCommits": false
-          },
-          "allOf": [
-            {
-              "$ref": "#/definitions/SourceConstraints"
-            }
-          ]
+          }
         },
         "locked": {
+          "$ref": "#/$defs/PolicyItems",
           "default": {
             "aliases": [],
             "env": [],
@@ -176,14 +165,10 @@
             "profiles": [],
             "secrets": [],
             "system": {}
-          },
-          "allOf": [
-            {
-              "$ref": "#/definitions/PolicyItems"
-            }
-          ]
+          }
         },
         "optional": {
+          "$ref": "#/$defs/PolicyItems",
           "default": {
             "aliases": [],
             "env": [],
@@ -193,14 +178,10 @@
             "profiles": [],
             "secrets": [],
             "system": {}
-          },
-          "allOf": [
-            {
-              "$ref": "#/definitions/PolicyItems"
-            }
-          ]
+          }
         },
         "recommended": {
+          "$ref": "#/$defs/PolicyItems",
           "default": {
             "aliases": [],
             "env": [],
@@ -210,14 +191,10 @@
             "profiles": [],
             "secrets": [],
             "system": {}
-          },
-          "allOf": [
-            {
-              "$ref": "#/definitions/PolicyItems"
-            }
-          ]
+          }
         },
         "required": {
+          "$ref": "#/$defs/PolicyItems",
           "default": {
             "aliases": [],
             "env": [],
@@ -227,33 +204,25 @@
             "profiles": [],
             "secrets": [],
             "system": {}
-          },
-          "allOf": [
-            {
-              "$ref": "#/definitions/PolicyItems"
-            }
-          ]
+          }
         }
       },
       "additionalProperties": false
     },
     "ConfigSourceProfileEntry": {
-      "description": "Detailed profile entry in a ConfigSource manifest. When present, provides richer info than the flat `profiles` list.",
+      "description": "Detailed profile entry in a ConfigSource manifest.\nWhen present, provides richer info than the flat `profiles` list.",
       "type": "object",
-      "required": [
-        "name"
-      ],
       "properties": {
         "description": {
-          "default": null,
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "default": null
         },
         "inherits": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
@@ -262,42 +231,45 @@
           "type": "string"
         },
         "path": {
-          "default": null,
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "default": null
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
     },
     "ConfigSourceProvides": {
       "type": "object",
       "properties": {
         "modules": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
         },
         "platformProfiles": {
-          "default": {},
           "type": "object",
           "additionalProperties": {
             "type": "string"
-          }
+          },
+          "default": {}
         },
         "profileDetails": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
-            "$ref": "#/definitions/ConfigSourceProfileEntry"
+            "$ref": "#/$defs/ConfigSourceProfileEntry"
           }
         },
         "profiles": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
@@ -307,13 +279,6 @@
     },
     "CustomManagerSpec": {
       "type": "object",
-      "required": [
-        "check",
-        "install",
-        "listInstalled",
-        "name",
-        "uninstall"
-      ],
       "properties": {
         "check": {
           "type": "string"
@@ -328,8 +293,8 @@
           "type": "string"
         },
         "packages": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
@@ -338,14 +303,21 @@
           "type": "string"
         },
         "update": {
-          "default": null,
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "default": null
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "check",
+        "listInstalled",
+        "install",
+        "uninstall"
+      ]
     },
     "EncryptionConstraint": {
       "description": "Encryption constraint applied to files from a config source.",
@@ -362,7 +334,7 @@
           "description": "If set, restrict which encryption mode is acceptable.",
           "anyOf": [
             {
-              "$ref": "#/definitions/EncryptionMode"
+              "$ref": "#/$defs/EncryptionMode"
             },
             {
               "type": "null"
@@ -371,8 +343,8 @@
         },
         "requiredTargets": {
           "description": "Glob patterns or explicit paths that must be encrypted.",
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
@@ -386,25 +358,18 @@
         {
           "description": "File must be encrypted when stored in the repository.",
           "type": "string",
-          "enum": [
-            "InRepo"
-          ]
+          "const": "InRepo"
         },
         {
           "description": "File must always be encrypted, including at rest on disk.",
           "type": "string",
-          "enum": [
-            "Always"
-          ]
+          "const": "Always"
         }
       ]
     },
     "EncryptionSpec": {
       "description": "Encryption settings for a managed file.",
       "type": "object",
-      "required": [
-        "backend"
-      ],
       "properties": {
         "backend": {
           "description": "The encryption backend to use (e.g. \"sops\", \"age\").",
@@ -412,22 +377,17 @@
         },
         "mode": {
           "description": "When encryption must be enforced. Defaults to `InRepo`.",
-          "default": "InRepo",
-          "allOf": [
-            {
-              "$ref": "#/definitions/EncryptionMode"
-            }
-          ]
+          "$ref": "#/$defs/EncryptionMode",
+          "default": "InRepo"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "required": [
+        "backend"
+      ]
     },
     "EnvVar": {
       "type": "object",
-      "required": [
-        "name",
-        "value"
-      ],
       "properties": {
         "name": {
           "type": "string"
@@ -435,7 +395,11 @@
         "value": {
           "type": "string"
         }
-      }
+      },
+      "required": [
+        "name",
+        "value"
+      ]
     },
     "FileStrategy": {
       "description": "File deployment strategy.",
@@ -443,30 +407,22 @@
         {
           "description": "Create a symbolic link from target to source (default).",
           "type": "string",
-          "enum": [
-            "Symlink"
-          ]
+          "const": "Symlink"
         },
         {
           "description": "Copy source content to target.",
           "type": "string",
-          "enum": [
-            "Copy"
-          ]
+          "const": "Copy"
         },
         {
           "description": "Render a Tera template and write the output (auto-selected for .tera files).",
           "type": "string",
-          "enum": [
-            "Template"
-          ]
+          "const": "Template"
         },
         {
           "description": "Create a hard link from target to source.",
           "type": "string",
-          "enum": [
-            "Hardlink"
-          ]
+          "const": "Hardlink"
         }
       ]
     },
@@ -474,34 +430,30 @@
       "type": "object",
       "properties": {
         "packages": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
         },
         "remote": {
-          "default": null,
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "default": null
         }
       },
       "additionalProperties": false
     },
     "ManagedFileSpec": {
       "type": "object",
-      "required": [
-        "source",
-        "target"
-      ],
       "properties": {
         "encryption": {
           "description": "Encryption settings for this file.",
           "anyOf": [
             {
-              "$ref": "#/definitions/EncryptionSpec"
+              "$ref": "#/$defs/EncryptionSpec"
             },
             {
               "type": "null"
@@ -516,7 +468,7 @@
           ]
         },
         "private": {
-          "description": "When true, the source file is local-only: auto-added to .gitignore, silently skipped on machines where it doesn't exist.",
+          "description": "When true, the source file is local-only: auto-added to .gitignore,\nsilently skipped on machines where it doesn't exist.",
           "type": "boolean"
         },
         "source": {
@@ -526,7 +478,7 @@
           "description": "Per-file deployment strategy override. If None, uses the global default.",
           "anyOf": [
             {
-              "$ref": "#/definitions/FileStrategy"
+              "$ref": "#/$defs/FileStrategy"
             },
             {
               "type": "null"
@@ -537,21 +489,25 @@
           "type": "string"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "target"
+      ]
     },
     "NpmSpec": {
       "type": "object",
       "properties": {
         "file": {
-          "default": null,
           "type": [
             "string",
             "null"
-          ]
+          ],
+          "default": null
         },
         "global": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
@@ -563,158 +519,158 @@
       "type": "object",
       "properties": {
         "apk": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
         },
         "apt": {
-          "default": null,
           "anyOf": [
             {
-              "$ref": "#/definitions/AptSpec"
+              "$ref": "#/$defs/AptSpec"
             },
             {
               "type": "null"
             }
-          ]
+          ],
+          "default": null
         },
         "brew": {
-          "default": null,
           "anyOf": [
             {
-              "$ref": "#/definitions/BrewSpec"
+              "$ref": "#/$defs/BrewSpec"
             },
             {
               "type": "null"
             }
-          ]
+          ],
+          "default": null
         },
         "cargo": {
-          "default": null,
           "anyOf": [
             {
-              "$ref": "#/definitions/CargoSpec"
+              "$ref": "#/$defs/CargoSpec"
             },
             {
               "type": "null"
             }
-          ]
+          ],
+          "default": null
         },
         "chocolatey": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
         },
         "custom": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
-            "$ref": "#/definitions/CustomManagerSpec"
+            "$ref": "#/$defs/CustomManagerSpec"
           }
         },
         "dnf": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
         },
         "flatpak": {
-          "default": null,
           "anyOf": [
             {
-              "$ref": "#/definitions/FlatpakSpec"
+              "$ref": "#/$defs/FlatpakSpec"
             },
             {
               "type": "null"
             }
-          ]
+          ],
+          "default": null
         },
         "go": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
         },
         "nix": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
         },
         "npm": {
-          "default": null,
           "anyOf": [
             {
-              "$ref": "#/definitions/NpmSpec"
+              "$ref": "#/$defs/NpmSpec"
             },
             {
               "type": "null"
             }
-          ]
+          ],
+          "default": null
         },
         "pacman": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
         },
         "pipx": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
         },
         "pkg": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
         },
         "scoop": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
         },
         "snap": {
-          "default": null,
           "anyOf": [
             {
-              "$ref": "#/definitions/SnapSpec"
+              "$ref": "#/$defs/SnapSpec"
             },
             {
               "type": "null"
             }
-          ]
+          ],
+          "default": null
         },
         "winget": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
         },
         "yum": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
         },
         "zypper": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
@@ -726,71 +682,68 @@
       "type": "object",
       "properties": {
         "aliases": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
-            "$ref": "#/definitions/ShellAlias"
+            "$ref": "#/$defs/ShellAlias"
           }
         },
         "env": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
-            "$ref": "#/definitions/EnvVar"
+            "$ref": "#/$defs/EnvVar"
           }
         },
         "files": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
-            "$ref": "#/definitions/ManagedFileSpec"
+            "$ref": "#/$defs/ManagedFileSpec"
           }
         },
         "modules": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
         },
         "packages": {
-          "default": null,
           "anyOf": [
             {
-              "$ref": "#/definitions/PackagesSpec"
+              "$ref": "#/$defs/PackagesSpec"
             },
             {
               "type": "null"
             }
-          ]
+          ],
+          "default": null
         },
         "profiles": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
         },
         "secrets": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
-            "$ref": "#/definitions/SecretSpec"
+            "$ref": "#/$defs/SecretSpec"
           }
         },
         "system": {
-          "default": {},
           "type": "object",
-          "additionalProperties": true
+          "additionalProperties": true,
+          "default": {}
         }
       },
       "additionalProperties": false
     },
     "SecretSpec": {
       "type": "object",
-      "required": [
-        "source"
-      ],
       "properties": {
         "backend": {
           "type": [
@@ -823,14 +776,13 @@
           ]
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "required": [
+        "source"
+      ]
     },
     "ShellAlias": {
       "type": "object",
-      "required": [
-        "command",
-        "name"
-      ],
       "properties": {
         "command": {
           "type": "string"
@@ -838,21 +790,25 @@
         "name": {
           "type": "string"
         }
-      }
+      },
+      "required": [
+        "name",
+        "command"
+      ]
     },
     "SnapSpec": {
       "type": "object",
       "properties": {
         "classic": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
         },
         "packages": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
@@ -864,12 +820,12 @@
       "type": "object",
       "properties": {
         "allowSystemChanges": {
-          "default": false,
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         },
         "allowedTargetPaths": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
@@ -878,7 +834,7 @@
           "description": "Encryption requirements imposed on files delivered by this source.",
           "anyOf": [
             {
-              "$ref": "#/definitions/EncryptionConstraint"
+              "$ref": "#/$defs/EncryptionConstraint"
             },
             {
               "type": "null"
@@ -886,17 +842,17 @@
           ]
         },
         "noScripts": {
-          "default": true,
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "noSecretsRead": {
-          "default": true,
-          "type": "boolean"
+          "type": "boolean",
+          "default": true
         },
         "requireSignedCommits": {
-          "description": "Require that the HEAD commit in this source's git repo has a valid GPG or SSH signature. Subscribers can bypass with `security.allow-unsigned`.",
-          "default": false,
-          "type": "boolean"
+          "description": "Require that the HEAD commit in this source's git repo has a valid\nGPG or SSH signature. Subscribers can bypass with `security.allow-unsigned`.",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false

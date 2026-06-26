@@ -365,9 +365,10 @@ fn get_bearer_token_parses_www_authenticate() {
         .with_body(r#"{"token":"tok-abc-123"}"#)
         .create();
 
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(10))
-        .build();
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .build()
+        .new_agent();
 
     let result = get_bearer_token(&agent, &www_auth, None);
     assert!(
@@ -393,9 +394,10 @@ fn get_bearer_token_uses_access_token_field() {
         .with_body(r#"{"access_token":"alt-token-456"}"#)
         .create();
 
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(10))
-        .build();
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .build()
+        .new_agent();
 
     let result = get_bearer_token(&agent, &www_auth, None);
     assert!(result.is_ok());
@@ -404,7 +406,7 @@ fn get_bearer_token_uses_access_token_field() {
 
 #[test]
 fn get_bearer_token_fails_without_realm() {
-    let agent = ureq::AgentBuilder::new().build();
+    let agent = ureq::Agent::config_builder().build().new_agent();
     let result = get_bearer_token(&agent, "Bearer service=\"svc\"", None);
     assert!(result.is_err());
     assert!(
@@ -429,9 +431,10 @@ fn get_bearer_token_fails_on_non_json_token_response() {
         .with_body("not json at all")
         .create();
 
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(10))
-        .build();
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .build()
+        .new_agent();
 
     let result = get_bearer_token(&agent, &www_auth, None);
     assert!(matches!(result, Err(OciError::AuthFailed { .. })));
@@ -461,9 +464,10 @@ fn get_bearer_token_sends_basic_auth_when_provided() {
         .with_body(r#"{"token":"authed-token"}"#)
         .create();
 
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(10))
-        .build();
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .build()
+        .new_agent();
 
     let result = get_bearer_token(&agent, &www_auth, Some(&auth));
     assert!(result.is_ok());
@@ -864,9 +868,10 @@ fn get_bearer_token_response_with_no_token_returns_auth_failed() {
         .with_body(r#"{"other":"field"}"#)
         .create();
 
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(10))
-        .build();
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .build()
+        .new_agent();
     let result = get_bearer_token(&agent, &www_auth, None);
     assert!(matches!(result, Err(OciError::AuthFailed { .. })));
     let msg = format!("{:?}", result.err().unwrap());
@@ -877,9 +882,10 @@ fn get_bearer_token_response_with_no_token_returns_auth_failed() {
 fn get_bearer_token_handles_failed_http_call() {
     // The realm URL points to a non-listening port so the call fails outright.
     let www_auth = r#"Bearer realm="http://127.0.0.1:1/token",service="svc""#;
-    let agent = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_millis(500))
-        .build();
+    let agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_millis(500)))
+        .build()
+        .new_agent();
     let result = get_bearer_token(&agent, www_auth, None);
     assert!(matches!(result, Err(OciError::AuthFailed { .. })));
 }

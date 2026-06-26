@@ -322,7 +322,7 @@ pub(super) fn fetch_existing_repo(
 
     let refspecs: Vec<String> = remote
         .refspecs()
-        .filter_map(|rs| rs.str().map(String::from))
+        .filter_map(|rs| rs.str().ok().map(String::from))
         .collect();
     let refspec_strs: Vec<&str> = refspecs.iter().map(|s| s.as_str()).collect();
 
@@ -453,7 +453,7 @@ pub fn check_tag_signature(
         None => return Ok(TagSignatureStatus::LightweightTag),
     };
 
-    let message = match tag.message() {
+    let message = match tag.message().ok().flatten() {
         Some(m) => m,
         None => return Ok(TagSignatureStatus::Unsigned),
     };

@@ -90,12 +90,12 @@ pub(crate) fn server_checkin(server_url: &str, resolved: &ResolvedProfile) -> bo
     );
 
     match ureq::post(&url)
-        .set("Content-Type", "application/json")
-        .send_string(&body)
+        .header("Content-Type", "application/json")
+        .send(body.as_str())
     {
-        Ok(response) => {
-            let status = response.status();
-            match response.into_string() {
+        Ok(mut response) => {
+            let status = response.status().as_u16();
+            match response.body_mut().read_to_string() {
                 Ok(resp_body) => match serde_json::from_str::<CheckinServerResponse>(&resp_body) {
                     Ok(resp) => {
                         tracing::info!(

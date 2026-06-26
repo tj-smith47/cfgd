@@ -1,113 +1,106 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ConfigPolicySpec",
   "type": "object",
   "properties": {
     "debugModules": {
       "description": "Modules staged as debug-only (CSI volume without volumeMount on declared containers).",
-      "default": [],
       "type": "array",
+      "default": [],
       "items": {
-        "$ref": "#/definitions/ModuleRef"
+        "$ref": "#/$defs/ModuleRef"
       }
     },
     "packages": {
-      "default": [],
       "type": "array",
+      "default": [],
       "items": {
-        "$ref": "#/definitions/PackageRef"
+        "$ref": "#/$defs/PackageRef"
       }
     },
     "requiredModules": {
-      "default": [],
       "type": "array",
+      "default": [],
       "items": {
-        "$ref": "#/definitions/ModuleRef"
+        "$ref": "#/$defs/ModuleRef"
       }
     },
     "settings": {
-      "default": {},
       "type": "object",
-      "additionalProperties": true
+      "additionalProperties": true,
+      "default": {}
     },
     "targetSelector": {
+      "$ref": "#/$defs/LabelSelector",
       "default": {
         "matchExpressions": [],
         "matchLabels": {}
-      },
-      "allOf": [
-        {
-          "$ref": "#/definitions/LabelSelector"
-        }
-      ]
+      }
     }
   },
-  "definitions": {
+  "$defs": {
     "LabelSelector": {
       "description": "Kubernetes-style label selector with match_labels and match_expressions.",
       "type": "object",
       "properties": {
         "matchExpressions": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
-            "$ref": "#/definitions/LabelSelectorRequirement"
+            "$ref": "#/$defs/LabelSelectorRequirement"
           }
         },
         "matchLabels": {
-          "default": {},
           "type": "object",
           "additionalProperties": {
             "type": "string"
-          }
+          },
+          "default": {}
         }
       }
     },
     "LabelSelectorRequirement": {
       "description": "A single requirement for label selector expressions.",
       "type": "object",
-      "required": [
-        "key",
-        "operator"
-      ],
       "properties": {
         "key": {
           "type": "string"
         },
         "operator": {
-          "$ref": "#/definitions/SelectorOperator"
+          "$ref": "#/$defs/SelectorOperator"
         },
         "values": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
             "type": "string"
           }
         }
-      }
+      },
+      "required": [
+        "key",
+        "operator"
+      ]
     },
     "ModuleRef": {
       "description": "Reference to a module that should be installed on the machine.",
       "type": "object",
-      "required": [
-        "name"
-      ],
       "properties": {
         "name": {
           "type": "string"
         },
         "required": {
-          "default": false,
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         }
-      }
+      },
+      "required": [
+        "name"
+      ]
     },
     "PackageRef": {
       "description": "Reference to a package with optional version pin.",
       "type": "object",
-      "required": [
-        "name"
-      ],
       "properties": {
         "name": {
           "type": "string"
@@ -118,7 +111,10 @@
             "null"
           ]
         }
-      }
+      },
+      "required": [
+        "name"
+      ]
     },
     "SelectorOperator": {
       "type": "string",

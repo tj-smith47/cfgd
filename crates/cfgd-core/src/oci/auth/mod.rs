@@ -229,10 +229,10 @@ pub(super) fn get_bearer_token(
 
     let mut req = agent.get(&url);
     if let Some(cred) = auth {
-        req = req.set("Authorization", &cred.basic_auth_header());
+        req = req.header("Authorization", &cred.basic_auth_header());
     }
 
-    let resp = req.call().map_err(|e| OciError::AuthFailed {
+    let mut resp = req.call().map_err(|e| OciError::AuthFailed {
         registry: String::new(),
         message: format!("token request failed: {e}"),
     })?;
@@ -243,10 +243,13 @@ pub(super) fn get_bearer_token(
         access_token: Option<String>,
     }
 
-    let body_str = resp.into_string().map_err(|e| OciError::AuthFailed {
-        registry: String::new(),
-        message: format!("cannot read token response body: {e}"),
-    })?;
+    let body_str = resp
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| OciError::AuthFailed {
+            registry: String::new(),
+            message: format!("cannot read token response body: {e}"),
+        })?;
     let body: TokenResponse =
         serde_json::from_str(&body_str).map_err(|e| OciError::AuthFailed {
             registry: String::new(),

@@ -17794,7 +17794,7 @@ mod cmd_source_add_local {
                 let refs = repo.references().unwrap();
                 let mut name = String::from("master");
                 for r in refs.flatten() {
-                    if let Some(n) = r.name()
+                    if let Ok(n) = r.name()
                         && let Some(stripped) = n.strip_prefix("refs/heads/")
                     {
                         name = stripped.to_string();

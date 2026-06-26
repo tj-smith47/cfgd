@@ -1625,7 +1625,7 @@ fn log_reconcile_ok_does_not_panic() {
     let err_result: ReconcileResult<MachineConfig> =
         Err(kube::runtime::controller::Error::ReconcilerFailed(
             OperatorError::Reconciliation("test error".into()),
-            obj_ref.erase(),
+            Box::new(obj_ref.erase()),
         ));
     let err_future = log_fn_err(err_result);
     futures::executor::block_on(err_future);
@@ -3458,7 +3458,7 @@ mod tests_log_reconcile {
         let obj = machine_config("err-obj", "default");
         let err = kube::runtime::controller::Error::ReconcilerFailed(
             OperatorError::Reconciliation("synthetic".to_string()),
-            ObjectRef::from_obj(&obj).erase(),
+            Box::new(ObjectRef::from_obj(&obj).erase()),
         );
         let ready = f(Err(err));
         let _: () = futures::executor::block_on(ready);
