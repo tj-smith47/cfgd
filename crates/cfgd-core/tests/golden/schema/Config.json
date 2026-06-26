@@ -1,89 +1,67 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "CfgdConfig",
-  "type": "object",
-  "properties": {
-    "apiVersion": {
-      "type": "string"
-    },
-    "kind": {
-      "type": "string"
-    },
-    "metadata": {
-      "$ref": "#/$defs/ConfigMetadata"
-    },
-    "spec": {
-      "$ref": "#/$defs/ConfigSpec"
-    }
-  },
+  "$schema": "https://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
-  "required": [
-    "apiVersion",
-    "kind",
-    "metadata",
-    "spec"
-  ],
-  "$defs": {
+  "definitions": {
     "AiConfig": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "apiKeyEnv": {
-          "type": "string",
-          "default": "ANTHROPIC_API_KEY"
+          "default": "ANTHROPIC_API_KEY",
+          "type": "string"
         },
         "model": {
-          "type": "string",
-          "default": "claude-sonnet-4-6"
+          "default": "claude-sonnet-4-6",
+          "type": "string"
         },
         "provider": {
-          "type": "string",
-          "default": "claude"
+          "default": "claude",
+          "type": "string"
         }
       },
-      "additionalProperties": false
+      "type": "object"
     },
     "AutoApplyPolicyConfig": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "lockedConflict": {
-          "$ref": "#/$defs/PolicyAction",
+          "$ref": "#/definitions/PolicyAction",
           "default": "Notify"
         },
         "newOptional": {
-          "$ref": "#/$defs/PolicyAction",
+          "$ref": "#/definitions/PolicyAction",
           "default": "Ignore"
         },
         "newRecommended": {
-          "$ref": "#/$defs/PolicyAction",
+          "$ref": "#/definitions/PolicyAction",
           "default": "Notify"
         }
       },
-      "additionalProperties": false
+      "type": "object"
     },
     "ComplianceConfig": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "enabled": {
-          "type": "boolean",
-          "default": false
+          "default": false,
+          "type": "boolean"
         },
         "export": {
-          "$ref": "#/$defs/ComplianceExport",
+          "$ref": "#/definitions/ComplianceExport",
           "default": {
             "format": "Json",
             "path": "~/.local/state/cfgd/compliance/"
           }
         },
         "interval": {
-          "type": "string",
-          "default": "1h"
+          "default": "1h",
+          "type": "string"
         },
         "retention": {
-          "type": "string",
-          "default": "30d"
+          "default": "30d",
+          "type": "string"
         },
         "scope": {
-          "$ref": "#/$defs/ComplianceScope",
+          "$ref": "#/definitions/ComplianceScope",
           "default": {
             "files": true,
             "packages": true,
@@ -94,116 +72,116 @@
           }
         }
       },
-      "additionalProperties": false
+      "type": "object"
     },
     "ComplianceExport": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "format": {
-          "$ref": "#/$defs/ComplianceFormat",
+          "$ref": "#/definitions/ComplianceFormat",
           "default": "Json"
         },
         "path": {
-          "type": "string",
-          "default": "~/.local/state/cfgd/compliance/"
+          "default": "~/.local/state/cfgd/compliance/",
+          "type": "string"
         }
       },
-      "additionalProperties": false
+      "type": "object"
     },
     "ComplianceFormat": {
-      "type": "string",
       "enum": [
         "Json",
         "Yaml"
-      ]
+      ],
+      "type": "string"
     },
     "ComplianceScope": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "files": {
-          "type": "boolean",
-          "default": true
+          "default": true,
+          "type": "boolean"
         },
         "packages": {
-          "type": "boolean",
-          "default": true
+          "default": true,
+          "type": "boolean"
         },
         "secrets": {
-          "type": "boolean",
-          "default": true
+          "default": true,
+          "type": "boolean"
         },
         "system": {
-          "type": "boolean",
-          "default": true
+          "default": true,
+          "type": "boolean"
         },
         "watchPackageManagers": {
-          "type": "array",
           "default": [],
           "items": {
             "type": "string"
-          }
+          },
+          "type": "array"
         },
         "watchPaths": {
-          "type": "array",
           "default": [],
           "items": {
             "type": "string"
-          }
+          },
+          "type": "array"
         }
       },
-      "additionalProperties": false
+      "type": "object"
     },
     "ConfigMetadata": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "name": {
           "type": "string"
         }
       },
-      "additionalProperties": false,
       "required": [
         "name"
-      ]
+      ],
+      "type": "object"
     },
     "ConfigSpec": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "ai": {
-          "description": "AI assistant configuration: provider, model, and API key env var.",
           "anyOf": [
             {
-              "$ref": "#/$defs/AiConfig"
+              "$ref": "#/definitions/AiConfig"
             },
             {
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "AI assistant configuration: provider, model, and API key env var."
         },
         "aliases": {
-          "description": "CLI aliases: map of alias name → command string.\nBuilt-in defaults (add, remove) can be overridden or extended.",
-          "type": "object",
           "additionalProperties": {
             "type": "string"
           },
-          "default": {}
+          "default": {},
+          "description": "CLI aliases: map of alias name → command string. Built-in defaults (add, remove) can be overridden or extended.",
+          "type": "object"
         },
         "compliance": {
-          "description": "Compliance snapshot configuration.",
           "anyOf": [
             {
-              "$ref": "#/$defs/ComplianceConfig"
+              "$ref": "#/definitions/ComplianceConfig"
             },
             {
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "Compliance snapshot configuration."
         },
         "daemon": {
           "anyOf": [
             {
-              "$ref": "#/$defs/DaemonConfig"
+              "$ref": "#/definitions/DaemonConfig"
             },
             {
               "type": "null"
@@ -212,40 +190,40 @@
           "default": null
         },
         "fileStrategy": {
-          "description": "Global default file deployment strategy. Per-file overrides take precedence.",
-          "$ref": "#/$defs/FileStrategy",
-          "default": "Symlink"
+          "$ref": "#/definitions/FileStrategy",
+          "default": "Symlink",
+          "description": "Global default file deployment strategy. Per-file overrides take precedence."
         },
         "modules": {
-          "description": "Module configuration: registries and security.",
           "anyOf": [
             {
-              "$ref": "#/$defs/ModulesConfig"
+              "$ref": "#/definitions/ModulesConfig"
             },
             {
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "Module configuration: registries and security."
         },
         "origin": {
-          "type": "array",
           "default": [],
           "items": {
-            "$ref": "#/$defs/OriginSpec"
-          }
+            "$ref": "#/definitions/OriginSpec"
+          },
+          "type": "array"
         },
         "profile": {
+          "default": null,
           "type": [
             "string",
             "null"
-          ],
-          "default": null
+          ]
         },
         "secrets": {
           "anyOf": [
             {
-              "$ref": "#/$defs/SecretsConfig"
+              "$ref": "#/definitions/SecretsConfig"
             },
             {
               "type": "null"
@@ -254,28 +232,28 @@
           "default": null
         },
         "security": {
-          "description": "Security settings for source signature verification.",
           "anyOf": [
             {
-              "$ref": "#/$defs/SecurityConfig"
+              "$ref": "#/definitions/SecurityConfig"
             },
             {
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "Security settings for source signature verification."
         },
         "sources": {
-          "type": "array",
           "default": [],
           "items": {
-            "$ref": "#/$defs/SourceSpec"
-          }
+            "$ref": "#/definitions/SourceSpec"
+          },
+          "type": "array"
         },
         "theme": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ThemeConfig"
+              "$ref": "#/definitions/ThemeConfig"
             },
             {
               "type": "null"
@@ -284,31 +262,31 @@
           "default": null
         },
         "update": {
-          "description": "Update policy for the cfgd binary and authored skills.",
           "anyOf": [
             {
-              "$ref": "#/$defs/UpdateConfig"
+              "$ref": "#/definitions/UpdateConfig"
             },
             {
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "Update policy for the cfgd binary and authored skills."
         }
       },
-      "additionalProperties": false
+      "type": "object"
     },
     "DaemonConfig": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "enabled": {
-          "type": "boolean",
-          "default": false
+          "default": false,
+          "type": "boolean"
         },
         "notify": {
           "anyOf": [
             {
-              "$ref": "#/$defs/NotifyConfig"
+              "$ref": "#/definitions/NotifyConfig"
             },
             {
               "type": "null"
@@ -319,7 +297,7 @@
         "reconcile": {
           "anyOf": [
             {
-              "$ref": "#/$defs/ReconcileConfig"
+              "$ref": "#/definitions/ReconcileConfig"
             },
             {
               "type": "null"
@@ -330,7 +308,7 @@
         "sync": {
           "anyOf": [
             {
-              "$ref": "#/$defs/SyncConfig"
+              "$ref": "#/definitions/SyncConfig"
             },
             {
               "type": "null"
@@ -339,30 +317,30 @@
           "default": null
         },
         "windowsEventLog": {
-          "description": "Mirror daemon log output into the Windows Event Log under the `cfgd`\nsource, in addition to the default file appender at\n`%LOCALAPPDATA%\\cfgd\\daemon.log`. No effect on Unix. Read by\n`cfgd daemon install` to bake `--enable-event-log` into the service\nbinPath; changes require reinstalling the service to take effect.",
-          "type": "boolean",
-          "default": false
+          "default": false,
+          "description": "Mirror daemon log output into the Windows Event Log under the `cfgd` source, in addition to the default file appender at `%LOCALAPPDATA%\\cfgd\\daemon.log`. No effect on Unix. Read by `cfgd daemon install` to bake `--enable-event-log` into the service binPath; changes require reinstalling the service to take effect.",
+          "type": "boolean"
         }
       },
-      "additionalProperties": false
+      "type": "object"
     },
     "DriftPolicy": {
       "description": "Daemon drift reconciliation policy. PascalCase values match K8s enum conventions.",
       "oneOf": [
         {
+          "const": "Auto",
           "description": "Apply drift corrections automatically (current behavior, now opt-in).",
-          "type": "string",
-          "const": "Auto"
+          "type": "string"
         },
         {
+          "const": "NotifyOnly",
           "description": "Notify and record drift, but do not apply. User must run `cfgd apply`.",
-          "type": "string",
-          "const": "NotifyOnly"
+          "type": "string"
         },
         {
+          "const": "Prompt",
           "description": "Future: notify with actionable prompt.",
-          "type": "string",
-          "const": "Prompt"
+          "type": "string"
         }
       ]
     },
@@ -370,30 +348,30 @@
       "description": "File deployment strategy.",
       "oneOf": [
         {
+          "const": "Symlink",
           "description": "Create a symbolic link from target to source (default).",
-          "type": "string",
-          "const": "Symlink"
+          "type": "string"
         },
         {
+          "const": "Copy",
           "description": "Copy source content to target.",
-          "type": "string",
-          "const": "Copy"
+          "type": "string"
         },
         {
+          "const": "Template",
           "description": "Render a Tera template and write the output (auto-selected for .tera files).",
-          "type": "string",
-          "const": "Template"
+          "type": "string"
         },
         {
+          "const": "Hardlink",
           "description": "Create a hard link from target to source.",
-          "type": "string",
-          "const": "Hardlink"
+          "type": "string"
         }
       ]
     },
     "ModuleRegistryEntry": {
+      "additionalProperties": false,
       "description": "A module registry — a git repo containing modules in `modules/<name>/module.yaml` structure.",
-      "type": "object",
       "properties": {
         "name": {
           "description": "Short name / alias for this source (defaults to GitHub org name).",
@@ -404,58 +382,58 @@
           "type": "string"
         }
       },
-      "additionalProperties": false,
       "required": [
         "name",
         "url"
-      ]
+      ],
+      "type": "object"
     },
     "ModuleSecurityConfig": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "requireSignatures": {
-          "description": "Require GPG/SSH signatures on all remote module tags.\nWhen true, unsigned modules are rejected unless `--allow-unsigned` is passed.",
-          "type": "boolean",
-          "default": false
+          "default": false,
+          "description": "Require GPG/SSH signatures on all remote module tags. When true, unsigned modules are rejected unless `--allow-unsigned` is passed.",
+          "type": "boolean"
         }
       },
-      "additionalProperties": false
+      "type": "object"
     },
     "ModulesConfig": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "registries": {
-          "description": "Module registries — git repos containing modules in a prescribed directory structure.",
-          "type": "array",
           "default": [],
+          "description": "Module registries — git repos containing modules in a prescribed directory structure.",
           "items": {
-            "$ref": "#/$defs/ModuleRegistryEntry"
-          }
+            "$ref": "#/definitions/ModuleRegistryEntry"
+          },
+          "type": "array"
         },
         "security": {
-          "description": "Module security settings.",
           "anyOf": [
             {
-              "$ref": "#/$defs/ModuleSecurityConfig"
+              "$ref": "#/definitions/ModuleSecurityConfig"
             },
             {
               "type": "null"
             }
           ],
-          "default": null
+          "default": null,
+          "description": "Module security settings."
         }
       },
-      "additionalProperties": false
+      "type": "object"
     },
     "NotifyConfig": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "drift": {
-          "type": "boolean",
-          "default": false
+          "default": false,
+          "type": "boolean"
         },
         "method": {
-          "$ref": "#/$defs/NotifyMethod",
+          "$ref": "#/definitions/NotifyMethod",
           "default": "Desktop"
         },
         "webhookUrl": {
@@ -465,18 +443,18 @@
           ]
         }
       },
-      "additionalProperties": false
+      "type": "object"
     },
     "NotifyMethod": {
-      "type": "string",
       "enum": [
         "Desktop",
         "Stdout",
         "Webhook"
-      ]
+      ],
+      "type": "string"
     },
     "OriginSpec": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "auth": {
           "type": [
@@ -485,75 +463,75 @@
           ]
         },
         "branch": {
-          "type": "string",
-          "default": "master"
+          "default": "master",
+          "type": "string"
         },
         "sshStrictHostKeyChecking": {
-          "description": "SSH `StrictHostKeyChecking` policy for git operations.\n`AcceptNew` (default): accept first-seen keys, reject changed keys.\n`Yes`: require keys to already exist in known_hosts (high-security).\n`No`: accept any key (insecure, not recommended).",
-          "$ref": "#/$defs/SshHostKeyPolicy",
-          "default": "AcceptNew"
+          "$ref": "#/definitions/SshHostKeyPolicy",
+          "default": "AcceptNew",
+          "description": "SSH `StrictHostKeyChecking` policy for git operations. `AcceptNew` (default): accept first-seen keys, reject changed keys. `Yes`: require keys to already exist in known_hosts (high-security). `No`: accept any key (insecure, not recommended)."
         },
         "type": {
-          "$ref": "#/$defs/OriginType"
+          "$ref": "#/definitions/OriginType"
         },
         "url": {
           "type": "string"
         }
       },
-      "additionalProperties": false,
       "required": [
         "type",
         "url"
-      ]
+      ],
+      "type": "object"
     },
     "OriginType": {
-      "type": "string",
       "enum": [
         "Git",
         "Server"
-      ]
+      ],
+      "type": "string"
     },
     "PolicyAction": {
-      "type": "string",
       "enum": [
         "Notify",
         "Accept",
         "Reject",
         "Ignore"
-      ]
+      ],
+      "type": "string"
     },
     "ReconcileConfig": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "autoApply": {
-          "type": "boolean",
-          "default": false
+          "default": false,
+          "type": "boolean"
         },
         "driftPolicy": {
-          "description": "Policy for daemon auto-reconciliation of detected drift.\n`Auto` = silently apply (must opt-in), `NotifyOnly` = notify but don't\napply (safe default), `Prompt` = future interactive approval.",
-          "$ref": "#/$defs/DriftPolicy",
-          "default": "NotifyOnly"
+          "$ref": "#/definitions/DriftPolicy",
+          "default": "NotifyOnly",
+          "description": "Policy for daemon auto-reconciliation of detected drift. `Auto` = silently apply (must opt-in), `NotifyOnly` = notify but don't apply (safe default), `Prompt` = future interactive approval."
         },
         "interval": {
-          "type": "string",
-          "default": "5m"
+          "default": "5m",
+          "type": "string"
         },
         "onChange": {
-          "type": "boolean",
-          "default": false
+          "default": false,
+          "type": "boolean"
         },
         "patches": {
-          "description": "Per-module or per-profile reconcile overrides (kustomize-style patches).\nEach patch targets a specific Module or Profile by name and overrides\nindividual reconcile fields. Precedence: Module patch > Profile patch > global.",
-          "type": "array",
           "default": [],
+          "description": "Per-module or per-profile reconcile overrides (kustomize-style patches). Each patch targets a specific Module or Profile by name and overrides individual reconcile fields. Precedence: Module patch > Profile patch > global.",
           "items": {
-            "$ref": "#/$defs/ReconcilePatch"
-          }
+            "$ref": "#/definitions/ReconcilePatch"
+          },
+          "type": "array"
         },
         "policy": {
           "anyOf": [
             {
-              "$ref": "#/$defs/AutoApplyPolicyConfig"
+              "$ref": "#/definitions/AutoApplyPolicyConfig"
             },
             {
               "type": "null"
@@ -562,11 +540,11 @@
           "default": null
         }
       },
-      "additionalProperties": false
+      "type": "object"
     },
     "ReconcilePatch": {
-      "description": "A kustomize-style reconcile patch targeting a specific module or profile.\nWhen `name` is omitted, the patch applies to all entities of the given kind.",
-      "type": "object",
+      "additionalProperties": false,
+      "description": "A kustomize-style reconcile patch targeting a specific module or profile. When `name` is omitted, the patch applies to all entities of the given kind.",
       "properties": {
         "autoApply": {
           "type": [
@@ -577,7 +555,7 @@
         "driftPolicy": {
           "anyOf": [
             {
-              "$ref": "#/$defs/DriftPolicy"
+              "$ref": "#/definitions/DriftPolicy"
             },
             {
               "type": "null"
@@ -591,7 +569,7 @@
           ]
         },
         "kind": {
-          "$ref": "#/$defs/ReconcilePatchKind"
+          "$ref": "#/definitions/ReconcilePatchKind"
         },
         "name": {
           "type": [
@@ -600,48 +578,48 @@
           ]
         }
       },
-      "additionalProperties": false,
       "required": [
         "kind"
-      ]
+      ],
+      "type": "object"
     },
     "ReconcilePatchKind": {
-      "type": "string",
       "enum": [
         "Module",
         "Profile"
-      ]
+      ],
+      "type": "string"
     },
     "SecretIntegration": {
-      "type": "object",
+      "additionalProperties": true,
       "properties": {
         "name": {
           "type": "string"
         }
       },
-      "additionalProperties": true,
       "required": [
         "name"
-      ]
+      ],
+      "type": "object"
     },
     "SecretsConfig": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "backend": {
-          "type": "string",
-          "default": "sops"
+          "default": "sops",
+          "type": "string"
         },
         "integrations": {
-          "type": "array",
           "default": [],
           "items": {
-            "$ref": "#/$defs/SecretIntegration"
-          }
+            "$ref": "#/definitions/SecretIntegration"
+          },
+          "type": "array"
         },
         "sops": {
           "anyOf": [
             {
-              "$ref": "#/$defs/SopsConfig"
+              "$ref": "#/definitions/SopsConfig"
             },
             {
               "type": "null"
@@ -649,63 +627,63 @@
           ]
         }
       },
-      "additionalProperties": false
+      "type": "object"
     },
     "SecurityConfig": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "allowUnsigned": {
-          "description": "Allow unsigned source content even when the source requires signed commits.\nIntended for development/testing environments.",
-          "type": "boolean",
-          "default": false
+          "default": false,
+          "description": "Allow unsigned source content even when the source requires signed commits. Intended for development/testing environments.",
+          "type": "boolean"
         }
       },
-      "additionalProperties": false
+      "type": "object"
     },
     "SkillUpdateConfig": {
+      "additionalProperties": false,
       "description": "Update configuration specific to authored skills.",
-      "type": "object",
       "properties": {
         "policy": {
-          "description": "How skill update checks behave. Defaults to `Inherit` (defer to the\nbinary-level policy).",
-          "$ref": "#/$defs/SkillUpdatePolicy",
-          "default": "Inherit"
+          "$ref": "#/definitions/SkillUpdatePolicy",
+          "default": "Inherit",
+          "description": "How skill update checks behave. Defaults to `Inherit` (defer to the binary-level policy)."
         }
       },
-      "additionalProperties": false
+      "type": "object"
     },
     "SkillUpdatePolicy": {
-      "description": "Per-skill update policy. Mirrors [`UpdatePolicy`] but adds `Inherit`, which\ndefers to the binary-level [`UpdateConfig::policy`].",
+      "description": "Per-skill update policy. Mirrors [`UpdatePolicy`] but adds `Inherit`, which defers to the binary-level [`UpdateConfig::policy`].",
       "oneOf": [
         {
+          "const": "Inherit",
           "description": "Defer to the binary-level update policy ([`UpdateConfig::policy`]).",
-          "type": "string",
-          "const": "Inherit"
+          "type": "string"
         },
         {
+          "const": "Auto",
           "description": "Apply skill updates automatically without prompting.",
-          "type": "string",
-          "const": "Auto"
+          "type": "string"
         },
         {
+          "const": "Prompt",
           "description": "Ask before applying an available skill update.",
-          "type": "string",
-          "const": "Prompt"
+          "type": "string"
         },
         {
+          "const": "Notify",
           "description": "Report that a skill update is available, but take no action.",
-          "type": "string",
-          "const": "Notify"
+          "type": "string"
         },
         {
+          "const": "Manual",
           "description": "Disable automatic skill update checks; the user updates manually.",
-          "type": "string",
-          "const": "Manual"
+          "type": "string"
         }
       ]
     },
     "SopsConfig": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "ageKey": {
           "type": [
@@ -714,19 +692,19 @@
           ]
         }
       },
-      "additionalProperties": false
+      "type": "object"
     },
     "SourceSpec": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "name": {
           "type": "string"
         },
         "origin": {
-          "$ref": "#/$defs/OriginSpec"
+          "$ref": "#/definitions/OriginSpec"
         },
         "subscription": {
-          "$ref": "#/$defs/SubscriptionSpec",
+          "$ref": "#/definitions/SubscriptionSpec",
           "default": {
             "acceptRecommended": false,
             "allowScripts": false,
@@ -737,7 +715,7 @@
           }
         },
         "sync": {
-          "$ref": "#/$defs/SourceSyncSpec",
+          "$ref": "#/definitions/SourceSyncSpec",
           "default": {
             "autoApply": false,
             "interval": "1h",
@@ -745,22 +723,22 @@
           }
         }
       },
-      "additionalProperties": false,
       "required": [
         "name",
         "origin"
-      ]
+      ],
+      "type": "object"
     },
     "SourceSyncSpec": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "autoApply": {
-          "type": "boolean",
-          "default": false
+          "default": false,
+          "type": "boolean"
         },
         "interval": {
-          "type": "string",
-          "default": "1h"
+          "default": "1h",
+          "type": "string"
         },
         "pinVersion": {
           "type": [
@@ -769,60 +747,60 @@
           ]
         },
         "required": {
-          "description": "Fail-closed marker. When `true`, a failure to load this source (fetch,\nmanifest, signature, or an unresolvable `pinVersion`) is fatal — apply /\nplan / compose abort rather than silently dropping the source. Default\n`false` keeps the best-effort warn-and-continue behaviour for optional\nsources. Use it for security or team baselines that must always be\ncomposed in.",
-          "type": "boolean",
-          "default": false
+          "default": false,
+          "description": "Fail-closed marker. When `true`, a failure to load this source (fetch, manifest, signature, or an unresolvable `pinVersion`) is fatal — apply / plan / compose abort rather than silently dropping the source. Default `false` keeps the best-effort warn-and-continue behaviour for optional sources. Use it for security or team baselines that must always be composed in.",
+          "type": "boolean"
         }
       },
-      "additionalProperties": false
+      "type": "object"
     },
     "SshHostKeyPolicy": {
       "description": "SSH `StrictHostKeyChecking` policy for git operations over SSH.",
       "oneOf": [
         {
+          "const": "AcceptNew",
           "description": "Accept first-seen keys, reject changed keys (safe default for automation).",
-          "type": "string",
-          "const": "AcceptNew"
+          "type": "string"
         },
         {
+          "const": "Yes",
           "description": "Require keys to already exist in known_hosts (high-security environments).",
-          "type": "string",
-          "const": "Yes"
+          "type": "string"
         },
         {
+          "const": "No",
           "description": "Accept any key without verification (insecure, not recommended).",
-          "type": "string",
-          "const": "No"
+          "type": "string"
         }
       ]
     },
     "SubscriptionSpec": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "acceptRecommended": {
-          "type": "boolean",
-          "default": false
+          "default": false,
+          "type": "boolean"
         },
         "allowScripts": {
-          "description": "Subscriber opt-in to run lifecycle scripts (profile-layer and\nsource-delivered module bodies) from this source even when the source's\n`constraints.no_scripts` would otherwise reject them. Default `false`:\nthe source's own `no_scripts` constraint governs.",
-          "type": "boolean",
-          "default": false
+          "default": false,
+          "description": "Subscriber opt-in to run lifecycle scripts (profile-layer and source-delivered module bodies) from this source even when the source's `constraints.no_scripts` would otherwise reject them. Default `false`: the source's own `no_scripts` constraint governs.",
+          "type": "boolean"
         },
         "optIn": {
-          "type": "array",
           "default": [],
           "items": {
             "type": "string"
-          }
+          },
+          "type": "array"
         },
         "overrides": {
           "default": null
         },
         "priority": {
-          "type": "integer",
-          "format": "uint32",
           "default": 500,
-          "minimum": 0
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
         },
         "profile": {
           "type": [
@@ -834,40 +812,39 @@
           "default": null
         }
       },
-      "additionalProperties": false
+      "type": "object"
     },
     "SyncConfig": {
-      "type": "object",
+      "additionalProperties": false,
       "properties": {
         "autoPull": {
-          "type": "boolean",
-          "default": false
+          "default": false,
+          "type": "boolean"
         },
         "autoPush": {
-          "type": "boolean",
-          "default": false
+          "default": false,
+          "type": "boolean"
         },
         "interval": {
-          "type": "string",
-          "default": "1h"
+          "default": "1h",
+          "type": "string"
         }
       },
-      "additionalProperties": false
+      "type": "object"
     },
     "ThemeConfig": {
-      "type": "object",
       "properties": {
         "name": {
-          "type": "string",
-          "default": "default"
+          "default": "default",
+          "type": "string"
         },
         "overrides": {
-          "$ref": "#/$defs/ThemeOverrides"
+          "$ref": "#/definitions/ThemeOverrides"
         }
-      }
+      },
+      "type": "object"
     },
     "ThemeOverrides": {
-      "type": "object",
       "properties": {
         "accent": {
           "type": [
@@ -983,63 +960,86 @@
             "null"
           ]
         }
-      }
+      },
+      "type": "object"
     },
     "UpdateConfig": {
+      "additionalProperties": false,
       "description": "Configuration for cfgd self-update checks and authored-skill updates.",
-      "type": "object",
       "properties": {
         "channel": {
-          "description": "Release channel to track (e.g. `stable`, `beta`). When unset, cfgd uses\nits built-in default channel.",
+          "description": "Release channel to track (e.g. `stable`, `beta`). When unset, cfgd uses its built-in default channel.",
           "type": [
             "string",
             "null"
           ]
         },
         "interval": {
-          "description": "How often to check for updates, as a duration string (e.g. `24h`, `7d`,\n`30m`) or a plain number of seconds. Defaults to `24h`.",
-          "type": "string",
-          "default": "24h"
+          "default": "24h",
+          "description": "How often to check for updates, as a duration string (e.g. `24h`, `7d`, `30m`) or a plain number of seconds. Defaults to `24h`.",
+          "type": "string"
         },
         "policy": {
-          "description": "How update checks for the cfgd binary behave. Defaults to `Prompt`.",
-          "$ref": "#/$defs/UpdatePolicy",
-          "default": "Prompt"
+          "$ref": "#/definitions/UpdatePolicy",
+          "default": "Prompt",
+          "description": "How update checks for the cfgd binary behave. Defaults to `Prompt`."
         },
         "skills": {
-          "description": "Update policy for authored skills. Defaults to inheriting `policy`.",
-          "$ref": "#/$defs/SkillUpdateConfig",
+          "$ref": "#/definitions/SkillUpdateConfig",
           "default": {
             "policy": "Inherit"
-          }
+          },
+          "description": "Update policy for authored skills. Defaults to inheriting `policy`."
         }
       },
-      "additionalProperties": false
+      "type": "object"
     },
     "UpdatePolicy": {
-      "description": "Update policy governing how cfgd self-update checks behave.\n\n`Auto` applies updates without prompting, `Prompt` asks before applying,\n`Notify` only reports that an update is available, and `Manual` disables\nautomatic checks entirely (the user runs `cfgd upgrade` themselves).",
+      "description": "Update policy governing how cfgd self-update checks behave. `Auto` applies updates without prompting, `Prompt` asks before applying, `Notify` only reports that an update is available, and `Manual` disables automatic checks entirely (the user runs `cfgd upgrade` themselves).",
       "oneOf": [
         {
+          "const": "Auto",
           "description": "Apply updates automatically without prompting.",
-          "type": "string",
-          "const": "Auto"
+          "type": "string"
         },
         {
+          "const": "Prompt",
           "description": "Ask before applying an available update.",
-          "type": "string",
-          "const": "Prompt"
+          "type": "string"
         },
         {
+          "const": "Notify",
           "description": "Report that an update is available, but take no action.",
-          "type": "string",
-          "const": "Notify"
+          "type": "string"
         },
         {
+          "const": "Manual",
           "description": "Disable automatic update checks; the user upgrades manually.",
-          "type": "string",
-          "const": "Manual"
+          "type": "string"
         }
       ]
     }
-  }
+  },
+  "properties": {
+    "apiVersion": {
+      "type": "string"
+    },
+    "kind": {
+      "type": "string"
+    },
+    "metadata": {
+      "$ref": "#/definitions/ConfigMetadata"
+    },
+    "spec": {
+      "$ref": "#/definitions/ConfigSpec"
+    }
+  },
+  "required": [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec"
+  ],
+  "title": "CfgdConfig",
+  "type": "object"
 }

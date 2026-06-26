@@ -119,15 +119,18 @@ fn write_schema<T: JsonSchema>(
     let schema = schemars::schema_for!(T);
     // Round-trip through Value so BTreeMap sorts every object's keys.
     let mut value = serde_json::to_value(&schema)?;
-    stamp_metadata(&mut value, &meta);
     if meta.dialect == DRAFT_07 {
         // schemars 1.x emits the draft-2020-12 idiom (`$defs` + `#/$defs/` refs).
         // For documents we declare as draft-07, downgrade to the draft-07 idiom
         // (`definitions` + `#/definitions/`) so the dialect declaration and the
         // keywords agree — what SchemaStore's draft-07 meta-validation wants. The
         // 2020-12 document needs no rewrite: schemars already emits its idiom.
-        migrate_defs_to_draft_07(&mut value);
+        // Shared with the embedded skill schema so both stay on one idiom.
+        cfgd_core::schema::migrate_to_draft_07(&mut value);
     }
+    // After the dialect downgrade so the per-file `$schema`/`$id`/`title` win
+    // over the generic draft-07 stamp `migrate_to_draft_07` writes.
+    stamp_metadata(&mut value, &meta);
 
     let mut json = serde_json::to_string_pretty(&value)?;
     json.push('\n');
@@ -160,41 +163,6 @@ fn stamp_metadata(value: &mut Value, meta: &SchemaMeta) {
 /// serialized position is fixed regardless of insertion order.)
 fn set_first(map: &mut Map<String, Value>, key: &str, val: Value) {
     map.insert(key.to_string(), val);
-}
-
-/// Migrate a schema from the draft-2020-12 `$defs` idiom (what schemars 1.x
-/// emits) to the draft-07 `definitions` idiom: rename the root `$defs` object to
-/// `definitions` and rewrite every `#/$defs/...` `$ref` to `#/definitions/...`.
-fn migrate_defs_to_draft_07(value: &mut Value) {
-    if let Value::Object(root) = value
-        && let Some(defs) = root.remove("$defs")
-    {
-        root.insert("definitions".to_string(), defs);
-    }
-    rewrite_def_refs(value);
-}
-
-/// Recursively rewrite every `$ref` string from the `#/$defs/` prefix to the
-/// `#/definitions/` prefix.
-fn rewrite_def_refs(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            if let Some(Value::String(r)) = map.get_mut("$ref")
-                && let Some(rest) = r.strip_prefix("#/$defs/")
-            {
-                *r = format!("#/definitions/{rest}");
-            }
-            for v in map.values_mut() {
-                rewrite_def_refs(v);
-            }
-        }
-        Value::Array(items) => {
-            for v in items {
-                rewrite_def_refs(v);
-            }
-        }
-        _ => {}
-    }
 }
 
 #[cfg(test)]
@@ -352,7 +320,7 @@ mod tests {
         assert!(value.get("$defs").is_some());
         assert!(value.get("definitions").is_none());
 
-        migrate_defs_to_draft_07(&mut value);
+        cfgd_core::schema::migrate_to_draft_07(&mut value);
 
         assert!(
             value.get("definitions").is_some(),

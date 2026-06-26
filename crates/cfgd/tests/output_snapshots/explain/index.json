@@ -78,7 +78,7 @@
             "type": "string"
           },
           {
-            "description": "When true, the source file is local-only: auto-added to .gitignore,\nsilently skipped on machines where it doesn't exist.",
+            "description": "When true, the source file is local-only: auto-added to .gitignore, silently skipped on machines where it doesn't exist.",
             "name": "private",
             "required": false,
             "type": "boolean"
@@ -116,7 +116,7 @@
             "type": "object"
           },
           {
-            "description": "Skip the install script if this path already exists. A leading `~`\nexpands to the home directory; a relative path resolves against the\nscript's working directory. Existence follows symlinks. Only meaningful\nfor a `prefer: [script]` install; ignored otherwise.",
+            "description": "Skip the install script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks. Only meaningful for a `prefer: [script]` install; ignored otherwise.",
             "name": "creates",
             "required": false,
             "type": "string"
@@ -140,7 +140,7 @@
             "type": "string"
           },
           {
-            "description": "Run the install script only if this command exits zero. A non-zero exit\nskips the install (the condition for installing was not met). Only\nmeaningful for a `prefer: [script]` install; ignored for manager-backed\ninstalls (those are idempotent via the manager's installed-package query).",
+            "description": "Run the install script only if this command exits zero. A non-zero exit skips the install (the condition for installing was not met). Only meaningful for a `prefer: [script]` install; ignored for manager-backed installs (those are idempotent via the manager's installed-package query).",
             "name": "onlyIf",
             "required": false,
             "type": "string"
@@ -164,7 +164,7 @@
             "type": "string"
           },
           {
-            "description": "Run the install script only if this command exits NON-zero. A zero exit\n(success) skips the install (the package already appears present). Only\nmeaningful for a `prefer: [script]` install; ignored otherwise.",
+            "description": "Run the install script only if this command exits NON-zero. A zero exit (success) skips the install (the package already appears present). Only meaningful for a `prefer: [script]` install; ignored otherwise.",
             "name": "unless",
             "required": false,
             "type": "string"
@@ -176,7 +176,7 @@
         "type": "[]object"
       },
       {
-        "description": "Platform tags gating the whole module. When non-empty and the current\nplatform matches none of them, the module is skipped entirely (it\nappears as a Skipped action rather than vanishing). Tags are matched\nagainst OS / distro / arch via `Platform::matches_any`; the canonical\nmacOS token is `macos`.",
+        "description": "Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a Skipped action rather than vanishing). Tags are matched against OS / distro / arch via `Platform::matches_any`; the canonical macOS token is `macos`.",
         "name": "platforms",
         "required": false,
         "type": "[]string"
@@ -226,7 +226,7 @@
         "type": "object"
       },
       {
-        "description": "System configurator settings contributed by this module.\nDeep-merged into the profile system map; module values override profile values at leaf level.",
+        "description": "System configurator settings contributed by this module. Deep-merged into the profile system map; module values override profile values at leaf level.",
         "name": "system",
         "required": false,
         "type": "object"
@@ -281,7 +281,7 @@
         "type": "[]object"
       },
       {
-        "description": "How far `spec.env` exports reach across the current user's environment.\nOmitted means \"inherit\" (a parent layer's value survives); the resolved\ndefault when no layer sets it is [`EnvScope::All`] — every standard user\nentry point cfgd can safely touch. Narrow it to `Login` or `Interactive`\nto opt out of the broader session surfaces.",
+        "description": "How far `spec.env` exports reach across the current user's environment. Omitted means \"inherit\" (a parent layer's value survives); the resolved default when no layer sets it is [`EnvScope::All`] — every standard user entry point cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out of the broader session surfaces.",
         "name": "envScope",
         "required": false,
         "type": "object"
@@ -317,7 +317,7 @@
                 "type": "string"
               },
               {
-                "description": "When true, the source file is local-only: auto-added to .gitignore,\nsilently skipped on machines where it doesn't exist.",
+                "description": "When true, the source file is local-only: auto-added to .gitignore, silently skipped on machines where it doesn't exist.",
                 "name": "private",
                 "required": false,
                 "type": "boolean"
@@ -445,7 +445,7 @@
                 "type": "[]string"
               }
             ],
-            "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`)\nand object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the\nshared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
+            "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`) and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
             "name": "cargo",
             "required": false,
             "type": "object"
@@ -784,7 +784,7 @@
                 "type": "boolean"
               },
               {
-                "description": "Require that the HEAD commit in this source's git repo has a valid\nGPG or SSH signature. Subscribers can bypass with `security.allow-unsigned`.",
+                "description": "Require that the HEAD commit in this source's git repo has a valid GPG or SSH signature. Subscribers can bypass with `security.allow-unsigned`.",
                 "name": "requireSignedCommits",
                 "required": false,
                 "type": "boolean"
@@ -866,7 +866,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "When true, the source file is local-only: auto-added to .gitignore,\nsilently skipped on machines where it doesn't exist.",
+                    "description": "When true, the source file is local-only: auto-added to .gitignore, silently skipped on machines where it doesn't exist.",
                     "name": "private",
                     "required": false,
                     "type": "boolean"
@@ -976,7 +976,7 @@
                         "type": "[]string"
                       }
                     ],
-                    "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`)\nand object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the\nshared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
+                    "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`) and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
                     "name": "cargo",
                     "required": false,
                     "type": "object"
@@ -1290,7 +1290,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "When true, the source file is local-only: auto-added to .gitignore,\nsilently skipped on machines where it doesn't exist.",
+                    "description": "When true, the source file is local-only: auto-added to .gitignore, silently skipped on machines where it doesn't exist.",
                     "name": "private",
                     "required": false,
                     "type": "boolean"
@@ -1400,7 +1400,7 @@
                         "type": "[]string"
                       }
                     ],
-                    "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`)\nand object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the\nshared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
+                    "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`) and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
                     "name": "cargo",
                     "required": false,
                     "type": "object"
@@ -1714,7 +1714,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "When true, the source file is local-only: auto-added to .gitignore,\nsilently skipped on machines where it doesn't exist.",
+                    "description": "When true, the source file is local-only: auto-added to .gitignore, silently skipped on machines where it doesn't exist.",
                     "name": "private",
                     "required": false,
                     "type": "boolean"
@@ -1824,7 +1824,7 @@
                         "type": "[]string"
                       }
                     ],
-                    "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`)\nand object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the\nshared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
+                    "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`) and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
                     "name": "cargo",
                     "required": false,
                     "type": "object"
@@ -2138,7 +2138,7 @@
                     "type": "string"
                   },
                   {
-                    "description": "When true, the source file is local-only: auto-added to .gitignore,\nsilently skipped on machines where it doesn't exist.",
+                    "description": "When true, the source file is local-only: auto-added to .gitignore, silently skipped on machines where it doesn't exist.",
                     "name": "private",
                     "required": false,
                     "type": "boolean"
@@ -2248,7 +2248,7 @@
                         "type": "[]string"
                       }
                     ],
-                    "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`)\nand object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the\nshared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
+                    "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`) and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
                     "name": "cargo",
                     "required": false,
                     "type": "object"
@@ -2591,7 +2591,7 @@
         "type": "object"
       },
       {
-        "description": "CLI aliases: map of alias name → command string.\nBuilt-in defaults (add, remove) can be overridden or extended.",
+        "description": "CLI aliases: map of alias name → command string. Built-in defaults (add, remove) can be overridden or extended.",
         "name": "aliases",
         "required": false,
         "type": "object"
@@ -2729,7 +2729,7 @@
                 "type": "boolean"
               },
               {
-                "description": "Policy for daemon auto-reconciliation of detected drift.\n`Auto` = silently apply (must opt-in), `NotifyOnly` = notify but don't\napply (safe default), `Prompt` = future interactive approval.",
+                "description": "Policy for daemon auto-reconciliation of detected drift. `Auto` = silently apply (must opt-in), `NotifyOnly` = notify but don't apply (safe default), `Prompt` = future interactive approval.",
                 "name": "driftPolicy",
                 "required": false,
                 "type": "object"
@@ -2773,7 +2773,7 @@
                     "type": "string"
                   }
                 ],
-                "description": "Per-module or per-profile reconcile overrides (kustomize-style patches).\nEach patch targets a specific Module or Profile by name and overrides\nindividual reconcile fields. Precedence: Module patch > Profile patch > global.",
+                "description": "Per-module or per-profile reconcile overrides (kustomize-style patches). Each patch targets a specific Module or Profile by name and overrides individual reconcile fields. Precedence: Module patch > Profile patch > global.",
                 "name": "patches",
                 "required": false,
                 "type": "[]object"
@@ -2837,7 +2837,7 @@
             "type": "object"
           },
           {
-            "description": "Mirror daemon log output into the Windows Event Log under the `cfgd`\nsource, in addition to the default file appender at\n`%LOCALAPPDATA%\\cfgd\\daemon.log`. No effect on Unix. Read by\n`cfgd daemon install` to bake `--enable-event-log` into the service\nbinPath; changes require reinstalling the service to take effect.",
+            "description": "Mirror daemon log output into the Windows Event Log under the `cfgd` source, in addition to the default file appender at `%LOCALAPPDATA%\\cfgd\\daemon.log`. No effect on Unix. Read by `cfgd daemon install` to bake `--enable-event-log` into the service binPath; changes require reinstalling the service to take effect.",
             "name": "windowsEventLog",
             "required": false,
             "type": "boolean"
@@ -2879,7 +2879,7 @@
           {
             "children": [
               {
-                "description": "Require GPG/SSH signatures on all remote module tags.\nWhen true, unsigned modules are rejected unless `--allow-unsigned` is passed.",
+                "description": "Require GPG/SSH signatures on all remote module tags. When true, unsigned modules are rejected unless `--allow-unsigned` is passed.",
                 "name": "requireSignatures",
                 "required": false,
                 "type": "boolean"
@@ -2911,7 +2911,7 @@
             "type": "string"
           },
           {
-            "description": "SSH `StrictHostKeyChecking` policy for git operations.\n`AcceptNew` (default): accept first-seen keys, reject changed keys.\n`Yes`: require keys to already exist in known_hosts (high-security).\n`No`: accept any key (insecure, not recommended).",
+            "description": "SSH `StrictHostKeyChecking` policy for git operations. `AcceptNew` (default): accept first-seen keys, reject changed keys. `Yes`: require keys to already exist in known_hosts (high-security). `No`: accept any key (insecure, not recommended).",
             "name": "sshStrictHostKeyChecking",
             "required": false,
             "type": "object"
@@ -2985,7 +2985,7 @@
       {
         "children": [
           {
-            "description": "Allow unsigned source content even when the source requires signed commits.\nIntended for development/testing environments.",
+            "description": "Allow unsigned source content even when the source requires signed commits. Intended for development/testing environments.",
             "name": "allowUnsigned",
             "required": false,
             "type": "boolean"
@@ -3019,7 +3019,7 @@
                 "type": "string"
               },
               {
-                "description": "SSH `StrictHostKeyChecking` policy for git operations.\n`AcceptNew` (default): accept first-seen keys, reject changed keys.\n`Yes`: require keys to already exist in known_hosts (high-security).\n`No`: accept any key (insecure, not recommended).",
+                "description": "SSH `StrictHostKeyChecking` policy for git operations. `AcceptNew` (default): accept first-seen keys, reject changed keys. `Yes`: require keys to already exist in known_hosts (high-security). `No`: accept any key (insecure, not recommended).",
                 "name": "sshStrictHostKeyChecking",
                 "required": false,
                 "type": "object"
@@ -3051,7 +3051,7 @@
                 "type": "boolean"
               },
               {
-                "description": "Subscriber opt-in to run lifecycle scripts (profile-layer and\nsource-delivered module bodies) from this source even when the source's\n`constraints.no_scripts` would otherwise reject them. Default `false`:\nthe source's own `no_scripts` constraint governs.",
+                "description": "Subscriber opt-in to run lifecycle scripts (profile-layer and source-delivered module bodies) from this source even when the source's `constraints.no_scripts` would otherwise reject them. Default `false`: the source's own `no_scripts` constraint governs.",
                 "name": "allowScripts",
                 "required": false,
                 "type": "boolean"
@@ -3113,7 +3113,7 @@
                 "type": "string"
               },
               {
-                "description": "Fail-closed marker. When `true`, a failure to load this source (fetch,\nmanifest, signature, or an unresolvable `pinVersion`) is fatal — apply /\nplan / compose abort rather than silently dropping the source. Default\n`false` keeps the best-effort warn-and-continue behaviour for optional\nsources. Use it for security or team baselines that must always be\ncomposed in.",
+                "description": "Fail-closed marker. When `true`, a failure to load this source (fetch, manifest, signature, or an unresolvable `pinVersion`) is fatal — apply / plan / compose abort rather than silently dropping the source. Default `false` keeps the best-effort warn-and-continue behaviour for optional sources. Use it for security or team baselines that must always be composed in.",
                 "name": "required",
                 "required": false,
                 "type": "boolean"
@@ -3269,13 +3269,13 @@
       {
         "children": [
           {
-            "description": "Release channel to track (e.g. `stable`, `beta`). When unset, cfgd uses\nits built-in default channel.",
+            "description": "Release channel to track (e.g. `stable`, `beta`). When unset, cfgd uses its built-in default channel.",
             "name": "channel",
             "required": false,
             "type": "string"
           },
           {
-            "description": "How often to check for updates, as a duration string (e.g. `24h`, `7d`,\n`30m`) or a plain number of seconds. Defaults to `24h`.",
+            "description": "How often to check for updates, as a duration string (e.g. `24h`, `7d`, `30m`) or a plain number of seconds. Defaults to `24h`.",
             "name": "interval",
             "required": false,
             "type": "string"
@@ -3289,7 +3289,7 @@
           {
             "children": [
               {
-                "description": "How skill update checks behave. Defaults to `Inherit` (defer to the\nbinary-level policy).",
+                "description": "How skill update checks behave. Defaults to `Inherit` (defer to the binary-level policy).",
                 "name": "policy",
                 "required": false,
                 "type": "object"
@@ -3784,7 +3784,7 @@
         "type": "[]object"
       },
       {
-        "description": "Controls how the module is mounted in pods.\n`Always` (default): CSI volume + volumeMount on all declared containers + env vars.\n`Debug`: CSI volume only — no volumeMount or env on declared containers.\n  Only accessible via ephemeral debug containers (`kubectl cfgd debug`).",
+        "description": "Controls how the module is mounted in pods. `Always` (default): CSI volume + volumeMount on all declared containers + env vars. `Debug`: CSI volume only — no volumeMount or env on declared containers. Only accessible via ephemeral debug containers (`kubectl cfgd debug`).",
         "name": "mountPolicy",
         "required": false,
         "type": "object"

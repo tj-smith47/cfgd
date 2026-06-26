@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use k8s_openapi::api::coordination::v1::Lease;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
 use k8s_openapi::jiff::{SignedDuration, Timestamp};
 use kube::Client;
 use kube::api::{Api, Patch, PatchParams, PostParams};
@@ -68,7 +67,6 @@ impl LeaderElection {
     pub async fn try_acquire(&self) -> Result<bool, OperatorError> {
         let leases: Api<Lease> = Api::namespaced(self.client.clone(), &self.namespace);
         let now = Timestamp::now();
-        let now_micro = MicroTime(now);
 
         match leases.get(LEASE_NAME).await {
             Ok(existing) => {
@@ -154,7 +152,7 @@ impl LeaderElection {
             }
             Err(kube::Error::Api(err)) if err.code == 404 => {
                 // Create the Lease
-                let now_str = rfc3339_micros(now_micro.0)?;
+                let now_str = rfc3339_micros(now)?;
                 let lease = serde_json::from_value(serde_json::json!({
                     "apiVersion": "coordination.k8s.io/v1",
                     "kind": "Lease",
