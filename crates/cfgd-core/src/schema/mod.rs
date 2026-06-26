@@ -102,8 +102,13 @@ impl KindEntry {
     /// Compact form: consumed by the embedded [`snapshot::SchemaSnapshot`], so
     /// keep it one-line to avoid bloating the binary. For a human-readable
     /// diffable form (the golden schema gate), use [`KindEntry::pretty_schema`].
+    ///
+    /// Emitted as draft-07 (via [`migrate_to_draft_07`]) with whitespace-collapsed
+    /// descriptions (via [`normalize_descriptions`]), so the embedded skill
+    /// schema stays consistent with the published draft-07 editor schemas and
+    /// carries the same single-line descriptions the `explain` walk shows.
     pub fn json_schema(&self) -> String {
-        serde_json::to_string(&(self.schema_fn)()).unwrap_or_default()
+        serde_json::to_string(&self.canonical_schema_value()).unwrap_or_default()
     }
 
     /// Serialize this kind's schema as a pretty-printed JSON string. Empty on
@@ -115,7 +120,19 @@ impl KindEntry {
     /// the output is stable across runs. This is the form the committed golden
     /// snapshots use, so a CI diff pinpoints exactly which schema field changed.
     pub fn pretty_schema(&self) -> String {
-        serde_json::to_string_pretty(&(self.schema_fn)()).unwrap_or_default()
+        serde_json::to_string_pretty(&self.canonical_schema_value()).unwrap_or_default()
+    }
+
+    /// Schema as a `Value` in cfgd's canonical published form: draft-07 dialect
+    /// and definition idiom with whitespace-collapsed descriptions. The single
+    /// transform behind both [`KindEntry::json_schema`] and
+    /// [`KindEntry::pretty_schema`].
+    fn canonical_schema_value(&self) -> Value {
+        let mut value =
+            serde_json::to_value((self.schema_fn)()).unwrap_or(Value::Object(Default::default()));
+        normalize_descriptions(&mut value);
+        migrate_to_draft_07(&mut value);
+        value
     }
 }
 
@@ -542,13 +559,99 @@ fn array_item(schema: &Value) -> Option<&Value> {
 /// Pull a `description` out of a schema, if present. schemars 1.x emits the
 /// `description` keyword inline on the schema object (draft-2020-12), not nested
 /// under a `metadata` wrapper as schemars 0.8 did.
+///
+/// The string is whitespace-collapsed via [`collapse_ws`]: schemars 1.x copies
+/// the rustdoc doc-comment verbatim (preserving the author's hard line wraps),
+/// whereas 0.8 collapsed runs of whitespace to single spaces. Collapsing here
+/// restores the pre-1.x single-line description and lets the renderer own its
+/// own wrapping.
 fn schema_description(schema: &Value) -> Option<String> {
     schema
         .as_object()
         .and_then(|o| o.get("description"))
         .and_then(Value::as_str)
+        .map(collapse_ws)
         .filter(|d| !d.is_empty())
-        .map(str::to_string)
+}
+
+/// Collapse every run of ASCII whitespace (spaces, tabs, `\r`, `\n`) in `s` to a
+/// single space and trim the ends. Restores the single-line description strings
+/// schemars 0.8 produced from multi-line rustdoc, so consumers never see a
+/// doc-comment's hard line wraps mid-sentence.
+fn collapse_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Recursively collapse whitespace in every `description` string anywhere in a
+/// schema `Value` tree. Applied to the raw serialized schema embedded in the
+/// skill snapshot, so its `description` keywords match the collapsed strings the
+/// `explain` field-walk emits.
+fn normalize_descriptions(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            if let Some(Value::String(d)) = map.get_mut("description") {
+                *d = collapse_ws(d);
+            }
+            for v in map.values_mut() {
+                normalize_descriptions(v);
+            }
+        }
+        Value::Array(items) => {
+            for v in items {
+                normalize_descriptions(v);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// JSON Schema draft-07 dialect URL. The standalone editor schemas
+/// (`schemas/cfgd-*.schema.json`) and the embedded skill fallback schema are
+/// both published as draft-07, so they share this stamp.
+pub const DRAFT_07_DIALECT: &str = "https://json-schema.org/draft-07/schema#";
+
+/// Downgrade a schemars 1.x schema `Value` (draft-2020-12 idiom) to the draft-07
+/// idiom: stamp the draft-07 `$schema`, rename the root `$defs` object to
+/// `definitions`, and rewrite every `#/$defs/...` `$ref` to `#/definitions/...`.
+///
+/// Shared by the standalone schema generator (`gen_schemas` bin, which then
+/// overrides `$schema` with the per-file dialect) and [`KindEntry::json_schema`]
+/// /[`KindEntry::pretty_schema`], so the embedded skill schema and the published
+/// editor schemas stay on the same dialect and definition idiom.
+pub fn migrate_to_draft_07(value: &mut Value) {
+    if let Value::Object(root) = value {
+        root.insert(
+            "$schema".to_string(),
+            Value::String(DRAFT_07_DIALECT.to_string()),
+        );
+        if let Some(defs) = root.remove("$defs") {
+            root.insert("definitions".to_string(), defs);
+        }
+    }
+    rewrite_def_refs(value);
+}
+
+/// Recursively rewrite every `$ref` string from the `#/$defs/` prefix to the
+/// `#/definitions/` prefix (the draft-07 definition location).
+fn rewrite_def_refs(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            if let Some(Value::String(r)) = map.get_mut("$ref")
+                && let Some(rest) = r.strip_prefix("#/$defs/")
+            {
+                *r = format!("#/definitions/{rest}");
+            }
+            for v in map.values_mut() {
+                rewrite_def_refs(v);
+            }
+        }
+        Value::Array(items) => {
+            for v in items {
+                rewrite_def_refs(v);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// True when the (resolved) schema describes a JSON object with properties.

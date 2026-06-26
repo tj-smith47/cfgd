@@ -1,48 +1,7 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "MachineConfigSpec",
-  "type": "object",
-  "properties": {
-    "files": {
-      "type": "array",
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/FileSpec"
-      }
-    },
-    "hostname": {
-      "type": "string"
-    },
-    "moduleRefs": {
-      "type": "array",
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/ModuleRef"
-      }
-    },
-    "packages": {
-      "type": "array",
-      "default": [],
-      "items": {
-        "$ref": "#/$defs/PackageRef"
-      }
-    },
-    "profile": {
-      "type": "string"
-    },
-    "systemSettings": {
-      "type": "object",
-      "additionalProperties": true,
-      "default": {}
-    }
-  },
-  "required": [
-    "hostname",
-    "profile"
-  ],
-  "$defs": {
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "definitions": {
     "FileSpec": {
-      "type": "object",
       "properties": {
         "content": {
           "type": [
@@ -51,8 +10,8 @@
           ]
         },
         "mode": {
-          "type": "string",
-          "default": "0644"
+          "default": "0644",
+          "type": "string"
         },
         "path": {
           "type": "string"
@@ -66,27 +25,27 @@
       },
       "required": [
         "path"
-      ]
+      ],
+      "type": "object"
     },
     "ModuleRef": {
       "description": "Reference to a module that should be installed on the machine.",
-      "type": "object",
       "properties": {
         "name": {
           "type": "string"
         },
         "required": {
-          "type": "boolean",
-          "default": false
+          "default": false,
+          "type": "boolean"
         }
       },
       "required": [
         "name"
-      ]
+      ],
+      "type": "object"
     },
     "PackageRef": {
       "description": "Reference to a package with optional version pin.",
-      "type": "object",
       "properties": {
         "name": {
           "type": "string"
@@ -100,7 +59,48 @@
       },
       "required": [
         "name"
-      ]
+      ],
+      "type": "object"
     }
-  }
+  },
+  "properties": {
+    "files": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/FileSpec"
+      },
+      "type": "array"
+    },
+    "hostname": {
+      "type": "string"
+    },
+    "moduleRefs": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/ModuleRef"
+      },
+      "type": "array"
+    },
+    "packages": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/PackageRef"
+      },
+      "type": "array"
+    },
+    "profile": {
+      "type": "string"
+    },
+    "systemSettings": {
+      "additionalProperties": true,
+      "default": {},
+      "type": "object"
+    }
+  },
+  "required": [
+    "hostname",
+    "profile"
+  ],
+  "title": "MachineConfigSpec",
+  "type": "object"
 }

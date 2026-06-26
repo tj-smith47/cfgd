@@ -12,11 +12,6 @@ FIELDS (under spec)
   env <[]object> [+]      — 
   files <[]object> [+]    — 
   packages <[]object> [+] — 
-  platforms <[]string>    — Platform tags gating the whole module. When non-empty and the current
-    platform matches none of them, the module is skipped entirely (it
-    appears as a Skipped action rather than vanishing). Tags are matched
-    against OS / distro / arch via `Platform::matches_any`; the canonical
-    macOS token is `macos`.
+  platforms <[]string>    — Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a Skipped action rather than vanishing). Tags are matched against OS / distro / arch via `Platform::matches_any`; the canonical macOS token is `macos`.
   scripts <object> [+]    — 
-  system <object>         — System configurator settings contributed by this module.
-    Deep-merged into the profile system map; module values override profile values at leaf level.
+  system <object>         — System configurator settings contributed by this module. Deep-merged into the profile system map; module values override profile values at leaf level.

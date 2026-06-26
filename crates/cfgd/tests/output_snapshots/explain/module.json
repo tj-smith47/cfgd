@@ -77,7 +77,7 @@
           "type": "string"
         },
         {
-          "description": "When true, the source file is local-only: auto-added to .gitignore,\nsilently skipped on machines where it doesn't exist.",
+          "description": "When true, the source file is local-only: auto-added to .gitignore, silently skipped on machines where it doesn't exist.",
           "name": "private",
           "required": false,
           "type": "boolean"
@@ -115,7 +115,7 @@
           "type": "object"
         },
         {
-          "description": "Skip the install script if this path already exists. A leading `~`\nexpands to the home directory; a relative path resolves against the\nscript's working directory. Existence follows symlinks. Only meaningful\nfor a `prefer: [script]` install; ignored otherwise.",
+          "description": "Skip the install script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks. Only meaningful for a `prefer: [script]` install; ignored otherwise.",
           "name": "creates",
           "required": false,
           "type": "string"
@@ -139,7 +139,7 @@
           "type": "string"
         },
         {
-          "description": "Run the install script only if this command exits zero. A non-zero exit\nskips the install (the condition for installing was not met). Only\nmeaningful for a `prefer: [script]` install; ignored for manager-backed\ninstalls (those are idempotent via the manager's installed-package query).",
+          "description": "Run the install script only if this command exits zero. A non-zero exit skips the install (the condition for installing was not met). Only meaningful for a `prefer: [script]` install; ignored for manager-backed installs (those are idempotent via the manager's installed-package query).",
           "name": "onlyIf",
           "required": false,
           "type": "string"
@@ -163,7 +163,7 @@
           "type": "string"
         },
         {
-          "description": "Run the install script only if this command exits NON-zero. A zero exit\n(success) skips the install (the package already appears present). Only\nmeaningful for a `prefer: [script]` install; ignored otherwise.",
+          "description": "Run the install script only if this command exits NON-zero. A zero exit (success) skips the install (the package already appears present). Only meaningful for a `prefer: [script]` install; ignored otherwise.",
           "name": "unless",
           "required": false,
           "type": "string"
@@ -175,7 +175,7 @@
       "type": "[]object"
     },
     {
-      "description": "Platform tags gating the whole module. When non-empty and the current\nplatform matches none of them, the module is skipped entirely (it\nappears as a Skipped action rather than vanishing). Tags are matched\nagainst OS / distro / arch via `Platform::matches_any`; the canonical\nmacOS token is `macos`.",
+      "description": "Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a Skipped action rather than vanishing). Tags are matched against OS / distro / arch via `Platform::matches_any`; the canonical macOS token is `macos`.",
       "name": "platforms",
       "required": false,
       "type": "[]string"
@@ -225,7 +225,7 @@
       "type": "object"
     },
     {
-      "description": "System configurator settings contributed by this module.\nDeep-merged into the profile system map; module values override profile values at leaf level.",
+      "description": "System configurator settings contributed by this module. Deep-merged into the profile system map; module values override profile values at leaf level.",
       "name": "system",
       "required": false,
       "type": "object"

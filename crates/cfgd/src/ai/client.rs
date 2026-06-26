@@ -138,6 +138,10 @@ impl AnthropicClient {
         let status = response.status();
         if !status.is_success() {
             let code = status.as_u16();
+            // ureq 3 surfaces status as an `http::StatusCode`, which drops the
+            // server-sent reason phrase (ureq 2's `status_text()` is gone); the
+            // canonical phrase for the code is the closest available. The
+            // structured error body below carries the real cause regardless.
             let reason = status.canonical_reason().unwrap_or("");
             let body = response.body_mut().read_to_string().unwrap_or_default();
             tracing::warn!(

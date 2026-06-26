@@ -43,7 +43,7 @@
       "type": "[]object"
     },
     {
-      "description": "How far `spec.env` exports reach across the current user's environment.\nOmitted means \"inherit\" (a parent layer's value survives); the resolved\ndefault when no layer sets it is [`EnvScope::All`] — every standard user\nentry point cfgd can safely touch. Narrow it to `Login` or `Interactive`\nto opt out of the broader session surfaces.",
+      "description": "How far `spec.env` exports reach across the current user's environment. Omitted means \"inherit\" (a parent layer's value survives); the resolved default when no layer sets it is [`EnvScope::All`] — every standard user entry point cfgd can safely touch. Narrow it to `Login` or `Interactive` to opt out of the broader session surfaces.",
       "name": "envScope",
       "required": false,
       "type": "object"
@@ -79,7 +79,7 @@
               "type": "string"
             },
             {
-              "description": "When true, the source file is local-only: auto-added to .gitignore,\nsilently skipped on machines where it doesn't exist.",
+              "description": "When true, the source file is local-only: auto-added to .gitignore, silently skipped on machines where it doesn't exist.",
               "name": "private",
               "required": false,
               "type": "boolean"
@@ -207,7 +207,7 @@
               "type": "[]string"
             }
           ],
-          "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`)\nand object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the\nshared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
+          "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`) and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
           "name": "cargo",
           "required": false,
           "type": "object"
