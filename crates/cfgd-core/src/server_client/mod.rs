@@ -159,16 +159,12 @@ impl ServerClient {
         crate::http::http_agent(crate::http::HTTP_API_TIMEOUT)
     }
 
-    fn build_request(&self, method: &str, path: &str) -> ureq::Request {
+    fn build_request(&self, path: &str) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
         let url = format!("{}{}", self.base_url, path);
-        let agent = self.agent();
-        let mut req = match method {
-            "POST" => agent.post(&url),
-            _ => agent.get(&url),
-        };
+        let mut req = self.agent().post(&url);
 
         if let Some(ref key) = self.api_key {
-            req = req.set("Authorization", &format!("Bearer {}", key));
+            req = req.header("Authorization", &format!("Bearer {}", key));
         }
 
         req
@@ -185,26 +181,20 @@ impl ServerClient {
             }
 
             match self
-                .build_request("POST", path)
-                .set("Content-Type", "application/json")
-                .send_string(body_json)
+                .build_request(path)
+                .header("Content-Type", "application/json")
+                .send(body_json)
             {
-                Ok(resp) => match resp.into_string() {
+                Ok(mut resp) => match resp.body_mut().read_to_string() {
                     Ok(body) => return Ok(body),
                     Err(e) => {
                         last_err = format!("failed to read response: {}", e);
                     }
                 },
-                Err(ureq::Error::Transport(e)) => {
-                    last_err = format!("network error: {}", e);
-                    tracing::debug!(
-                        attempt = attempt + 1,
-                        max = retry.max_attempts,
-                        error = %e,
-                        "Request failed, retrying"
-                    );
-                }
-                Err(ureq::Error::Status(code, _)) if code >= 500 => {
+                // 5xx responses are retried as transient server errors; ureq 3
+                // surfaces them as `StatusCode` (status-as-error is on for this
+                // agent), replacing ureq 2's `Error::Status(code, _)`.
+                Err(ureq::Error::StatusCode(code)) if code >= 500 => {
                     last_err = format!("server error (HTTP {})", code);
                     tracing::debug!(
                         attempt = attempt + 1,
@@ -213,8 +203,21 @@ impl ServerClient {
                         "Server error, retrying"
                     );
                 }
-                Err(e) => {
+                // A 4xx status is a hard request error — do not retry.
+                Err(e @ ureq::Error::StatusCode(_)) => {
                     return Err(format!("request error: {}", e));
+                }
+                // Everything else (Io, Timeout, HostNotFound, ConnectionFailed,
+                // Protocol, …) is a transport-layer failure — ureq 2's
+                // `Error::Transport`. Retry with backoff.
+                Err(e) => {
+                    last_err = format!("network error: {}", e);
+                    tracing::debug!(
+                        attempt = attempt + 1,
+                        max = retry.max_attempts,
+                        error = %e,
+                        "Request failed, retrying"
+                    );
                 }
             }
         }
@@ -349,13 +352,13 @@ impl ServerClient {
     /// Query the server's enrollment method (token or key).
     pub fn enroll_info(&self) -> Result<EnrollInfoResponse> {
         let url = format!("{}/api/v1/enroll/info", self.base_url);
-        let resp = ureq::get(&url).call().map_err(|e| {
+        let mut resp = ureq::get(&url).call().map_err(|e| {
             CfgdError::Io(std::io::Error::new(
                 std::io::ErrorKind::ConnectionRefused,
                 format!("failed to query enrollment info: {}", e),
             ))
         })?;
-        let body = resp.into_string().map_err(|e| {
+        let body = resp.body_mut().read_to_string().map_err(|e| {
             CfgdError::Io(std::io::Error::other(format!(
                 "failed to read enrollment info response: {}",
                 e

@@ -34,12 +34,15 @@ pub const HTTP_AI_TIMEOUT: Duration = Duration::from_secs(120);
 /// should not starve the daemon's notification loop.
 pub const HTTP_WEBHOOK_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Build a `ureq::Agent` with `timeout` applied. Exists so every call site
-/// that wants a timeout can use one line and we can change `AgentBuilder`
-/// configuration (user-agent defaults, connection pooling, TLS options)
-/// in exactly one place if it becomes necessary.
+/// Build a `ureq::Agent` with `timeout` applied as the global per-call
+/// timeout. Exists so every call site that wants a timeout can use one line
+/// and we can change agent configuration (user-agent defaults, connection
+/// pooling, TLS options) in exactly one place if it becomes necessary.
 pub fn http_agent(timeout: Duration) -> ureq::Agent {
-    ureq::AgentBuilder::new().timeout(timeout).build()
+    ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .build()
+        .into()
 }
 
 #[cfg(test)]

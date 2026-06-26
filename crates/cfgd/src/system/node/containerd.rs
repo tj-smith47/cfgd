@@ -135,8 +135,10 @@ impl SystemConfigurator for ContainerdConfigurator {
             )))
         })?;
 
-        // Validate serialized TOML can be re-parsed before writing
-        if let Err(e) = content.parse::<toml::Value>() {
+        // Validate serialized TOML can be re-parsed before writing. The output
+        // is a document (top-level key/value pairs), so it must round-trip
+        // through `toml::Table`; `toml::Value`'s parser rejects a document body.
+        if let Err(e) = content.parse::<toml::Table>() {
             return Err(CfgdError::Io(std::io::Error::other(format!(
                 "containerd config validation failed — aborting write: {}",
                 e

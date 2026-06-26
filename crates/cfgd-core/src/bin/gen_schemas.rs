@@ -120,12 +120,13 @@ fn write_schema<T: JsonSchema>(
     // Round-trip through Value so BTreeMap sorts every object's keys.
     let mut value = serde_json::to_value(&schema)?;
     stamp_metadata(&mut value, &meta);
-    if meta.dialect == DRAFT_2020_12 {
-        // schemars 0.8 emits the draft-07 idiom (`definitions` + `#/definitions/`
-        // refs). For the document we declare as draft-2020-12, migrate to the
-        // 2020-12 idiom (`$defs` + `#/$defs/`) so the dialect declaration and
-        // the keywords agree — what SchemaStore's 2020-12 meta-validation wants.
-        migrate_defs_to_2020_12(&mut value);
+    if meta.dialect == DRAFT_07 {
+        // schemars 1.x emits the draft-2020-12 idiom (`$defs` + `#/$defs/` refs).
+        // For documents we declare as draft-07, downgrade to the draft-07 idiom
+        // (`definitions` + `#/definitions/`) so the dialect declaration and the
+        // keywords agree — what SchemaStore's draft-07 meta-validation wants. The
+        // 2020-12 document needs no rewrite: schemars already emits its idiom.
+        migrate_defs_to_draft_07(&mut value);
     }
 
     let mut json = serde_json::to_string_pretty(&value)?;
@@ -161,27 +162,27 @@ fn set_first(map: &mut Map<String, Value>, key: &str, val: Value) {
     map.insert(key.to_string(), val);
 }
 
-/// Migrate a schema from the draft-07 `definitions` idiom to the draft-2020-12
-/// `$defs` idiom: rename the root `definitions` object to `$defs` and rewrite
-/// every `#/definitions/...` `$ref` to `#/$defs/...`.
-fn migrate_defs_to_2020_12(value: &mut Value) {
+/// Migrate a schema from the draft-2020-12 `$defs` idiom (what schemars 1.x
+/// emits) to the draft-07 `definitions` idiom: rename the root `$defs` object to
+/// `definitions` and rewrite every `#/$defs/...` `$ref` to `#/definitions/...`.
+fn migrate_defs_to_draft_07(value: &mut Value) {
     if let Value::Object(root) = value
-        && let Some(defs) = root.remove("definitions")
+        && let Some(defs) = root.remove("$defs")
     {
-        root.insert("$defs".to_string(), defs);
+        root.insert("definitions".to_string(), defs);
     }
     rewrite_def_refs(value);
 }
 
-/// Recursively rewrite every `$ref` string from the `#/definitions/` prefix to
-/// the `#/$defs/` prefix.
+/// Recursively rewrite every `$ref` string from the `#/$defs/` prefix to the
+/// `#/definitions/` prefix.
 fn rewrite_def_refs(value: &mut Value) {
     match value {
         Value::Object(map) => {
             if let Some(Value::String(r)) = map.get_mut("$ref")
-                && let Some(rest) = r.strip_prefix("#/definitions/")
+                && let Some(rest) = r.strip_prefix("#/$defs/")
             {
-                *r = format!("#/$defs/{rest}");
+                *r = format!("#/definitions/{rest}");
             }
             for v in map.values_mut() {
                 rewrite_def_refs(v);
@@ -328,9 +329,11 @@ mod tests {
     fn open_value_fields_schema_as_arbitrary() {
         // overrides/reject (serde_yaml::Value via schemars(with)) must NOT
         // close to a fixed shape — they accept arbitrary YAML.
+        // Raw schemars 1.x output keys definitions under `$defs` (draft-2020-12);
+        // the draft-07 downgrade to `definitions` happens later in `write_schema`.
         let cfg = schema_value::<CfgdConfig>();
         let overrides = cfg
-            .pointer("/definitions/SubscriptionSpec/properties/overrides")
+            .pointer("/$defs/SubscriptionSpec/properties/overrides")
             .expect("SubscriptionSpec.overrides present in schema");
         // An arbitrary-value schema has no "type" / "properties" restriction.
         assert!(
@@ -340,33 +343,31 @@ mod tests {
     }
 
     #[test]
-    fn module_schema_migrated_to_2020_12_defs_idiom() {
-        // The module document is published as draft-2020-12, so its generated
-        // file must use `$defs` + `#/$defs/` refs, not draft-07 `definitions`.
-        let mut value = schema_value::<ModuleDocument>();
-        // Pre-migration: schemars 0.8 emits the draft-07 idiom.
-        assert!(value.get("definitions").is_some());
-        assert!(value.get("$defs").is_none());
+    fn draft_07_documents_migrated_to_definitions_idiom() {
+        // The config/profile/source documents are published as draft-07, so
+        // their generated files must use `definitions` + `#/definitions/` refs,
+        // not the draft-2020-12 `$defs` idiom schemars 1.x emits by default.
+        let mut value = schema_value::<CfgdConfig>();
+        // Pre-migration: schemars 1.x emits the draft-2020-12 idiom.
+        assert!(value.get("$defs").is_some());
+        assert!(value.get("definitions").is_none());
 
-        migrate_defs_to_2020_12(&mut value);
+        migrate_defs_to_draft_07(&mut value);
 
         assert!(
-            value.get("$defs").is_some(),
-            "expected $defs after migration"
+            value.get("definitions").is_some(),
+            "expected definitions after migration"
         );
-        assert!(
-            value.get("definitions").is_none(),
-            "definitions should be renamed away"
-        );
-        // No `#/definitions/` ref survives.
+        assert!(value.get("$defs").is_none(), "$defs should be renamed away");
+        // No `#/$defs/` ref survives.
         let serialized = serde_json::to_string(&value).expect("serialize");
         assert!(
-            !serialized.contains("#/definitions/"),
-            "no #/definitions/ ref should remain after migration"
+            !serialized.contains("#/$defs/"),
+            "no #/$defs/ ref should remain after migration"
         );
         assert!(
-            serialized.contains("#/$defs/"),
-            "expected #/$defs/ refs after migration"
+            serialized.contains("#/definitions/"),
+            "expected #/definitions/ refs after migration"
         );
     }
 

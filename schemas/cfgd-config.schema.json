@@ -25,27 +25,15 @@
       "additionalProperties": false,
       "properties": {
         "lockedConflict": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/PolicyAction"
-            }
-          ],
+          "$ref": "#/definitions/PolicyAction",
           "default": "Notify"
         },
         "newOptional": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/PolicyAction"
-            }
-          ],
+          "$ref": "#/definitions/PolicyAction",
           "default": "Ignore"
         },
         "newRecommended": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/PolicyAction"
-            }
-          ],
+          "$ref": "#/definitions/PolicyAction",
           "default": "Notify"
         }
       },
@@ -59,11 +47,7 @@
           "type": "boolean"
         },
         "export": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/ComplianceExport"
-            }
-          ],
+          "$ref": "#/definitions/ComplianceExport",
           "default": {
             "format": "Json",
             "path": "~/.local/state/cfgd/compliance/"
@@ -78,11 +62,7 @@
           "type": "string"
         },
         "scope": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/ComplianceScope"
-            }
-          ],
+          "$ref": "#/definitions/ComplianceScope",
           "default": {
             "files": true,
             "packages": true,
@@ -99,11 +79,7 @@
       "additionalProperties": false,
       "properties": {
         "format": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/ComplianceFormat"
-            }
-          ],
+          "$ref": "#/definitions/ComplianceFormat",
           "default": "Json"
         },
         "path": {
@@ -188,7 +164,7 @@
             "type": "string"
           },
           "default": {},
-          "description": "CLI aliases: map of alias name → command string. Built-in defaults (add, remove) can be overridden or extended.",
+          "description": "CLI aliases: map of alias name → command string.\nBuilt-in defaults (add, remove) can be overridden or extended.",
           "type": "object"
         },
         "compliance": {
@@ -215,11 +191,7 @@
           "default": null
         },
         "fileStrategy": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/FileStrategy"
-            }
-          ],
+          "$ref": "#/definitions/FileStrategy",
           "default": "Symlink",
           "description": "Global default file deployment strategy. Per-file overrides take precedence."
         },
@@ -347,7 +319,7 @@
         },
         "windowsEventLog": {
           "default": false,
-          "description": "Mirror daemon log output into the Windows Event Log under the `cfgd` source, in addition to the default file appender at `%LOCALAPPDATA%\\cfgd\\daemon.log`. No effect on Unix. Read by `cfgd daemon install` to bake `--enable-event-log` into the service binPath; changes require reinstalling the service to take effect.",
+          "description": "Mirror daemon log output into the Windows Event Log under the `cfgd`\nsource, in addition to the default file appender at\n`%LOCALAPPDATA%\\cfgd\\daemon.log`. No effect on Unix. Read by\n`cfgd daemon install` to bake `--enable-event-log` into the service\nbinPath; changes require reinstalling the service to take effect.",
           "type": "boolean"
         }
       },
@@ -357,24 +329,18 @@
       "description": "Daemon drift reconciliation policy. PascalCase values match K8s enum conventions.",
       "oneOf": [
         {
+          "const": "Auto",
           "description": "Apply drift corrections automatically (current behavior, now opt-in).",
-          "enum": [
-            "Auto"
-          ],
           "type": "string"
         },
         {
+          "const": "NotifyOnly",
           "description": "Notify and record drift, but do not apply. User must run `cfgd apply`.",
-          "enum": [
-            "NotifyOnly"
-          ],
           "type": "string"
         },
         {
+          "const": "Prompt",
           "description": "Future: notify with actionable prompt.",
-          "enum": [
-            "Prompt"
-          ],
           "type": "string"
         }
       ]
@@ -383,31 +349,23 @@
       "description": "File deployment strategy.",
       "oneOf": [
         {
+          "const": "Symlink",
           "description": "Create a symbolic link from target to source (default).",
-          "enum": [
-            "Symlink"
-          ],
           "type": "string"
         },
         {
+          "const": "Copy",
           "description": "Copy source content to target.",
-          "enum": [
-            "Copy"
-          ],
           "type": "string"
         },
         {
+          "const": "Template",
           "description": "Render a Tera template and write the output (auto-selected for .tera files).",
-          "enum": [
-            "Template"
-          ],
           "type": "string"
         },
         {
+          "const": "Hardlink",
           "description": "Create a hard link from target to source.",
-          "enum": [
-            "Hardlink"
-          ],
           "type": "string"
         }
       ]
@@ -436,7 +394,7 @@
       "properties": {
         "requireSignatures": {
           "default": false,
-          "description": "Require GPG/SSH signatures on all remote module tags. When true, unsigned modules are rejected unless `--allow-unsigned` is passed.",
+          "description": "Require GPG/SSH signatures on all remote module tags.\nWhen true, unsigned modules are rejected unless `--allow-unsigned` is passed.",
           "type": "boolean"
         }
       },
@@ -476,11 +434,7 @@
           "type": "boolean"
         },
         "method": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/NotifyMethod"
-            }
-          ],
+          "$ref": "#/definitions/NotifyMethod",
           "default": "Desktop"
         },
         "webhookUrl": {
@@ -514,13 +468,9 @@
           "type": "string"
         },
         "sshStrictHostKeyChecking": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/SshHostKeyPolicy"
-            }
-          ],
+          "$ref": "#/definitions/SshHostKeyPolicy",
           "default": "AcceptNew",
-          "description": "SSH `StrictHostKeyChecking` policy for git operations. `AcceptNew` (default): accept first-seen keys, reject changed keys. `Yes`: require keys to already exist in known_hosts (high-security). `No`: accept any key (insecure, not recommended)."
+          "description": "SSH `StrictHostKeyChecking` policy for git operations.\n`AcceptNew` (default): accept first-seen keys, reject changed keys.\n`Yes`: require keys to already exist in known_hosts (high-security).\n`No`: accept any key (insecure, not recommended)."
         },
         "type": {
           "$ref": "#/definitions/OriginType"
@@ -559,13 +509,9 @@
           "type": "boolean"
         },
         "driftPolicy": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/DriftPolicy"
-            }
-          ],
+          "$ref": "#/definitions/DriftPolicy",
           "default": "NotifyOnly",
-          "description": "Policy for daemon auto-reconciliation of detected drift. `Auto` = silently apply (must opt-in), `NotifyOnly` = notify but don't apply (safe default), `Prompt` = future interactive approval."
+          "description": "Policy for daemon auto-reconciliation of detected drift.\n`Auto` = silently apply (must opt-in), `NotifyOnly` = notify but don't\napply (safe default), `Prompt` = future interactive approval."
         },
         "interval": {
           "default": "5m",
@@ -577,7 +523,7 @@
         },
         "patches": {
           "default": [],
-          "description": "Per-module or per-profile reconcile overrides (kustomize-style patches). Each patch targets a specific Module or Profile by name and overrides individual reconcile fields. Precedence: Module patch > Profile patch > global.",
+          "description": "Per-module or per-profile reconcile overrides (kustomize-style patches).\nEach patch targets a specific Module or Profile by name and overrides\nindividual reconcile fields. Precedence: Module patch > Profile patch > global.",
           "items": {
             "$ref": "#/definitions/ReconcilePatch"
           },
@@ -599,7 +545,7 @@
     },
     "ReconcilePatch": {
       "additionalProperties": false,
-      "description": "A kustomize-style reconcile patch targeting a specific module or profile. When `name` is omitted, the patch applies to all entities of the given kind.",
+      "description": "A kustomize-style reconcile patch targeting a specific module or profile.\nWhen `name` is omitted, the patch applies to all entities of the given kind.",
       "properties": {
         "autoApply": {
           "type": [
@@ -689,7 +635,7 @@
       "properties": {
         "allowUnsigned": {
           "default": false,
-          "description": "Allow unsigned source content even when the source requires signed commits. Intended for development/testing environments.",
+          "description": "Allow unsigned source content even when the source requires signed commits.\nIntended for development/testing environments.",
           "type": "boolean"
         }
       },
@@ -700,53 +646,39 @@
       "description": "Update configuration specific to authored skills.",
       "properties": {
         "policy": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/SkillUpdatePolicy"
-            }
-          ],
+          "$ref": "#/definitions/SkillUpdatePolicy",
           "default": "Inherit",
-          "description": "How skill update checks behave. Defaults to `Inherit` (defer to the binary-level policy)."
+          "description": "How skill update checks behave. Defaults to `Inherit` (defer to the\nbinary-level policy)."
         }
       },
       "type": "object"
     },
     "SkillUpdatePolicy": {
-      "description": "Per-skill update policy. Mirrors [`UpdatePolicy`] but adds `Inherit`, which defers to the binary-level [`UpdateConfig::policy`].",
+      "description": "Per-skill update policy. Mirrors [`UpdatePolicy`] but adds `Inherit`, which\ndefers to the binary-level [`UpdateConfig::policy`].",
       "oneOf": [
         {
+          "const": "Inherit",
           "description": "Defer to the binary-level update policy ([`UpdateConfig::policy`]).",
-          "enum": [
-            "Inherit"
-          ],
           "type": "string"
         },
         {
+          "const": "Auto",
           "description": "Apply skill updates automatically without prompting.",
-          "enum": [
-            "Auto"
-          ],
           "type": "string"
         },
         {
+          "const": "Prompt",
           "description": "Ask before applying an available skill update.",
-          "enum": [
-            "Prompt"
-          ],
           "type": "string"
         },
         {
+          "const": "Notify",
           "description": "Report that a skill update is available, but take no action.",
-          "enum": [
-            "Notify"
-          ],
           "type": "string"
         },
         {
+          "const": "Manual",
           "description": "Disable automatic skill update checks; the user updates manually.",
-          "enum": [
-            "Manual"
-          ],
           "type": "string"
         }
       ]
@@ -773,11 +705,7 @@
           "$ref": "#/definitions/OriginSpec"
         },
         "subscription": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/SubscriptionSpec"
-            }
-          ],
+          "$ref": "#/definitions/SubscriptionSpec",
           "default": {
             "acceptRecommended": false,
             "allowScripts": false,
@@ -788,11 +716,7 @@
           }
         },
         "sync": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/SourceSyncSpec"
-            }
-          ],
+          "$ref": "#/definitions/SourceSyncSpec",
           "default": {
             "autoApply": false,
             "interval": "1h",
@@ -825,7 +749,7 @@
         },
         "required": {
           "default": false,
-          "description": "Fail-closed marker. When `true`, a failure to load this source (fetch, manifest, signature, or an unresolvable `pinVersion`) is fatal — apply / plan / compose abort rather than silently dropping the source. Default `false` keeps the best-effort warn-and-continue behaviour for optional sources. Use it for security or team baselines that must always be composed in.",
+          "description": "Fail-closed marker. When `true`, a failure to load this source (fetch,\nmanifest, signature, or an unresolvable `pinVersion`) is fatal — apply /\nplan / compose abort rather than silently dropping the source. Default\n`false` keeps the best-effort warn-and-continue behaviour for optional\nsources. Use it for security or team baselines that must always be\ncomposed in.",
           "type": "boolean"
         }
       },
@@ -835,24 +759,18 @@
       "description": "SSH `StrictHostKeyChecking` policy for git operations over SSH.",
       "oneOf": [
         {
+          "const": "AcceptNew",
           "description": "Accept first-seen keys, reject changed keys (safe default for automation).",
-          "enum": [
-            "AcceptNew"
-          ],
           "type": "string"
         },
         {
+          "const": "Yes",
           "description": "Require keys to already exist in known_hosts (high-security environments).",
-          "enum": [
-            "Yes"
-          ],
           "type": "string"
         },
         {
+          "const": "No",
           "description": "Accept any key without verification (insecure, not recommended).",
-          "enum": [
-            "No"
-          ],
           "type": "string"
         }
       ]
@@ -866,7 +784,7 @@
         },
         "allowScripts": {
           "default": false,
-          "description": "Subscriber opt-in to run lifecycle scripts (profile-layer and source-delivered module bodies) from this source even when the source's `constraints.no_scripts` would otherwise reject them. Default `false`: the source's own `no_scripts` constraint governs.",
+          "description": "Subscriber opt-in to run lifecycle scripts (profile-layer and\nsource-delivered module bodies) from this source even when the source's\n`constraints.no_scripts` would otherwise reject them. Default `false`:\nthe source's own `no_scripts` constraint governs.",
           "type": "boolean"
         },
         "optIn": {
@@ -882,7 +800,7 @@
         "priority": {
           "default": 500,
           "format": "uint32",
-          "minimum": 0.0,
+          "minimum": 0,
           "type": "integer"
         },
         "profile": {
@@ -1051,7 +969,7 @@
       "description": "Configuration for cfgd self-update checks and authored-skill updates.",
       "properties": {
         "channel": {
-          "description": "Release channel to track (e.g. `stable`, `beta`). When unset, cfgd uses its built-in default channel.",
+          "description": "Release channel to track (e.g. `stable`, `beta`). When unset, cfgd uses\nits built-in default channel.",
           "type": [
             "string",
             "null"
@@ -1059,24 +977,16 @@
         },
         "interval": {
           "default": "24h",
-          "description": "How often to check for updates, as a duration string (e.g. `24h`, `7d`, `30m`) or a plain number of seconds. Defaults to `24h`.",
+          "description": "How often to check for updates, as a duration string (e.g. `24h`, `7d`,\n`30m`) or a plain number of seconds. Defaults to `24h`.",
           "type": "string"
         },
         "policy": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/UpdatePolicy"
-            }
-          ],
+          "$ref": "#/definitions/UpdatePolicy",
           "default": "Prompt",
           "description": "How update checks for the cfgd binary behave. Defaults to `Prompt`."
         },
         "skills": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/SkillUpdateConfig"
-            }
-          ],
+          "$ref": "#/definitions/SkillUpdateConfig",
           "default": {
             "policy": "Inherit"
           },
@@ -1086,34 +996,26 @@
       "type": "object"
     },
     "UpdatePolicy": {
-      "description": "Update policy governing how cfgd self-update checks behave.\n\n`Auto` applies updates without prompting, `Prompt` asks before applying, `Notify` only reports that an update is available, and `Manual` disables automatic checks entirely (the user runs `cfgd upgrade` themselves).",
+      "description": "Update policy governing how cfgd self-update checks behave.\n\n`Auto` applies updates without prompting, `Prompt` asks before applying,\n`Notify` only reports that an update is available, and `Manual` disables\nautomatic checks entirely (the user runs `cfgd upgrade` themselves).",
       "oneOf": [
         {
+          "const": "Auto",
           "description": "Apply updates automatically without prompting.",
-          "enum": [
-            "Auto"
-          ],
           "type": "string"
         },
         {
+          "const": "Prompt",
           "description": "Ask before applying an available update.",
-          "enum": [
-            "Prompt"
-          ],
           "type": "string"
         },
         {
+          "const": "Notify",
           "description": "Report that an update is available, but take no action.",
-          "enum": [
-            "Notify"
-          ],
           "type": "string"
         },
         {
+          "const": "Manual",
           "description": "Disable automatic update checks; the user upgrades manually.",
-          "enum": [
-            "Manual"
-          ],
           "type": "string"
         }
       ]

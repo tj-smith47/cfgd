@@ -104,9 +104,12 @@ pub fn pull_module(
         reference: format!("{}: {e}", oci_ref),
     })?;
 
-    let manifest_body = resp.into_string().map_err(|e| OciError::RequestFailed {
-        message: format!("cannot read manifest body: {e}"),
-    })?;
+    let manifest_body = resp
+        .into_body()
+        .read_to_string()
+        .map_err(|e| OciError::RequestFailed {
+            message: format!("cannot read manifest body: {e}"),
+        })?;
     let manifest: OciManifest =
         serde_json::from_str(&manifest_body).map_err(|e| OciError::RequestFailed {
             message: format!("invalid manifest JSON: {e}"),
@@ -152,7 +155,8 @@ pub fn pull_module(
         });
     }
     let mut blob_data = Vec::with_capacity(layer.size as usize);
-    resp.into_reader()
+    resp.into_body()
+        .into_reader()
         .take(MAX_BLOB_SIZE + 1024)
         .read_to_end(&mut blob_data)?;
 

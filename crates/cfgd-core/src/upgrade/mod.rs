@@ -244,18 +244,22 @@ fn github_get(
     let spinner = printer.map(|p| p.spinner(start_label.to_string()));
 
     let agent = crate::http::http_agent(crate::http::HTTP_UPGRADE_TIMEOUT);
-    let response = agent
+    let mut response = agent
         .get(url)
-        .set("Accept", "application/vnd.github+json")
-        .set("User-Agent", "cfgd-self-update")
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "cfgd-self-update")
         .call()
         .map_err(|e| UpgradeError::ApiError {
             message: format!("{}", e),
         })?;
 
-    let body: String = response.into_string().map_err(|e| UpgradeError::ApiError {
-        message: format!("failed to read response body: {}", e),
-    })?;
+    let body: String =
+        response
+            .body_mut()
+            .read_to_string()
+            .map_err(|e| UpgradeError::ApiError {
+                message: format!("failed to read response body: {}", e),
+            })?;
 
     if let Some(s) = spinner {
         let _ = s.finish_ok(finish_label.to_string());
@@ -554,7 +558,7 @@ fn download_to_file(
     let agent = crate::http::http_agent(crate::http::HTTP_UPGRADE_TIMEOUT);
     let response = agent
         .get(url)
-        .set("User-Agent", "cfgd-self-update")
+        .header("User-Agent", "cfgd-self-update")
         .call()
         .map_err(|e| UpgradeError::DownloadFailed {
             message: format!("{}", e),
@@ -562,7 +566,9 @@ fn download_to_file(
 
     // Determine content length for progress tracking
     let content_length: Option<u64> = response
-        .header("content-length")
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse().ok());
 
     // Stream directly to a temp file (avoids buffering entire binary in memory)
@@ -573,7 +579,7 @@ fn download_to_file(
         })?;
 
     const MAX_DOWNLOAD_SIZE: u64 = 256 * 1024 * 1024;
-    let mut reader = response.into_reader().take(MAX_DOWNLOAD_SIZE);
+    let mut reader = response.into_body().into_reader().take(MAX_DOWNLOAD_SIZE);
 
     // Use progress bar if we know the size, spinner otherwise
     match (printer, content_length) {

@@ -5,8 +5,8 @@
 //! `Config`) and the cluster-side CRD kinds delivered by the [`cfgd_crd`] crate
 //! (`MachineConfig`, `ConfigPolicy`, `ClusterConfigPolicy`, `DriftAlert`, and the
 //! CRD `Module`). Each [`KindEntry`] carries a `schema_fn` that returns the
-//! kind's `schemars`-derived [`RootSchema`], so `explain`, `validate`, and the
-//! skill installer all read schemas from one place and can never drift apart.
+//! kind's `schemars`-derived [`schemars::Schema`], so `explain`, `validate`, and
+//! the skill installer all read schemas from one place and can never drift apart.
 //!
 //! The CRD half of the registry is compiled behind the default-on `crd` Cargo
 //! feature. Consumers that never touch Kubernetes resources (notably the CSI
@@ -15,8 +15,32 @@
 
 pub mod snapshot;
 
-use schemars::schema::{RootSchema, Schema, SchemaObject, SingleOrVec};
-use schemars::schema_for;
+use schemars::{Schema, schema_for};
+use serde_json::Value;
+
+/// JSON Pointer prefix schemars 1.x uses for definition `$ref`s under the
+/// default draft-2020-12 settings (`#/$defs/<Name>`). Earlier schemars releases
+/// used draft-07's `#/definitions/<Name>`; both are recognized so the walk keeps
+/// resolving refs if the generator's draft ever changes.
+const DEFS_REF_PREFIXES: [&str; 2] = ["#/$defs/", "#/definitions/"];
+
+/// The JSON Pointer schemars 1.x emits for a type that recursively references
+/// the schema's own root (e.g. a self-referential `Box<Self>`/`Vec<Self>`
+/// field). schemars 0.8 instead minted a named `#/definitions/<Self>` ref; under
+/// 1.x the root type is not duplicated into the definitions map, so this bare
+/// fragment must resolve back to the root schema.
+const ROOT_REF: &str = "#";
+
+/// Root schema plus its definitions map, threaded through the walk so a `$ref`
+/// resolves whether it targets a named definition (`#/$defs/<Name>`) or the
+/// document root (`#`).
+#[derive(Clone, Copy)]
+struct SchemaCtx<'a> {
+    /// The full document root schema — the resolution target for a bare `#` ref.
+    root: &'a Value,
+    /// The root's definitions object (`$defs`/`definitions`), keyed by name.
+    defs: &'a serde_json::Map<String, Value>,
+}
 
 /// A field in a resource schema, resolved from the kind's JSON schema.
 ///
@@ -55,8 +79,8 @@ pub struct KindEntry {
     /// Discriminates the CRD `Module` from the local `Module` (both share the
     /// `kind` string `"Module"`).
     pub crd: bool,
-    /// Returns the kind's `schemars`-derived root schema.
-    pub schema_fn: fn() -> RootSchema,
+    /// Returns the kind's `schemars`-derived schema.
+    pub schema_fn: fn() -> Schema,
     /// Validate a full YAML document of this kind, returning the offending
     /// messages on failure. Local kinds deserialize into their document type
     /// (leaning on `deny_unknown_fields`) and reject an unknown `apiVersion`;
@@ -86,10 +110,10 @@ impl KindEntry {
     /// serialization failure (schemars schemas are infallibly serializable, so
     /// this never observably empties in practice).
     ///
-    /// Deterministic: schemars 0.8 backs schema maps with `BTreeMap`, so keys
-    /// are sorted and the output is stable across runs. This is the form the
-    /// committed golden snapshots use, so a CI diff pinpoints exactly which
-    /// schema field changed.
+    /// Deterministic: this workspace serializes through `serde_json`'s default
+    /// `BTreeMap`-backed map (`preserve_order` is off), so keys are sorted and
+    /// the output is stable across runs. This is the form the committed golden
+    /// snapshots use, so a CI diff pinpoints exactly which schema field changed.
     pub fn pretty_schema(&self) -> String {
         serde_json::to_string_pretty(&(self.schema_fn)()).unwrap_or_default()
     }
@@ -229,29 +253,43 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
     },
 ];
 
-/// Walk a `schemars` [`RootSchema`] into a [`FieldNode`] tree.
+/// Walk a `schemars` [`Schema`] into a [`FieldNode`] tree.
 ///
 /// Reads the root object's `properties` (skipping the KRM envelope keys
 /// `apiVersion`/`kind`/`metadata`), descending into the `spec` object so the
 /// tree presents authoring fields directly. `$ref`s are resolved against the
-/// schema's `definitions`; nested object fields recurse; array element types
-/// are unwrapped to a `[]<inner>` type description. Required-ness and
-/// descriptions come from the schema. Pure — no I/O.
-pub fn field_tree_from_schema(root: &RootSchema) -> Vec<FieldNode> {
+/// schema's definitions (`$defs` under schemars 1.x); nested object fields
+/// recurse; array element types are unwrapped to a `[]<inner>` type description.
+/// Required-ness and descriptions come from the schema. Pure — no I/O.
+pub fn field_tree_from_schema(root: &Schema) -> Vec<FieldNode> {
+    let root = root.as_value();
+    let defs = definitions(root);
+    let ctx = SchemaCtx { root, defs };
     let mut visited = std::collections::BTreeSet::new();
-    let top = object_properties(&root.schema);
+    let top = object_properties(root);
     // KRM document schemas (Config) wrap authoring fields under `spec`; CRD and
     // bare-spec schemas already start at the spec object. Descend into `spec`
     // when present so every kind presents its authoring fields uniformly.
     if let Some((_, spec_schema)) = top.iter().find(|(name, _)| name.as_str() == "spec") {
         let descent = RefDescent::enter(spec_schema, &mut visited);
-        let resolved = resolve_ref(spec_schema, root);
+        let resolved = resolve_ref(spec_schema, ctx);
         let props = object_properties(&resolved);
-        let fields = fields_from_properties(&props, &required_set(&resolved), root, &mut visited);
+        let fields = fields_from_properties(&props, &required_set(&resolved), ctx, &mut visited);
         descent.leave(&mut visited);
         return fields;
     }
-    fields_from_properties(&top, &required_set(&root.schema), root, &mut visited)
+    fields_from_properties(&top, &required_set(root), ctx, &mut visited)
+}
+
+/// The schema's definitions object — schemars 1.x emits `$defs`; older drafts
+/// used `definitions`. Returns an empty map when neither is present.
+fn definitions(root: &Value) -> &serde_json::Map<String, Value> {
+    static EMPTY: std::sync::LazyLock<serde_json::Map<String, Value>> =
+        std::sync::LazyLock::new(serde_json::Map::new);
+    root.as_object()
+        .and_then(|o| o.get("$defs").or_else(|| o.get("definitions")))
+        .and_then(Value::as_object)
+        .unwrap_or(&EMPTY)
 }
 
 /// Tracks one `$ref` name on the current descent path so a self-referential
@@ -272,7 +310,7 @@ struct RefDescent {
 
 impl RefDescent {
     /// Record the schema's `$ref` target (if any) as on the descent path.
-    fn enter(schema: &Schema, visited: &mut std::collections::BTreeSet<String>) -> Self {
+    fn enter(schema: &Value, visited: &mut std::collections::BTreeSet<String>) -> Self {
         match ref_name(schema) {
             // Inline schema: always safe, nothing to track.
             None => RefDescent {
@@ -305,54 +343,61 @@ impl RefDescent {
     }
 }
 
-/// The definition name a schema `$ref`s (`#/definitions/<Name>` → `<Name>`),
-/// or `None` for an inline schema carrying no `$ref`.
-fn ref_name(schema: &Schema) -> Option<String> {
-    let Schema::Object(obj) = schema else {
-        return None;
-    };
-    obj.reference
-        .as_ref()
-        .and_then(|r| r.strip_prefix("#/definitions/"))
+/// The cycle-tracking key for a schema's `$ref` target: the definition name for
+/// a `#/$defs/<Name>` (or legacy `#/definitions/<Name>`) ref, the literal `#`
+/// for a root self-reference, or `None` for an inline schema carrying no `$ref`.
+/// Both ref forms must be tracked so a self-referential type — whether schemars
+/// names it in the definitions map or points it at the root — stops descending
+/// instead of recursing forever.
+fn ref_name(schema: &Value) -> Option<String> {
+    let reference = schema.as_object()?.get("$ref")?.as_str()?;
+    if reference == ROOT_REF {
+        return Some(ROOT_REF.to_string());
+    }
+    DEFS_REF_PREFIXES
+        .iter()
+        .find_map(|prefix| reference.strip_prefix(prefix))
         .map(str::to_string)
 }
 
-/// Resolve a `$ref` (`#/definitions/<Name>`) against the root's `definitions`,
-/// returning the referenced [`SchemaObject`]. Returns the input unchanged when
-/// it carries no `$ref` or the target is missing (graceful, no panic).
-fn resolve_ref(schema: &Schema, root: &RootSchema) -> SchemaObject {
-    let Schema::Object(obj) = schema else {
-        return SchemaObject::default();
-    };
-    if let Some(reference) = &obj.reference
-        && let Some(name) = reference.strip_prefix("#/definitions/")
-        && let Some(Schema::Object(target)) = root.definitions.get(name)
-    {
-        return target.clone();
+/// Resolve a `$ref` to its target schema: a named definition against the root's
+/// definitions map, or the document root for a bare `#`. Returns the input
+/// unchanged when it carries no `$ref` or the target is missing (graceful, no
+/// panic).
+fn resolve_ref(schema: &Value, ctx: SchemaCtx) -> Value {
+    match ref_name(schema) {
+        Some(name) if name == ROOT_REF => ctx.root.clone(),
+        Some(name) => ctx
+            .defs
+            .get(&name)
+            .cloned()
+            .unwrap_or_else(|| schema.clone()),
+        None => schema.clone(),
     }
-    obj.clone()
 }
 
 /// Extract the `(name, schema)` pairs from an object schema's `properties`.
-fn object_properties(schema: &SchemaObject) -> Vec<(String, Schema)> {
+fn object_properties(schema: &Value) -> Vec<(String, Value)> {
     schema
-        .object
-        .as_ref()
-        .map(|o| {
-            o.properties
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect()
-        })
+        .as_object()
+        .and_then(|o| o.get("properties"))
+        .and_then(Value::as_object)
+        .map(|props| props.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
         .unwrap_or_default()
 }
 
 /// The set of required field names declared on an object schema.
-fn required_set(schema: &SchemaObject) -> std::collections::BTreeSet<String> {
+fn required_set(schema: &Value) -> std::collections::BTreeSet<String> {
     schema
-        .object
-        .as_ref()
-        .map(|o| o.required.iter().cloned().collect())
+        .as_object()
+        .and_then(|o| o.get("required"))
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -360,24 +405,24 @@ fn required_set(schema: &SchemaObject) -> std::collections::BTreeSet<String> {
 /// object schema. `visited` carries the `$ref` names on the current descent
 /// path for cycle protection.
 fn object_fields(
-    schema: &SchemaObject,
-    root: &RootSchema,
+    schema: &Value,
+    ctx: SchemaCtx,
     visited: &mut std::collections::BTreeSet<String>,
 ) -> Vec<FieldNode> {
     let props = object_properties(schema);
-    fields_from_properties(&props, &required_set(schema), root, visited)
+    fields_from_properties(&props, &required_set(schema), ctx, visited)
 }
 
 fn fields_from_properties(
-    props: &[(String, Schema)],
+    props: &[(String, Value)],
     required: &std::collections::BTreeSet<String>,
-    root: &RootSchema,
+    ctx: SchemaCtx,
     visited: &mut std::collections::BTreeSet<String>,
 ) -> Vec<FieldNode> {
     let mut fields: Vec<FieldNode> = props
         .iter()
         .filter(|(name, _)| !matches!(name.as_str(), "apiVersion" | "kind" | "metadata" | "status"))
-        .map(|(name, schema)| field_node(name, schema, required.contains(name), root, visited))
+        .map(|(name, schema)| field_node(name, schema, required.contains(name), ctx, visited))
         .collect();
     fields.sort_by(|a, b| a.name.cmp(&b.name));
     fields
@@ -389,19 +434,19 @@ fn fields_from_properties(
 /// than recursing, so a self-referential schema terminates.
 fn field_node(
     name: &str,
-    schema: &Schema,
+    schema: &Value,
     required: bool,
-    root: &RootSchema,
+    ctx: SchemaCtx,
     visited: &mut std::collections::BTreeSet<String>,
 ) -> FieldNode {
     let unwrapped = unwrap_single_subschema(schema);
     let descent = RefDescent::enter(&unwrapped, visited);
-    let resolved = resolve_ref(&unwrapped, root);
+    let resolved = resolve_ref(&unwrapped, ctx);
     let description = schema_description(schema)
         .or_else(|| schema_description(&unwrapped))
-        .or_else(|| schema_description(&Schema::Object(resolved.clone())))
+        .or_else(|| schema_description(&resolved))
         .unwrap_or_default();
-    let type_desc = type_description(&resolved, root, visited);
+    let type_desc = type_description(&resolved, ctx, visited);
     // Children come from the field's own object properties, or — for an array
     // field — from its element type's object properties so `[]object` entries
     // stay drillable (e.g. `packages[].name`). A `$ref` re-entry (cycle) stops
@@ -409,9 +454,9 @@ fn field_node(
     let children = if !descent.safe() {
         Vec::new()
     } else if is_object(&resolved) {
-        object_fields(&resolved, root, visited)
+        object_fields(&resolved, ctx, visited)
     } else {
-        array_element_fields(&resolved, root, visited)
+        array_element_fields(&resolved, ctx, visited)
     };
     descent.leave(visited);
     FieldNode {
@@ -428,40 +473,34 @@ fn field_node(
 /// `Option<T>` whose `T` is a `$ref`. Returns the inner schema so its `$ref`
 /// resolves and its object fields recurse; returns the input unchanged when it
 /// is not such a single-subschema wrapper.
-fn unwrap_single_subschema(schema: &Schema) -> Schema {
-    let Schema::Object(obj) = schema else {
+fn unwrap_single_subschema(schema: &Value) -> Value {
+    let Some(obj) = schema.as_object() else {
         return schema.clone();
     };
-    // A direct `$ref` or inline object needs no unwrapping.
-    if obj.reference.is_some() || obj.object.is_some() || obj.array.is_some() {
+    // A direct `$ref` or inline object/array needs no unwrapping.
+    if obj.contains_key("$ref") || obj.contains_key("properties") || obj.contains_key("items") {
         return schema.clone();
     }
-    let Some(sub) = &obj.subschemas else {
-        return schema.clone();
-    };
-    let variants = sub
-        .all_of
-        .as_ref()
-        .or(sub.any_of.as_ref())
-        .or(sub.one_of.as_ref());
+    let variants = ["allOf", "anyOf", "oneOf"]
+        .iter()
+        .find_map(|key| obj.get(*key))
+        .and_then(Value::as_array);
     let Some(variants) = variants else {
         return schema.clone();
     };
-    let non_null: Vec<&Schema> = variants.iter().filter(|s| !is_null_schema(s)).collect();
+    let non_null: Vec<&Value> = variants.iter().filter(|s| !is_null_schema(s)).collect();
     match non_null.as_slice() {
         [single] => (*single).clone(),
         _ => schema.clone(),
     }
 }
 
-/// True for the schemars `null` variant emitted in an `Option<T>`'s `anyOf`.
-fn is_null_schema(schema: &Schema) -> bool {
-    let Schema::Object(obj) = schema else {
-        return false;
-    };
+/// True for the schemars `null` variant emitted in an `Option<T>`'s `anyOf`
+/// (`{"type": "null"}`).
+fn is_null_schema(schema: &Value) -> bool {
     matches!(
-        &obj.instance_type,
-        Some(SingleOrVec::Single(t)) if matches!(**t, schemars::schema::InstanceType::Null)
+        schema.as_object().and_then(|o| o.get("type")),
+        Some(Value::String(t)) if t == "null"
     )
 }
 
@@ -470,28 +509,18 @@ fn is_null_schema(schema: &Schema) -> bool {
 /// empty vec for non-arrays or arrays of scalars. Guards the element `$ref`
 /// against a cycle.
 fn array_element_fields(
-    schema: &SchemaObject,
-    root: &RootSchema,
+    schema: &Value,
+    ctx: SchemaCtx,
     visited: &mut std::collections::BTreeSet<String>,
 ) -> Vec<FieldNode> {
-    let Some(array) = &schema.array else {
+    let Some(item) = array_item(schema) else {
         return Vec::new();
-    };
-    let Some(items) = &array.items else {
-        return Vec::new();
-    };
-    let item = match items {
-        SingleOrVec::Single(item) => item.as_ref(),
-        SingleOrVec::Vec(items) => match items.first() {
-            Some(item) => item,
-            None => return Vec::new(),
-        },
     };
     let item = unwrap_single_subschema(item);
     let descent = RefDescent::enter(&item, visited);
-    let resolved = resolve_ref(&item, root);
+    let resolved = resolve_ref(&item, ctx);
     let fields = if descent.safe() && is_object(&resolved) {
-        object_fields(&resolved, root, visited)
+        object_fields(&resolved, ctx, visited)
     } else {
         Vec::new()
     };
@@ -499,23 +528,36 @@ fn array_element_fields(
     fields
 }
 
-/// Pull a `description` out of a schema's metadata, if present.
-fn schema_description(schema: &Schema) -> Option<String> {
-    let Schema::Object(obj) = schema else {
-        return None;
-    };
-    obj.metadata
-        .as_ref()
-        .and_then(|m| m.description.clone())
+/// The element schema of an array schema's `items`. Handles both the single-
+/// schema form (`"items": {…}`) and the tuple form (`"items": [{…}, …]`,
+/// returning the first), mirroring schemars' `SingleOrVec`.
+fn array_item(schema: &Value) -> Option<&Value> {
+    let items = schema.as_object()?.get("items")?;
+    match items {
+        Value::Array(items) => items.first(),
+        other => Some(other),
+    }
+}
+
+/// Pull a `description` out of a schema, if present. schemars 1.x emits the
+/// `description` keyword inline on the schema object (draft-2020-12), not nested
+/// under a `metadata` wrapper as schemars 0.8 did.
+fn schema_description(schema: &Value) -> Option<String> {
+    schema
+        .as_object()
+        .and_then(|o| o.get("description"))
+        .and_then(Value::as_str)
         .filter(|d| !d.is_empty())
+        .map(str::to_string)
 }
 
 /// True when the (resolved) schema describes a JSON object with properties.
-fn is_object(schema: &SchemaObject) -> bool {
+fn is_object(schema: &Value) -> bool {
     schema
-        .object
-        .as_ref()
-        .map(|o| !o.properties.is_empty())
+        .as_object()
+        .and_then(|o| o.get("properties"))
+        .and_then(Value::as_object)
+        .map(|props| !props.is_empty())
         .unwrap_or(false)
 }
 
@@ -524,33 +566,28 @@ fn is_object(schema: &SchemaObject) -> bool {
 /// `integer`, `boolean`, …). Falls back to `object` when no type is declared
 /// (e.g. enums, untyped maps).
 fn type_description(
-    schema: &SchemaObject,
-    root: &RootSchema,
+    schema: &Value,
+    ctx: SchemaCtx,
     visited: &mut std::collections::BTreeSet<String>,
 ) -> String {
-    if let Some(array) = &schema.array
-        && let Some(items) = &array.items
-    {
-        let inner = match items {
-            SingleOrVec::Single(item) => array_inner_type(item, root, visited),
-            SingleOrVec::Vec(items) => items
-                .first()
-                .map(|item| array_inner_type(item, root, visited))
-                .unwrap_or_else(|| "string".to_string()),
-        };
+    if let Some(item) = array_item(schema) {
+        let inner = array_inner_type(item, ctx, visited);
         return format!("[]{inner}");
     }
     if is_object(schema) {
         return "object".to_string();
     }
-    match &schema.instance_type {
-        Some(SingleOrVec::Single(t)) => instance_type_name(t),
-        Some(SingleOrVec::Vec(types)) => types
+    match schema.as_object().and_then(|o| o.get("type")) {
+        Some(Value::String(t)) => t.clone(),
+        // A type union (`["string", "null"]`) takes the first non-null member,
+        // matching how the 0.8 walk skipped the `null` instance type.
+        Some(Value::Array(types)) => types
             .iter()
-            .map(instance_type_name)
-            .find(|name| name != "null")
+            .filter_map(Value::as_str)
+            .find(|name| *name != "null")
+            .map(str::to_string)
             .unwrap_or_else(|| "object".to_string()),
-        None => "object".to_string(),
+        _ => "object".to_string(),
     }
 }
 
@@ -558,33 +595,19 @@ fn type_description(
 /// cycle (a `Vec` whose element type `$ref`s back onto the descent path renders
 /// as `object` rather than recursing).
 fn array_inner_type(
-    item: &Schema,
-    root: &RootSchema,
+    item: &Value,
+    ctx: SchemaCtx,
     visited: &mut std::collections::BTreeSet<String>,
 ) -> String {
     let descent = RefDescent::enter(item, visited);
-    let resolved = resolve_ref(item, root);
+    let resolved = resolve_ref(item, ctx);
     let desc = if descent.safe() {
-        type_description(&resolved, root, visited)
+        type_description(&resolved, ctx, visited)
     } else {
         "object".to_string()
     };
     descent.leave(visited);
     desc
-}
-
-fn instance_type_name(t: &schemars::schema::InstanceType) -> String {
-    use schemars::schema::InstanceType::*;
-    match t {
-        Null => "null",
-        Boolean => "boolean",
-        Object => "object",
-        Array => "array",
-        Number => "number",
-        String => "string",
-        Integer => "integer",
-    }
-    .to_string()
 }
 
 #[cfg(test)]

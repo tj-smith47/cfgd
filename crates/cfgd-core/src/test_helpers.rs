@@ -954,7 +954,13 @@ impl BareGitRepo {
     pub fn tags(&self) -> Vec<String> {
         self.bare_repo
             .tag_names(None)
-            .map(|names| names.iter().flatten().map(|s| s.to_string()).collect())
+            .map(|names| {
+                names
+                    .iter()
+                    .filter_map(|n| n.ok().flatten())
+                    .map(|s| s.to_string())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 }

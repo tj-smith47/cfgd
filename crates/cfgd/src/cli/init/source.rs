@@ -81,7 +81,7 @@ pub(super) fn clone_into(
     let current_branch = repo
         .head()
         .ok()
-        .and_then(|h| h.shorthand().map(String::from))
+        .and_then(|h| h.shorthand().ok().map(String::from))
         .unwrap_or_default();
     if current_branch != branch {
         let remote_branch = format!("origin/{}", branch);

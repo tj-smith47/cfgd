@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use chrono::Utc;
 use k8s_openapi::api::coordination::v1::Lease;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime;
+use k8s_openapi::jiff::{SignedDuration, Timestamp};
 use kube::Client;
 use kube::api::{Api, Patch, PatchParams, PostParams};
 use tokio_util::sync::CancellationToken;
@@ -11,6 +11,16 @@ use crate::errors::OperatorError;
 
 const FIELD_MANAGER_PREFIX: &str = "cfgd-operator-leader";
 const LEASE_NAME: &str = "cfgd-operator-leader";
+
+/// Format a [`jiff::Timestamp`] as an RFC 3339 string with fixed microsecond
+/// precision and a `Z` zulu offset, byte-identical to how `k8s-openapi`'s own
+/// `MicroTime` serializer renders the wire value. Used to build the
+/// `renewTime`/`acquireTime` strings the Kubernetes API server expects.
+fn rfc3339_micros(ts: Timestamp) -> Result<String, OperatorError> {
+    // Matches k8s-openapi 0.28's MicroTime::serialize strftime pattern exactly.
+    k8s_openapi::jiff::fmt::strtime::format("%Y-%m-%dT%H:%M:%S%.6fZ", ts)
+        .map_err(|e| OperatorError::Leader(format!("formatting lease timestamp: {e}")))
+}
 
 /// Module-local wrapper around [`cfgd_core::parse_duration_str`] that reads a
 /// duration from an env var and returns seconds (u64), with a caller-provided
@@ -57,7 +67,7 @@ impl LeaderElection {
 
     pub async fn try_acquire(&self) -> Result<bool, OperatorError> {
         let leases: Api<Lease> = Api::namespaced(self.client.clone(), &self.namespace);
-        let now = Utc::now();
+        let now = Timestamp::now();
         let now_micro = MicroTime(now);
 
         match leases.get(LEASE_NAME).await {
@@ -72,9 +82,10 @@ impl LeaderElection {
                     let duration_secs = spec
                         .and_then(|s| s.lease_duration_seconds)
                         .unwrap_or(self.lease_duration_secs);
-                    let expiry = renew_time.0
-                        + chrono::TimeDelta::try_seconds(i64::from(duration_secs))
-                            .unwrap_or_default();
+                    let expiry = renew_time
+                        .0
+                        .checked_add(SignedDuration::from_secs(i64::from(duration_secs)))
+                        .unwrap_or(renew_time.0);
                     now > expiry
                 } else {
                     // No renew time means expired
@@ -83,6 +94,14 @@ impl LeaderElection {
 
                 if expired || current_holder == self.identity {
                     let taking_over = expired && current_holder != self.identity;
+                    let now_str = rfc3339_micros(now)?;
+                    let acquire_time = if taking_over {
+                        Some(now_str.clone())
+                    } else {
+                        spec.and_then(|s| s.acquire_time.as_ref())
+                            .map(|t| rfc3339_micros(t.0))
+                            .transpose()?
+                    };
                     // SSA apply body must carry apiVersion/kind so the server
                     // accepts it as an `application/apply-patch+yaml`.
                     let patch = serde_json::json!({
@@ -92,13 +111,8 @@ impl LeaderElection {
                         "spec": {
                             "holderIdentity": self.identity,
                             "leaseDurationSeconds": self.lease_duration_secs,
-                            "renewTime": now.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
-                            "acquireTime": if taking_over {
-                                Some(now.to_rfc3339_opts(chrono::SecondsFormat::Micros, true))
-                            } else {
-                                spec.and_then(|s| s.acquire_time.as_ref())
-                                    .map(|t| t.0.to_rfc3339_opts(chrono::SecondsFormat::Micros, true))
-                            },
+                            "renewTime": now_str,
+                            "acquireTime": acquire_time,
                             "leaseTransitions": if taking_over {
                                 spec.and_then(|s| s.lease_transitions).unwrap_or(0) + 1
                             } else {
@@ -140,6 +154,7 @@ impl LeaderElection {
             }
             Err(kube::Error::Api(err)) if err.code == 404 => {
                 // Create the Lease
+                let now_str = rfc3339_micros(now_micro.0)?;
                 let lease = serde_json::from_value(serde_json::json!({
                     "apiVersion": "coordination.k8s.io/v1",
                     "kind": "Lease",
@@ -150,8 +165,8 @@ impl LeaderElection {
                     "spec": {
                         "holderIdentity": self.identity,
                         "leaseDurationSeconds": self.lease_duration_secs,
-                        "acquireTime": now_micro.0.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
-                        "renewTime": now_micro.0.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+                        "acquireTime": now_str,
+                        "renewTime": now_str,
                         "leaseTransitions": 0
                     }
                 }))
@@ -352,7 +367,8 @@ mod tests {
     /// Build a Lease JSON payload whose renew_time is `secs_ago` seconds before now
     /// and whose holder is `holder`. `lease_duration_seconds` controls expiry math.
     fn lease_json(holder: &str, lease_duration: i32, secs_ago: i64) -> serde_json::Value {
-        let renew_time = chrono::Utc::now() - chrono::TimeDelta::try_seconds(secs_ago).unwrap();
+        let renew_time = Timestamp::now() - SignedDuration::from_secs(secs_ago);
+        let renew_str = rfc3339_micros(renew_time).expect("format test timestamp");
         serde_json::json!({
             "apiVersion": "coordination.k8s.io/v1",
             "kind": "Lease",
@@ -360,8 +376,8 @@ mod tests {
             "spec": {
                 "holderIdentity": holder,
                 "leaseDurationSeconds": lease_duration,
-                "renewTime": renew_time.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
-                "acquireTime": renew_time.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+                "renewTime": renew_str,
+                "acquireTime": renew_str,
                 "leaseTransitions": 0_i32,
             }
         })
@@ -550,7 +566,8 @@ mod tests {
         lease_duration: i32,
         secs_ago: i64,
     ) -> serde_json::Value {
-        let renew_time = chrono::Utc::now() - chrono::TimeDelta::try_seconds(secs_ago).unwrap();
+        let renew_time = Timestamp::now() - SignedDuration::from_secs(secs_ago);
+        let renew_str = rfc3339_micros(renew_time).expect("format test timestamp");
         serde_json::json!({
             "apiVersion": "coordination.k8s.io/v1",
             "kind": "Lease",
@@ -558,7 +575,7 @@ mod tests {
             "spec": {
                 "holderIdentity": holder,
                 "leaseDurationSeconds": lease_duration,
-                "renewTime": renew_time.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+                "renewTime": renew_str,
             }
         })
     }
@@ -618,6 +635,8 @@ mod tests {
     async fn try_acquire_takeover_with_no_transitions_bumps_to_one() {
         // Existing holder is someone else, expired, with no leaseTransitions
         // in spec. Takeover should bump the unwrap_or(0) baseline to 1.
+        let renew_str = rfc3339_micros(Timestamp::now() - SignedDuration::from_secs(60))
+            .expect("format test timestamp");
         let existing = serde_json::json!({
             "apiVersion": "coordination.k8s.io/v1",
             "kind": "Lease",
@@ -625,8 +644,7 @@ mod tests {
             "spec": {
                 "holderIdentity": "other-pod",
                 "leaseDurationSeconds": 15,
-                "renewTime": (chrono::Utc::now() - chrono::TimeDelta::try_seconds(60).unwrap())
-                    .to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+                "renewTime": renew_str,
             }
         });
         let (ctx, _reg, harness) = MockKubeHarness::new(vec![
@@ -652,7 +670,8 @@ mod tests {
         // Spec carries an explicit leaseDurationSeconds different from the
         // default 15. Pin that the expiry math uses the spec value (60 here),
         // so a 90s-ago renewTime is still expired even with the longer duration.
-        let renew_time = chrono::Utc::now() - chrono::TimeDelta::try_seconds(90).unwrap();
+        let renew_time = Timestamp::now() - SignedDuration::from_secs(90);
+        let renew_str = rfc3339_micros(renew_time).expect("format test timestamp");
         let existing = serde_json::json!({
             "apiVersion": "coordination.k8s.io/v1",
             "kind": "Lease",
@@ -660,7 +679,7 @@ mod tests {
             "spec": {
                 "holderIdentity": "other-pod",
                 "leaseDurationSeconds": 60,
-                "renewTime": renew_time.to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+                "renewTime": renew_str,
                 "leaseTransitions": 7_i32,
             }
         });

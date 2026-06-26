@@ -2077,7 +2077,7 @@ mod local_source_fixture {
         let repo = git2::Repository::open(bare).unwrap();
         let refs = repo.references().unwrap();
         for r in refs.flatten() {
-            if let Some(n) = r.name()
+            if let Ok(n) = r.name()
                 && let Some(stripped) = n.strip_prefix("refs/heads/")
             {
                 return stripped.to_string();

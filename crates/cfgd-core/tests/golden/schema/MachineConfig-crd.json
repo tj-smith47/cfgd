@@ -1,51 +1,48 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "MachineConfigSpec",
   "type": "object",
-  "required": [
-    "hostname",
-    "profile"
-  ],
   "properties": {
     "files": {
-      "default": [],
       "type": "array",
+      "default": [],
       "items": {
-        "$ref": "#/definitions/FileSpec"
+        "$ref": "#/$defs/FileSpec"
       }
     },
     "hostname": {
       "type": "string"
     },
     "moduleRefs": {
-      "default": [],
       "type": "array",
+      "default": [],
       "items": {
-        "$ref": "#/definitions/ModuleRef"
+        "$ref": "#/$defs/ModuleRef"
       }
     },
     "packages": {
-      "default": [],
       "type": "array",
+      "default": [],
       "items": {
-        "$ref": "#/definitions/PackageRef"
+        "$ref": "#/$defs/PackageRef"
       }
     },
     "profile": {
       "type": "string"
     },
     "systemSettings": {
-      "default": {},
       "type": "object",
-      "additionalProperties": true
+      "additionalProperties": true,
+      "default": {}
     }
   },
-  "definitions": {
+  "required": [
+    "hostname",
+    "profile"
+  ],
+  "$defs": {
     "FileSpec": {
       "type": "object",
-      "required": [
-        "path"
-      ],
       "properties": {
         "content": {
           "type": [
@@ -54,8 +51,8 @@
           ]
         },
         "mode": {
-          "default": "0644",
-          "type": "string"
+          "type": "string",
+          "default": "0644"
         },
         "path": {
           "type": "string"
@@ -66,30 +63,30 @@
             "null"
           ]
         }
-      }
+      },
+      "required": [
+        "path"
+      ]
     },
     "ModuleRef": {
       "description": "Reference to a module that should be installed on the machine.",
       "type": "object",
-      "required": [
-        "name"
-      ],
       "properties": {
         "name": {
           "type": "string"
         },
         "required": {
-          "default": false,
-          "type": "boolean"
+          "type": "boolean",
+          "default": false
         }
-      }
+      },
+      "required": [
+        "name"
+      ]
     },
     "PackageRef": {
       "description": "Reference to a package with optional version pin.",
       "type": "object",
-      "required": [
-        "name"
-      ],
       "properties": {
         "name": {
           "type": "string"
@@ -100,7 +97,10 @@
             "null"
           ]
         }
-      }
+      },
+      "required": [
+        "name"
+      ]
     }
   }
 }

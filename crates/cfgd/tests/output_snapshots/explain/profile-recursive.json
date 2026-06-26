@@ -1,0 +1,489 @@
+{
+  "apiVersion": "cfgd.io/v1alpha1",
+  "description": "A composable layer of modules, packages, files, and settings.",
+  "fields": [
+    {
+      "children": [
+        {
+          "description": "",
+          "name": "command",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "name",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "description": "",
+      "name": "aliases",
+      "required": false,
+      "type": "[]object"
+    },
+    {
+      "children": [
+        {
+          "description": "",
+          "name": "name",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "value",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "description": "",
+      "name": "env",
+      "required": false,
+      "type": "[]object"
+    },
+    {
+      "description": "How far `spec.env` exports reach across the current user's environment.\nOmitted means \"inherit\" (a parent layer's value survives); the resolved\ndefault when no layer sets it is [`EnvScope::All`] — every standard user\nentry point cfgd can safely touch. Narrow it to `Login` or `Interactive`\nto opt out of the broader session surfaces.",
+      "name": "envScope",
+      "required": false,
+      "type": "object"
+    },
+    {
+      "children": [
+        {
+          "children": [
+            {
+              "children": [
+                {
+                  "description": "The encryption backend to use (e.g. \"sops\", \"age\").",
+                  "name": "backend",
+                  "required": true,
+                  "type": "string"
+                },
+                {
+                  "description": "When encryption must be enforced. Defaults to `InRepo`.",
+                  "name": "mode",
+                  "required": false,
+                  "type": "object"
+                }
+              ],
+              "description": "Encryption settings for this file.",
+              "name": "encryption",
+              "required": false,
+              "type": "object"
+            },
+            {
+              "description": "Unix permission bits (e.g. \"600\", \"644\") to apply after deployment.",
+              "name": "permissions",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "description": "When true, the source file is local-only: auto-added to .gitignore,\nsilently skipped on machines where it doesn't exist.",
+              "name": "private",
+              "required": false,
+              "type": "boolean"
+            },
+            {
+              "description": "",
+              "name": "source",
+              "required": true,
+              "type": "string"
+            },
+            {
+              "description": "Per-file deployment strategy override. If None, uses the global default.",
+              "name": "strategy",
+              "required": false,
+              "type": "object"
+            },
+            {
+              "description": "",
+              "name": "target",
+              "required": true,
+              "type": "string"
+            }
+          ],
+          "description": "",
+          "name": "managed",
+          "required": false,
+          "type": "[]object"
+        },
+        {
+          "description": "",
+          "name": "permissions",
+          "required": false,
+          "type": "object"
+        }
+      ],
+      "description": "",
+      "name": "files",
+      "required": false,
+      "type": "object"
+    },
+    {
+      "description": "",
+      "name": "inherits",
+      "required": false,
+      "type": "[]string"
+    },
+    {
+      "description": "",
+      "name": "modules",
+      "required": false,
+      "type": "[]string"
+    },
+    {
+      "children": [
+        {
+          "description": "",
+          "name": "apk",
+          "required": false,
+          "type": "[]string"
+        },
+        {
+          "children": [
+            {
+              "description": "",
+              "name": "file",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "description": "",
+              "name": "packages",
+              "required": false,
+              "type": "[]string"
+            }
+          ],
+          "description": "",
+          "name": "apt",
+          "required": false,
+          "type": "object"
+        },
+        {
+          "children": [
+            {
+              "description": "",
+              "name": "casks",
+              "required": false,
+              "type": "[]string"
+            },
+            {
+              "description": "",
+              "name": "file",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "description": "",
+              "name": "formulae",
+              "required": false,
+              "type": "[]string"
+            },
+            {
+              "description": "",
+              "name": "taps",
+              "required": false,
+              "type": "[]string"
+            }
+          ],
+          "description": "",
+          "name": "brew",
+          "required": false,
+          "type": "object"
+        },
+        {
+          "children": [
+            {
+              "description": "",
+              "name": "file",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "description": "",
+              "name": "packages",
+              "required": false,
+              "type": "[]string"
+            }
+          ],
+          "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`)\nand object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the\nshared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
+          "name": "cargo",
+          "required": false,
+          "type": "object"
+        },
+        {
+          "description": "",
+          "name": "chocolatey",
+          "required": false,
+          "type": "[]string"
+        },
+        {
+          "children": [
+            {
+              "description": "",
+              "name": "check",
+              "required": true,
+              "type": "string"
+            },
+            {
+              "description": "",
+              "name": "install",
+              "required": true,
+              "type": "string"
+            },
+            {
+              "description": "",
+              "name": "listInstalled",
+              "required": true,
+              "type": "string"
+            },
+            {
+              "description": "",
+              "name": "name",
+              "required": true,
+              "type": "string"
+            },
+            {
+              "description": "",
+              "name": "packages",
+              "required": false,
+              "type": "[]string"
+            },
+            {
+              "description": "",
+              "name": "uninstall",
+              "required": true,
+              "type": "string"
+            },
+            {
+              "description": "",
+              "name": "update",
+              "required": false,
+              "type": "string"
+            }
+          ],
+          "description": "",
+          "name": "custom",
+          "required": false,
+          "type": "[]object"
+        },
+        {
+          "description": "",
+          "name": "dnf",
+          "required": false,
+          "type": "[]string"
+        },
+        {
+          "children": [
+            {
+              "description": "",
+              "name": "packages",
+              "required": false,
+              "type": "[]string"
+            },
+            {
+              "description": "",
+              "name": "remote",
+              "required": false,
+              "type": "string"
+            }
+          ],
+          "description": "",
+          "name": "flatpak",
+          "required": false,
+          "type": "object"
+        },
+        {
+          "description": "",
+          "name": "go",
+          "required": false,
+          "type": "[]string"
+        },
+        {
+          "description": "",
+          "name": "nix",
+          "required": false,
+          "type": "[]string"
+        },
+        {
+          "children": [
+            {
+              "description": "",
+              "name": "file",
+              "required": false,
+              "type": "string"
+            },
+            {
+              "description": "",
+              "name": "global",
+              "required": false,
+              "type": "[]string"
+            }
+          ],
+          "description": "",
+          "name": "npm",
+          "required": false,
+          "type": "object"
+        },
+        {
+          "description": "",
+          "name": "pacman",
+          "required": false,
+          "type": "[]string"
+        },
+        {
+          "description": "",
+          "name": "pipx",
+          "required": false,
+          "type": "[]string"
+        },
+        {
+          "description": "",
+          "name": "pkg",
+          "required": false,
+          "type": "[]string"
+        },
+        {
+          "description": "",
+          "name": "scoop",
+          "required": false,
+          "type": "[]string"
+        },
+        {
+          "children": [
+            {
+              "description": "",
+              "name": "classic",
+              "required": false,
+              "type": "[]string"
+            },
+            {
+              "description": "",
+              "name": "packages",
+              "required": false,
+              "type": "[]string"
+            }
+          ],
+          "description": "",
+          "name": "snap",
+          "required": false,
+          "type": "object"
+        },
+        {
+          "description": "",
+          "name": "winget",
+          "required": false,
+          "type": "[]string"
+        },
+        {
+          "description": "",
+          "name": "yum",
+          "required": false,
+          "type": "[]string"
+        },
+        {
+          "description": "",
+          "name": "zypper",
+          "required": false,
+          "type": "[]string"
+        }
+      ],
+      "description": "",
+      "name": "packages",
+      "required": false,
+      "type": "object"
+    },
+    {
+      "children": [
+        {
+          "description": "",
+          "name": "onChange",
+          "required": false,
+          "type": "[]object"
+        },
+        {
+          "description": "",
+          "name": "onDrift",
+          "required": false,
+          "type": "[]object"
+        },
+        {
+          "description": "",
+          "name": "postApply",
+          "required": false,
+          "type": "[]object"
+        },
+        {
+          "description": "",
+          "name": "postReconcile",
+          "required": false,
+          "type": "[]object"
+        },
+        {
+          "description": "",
+          "name": "preApply",
+          "required": false,
+          "type": "[]object"
+        },
+        {
+          "description": "",
+          "name": "preReconcile",
+          "required": false,
+          "type": "[]object"
+        }
+      ],
+      "description": "",
+      "name": "scripts",
+      "required": false,
+      "type": "object"
+    },
+    {
+      "children": [
+        {
+          "description": "",
+          "name": "backend",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "envs",
+          "required": false,
+          "type": "[]string"
+        },
+        {
+          "description": "",
+          "name": "source",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "target",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "description": "",
+          "name": "template",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "description": "",
+      "name": "secrets",
+      "required": false,
+      "type": "[]object"
+    },
+    {
+      "description": "",
+      "name": "system",
+      "required": false,
+      "type": "object"
+    }
+  ],
+  "kind": "Profile",
+  "location": "profiles/<name>.yaml",
+  "name": "Profile"
+}

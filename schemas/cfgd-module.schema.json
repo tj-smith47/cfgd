@@ -4,17 +4,13 @@
       "description": "Controls when encryption is required for a managed file.",
       "oneOf": [
         {
+          "const": "InRepo",
           "description": "File must be encrypted when stored in the repository.",
-          "enum": [
-            "InRepo"
-          ],
           "type": "string"
         },
         {
+          "const": "Always",
           "description": "File must always be encrypted, including at rest on disk.",
-          "enum": [
-            "Always"
-          ],
           "type": "string"
         }
       ]
@@ -28,11 +24,7 @@
           "type": "string"
         },
         "mode": {
-          "allOf": [
-            {
-              "$ref": "#/$defs/EncryptionMode"
-            }
-          ],
+          "$ref": "#/$defs/EncryptionMode",
           "default": "InRepo",
           "description": "When encryption must be enforced. Defaults to `InRepo`."
         }
@@ -61,31 +53,23 @@
       "description": "File deployment strategy.",
       "oneOf": [
         {
+          "const": "Symlink",
           "description": "Create a symbolic link from target to source (default).",
-          "enum": [
-            "Symlink"
-          ],
           "type": "string"
         },
         {
+          "const": "Copy",
           "description": "Copy source content to target.",
-          "enum": [
-            "Copy"
-          ],
           "type": "string"
         },
         {
+          "const": "Template",
           "description": "Render a Tera template and write the output (auto-selected for .tera files).",
-          "enum": [
-            "Template"
-          ],
           "type": "string"
         },
         {
+          "const": "Hardlink",
           "description": "Create a hard link from target to source.",
-          "enum": [
-            "Hardlink"
-          ],
           "type": "string"
         }
       ]
@@ -112,7 +96,7 @@
           ]
         },
         "private": {
-          "description": "When true, the source file is local-only: auto-added to .gitignore, silently skipped on machines where it doesn't exist.",
+          "description": "When true, the source file is local-only: auto-added to .gitignore,\nsilently skipped on machines where it doesn't exist.",
           "type": "boolean"
         },
         "source": {
@@ -167,7 +151,7 @@
           "type": "object"
         },
         "creates": {
-          "description": "Skip the install script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks. Only meaningful for a `prefer: [script]` install; ignored otherwise.",
+          "description": "Skip the install script if this path already exists. A leading `~`\nexpands to the home directory; a relative path resolves against the\nscript's working directory. Existence follows symlinks. Only meaningful\nfor a `prefer: [script]` install; ignored otherwise.",
           "type": [
             "string",
             "null"
@@ -190,7 +174,7 @@
           "type": "string"
         },
         "onlyIf": {
-          "description": "Run the install script only if this command exits zero. A non-zero exit skips the install (the condition for installing was not met). Only meaningful for a `prefer: [script]` install; ignored for manager-backed installs (those are idempotent via the manager's installed-package query).",
+          "description": "Run the install script only if this command exits zero. A non-zero exit\nskips the install (the condition for installing was not met). Only\nmeaningful for a `prefer: [script]` install; ignored for manager-backed\ninstalls (those are idempotent via the manager's installed-package query).",
           "type": [
             "string",
             "null"
@@ -215,7 +199,7 @@
           ]
         },
         "unless": {
-          "description": "Run the install script only if this command exits NON-zero. A zero exit (success) skips the install (the package already appears present). Only meaningful for a `prefer: [script]` install; ignored otherwise.",
+          "description": "Run the install script only if this command exits NON-zero. A zero exit\n(success) skips the install (the package already appears present). Only\nmeaningful for a `prefer: [script]` install; ignored otherwise.",
           "type": [
             "string",
             "null"
@@ -258,7 +242,7 @@
           "type": "array"
         },
         "platforms": {
-          "description": "Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a Skipped action rather than vanishing). Tags are matched against OS / distro / arch via `Platform::matches_any`; the canonical macOS token is `macos`.",
+          "description": "Platform tags gating the whole module. When non-empty and the current\nplatform matches none of them, the module is skipped entirely (it\nappears as a Skipped action rather than vanishing). Tags are matched\nagainst OS / distro / arch via `Platform::matches_any`; the canonical\nmacOS token is `macos`.",
           "items": {
             "type": "string"
           },
@@ -276,7 +260,7 @@
         },
         "system": {
           "additionalProperties": true,
-          "description": "System configurator settings contributed by this module. Deep-merged into the profile system map; module values override profile values at leaf level.",
+          "description": "System configurator settings contributed by this module.\nDeep-merged into the profile system map; module values override profile values at leaf level.",
           "type": "object"
         }
       },
@@ -296,25 +280,25 @@
               ]
             },
             "creates": {
-              "description": "Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.",
+              "description": "Skip the script if this path already exists. A leading `~` expands to\nthe home directory; a relative path resolves against the script's\nworking directory. Existence follows symlinks.",
               "type": [
                 "string",
                 "null"
               ]
             },
             "idleTimeout": {
-              "description": "Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
+              "description": "Kill the script if it produces no stdout/stderr output for this duration.\nPrevents scripts from silently hanging on unresponsive resources.\nFormat: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
               "type": [
                 "string",
                 "null"
               ]
             },
             "interactive": {
-              "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+              "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr,\nno spinner, no output capture, no idle timeout) so it can prompt the\nuser — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when\nstdin is not a terminal (CI, piped input, or any daemon-run phase) the\nscript is skipped with a warning rather than hanging on instant EOF.",
               "type": "boolean"
             },
             "onlyIf": {
-              "description": "Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.",
+              "description": "Run the script only if this command exits zero. A non-zero exit skips\nthe script (the condition for running was not met). Evaluated with the\nsame shell, working directory, and environment as the body.",
               "type": [
                 "string",
                 "null"
@@ -324,11 +308,7 @@
               "type": "string"
             },
             "shell": {
-              "allOf": [
-                {
-                  "$ref": "#/$defs/ScriptShell"
-                }
-              ],
+              "$ref": "#/$defs/ScriptShell",
               "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts."
             },
             "timeout": {
@@ -338,14 +318,14 @@
               ]
             },
             "unless": {
-              "description": "Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.",
+              "description": "Run the script only if this command exits NON-zero. A zero exit\n(success) skips the script (the guarded state already holds).\nEvaluated with the same shell, working directory, and environment as\nthe body.",
               "type": [
                 "string",
                 "null"
               ]
             },
             "workdir": {
-              "description": "Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
+              "description": "Working directory for the script. By default every lifecycle script\nruns in the user's home directory — never the config source tree — so\na relative write can't pollute the user's GitOps repo. Set `workdir`\nto override: a leading `~` expands to home and `$VAR`/`${VAR}` expand\nagainst the script environment (which always carries `$CFGD_MODULE_DIR`\nand `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,\n`workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
               "type": [
                 "string",
                 "null"
@@ -373,10 +353,8 @@
           "type": "string"
         },
         {
+          "const": "auto",
           "description": "Platform default: `sh` on Unix, `cmd.exe` on Windows.",
-          "enum": [
-            "auto"
-          ],
           "type": "string"
         }
       ]
@@ -439,8 +417,8 @@
         }
       },
       "required": [
-        "command",
-        "name"
+        "name",
+        "command"
       ],
       "type": "object"
     }

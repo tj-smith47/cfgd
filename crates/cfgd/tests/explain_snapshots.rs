@@ -88,6 +88,37 @@ fn explain_recursive_drops_plus_marker() {
 }
 
 #[test]
+fn explain_recursive_tree_human() {
+    // Pin the full recursive (`--recursive`) field tree, not just the absence
+    // of `[+]` markers: every nested level — `packages.brew.taps`, the deeply
+    // nested override blocks — must render at a stable indent so a schemars
+    // walk regression (a dropped child, a re-ordered field) shows up as a
+    // diff. Profile is the representative case because its schema nests the
+    // deepest. The walk is pure and `serde_json` keys sort, so this is
+    // deterministic.
+    let schema = find_schema("profile").expect("profile schema is registered");
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_explain_schema_doc(&schema, true));
+    drop(printer);
+    cap.assert_human_snapshot_in(Path::new(SNAPSHOT_ROOT), "explain/profile-recursive.txt");
+}
+
+#[test]
+fn explain_recursive_tree_json() {
+    let schema = find_schema("profile").expect("profile schema is registered");
+    let (printer, cap) = Printer::for_test_doc();
+    printer.emit(build_explain_schema_doc(&schema, true));
+    drop(printer);
+    let actual = cap.json().expect("doc captured json");
+    assert_eq!(
+        actual.get("kind").and_then(|v| v.as_str()),
+        Some("Profile"),
+        "recursive explain payload must carry kind=Profile, got: {actual}"
+    );
+    cap.assert_json_snapshot_in(Path::new(SNAPSHOT_ROOT), "explain/profile-recursive.json");
+}
+
+#[test]
 fn explain_unknown_resource_returns_none() {
     // The live `cmd_explain` `bail!`s on an unknown resource before any Doc
     // is emitted; the lookup helper that drives that branch is the public

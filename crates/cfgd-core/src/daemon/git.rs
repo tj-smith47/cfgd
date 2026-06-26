@@ -6,13 +6,14 @@ pub(crate) fn git_pull(repo_path: &Path) -> std::result::Result<bool, String> {
     let head = repo.head().map_err(|e| format!("get HEAD: {}", e))?;
     let branch_name = head
         .shorthand()
+        .ok()
         .ok_or_else(|| "cannot determine branch name".to_string())?;
 
     // Try git CLI first with SSH hang protection.
     let remote_url = repo
         .find_remote("origin")
         .ok()
-        .and_then(|r| r.url().map(String::from));
+        .and_then(|r| r.url().ok().map(String::from));
     let repo_dir = &repo_path.display().to_string();
     let cli_ok = crate::try_git_cmd(
         remote_url.as_deref(),
@@ -130,12 +131,13 @@ pub(crate) fn git_auto_commit_push(repo_path: &Path) -> std::result::Result<bool
     let head = repo.head().map_err(|e| format!("get HEAD: {}", e))?;
     let branch_name = head
         .shorthand()
+        .ok()
         .ok_or_else(|| "cannot determine branch name".to_string())?;
 
     let remote_url = repo
         .find_remote("origin")
         .ok()
-        .and_then(|r| r.url().map(String::from));
+        .and_then(|r| r.url().ok().map(String::from));
 
     let repo_dir = &repo_path.display().to_string();
     let cli_ok = crate::try_git_cmd(

@@ -3,11 +3,53 @@
 
 use std::io::Read;
 
+use ureq::Body;
+use ureq::http::Response;
+
 use crate::errors::OciError;
 use crate::sha256_digest;
 
 use super::OciReference;
 use super::auth::{RegistryAuth, get_bearer_token};
+
+/// Read a response header value as a UTF-8 `&str`, mirroring ureq 2's
+/// `Response::header` (`Option<&str>`) over ureq 3's `http::HeaderMap`.
+fn header<'a>(resp: &'a Response<Body>, name: &str) -> Option<&'a str> {
+    resp.headers().get(name).and_then(|v| v.to_str().ok())
+}
+
+/// Run an `http::Request` through `agent` with HTTP-status-as-error disabled so
+/// the caller can inspect 4xx/5xx responses (notably the 401 token challenge)
+/// exactly as ureq 2 surfaced them in `Error::Status(code, resp)`.
+fn run_request(
+    agent: &ureq::Agent,
+    method: &str,
+    url: &str,
+    content_type: Option<&str>,
+    accept: Option<&str>,
+    authorization: Option<&str>,
+    body: Option<&[u8]>,
+) -> Result<Response<Body>, ureq::Error> {
+    let mut builder = ureq::http::Request::builder().method(method).uri(url);
+    if let Some(ct) = content_type {
+        builder = builder.header("Content-Type", ct);
+    }
+    if let Some(acc) = accept {
+        builder = builder.header("Accept", acc);
+    }
+    if let Some(authz) = authorization {
+        builder = builder.header("Authorization", authz);
+    }
+    let request = builder
+        .body(body.map(<[u8]>::to_vec).unwrap_or_default())
+        .map_err(ureq::Error::from)?;
+
+    let configured = agent
+        .configure_request(request)
+        .http_status_as_error(false)
+        .build();
+    agent.run(configured)
+}
 
 /// Maximum blob size accepted by [`fetch_blob`] (512 MiB). Mirrors the cap in
 /// `pull_module`; a base image layer larger than this is rejected rather than
@@ -23,87 +65,71 @@ pub(super) fn authenticated_request(
     accept: Option<&str>,
     content_type: Option<&str>,
     body: Option<&[u8]>,
-) -> Result<ureq::Response, OciError> {
-    // First attempt — may get 401
-    let mut req = match method {
-        "GET" => agent.get(url),
-        "PUT" => agent.put(url),
-        "POST" => agent.post(url),
-        "HEAD" => agent.head(url),
-        "PATCH" => agent.request("PATCH", url),
-        _ => agent.get(url),
-    };
+) -> Result<Response<Body>, OciError> {
+    let basic_authz = auth.map(|cred| cred.basic_auth_header());
 
-    if let Some(ct) = content_type {
-        req = req.set("Content-Type", ct);
+    // First attempt — may get 401. `run_request` disables status-as-error so a
+    // 401 is returned as `Ok(resp)` and we can read its Www-Authenticate header.
+    let resp = run_request(
+        agent,
+        method,
+        url,
+        content_type,
+        accept,
+        basic_authz.as_deref(),
+        body,
+    )
+    .map_err(|e| OciError::RequestFailed {
+        message: format!("{e}"),
+    })?;
+
+    let status = resp.status().as_u16();
+    if (200..300).contains(&status) {
+        return Ok(resp);
     }
-    if let Some(acc) = accept {
-        req = req.set("Accept", acc);
-    }
-    if let Some(cred) = auth {
-        req = req.set("Authorization", &cred.basic_auth_header());
-    }
 
-    let result = if let Some(b) = body {
-        req.send_bytes(b)
-    } else {
-        req.call()
-    };
+    if status == 401 {
+        // Get the Www-Authenticate header and try token auth
+        let www_auth = header(&resp, "Www-Authenticate")
+            .or_else(|| header(&resp, "www-authenticate"))
+            .unwrap_or("")
+            .to_string();
 
-    match result {
-        Ok(resp) => Ok(resp),
-        Err(ureq::Error::Status(401, resp)) => {
-            // Get the Www-Authenticate header and try token auth
-            let www_auth = resp
-                .header("Www-Authenticate")
-                .or_else(|| resp.header("www-authenticate"))
-                .unwrap_or("")
-                .to_string();
-
-            if www_auth.is_empty() || !www_auth.contains("Bearer") {
-                return Err(OciError::AuthFailed {
-                    registry: url.to_string(),
-                    message: "401 with no Bearer challenge".to_string(),
-                });
-            }
-
-            let token = get_bearer_token(agent, &www_auth, auth)?;
-
-            // Retry with bearer token
-            let mut req2 = match method {
-                "GET" => agent.get(url),
-                "PUT" => agent.put(url),
-                "POST" => agent.post(url),
-                "HEAD" => agent.head(url),
-                "PATCH" => agent.request("PATCH", url),
-                _ => agent.get(url),
-            };
-
-            if let Some(ct) = content_type {
-                req2 = req2.set("Content-Type", ct);
-            }
-            if let Some(acc) = accept {
-                req2 = req2.set("Accept", acc);
-            }
-            req2 = req2.set("Authorization", &format!("Bearer {}", token));
-
-            let result2 = if let Some(b) = body {
-                req2.send_bytes(b)
-            } else {
-                req2.call()
-            };
-
-            result2.map_err(|e| OciError::RequestFailed {
-                message: format!("{e}"),
-            })
+        if www_auth.is_empty() || !www_auth.contains("Bearer") {
+            return Err(OciError::AuthFailed {
+                registry: url.to_string(),
+                message: "401 with no Bearer challenge".to_string(),
+            });
         }
-        Err(ureq::Error::Status(code, _)) => Err(OciError::RequestFailed {
-            message: format!("HTTP {code} from {url}"),
-        }),
-        Err(e) => Err(OciError::RequestFailed {
+
+        let token = get_bearer_token(agent, &www_auth, auth)?;
+
+        // Retry with bearer token
+        let resp2 = run_request(
+            agent,
+            method,
+            url,
+            content_type,
+            accept,
+            Some(&format!("Bearer {}", token)),
+            body,
+        )
+        .map_err(|e| OciError::RequestFailed {
             message: format!("{e}"),
-        }),
+        })?;
+
+        let status2 = resp2.status().as_u16();
+        if (200..300).contains(&status2) {
+            return Ok(resp2);
+        }
+        return Err(OciError::RequestFailed {
+            message: format!("HTTP {status2} from {url}"),
+        });
     }
+
+    Err(OciError::RequestFailed {
+        message: format!("HTTP {status} from {url}"),
+    })
 }
 
 /// Resolve the authoritative digest of a just-PUT manifest/index.
@@ -113,9 +139,9 @@ pub(super) fn authenticated_request(
 /// of those bytes — but one that re-canonicalizes the manifest stores (and
 /// addresses) a different digest, so the value a caller pins (e.g. a Kubernetes
 /// `volume.image` reference) must come from the registry whenever it provides one.
-pub(super) fn resolve_pushed_digest(resp: &ureq::Response, sent_bytes: &[u8]) -> String {
-    resp.header("Docker-Content-Digest")
-        .or_else(|| resp.header("docker-content-digest"))
+pub(super) fn resolve_pushed_digest(resp: &Response<Body>, sent_bytes: &[u8]) -> String {
+    header(resp, "Docker-Content-Digest")
+        .or_else(|| header(resp, "docker-content-digest"))
         .map(str::trim)
         .filter(|d| !d.is_empty())
         .map(str::to_string)
@@ -159,8 +185,7 @@ pub(super) fn upload_blob(
             message: format!("upload initiation failed: {e}"),
         })?;
 
-    let location = resp
-        .header("Location")
+    let location = header(&resp, "Location")
         .ok_or_else(|| OciError::BlobUploadFailed {
             digest: digest.clone(),
             message: "no Location header in upload response".to_string(),
@@ -235,7 +260,8 @@ pub(super) fn fetch_blob(
     })?;
 
     let mut data = Vec::new();
-    resp.into_reader()
+    resp.into_body()
+        .into_reader()
         .take(MAX_BLOB_SIZE + 1024)
         .read_to_end(&mut data)?;
 
@@ -286,7 +312,7 @@ pub(super) fn ensure_blob_present(
         );
         if let Ok(resp) =
             authenticated_request(agent, "POST", &mount_url, auth_dst, None, None, Some(&[]))
-            && resp.status() == 201
+            && resp.status().as_u16() == 201
         {
             tracing::debug!(digest = %digest, "base blob mounted from source repo");
             return Ok(());
@@ -353,9 +379,10 @@ mod tests {
             .with_status(201)
             .create();
 
-        let agent = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(10))
-            .build();
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+            .new_agent();
 
         let result = upload_blob(&agent, &oci_ref, None, data, "application/octet-stream");
         assert!(result.is_ok(), "upload_blob failed: {:?}", result.err());
@@ -389,9 +416,10 @@ mod tests {
             .with_status(200)
             .create();
 
-        let agent = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(10))
-            .build();
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+            .new_agent();
 
         let result = upload_blob(&agent, &oci_ref, None, data, "application/octet-stream");
         assert!(result.is_ok());
@@ -441,9 +469,10 @@ mod tests {
             .with_status(201)
             .create();
 
-        let agent = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(10))
-            .build();
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+            .new_agent();
 
         let result = upload_blob(&agent, &oci_ref, None, data, "application/octet-stream");
         assert!(
@@ -489,9 +518,10 @@ mod tests {
             .with_body("manifest content")
             .create();
 
-        let agent = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(10))
-            .build();
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+            .new_agent();
 
         let url = format!("{}/v2/test/repo/manifests/v1", server.url());
         let result = authenticated_request(&agent, "GET", &url, None, None, None, None);
@@ -513,9 +543,10 @@ mod tests {
             .with_header("Www-Authenticate", "Basic realm=\"test\"")
             .create();
 
-        let agent = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(10))
-            .build();
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+            .new_agent();
 
         let url = format!("{}/v2/test/repo/manifests/v1", server.url());
         let result = authenticated_request(&agent, "GET", &url, None, None, None, None);
@@ -541,14 +572,15 @@ mod tests {
             .with_body("{}")
             .create();
 
-        let agent = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(10))
-            .build();
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+            .new_agent();
 
         let url = format!("{}/v2/test/repo/tags/list", server.url());
         let result = authenticated_request(&agent, "GET", &url, Some(&auth), None, None, None);
         let resp = result.expect("authenticated request should succeed with basic auth");
-        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.status().as_u16(), 200);
     }
 
     #[test]
@@ -563,9 +595,10 @@ mod tests {
             .with_status(201)
             .create();
 
-        let agent = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(10))
-            .build();
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+            .new_agent();
 
         let url = format!("{}/v2/test/repo/manifests/v1", server.url());
         let result = authenticated_request(
@@ -578,10 +611,10 @@ mod tests {
             Some(body_content),
         );
         let resp = result.expect("PUT with body should succeed");
-        assert_eq!(resp.status(), 201);
+        assert_eq!(resp.status().as_u16(), 201);
     }
 
-    fn put_response_with(headers: &[(&str, &str)]) -> ureq::Response {
+    fn put_response_with(headers: &[(&str, &str)]) -> Response<Body> {
         let mut server = mockito::Server::new();
         let mut m = server
             .mock("PUT", "/v2/test/repo/manifests/v1")
@@ -590,9 +623,10 @@ mod tests {
             m = m.with_header(*k, v);
         }
         m.create();
-        let agent = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(10))
-            .build();
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+            .new_agent();
         let url = format!("{}/v2/test/repo/manifests/v1", server.url());
         authenticated_request(&agent, "PUT", &url, None, None, None, Some(b"x"))
             .expect("PUT should succeed")
@@ -639,9 +673,10 @@ mod tests {
             .with_status(500)
             .create();
 
-        let agent = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_secs(10))
-            .build();
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+            .new_agent();
 
         let url = format!("{}/v2/test/repo/tags/list", server.url());
         let result = authenticated_request(&agent, "GET", &url, None, None, None, None);
@@ -652,9 +687,10 @@ mod tests {
     fn authenticated_request_returns_request_failed_on_unreachable_host() {
         // Pointing the agent at a closed port triggers the catch-all
         // `Err(e) => Err(OciError::RequestFailed { ... })` arm.
-        let agent = ureq::AgentBuilder::new()
-            .timeout(std::time::Duration::from_millis(250))
-            .build();
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_millis(250)))
+            .build()
+            .new_agent();
 
         // 127.0.0.1:1 is reserved/unused; the connection refuses immediately.
         let url = "http://127.0.0.1:1/v2/test/repo/tags/list";

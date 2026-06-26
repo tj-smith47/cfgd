@@ -246,7 +246,9 @@ fn list_module_tags(repo_path: &Path, source_name: &str) -> Result<HashMap<Strin
             url: String::new(),
             message: format!("cannot list tags: {e}"),
         })?;
-    Ok(group_module_tags(tag_names.iter().flatten()))
+    Ok(group_module_tags(
+        tag_names.iter().filter_map(|t| t.ok().flatten()),
+    ))
 }
 
 /// Group git tag names that follow the `<module>/<version>` convention into a

@@ -59,7 +59,7 @@
     },
     "CargoSpec": {
       "additionalProperties": false,
-      "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`) and object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the shared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
+      "description": "Cargo package spec. Supports both list form (`cargo: [bat, ripgrep]`)\nand object form (`cargo: { file: Cargo.toml, packages: [...] }`) via the\nshared `list_or_struct` deserializer on the `PackagesSpec::cargo` field.",
       "properties": {
         "file": {
           "type": [
@@ -107,11 +107,7 @@
       "additionalProperties": false,
       "properties": {
         "constraints": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/SourceConstraints"
-            }
-          ],
+          "$ref": "#/definitions/SourceConstraints",
           "default": {
             "allowSystemChanges": false,
             "allowedTargetPaths": [],
@@ -121,11 +117,7 @@
           }
         },
         "locked": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/PolicyItems"
-            }
-          ],
+          "$ref": "#/definitions/PolicyItems",
           "default": {
             "aliases": [],
             "env": [],
@@ -138,11 +130,7 @@
           }
         },
         "optional": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/PolicyItems"
-            }
-          ],
+          "$ref": "#/definitions/PolicyItems",
           "default": {
             "aliases": [],
             "env": [],
@@ -155,11 +143,7 @@
           }
         },
         "recommended": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/PolicyItems"
-            }
-          ],
+          "$ref": "#/definitions/PolicyItems",
           "default": {
             "aliases": [],
             "env": [],
@@ -172,11 +156,7 @@
           }
         },
         "required": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/PolicyItems"
-            }
-          ],
+          "$ref": "#/definitions/PolicyItems",
           "default": {
             "aliases": [],
             "env": [],
@@ -193,7 +173,7 @@
     },
     "ConfigSourceProfileEntry": {
       "additionalProperties": false,
-      "description": "Detailed profile entry in a ConfigSource manifest. When present, provides richer info than the flat `profiles` list.",
+      "description": "Detailed profile entry in a ConfigSource manifest.\nWhen present, provides richer info than the flat `profiles` list.",
       "properties": {
         "description": {
           "default": null,
@@ -263,11 +243,7 @@
       "additionalProperties": false,
       "properties": {
         "policy": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/ConfigSourcePolicy"
-            }
-          ],
+          "$ref": "#/definitions/ConfigSourcePolicy",
           "default": {
             "constraints": {
               "allowSystemChanges": false,
@@ -319,11 +295,7 @@
           }
         },
         "provides": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/ConfigSourceProvides"
-            }
-          ],
+          "$ref": "#/definitions/ConfigSourceProvides",
           "default": {
             "modules": [],
             "platformProfiles": {},
@@ -368,10 +340,10 @@
         }
       },
       "required": [
-        "check",
-        "install",
-        "listInstalled",
         "name",
+        "check",
+        "listInstalled",
+        "install",
         "uninstall"
       ],
       "type": "object"
@@ -413,17 +385,13 @@
       "description": "Controls when encryption is required for a managed file.",
       "oneOf": [
         {
+          "const": "InRepo",
           "description": "File must be encrypted when stored in the repository.",
-          "enum": [
-            "InRepo"
-          ],
           "type": "string"
         },
         {
+          "const": "Always",
           "description": "File must always be encrypted, including at rest on disk.",
-          "enum": [
-            "Always"
-          ],
           "type": "string"
         }
       ]
@@ -437,11 +405,7 @@
           "type": "string"
         },
         "mode": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/EncryptionMode"
-            }
-          ],
+          "$ref": "#/definitions/EncryptionMode",
           "default": "InRepo",
           "description": "When encryption must be enforced. Defaults to `InRepo`."
         }
@@ -470,31 +434,23 @@
       "description": "File deployment strategy.",
       "oneOf": [
         {
+          "const": "Symlink",
           "description": "Create a symbolic link from target to source (default).",
-          "enum": [
-            "Symlink"
-          ],
           "type": "string"
         },
         {
+          "const": "Copy",
           "description": "Copy source content to target.",
-          "enum": [
-            "Copy"
-          ],
           "type": "string"
         },
         {
+          "const": "Template",
           "description": "Render a Tera template and write the output (auto-selected for .tera files).",
-          "enum": [
-            "Template"
-          ],
           "type": "string"
         },
         {
+          "const": "Hardlink",
           "description": "Create a hard link from target to source.",
-          "enum": [
-            "Hardlink"
-          ],
           "type": "string"
         }
       ]
@@ -541,7 +497,7 @@
           ]
         },
         "private": {
-          "description": "When true, the source file is local-only: auto-added to .gitignore, silently skipped on machines where it doesn't exist.",
+          "description": "When true, the source file is local-only: auto-added to .gitignore,\nsilently skipped on machines where it doesn't exist.",
           "type": "boolean"
         },
         "source": {
@@ -864,8 +820,8 @@
         }
       },
       "required": [
-        "command",
-        "name"
+        "name",
+        "command"
       ],
       "type": "object"
     },
@@ -924,7 +880,7 @@
         },
         "requireSignedCommits": {
           "default": false,
-          "description": "Require that the HEAD commit in this source's git repo has a valid GPG or SSH signature. Subscribers can bypass with `security.allow-unsigned`.",
+          "description": "Require that the HEAD commit in this source's git repo has a valid\nGPG or SSH signature. Subscribers can bypass with `security.allow-unsigned`.",
           "type": "boolean"
         }
       },

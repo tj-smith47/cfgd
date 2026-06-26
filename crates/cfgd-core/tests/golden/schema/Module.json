@@ -1,12 +1,12 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ModuleSpec",
   "type": "object",
   "properties": {
     "aliases": {
       "type": "array",
       "items": {
-        "$ref": "#/definitions/ShellAlias"
+        "$ref": "#/$defs/ShellAlias"
       }
     },
     "depends": {
@@ -18,23 +18,23 @@
     "env": {
       "type": "array",
       "items": {
-        "$ref": "#/definitions/EnvVar"
+        "$ref": "#/$defs/EnvVar"
       }
     },
     "files": {
       "type": "array",
       "items": {
-        "$ref": "#/definitions/ModuleFileEntry"
+        "$ref": "#/$defs/ModuleFileEntry"
       }
     },
     "packages": {
       "type": "array",
       "items": {
-        "$ref": "#/definitions/ModulePackageEntry"
+        "$ref": "#/$defs/ModulePackageEntry"
       }
     },
     "platforms": {
-      "description": "Platform tags gating the whole module. When non-empty and the current platform matches none of them, the module is skipped entirely (it appears as a Skipped action rather than vanishing). Tags are matched against OS / distro / arch via `Platform::matches_any`; the canonical macOS token is `macos`.",
+      "description": "Platform tags gating the whole module. When non-empty and the current\nplatform matches none of them, the module is skipped entirely (it\nappears as a Skipped action rather than vanishing). Tags are matched\nagainst OS / distro / arch via `Platform::matches_any`; the canonical\nmacOS token is `macos`.",
       "type": "array",
       "items": {
         "type": "string"
@@ -43,7 +43,7 @@
     "scripts": {
       "anyOf": [
         {
-          "$ref": "#/definitions/ScriptSpec"
+          "$ref": "#/$defs/ScriptSpec"
         },
         {
           "type": "null"
@@ -51,38 +51,31 @@
       ]
     },
     "system": {
-      "description": "System configurator settings contributed by this module. Deep-merged into the profile system map; module values override profile values at leaf level.",
+      "description": "System configurator settings contributed by this module.\nDeep-merged into the profile system map; module values override profile values at leaf level.",
       "type": "object",
       "additionalProperties": true
     }
   },
   "additionalProperties": false,
-  "definitions": {
+  "$defs": {
     "EncryptionMode": {
       "description": "Controls when encryption is required for a managed file.",
       "oneOf": [
         {
           "description": "File must be encrypted when stored in the repository.",
           "type": "string",
-          "enum": [
-            "InRepo"
-          ]
+          "const": "InRepo"
         },
         {
           "description": "File must always be encrypted, including at rest on disk.",
           "type": "string",
-          "enum": [
-            "Always"
-          ]
+          "const": "Always"
         }
       ]
     },
     "EncryptionSpec": {
       "description": "Encryption settings for a managed file.",
       "type": "object",
-      "required": [
-        "backend"
-      ],
       "properties": {
         "backend": {
           "description": "The encryption backend to use (e.g. \"sops\", \"age\").",
@@ -90,22 +83,17 @@
         },
         "mode": {
           "description": "When encryption must be enforced. Defaults to `InRepo`.",
-          "default": "InRepo",
-          "allOf": [
-            {
-              "$ref": "#/definitions/EncryptionMode"
-            }
-          ]
+          "$ref": "#/$defs/EncryptionMode",
+          "default": "InRepo"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "required": [
+        "backend"
+      ]
     },
     "EnvVar": {
       "type": "object",
-      "required": [
-        "name",
-        "value"
-      ],
       "properties": {
         "name": {
           "type": "string"
@@ -113,7 +101,11 @@
         "value": {
           "type": "string"
         }
-      }
+      },
+      "required": [
+        "name",
+        "value"
+      ]
     },
     "FileStrategy": {
       "description": "File deployment strategy.",
@@ -121,45 +113,33 @@
         {
           "description": "Create a symbolic link from target to source (default).",
           "type": "string",
-          "enum": [
-            "Symlink"
-          ]
+          "const": "Symlink"
         },
         {
           "description": "Copy source content to target.",
           "type": "string",
-          "enum": [
-            "Copy"
-          ]
+          "const": "Copy"
         },
         {
           "description": "Render a Tera template and write the output (auto-selected for .tera files).",
           "type": "string",
-          "enum": [
-            "Template"
-          ]
+          "const": "Template"
         },
         {
           "description": "Create a hard link from target to source.",
           "type": "string",
-          "enum": [
-            "Hardlink"
-          ]
+          "const": "Hardlink"
         }
       ]
     },
     "ModuleFileEntry": {
       "type": "object",
-      "required": [
-        "source",
-        "target"
-      ],
       "properties": {
         "encryption": {
           "description": "Encryption settings for this module file.",
           "anyOf": [
             {
-              "$ref": "#/definitions/EncryptionSpec"
+              "$ref": "#/$defs/EncryptionSpec"
             },
             {
               "type": "null"
@@ -174,7 +154,7 @@
           ]
         },
         "private": {
-          "description": "When true, the source file is local-only: auto-added to .gitignore, silently skipped on machines where it doesn't exist.",
+          "description": "When true, the source file is local-only: auto-added to .gitignore,\nsilently skipped on machines where it doesn't exist.",
           "type": "boolean"
         },
         "source": {
@@ -184,7 +164,7 @@
           "description": "Per-file deployment strategy override. If None, uses the global default.",
           "anyOf": [
             {
-              "$ref": "#/definitions/FileStrategy"
+              "$ref": "#/$defs/FileStrategy"
             },
             {
               "type": "null"
@@ -195,7 +175,11 @@
           "type": "string"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "target"
+      ]
     },
     "ModulePackageEntry": {
       "type": "object",
@@ -207,7 +191,7 @@
           }
         },
         "creates": {
-          "description": "Skip the install script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks. Only meaningful for a `prefer: [script]` install; ignored otherwise.",
+          "description": "Skip the install script if this path already exists. A leading `~`\nexpands to the home directory; a relative path resolves against the\nscript's working directory. Existence follows symlinks. Only meaningful\nfor a `prefer: [script]` install; ignored otherwise.",
           "type": [
             "string",
             "null"
@@ -226,11 +210,11 @@
           ]
         },
         "name": {
-          "default": "",
-          "type": "string"
+          "type": "string",
+          "default": ""
         },
         "onlyIf": {
-          "description": "Run the install script only if this command exits zero. A non-zero exit skips the install (the condition for installing was not met). Only meaningful for a `prefer: [script]` install; ignored for manager-backed installs (those are idempotent via the manager's installed-package query).",
+          "description": "Run the install script only if this command exits zero. A non-zero exit\nskips the install (the condition for installing was not met). Only\nmeaningful for a `prefer: [script]` install; ignored for manager-backed\ninstalls (those are idempotent via the manager's installed-package query).",
           "type": [
             "string",
             "null"
@@ -255,7 +239,7 @@
           ]
         },
         "unless": {
-          "description": "Run the install script only if this command exits NON-zero. A zero exit (success) skips the install (the package already appears present). Only meaningful for a `prefer: [script]` install; ignored otherwise.",
+          "description": "Run the install script only if this command exits NON-zero. A zero exit\n(success) skips the install (the package already appears present). Only\nmeaningful for a `prefer: [script]` install; ignored otherwise.",
           "type": [
             "string",
             "null"
@@ -271,9 +255,6 @@
         },
         {
           "type": "object",
-          "required": [
-            "run"
-          ],
           "properties": {
             "continueOnError": {
               "type": [
@@ -282,25 +263,25 @@
               ]
             },
             "creates": {
-              "description": "Skip the script if this path already exists. A leading `~` expands to the home directory; a relative path resolves against the script's working directory. Existence follows symlinks.",
+              "description": "Skip the script if this path already exists. A leading `~` expands to\nthe home directory; a relative path resolves against the script's\nworking directory. Existence follows symlinks.",
               "type": [
                 "string",
                 "null"
               ]
             },
             "idleTimeout": {
-              "description": "Kill the script if it produces no stdout/stderr output for this duration. Prevents scripts from silently hanging on unresponsive resources. Format: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
+              "description": "Kill the script if it produces no stdout/stderr output for this duration.\nPrevents scripts from silently hanging on unresponsive resources.\nFormat: \"30s\", \"2m\", etc. If unset, no idle timeout is enforced.",
               "type": [
                 "string",
                 "null"
               ]
             },
             "interactive": {
-              "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr, no spinner, no output capture, no idle timeout) so it can prompt the user — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when stdin is not a terminal (CI, piped input, or any daemon-run phase) the script is skipped with a warning rather than hanging on instant EOF.",
+              "description": "Run the script attached to the terminal (inherited stdin/stdout/stderr,\nno spinner, no output capture, no idle timeout) so it can prompt the\nuser — e.g. `echo \"press Enter when done\"; read`. Requires a TTY: when\nstdin is not a terminal (CI, piped input, or any daemon-run phase) the\nscript is skipped with a warning rather than hanging on instant EOF.",
               "type": "boolean"
             },
             "onlyIf": {
-              "description": "Run the script only if this command exits zero. A non-zero exit skips the script (the condition for running was not met). Evaluated with the same shell, working directory, and environment as the body.",
+              "description": "Run the script only if this command exits zero. A non-zero exit skips\nthe script (the condition for running was not met). Evaluated with the\nsame shell, working directory, and environment as the body.",
               "type": [
                 "string",
                 "null"
@@ -311,11 +292,7 @@
             },
             "shell": {
               "description": "Interpreter to use for inline commands. Ignored (and rejected) on file scripts.",
-              "allOf": [
-                {
-                  "$ref": "#/definitions/ScriptShell"
-                }
-              ]
+              "$ref": "#/$defs/ScriptShell"
             },
             "timeout": {
               "type": [
@@ -324,20 +301,23 @@
               ]
             },
             "unless": {
-              "description": "Run the script only if this command exits NON-zero. A zero exit (success) skips the script (the guarded state already holds). Evaluated with the same shell, working directory, and environment as the body.",
+              "description": "Run the script only if this command exits NON-zero. A zero exit\n(success) skips the script (the guarded state already holds).\nEvaluated with the same shell, working directory, and environment as\nthe body.",
               "type": [
                 "string",
                 "null"
               ]
             },
             "workdir": {
-              "description": "Working directory for the script. By default every lifecycle script runs in the user's home directory — never the config source tree — so a relative write can't pollute the user's GitOps repo. Set `workdir` to override: a leading `~` expands to home and `$VAR`/`${VAR}` expand against the script environment (which always carries `$CFGD_MODULE_DIR` and `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`, `workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
+              "description": "Working directory for the script. By default every lifecycle script\nruns in the user's home directory — never the config source tree — so\na relative write can't pollute the user's GitOps repo. Set `workdir`\nto override: a leading `~` expands to home and `$VAR`/`${VAR}` expand\nagainst the script environment (which always carries `$CFGD_MODULE_DIR`\nand `$CFGD_CONFIG_DIR`), so `workdir: ~/.local/share/app`,\n`workdir: $CFGD_MODULE_DIR`, or an absolute path all work.",
               "type": [
                 "string",
                 "null"
               ]
             }
-          }
+          },
+          "required": [
+            "run"
+          ]
         }
       ]
     },
@@ -357,9 +337,7 @@
         {
           "description": "Platform default: `sh` on Unix, `cmd.exe` on Windows.",
           "type": "string",
-          "enum": [
-            "auto"
-          ]
+          "const": "auto"
         }
       ]
     },
@@ -367,45 +345,45 @@
       "type": "object",
       "properties": {
         "onChange": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
-            "$ref": "#/definitions/ScriptEntry"
+            "$ref": "#/$defs/ScriptEntry"
           }
         },
         "onDrift": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
-            "$ref": "#/definitions/ScriptEntry"
+            "$ref": "#/$defs/ScriptEntry"
           }
         },
         "postApply": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
-            "$ref": "#/definitions/ScriptEntry"
+            "$ref": "#/$defs/ScriptEntry"
           }
         },
         "postReconcile": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
-            "$ref": "#/definitions/ScriptEntry"
+            "$ref": "#/$defs/ScriptEntry"
           }
         },
         "preApply": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
-            "$ref": "#/definitions/ScriptEntry"
+            "$ref": "#/$defs/ScriptEntry"
           }
         },
         "preReconcile": {
-          "default": [],
           "type": "array",
+          "default": [],
           "items": {
-            "$ref": "#/definitions/ScriptEntry"
+            "$ref": "#/$defs/ScriptEntry"
           }
         }
       },
@@ -413,10 +391,6 @@
     },
     "ShellAlias": {
       "type": "object",
-      "required": [
-        "command",
-        "name"
-      ],
       "properties": {
         "command": {
           "type": "string"
@@ -424,7 +398,11 @@
         "name": {
           "type": "string"
         }
-      }
+      },
+      "required": [
+        "name",
+        "command"
+      ]
     }
   }
 }

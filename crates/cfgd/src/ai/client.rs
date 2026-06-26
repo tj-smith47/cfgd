@@ -116,37 +116,42 @@ impl AnthropicClient {
         // Must use a bounded timeout — the previous `ureq::post(...)` had
         // none and could hang the CLI indefinitely on a slow / unreachable
         // api.anthropic.com.
-        let response = cfgd_core::http::http_agent(cfgd_core::http::HTTP_AI_TIMEOUT)
-            .post(&format!("{}/v1/messages", self.base_url))
-            .set("x-api-key", &self.api_key)
-            .set("anthropic-version", "2023-06-01")
-            .set("content-type", "application/json")
+        // Disable ureq's status-as-error so a non-2xx response is returned as
+        // `Ok(resp)` and its body — the structured error payload Anthropic
+        // returns — can be read out rather than discarded with the error.
+        let mut response = cfgd_core::http::http_agent(cfgd_core::http::HTTP_AI_TIMEOUT)
+            .post(format!("{}/v1/messages", self.base_url))
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", "2023-06-01")
+            .header("content-type", "application/json")
+            .config()
+            .http_status_as_error(false)
+            .build()
             .send_json(&request)
             .map_err(|e| {
-                let message = match e {
-                    ureq::Error::Status(code, resp) => {
-                        let status_text = resp.status_text().to_string();
-                        // Consume the response body so the structured error
-                        // payload Anthropic returns is in logs and the surfaced
-                        // error string, not silently dropped with `resp`.
-                        let body = resp.into_string().unwrap_or_default();
-                        tracing::warn!(
-                            status = code,
-                            status_text = %status_text,
-                            body = %body,
-                            "anthropic api returned non-2xx status"
-                        );
-                        format!("API request failed: {code} {status_text}: {body}")
-                    }
-                    ureq::Error::Transport(t) => {
-                        tracing::warn!(error = %t, "anthropic api transport error");
-                        format!("API request failed: {t}")
-                    }
-                };
-                GenerateError::ProviderError { message }
+                tracing::warn!(error = %e, "anthropic api transport error");
+                GenerateError::ProviderError {
+                    message: format!("API request failed: {e}"),
+                }
             })?;
 
-        let api_response: ApiResponse = response.into_json().map_err(|e| {
+        let status = response.status();
+        if !status.is_success() {
+            let code = status.as_u16();
+            let reason = status.canonical_reason().unwrap_or("");
+            let body = response.body_mut().read_to_string().unwrap_or_default();
+            tracing::warn!(
+                status = code,
+                reason = %reason,
+                body = %body,
+                "anthropic api returned non-2xx status"
+            );
+            return Err(GenerateError::ProviderError {
+                message: format!("API request failed: {code} {reason}: {body}"),
+            });
+        }
+
+        let api_response: ApiResponse = response.body_mut().read_json().map_err(|e| {
             tracing::warn!(error = %e, "failed to parse anthropic api response");
             GenerateError::ProviderError {
                 message: format!("Failed to parse API response: {e}"),
