@@ -1,15 +1,24 @@
 #!/usr/bin/env bash
 # Publish the coverage percentage to the orphan 'badges' branch as a Shields.io
-# endpoint payload. Switches branches; intended for CI / release use only.
-# Local runs that just need the number should use `task coverage:check`.
+# endpoint payload. Intended for CI / release use only. Local runs that just
+# need the number should use `task coverage:check`.
 # Usage: publish-coverage.sh <cobertura.xml>
+#
+# The badge lives on an orphan `badges` branch that carries only coverage.json
+# and shares no history with master. Publishing it must NOT touch the primary
+# checkout: GitHub Actions runs a post-step for the local composite action
+# `./.github/actions/setup-rust` when the job ends, and that step needs
+# `.github/actions/setup-rust/action.yml` present in the workspace. A
+# `git checkout badges` in-place would replace the working tree with the
+# orphan branch's contents (no action.yml), breaking that post-step. So all
+# branch mutation happens in a throwaway `git worktree` under a temp dir; the
+# primary checkout stays on the CI commit the whole time.
 set -euo pipefail
 
 XML="${1:?Usage: publish-coverage.sh <cobertura.xml>}"
 
-# Refuse to run outside CI — this script switches branches and mutates local
-# git config, both of which surprise local users. Local dev should use
-# `task coverage:check` instead.
+# Refuse to run outside CI — this script pushes to origin and is meant for the
+# release/CI pipeline only. Local dev should use `task coverage:check` instead.
 if [ -z "${CI:-}${GITHUB_ACTIONS:-}" ]; then
   echo "error: publish-coverage.sh is CI-only (CI or GITHUB_ACTIONS env var required)." >&2
   echo "       For local coverage, run \`task coverage:check\` instead." >&2
@@ -32,19 +41,39 @@ elif (( $(echo "$COVERAGE >= 70" | bc -l) )); then COLOR="yellowgreen"
 elif (( $(echo "$COVERAGE >= 60" | bc -l) )); then COLOR="yellow"
 else COLOR="red"; fi
 
-git config user.email "github-actions[bot]@users.noreply.github.com"
-git config user.name "github-actions[bot]"
-git fetch origin badges:badges 2>/dev/null || true
-if git show-ref --verify --quiet refs/heads/badges; then
-  git checkout badges
+BADGE="{\"schemaVersion\":1,\"label\":\"coverage\",\"message\":\"${COVERAGE}%\",\"color\":\"${COLOR}\"}"
+
+# Stage the badge work in an isolated worktree so the primary checkout never
+# changes branch. The worktree (and any branch it checks out) is removed on
+# exit regardless of outcome.
+WORKTREE_DIR="$(mktemp -d)"
+cleanup() {
+  git worktree remove --force "$WORKTREE_DIR" 2>/dev/null || true
+  rm -rf "$WORKTREE_DIR" 2>/dev/null || true
+  git worktree prune 2>/dev/null || true
+}
+trap cleanup EXIT
+
+git fetch origin badges 2>/dev/null || true
+
+if git show-ref --verify --quiet refs/remotes/origin/badges; then
+  # Existing branch: check it out into the worktree, tracking the remote tip.
+  git worktree add --force -B badges "$WORKTREE_DIR" origin/badges
 else
-  git checkout --orphan badges
-  git rm -rf . > /dev/null 2>&1 || true
+  # First publish: an orphan worktree with no parent history. `--orphan`
+  # creates the branch with an empty index; the badge is its initial content.
+  git worktree add --orphan -b badges "$WORKTREE_DIR"
 fi
 
-BADGE="{\"schemaVersion\":1,\"label\":\"coverage\",\"message\":\"${COVERAGE}%\",\"color\":\"${COLOR}\"}"
-echo "$BADGE" > coverage.json
+echo "$BADGE" > "$WORKTREE_DIR/coverage.json"
 
-git add coverage.json
-git diff --cached --quiet || git commit -m "Update coverage to ${COVERAGE}%"
-git push origin badges --force
+git -C "$WORKTREE_DIR" add coverage.json
+if ! git -C "$WORKTREE_DIR" diff --cached --quiet; then
+  git -C "$WORKTREE_DIR" \
+    -c user.email="github-actions[bot]@users.noreply.github.com" \
+    -c user.name="github-actions[bot]" \
+    commit -m "Update coverage to ${COVERAGE}%"
+  git -C "$WORKTREE_DIR" push origin badges --force
+else
+  echo "coverage unchanged at ${COVERAGE}%; nothing to publish"
+fi

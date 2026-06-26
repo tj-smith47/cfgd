@@ -7507,6 +7507,33 @@ mod harness {
         )
     }
 
+    /// Poll the shared printer buffer until it contains `needle`, or panic once
+    /// `timeout` elapses. Lets a `run_daemon_with` test synchronize on a daemon
+    /// lifecycle banner (e.g. "Daemon running") that is written from the spawned
+    /// daemon task before driving an action that would otherwise race the
+    /// daemon's own setup.
+    async fn wait_for_buffer_contains(
+        buf: &Arc<std::sync::Mutex<String>>,
+        needle: &str,
+        timeout: StdDuration,
+    ) {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if buf.lock().unwrap().contains(needle) {
+                return;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!(
+                    "timed out after {:?} waiting for buffer to contain {:?}; got: {}",
+                    timeout,
+                    needle,
+                    buf.lock().unwrap()
+                );
+            }
+            tokio::time::sleep(StdDuration::from_millis(5)).await;
+        }
+    }
+
     #[allow(dead_code)]
     pub(super) struct TriggerSenders {
         pub file_tx: mpsc::Sender<PathBuf>,
@@ -10226,6 +10253,18 @@ mod harness {
             hooks,
             overrides,
         ));
+
+        // Wait until the daemon has finished its pre-loop setup — signalled by
+        // the "Daemon running" banner — before rewriting the config. Setup
+        // calls `config::load_config(config_path)` (build_pre_loop_setup); on
+        // Windows a `std::fs::write` that truncates the same file *while* that
+        // read is in flight raises a sharing violation (os error 32), which
+        // propagates out of `run_daemon_with` as an early Err, drops the
+        // injected triggers, and turns the SIGHUP send below into a SendError.
+        // POSIX tolerates the concurrent read/truncate, so the race only ever
+        // bit Windows CI. Sequencing the rewrite after setup removes the race
+        // on every platform.
+        wait_for_buffer_contains(&buf, "Daemon running", StdDuration::from_secs(5)).await;
 
         // Rewrite the config to introduce daemon reconcile interval.
         std::fs::write(
