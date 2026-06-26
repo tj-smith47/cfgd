@@ -178,6 +178,14 @@ workspaces:
           enabled: true
           mode: cargo
         # Inherits `publish.cargo: { index_timeout: 600 }` from defaults.
+        # cfgd-core ships only as a crates.io library. Its src/bin entries
+        # (cfgd-gen-schemas, fake-cosign) are CI-internal codegen/mock tools,
+        # not release artifacts, so suppress the default binary build — which
+        # would otherwise resolve `--bin cfgd-core`, a target that does not
+        # exist (the bins are renamed), and fail the build/determinism legs.
+        builds:
+          - id: cfgd-core
+            skip: true
 
   # --- cfgd CLI: cross-platform binary + kubectl plugin ---
   - name: cfgd
