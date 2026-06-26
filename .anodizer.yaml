@@ -621,6 +621,11 @@ workspaces:
                 key_file: "{{ .Env.APK_PRIVATE_KEY_PATH }}"
         snapcrafts:
           - id: default
+            # gnu only, mirroring `archives`: the musl build is package-only
+            # (nfpm) and shares the linux-amd64 platform, so without this filter
+            # both the gnu and musl builds render the same `cfgd_<v>_linux_amd64.snap`
+            # path and collide. The snap ships the `cfgd` binary alone.
+            ids: [cfgd]
             name: cfgd
             title: "cfgd"
             icon: ".github/gear.svg"
