@@ -164,6 +164,13 @@ workspaces:
           enabled: true
           mode: cargo
         # Inherits `publish.cargo: { index_timeout: 600 }` from defaults.
+        # cfgd-crd is a pure library — zero bin targets — so the default
+        # binary build would resolve `--bin cfgd-crd` against a target that
+        # does not exist and fail the build/determinism legs. Suppress it,
+        # mirroring cfgd-core; this crate ships only as a crates.io library.
+        builds:
+          - id: cfgd-crd
+            skip: true
 
   # --- cfgd-core: shared library (crates.io only) ---
   - name: cfgd-core
