@@ -260,6 +260,25 @@ echo "  MC DriftDetected: ${MC_DRIFT:-not set}"
 if [ -n "$DA_STATUS" ] || [ "$MC_DRIFT" = "True" ]; then
     pass_test "OP-LC-06"
 else
+    # The DriftAlert controller is event-driven and sets both the MC
+    # DriftDetected condition and the DriftAlert status in a single reconcile
+    # pass, so an empty status after the poll window means that pass never
+    # completed (missed watch event, transient patch error → backoff, or
+    # informer-cache lag under load). Without this dump the failure is a black
+    # box; capture the resource state + drift-related operator logs so a
+    # recurrence is diagnosable rather than a bare "not set".
+    echo "  --- OP-LC-06 diagnostics ---"
+    echo "  DriftAlert object:"
+    kubectl get driftalert "e2e-lc-drift-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
+        -o yaml 2>&1 | sed 's/^/    /' | head -60 || true
+    echo "  MachineConfig status:"
+    kubectl get machineconfig "e2e-lc-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
+        -o jsonpath='{.status}' 2>&1 | sed 's/^/    /' || true
+    echo ""
+    echo "  Operator logs (drift-related, last 40):"
+    kubectl logs -n cfgd-system deployment/cfgd-operator --tail=300 2>/dev/null \
+        | grep -iE "drift|e2e-lc-drift-${E2E_RUN_ID}|e2e-lc-mc-${E2E_RUN_ID}" \
+        | tail -40 | sed 's/^/    /' || true
     fail_test "OP-LC-06" "DriftAlert status conditions not set"
 fi
 
