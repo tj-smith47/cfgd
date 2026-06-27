@@ -696,6 +696,18 @@ pub struct SecretSpec {
     pub envs: Option<Vec<String>>,
 }
 
+/// Deserialize a [`ProfileSpec`] from an in-memory YAML value.
+///
+/// Keeps `ProfileSpec` deserialization inside `config/` (the config-parsing
+/// boundary) for callers that hold a pre-transformed value rather than raw
+/// document text — e.g. composition turning a subscriber's `overrides` mapping
+/// into a spec. `deny_unknown_fields` still surfaces typo'd keys as an error.
+pub(crate) fn profile_spec_from_value(
+    value: serde_yaml::Value,
+) -> std::result::Result<ProfileSpec, serde_yaml::Error> {
+    serde_yaml::from_value::<ProfileSpec>(value)
+}
+
 /// Validate that each secret has at least one delivery target (`target` or `envs`).
 pub fn validate_secret_specs(specs: &[SecretSpec]) -> Result<()> {
     for spec in specs {

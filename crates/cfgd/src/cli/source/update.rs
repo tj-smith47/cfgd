@@ -191,10 +191,7 @@ pub(crate) fn run_source_update(
                             {
                                 source_sec.status_simple(
                                     Role::Warn,
-                                    format!(
-                                        "Could not update sources.lock: {}",
-                                        cfgd_core::output::collapse_to_subject_line(&e)
-                                    ),
+                                    super::sources_lock_update_warning(&e),
                                 );
                             }
                         }

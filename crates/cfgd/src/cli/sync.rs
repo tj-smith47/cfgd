@@ -169,10 +169,7 @@ pub fn cmd_sync(cli: &Cli, printer: &cfgd_core::output::Printer) -> anyhow::Resu
                                 {
                                     sources_sec.status_simple(
                                         cfgd_core::output::Role::Warn,
-                                        format!(
-                                            "Could not update sources.lock: {}",
-                                            cfgd_core::output::collapse_to_subject_line(&e)
-                                        ),
+                                        crate::cli::source::sources_lock_update_warning(&e),
                                     );
                                 }
                             }

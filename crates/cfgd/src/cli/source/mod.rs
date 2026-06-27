@@ -30,6 +30,16 @@ pub use update::cmd_source_update;
 #[cfg(test)]
 pub(in crate::cli) use update::run_source_update;
 
+/// Warning emitted when writing `sources.lock` fails after a source mutation.
+/// The lockfile is advisory (it records resolved commit SHAs), so every caller
+/// warns and continues rather than failing the command.
+pub(in crate::cli) fn sources_lock_update_warning(e: impl std::fmt::Display) -> String {
+    format!(
+        "Could not update sources.lock: {}",
+        cfgd_core::output::collapse_to_subject_line(e)
+    )
+}
+
 // --- Helpers consumed elsewhere in cli:: ---
 
 pub(in crate::cli) use helpers::{

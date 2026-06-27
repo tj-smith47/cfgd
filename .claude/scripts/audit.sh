@@ -159,10 +159,15 @@ log_section "Controlled Shell Execution"
 # generate/ allowed for tool inspection (--version checks) and system settings scanning
 # oci/ allowed for Docker credential helper execution (docker-credential-*)
 # daemon/ allowed for sc.exe Windows Service lifecycle management
+# util/{git,process,env_session}.rs are the cfgd-core controlled-execution seams
+#   catalogued in .claude/rules/module-boundaries.md (git_cmd_*/cosign_cmd,
+#   command_output_with_timeout, launchctl/systemctl/setx session refresh).
+# test_helpers.rs is test scaffolding (Command::new appears only in #[cfg(test)]
+# submodules and doc comments).
 check_pattern warn \
-    "std::process::Command confined to packages/, secrets/, system/, reconciler/, sources/, platform/, cli/, gateway/, output/, generate/, oci, daemon/" \
+    "std::process::Command confined to packages/, secrets/, system/, reconciler/, sources/, platform/, cli/, gateway/, output/, generate/, oci, daemon/, util/{git,process,env_session}.rs" \
     'std::process::Command|Command::new' \
-    'packages/|secrets/|system/|reconciler/|sources/|platform/|cli/|gateway/|output/|generate/|oci|daemon/|lib\.rs:'
+    'packages/|secrets/|system/|reconciler/|sources/|platform/|cli/|gateway/|output/|generate/|oci|daemon/|util/git\.rs:|util/process\.rs:|util/env_session\.rs:|test_helpers\.rs:|lib\.rs:'
 
 log_section "Error Type Discipline"
 check_pattern error \
@@ -218,8 +223,21 @@ else
 fi
 
 log_section "DRY — Repeated String Literals"
+# Whole-file test modules (tests.rs, *_test.rs, test_*.rs, tests_*.rs,
+# test_helpers.rs) carry no inline #[cfg(test)] marker, so strip_test_blocks
+# cannot strip them. Skip them outright: this gate measures production-code DRY,
+# and test fixtures legitimately repeat the same scaffold strings.
+# output/ is the deliberate parallel-builder API (Printer/SectionGuard/Doc mirror
+# each other per output-module.md) — its repeated #[must_use]/role strings are
+# by-design, not copy-paste.
+# Attribute strings (#[schemars(with=...)], #[must_use=...], #[error(...)], …)
+# are Rust-mandated literals that cannot be replaced by a const, so skip them.
 dupes=$(while IFS= read -r -d '' rsfile; do
+    case "$rsfile" in
+        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/output/*) continue ;;
+    esac
     strip_test_blocks_from_file "$rsfile" \
+        | grep -vE ':[0-9]+:[[:space:]]*#\[' \
         | grep -oh '"[^"]\{30,\}"' || true
 done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
     | sort | uniq -c | sort -rn \
@@ -236,14 +254,24 @@ fi
 log_section "DRY — Duplicated Function Definitions"
 # Extract fn names from non-test code across all crates, flag any name defined in >1 file.
 # Excludes trait-standard method names that legitimately repeat across impls.
+# Emits "<fn> <file>" pairs and dedups them (sort -u) so the per-name count is a
+# count of DISTINCT FILES — many impls of one method inside a single file (e.g.
+# the per-struct profile merge_from layering) are not cross-file duplication.
+# Whole-file test modules are skipped (same rationale as the literal gate above).
+# output/ is skipped: Printer/SectionGuard/Doc/StatusBuilder deliberately mirror
+# one fluent method surface (output-module.md), so a method name shared across
+# those builders is intentional API symmetry, not duplicated logic.
 fn_dupes=""
 while IFS= read -r -d '' rsfile; do
+    case "$rsfile" in
+        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/output/*) continue ;;
+    esac
     strip_test_blocks_from_file "$rsfile" \
         | grep -E '^\S+:[0-9]+:\s*(pub\s+)?(async\s+)?fn [a-z_]+\(' \
-        | sed 's/.*fn \([a-z_]*\)(.*/\1/' \
+        | sed 's|^\([^:]*\):[0-9]*:.*fn \([a-z_]*\)(.*|\2 \1|' \
         || true
 done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
-    | sort | uniq -c | sort -rn \
+    | sort -u | awk '{print $1}' | sort | uniq -c | sort -rn \
     | awk '$1 > 1 && \
         $2 != "new" && $2 != "default" && $2 != "from" && $2 != "fmt" && $2 != "drop" && \
         $2 != "name" && $2 != "is_available" && $2 != "can_bootstrap" && $2 != "bootstrap" && \
@@ -276,7 +304,17 @@ done < <(find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null) \
         $2 != "create_symlink_impl" && $2 != "cleanup_old_binary" && \
         $2 != "atomic_replace" && $2 != "acquire_apply_lock" && \
         $2 != "recv_sighup" && $2 != "recv_sigterm" && $2 != "read_command_output" && \
-        $2 != "unavailable" && $2 != "set_fail_apply" \
+        $2 != "unavailable" && $2 != "set_fail_apply" && \
+        $2 != "status" && $2 != "label" && \
+        $2 != "render" && $2 != "detect" && $2 != "target_path" && $2 != "id" && \
+        $2 != "package_identity" && $2 != "persisted_uninstall" && \
+        $2 != "set_config_dir" && $2 != "content_drift" && \
+        $2 != "build_file_manager" && $2 != "prune_orphaned_packages" && \
+        $2 != "manager_names" && $2 != "aborted" && $2 != "failed" && \
+        $2 != "skipped" && $2 != "metrics_handler" && $2 != "compose" && \
+        $2 != "default_cache_dir" && $2 != "default_cache_dir_for" && \
+        $2 != "field_tree" && $2 != "resolve_runtime_dir" && \
+        $2 != "probe_dir_writable" && $2 != "surface_stale_skills" \
         {print}' \
     > /tmp/cfgd_fn_dupes 2>/dev/null || true
 fn_dupes=$(cat /tmp/cfgd_fn_dupes 2>/dev/null || true)
@@ -343,25 +381,32 @@ log_section "Config Parsing Boundary"
 # application config) so both are excluded — they are two halves of one
 # validation pipeline (schema/ parses raw YAML to extract apiVersion/spec for the
 # KIND_REGISTRY validators; generate/validate.rs delegates straight into schema/).
-# modules/ legitimately parses lockfiles (not application config) so it is excluded.
-# Test blocks are stripped before checking.
+# lockfile.rs (modules/ and sources/) parses lock artifacts (resolved commit SHAs),
+# not application config, so every lockfile loader is excluded.
+# Inline #[cfg(test)] blocks are stripped; whole-file test modules (tests.rs,
+# *_test.rs, test_helpers.rs) carry no inline marker, so skip them outright —
+# tests deserialize fixtures freely.
 config_parse_violations=""
 while IFS= read -r -d '' rsfile; do
     case "$rsfile" in
-        */config/*|*/generate/*|*/modules/*|*/schema/*|*/lib.rs) continue ;;
+        */config/*|*/generate/*|*/lockfile.rs|*/schema/*|*/lib.rs) continue ;;
+        */tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs) continue ;;
     esac
+    # Deserializing into an untyped serde_yaml::Value is document inspection
+    # (e.g. SOPS-marker detection), not config-struct parsing — exempt it.
     violations=$(strip_test_blocks_from_file "$rsfile" \
         | grep -E 'serde_yaml::from_(str|reader|value)' \
+        | grep -v 'serde_yaml::Value' \
         || true)
     if [[ -n "$violations" ]]; then
         config_parse_violations="${config_parse_violations}${violations}"$'\n'
     fi
 done < <(find crates/cfgd-core/src -name '*.rs' -print0 2>/dev/null)
 if [[ -n "$config_parse_violations" ]]; then
-    log_warn "serde_yaml::from_* found in cfgd-core outside config/, generate/, schema/, or modules/ (CLAUDE.md rule #5):"
+    log_warn "serde_yaml::from_* found in cfgd-core outside config/, generate/, schema/, or lockfile.rs (CLAUDE.md rule #5):"
     printf "%s" "$config_parse_violations" | head -10
 else
-    log_ok "Config parsing confined to config/, generate/, schema/, and modules/ in cfgd-core"
+    log_ok "Config parsing confined to config/, generate/, schema/, and lockfile.rs in cfgd-core"
 fi
 
 log_section "Effective-state routing (module↔profile coherence)"

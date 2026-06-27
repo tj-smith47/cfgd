@@ -281,10 +281,7 @@ pub fn cmd_source_add(cli: &Cli, printer: &Printer, args: &SourceAddArgs) -> any
         if let Err(e) = cfgd_core::update_source_lock_entry(&cfg_dir, lock_entry) {
             printer.status_simple(
                 cfgd_core::output::Role::Warn,
-                format!(
-                    "Could not update sources.lock: {}",
-                    cfgd_core::output::collapse_to_subject_line(&e)
-                ),
+                super::sources_lock_update_warning(&e),
             );
         }
     }

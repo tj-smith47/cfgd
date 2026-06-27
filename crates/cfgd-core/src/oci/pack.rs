@@ -123,7 +123,7 @@ pub(super) fn build_image_manifest(
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     annotations
-        .entry("org.opencontainers.image.created".to_string())
+        .entry(crate::OCI_ANNOTATION_CREATED.to_string())
         .or_insert_with(crate::utc_now_iso8601);
 
     OciManifest {
@@ -244,7 +244,7 @@ pub(super) fn build_layered_manifest(
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
     annotations
-        .entry("org.opencontainers.image.created".to_string())
+        .entry(crate::OCI_ANNOTATION_CREATED.to_string())
         .or_insert_with(crate::utc_now_iso8601);
 
     let mut layers: Vec<OciDescriptor> = base_layers

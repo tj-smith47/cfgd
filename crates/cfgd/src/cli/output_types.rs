@@ -417,7 +417,10 @@ mod tests {
                 timestamp: "2026-01-02T03:04:05Z".to_string(),
                 profile: "default".to_string(),
                 plan_hash: "deadbeef".to_string(),
-                status: ApplyStatus::Success,
+                // InProgress is the variant where the apply/status/log tokens
+                // historically drifted; assert the `cfgd log -o json` surface
+                // now emits the unified camelCase token.
+                status: ApplyStatus::InProgress,
                 summary: Some("ok".to_string()),
             }],
         };
@@ -426,7 +429,11 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["id"], json!(7));
         assert_eq!(entries[0]["planHash"], json!("deadbeef"));
-        assert_eq!(entries[0]["status"], json!("Success"));
+        assert_eq!(entries[0]["status"], json!("inProgress"));
+        assert_eq!(
+            entries[0]["status"],
+            json!(ApplyStatus::InProgress.display_str())
+        );
     }
 
     #[test]

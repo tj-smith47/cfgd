@@ -6,6 +6,12 @@ fn first_line(s: &str) -> String {
     s.lines().next().unwrap_or("").to_string()
 }
 
+/// `{ path, detail }` JSON payload shared by the secret subcommands'
+/// `backend_unavailable` error contexts.
+fn secret_path_detail(file: &Path, detail: &str) -> serde_json::Value {
+    serde_json::json!({ "path": cfgd_core::to_posix_string(file), "detail": detail })
+}
+
 pub fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Result<()> {
     let backend = match get_secret_backend(cli, file) {
         Ok(b) => b,
@@ -16,7 +22,7 @@ pub fn cmd_secret_encrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
                 file.display().to_string(),
                 "backend_unavailable",
                 first_line(&full),
-                serde_json::json!({ "path": cfgd_core::to_posix_string(file), "detail": full }),
+                secret_path_detail(file, &full),
             ));
         }
     };
@@ -62,7 +68,7 @@ pub fn cmd_secret_decrypt(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::
                 file.display().to_string(),
                 "backend_unavailable",
                 first_line(&full),
-                serde_json::json!({ "path": cfgd_core::to_posix_string(file), "detail": full }),
+                secret_path_detail(file, &full),
             ));
         }
     };
@@ -129,7 +135,7 @@ pub fn cmd_secret_edit(cli: &Cli, printer: &Printer, file: &Path) -> anyhow::Res
                 file.display().to_string(),
                 "backend_unavailable",
                 first_line(&full),
-                serde_json::json!({ "path": cfgd_core::to_posix_string(file), "detail": full }),
+                secret_path_detail(file, &full),
             ));
         }
     };

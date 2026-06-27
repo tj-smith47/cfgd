@@ -135,13 +135,7 @@ pub fn cmd_source_remove(
     // Remove the entry from sources.lock (best-effort — a missing entry is fine).
     let cfg_dir = config_dir(cli);
     if let Err(e) = cfgd_core::remove_source_lock_entry(&cfg_dir, name) {
-        printer.status_simple(
-            Role::Warn,
-            format!(
-                "Could not update sources.lock: {}",
-                cfgd_core::output::collapse_to_subject_line(&e)
-            ),
-        );
+        printer.status_simple(Role::Warn, super::sources_lock_update_warning(&e));
     }
 
     // Remove the cached clone. It lives at `<cache_dir>/<name>` (see

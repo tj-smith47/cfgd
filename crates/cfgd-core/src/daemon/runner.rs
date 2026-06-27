@@ -25,6 +25,10 @@ use crate::errors::{DaemonError, Result};
 use crate::output::{Printer, Role};
 use crate::state::StateStore;
 
+/// Shared message for every per-tick error in the select loop; the `tick` field
+/// distinguishes which handler failed.
+const TICK_FAILED_MSG: &str = "daemon tick failed; loop continues";
+
 pub(super) struct DaemonLoopContext {
     pub state: Arc<Mutex<DaemonState>>,
     pub hooks: Arc<dyn DaemonHooks>,
@@ -78,31 +82,31 @@ pub(super) async fn run_daemon_loop(
         tokio::select! {
             Some(path) = triggers.file_rx.recv() => {
                 if let Err(e) = handle_file_change_tick(&ctx, &mut last_change, debounce, path).await {
-                    tracing::error!(error = %e, tick = "file_change", "daemon tick failed; loop continues");
+                    tracing::error!(error = %e, tick = "file_change", "{TICK_FAILED_MSG}");
                 }
             }
 
             Some(()) = triggers.reconcile_rx.recv() => {
                 if let Err(e) = handle_reconcile_tick(&ctx, &mut reconcile_tasks).await {
-                    tracing::error!(error = %e, tick = "reconcile", "daemon tick failed; loop continues");
+                    tracing::error!(error = %e, tick = "reconcile", "{TICK_FAILED_MSG}");
                 }
             }
 
             Some(()) = triggers.sync_rx.recv() => {
                 if let Err(e) = handle_sync_tick(&ctx, &mut sync_tasks).await {
-                    tracing::error!(error = %e, tick = "sync", "daemon tick failed; loop continues");
+                    tracing::error!(error = %e, tick = "sync", "{TICK_FAILED_MSG}");
                 }
             }
 
             Some(()) = triggers.version_check_rx.recv() => {
                 if let Err(e) = handle_version_check_tick(&ctx).await {
-                    tracing::error!(error = %e, tick = "version_check", "daemon tick failed; loop continues");
+                    tracing::error!(error = %e, tick = "version_check", "{TICK_FAILED_MSG}");
                 }
             }
 
             Some(()) = triggers.compliance_rx.recv() => {
                 if let Err(e) = handle_compliance_tick(&ctx).await {
-                    tracing::error!(error = %e, tick = "compliance", "daemon tick failed; loop continues");
+                    tracing::error!(error = %e, tick = "compliance", "{TICK_FAILED_MSG}");
                 }
             }
 

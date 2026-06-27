@@ -80,7 +80,7 @@ pub(super) fn push_module_inner(
     let mut annotations = HashMap::new();
     annotations.insert(crate::OCI_ANNOTATION_PLATFORM.to_string(), platform_str);
     annotations.insert(
-        "org.opencontainers.image.created".to_string(),
+        crate::OCI_ANNOTATION_CREATED.to_string(),
         crate::utc_now_iso8601(),
     );
 

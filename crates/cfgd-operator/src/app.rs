@@ -20,6 +20,10 @@ use crate::{controllers, env, errors, gateway, health, leader, metrics, runtime,
 static OTEL_PROVIDER: std::sync::OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> =
     std::sync::OnceLock::new();
 
+/// Warning logged when `shutdown_signal()` itself errors; we drain and exit
+/// regardless, so the failed handler is non-fatal.
+const SIGNAL_SETUP_FAILED_MSG: &str = "signal handler setup failed; proceeding with shutdown";
+
 // try_init: if a subscriber is already registered (test harness), skip — the
 // existing fmt subscriber installed by tests is the intended state in that case.
 fn init_tracing() {
@@ -351,7 +355,7 @@ pub async fn run() -> Result<()> {
         },
         result = shutdown_signal() => {
             if let Err(e) = result {
-                tracing::warn!(error = %e, "signal handler setup failed; proceeding with shutdown");
+                tracing::warn!(error = %e, "{SIGNAL_SETUP_FAILED_MSG}");
             }
             shutdown_drain().await;
         },
@@ -413,7 +417,7 @@ async fn run_standalone_gateway() -> Result<()> {
         },
         result = shutdown_signal() => {
             if let Err(e) = result {
-                tracing::warn!(error = %e, "signal handler setup failed; proceeding with shutdown");
+                tracing::warn!(error = %e, "{SIGNAL_SETUP_FAILED_MSG}");
             }
             shutdown_drain().await;
         },

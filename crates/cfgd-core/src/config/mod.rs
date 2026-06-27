@@ -44,6 +44,7 @@ pub use parse::{
     parse_config_source, resolve_config_path,
 };
 pub use platform::{PlatformInfo, detect_platform, match_platform_profile, source_profile_names};
+pub(crate) use profile_spec::profile_spec_from_value;
 pub use profile_spec::{
     AptSpec, BrewSpec, CargoSpec, CustomManagerSpec, EncryptionConstraint, EncryptionMode,
     EncryptionSpec, EnvScope, FileStrategy, FilesSpec, FlatpakSpec, ManagedFileSpec, MergeSpec,

@@ -11,7 +11,14 @@
 use serde::Serialize;
 
 /// Apply status for a reconciliation run.
+///
+/// `rename_all = "camelCase"` makes the derived `Serialize` token match
+/// [`Self::display_str`] for every variant (e.g. `inProgress`), so the CLI JSON
+/// surface, the human display, and the `cfgd log` column never drift. The
+/// snake_case state-store persistence form is the separate [`Self::as_str`] /
+/// [`Self::from_str`] pair and is unaffected by this attribute.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ApplyStatus {
     /// Apply completed with all actions successful.
     Success,
@@ -33,6 +40,19 @@ impl ApplyStatus {
             ApplyStatus::Partial => "partial",
             ApplyStatus::Failed => "failed",
             ApplyStatus::InProgress => "in_progress",
+            ApplyStatus::Aborted => "aborted",
+        }
+    }
+
+    /// camelCase token for the CLI JSON surface (`cfgd apply`/`status -o json`).
+    /// Distinct from [`Self::as_str`], which is the snake_case state-store
+    /// persistence form that round-trips through [`Self::from_str`].
+    pub fn display_str(&self) -> &'static str {
+        match self {
+            ApplyStatus::Success => "success",
+            ApplyStatus::Partial => "partial",
+            ApplyStatus::Failed => "failed",
+            ApplyStatus::InProgress => "inProgress",
             ApplyStatus::Aborted => "aborted",
         }
     }
@@ -65,6 +85,43 @@ mod apply_status_tests {
         assert_eq!(ApplyStatus::from_str("failed"), ApplyStatus::Failed);
         // An unrecognized status conservatively maps to Failed.
         assert_eq!(ApplyStatus::from_str("bogus-status"), ApplyStatus::Failed);
+    }
+
+    /// Drift gate: the derived `Serialize` token (every `ApplyStatus` field
+    /// embedded in a `-o json` struct) must equal `display_str` (the text/table
+    /// surfaces) for EVERY variant. A fourth surface that re-derives a token, or
+    /// a serde/display divergence, fails here. The exhaustive `match` is a
+    /// tripwire: a newly added variant breaks compilation until it is listed.
+    #[test]
+    fn serialize_token_equals_display_str_for_every_variant() {
+        let all = [
+            ApplyStatus::Success,
+            ApplyStatus::Partial,
+            ApplyStatus::Failed,
+            ApplyStatus::InProgress,
+            ApplyStatus::Aborted,
+        ];
+        for v in &all {
+            match v {
+                ApplyStatus::Success
+                | ApplyStatus::Partial
+                | ApplyStatus::Failed
+                | ApplyStatus::InProgress
+                | ApplyStatus::Aborted => {}
+            }
+            let serde_token = serde_json::to_value(v).expect("serialize ApplyStatus");
+            assert_eq!(
+                serde_token,
+                serde_json::Value::String(v.display_str().to_string()),
+                "serde token and display_str drifted for {v:?}"
+            );
+        }
+        // Concrete anchor for the only multi-word variant (where drift hid).
+        assert_eq!(ApplyStatus::InProgress.display_str(), "inProgress");
+        assert_eq!(
+            serde_json::to_value(ApplyStatus::InProgress).expect("serialize"),
+            serde_json::Value::String("inProgress".to_string())
+        );
     }
 }
 

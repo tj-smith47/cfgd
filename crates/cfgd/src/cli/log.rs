@@ -98,13 +98,7 @@ pub fn build_log_doc(output: &LogOutput) -> Doc {
                     record.id.to_string(),
                     record.timestamp.clone(),
                     record.profile.clone(),
-                    match record.status {
-                        cfgd_core::state::ApplyStatus::Success => "success".into(),
-                        cfgd_core::state::ApplyStatus::Partial => "partial".into(),
-                        cfgd_core::state::ApplyStatus::Failed => "failed".into(),
-                        cfgd_core::state::ApplyStatus::InProgress => "in_progress".into(),
-                        cfgd_core::state::ApplyStatus::Aborted => "aborted".into(),
-                    },
+                    record.status.display_str().to_string(),
                     record.summary.clone().unwrap_or_else(|| "-".into()),
                 ]
             })
@@ -116,4 +110,64 @@ pub fn build_log_doc(output: &LogOutput) -> Doc {
         doc = doc.table(t);
     }
     doc.with_data(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cfgd_core::output::Verbosity;
+    use cfgd_core::state::{ApplyRecord, ApplyStatus};
+
+    fn in_progress_log() -> LogOutput {
+        LogOutput {
+            entries: vec![ApplyRecord {
+                id: 1,
+                timestamp: "2026-01-02T03:04:05Z".to_string(),
+                profile: "default".to_string(),
+                plan_hash: "deadbeef".to_string(),
+                status: ApplyStatus::InProgress,
+                summary: Some("running".to_string()),
+            }],
+        }
+    }
+
+    /// The `cfgd log` human table Status column must render the unified
+    /// camelCase token via `display_str`, never the snake_case persistence
+    /// form (`in_progress`) or the bare PascalCase variant (`InProgress`).
+    #[test]
+    fn log_table_status_column_is_camelcase_token() {
+        let (printer, buf) = Printer::for_test_at(Verbosity::Normal);
+        printer.emit(build_log_doc(&in_progress_log()));
+        drop(printer);
+
+        let out = buf.lock().unwrap();
+        assert!(
+            out.contains("inProgress"),
+            "log Status column should render display_str token, got: {out}"
+        );
+        assert!(
+            !out.contains("in_progress"),
+            "log Status column leaked the snake_case persistence form, got: {out}"
+        );
+        assert!(
+            !out.contains("InProgress"),
+            "log Status column leaked the bare PascalCase variant, got: {out}"
+        );
+    }
+
+    /// The `cfgd log -o json` surface must emit the unified camelCase token at
+    /// `entries[].status` (the derived `Serialize` path).
+    #[test]
+    fn log_json_status_is_camelcase_token() {
+        let (printer, buf) = Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        printer.emit(build_log_doc(&in_progress_log()));
+        drop(printer);
+
+        let out = buf.lock().unwrap();
+        let json: serde_json::Value = serde_json::from_str(&out).expect("valid json");
+        assert_eq!(
+            json["entries"][0]["status"],
+            serde_json::json!("inProgress")
+        );
+    }
 }

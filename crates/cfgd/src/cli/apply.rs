@@ -454,7 +454,7 @@ pub fn run_apply(
     }
 
     let output = ApplyOutput {
-        status: apply_status_str(&status).to_string(),
+        status: status.display_str().to_string(),
         apply_id: Some(result.apply_id),
         succeeded: result.succeeded(),
         failed: result.failed(),
@@ -618,17 +618,6 @@ pub(in crate::cli) fn preview_orphaned_custom_packages(
         }
     }
 }
-
-fn apply_status_str(status: &cfgd_core::state::ApplyStatus) -> &'static str {
-    match status {
-        cfgd_core::state::ApplyStatus::Success => "success",
-        cfgd_core::state::ApplyStatus::Partial => "partial",
-        cfgd_core::state::ApplyStatus::Failed => "failed",
-        cfgd_core::state::ApplyStatus::InProgress => "inProgress",
-        cfgd_core::state::ApplyStatus::Aborted => "aborted",
-    }
-}
-
 /// Build the buffered `Doc` that carries the final `ApplyOutput` payload.
 /// Pure function so snapshot tests can drive the JSON path without standing
 /// up a reconciler.

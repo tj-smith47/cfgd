@@ -33,16 +33,6 @@ pub struct ModuleStatus {
     pub last_applied: Option<String>,
 }
 
-fn apply_status_str(s: &cfgd_core::state::ApplyStatus) -> &'static str {
-    match s {
-        cfgd_core::state::ApplyStatus::Success => "success",
-        cfgd_core::state::ApplyStatus::Partial => "partial",
-        cfgd_core::state::ApplyStatus::Failed => "failed",
-        cfgd_core::state::ApplyStatus::InProgress => "in_progress",
-        cfgd_core::state::ApplyStatus::Aborted => "aborted",
-    }
-}
-
 /// Build the fleet-wide `cfgd status` Doc. Caller supplies the precomputed
 /// payload and the configured `SourceSpec` list so the renderer can show
 /// "not yet fetched" rows for sources without state records.
@@ -63,7 +53,7 @@ pub fn build_fleet_status_doc(
                 let mut s = s
                     .kv("Time", &last.timestamp)
                     .kv("Profile", &last.profile)
-                    .kv("Result", apply_status_str(&last.status));
+                    .kv("Result", last.status.display_str());
                 if let Some(summary) = &last.summary {
                     s = s.kv("Summary", summary);
                 }
@@ -415,7 +405,36 @@ mod tests {
     use super::*;
     use cfgd_core::output::Printer;
     use cfgd_core::output::Verbosity;
-    use cfgd_core::state::ApplyStatus;
+    use cfgd_core::state::{ApplyRecord, ApplyStatus};
+
+    /// The `cfgd status -o json` surface must emit the unified camelCase status
+    /// token at `.lastApply.status`. InProgress is the variant where the apply/
+    /// status/log spellings historically drifted (`InProgress`/`in_progress`/
+    /// `inProgress`); this pins the JSON path to `display_str`.
+    #[test]
+    fn status_json_last_apply_status_is_camelcase_token() {
+        let output = StatusOutput {
+            last_apply: Some(ApplyRecord {
+                id: 1,
+                timestamp: "2026-01-02T03:04:05Z".to_string(),
+                profile: "default".to_string(),
+                plan_hash: "deadbeef".to_string(),
+                status: ApplyStatus::InProgress,
+                summary: Some("running".to_string()),
+            }),
+            drift: Vec::new(),
+            sources: Vec::new(),
+            pending_decisions: Vec::new(),
+            modules: Vec::new(),
+            managed_resources: Vec::new(),
+        };
+        let json = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["lastApply"]["status"], serde_json::json!("inProgress"));
+        assert_eq!(
+            json["lastApply"]["status"],
+            serde_json::json!(ApplyStatus::InProgress.display_str())
+        );
+    }
 
     // Minimal config + default profile YAML used by every test that exercises
     // the load_config_and_profile path. The active profile must materialize as

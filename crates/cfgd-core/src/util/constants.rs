@@ -16,6 +16,9 @@ pub const LABEL_DEVICE_ID: &str = "cfgd.io/device-id";
 /// OCI manifest annotation key carrying the `os/arch` platform string that a
 /// pushed module artifact was built for (parsed by the CSI cache on pull).
 pub const OCI_ANNOTATION_PLATFORM: &str = "cfgd.io/platform";
+/// Standard OCI image-spec annotation recording artifact creation time
+/// (RFC 3339); injected on every pushed module manifest.
+pub const OCI_ANNOTATION_CREATED: &str = "org.opencontainers.image.created";
 
 /// Default timeout for external commands (2 minutes).
 pub const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);

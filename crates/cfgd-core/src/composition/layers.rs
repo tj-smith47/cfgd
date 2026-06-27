@@ -158,7 +158,7 @@ fn overrides_to_spec(
         named_map_to_list(map, "aliases", "command");
     }
 
-    serde_yaml::from_value::<crate::config::ProfileSpec>(value).map_err(|e| {
+    crate::config::profile_spec_from_value(value).map_err(|e| {
         crate::errors::CompositionError::InvalidOverrides {
             source_name: source_name.to_string(),
             message: e.to_string(),
