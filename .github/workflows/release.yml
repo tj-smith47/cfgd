@@ -108,11 +108,12 @@ jobs:
   determinism-check:
     name: Determinism (${{ matrix.crate }})
     needs: tag
-    if: needs.tag.result == 'success' && needs.tag.outputs.crates != '[]'
+    # trio only: library crates have no binary/package/image for the harness to diff.
+    if: needs.tag.result == 'success' && needs.tag.outputs.trio != '[]'
     strategy:
       fail-fast: false
       matrix:
-        crate: ${{ fromJson(needs.tag.outputs.crates) }}
+        crate: ${{ fromJson(needs.tag.outputs.trio) }}
     # Reusable workflow: parent matrix has one entry per crate; the
     # 4 OS shards are nested inside determinism-shards.yml so the
     # Actions run summary groups all of a crate's shards under one

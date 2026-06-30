@@ -34,8 +34,9 @@ jobs:
         shard:
           - { os: ubuntu-latest,  label: linux,           targets: '',                          name: 'Linux x86_64' }
           - { os: macos-latest,   label: macos,           targets: '',                          name: 'macOS' }
-          - { os: windows-latest, label: windows-x86_64,  targets: 'x86_64-pc-windows-msvc',    name: 'Windows x86_64' }
-          - { os: windows-latest, label: windows-aarch64, targets: 'aarch64-pc-windows-msvc',   name: 'Windows aarch64' }
+          - { os: windows-latest,  label: windows-x86_64,  targets: 'x86_64-pc-windows-msvc',    name: 'Windows x86_64' }
+          # native arm64 host: archive mode-A runs the binary, x86_64 can't exec aarch64.
+          - { os: windows-11-arm,  label: windows-aarch64, targets: 'aarch64-pc-windows-msvc',   name: 'Windows aarch64' }
     runs-on: ${{ matrix.shard.os }}
     steps:
       - uses: actions/checkout@v7
