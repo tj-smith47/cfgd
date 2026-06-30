@@ -22,7 +22,7 @@ env:
   # cache. GHA cache backend — no S3 needed.
   SCCACHE_GHA_ENABLED: "true"
   RUSTC_WRAPPER: "sccache"
-  ANODIZER_VERSION: v0.12.2
+  ANODIZER_VERSION: v0.13.1
 
 jobs:
   fmt:

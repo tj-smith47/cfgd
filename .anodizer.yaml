@@ -164,10 +164,9 @@ workspaces:
           enabled: true
           mode: cargo
         # Inherits `publish.cargo: { index_timeout: 600 }` from defaults.
-        # cfgd-crd is a pure library — zero bin targets — so the default
-        # binary build would resolve `--bin cfgd-crd` against a target that
-        # does not exist and fail the build/determinism legs. Suppress it,
-        # mirroring cfgd-core; this crate ships only as a crates.io library.
+        # cfgd-crd is a pure library with zero bin targets, so it produces no
+        # binary release artifact. Skip the binary build leg explicitly; this
+        # crate ships only as a crates.io library (mirrors cfgd-core).
         builds:
           - id: cfgd-crd
             skip: true
@@ -187,9 +186,9 @@ workspaces:
         # Inherits `publish.cargo: { index_timeout: 600 }` from defaults.
         # cfgd-core ships only as a crates.io library. Its src/bin entries
         # (cfgd-gen-schemas, fake-cosign) are CI-internal codegen/mock tools,
-        # not release artifacts, so suppress the default binary build — which
-        # would otherwise resolve `--bin cfgd-core`, a target that does not
-        # exist (the bins are renamed), and fail the build/determinism legs.
+        # not release artifacts. Skip the binary build leg so an unscoped
+        # `cargo build` never compiles those internal bins into release
+        # artifacts and uploads them.
         builds:
           - id: cfgd-core
             skip: true

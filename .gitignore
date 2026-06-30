@@ -46,6 +46,12 @@
 !cfgd.spec
 !cliff.toml
 /dist/
+# Determinism-harness scratch (anodizer `check determinism`): hermetic build
+# worktrees plus their cargo cache. Multi-GB, regenerated each run, never tracked.
+# The allowlist's `!*/` re-includes every directory, so without an explicit
+# re-ignore these surface as untracked and a `git add -A` would stage them.
+/.det-tmp/
+/.det-worktrees/
 !scripts/
 !scripts/**
 !Taskfile.yml

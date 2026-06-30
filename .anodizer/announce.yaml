@@ -4,6 +4,14 @@
 # the 1k-line root config. anodizer merges includes as defaults under the root
 # config, so the root may still override any value here.
 announce:
+  # Wall-clock bound on the whole announce stage. cfgd fans out to two channels
+  # (self-hosted webhook + Gmail SMTP) under an aggressive global retry policy
+  # (10 attempts, 10s→5m backoff). Without a bound, one unreachable channel could
+  # retry for minutes and accumulate into a hang AFTER publishers already crossed
+  # one-way doors. 120s sits just above one full webhook retry cycle so a
+  # transiently-slow-but-reachable channel still completes, while any genuinely
+  # dead channel is abandoned with a warning well under the pipeline timeout.
+  deadline: "120s"
   webhook:
     enabled: true
     endpoint_url: "https://tj.jarvispro.io/webhooks/anodizer"
