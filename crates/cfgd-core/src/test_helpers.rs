@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use secrecy::SecretString;
 
@@ -1417,6 +1417,46 @@ pub fn install_named_path_shims(shims: &[(&str, i32)]) -> (tempfile::TempDir, En
     let new_path = format!("{}:{}", bin_dir.path().display(), old_path);
     let path_guard = EnvVarGuard::set("PATH", &new_path);
     (bin_dir, path_guard)
+}
+
+// ---------------------------------------------------------------------------
+// PATH-mutation / interpreter-spawn coordination
+// ---------------------------------------------------------------------------
+
+/// Serializes the process-global `PATH` *emptying* done by command-not-found
+/// tests against the interpreter *spawns* done by script-execution tests.
+///
+/// `std::env::set_var`/`remove_var` is `unsafe` precisely because a concurrent
+/// reader is a data race on the C `environ`. A script spawn resolves its
+/// interpreter (`sh`/`bash`) through `PATH` inside `Command::spawn`, so a test
+/// that empties `PATH` to drive a "command not found" branch races — and
+/// corrupts — any concurrently-spawning script test, surfacing as a spurious
+/// `could not spawn the script interpreter (os error 2)`.
+///
+/// `#[serial]` cannot close this: it only excludes other `#[serial]` tests,
+/// never the non-serial spawner majority. This lock guards the real resource
+/// boundary instead — spawns take the shared read guard ([`script_spawn_path_guard`]),
+/// PATH emptying takes the exclusive write guard ([`path_env_mutation_guard`]) —
+/// so the two can never overlap and every spawner is covered with no per-test
+/// attribute. Spawns run fully parallel with each other; only an active
+/// PATH-emptying window blocks them.
+static PATH_ENV_LOCK: RwLock<()> = RwLock::new(());
+
+/// Shared read guard held across an interpreter spawn. Acquired at the top of
+/// `reconciler::scripts::execute_script`, so every script-spawning test is
+/// covered automatically. See [`PATH_ENV_LOCK`].
+pub fn script_spawn_path_guard() -> RwLockReadGuard<'static, ()> {
+    PATH_ENV_LOCK.read().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Exclusive write guard for a test that empties the process-global `PATH` to
+/// exercise a command-not-found branch. Declare it *before* the `EnvVarGuard`
+/// that mutates `PATH` so it drops last, bracketing the entire empty-`PATH`
+/// window. Never spawn a script while holding it — that both contradicts the
+/// test (no `sh` on an empty `PATH`) and risks a same-thread read-after-write
+/// deadlock. See [`PATH_ENV_LOCK`].
+pub fn path_env_mutation_guard() -> RwLockWriteGuard<'static, ()> {
+    PATH_ENV_LOCK.write().unwrap_or_else(|e| e.into_inner())
 }
 
 // ---------------------------------------------------------------------------

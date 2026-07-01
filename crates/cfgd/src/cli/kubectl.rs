@@ -156,7 +156,10 @@ mod tests {
         // without polluting test stdout, so we pin only the Err path here.
         let prior_path = std::env::var_os("PATH");
         let tmp = tempfile::tempdir().unwrap();
-        // SAFETY: serial_test::serial gates execution; no concurrent readers.
+        // Excludes concurrent script-interpreter spawns (which resolve `sh` via
+        // PATH) for the whole empty-PATH window; held until end of scope.
+        let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
+        // SAFETY: spawn exclusion above + serial gate ⇒ no concurrent PATH reader.
         unsafe {
             std::env::set_var("PATH", tmp.path());
         }

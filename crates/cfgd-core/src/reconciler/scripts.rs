@@ -162,6 +162,13 @@ pub(crate) fn execute_script(
 ) -> Result<(String, bool, Option<String>)> {
     let run_str = entry.run_str();
 
+    // Hold the PATH read-lock across interpreter resolution + spawn: a
+    // concurrent test emptying `PATH` (command-not-found paths) is a data race
+    // on `environ` that surfaces here as a spurious ENOENT. Compiled out of
+    // release builds.
+    #[cfg(any(test, feature = "test-helpers"))]
+    let _path_guard = crate::test_helpers::script_spawn_path_guard();
+
     // `script_dir` is where the script's bundled files live (the module / config
     // source tree); a relative file-path `run:` resolves against it. `working_dir`
     // is the directory the script *runs in* — the home default by default, so a

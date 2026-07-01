@@ -1884,6 +1884,9 @@ fn verify_head_signature_with_no_git_on_path_returns_clear_error() {
     // Empty PATH → command_available("git") returns false → verify_head_signature
     // short-circuits with the L565-570 "git CLI is required" error. Marked
     // #[serial] to avoid racing with parallel tests that shell out to git.
+    // Declared before the PATH override so it drops last, bracketing the whole
+    // empty-PATH window against concurrent script-interpreter spawns.
+    let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
     let _path = EnvVarGuard::set("PATH", "");
     let dir = tempfile::tempdir().unwrap();
     let err = super::verify_head_signature("nogit", dir.path())

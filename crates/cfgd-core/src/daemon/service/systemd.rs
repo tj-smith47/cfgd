@@ -601,6 +601,9 @@ mod tests {
         // driving the not-found branch without any real systemctl shell-out.
         let empty = TempDir::new().expect("tempdir");
         let empty_path = empty.path().display().to_string();
+        // Holds the spawn-exclusion lock across the empty-PATH window so no
+        // concurrent script test resolves its interpreter while PATH is bare.
+        let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
         let _path_g = crate::test_helpers::EnvVarGuard::set("PATH", &empty_path);
 
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
@@ -623,6 +626,9 @@ mod tests {
     fn start_systemd_service_system_scope_hint_omits_user_flag_when_systemctl_missing() {
         let empty = TempDir::new().expect("tempdir");
         let empty_path = empty.path().display().to_string();
+        // Holds the spawn-exclusion lock across the empty-PATH window so no
+        // concurrent script test resolves its interpreter while PATH is bare.
+        let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
         let _path_g = crate::test_helpers::EnvVarGuard::set("PATH", &empty_path);
 
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
@@ -665,6 +671,9 @@ mod tests {
         // PATH drives the systemctl-not-found branch without a real shell-out.
         let empty = TempDir::new().expect("tempdir");
         let empty_path = empty.path().display().to_string();
+        // Holds the spawn-exclusion lock across the empty-PATH window so no
+        // concurrent script test resolves its interpreter while PATH is bare.
+        let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
         let _path_g = crate::test_helpers::EnvVarGuard::set("PATH", &empty_path);
 
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
@@ -686,6 +695,9 @@ mod tests {
     fn stop_systemd_service_system_scope_hint_omits_user_flag_when_systemctl_missing() {
         let empty = TempDir::new().expect("tempdir");
         let empty_path = empty.path().display().to_string();
+        // Holds the spawn-exclusion lock across the empty-PATH window so no
+        // concurrent script test resolves its interpreter while PATH is bare.
+        let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
         let _path_g = crate::test_helpers::EnvVarGuard::set("PATH", &empty_path);
 
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
