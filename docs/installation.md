@@ -97,6 +97,18 @@ tar -xzf cfgd.tar.gz
 install -m 0755 cfgd /usr/local/bin/cfgd
 ```
 
+> **macOS Gatekeeper:** binaries downloaded through a browser are quarantined, so
+> the first run reports *"cfgd cannot be opened because the developer cannot be
+> verified."* The binary is cosign-signed but not Apple-notarized; clear the
+> quarantine flag once after verifying the signature:
+>
+> ```sh
+> xattr -d com.apple.quarantine cfgd
+> ```
+>
+> Installs via Homebrew or the `install.sh` script (both above) fetch with `curl`
+> and are not quarantined, so they skip this step.
+
 ## Windows
 
 cfgd publishes signed installers to the three mainstream Windows package
