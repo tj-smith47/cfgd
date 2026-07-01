@@ -3407,7 +3407,7 @@
       }
     ],
     "kind": "MachineConfig",
-    "location": "MachineConfig CRD (cfgd.io/v1alpha1)",
+    "location": "MachineConfig CRD",
     "name": "MachineConfig"
   },
   {
@@ -3522,7 +3522,7 @@
       }
     ],
     "kind": "ConfigPolicy",
-    "location": "ConfigPolicy CRD (cfgd.io/v1alpha1)",
+    "location": "ConfigPolicy CRD",
     "name": "ConfigPolicy"
   },
   {
@@ -3657,7 +3657,7 @@
       }
     ],
     "kind": "ClusterConfigPolicy",
-    "location": "ClusterConfigPolicy CRD (cfgd.io/v1alpha1)",
+    "location": "ClusterConfigPolicy CRD",
     "name": "ClusterConfigPolicy"
   },
   {
@@ -3724,7 +3724,7 @@
       }
     ],
     "kind": "DriftAlert",
-    "location": "DriftAlert CRD (cfgd.io/v1alpha1)",
+    "location": "DriftAlert CRD",
     "name": "DriftAlert"
   },
   {
@@ -3871,7 +3871,7 @@
       }
     ],
     "kind": "Module",
-    "location": "Module CRD (cfgd.io/v1alpha1)",
+    "location": "Module CRD",
     "name": "Module (CRD)"
   },
   {

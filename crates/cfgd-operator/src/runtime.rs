@@ -39,7 +39,7 @@ pub fn is_leader_election_enabled() -> bool {
 /// The namespace in which the operator runs leader-election leases. Reads
 /// `POD_NAMESPACE`; defaults to `cfgd-system` when unset.
 pub fn leader_namespace() -> String {
-    env::env_or("POD_NAMESPACE", "cfgd-system")
+    env::env_or("POD_NAMESPACE", cfgd_core::CFGD_SYSTEM_NAMESPACE)
 }
 
 /// The identity string this operator instance uses for leader election.

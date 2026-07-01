@@ -205,10 +205,12 @@ workspaces:
           mode: cargo
         # Keep the user-facing download URLs and the Helm chart's appVersion in
         # lockstep with the cfgd crate version at tag time. Plain old→new string
-        # rewrite of the cfgd version (0.4.0): the chart's own `version:` (0.1.0)
+        # rewrite of the cfgd crate version: the chart's own `version:` (0.1.0)
         # has a separate cadence and never matches, so it is left untouched.
         version_files:
           - docs/installation.md
+          - docs/bootstrap.md
+          - docs/skill.md
           - chart/cfgd/Chart.yaml
         builds:
           # gnu build → tarballs / binstall / homebrew cask / makeself installer

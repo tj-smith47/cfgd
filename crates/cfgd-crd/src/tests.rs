@@ -15,6 +15,22 @@ fn crd_specs_and_validate_are_exposed() {
     );
 }
 
+#[test]
+fn api_version_helper_matches_every_kind_derive() {
+    use kube::Resource;
+    let shared = crate::api_version();
+    assert_eq!(shared, "cfgd.io/v1alpha1");
+    for got in [
+        MachineConfig::api_version(&()),
+        ConfigPolicy::api_version(&()),
+        ClusterConfigPolicy::api_version(&()),
+        DriftAlert::api_version(&()),
+        Module::api_version(&()),
+    ] {
+        assert_eq!(got, shared, "every cfgd CRD kind must share one apiVersion");
+    }
+}
+
 fn minimal_mc_spec(hostname: &str, profile: &str) -> MachineConfigSpec {
     MachineConfigSpec {
         hostname: hostname.to_string(),

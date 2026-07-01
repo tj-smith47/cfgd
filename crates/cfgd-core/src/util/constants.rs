@@ -39,3 +39,14 @@ pub(super) const MAX_BACKUP_FILE_SIZE: u64 = 10 * 1024 * 1024;
 /// feed the triple into `prometheus_client::metrics::histogram::exponential_buckets(start, factor, length)`.
 pub const DURATION_BUCKETS_SHORT: (f64, f64, u16) = (0.001, 2.0, 16);
 pub const DURATION_BUCKETS_LONG: (f64, f64, u16) = (0.1, 2.0, 10);
+
+#[cfg(all(test, feature = "crd"))]
+mod tests {
+    // API_VERSION is the string config parsing accepts; cfgd_crd::api_version()
+    // is read from the kube `#[kube(group, version)]` derive. Bumping the derive
+    // to v1beta1 must not silently leave parsing pinned to the old apiVersion.
+    #[test]
+    fn api_version_const_matches_crd_derive() {
+        assert_eq!(super::API_VERSION, cfgd_crd::api_version());
+    }
+}

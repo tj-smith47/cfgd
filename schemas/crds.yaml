@@ -760,7 +760,11 @@ spec:
                 x-kubernetes-list-type: map
               mountPolicy:
                 default: Always
-                description: 'Controls how the module is mounted in pods. `Always` (default): CSI volume + volumeMount on all declared containers + env vars. `Debug`: CSI volume only — no volumeMount or env on declared containers. Only accessible via ephemeral debug containers (`kubectl cfgd debug`).'
+                description: |-
+                  Controls how the module is mounted in pods.
+                  `Always` (default): CSI volume + volumeMount on all declared containers + env vars.
+                  `Debug`: CSI volume only — no volumeMount or env on declared containers.
+                    Only accessible via ephemeral debug containers (`kubectl cfgd debug`).
                 enum:
                 - Always
                 - Debug
@@ -826,7 +830,7 @@ spec:
             nullable: true
             properties:
               attestations:
-                description: Attestation types found on the artifact (e.g. "slsaprovenance").
+                description: Attestation types found on the artifact (e.g. "slsaprovenance1").
                 items:
                   type: string
                 type: array

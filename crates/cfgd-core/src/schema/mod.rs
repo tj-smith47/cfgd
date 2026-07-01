@@ -222,7 +222,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
     KindEntry {
         kind: "MachineConfig",
         api_version: crate::API_VERSION,
-        location: "MachineConfig CRD (cfgd.io/v1alpha1)",
+        location: "MachineConfig CRD",
         description: "Per-machine desired state reconciled by the cfgd operator.",
         crd: true,
         schema_fn: || schema_for!(cfgd_crd::MachineConfigSpec),
@@ -232,7 +232,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
     KindEntry {
         kind: "ConfigPolicy",
         api_version: crate::API_VERSION,
-        location: "ConfigPolicy CRD (cfgd.io/v1alpha1)",
+        location: "ConfigPolicy CRD",
         description: "Namespace-scoped policy of required modules, packages, and settings.",
         crd: true,
         schema_fn: || schema_for!(cfgd_crd::ConfigPolicySpec),
@@ -242,7 +242,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
     KindEntry {
         kind: "ClusterConfigPolicy",
         api_version: crate::API_VERSION,
-        location: "ClusterConfigPolicy CRD (cfgd.io/v1alpha1)",
+        location: "ClusterConfigPolicy CRD",
         description: "Cluster-scoped policy fanned out across selected namespaces.",
         crd: true,
         schema_fn: || schema_for!(cfgd_crd::ClusterConfigPolicySpec),
@@ -252,7 +252,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
     KindEntry {
         kind: "DriftAlert",
         api_version: crate::API_VERSION,
-        location: "DriftAlert CRD (cfgd.io/v1alpha1)",
+        location: "DriftAlert CRD",
         description: "A recorded drift event between desired and observed machine state.",
         crd: true,
         schema_fn: || schema_for!(cfgd_crd::DriftAlertSpec),
@@ -262,7 +262,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
     KindEntry {
         kind: "Module",
         api_version: crate::API_VERSION,
-        location: "Module CRD (cfgd.io/v1alpha1)",
+        location: "Module CRD",
         description: "Cluster-side Module CRD: an OCI-packaged module injected via CSI.",
         crd: true,
         schema_fn: || schema_for!(cfgd_crd::ModuleSpec),

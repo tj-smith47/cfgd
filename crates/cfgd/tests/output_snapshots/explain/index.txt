@@ -1,17 +1,17 @@
 Available resource types
 
-NAME                 API/KIND                              LOCATION                                  
-─────────────────────────────────────────────────────────────────────────────────────────────────────
-Module               cfgd.io/v1alpha1/Module               modules/<name>/module.yaml                
-Profile              cfgd.io/v1alpha1/Profile              profiles/<name>.yaml                      
-ConfigSource         cfgd.io/v1alpha1/ConfigSource         cfgd-source.yaml                          
-Config               cfgd.io/v1alpha1/Config               cfgd.yaml                                 
-MachineConfig        cfgd.io/v1alpha1/MachineConfig        MachineConfig CRD (cfgd.io/v1alpha1)      
-ConfigPolicy         cfgd.io/v1alpha1/ConfigPolicy         ConfigPolicy CRD (cfgd.io/v1alpha1)       
-ClusterConfigPolicy  cfgd.io/v1alpha1/ClusterConfigPolicy  ClusterConfigPolicy CRD (cfgd.io/v1alpha1)
-DriftAlert           cfgd.io/v1alpha1/DriftAlert           DriftAlert CRD (cfgd.io/v1alpha1)         
-Module (CRD)         cfgd.io/v1alpha1/Module               Module CRD (cfgd.io/v1alpha1)             
-TeamConfig           cfgd.io/v1alpha1/TeamConfig           Crossplane Composite Resource (XR)        
+NAME                 API/KIND                              LOCATION                          
+─────────────────────────────────────────────────────────────────────────────────────────────
+Module               cfgd.io/v1alpha1/Module               modules/<name>/module.yaml        
+Profile              cfgd.io/v1alpha1/Profile              profiles/<name>.yaml              
+ConfigSource         cfgd.io/v1alpha1/ConfigSource         cfgd-source.yaml                  
+Config               cfgd.io/v1alpha1/Config               cfgd.yaml                         
+MachineConfig        cfgd.io/v1alpha1/MachineConfig        MachineConfig CRD                 
+ConfigPolicy         cfgd.io/v1alpha1/ConfigPolicy         ConfigPolicy CRD                  
+ClusterConfigPolicy  cfgd.io/v1alpha1/ClusterConfigPolicy  ClusterConfigPolicy CRD           
+DriftAlert           cfgd.io/v1alpha1/DriftAlert           DriftAlert CRD                    
+Module (CRD)         cfgd.io/v1alpha1/Module               Module CRD                        
+TeamConfig           cfgd.io/v1alpha1/TeamConfig           Crossplane Composite Resource (XR)
 
 → Use 'cfgd explain <resource>' for details
 

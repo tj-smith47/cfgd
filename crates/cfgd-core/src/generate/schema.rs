@@ -27,6 +27,14 @@ spec:
     - node
     - python
 
+  # Platform tags gating the WHOLE module. When non-empty and the current
+  # platform matches none of them, the module is skipped entirely (shown as a
+  # Skipped action). Matched against OS / distro / arch; the macOS token is `macos`.
+  # optional, default: [] (runs on every platform)
+  platforms:
+    - macos
+    - linux
+
   # Cross-platform package declarations.
   # Each entry describes one logical package with platform-aware resolution.
   # optional, default: []
@@ -489,6 +497,35 @@ spec:
     url: git@github.com:me/machine-config.git  # required, string — repository URL
     branch: master             # optional, string, default: "master"
     auth: ssh                  # optional, string — auth method hint
+
+  # Compliance snapshot configuration — periodic capture of files / packages /
+  # secrets / system state for drift auditing and export.
+  # optional, default: disabled
+  compliance:
+    enabled: false             # optional, bool, default: false
+    interval: 1h               # optional, string duration, default: "1h"
+    retention: 30d             # optional, string duration, default: "30d"
+    export:
+      format: Json             # optional: Json (default), Yaml
+      path: ~/.local/state/cfgd/compliance/  # optional, string
+    scope:
+      files: true              # optional, bool, default: true
+      packages: true           # optional, bool, default: true
+      secrets: true            # optional, bool, default: true
+      system: true             # optional, bool, default: true
+
+  # Update policy for the cfgd binary and authored skills.
+  # optional, default: prompt on binary updates
+  update:
+    # How binary update checks behave.
+    # optional: Prompt (default), Auto, Notify, Manual
+    policy: Prompt
+    channel: stable            # optional, string — release channel; unset = current stream
+    interval: 24h              # optional, string duration, default: "24h"
+    skills:
+      # Skill update policy; Inherit (default) follows the binary `policy` above.
+      # optional: Inherit (default), Auto, Prompt, Notify, Manual
+      policy: Inherit
 
   # Daemon configuration — controls the background reconciliation loop.
   # optional

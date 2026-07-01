@@ -731,5 +731,17 @@ pub fn is_valid_pem_public_key(key: &str) -> bool {
         && trimmed.ends_with("-----END PUBLIC KEY-----")
 }
 
+/// The `apiVersion` (`group/version`) shared by every cfgd CRD kind, read from
+/// the kube-derived [`kube::Resource`] impl so it can never drift from the
+/// `#[kube(group = …, version = …)]` attributes. `cfgd-core::API_VERSION` — the
+/// string config parsing accepts — is guard-tested against this value, so a
+/// `version = "v1beta1"` bump on the derives can't silently leave parsing
+/// pinned to the old apiVersion.
+#[must_use]
+pub fn api_version() -> String {
+    use kube::Resource;
+    MachineConfig::api_version(&()).into_owned()
+}
+
 #[cfg(test)]
 mod tests;

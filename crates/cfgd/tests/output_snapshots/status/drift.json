@@ -25,7 +25,7 @@
     "id": 2,
     "planHash": "cafebabe",
     "profile": "default",
-    "status": "Success",
+    "status": "success",
     "summary": null,
     "timestamp": "2026-05-14T11:30:00Z"
   },

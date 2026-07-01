@@ -4,7 +4,7 @@
     "id": 1,
     "planHash": "deadbeef",
     "profile": "default",
-    "status": "Success",
+    "status": "success",
     "summary": "12 actions applied",
     "timestamp": "2026-05-14T10:00:00Z"
   },

@@ -132,13 +132,15 @@ tasks:
       - bash .claude/scripts/audit.sh
 
   gen:crds:
-    desc: Regenerate the Helm chart CRD manifests (chart/cfgd/crds/*.yaml) from the cfgd-crd spec types.
+    desc: Regenerate every CRD copy (Helm chart + OLM bundle + schemas/crds.yaml) from the cfgd-crd spec types.
     deps: [_check:tmp-headroom]
     cmds:
       - cargo run -q -p cfgd-operator --bin cfgd-gen-crds -- --out-dir chart/cfgd/crds
+      - cargo run -q -p cfgd-operator --bin cfgd-gen-crds -- --out-dir ecosystem/olm/manifests
+      - cargo run -q -p cfgd-operator --bin cfgd-gen-crds > schemas/crds.yaml
 
   gen:crds:check:
-    desc: Verify chart/cfgd/crds/*.yaml are up to date with the cfgd-crd spec types (CI drift guard).
+    desc: Verify every CRD copy (chart + OLM + schemas/crds.yaml) is up to date with the cfgd-crd spec types (CI drift guard).
     deps: [_check:tmp-headroom]
     cmds:
       - cmd: |
@@ -146,14 +148,22 @@ tasks:
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
           cargo run -q -p cfgd-operator --bin cfgd-gen-crds -- --out-dir "$tmp"
+          cargo run -q -p cfgd-operator --bin cfgd-gen-crds > "$tmp/crds.yaml"
           for f in machineconfigs configpolicies clusterconfigpolicies driftalerts modules; do
-            if ! diff -u "chart/cfgd/crds/$f.yaml" "$tmp/$f.yaml"; then
-              echo ""
-              echo "ERROR: chart/cfgd/crds/$f.yaml is out of date — run: task gen:crds"
-              exit 1
-            fi
+            for tree in chart/cfgd/crds ecosystem/olm/manifests; do
+              if ! diff -u "$tree/$f.yaml" "$tmp/$f.yaml"; then
+                echo ""
+                echo "ERROR: $tree/$f.yaml is out of date — run: task gen:crds"
+                exit 1
+              fi
+            done
           done
-          echo "chart CRDs up to date"
+          if ! diff -u schemas/crds.yaml "$tmp/crds.yaml"; then
+            echo ""
+            echo "ERROR: schemas/crds.yaml is out of date — run: task gen:crds"
+            exit 1
+          fi
+          echo "all CRD copies up to date"
 
   schema:generate:
     desc: Regenerate the published editor-config JSON schemas (schemas/*.schema.json) from the Rust config structs.

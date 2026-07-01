@@ -63,13 +63,9 @@ mod tests {
 
     #[test]
     fn invalid_attribute_display_uses_exact_key() {
-        let e = CsiError::InvalidAttribute {
-            key: "csi.cfgd.io/oci-uri".into(),
-        };
-        assert_eq!(
-            format!("{e}"),
-            "invalid volume attribute: csi.cfgd.io/oci-uri"
-        );
+        let key = format!("{}/oci-uri", cfgd_core::CSI_DRIVER_NAME);
+        let e = CsiError::InvalidAttribute { key: key.clone() };
+        assert_eq!(format!("{e}"), format!("invalid volume attribute: {key}"));
     }
 
     #[test]

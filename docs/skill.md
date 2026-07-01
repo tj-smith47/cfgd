@@ -95,8 +95,8 @@ are left in place — each file is written atomically and is independently valid
 ```console
 $ cfgd skill list
 Installed skills (project scope)
-  claude-code/module: .claude/skills/cfgd-module/SKILL.md (0.4.0)
-  codex/module: AGENTS.md (0.4.0)
+  claude-code/module: .claude/skills/cfgd-module/SKILL.md (0.5.0)
+  codex/module: AGENTS.md (0.5.0)
 ```
 
 A skill rendered by an older cfgd is flagged stale (it carries a version stamp):
@@ -147,7 +147,7 @@ $ cfgd skill install module -o json
 {
   "kind": "module",
   "scope": "project",
-  "cfgdVersion": "0.4.0",
+  "cfgdVersion": "0.5.0",
   "results": [
     { "provider": "claude-code", "path": ".claude/skills/cfgd-module/SKILL.md", "status": "installed" },
     { "provider": "copilot", "status": "skipped", "reason": "not detected" }
