@@ -302,6 +302,13 @@ workspaces:
           extra_files:
             - glob: "dist/*-apk-signing-key.rsa.pub"
               allow_empty: true
+            # Single-file CRD bundle for a one-command, Helm-less install:
+            #   kubectl apply -f .../releases/latest/download/cfgd-crds.yaml
+            # Generated from the cfgd-crd spec types (task gen:crds) and
+            # drift-guarded by gen:crds:check; committed, so the glob always
+            # matches (a zero-match is a hard release error, which is desired).
+            - glob: "schemas/crds.yaml"
+              name_template: "cfgd-crds.yaml"
         publish:
           # `cargo:` inherits `index_timeout: 600` from defaults.publish.cargo.
           # Homebrew is handled exclusively via the top-level `homebrew_casks:` block.
