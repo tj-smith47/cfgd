@@ -12,7 +12,9 @@ API group: `cfgd.io/v1alpha1`
 |---|---|---|---|
 | `MachineConfig` | Namespaced | [spec](spec/machineconfig.md) | Desired machine state — hostname, profile, packages, files, module refs |
 | `ConfigPolicy` | Namespaced | [spec](spec/configpolicy.md) | Team-level policy mandates — required packages, modules, settings |
+| `ClusterConfigPolicy` | Cluster | [spec](spec/clusterconfigpolicy.md) | Cluster-wide mandates across selected namespaces, plus module-provenance policy |
 | `DriftAlert` | Namespaced | [spec](spec/driftalert.md) | Reported drift from devices — severity, expected vs actual |
+| `Module` | Cluster | [spec](spec/module.md) | Reusable configuration bundle — packages, files, env, scripts; OCI-distributable |
 
 ### Installing the CRDs
 
@@ -111,6 +113,28 @@ spec:
 | `packages` | list of PackageRef | Required packages (each with `name` and optional `version` constraint) |
 | `settings` | map | Required system settings |
 | `targetSelector` | LabelSelector | Label selector (`matchLabels` / `matchExpressions`) — policy applies to MachineConfigs with matching labels |
+
+### ClusterConfigPolicy
+
+The cluster-scoped sibling of `ConfigPolicy`. It selects whole namespaces (via `namespaceSelector`, not a per-MachineConfig label selector) and adds a cluster-wide `security` block governing module provenance. On conflicts with a namespaced `ConfigPolicy`, the cluster policy wins — see [multi-tenancy.md](multi-tenancy.md#policy-merge-semantics). Full field reference: [spec/clusterconfigpolicy.md](spec/clusterconfigpolicy.md).
+
+```yaml
+apiVersion: cfgd.io/v1alpha1
+kind: ClusterConfigPolicy
+metadata:
+  name: org-baseline
+spec:
+  namespaceSelector:
+    matchLabels:
+      cfgd.io/managed: "true"
+  requiredModules:
+    - name: security-tools
+      required: true
+  security:
+    trustedRegistries:
+      - ghcr.io/acme-corp
+    allowUnsigned: false
+```
 
 ### DriftAlert
 
