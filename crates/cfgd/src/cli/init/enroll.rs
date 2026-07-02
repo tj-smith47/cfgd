@@ -378,7 +378,7 @@ pub(super) fn first_existing_ssh_key(ssh_dir: &Path) -> Option<std::path::PathBu
 }
 
 pub(super) fn sign_with_ssh(nonce: &str, key_path: &str) -> anyhow::Result<String> {
-    if !cfgd_core::command_available("ssh-keygen") {
+    if !cfgd_core::command_available_with_seam("CFGD_SSH_KEYGEN_BIN", "ssh-keygen") {
         anyhow::bail!("ssh-keygen not found — is OpenSSH installed?");
     }
 
@@ -388,13 +388,14 @@ pub(super) fn sign_with_ssh(nonce: &str, key_path: &str) -> anyhow::Result<Strin
 
     std::fs::write(&data_path, nonce)?;
 
-    // `ssh-keygen -Y sign` prompts on stdin for the key passphrase when the
-    // private key is encrypted or missing, and can block on the agent socket.
-    // In a headless enrollment (no tty, or a wedged agent) an inherited stdin
-    // prompt never returns, hanging the enroll flow. Close stdin so any prompt
-    // hits EOF and ssh-keygen exits non-zero, and bound the whole call with a
-    // timeout as a hard backstop against any other block (e.g. the agent).
-    let mut cmd = std::process::Command::new("ssh-keygen");
+    // `ssh-keygen -Y sign` prompts for the key passphrase when the private key
+    // is encrypted or missing, and can block on the agent socket. In a headless
+    // enrollment (no tty, or a wedged agent) that prompt never returns, hanging
+    // the enroll flow — on Unix ssh-keygen reads the passphrase from stdin, so
+    // close it (EOF → non-zero exit); on Windows it reads the console directly,
+    // which stdin can't defeat, so the timeout is the real backstop there.
+    // `CFGD_SSH_KEYGEN_BIN` is the test seam that routes this at a shim.
+    let mut cmd = cfgd_core::tool_cmd("CFGD_SSH_KEYGEN_BIN", "ssh-keygen");
     cmd.args([
         "-Y",
         "sign",
@@ -405,8 +406,7 @@ pub(super) fn sign_with_ssh(nonce: &str, key_path: &str) -> anyhow::Result<Strin
         data_path.to_str().unwrap_or("challenge.txt"),
     ])
     .stdin(std::process::Stdio::null())
-    .stdout(std::process::Stdio::null())
-    .stderr(std::process::Stdio::piped());
+    .stdout(std::process::Stdio::null());
 
     let outcome =
         cfgd_core::command_output_with_timeout_outcome(&mut cmd, cfgd_core::COMMAND_TIMEOUT)
@@ -430,7 +430,7 @@ pub(super) fn sign_with_ssh(nonce: &str, key_path: &str) -> anyhow::Result<Strin
 }
 
 pub(super) fn sign_with_gpg(nonce: &str, gpg_key_id: &str) -> anyhow::Result<String> {
-    if !cfgd_core::command_available("gpg") {
+    if !cfgd_core::command_available_with_seam("CFGD_GPG_BIN", "gpg") {
         anyhow::bail!("gpg not found — is GnuPG installed?");
     }
 
@@ -449,7 +449,8 @@ pub(super) fn sign_with_gpg(nonce: &str, gpg_key_id: &str) -> anyhow::Result<Str
     // `--batch` makes gpg fail rather than prompt on its own stdin, but a
     // misconfigured gpg-agent/pinentry can still block. Close stdin and bound
     // the call with a timeout so enrollment can never hang on signing.
-    let mut cmd = std::process::Command::new("gpg");
+    // `CFGD_GPG_BIN` is the test seam that routes this at a shim.
+    let mut cmd = cfgd_core::tool_cmd("CFGD_GPG_BIN", "gpg");
     cmd.args([
         "--batch",
         "--yes",
@@ -462,8 +463,7 @@ pub(super) fn sign_with_gpg(nonce: &str, gpg_key_id: &str) -> anyhow::Result<Str
         data_path.to_str().unwrap_or("challenge.txt"),
     ])
     .stdin(std::process::Stdio::null())
-    .stdout(std::process::Stdio::null())
-    .stderr(std::process::Stdio::piped());
+    .stdout(std::process::Stdio::null());
 
     let outcome =
         cfgd_core::command_output_with_timeout_outcome(&mut cmd, cfgd_core::COMMAND_TIMEOUT)

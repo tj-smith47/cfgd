@@ -1857,14 +1857,29 @@ fn clone_into_skips_existing_git_dir() {
 // --- sign_with_ssh tests ---
 
 #[test]
-fn sign_with_ssh_requires_ssh_keygen() {
+#[serial_test::serial]
+fn sign_with_ssh_bails_when_ssh_keygen_unavailable() {
+    // Route the ssh-keygen seam at a nonexistent path so the availability
+    // check fails deterministically on every OS — including Windows, where a
+    // real `ssh-keygen -Y sign` blocks on a console passphrase prompt no
+    // amount of stdin redirection can defeat. Mirrors the CFGD_COSIGN_BIN
+    // "/nonexistent" idiom used across the module tests.
+    let _g =
+        cfgd_core::test_helpers::EnvVarGuard::set("CFGD_SSH_KEYGEN_BIN", "/nonexistent/ssh-keygen");
+    let result = sign_with_ssh("test-nonce", "/nonexistent/key");
+    assert!(result.is_err(), "must error when ssh-keygen is unavailable");
+}
+
+#[test]
+#[cfg(unix)]
+fn sign_with_ssh_fails_on_invalid_key_when_keygen_present() {
+    // On Unix a real `ssh-keygen -Y sign` against a missing key errors fast
+    // (no console-prompt block), so this exercises the real binary's failure.
+    // Skipped on Windows, where the console prompt would hang — that path is
+    // covered by the seam-based unavailable test above.
     if !cfgd_core::command_available("ssh-keygen") {
-        // If ssh-keygen not available, the function should error
-        let result = sign_with_ssh("test-nonce", "/nonexistent/key");
-        assert!(result.is_err());
         return;
     }
-    // If ssh-keygen is available but key path is bad, it should fail gracefully
     let result = sign_with_ssh("test-nonce", "/nonexistent/key");
     assert!(result.is_err(), "should fail with nonexistent key file");
 }
@@ -3520,6 +3535,13 @@ mod enroll_mockito {
         // skipped, code reaches sign_with_ssh. With an invalid key path,
         // sign_with_ssh Errs and the signing_failed error Doc is emitted.
         // This pins the `key_type=Ssh` / explicit-ssh-key arm.
+        // Route ssh-keygen at a nonexistent binary so signing fails fast and
+        // deterministically on every OS (a real Windows ssh-keygen would block
+        // on a console passphrase prompt).
+        let _kg = cfgd_core::test_helpers::EnvVarGuard::set(
+            "CFGD_SSH_KEYGEN_BIN",
+            "/nonexistent/ssh-keygen",
+        );
         let tmp = tempfile::tempdir().unwrap();
         with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
             let mut server = mockito::Server::new();
@@ -3571,6 +3593,9 @@ mod enroll_mockito {
         // --gpg-key supplied → KeyType::Gpg arm exercised. sign_with_gpg with
         // a bogus key ID either Errs (gpg not installed) or Errs (key not
         // found) — either way sign_with_gpg returns Err and signing_failed Doc fires.
+        // Route gpg at a nonexistent binary so the signing failure is
+        // deterministic regardless of whether the host has gpg installed.
+        let _gpg = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_GPG_BIN", "/nonexistent/gpg");
         let tmp = tempfile::tempdir().unwrap();
         with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
             let mut server = mockito::Server::new();
@@ -3714,6 +3739,12 @@ mod enroll_mockito {
         std::fs::create_dir_all(&ssh_dir).unwrap();
         std::fs::write(ssh_dir.join("id_ed25519.pub"), b"ssh-ed25519 AAAA fake-key").unwrap();
         let _home_guard = cfgd_core::with_test_home_guard(tmp.path());
+        // detect_ssh_key still finds and names the .pub; only the signing step is
+        // routed at a nonexistent ssh-keygen so it fails fast on every OS.
+        let _kg = cfgd_core::test_helpers::EnvVarGuard::set(
+            "CFGD_SSH_KEYGEN_BIN",
+            "/nonexistent/ssh-keygen",
+        );
 
         with_test_env_var("CFGD_STATE_DIR", Some(tmp.path().to_str().unwrap()), || {
             let mut server = mockito::Server::new();
