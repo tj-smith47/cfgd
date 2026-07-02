@@ -410,7 +410,7 @@ fn render_template_to(
     match v {
         serde_json::Value::Array(arr) => {
             for item in arr {
-                match tera::Context::from_value(item.clone()) {
+                match tera::Context::from_serialize(&item) {
                     Ok(ctx) => match tera.render(tmpl_name, &ctx) {
                         Ok(rendered) => sink_stdout.write_line(&rendered),
                         Err(e) => fail(format!("template render error: {e}")),
@@ -419,7 +419,7 @@ fn render_template_to(
                 }
             }
         }
-        other => match tera::Context::from_value(other) {
+        other => match tera::Context::from_serialize(&other) {
             Ok(ctx) => match tera.render(tmpl_name, &ctx) {
                 Ok(rendered) => sink_stdout.write_line(&rendered),
                 Err(e) => fail(format!("template render error: {e}")),
@@ -965,10 +965,16 @@ mod tests {
     fn emit_structured_template_render_error_routes_to_stderr_and_flags() {
         let (stdout_buf, sink) = capture();
         let doc = doc_with(serde_json::json!({"foo": "bar"}));
+        // A reference to a variable absent from the context compiles cleanly
+        // (tera validates function/filter references at template-finalize time,
+        // but context variables only at render time) and then fails during
+        // `tera.render`, exercising the render-error branch specifically —
+        // distinct from the compile-error branch covered by the sibling
+        // `..._invalid_template_...` test.
         let (handled, errored, stderr) = emit_with_stderr(
             &sink,
             &doc,
-            &OutputFormat::Template("{{ foo | NONEXISTENT }}".into()),
+            &OutputFormat::Template("{{ missing_var }}".into()),
         );
         assert!(handled);
         assert!(errored, "render failure must set the output-error flag");

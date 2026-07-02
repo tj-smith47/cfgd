@@ -37,13 +37,13 @@ impl CfgdFileManager {
     /// `resolved` is the fully resolved profile with merged env vars.
     pub fn new(config_dir: &Path, resolved: &ResolvedProfile) -> Result<Self> {
         let mut tera = Tera::default();
-        tera.autoescape_on(vec![]);
+        tera.autoescape_on(Vec::<&str>::new());
 
         let mut context = Context::new();
 
         // Flat profile env vars
         for ev in &resolved.merged.env {
-            context.insert(&ev.name, &ev.value);
+            context.insert(ev.name.clone(), &ev.value);
         }
 
         template::insert_system_facts(&mut context);
@@ -71,7 +71,7 @@ impl CfgdFileManager {
         for (source_name, env) in source_env {
             let mut ctx = Context::new();
             for ev in env {
-                ctx.insert(&ev.name, &ev.value);
+                ctx.insert(ev.name.clone(), &ev.value);
             }
             template::insert_system_facts(&mut ctx);
             self.source_contexts.insert(source_name.clone(), ctx);

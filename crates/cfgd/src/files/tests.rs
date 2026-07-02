@@ -1954,8 +1954,8 @@ fn render_template_for_display_undefined_var_error() {
         "error should mention the undefined variable name, got: {msg}"
     );
     assert!(
-        msg.contains("not found in context"),
-        "error should explain the variable was not found in context, got: {msg}"
+        msg.contains("is not defined"),
+        "error should explain the variable was not defined, got: {msg}"
     );
 }
 

@@ -1,8 +1,7 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use tera::{Context, Tera};
+use tera::{Context, Kwargs, State, Tera};
 
 use cfgd_core::errors::{FileError, Result};
 
@@ -52,14 +51,15 @@ impl super::CfgdFileManager {
             path: path.to_path_buf(),
             message: "tera mutex poisoned".to_string(),
         })?;
+        // Register before add_raw_template: tera 2.0 validates function calls during
+        // finalize_templates() which is invoked by add_raw_template.
+        register_custom_functions(&mut tera, source_origin.is_some());
+
         tera.add_raw_template(&template_name, &template_content)
             .map_err(|e| FileError::TemplateError {
                 path: path.to_path_buf(),
                 message: format_tera_error(&e),
             })?;
-
-        // Register custom functions (source templates get a restricted env() that blocks access)
-        register_custom_functions(&mut tera, source_origin.is_some());
 
         // Use source-restricted context if this file came from a source
         let ctx = match source_origin {
@@ -74,7 +74,10 @@ impl super::CfgdFileManager {
             let msg = format_tera_error(&e);
             // If a source template references an undefined variable, it means
             // it tried to access a local variable that isn't in its sandbox.
-            if source_origin.is_some() && msg.contains("not found in context") {
+            if source_origin.is_some()
+                && msg.contains("Variable `")
+                && msg.contains("is not defined")
+            {
                 let var_name = msg
                     .split("Variable `")
                     .nth(1)
@@ -110,22 +113,22 @@ pub(super) fn format_tera_error(err: &tera::Error) -> String {
 fn register_custom_functions(tera: &mut Tera, is_source_template: bool) {
     tera.register_function(
         "os",
-        |_args: &HashMap<String, tera::Value>| -> tera::Result<tera::Value> {
-            Ok(tera::Value::String(std::env::consts::OS.to_string()))
+        |_kwargs: Kwargs, _state: &State| -> tera::TeraResult<tera::Value> {
+            Ok(tera::Value::from(std::env::consts::OS))
         },
     );
 
     tera.register_function(
         "hostname",
-        |_args: &HashMap<String, tera::Value>| -> tera::Result<tera::Value> {
-            Ok(tera::Value::String(cfgd_core::hostname_string()))
+        |_kwargs: Kwargs, _state: &State| -> tera::TeraResult<tera::Value> {
+            Ok(tera::Value::from(cfgd_core::hostname_string()))
         },
     );
 
     tera.register_function(
         "arch",
-        |_args: &HashMap<String, tera::Value>| -> tera::Result<tera::Value> {
-            Ok(tera::Value::String(std::env::consts::ARCH.to_string()))
+        |_kwargs: Kwargs, _state: &State| -> tera::TeraResult<tera::Value> {
+            Ok(tera::Value::from(std::env::consts::ARCH))
         },
     );
 
@@ -134,8 +137,8 @@ fn register_custom_functions(tera: &mut Tera, is_source_template: bool) {
         // of sensitive environment variables (API keys, credentials, etc.)
         tera.register_function(
             "env",
-            |_args: &HashMap<String, tera::Value>| -> tera::Result<tera::Value> {
-                Err(tera::Error::msg(
+            |_kwargs: Kwargs, _state: &State| -> tera::TeraResult<tera::Value> {
+                Err(tera::Error::message(
                     "env() is not available in source templates (sandbox restriction)",
                 ))
             },
@@ -143,13 +146,17 @@ fn register_custom_functions(tera: &mut Tera, is_source_template: bool) {
     } else {
         tera.register_function(
             "env",
-            |args: &HashMap<String, tera::Value>| -> tera::Result<tera::Value> {
-                let name = args
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| tera::Error::msg("env() requires a 'name' argument"))?;
+            |kwargs: Kwargs, _state: &State| -> tera::TeraResult<tera::Value> {
+                // Match tera 1.x semantics: a missing OR non-string `name`
+                // yields the "requires a 'name'" error (get::<&str> rejects
+                // non-strings; .ok().flatten() folds that into the None arm).
+                let name = kwargs
+                    .get::<&str>("name")
+                    .ok()
+                    .flatten()
+                    .ok_or_else(|| tera::Error::message("env() requires a 'name' argument"))?;
                 let value = std::env::var(name).unwrap_or_default();
-                Ok(tera::Value::String(value))
+                Ok(tera::Value::from(value))
             },
         );
     }
