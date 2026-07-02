@@ -388,22 +388,38 @@ pub(super) fn sign_with_ssh(nonce: &str, key_path: &str) -> anyhow::Result<Strin
 
     std::fs::write(&data_path, nonce)?;
 
-    let status = std::process::Command::new("ssh-keygen")
-        .args([
-            "-Y",
-            "sign",
-            "-f",
-            key_path,
-            "-n",
-            "cfgd-enroll",
-            data_path.to_str().unwrap_or("challenge.txt"),
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .status()
-        .map_err(|e| anyhow::anyhow!("ssh-keygen not found: {e} — is OpenSSH installed?"))?;
+    // `ssh-keygen -Y sign` prompts on stdin for the key passphrase when the
+    // private key is encrypted or missing, and can block on the agent socket.
+    // In a headless enrollment (no tty, or a wedged agent) an inherited stdin
+    // prompt never returns, hanging the enroll flow. Close stdin so any prompt
+    // hits EOF and ssh-keygen exits non-zero, and bound the whole call with a
+    // timeout as a hard backstop against any other block (e.g. the agent).
+    let mut cmd = std::process::Command::new("ssh-keygen");
+    cmd.args([
+        "-Y",
+        "sign",
+        "-f",
+        key_path,
+        "-n",
+        "cfgd-enroll",
+        data_path.to_str().unwrap_or("challenge.txt"),
+    ])
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::piped());
 
-    if !status.success() {
+    let outcome =
+        cfgd_core::command_output_with_timeout_outcome(&mut cmd, cfgd_core::COMMAND_TIMEOUT)
+            .map_err(|e| anyhow::anyhow!("ssh-keygen not found: {e} — is OpenSSH installed?"))?;
+
+    if outcome.timed_out {
+        anyhow::bail!(
+            "ssh-keygen -Y sign timed out after {}s — the SSH key may be prompting for a passphrase or the agent is unresponsive",
+            cfgd_core::COMMAND_TIMEOUT.as_secs()
+        );
+    }
+
+    if !outcome.output.status.success() {
         anyhow::bail!("ssh-keygen -Y sign failed — check that your SSH key is accessible");
     }
 
@@ -430,23 +446,37 @@ pub(super) fn sign_with_gpg(nonce: &str, gpg_key_id: &str) -> anyhow::Result<Str
     // with "no secret key". gpg reuses the user's running gpg-agent for any passphrase
     // pinentry, and we deliberately do not kill that agent afterward — it belongs to
     // the user's session, not to this process.
-    let sign_output = std::process::Command::new("gpg")
-        .args([
-            "--batch",
-            "--yes",
-            "--detach-sign",
-            "--armor",
-            "-u",
-            gpg_key_id,
-            "-o",
-            sig_path.to_str().unwrap_or("challenge.txt.asc"),
-            data_path.to_str().unwrap_or("challenge.txt"),
-        ])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .map_err(|e| anyhow::anyhow!("gpg not found: {e} — is GPG installed?"))?;
+    // `--batch` makes gpg fail rather than prompt on its own stdin, but a
+    // misconfigured gpg-agent/pinentry can still block. Close stdin and bound
+    // the call with a timeout so enrollment can never hang on signing.
+    let mut cmd = std::process::Command::new("gpg");
+    cmd.args([
+        "--batch",
+        "--yes",
+        "--detach-sign",
+        "--armor",
+        "-u",
+        gpg_key_id,
+        "-o",
+        sig_path.to_str().unwrap_or("challenge.txt.asc"),
+        data_path.to_str().unwrap_or("challenge.txt"),
+    ])
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::piped());
 
+    let outcome =
+        cfgd_core::command_output_with_timeout_outcome(&mut cmd, cfgd_core::COMMAND_TIMEOUT)
+            .map_err(|e| anyhow::anyhow!("gpg not found: {e} — is GPG installed?"))?;
+
+    if outcome.timed_out {
+        anyhow::bail!(
+            "gpg --detach-sign timed out after {}s — the gpg-agent may be unresponsive",
+            cfgd_core::COMMAND_TIMEOUT.as_secs()
+        );
+    }
+
+    let sign_output = outcome.output;
     if !sign_output.status.success() {
         // Surface gpg's own stderr — it carries the actionable reason ("No secret key",
         // "no passphrase supplied in batch mode", …) that the user needs.

@@ -1869,6 +1869,47 @@ fn sign_with_ssh_requires_ssh_keygen() {
     assert!(result.is_err(), "should fail with nonexistent key file");
 }
 
+#[test]
+#[serial_test::serial]
+#[cfg(unix)]
+fn sign_with_ssh_does_not_hang_when_key_prompts_on_stdin() {
+    // Regression: `ssh-keygen -Y sign` prompts on stdin for the passphrase of
+    // an encrypted/missing private key. When stdin was inherited, a headless
+    // enroll (no tty) hung forever on that prompt. The fix closes the child's
+    // stdin so the prompt hits EOF. A fake `ssh-keygen` that blocks reading
+    // stdin (`cat`) stands in for the prompt: with stdin closed it returns at
+    // EOF; without the fix it would block until the test timed out.
+    let tmp = tempfile::tempdir().unwrap();
+    let bin_dir = tmp.path().join("fakebin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let fake = bin_dir.join("ssh-keygen");
+    std::fs::write(&fake, b"#!/bin/sh\ncat > /dev/null\nexit 1\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let original_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut path_entries: Vec<std::path::PathBuf> = vec![bin_dir.clone()];
+    path_entries.extend(std::env::split_paths(&original_path));
+    let new_path = std::env::join_paths(&path_entries).unwrap();
+    let _path_guard = cfgd_core::test_helpers::EnvVarGuard::set(
+        "PATH",
+        new_path.to_str().expect("PATH must be valid UTF-8"),
+    );
+
+    // Run the signing call on a worker thread and assert it returns promptly.
+    // If stdin were inherited, `cat` would block and the recv would time out —
+    // turning the production hang into a deterministic test failure here.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = sign_with_ssh("nonce", "/nonexistent/id_ed25519");
+        let _ = tx.send(result.is_err());
+    });
+    match rx.recv_timeout(std::time::Duration::from_secs(15)) {
+        Ok(is_err) => assert!(is_err, "signing against a fake key must return an error"),
+        Err(_) => panic!("sign_with_ssh hung on an interactive stdin prompt — stdin not closed"),
+    }
+}
+
 // --- sign_with_gpg tests ---
 
 #[test]
