@@ -109,7 +109,7 @@ ureq = "3"
 git2 = { version = "0.21", features = ["ssh", "https"] }
 
 # Templating (output format)
-tera = "1"
+tera = "2"
 
 # Semver (multi-source version pinning)
 semver = "1"
