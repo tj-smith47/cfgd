@@ -402,6 +402,12 @@ pub(super) struct Notifier {
     captured: std::sync::Mutex<Vec<(String, String)>>,
 }
 
+/// Upper bound on a single desktop-notification attempt before the notifier
+/// gives up and falls back to stdout. `notify_rust::show()` blocks on the OS
+/// notification service and can hang indefinitely in a headless session, so
+/// this bound keeps a drift notification from ever stalling the reconcile loop.
+const DESKTOP_NOTIFY_TIMEOUT: Duration = Duration::from_secs(5);
+
 impl Notifier {
     fn new(method: NotifyMethod, webhook_url: Option<String>) -> Self {
         Self {
@@ -431,15 +437,39 @@ impl Notifier {
     }
 
     fn notify_desktop(&self, title: &str, message: &str) {
-        match notify_rust::Notification::new()
-            .summary(title)
-            .body(message)
-            .appname("cfgd")
-            .show()
-        {
-            Ok(_) => tracing::debug!(title = %title, "desktop notification sent"),
-            Err(e) => {
+        // `notify_rust::show()` blocks on the OS notification service. In a
+        // headless session (no GUI login, or a wedged Notification Center) it
+        // can block indefinitely instead of returning an error, so the
+        // Err→stdout fallback below never fires and the caller — the reconcile
+        // loop — stalls. Run the attempt on a detached thread bounded by
+        // DESKTOP_NOTIFY_TIMEOUT so the notifier always returns: fall back to
+        // stdout on either an error or a timeout.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let title_owned = title.to_string();
+        let message_owned = message.to_string();
+        std::thread::spawn(move || {
+            let outcome = notify_rust::Notification::new()
+                .summary(&title_owned)
+                .body(&message_owned)
+                .appname("cfgd")
+                .show()
+                .map(|_| ())
+                .map_err(|e| e.to_string());
+            // The receiver is gone once we time out below; ignore the drop.
+            let _ = tx.send(outcome);
+        });
+
+        match rx.recv_timeout(DESKTOP_NOTIFY_TIMEOUT) {
+            Ok(Ok(())) => tracing::debug!(title = %title, "desktop notification sent"),
+            Ok(Err(e)) => {
                 tracing::warn!(error = %e, "desktop notification failed, falling back to stdout");
+                self.notify_stdout(title, message);
+            }
+            Err(_) => {
+                tracing::warn!(
+                    timeout_secs = DESKTOP_NOTIFY_TIMEOUT.as_secs(),
+                    "desktop notification timed out, falling back to stdout"
+                );
                 self.notify_stdout(title, message);
             }
         }
