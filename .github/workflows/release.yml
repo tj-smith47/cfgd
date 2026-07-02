@@ -24,7 +24,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  ANODIZER_VERSION: v0.13.1
+  ANODIZER_VERSION: v0.13.2
   PROTOC_VERSION: "25.9"
   # Pinned + checksum-verified Crossplane CLI (crank). The crossplane/crossplane
   # install.sh is unpinned (always "current") and performs NO checksum check on
