@@ -1090,13 +1090,13 @@ pub fn check_latest(
 }
 
 fn cache_dir() -> Option<PathBuf> {
-    // Tests that install a test-home override get a tempdir-scoped cache
-    // directory so they don't pollute (or race against each other in) the
-    // real user cache. Production callers see the real ProjectDirs path.
-    if let Some(home) = crate::test_home_override() {
-        return Some(home.join(".cache").join("cfgd"));
-    }
-    directories::ProjectDirs::from("dev", "cfgd", "cfgd").map(|dirs| dirs.cache_dir().to_path_buf())
+    // Share the crate-wide cache root so the update-check timestamp honors
+    // `CFGD_CACHE_DIR` (and systemd's `$CACHE_DIRECTORY`, and the test-home
+    // override) exactly like the source and module caches. A headless or
+    // sandboxed run that redirects the cache via env would otherwise fall
+    // through to a `ProjectDirs` lookup that can fail to resolve a home,
+    // surfacing a spurious "cannot determine cache directory" warning.
+    crate::default_cache_dir_for(crate::Scope::User).ok()
 }
 
 fn read_version_cache() -> Option<VersionCache> {

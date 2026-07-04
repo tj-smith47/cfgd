@@ -527,7 +527,7 @@ These flags work with any subcommand:
 | `--config <path>` | | `CFGD_CONFIG` | Path to `cfgd.yaml` (or a directory — cfgd infers `cfgd.yaml`, then `cfgd.toml`, inside it) |
 | `--config-dir <dir>` | | `CFGD_CONFIG_DIR` | Override the config directory (`--config` wins over it) |
 | `--state-dir <dir>` | | `CFGD_STATE_DIR` | Override the state directory (`state.db`, history, `apply.lock`) |
-| `--cache-dir <dir>` | | `CFGD_CACHE_DIR` | Override the cache directory (source + module caches) |
+| `--cache-dir <dir>` | | `CFGD_CACHE_DIR` | Override the cache directory (source, module, and update-check caches) |
 | `--runtime-dir <dir>` | | `CFGD_RUNTIME_DIR` | Override the runtime directory (daemon socket, locks) |
 | `--profile <name>` | | `CFGD_PROFILE` | Override the active profile |
 | `--verbose` | `-v` | `CFGD_VERBOSE` | Show debug output (`-vv` = trace) |

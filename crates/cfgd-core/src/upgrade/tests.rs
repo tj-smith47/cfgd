@@ -3593,6 +3593,37 @@ fn cache_dir_returns_test_home_scoped_path() {
     );
 }
 
+#[test]
+#[serial_test::serial]
+fn cache_dir_honors_cfgd_cache_dir_env() {
+    // A headless/sandboxed run (notably Windows) redirects the cache via
+    // `CFGD_CACHE_DIR`; the update-check timestamp must land there rather than
+    // falling through to a home-directory lookup that can fail and emit a
+    // spurious "cannot determine cache directory" warning.
+    let redirect = tempfile::tempdir().unwrap();
+    let _env =
+        crate::test_helpers::EnvVarGuard::set("CFGD_CACHE_DIR", redirect.path().to_str().unwrap());
+
+    let dir = cache_dir().expect("cache_dir must honor CFGD_CACHE_DIR");
+    assert_eq!(
+        dir,
+        redirect.path(),
+        "cache_dir must return CFGD_CACHE_DIR verbatim"
+    );
+
+    write_version_cache(&VersionCache {
+        checked_at_secs: 42,
+        latest_tag: "v9.9.0".into(),
+        latest_version: "9.9.0".into(),
+        current_version: "9.8.0".into(),
+    })
+    .expect("write_version_cache must succeed under a redirected cache dir");
+    assert!(
+        redirect.path().join(CACHE_FILENAME).exists(),
+        "cache file must be written under CFGD_CACHE_DIR"
+    );
+}
+
 // --- download_to_file: large file branch ---
 
 #[test]
