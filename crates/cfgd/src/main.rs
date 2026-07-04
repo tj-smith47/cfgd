@@ -196,14 +196,30 @@ fn main() -> anyhow::Result<()> {
             _ => "trace",
         }
     };
+    // The Windows Service path installs its OWN tracing subscriber (file +
+    // Event Log sinks) inside `windows_service_main`. Claiming the global
+    // subscriber slot here first would silently defeat it — its `try_init`
+    // fails against an already-set global, leaving the service with an empty
+    // daemon.log and no Event Log. Skip our stderr subscriber for that
+    // subcommand so the service's own subscriber wins. On non-Windows the
+    // `daemon service` path errors out immediately and never logs, so skipping
+    // here is harmless.
+    let is_windows_service = matches!(
+        cli.command,
+        Some(cli::Command::Daemon {
+            command: Some(cli::DaemonCommand::Service { .. })
+        })
+    );
     // Route tracing to stderr: stdout is reserved for `-o` machine output
     // (the `-o json` purity contract), mirroring Printer human-on-stderr.
-    tracing_subscriber::fmt()
-        .with_env_filter(cfgd_core::tracing_env_filter(filter))
-        .with_target(false)
-        .without_time()
-        .with_writer(std::io::stderr)
-        .init();
+    if !is_windows_service {
+        tracing_subscriber::fmt()
+            .with_env_filter(cfgd_core::tracing_env_filter(filter))
+            .with_target(false)
+            .without_time()
+            .with_writer(std::io::stderr)
+            .init();
+    }
 
     // Handle --no-color flag. NO_COLOR / TERM=dumb are handled inside
     // Printer::with_format so every Printer (including daemon-owned

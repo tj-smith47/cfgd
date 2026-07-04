@@ -1,5 +1,59 @@
 use super::super::*;
 
+/// Build the service binPath argv — the tokens AFTER the cfgd binary that the
+/// SCM re-launches: `daemon service --config <path> [--profile <p>]
+/// [--scope system] [--enable-event-log]`.
+///
+/// Kept pure and platform-independent (not `#[cfg(windows)]`) so the CLI-parse
+/// contract can be unit-tested on the Linux CI host, not only on Windows:
+/// **every token produced here MUST be accepted by the `daemon service` clap
+/// parser.** A flag added here without a matching clap arg makes the
+/// SCM-launched process die at argument validation (exit 2) BEFORE the service
+/// dispatcher runs, so the service never starts — Windows reports error 1053
+/// ("did not respond to the start request in a timely fashion") and `sc query`
+/// shows STOPPED. `windows_service_binpath_argv_parses_via_cli` guards this.
+pub fn service_binpath_argv(
+    config_path: &Path,
+    profile: Option<&str>,
+    enable_event_log: bool,
+    scope: crate::Scope,
+) -> Vec<String> {
+    let config_abs =
+        std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
+    let config_str = crate::strip_windows_verbatim(&config_abs.display().to_string()).to_string();
+
+    let mut argv = vec![
+        "daemon".to_string(),
+        "service".to_string(),
+        "--config".to_string(),
+        config_str,
+    ];
+    if let Some(p) = profile {
+        argv.push("--profile".to_string());
+        argv.push(p.to_string());
+    }
+    if scope == crate::Scope::System {
+        argv.push("--scope".to_string());
+        argv.push("system".to_string());
+    }
+    if enable_event_log {
+        argv.push("--enable-event-log".to_string());
+    }
+    argv
+}
+
+/// Quote a single binPath token for the sc.exe command-line string. Values that
+/// carry a space or a backslash (every Windows path) must be quoted so sc.exe
+/// stores them as one argument; bare flag names and subcommands need no quotes.
+#[cfg(windows)]
+fn sc_quote(tok: &str) -> String {
+    if tok.is_empty() || tok.contains(' ') || tok.contains('\\') {
+        format!("\"{}\"", tok)
+    } else {
+        tok.to_string()
+    }
+}
+
 /// Install cfgd as a Windows Service via sc.exe.
 ///
 /// `enable_event_log` controls whether the Windows Event Log subscriber is
@@ -23,26 +77,17 @@ pub(crate) fn install_windows_service(
     if crate::test_home_override().is_some() {
         return Ok(());
     }
-    let config_abs =
-        std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
-    let config_str = config_abs.display().to_string();
-    let config_str = crate::strip_windows_verbatim(&config_str);
-
     let binary_str = binary.display().to_string();
     let binary_str = crate::strip_windows_verbatim(&binary_str);
 
-    let mut bin_args = format!(
-        "\"{}\" daemon service --config \"{}\"",
-        binary_str, config_str,
-    );
-    if let Some(p) = profile {
-        bin_args.push_str(&format!(" --profile \"{}\"", p));
-    }
-    if scope == crate::Scope::System {
-        bin_args.push_str(" --scope system");
-    }
-    if enable_event_log {
-        bin_args.push_str(" --enable-event-log");
+    // Single source of truth for the SCM-launched argv (see service_binpath_argv):
+    // rebuild the sc.exe binPath command-line string from those exact tokens so
+    // the parsed contract the test pins and the string sc.exe stores never drift.
+    let argv = service_binpath_argv(config_path, profile, enable_event_log, scope);
+    let mut bin_args = format!("\"{}\"", binary_str);
+    for tok in &argv {
+        bin_args.push(' ');
+        bin_args.push_str(&sc_quote(tok));
     }
 
     // sc.exe requires key= and value as separate arguments
@@ -88,19 +133,52 @@ pub(crate) fn install_windows_service(
         register_event_source();
     }
 
-    // Start the service
-    if let Err(e) = std::process::Command::new("sc.exe")
-        .args(["start", "cfgd"])
-        .output()
-    {
-        tracing::warn!(error = %e, "failed to start Windows Service");
-    }
-
+    // Starting is `start_service`'s job (mirroring the Unix seam), so it can
+    // poll the SCM and report the TRUE post-start state — an install that also
+    // fired `sc start` here would swallow the outcome and force callers to
+    // over-claim "started".
     tracing::info!(
         event_log = enable_event_log,
         "installed Windows Service: cfgd"
     );
     Ok(())
+}
+
+/// Start the `cfgd` Windows Service and report whether it actually reached
+/// RUNNING. `sc start` returns as soon as the SCM accepts the request, well
+/// before the service transitions, so the true state is only knowable by
+/// polling `sc query`. A service that dies at startup (e.g. a binPath clap
+/// rejects) leaves STOPPED — this returns `Ok(false)` for it rather than
+/// claiming success, so `cfgd daemon install` reports the real state.
+#[cfg(windows)]
+pub(crate) fn start_windows_service() -> Result<bool> {
+    let _ = std::process::Command::new("sc.exe")
+        .args(["start", "cfgd"])
+        .output()
+        .map_err(|e| tracing::warn!(error = %e, "failed to issue sc start for the cfgd service"));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        if windows_service_is_running() {
+            return Ok(true);
+        }
+        if std::time::Instant::now() >= deadline {
+            tracing::warn!("cfgd Windows Service did not reach RUNNING within the start timeout");
+            return Ok(false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
+/// True when `sc query cfgd` reports the service is RUNNING.
+#[cfg(windows)]
+fn windows_service_is_running() -> bool {
+    std::process::Command::new("sc.exe")
+        .args(["query", "cfgd"])
+        .output()
+        .ok()
+        .map(|o| crate::stdout_lossy_trimmed(&o).contains("RUNNING"))
+        .unwrap_or(false)
 }
 
 /// Register the `cfgd` source in the Application Event Log so Event Viewer

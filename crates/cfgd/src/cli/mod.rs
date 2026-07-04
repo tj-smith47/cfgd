@@ -1093,7 +1093,15 @@ pub enum DaemonCommand {
     Status,
     /// Run as a Windows Service (called by SCM, not directly by users)
     #[clap(hide = true)]
-    Service,
+    Service {
+        /// Mirror tracing events into the Windows Event Log. `daemon install`
+        /// bakes this into the service binPath when `daemon.windowsEventLog:
+        /// true`; the SCM-launched process reads it back from argv
+        /// (`event_log_requested`). Declared here so that argv parses instead
+        /// of dying at clap validation before the service dispatcher runs.
+        #[arg(long, hide = true)]
+        enable_event_log: bool,
+    },
 }
 
 #[derive(Subcommand)]

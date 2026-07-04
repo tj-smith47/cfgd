@@ -33,7 +33,7 @@ pub(super) fn cmd_daemon(
         Some(DaemonCommand::Status) => return cmd_daemon_status(cli, printer),
         Some(DaemonCommand::Install) => return cmd_daemon_install(cli, printer),
         Some(DaemonCommand::Uninstall) => return cmd_daemon_uninstall(cli, printer),
-        Some(DaemonCommand::Service) => return cmd_daemon_service(),
+        Some(DaemonCommand::Service { .. }) => return cmd_daemon_service(),
         Some(DaemonCommand::Run) | None => {}
     }
 
@@ -271,8 +271,17 @@ pub fn build_daemon_install_doc(payload: &DaemonInstallOutput) -> Doc {
     let mut doc = Doc::new().heading("Install Daemon Service");
     match payload.platform.as_str() {
         "windows" => {
+            if payload.started {
+                doc = doc.status(Role::Ok, "cfgd service installed and started");
+            } else {
+                doc = doc
+                    .status(Role::Warn, "cfgd service installed but not yet running")
+                    .status(
+                        Role::Info,
+                        "Start it with: sc start cfgd  (it is also set to auto-start on boot)",
+                    );
+            }
             doc = doc
-                .status(Role::Ok, "cfgd service installed and started")
                 .status(Role::Info, "The service will start automatically on boot")
                 .status(Role::Info, format!("Logs: {}", payload.path));
             if payload.windows_event_log.unwrap_or(false) {
@@ -448,6 +457,42 @@ mod tests {
             runtime_dir: None,
             scope_arg: crate::cli::ScopeArg::User,
             command: None,
+        }
+    }
+
+    // Producer/consumer contract: the argv `install_windows_service` bakes into
+    // the Windows service binPath MUST parse through the real clap `Cli`. The SCM
+    // re-launches `cfgd.exe daemon service …` with those exact tokens; if clap
+    // rejects any of them the process exits (code 2) before the service
+    // dispatcher runs, so the service never starts (Windows error 1053). Runs on
+    // the Linux CI host — `service_binpath_argv` is deliberately platform-neutral.
+    #[test]
+    fn windows_service_binpath_argv_parses_via_cli() {
+        use clap::Parser;
+        let cfg = std::path::Path::new("C:/ProgramData/cfgd/cfgd.yaml");
+        let cases = [
+            (None, false, cfgd_core::Scope::User),
+            (Some("laptop"), true, cfgd_core::Scope::User),
+            (None, true, cfgd_core::Scope::System),
+            (Some("srv"), true, cfgd_core::Scope::System),
+        ];
+        for (profile, event_log, scope) in cases {
+            let argv = cfgd_core::daemon::service_binpath_argv(cfg, profile, event_log, scope);
+            let full = std::iter::once("cfgd".to_string()).chain(argv.iter().cloned());
+            let cli = Cli::try_parse_from(full).unwrap_or_else(|e| {
+                panic!(
+                    "baked service argv {argv:?} rejected by the daemon-service clap parser: {e}"
+                )
+            });
+            assert!(
+                matches!(
+                    cli.command,
+                    Some(crate::cli::Command::Daemon {
+                        command: Some(DaemonCommand::Service { .. })
+                    })
+                ),
+                "argv {argv:?} did not parse to `daemon service`",
+            );
         }
     }
 
@@ -673,6 +718,52 @@ mod tests {
         );
         let json = cap.json().expect("doc must carry JSON payload");
         assert_eq!(json["platform"], "windows");
+    }
+
+    #[test]
+    fn build_daemon_install_doc_windows_not_started_is_honest() {
+        // A Windows install whose service did not reach RUNNING must NOT claim
+        // "started" — it reports the real state plus a manual-start hint, so
+        // `-o json` consumers and the human reader both see the truth.
+        let payload = DaemonInstallOutput {
+            platform: "windows".to_string(),
+            service: "cfgd".to_string(),
+            path: "%LOCALAPPDATA%\\cfgd\\daemon.log".to_string(),
+            started: false,
+            windows_event_log: Some(true),
+        };
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_daemon_install_doc(&payload));
+        let human = cap.human();
+        assert!(
+            human.contains("installed but not yet running") && human.contains("sc start cfgd"),
+            "not-started install must report the real state + start hint, got: {human}"
+        );
+        assert!(
+            !human.contains("installed and started"),
+            "must NOT over-claim 'started' when the service is not running, got: {human}"
+        );
+        let json = cap.json().expect("doc must carry JSON payload");
+        assert_eq!(json["started"], false);
+    }
+
+    #[test]
+    fn build_daemon_install_doc_windows_started_reports_started() {
+        let payload = DaemonInstallOutput {
+            platform: "windows".to_string(),
+            service: "cfgd".to_string(),
+            path: "%LOCALAPPDATA%\\cfgd\\daemon.log".to_string(),
+            started: true,
+            windows_event_log: Some(false),
+        };
+        let (printer, cap) = Printer::for_test_doc();
+        printer.emit(build_daemon_install_doc(&payload));
+        let human = cap.human();
+        assert!(
+            human.contains("installed and started"),
+            "a running service must report 'started', got: {human}"
+        );
+        assert_eq!(cap.json().expect("payload")["started"], true);
     }
 
     #[test]

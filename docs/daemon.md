@@ -249,9 +249,9 @@ Restart with `cfgd daemon` (foreground) or the service-manager equivalent
 
 - **macOS**: LaunchAgent plist in `~/Library/LaunchAgents/`
 - **Linux**: systemd user unit in `~/.config/systemd/user/`
-- **Windows**: Windows Service registered via `sc.exe`, running as the current user
+- **Windows**: Windows Service registered via `sc.exe`, running as `LocalSystem`
 
-The service is configured to start at login (macOS/Linux) or at system boot (Windows) and restart on failure.
+The service is configured to start at login (macOS/Linux) or at system boot (Windows).
 
 ### System scope
 
@@ -316,7 +316,7 @@ cfgd daemon install
 
 ### Windows Service
 
-On Windows, `cfgd daemon install` registers cfgd as a Windows Service named `cfgd`. The service starts automatically on boot and restarts on failure.
+On Windows, `cfgd daemon install` registers cfgd as a Windows Service named `cfgd`, running as `LocalSystem`. The service starts automatically on boot.
 
 ```sh
 cfgd daemon install    # register and start the Windows Service

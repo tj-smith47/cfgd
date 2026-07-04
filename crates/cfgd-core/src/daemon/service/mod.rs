@@ -16,6 +16,10 @@ pub(crate) use systemd::*;
 pub(crate) use windows::*;
 
 pub use windows::run_as_windows_service;
+// Pure, platform-independent binPath argv builder — re-exported unconditionally
+// (not gated like `windows::*`) so the Linux CI host can unit-test the
+// clap-parse contract for the SCM-launched service argv.
+pub use windows::service_binpath_argv;
 
 // --- Service Management ---
 // launchd on macOS, systemd on Linux, Windows Service on Windows.
@@ -82,9 +86,11 @@ pub fn start_service(printer: &crate::output::Printer, scope: crate::Scope) -> R
         if crate::test_home_override().is_some() {
             return Ok(false);
         }
-        // `install_windows_service` already issues `sc start`, so the service
-        // is running by the time this is reached.
-        Ok(true)
+        // Start the service and report the TRUE post-start state — `sc start`
+        // returns before the SCM finishes the transition, so this polls
+        // `sc query` and returns `Ok(false)` if the service never reaches
+        // RUNNING, rather than over-claiming success.
+        start_windows_service()
     }
     #[cfg(unix)]
     {
