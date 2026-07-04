@@ -18,6 +18,18 @@ pub(super) fn tool_seam_var(name: &str) -> String {
     format!("CFGD_{}_BIN", name.to_uppercase().replace('-', "_"))
 }
 
+/// Canonical package name for the managers whose package ids are matched
+/// case-INSENSITIVELY (Windows: chocolatey, scoop, winget). `choco list` /
+/// `scoop export` / `winget list` echo an id in its REGISTERED case (e.g. `Wget`,
+/// `Cosign`), while a user writes `wget` in the profile. Folding both the
+/// installed-side parse AND `package_identity` (desired side) through this makes
+/// install-idempotency, prune, and per-package tracking keys agree regardless of
+/// case. Must NOT be applied to the case-sensitive Unix managers (apt/dnf/brew/…),
+/// where distinct-case names can be distinct packages.
+pub(super) fn canonical_ci_pkg_name(name: &str) -> String {
+    name.to_ascii_lowercase()
+}
+
 /// Locate a package-manager binary. First checks the `CFGD_<NAME>_BIN` env-var
 /// seam (tests inject a ToolShim path here); then `$PATH` via
 /// `command_available`; on miss, walks each entry in `fallbacks` and returns

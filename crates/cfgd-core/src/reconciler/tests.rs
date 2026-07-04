@@ -1092,6 +1092,62 @@ fn verify_module_all_installed_emits_per_package_pass_rows() {
 }
 
 #[test]
+fn verify_routes_through_package_identity_for_name_remapping_manager() {
+    // go installs `rsc.io/2fa` but lists the binary `2fa`. verify must compare
+    // the desired name through package_identity, else the installed binary reads
+    // as missing and reconcile reports permanent phantom drift. Reverting the
+    // `package_identity` wire at verify.rs (raw `installed.contains(&ep.name)`)
+    // turns this red — the guard for the case-insensitive/remapping routing.
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    let mut go = TrackingPackageManager::with_installed("go", &["2fa"]);
+    go.identity_strip = true;
+    registry.package_managers.push(Box::new(go));
+
+    let resolved = make_empty_resolved();
+    let printer = test_printer();
+
+    let modules = vec![ResolvedModule {
+        name: "gotools".to_string(),
+        packages: vec![ResolvedPackage {
+            canonical_name: "2fa".to_string(),
+            resolved_name: "rsc.io/2fa".to_string(),
+            manager: "go".to_string(),
+            version: None,
+            script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
+        }],
+        files: vec![],
+        env: vec![],
+        aliases: vec![],
+        post_apply_scripts: vec![],
+        pre_apply_scripts: Vec::new(),
+        pre_reconcile_scripts: Vec::new(),
+        post_reconcile_scripts: Vec::new(),
+        on_change_scripts: Vec::new(),
+        on_drift_scripts: Vec::new(),
+        system: HashMap::new(),
+        depends: vec![],
+        dir: PathBuf::from("."),
+        origin: None,
+        platform_skip_reason: None,
+    }];
+
+    let results = verify(&resolved, &registry, &state, &printer, &modules).unwrap();
+    let row = results
+        .iter()
+        .find(|r| r.resource_type == "module" && r.resource_id == "gotools/rsc.io/2fa")
+        .expect("expected a verify row for the go package");
+    assert!(
+        row.matches,
+        "installed binary `2fa` must match desired `rsc.io/2fa` through package_identity: {results:?}"
+    );
+    assert_eq!(row.actual, "installed");
+}
+
+#[test]
 fn verify_module_script_packages_not_false_drift() {
     // Script-based packages should not cause false drift reports since
     // "script" isn't a registered package manager in the registry.

@@ -144,6 +144,14 @@ spec:
       - bat
 ```
 
+> **Case-insensitive matching.** `winget`, `chocolatey`, and `scoop` treat package
+> names case-insensitively, so `Wget` and `wget` refer to the same package. cfgd
+> matches your declared name against installed state without regard to case — a
+> package listed as `Wget` in your profile stays converged even though `choco list`
+> reports it as `Wget` and the tracking key is normalized to `wget`. The Unix-side
+> managers (`apt`, `dnf`, `brew`, `cargo`, `npm`, `pipx`) are case-**sensitive** —
+> declare those exactly as the manager expects.
+
 ## Module Packages
 
 In [modules](modules.md), packages use cross-platform resolution instead of manager-specific lists:

@@ -75,7 +75,10 @@ pub fn verify(
             installed_cache.insert(ep.manager.clone(), mgr.installed_packages()?);
         }
         let installed = &installed_cache[&ep.manager];
-        let ok = installed.contains(&ep.name);
+        // Compare through package_identity so case-insensitive managers (choco/scoop/
+        // winget: `wget` vs installed `Wget`) and name-remapping managers (go: module
+        // path vs binary) match like with like.
+        let ok = installed.contains(&mgr.package_identity(&ep.name));
 
         // Preserve each origin's resource conventions: module packages report as
         // `module` / `<module>/<name>`; profile packages as `package` /

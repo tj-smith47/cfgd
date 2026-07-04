@@ -5,14 +5,19 @@ use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::Printer;
-use cfgd_core::providers::PackageManager;
+use cfgd_core::providers::{PackageInfo, PackageManager};
 
-use super::shared::{parse_version_field, run_pkg_cmd, run_pkg_cmd_live};
+use super::shared::{canonical_ci_pkg_name, parse_version_field, run_pkg_cmd, run_pkg_cmd_live};
 
 pub struct WingetManager;
 
-pub(super) fn parse_winget_list(output: &str) -> HashSet<String> {
-    let mut packages = HashSet::new();
+/// Parse `winget list` into `(Id, Version)` pairs, locating the `Id`/`Version`
+/// columns from the header. The Id is in its REGISTERED case (e.g. `Git.Git`);
+/// the version is the first token of the Version column (any trailing `Available`/
+/// `Source` columns are ignored). This is the primitive; [`parse_winget_list`]
+/// derives the case-folded identity set from it.
+fn parse_winget_list_versions(output: &str) -> Vec<PackageInfo> {
+    let mut out = Vec::new();
     let mut header_seen = false;
     let mut id_start = 0;
     let mut id_end = 0;
@@ -39,11 +44,26 @@ pub(super) fn parse_winget_list(output: &str) -> HashSet<String> {
         {
             let id = slice.trim();
             if !id.is_empty() {
-                packages.insert(id.to_string());
+                let version = line
+                    .get(id_end..)
+                    .and_then(|s| s.split_whitespace().next())
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or("unknown");
+                out.push(PackageInfo {
+                    name: id.to_string(),
+                    version: version.to_string(),
+                });
             }
         }
     }
-    packages
+    out
+}
+
+pub(super) fn parse_winget_list(output: &str) -> HashSet<String> {
+    parse_winget_list_versions(output)
+        .into_iter()
+        .map(|p| canonical_ci_pkg_name(&p.name))
+        .collect()
 }
 
 impl PackageManager for WingetManager {
@@ -75,6 +95,26 @@ impl PackageManager for WingetManager {
             "list",
         )?;
         Ok(parse_winget_list(&String::from_utf8_lossy(&output.stdout)))
+    }
+
+    /// winget package Ids are matched case-insensitively; canonicalize to lowercase
+    /// so a profile entry matches `winget list`'s reported Id for install-diffing,
+    /// prune, and tracking (mirrors chocolatey/scoop).
+    fn package_identity(&self, entry: &str) -> String {
+        canonical_ci_pkg_name(entry)
+    }
+
+    /// Display surface (scan/status): keep the REGISTERED Id case and the real
+    /// version, rather than the lowercase identity form used for matching.
+    fn installed_packages_with_versions(&self) -> Result<Vec<PackageInfo>> {
+        let output = run_pkg_cmd(
+            "winget",
+            Command::new("winget").args(["list", "--source", "winget"]),
+            "list",
+        )?;
+        Ok(parse_winget_list_versions(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
     }
 
     fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
@@ -155,8 +195,8 @@ mod tests {
                       Visual Studio   Microsoft.VisualStudio 17.8.3\n\
                       Git             Git.Git                2.43.0\n";
         let packages = parse_winget_list(output);
-        assert!(packages.contains("Microsoft.VisualStudio"));
-        assert!(packages.contains("Git.Git"));
+        assert!(packages.contains("microsoft.visualstudio"));
+        assert!(packages.contains("git.git"));
     }
 
     #[test]
@@ -183,8 +223,8 @@ Name                              Id                                   Version  
 Microsoft Visual Studio Code      Microsoft.VisualStudioCode           1.85.1        1.86.0    winget\n\
 Windows Terminal                   Microsoft.WindowsTerminal            1.18.3181.0             winget\n";
         let packages = parse_winget_list(output);
-        assert!(packages.contains("Microsoft.VisualStudioCode"));
-        assert!(packages.contains("Microsoft.WindowsTerminal"));
+        assert!(packages.contains("microsoft.visualstudiocode"));
+        assert!(packages.contains("microsoft.windowsterminal"));
         assert_eq!(packages.len(), 2);
     }
 
@@ -196,7 +236,7 @@ Name       Id          Version\n\
 ============================\n\
 Git        Git.Git     2.43.0\n";
         let packages = parse_winget_list(output);
-        assert!(packages.contains("Git.Git"));
+        assert!(packages.contains("git.git"));
     }
 
     #[test]
@@ -209,7 +249,7 @@ Git        Git.Git     2.43.0\n\
 \n";
         let packages = parse_winget_list(output);
         assert_eq!(packages.len(), 1);
-        assert!(packages.contains("Git.Git"));
+        assert!(packages.contains("git.git"));
     }
 
     #[test]
@@ -255,8 +295,8 @@ Git                   Git.Git                   2.43.0     2.44.0     winget\n\
 PowerShell            Microsoft.PowerShell      7.4.0                 winget\n";
         let packages = parse_winget_list(output);
         assert_eq!(packages.len(), 2);
-        assert!(packages.contains("Git.Git"));
-        assert!(packages.contains("Microsoft.PowerShell"));
+        assert!(packages.contains("git.git"));
+        assert!(packages.contains("microsoft.powershell"));
     }
 
     #[test]
@@ -278,10 +318,10 @@ PowerShell                             Microsoft.PowerShell                    7
 ";
         let packages = parse_winget_list(output);
         assert_eq!(packages.len(), 4);
-        assert!(packages.contains("Microsoft.VisualStudioCode"));
-        assert!(packages.contains("Git.Git"));
-        assert!(packages.contains("Microsoft.WindowsTerminal"));
-        assert!(packages.contains("Microsoft.PowerShell"));
+        assert!(packages.contains("microsoft.visualstudiocode"));
+        assert!(packages.contains("git.git"));
+        assert!(packages.contains("microsoft.windowsterminal"));
+        assert!(packages.contains("microsoft.powershell"));
     }
 
     #[test]
@@ -293,8 +333,8 @@ Name                Id                  Version
 Git                 Git.Git             2.43.0
 ";
         let packages = parse_winget_list(output);
-        assert!(packages.contains("Test.App"));
-        assert!(packages.contains("Git.Git"));
+        assert!(packages.contains("test.app"));
+        assert!(packages.contains("git.git"));
     }
 
     #[test]
@@ -305,8 +345,8 @@ Name            Id                  Version\n\
 Git             Git.Git             2.44.0\n\
 Node.js         OpenJS.NodeJS       20.11.1\n";
         let result = parse_winget_list(output);
-        assert!(result.contains("Git.Git"));
-        assert!(result.contains("OpenJS.NodeJS"));
+        assert!(result.contains("git.git"));
+        assert!(result.contains("openjs.nodejs"));
         assert_eq!(result.len(), 2);
     }
 
@@ -334,7 +374,7 @@ Name                  Id                        Version\n\
 -------------------------------------------------------\n\
 SomeApp               Some.App                  1.0.0\n";
         let packages = parse_winget_list(output);
-        assert!(packages.contains("Some.App"));
+        assert!(packages.contains("some.app"));
     }
 
     #[test]
@@ -447,8 +487,28 @@ Git             Git.Git                2.43.0
 ";
             let (_bin, _path) = install_winget_shim(0, stdout, "");
             let pkgs = WingetManager.installed_packages().expect("Ok");
-            assert!(pkgs.contains("Microsoft.VisualStudio"));
-            assert!(pkgs.contains("Git.Git"));
+            // winget Ids are matched case-insensitively; cfgd canonicalizes to lowercase.
+            assert!(pkgs.contains("microsoft.visualstudio"));
+            assert!(pkgs.contains("git.git"));
+        }
+
+        #[test]
+        fn package_identity_folds_case() {
+            assert_eq!(WingetManager.package_identity("Git.Git"), "git.git");
+            assert_eq!(WingetManager.package_identity("git.git"), "git.git");
+        }
+
+        #[test]
+        fn parse_winget_list_versions_keeps_registered_case_and_version() {
+            let output = "\
+Name            Id                    Version
+------------------------------------------------
+Git             Git.Git               2.43.0
+";
+            let infos = parse_winget_list_versions(output);
+            assert_eq!(infos.len(), 1);
+            assert_eq!(infos[0].name, "Git.Git");
+            assert_eq!(infos[0].version, "2.43.0");
         }
 
         #[test]

@@ -207,24 +207,13 @@ fn cmd_diff_module(
         let mut emitted = false;
         for module in &resolved_modules {
             for pkg in &module.packages {
-                if pkg.manager == "script" {
-                    continue;
-                }
-                if let Some(mgr) = mgr_map.get(pkg.manager.as_str()) {
-                    let installed = mgr.installed_packages().unwrap_or_default();
-                    if !installed.contains(&pkg.resolved_name) {
-                        has_pkg_drift = true;
-                        emitted = true;
-                        pkg_sec
-                            .status(Role::Warn, format!("{}: missing", pkg.manager))
-                            .detail(pkg.resolved_name.clone());
-                        diff_payload.packages.push(PackageDrift {
-                            manager: pkg.manager.clone(),
-                            shape: "missing".to_string(),
-                            packages: vec![pkg.resolved_name.clone()],
-                            bootstrap_method: None,
-                        });
-                    }
+                if let Some(drift) = package_missing_drift(pkg, &mgr_map) {
+                    has_pkg_drift = true;
+                    emitted = true;
+                    pkg_sec
+                        .status(Role::Warn, format!("{}: missing", pkg.manager))
+                        .detail(pkg.resolved_name.clone());
+                    diff_payload.packages.push(drift);
                 }
             }
         }
@@ -246,6 +235,32 @@ fn cmd_diff_module(
     }
 
     Ok(())
+}
+
+/// Drift record for a module-declared package that is not installed, or `None`
+/// when it is installed, script-based, or its manager isn't registered.
+/// The comparison routes through `package_identity` so case-insensitive managers
+/// (choco/scoop/winget) and name-remapping ones (go) match installed state like
+/// with like — a raw name compare re-reports installed packages as missing on
+/// every `cfgd diff --module`.
+fn package_missing_drift(
+    pkg: &modules::ResolvedPackage,
+    mgr_map: &std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager>,
+) -> Option<PackageDrift> {
+    if pkg.manager == "script" {
+        return None;
+    }
+    let mgr = mgr_map.get(pkg.manager.as_str())?;
+    let installed = mgr.installed_packages().unwrap_or_default();
+    if installed.contains(&mgr.package_identity(&pkg.resolved_name)) {
+        return None;
+    }
+    Some(PackageDrift {
+        manager: pkg.manager.clone(),
+        shape: "missing".to_string(),
+        packages: vec![pkg.resolved_name.clone()],
+        bootstrap_method: None,
+    })
 }
 
 fn print_package_drift(
@@ -484,5 +499,126 @@ mod tests {
             "should show bootstrap need, got: {output}"
         );
         assert_eq!(payload.packages.len(), 3);
+    }
+
+    /// Minimal package-manager double: a fixed installed set plus an optional
+    /// case-folding `package_identity`, to exercise `package_missing_drift`'s
+    /// identity routing without shelling out to a real manager.
+    struct FoldingStub {
+        installed: std::collections::HashSet<String>,
+        fold_case: bool,
+    }
+
+    impl cfgd_core::providers::PackageManager for FoldingStub {
+        fn name(&self) -> &str {
+            "chocolatey"
+        }
+        fn is_available(&self) -> bool {
+            true
+        }
+        fn can_bootstrap(&self) -> bool {
+            false
+        }
+        fn bootstrap(&self, _printer: &Printer) -> cfgd_core::errors::Result<()> {
+            Ok(())
+        }
+        fn installed_packages(
+            &self,
+        ) -> cfgd_core::errors::Result<std::collections::HashSet<String>> {
+            Ok(self.installed.clone())
+        }
+        fn install(
+            &self,
+            _packages: &[String],
+            _printer: &Printer,
+        ) -> cfgd_core::errors::Result<()> {
+            Ok(())
+        }
+        fn uninstall(
+            &self,
+            _packages: &[String],
+            _printer: &Printer,
+        ) -> cfgd_core::errors::Result<()> {
+            Ok(())
+        }
+        fn update(&self, _printer: &Printer) -> cfgd_core::errors::Result<()> {
+            Ok(())
+        }
+        fn available_version(&self, _package: &str) -> cfgd_core::errors::Result<Option<String>> {
+            Ok(None)
+        }
+        fn package_identity(&self, entry: &str) -> String {
+            if self.fold_case {
+                entry.to_ascii_lowercase()
+            } else {
+                entry.to_string()
+            }
+        }
+    }
+
+    fn resolved_pkg(manager: &str, resolved_name: &str) -> modules::ResolvedPackage {
+        modules::ResolvedPackage {
+            canonical_name: resolved_name.to_string(),
+            resolved_name: resolved_name.to_string(),
+            manager: manager.to_string(),
+            version: None,
+            script: None,
+            creates: None,
+            only_if: None,
+            unless: None,
+        }
+    }
+
+    #[test]
+    fn package_missing_drift_routes_through_package_identity_for_case_insensitive_manager() {
+        // The module desires `Wget` (as authored); chocolatey's installed set is
+        // folded to `wget` (parse_choco_list lowercases). `package_missing_drift`
+        // must match through package_identity — reverting the identity wire
+        // re-reports the installed package as missing drift.
+        let stub = FoldingStub {
+            installed: ["wget".to_string()].into_iter().collect(),
+            fold_case: true,
+        };
+        let mgr_map: std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager> =
+            [(
+                "chocolatey".to_string(),
+                &stub as &dyn cfgd_core::providers::PackageManager,
+            )]
+            .into_iter()
+            .collect();
+
+        let pkg = resolved_pkg("chocolatey", "Wget");
+        assert!(
+            package_missing_drift(&pkg, &mgr_map).is_none(),
+            "desired `Wget` must match folded installed `wget` — no drift"
+        );
+    }
+
+    #[test]
+    fn package_missing_drift_reports_genuinely_absent_package() {
+        let stub = FoldingStub {
+            installed: std::collections::HashSet::new(),
+            fold_case: true,
+        };
+        let mgr_map: std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager> =
+            [(
+                "chocolatey".to_string(),
+                &stub as &dyn cfgd_core::providers::PackageManager,
+            )]
+            .into_iter()
+            .collect();
+
+        let pkg = resolved_pkg("chocolatey", "wget");
+        let drift = package_missing_drift(&pkg, &mgr_map).expect("absent package must drift");
+        assert_eq!(drift.shape, "missing");
+        assert_eq!(drift.packages, vec!["wget".to_string()]);
+    }
+
+    #[test]
+    fn package_missing_drift_skips_script_packages() {
+        let mgr_map: std::collections::HashMap<String, &dyn cfgd_core::providers::PackageManager> =
+            std::collections::HashMap::new();
+        let pkg = resolved_pkg("script", "rustup");
+        assert!(package_missing_drift(&pkg, &mgr_map).is_none());
     }
 }

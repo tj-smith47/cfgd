@@ -5,14 +5,17 @@ use std::process::Command;
 
 use cfgd_core::errors::{PackageError, Result};
 use cfgd_core::output::Printer;
-use cfgd_core::providers::PackageManager;
+use cfgd_core::providers::{PackageInfo, PackageManager};
 
-use super::shared::{run_pkg_cmd, run_pkg_cmd_live};
+use super::shared::{canonical_ci_pkg_name, run_pkg_cmd, run_pkg_cmd_live};
 
 pub struct ChocolateyManager;
 
-pub(super) fn parse_choco_list(output: &str) -> HashSet<String> {
-    let mut packages = HashSet::new();
+/// Extract `(name, version)` for each real package line of `choco list` output,
+/// skipping the `Chocolatey vX` banner and the `N packages installed.` footer. The
+/// name is in its REGISTERED case (e.g. `Wget`) — callers canonicalize as needed.
+fn choco_list_entries(output: &str) -> Vec<(String, String)> {
+    let mut entries = Vec::new();
     for line in output.lines() {
         let line = line.trim();
         if line.is_empty()
@@ -24,11 +27,35 @@ pub(super) fn parse_choco_list(output: &str) -> HashSet<String> {
         {
             continue;
         }
-        if let Some((name, _version)) = line.split_once(' ') {
-            packages.insert(name.to_string());
+        if let Some((name, version)) = line.split_once(' ') {
+            entries.push((name.to_string(), version.trim().to_string()));
         }
     }
-    packages
+    entries
+}
+
+pub(super) fn parse_choco_list(output: &str) -> HashSet<String> {
+    choco_list_entries(output)
+        .into_iter()
+        .map(|(name, _)| canonical_ci_pkg_name(&name))
+        .collect()
+}
+
+/// Installed packages WITH versions for `installed_packages_with_versions`. Unlike
+/// [`parse_choco_list`] this preserves the REGISTERED name case for display (the
+/// scan/status surface) and carries the real version.
+fn parse_choco_list_versions(output: &str) -> Vec<PackageInfo> {
+    choco_list_entries(output)
+        .into_iter()
+        .map(|(name, version)| PackageInfo {
+            name,
+            version: if version.is_empty() {
+                "unknown".into()
+            } else {
+                version
+            },
+        })
+        .collect()
 }
 
 impl PackageManager for ChocolateyManager {
@@ -67,6 +94,22 @@ impl PackageManager for ChocolateyManager {
     fn installed_packages(&self) -> Result<HashSet<String>> {
         let output = run_pkg_cmd("chocolatey", Command::new("choco").args(["list"]), "list")?;
         Ok(parse_choco_list(&String::from_utf8_lossy(&output.stdout)))
+    }
+
+    /// chocolatey package ids are case-insensitive; `choco list` echoes them in
+    /// their registered case (e.g. `Wget`). Canonicalize to lowercase so a profile
+    /// `wget` matches installed `Wget` for install-diffing, prune, and tracking.
+    fn package_identity(&self, entry: &str) -> String {
+        canonical_ci_pkg_name(entry)
+    }
+
+    /// Display surface (scan/status): keep the REGISTERED name case and the real
+    /// version, rather than the lowercase identity form used for matching.
+    fn installed_packages_with_versions(&self) -> Result<Vec<PackageInfo>> {
+        let output = run_pkg_cmd("chocolatey", Command::new("choco").args(["list"]), "list")?;
+        Ok(parse_choco_list_versions(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
     }
 
     fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
@@ -156,6 +199,38 @@ mod tests {
         assert!(packages.contains("nodejs"));
         assert!(packages.contains("python"));
         assert_eq!(packages.len(), 3);
+    }
+
+    #[test]
+    fn chocolatey_parse_list_canonicalizes_registered_case() {
+        // `choco list` echoes the registered id case (e.g. `Wget`, `Cosign`); cfgd must
+        // canonicalize to lowercase so a profile `wget` matches for install-diff + prune.
+        let output = "Chocolatey v2.7.3\n\
+                      Wget 1.21.4\n\
+                      Cosign 1.3.1\n\
+                      2 packages installed.";
+        let packages = parse_choco_list(output);
+        assert!(packages.contains("wget"), "Wget should fold to wget");
+        assert!(packages.contains("cosign"), "Cosign should fold to cosign");
+        assert!(!packages.contains("Wget"));
+    }
+
+    #[test]
+    fn chocolatey_package_identity_folds_case() {
+        assert_eq!(ChocolateyManager.package_identity("Wget"), "wget");
+        assert_eq!(ChocolateyManager.package_identity("wget"), "wget");
+    }
+
+    #[test]
+    fn chocolatey_versions_keep_registered_case_and_version() {
+        // The display surface (scan/status) must NOT fold case, and carries the version.
+        let output = "Chocolatey v2.7.3\n\
+                      Wget 1.21.4\n\
+                      1 packages installed.";
+        let infos = parse_choco_list_versions(output);
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].name, "Wget");
+        assert_eq!(infos[0].version, "1.21.4");
     }
 
     #[test]

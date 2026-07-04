@@ -5,11 +5,11 @@ use std::process::Command;
 
 use cfgd_core::errors::Result;
 use cfgd_core::output::Printer;
-use cfgd_core::providers::PackageManager;
+use cfgd_core::providers::{PackageInfo, PackageManager};
 
 use super::shared::{
-    parse_version_field, resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query,
-    tool_cmd_with_resolver,
+    canonical_ci_pkg_name, parse_version_field, resolve_tool_with_fallbacks, run_pkg_cmd_live,
+    run_pkg_query, tool_cmd_with_resolver,
 };
 
 pub struct ScoopManager;
@@ -39,7 +39,35 @@ pub(super) fn parse_scoop_export(output: &str) -> HashSet<String> {
         .map(|apps| {
             apps.iter()
                 .filter_map(|app| app.get("Name").and_then(|n| n.as_str()))
-                .map(str::to_string)
+                .map(canonical_ci_pkg_name)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Installed apps WITH versions for `installed_packages_with_versions`. Unlike
+/// [`parse_scoop_export`] this preserves the REGISTERED app-name case for display
+/// (the scan/status surface) and carries `scoop export`'s reported `Version`.
+fn parse_scoop_export_versions(output: &str) -> Vec<PackageInfo> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(output) else {
+        return Vec::new();
+    };
+    value
+        .get("apps")
+        .and_then(|apps| apps.as_array())
+        .map(|apps| {
+            apps.iter()
+                .filter_map(|app| {
+                    let name = app.get("Name").and_then(|n| n.as_str())?;
+                    let version = app
+                        .get("Version")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+                    Some(PackageInfo {
+                        name: name.to_string(),
+                        version: version.to_string(),
+                    })
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -83,6 +111,22 @@ impl PackageManager for ScoopManager {
         // (scoop exits non-zero on an empty DB, a benign result — not a failure).
         let output = run_pkg_query("scoop", scoop_cmd().arg("export"))?;
         Ok(parse_scoop_export(&String::from_utf8_lossy(&output.stdout)))
+    }
+
+    /// scoop app names are matched case-insensitively; canonicalize to lowercase so
+    /// a profile entry matches `scoop export`'s reported `Name` for install-diffing,
+    /// prune, and tracking (mirrors chocolatey/winget).
+    fn package_identity(&self, entry: &str) -> String {
+        canonical_ci_pkg_name(entry)
+    }
+
+    /// Display surface (scan/status): keep the REGISTERED app-name case and the real
+    /// version, rather than the lowercase identity form used for matching.
+    fn installed_packages_with_versions(&self) -> Result<Vec<PackageInfo>> {
+        let output = run_pkg_query("scoop", scoop_cmd().arg("export"))?;
+        Ok(parse_scoop_export_versions(&String::from_utf8_lossy(
+            &output.stdout,
+        )))
     }
 
     fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
@@ -165,6 +209,32 @@ mod tests {
         let packages = parse_scoop_export(output);
         assert_eq!(packages.len(), 1);
         assert!(packages.contains("git"));
+    }
+
+    #[test]
+    fn scoop_parse_export_canonicalizes_case() {
+        // scoop app names are matched case-insensitively; fold to lowercase so a
+        // profile entry matches for install-diff + prune.
+        let output = r#"{"apps":[{"Name":"NodeJS","Version":"22.0.0","Source":"main"}]}"#;
+        let packages = parse_scoop_export(output);
+        assert!(packages.contains("nodejs"));
+        assert!(!packages.contains("NodeJS"));
+    }
+
+    #[test]
+    fn scoop_package_identity_folds_case() {
+        assert_eq!(ScoopManager.package_identity("NodeJS"), "nodejs");
+        assert_eq!(ScoopManager.package_identity("7zip"), "7zip");
+    }
+
+    #[test]
+    fn scoop_versions_keep_registered_case_and_version() {
+        // Display surface keeps the registered app-name case and the exported version.
+        let output = r#"{"apps":[{"Name":"NodeJS","Version":"22.0.0","Source":"main"}]}"#;
+        let infos = parse_scoop_export_versions(output);
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].name, "NodeJS");
+        assert_eq!(infos[0].version, "22.0.0");
     }
 
     #[test]

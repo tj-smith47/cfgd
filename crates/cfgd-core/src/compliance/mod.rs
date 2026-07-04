@@ -428,7 +428,9 @@ pub fn collect_package_checks(
 
         for (pkg, origin) in desired {
             let suffix = origin_suffix(origin);
-            if installed.contains(pkg) {
+            // package_identity: match case-insensitive managers (choco/scoop/winget)
+            // and name-remapping ones (go) like with like against installed_packages.
+            if installed.contains(&pm.package_identity(pkg)) {
                 checks.push(ComplianceCheck {
                     category: "package".into(),
                     name: Some(pkg.clone()),

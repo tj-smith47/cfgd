@@ -498,6 +498,35 @@ fn collect_package_checks_installed_package_compliant() {
 }
 
 #[test]
+fn collect_package_checks_routes_through_package_identity_for_case_insensitive_manager() {
+    use crate::config::MergedProfile;
+    use crate::providers::StubPackageManager;
+
+    // The profile desires `Wget` (as authored); chocolatey's installed set is
+    // folded to `wget` (parse_choco_list lowercases). Compliance must compare
+    // through package_identity, else a compliant package reads as a violation on
+    // every snapshot. Reverting the identity wire at collect_package_checks turns
+    // this red.
+    let mut profile = MergedProfile::default();
+    profile.packages.chocolatey = vec!["Wget".into()];
+
+    let mut registry = ProviderRegistry::new();
+    registry.package_managers.push(Box::new(
+        StubPackageManager::new("chocolatey")
+            .case_folding()
+            .with_installed(&["wget"]),
+    ));
+
+    let checks = collect_package_checks(&profile, &[], &registry).unwrap();
+    assert_eq!(checks.len(), 1);
+    assert_eq!(
+        checks[0].status,
+        ComplianceStatus::Compliant,
+        "desired `Wget` must match folded installed `wget`: {checks:?}"
+    );
+}
+
+#[test]
 fn collect_package_checks_missing_package_violation() {
     use crate::config::MergedProfile;
     use crate::providers::StubPackageManager;

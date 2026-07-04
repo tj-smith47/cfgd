@@ -407,6 +407,11 @@ pub(crate) struct StubPackageManager {
     /// When Some, `installed_packages()` returns an Err carrying this message.
     /// Lets tests drive the "cannot query" arms in compliance + reconciler code.
     pub installed_error: Option<String>,
+    /// When true, `package_identity` lowercases its entry, mimicking a
+    /// case-insensitive manager (choco/scoop/winget) whose `installed_packages`
+    /// reports a different letter case than the desired name. Lets tests guard
+    /// the identity-routed comparison sites (verify, compliance, diff).
+    pub fold_case: bool,
 }
 
 #[cfg(test)]
@@ -419,7 +424,15 @@ impl StubPackageManager {
             versions: std::collections::HashMap::new(),
             bootstrap_capable: false,
             installed_error: None,
+            fold_case: false,
         }
+    }
+
+    /// Mark this stub as a case-insensitive manager so `package_identity`
+    /// lowercases desired names before comparison.
+    pub fn case_folding(mut self) -> Self {
+        self.fold_case = true;
+        self
     }
 
     pub fn unavailable(mut self) -> Self {
@@ -483,6 +496,13 @@ impl PackageManager for StubPackageManager {
     }
     fn available_version(&self, package: &str) -> Result<Option<String>> {
         Ok(self.versions.get(package).cloned())
+    }
+    fn package_identity(&self, entry: &str) -> String {
+        if self.fold_case {
+            entry.to_ascii_lowercase()
+        } else {
+            entry.to_string()
+        }
     }
 }
 
