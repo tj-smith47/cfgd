@@ -155,29 +155,44 @@ pub fn stderr_lossy_trimmed(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).trim().to_string()
 }
 
-/// Check if a command is available on the system via PATH lookup.
-/// On Windows, tries common executable extensions (.exe, .cmd, .bat, .ps1, .com)
-/// since executables require an extension to be found.
-pub fn command_available(cmd: &str) -> bool {
+/// Resolve a command to its full executable path via a PATHEXT-aware `$PATH` walk.
+///
+/// On Windows, tries executable extensions in invocation-preference order
+/// (`.exe`/`.com` first, then the script-shim forms `.ps1`/`.cmd`/`.bat`) and
+/// returns the first `$PATH` entry holding a real, executable file. This is what
+/// makes a bare name like `scoop` — which ships only as `scoop.ps1`/`scoop.cmd`,
+/// never `scoop.exe` — resolve to its shim path instead of reporting "not found":
+/// a caller can then launch the shim correctly (a native `Command::new("scoop")`
+/// only ever finds `scoop.exe`). On Unix, resolves the bare name against the exec
+/// bit. Returns `None` when nothing on `$PATH` matches.
+pub fn command_path(cmd: &str) -> Option<std::path::PathBuf> {
     let extensions: &[&str] = if cfg!(windows) {
-        &["", ".exe", ".cmd", ".bat", ".ps1", ".com"]
+        &[".exe", ".com", ".ps1", ".cmd", ".bat"]
     } else {
         &[""]
     };
-    std::env::var_os("PATH")
-        .map(|paths| {
-            std::env::split_paths(&paths).any(|dir| {
-                extensions.iter().any(|ext| {
-                    let name = format!("{}{}", cmd, ext);
-                    let path = dir.join(&name);
-                    path.is_file()
-                        && std::fs::metadata(&path)
-                            .map(|m| is_executable(&path, &m))
-                            .unwrap_or(false)
-                })
-            })
-        })
-        .unwrap_or(false)
+    let paths = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&paths) {
+        for ext in extensions {
+            let candidate = dir.join(format!("{cmd}{ext}"));
+            if candidate.is_file()
+                && std::fs::metadata(&candidate)
+                    .map(|m| is_executable(&candidate, &m))
+                    .unwrap_or(false)
+            {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// Check if a command is available on the system via PATH lookup.
+/// On Windows, tries common executable extensions (.exe, .cmd, .bat, .ps1, .com)
+/// since executables require an extension to be found. Thin `is_some()` view over
+/// [`command_path`], so availability and path resolution can never disagree.
+pub fn command_available(cmd: &str) -> bool {
+    command_path(cmd).is_some()
 }
 
 /// Build a `tracing_subscriber::EnvFilter` from `RUST_LOG` if set, falling
@@ -324,6 +339,27 @@ mod tests {
     #[test]
     fn command_available_rejects_nonexistent() {
         assert!(!command_available("absolutely-not-a-real-command-xyz"));
+    }
+
+    #[test]
+    fn command_path_resolves_sh_to_a_real_executable_file() {
+        let p = command_path("sh").expect("sh is on PATH");
+        assert!(p.is_file(), "resolved sh must be a real file: {p:?}");
+        assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("sh"));
+    }
+
+    #[test]
+    fn command_path_returns_none_for_nonexistent() {
+        assert!(command_path("absolutely-not-a-real-command-xyz").is_none());
+    }
+
+    #[test]
+    fn command_path_and_command_available_agree() {
+        assert_eq!(command_available("sh"), command_path("sh").is_some());
+        assert_eq!(
+            command_available("absolutely-not-a-real-command-xyz"),
+            command_path("absolutely-not-a-real-command-xyz").is_some()
+        );
     }
 
     #[test]

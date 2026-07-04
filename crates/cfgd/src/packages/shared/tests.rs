@@ -1333,10 +1333,98 @@ fn resolve_tool_with_fallbacks_uses_path_when_command_available() {
             None => std::env::remove_var("CFGD_SH_BIN"),
         }
     }
+    // The resolver now returns the FULL resolved path (not the bare name) so a
+    // Windows script shim (.cmd/.ps1) can be launched correctly downstream.
+    let resolved = resolved.expect("sh resolves when on PATH");
+    assert!(
+        resolved.is_file(),
+        "expected a real resolved path for 'sh', got {resolved:?}"
+    );
     assert_eq!(
-        resolved,
-        Some(std::path::PathBuf::from("sh")),
-        "expected plain 'sh' when command_available returns true"
+        resolved.file_name().and_then(|f| f.to_str()),
+        Some("sh"),
+        "resolved path must be the sh binary, got {resolved:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn run_pkg_query_returns_output_even_on_nonzero_exit() {
+    // A query command (e.g. scoop `list`) may exit non-zero for a benign empty
+    // result; run_pkg_query returns the captured output instead of erroring, so the
+    // caller can parse stdout. Only spawn/timeout failures become CommandFailed.
+    let mut cmd = std::process::Command::new("sh");
+    cmd.args(["-c", "echo listed-output; exit 1"]);
+    let out = run_pkg_query("test-mgr", &mut cmd).expect("non-zero exit must NOT error");
+    assert!(
+        !out.status.success(),
+        "the command really did exit non-zero"
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "listed-output");
+}
+
+#[cfg(unix)]
+#[test]
+#[serial_test::serial]
+fn run_pkg_query_maps_spawn_error_to_command_failed() {
+    let mut cmd = std::process::Command::new("/nonexistent/binary/cfgd-query-xyz");
+    let err = run_pkg_query("test-mgr", &mut cmd).expect_err("spawn error must surface");
+    assert!(matches!(&err, PackageError::CommandFailed { manager, .. } if manager == "test-mgr"));
+}
+
+// windows_pkg_argv: the pure Windows shim-invocation decision, unit-tested off
+// Windows (a `.ps1` shim runs via `powershell -File`, a `.cmd`/`.bat` via `cmd /c`,
+// a real `.exe` directly, and an unresolved tool falls back to the bare name).
+#[test]
+fn windows_pkg_argv_ps1_shim_runs_via_powershell_file() {
+    let argv = windows_pkg_argv(
+        "scoop",
+        Some(std::path::Path::new("C:/Users/x/scoop/shims/scoop.ps1")),
+    );
+    assert_eq!(
+        argv,
+        vec![
+            "powershell".to_string(),
+            "-NoProfile".into(),
+            "-ExecutionPolicy".into(),
+            "Bypass".into(),
+            "-File".into(),
+            "C:/Users/x/scoop/shims/scoop.ps1".into(),
+        ]
+    );
+}
+
+#[test]
+fn windows_pkg_argv_cmd_shim_runs_via_cmd_slash_c() {
+    let argv = windows_pkg_argv("npm", Some(std::path::Path::new("C:/Program/npm.cmd")));
+    assert_eq!(
+        argv,
+        vec!["cmd".to_string(), "/c".into(), "C:/Program/npm.cmd".into()]
+    );
+    let bat = windows_pkg_argv("tool", Some(std::path::Path::new("C:/bin/tool.bat")));
+    assert_eq!(bat[0], "cmd");
+    assert_eq!(bat[1], "/c");
+}
+
+#[test]
+fn windows_pkg_argv_exe_runs_directly() {
+    let argv = windows_pkg_argv(
+        "choco",
+        Some(std::path::Path::new("C:/ProgramData/choco.exe")),
+    );
+    assert_eq!(argv, vec!["C:/ProgramData/choco.exe".to_string()]);
+    // Unix binaries (no extension) also run directly by their resolved path.
+    let unix = windows_pkg_argv("scoop", Some(std::path::Path::new("/usr/local/bin/scoop")));
+    assert_eq!(unix, vec!["/usr/local/bin/scoop".to_string()]);
+}
+
+#[test]
+fn windows_pkg_argv_unresolved_falls_back_to_bare_name() {
+    assert_eq!(
+        windows_pkg_argv("scoop", None),
+        vec!["scoop".to_string()],
+        "an unresolved tool keeps the bare name so the normal not-found error surfaces"
     );
 }
 

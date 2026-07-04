@@ -3,31 +3,46 @@
 use std::collections::HashSet;
 use std::process::Command;
 
-use cfgd_core::errors::{PackageError, Result};
+use cfgd_core::errors::Result;
 use cfgd_core::output::Printer;
 use cfgd_core::providers::PackageManager;
 
-use super::shared::{parse_version_field, run_pkg_cmd, run_pkg_cmd_live};
+use super::shared::{
+    parse_version_field, resolve_tool_with_fallbacks, run_pkg_cmd_live, run_pkg_query,
+    tool_cmd_with_resolver,
+};
 
 pub struct ScoopManager;
 
-pub(super) fn parse_scoop_list(output: &str) -> HashSet<String> {
-    let mut packages = HashSet::new();
-    let mut header_passed = false;
-    for line in output.lines() {
-        let line = line.trim();
-        if line.starts_with("----") {
-            header_passed = true;
-            continue;
-        }
-        if !header_passed || line.is_empty() {
-            continue;
-        }
-        if let Some(name) = line.split_whitespace().next() {
-            packages.insert(name.to_string());
-        }
-    }
-    packages
+/// Build a `Command` for scoop, resolved shim-aware. scoop ships on Windows only as
+/// `scoop.ps1`/`scoop.cmd` (never `scoop.exe`), so a bare `Command::new("scoop")`
+/// dies with "program not found" even though the tool is on `$PATH`. Routing through
+/// `tool_cmd_with_resolver` resolves the full shim path and invokes it via
+/// `powershell -File` / `cmd /c` on Windows (a plain PATH lookup on Unix). No
+/// fallbacks: scoop always lives in its shims dir on `$PATH`.
+fn scoop_cmd() -> Command {
+    tool_cmd_with_resolver("scoop", || resolve_tool_with_fallbacks("scoop", &[]))
+}
+
+/// Parse the set of installed app names from `scoop export` JSON. The document is
+/// `{ "buckets": [...], "apps": [ { "Name": "...", ... }, ... ] }`; a missing/empty
+/// `apps` array (or non-JSON input) yields an empty set. Used instead of parsing
+/// `scoop list`, whose PowerShell Format-Table renders NO rows when captured with no
+/// console width (every non-interactive child process), making it unparseable.
+pub(super) fn parse_scoop_export(output: &str) -> HashSet<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(output) else {
+        return HashSet::new();
+    };
+    value
+        .get("apps")
+        .and_then(|apps| apps.as_array())
+        .map(|apps| {
+            apps.iter()
+                .filter_map(|app| app.get("Name").and_then(|n| n.as_str()))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 impl PackageManager for ScoopManager {
@@ -61,8 +76,13 @@ impl PackageManager for ScoopManager {
     }
 
     fn installed_packages(&self) -> Result<HashSet<String>> {
-        let output = run_pkg_cmd("scoop", Command::new("scoop").arg("list"), "list")?;
-        Ok(parse_scoop_list(&String::from_utf8_lossy(&output.stdout)))
+        // `scoop list` renders a PowerShell Format-Table that produces NO rows when
+        // captured with no console width (any non-interactive child process), so it
+        // cannot be parsed. `scoop export` emits stable JSON regardless of console —
+        // enumerate its `apps[].Name`. Exit code is tolerated via run_pkg_query
+        // (scoop exits non-zero on an empty DB, a benign result — not a failure).
+        let output = run_pkg_query("scoop", scoop_cmd().arg("export"))?;
+        Ok(parse_scoop_export(&String::from_utf8_lossy(&output.stdout)))
     }
 
     fn install(&self, packages: &[String], printer: &Printer) -> Result<()> {
@@ -70,7 +90,7 @@ impl PackageManager for ScoopManager {
             run_pkg_cmd_live(
                 printer,
                 "scoop",
-                Command::new("scoop").args(["install", pkg]),
+                scoop_cmd().args(["install", pkg]),
                 &format!("Installing {}", pkg),
                 "install",
             )?;
@@ -83,7 +103,7 @@ impl PackageManager for ScoopManager {
             run_pkg_cmd_live(
                 printer,
                 "scoop",
-                Command::new("scoop").args(["uninstall", pkg]),
+                scoop_cmd().args(["uninstall", pkg]),
                 &format!("Uninstalling {}", pkg),
                 "uninstall",
             )?;
@@ -95,7 +115,7 @@ impl PackageManager for ScoopManager {
         run_pkg_cmd_live(
             printer,
             "scoop",
-            Command::new("scoop").args(["update", "*"]),
+            scoop_cmd().args(["update", "*"]),
             "Upgrading all scoop packages",
             "install",
         )?;
@@ -103,13 +123,10 @@ impl PackageManager for ScoopManager {
     }
 
     fn available_version(&self, package: &str) -> Result<Option<String>> {
-        let output = Command::new("scoop")
-            .args(["info", package])
-            .output()
-            .map_err(|e| PackageError::CommandFailed {
-                manager: "scoop".into(),
-                source: e,
-            })?;
+        // Bounded via run_pkg_query: `scoop info` runs through PowerShell on Windows
+        // and must never hang a headless reconcile. A non-zero exit (unknown package)
+        // is a benign "no version", not an error.
+        let output = run_pkg_query("scoop", scoop_cmd().args(["info", package]))?;
         if !output.status.success() {
             return Ok(None);
         }
@@ -125,53 +142,55 @@ mod tests {
 
     use super::*;
 
+    // scoop `export` emits stable JSON regardless of console; parse_scoop_export
+    // enumerates `apps[].Name`. (scoop `list` renders a Format-Table that produces
+    // no rows when captured with no console width, so it is not used.)
     #[test]
-    fn scoop_parse_list_output() {
-        let output = "Installed apps:\n\n\
-                      Name     Version Source\n\
-                      ----     ------- ------\n\
-                      7zip     23.01   main\n\
-                      ripgrep  14.1.0  main\n\
-                      fd       9.0.0   main\n";
-        let packages = parse_scoop_list(output);
+    fn scoop_parse_export_multiple_apps() {
+        let output = r#"{"buckets":[{"Name":"main"}],"apps":[
+            {"Name":"7zip","Version":"26.02","Source":"main"},
+            {"Name":"ripgrep","Version":"14.1.0","Source":"main"},
+            {"Name":"fd","Version":"9.0.0","Source":"main"}
+        ]}"#;
+        let packages = parse_scoop_export(output);
+        assert_eq!(packages.len(), 3);
         assert!(packages.contains("7zip"));
         assert!(packages.contains("ripgrep"));
         assert!(packages.contains("fd"));
-        assert_eq!(packages.len(), 3);
     }
 
     #[test]
-    fn scoop_parse_list_empty() {
-        let packages = parse_scoop_list("");
+    fn scoop_parse_export_single_app() {
+        let output = r#"{"apps":[{"Name":"git","Version":"2.44.0","Source":"main"}]}"#;
+        let packages = parse_scoop_export(output);
+        assert_eq!(packages.len(), 1);
+        assert!(packages.contains("git"));
+    }
+
+    #[test]
+    fn scoop_parse_export_empty_apps_array() {
+        let packages = parse_scoop_export(r#"{"buckets":[{"Name":"main"}],"apps":[]}"#);
         assert!(packages.is_empty());
     }
 
     #[test]
-    fn scoop_parse_list_no_separator() {
-        // Without the ---- separator line, nothing is parsed
-        let output = "Installed apps:\n\nName  Version  Source\n7zip  23.01    main\n";
-        let packages = parse_scoop_list(output);
+    fn scoop_parse_export_missing_apps_key() {
+        let packages = parse_scoop_export(r#"{"buckets":[{"Name":"main"}]}"#);
         assert!(packages.is_empty());
     }
 
     #[test]
-    fn scoop_parse_list_only_separator() {
-        let output = "----\n";
-        let packages = parse_scoop_list(output);
-        assert!(packages.is_empty());
+    fn scoop_parse_export_non_json_is_empty() {
+        // A benign empty-DB message or any non-JSON text yields an empty set.
+        assert!(parse_scoop_export("There aren't any apps installed.").is_empty());
+        assert!(parse_scoop_export("").is_empty());
     }
 
     #[test]
-    fn scoop_parse_list_blank_lines_after_separator() {
-        let output = "Name   Version  Source\n\
-                      ----   -------  ------\n\
-                      \n\
-                      7zip   23.01    main\n\
-                      \n\
-                      fd     9.0.0   main\n";
-        let packages = parse_scoop_list(output);
-        assert_eq!(packages.len(), 2);
-        assert!(packages.contains("7zip"));
+    fn scoop_parse_export_ignores_apps_without_name() {
+        let output = r#"{"apps":[{"Version":"1.0"},{"Name":"fd","Version":"9.0.0"}]}"#;
+        let packages = parse_scoop_export(output);
+        assert_eq!(packages.len(), 1);
         assert!(packages.contains("fd"));
     }
 
@@ -180,77 +199,6 @@ mod tests {
         let mgr = ScoopManager;
         assert_eq!(mgr.name(), "scoop");
         assert!(mgr.can_bootstrap());
-    }
-
-    #[test]
-    fn scoop_parse_list_single_package() {
-        let output = "Name   Version  Source\n\
-                      ----   -------  ------\n\
-                      git    2.43.0   main\n";
-        let packages = parse_scoop_list(output);
-        assert_eq!(packages.len(), 1);
-        assert!(packages.contains("git"));
-    }
-
-    #[test]
-    fn scoop_parse_list_real_world_output() {
-        let output = "\
-Installed apps:
-
-Name         Version       Source  Updated             Info
-----         -------       ------  -------             ----
-7zip         23.01         main    2024-01-15 10:30:00
-fd           9.0.0         main    2024-01-10 08:15:00
-git          2.43.0.windows.1 main 2024-01-12 14:20:00
-ripgrep      14.1.0        main    2024-01-10 08:15:00
-";
-        let packages = parse_scoop_list(output);
-        assert_eq!(packages.len(), 4);
-        assert!(packages.contains("7zip"));
-        assert!(packages.contains("fd"));
-        assert!(packages.contains("git"));
-        assert!(packages.contains("ripgrep"));
-    }
-
-    #[test]
-    fn parse_scoop_list_basic() {
-        let output = "\
-Name    Version  Source   Updated\n\
-----    -------  ------   -------\n\
-git     2.44.0   main     2024-03-15\n\
-nodejs  20.11.1  main     2024-02-01\n";
-        let result = parse_scoop_list(output);
-        assert!(result.contains("git"));
-        assert!(result.contains("nodejs"));
-        assert_eq!(result.len(), 2);
-    }
-
-    #[test]
-    fn parse_scoop_list_empty_after_header() {
-        let output = "Name    Version\n----    -------\n";
-        let result = parse_scoop_list(output);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn parse_scoop_list_skips_before_separator() {
-        // Lines before the ---- separator should be ignored
-        let output = "Installed apps:\nName    Version\n----    -------\ngit     2.44.0\n";
-        let result = parse_scoop_list(output);
-        assert!(result.contains("git"));
-        assert_eq!(result.len(), 1);
-    }
-
-    #[test]
-    fn parse_scoop_list_multiple_separator_lines() {
-        // Only the first ---- triggers header_passed
-        let output = "Header line\n----\ngit 2.44.0\n----\nignored 1.0\n";
-        let packages = parse_scoop_list(output);
-        // After first ----, "git 2.44.0" is parsed.
-        // Second "----" just continues (already header_passed), so it's skipped as a line starting with "----"
-        // "ignored 1.0" is parsed normally
-        assert!(packages.contains("git"));
-        assert!(packages.contains("ignored"));
     }
 
     #[test]
@@ -268,8 +216,8 @@ nodejs  20.11.1  main     2024-02-01\n";
     }
 
     // ---------------------------------------------------------------------------
-    // PackageManager trait impls via a fake scoop binary on PATH. scoop uses
-    // `Command::new("scoop")` directly (no resolver indirection), so PATH
+    // PackageManager trait impls via a fake scoop binary on PATH. scoop_cmd()
+    // resolves the tool through command_path (no CFGD_SCOOP_BIN seam), so PATH
     // manipulation routes the invocation through our shim.
     // ---------------------------------------------------------------------------
 
@@ -372,8 +320,9 @@ nodejs  20.11.1  main     2024-02-01\n";
 
         #[test]
         #[serial]
-        fn scoop_installed_packages_parses_list_output() {
-            let stdout = "Installed apps:\n\nName  Version  Source\n----  -------  ------\ngit  2.44.0  main\nfd  9.0.0  main\n";
+        fn scoop_installed_packages_parses_export_json() {
+            let stdout =
+                r#"{"apps":[{"Name":"git","Version":"2.44.0"},{"Name":"fd","Version":"9.0.0"}]}"#;
             let (_bin, _path) = install_scoop_shim(0, stdout, "");
             let pkgs = ScoopManager.installed_packages().expect("Ok");
             assert!(pkgs.contains("git"));
@@ -383,9 +332,24 @@ nodejs  20.11.1  main     2024-02-01\n";
 
         #[test]
         #[serial]
-        fn scoop_installed_packages_empty_when_no_separator() {
-            let (_bin, _path) = install_scoop_shim(0, "no apps installed\n", "");
+        fn scoop_installed_packages_empty_when_no_apps() {
+            let (_bin, _path) = install_scoop_shim(0, r#"{"apps":[]}"#, "");
             let pkgs = ScoopManager.installed_packages().expect("Ok");
+            assert!(pkgs.is_empty());
+        }
+
+        #[test]
+        #[serial]
+        fn scoop_installed_packages_empty_db_exit1_is_empty_not_error() {
+            // scoop exits 1 when the DB is empty; installed_packages must treat that
+            // as an empty set, not a ListFailed — otherwise every apply on a fresh
+            // scoop aborts before it can install anything. (Export prints an empty
+            // apps array; some scoop versions emit a non-JSON message — both parse to
+            // an empty set.)
+            let (_bin, _path) = install_scoop_shim(1, "There aren't any apps installed.\n", "");
+            let pkgs = ScoopManager
+                .installed_packages()
+                .expect("empty-DB exit-1 must be Ok(empty), not Err");
             assert!(pkgs.is_empty());
         }
 

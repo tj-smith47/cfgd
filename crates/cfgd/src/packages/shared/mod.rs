@@ -31,17 +31,80 @@ pub(super) fn resolve_tool_with_fallbacks(name: &str, fallbacks: &[PathBuf]) -> 
             return Some(p);
         }
     }
-    if command_available(name) {
-        return Some(PathBuf::from(name));
+    if let Some(p) = cfgd_core::command_path(name) {
+        return Some(p);
     }
     fallbacks.iter().find(|p| p.exists()).cloned()
+}
+
+/// Compute the leading argv for invoking a package-manager binary `name` given
+/// its resolved full path (`None` when it was not found on `$PATH`) — the program
+/// plus any fixed pre-arguments, WITHOUT the subcommand the caller appends.
+///
+/// On Windows a script shim cannot be launched by `Command::new(name)` (that only
+/// finds `name.exe`), so a PowerShell shim is run via `powershell -File` and a
+/// `.cmd`/`.bat` shim via `cmd /c` — both propagate the tool's real exit code so a
+/// failed install is never mistaken for success. A `.exe`/`.com` (or any Unix
+/// binary) is launched directly by its resolved path. When the tool was not found,
+/// fall back to the bare name so the caller surfaces the normal "not found" error.
+///
+/// Pure and platform-neutral so it is unit-testable off Windows; the Windows-only
+/// wiring lives in [`build_pkg_command`].
+#[cfg(any(windows, test))]
+pub(super) fn windows_pkg_argv(name: &str, resolved: Option<&std::path::Path>) -> Vec<String> {
+    let Some(path) = resolved else {
+        return vec![name.to_string()];
+    };
+    let p = path.to_string_lossy().into_owned(); // native-ok: Windows CreateProcess argv (backslash path), not a cross-OS key
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("ps1") => vec![
+            "powershell".into(),
+            "-NoProfile".into(),
+            "-ExecutionPolicy".into(),
+            "Bypass".into(),
+            "-File".into(),
+            p,
+        ],
+        // Pass the shim path UNQUOTED: Rust wraps a space-bearing argv token in quotes
+        // itself, and cmd.exe's "exactly two quotes around an executable file" rule then
+        // preserves them. Quoting here instead would get the inner quotes backslash-escaped
+        // and reach cmd.exe malformed.
+        Some("cmd") | Some("bat") => vec!["cmd".into(), "/c".into(), p],
+        _ => vec![p],
+    }
+}
+
+/// Build a base `Command` for a package-manager binary, resolving it to a full
+/// path so a Windows script shim (`.ps1`/`.cmd`) is invoked correctly rather than
+/// dying with "program not found" (see [`windows_pkg_argv`]). On non-Windows this
+/// is just `Command::new(<resolved-or-name>)`.
+fn build_pkg_command(name: &str, resolved: Option<PathBuf>) -> Command {
+    #[cfg(windows)]
+    {
+        let argv = windows_pkg_argv(name, resolved.as_deref());
+        let mut it = argv.into_iter();
+        let prog = it.next().unwrap_or_else(|| name.to_string());
+        let mut cmd = Command::new(prog);
+        cmd.args(it);
+        cmd
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new(resolved.unwrap_or_else(|| PathBuf::from(name)))
+    }
 }
 
 /// Build a `Command` for `name`, using `resolver` for the binary path and
 /// falling back to a plain `Command::new(name)` when `resolver` returns `None`.
 /// Honors the `CFGD_<NAME>_BIN` env-var seam first, short-circuiting the
 /// resolver entirely (tests don't want resolver-side filesystem checks
-/// running). Mirrors the `X_cmd()` pattern that cargo/pipx/go had open-coded.
+/// running). On Windows the resolved path is invoked shim-aware so `.cmd`/`.ps1`
+/// managers (scoop, npm) actually run. Mirrors the `X_cmd()` pattern that
+/// cargo/pipx/go had open-coded.
 pub(super) fn tool_cmd_with_resolver<F>(name: &str, resolver: F) -> Command
 where
     F: FnOnce() -> Option<PathBuf>,
@@ -49,7 +112,7 @@ where
     if let Ok(custom) = std::env::var(tool_seam_var(name)) {
         return Command::new(custom);
     }
-    Command::new(resolver().unwrap_or_else(|| PathBuf::from(name)))
+    build_pkg_command(name, resolver())
 }
 
 /// Important post-install messages extracted from package manager output.
@@ -213,6 +276,28 @@ fn run_pkg_cmd_prefixed(
         });
     }
     Ok(output)
+}
+
+/// Run a package-manager *query* command (e.g. `export`, `info`) with the standard
+/// timeout, returning its captured output REGARDLESS of exit status. Some managers
+/// exit non-zero for a benign result — scoop's `export`/`list` returns 1 when no
+/// apps are installed and `info` returns non-zero for an unknown package — so the
+/// caller parses stdout and decides what the result means; only a spawn/timeout
+/// failure is surfaced as `CommandFailed`. Contrast with
+/// `run_pkg_cmd`, which treats any non-zero exit as an error (correct for mutating
+/// install/uninstall commands, wrong for a read whose exit code is unreliable).
+pub(super) fn run_pkg_query(
+    manager: &str,
+    cmd: &mut Command,
+) -> std::result::Result<Output, PackageError> {
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    cfgd_core::command_output_with_timeout(cmd, PKG_CMD_TIMEOUT).map_err(|e| {
+        PackageError::CommandFailed {
+            manager: manager.into(),
+            source: e,
+        }
+    })
 }
 
 /// Run a package manager command with live progress display via Printer.
