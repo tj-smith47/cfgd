@@ -31,20 +31,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # One shard per OS. Each leaves `targets` empty so the harness derives
+        # that OS's full shipped target set from `anodizer targets --json`
+        # (cfgd maps both x86_64 and aarch64 of every OS — including
+        # aarch64-pc-windows-msvc — onto its native runner OS). Building all of
+        # an OS's targets on one runner guarantees the host-native x86_64 build
+        # is present, which the archive stage's arch-agnostic completions/man
+        # generation must execute — the same reason the all-targets publish
+        # build on ubuntu-latest can generate them once and share them into
+        # every archive. arm64 is cross-compiled from the x86_64 host, exactly
+        # as publish cross-builds it; a native windows-11-arm runner is avoided
+        # (its cosign install 404s — Sigstore ships no windows/arm64 binary).
         shard:
-          - { os: ubuntu-latest,  label: linux,           targets: '',                          name: 'Linux x86_64' }
-          - { os: macos-latest,   label: macos,           targets: '',                          name: 'macOS' }
-          - { os: windows-latest,  label: windows-x86_64,  targets: 'x86_64-pc-windows-msvc',    name: 'Windows x86_64' }
-          # Cross-compile the arm64 target from the x86_64 Windows host (not a
-          # native windows-11-arm runner) for two reasons: (1) tool installs
-          # resolve x64 assets — cosign ships no windows/arm64 binary (checked
-          # through v3.1.1), so a native arm64 host 404s on install; (2) the
-          # x86_64-pc-windows-msvc companion is the host-native binary the
-          # archive's completions/man step must execute — completions are
-          # arch-agnostic, generated once from any host-native build and bundled
-          # into every archive, exactly as the all-targets publish build does.
-          # A lone cross-target leaves the shard with no runnable host binary.
-          - { os: windows-latest,  label: windows-aarch64, targets: 'aarch64-pc-windows-msvc,x86_64-pc-windows-msvc', name: 'Windows aarch64' }
+          - { os: ubuntu-latest,  label: linux,   targets: '', name: 'Linux' }
+          - { os: macos-latest,   label: macos,   targets: '', name: 'macOS' }
+          - { os: windows-latest, label: windows, targets: '', name: 'Windows' }
     runs-on: ${{ matrix.shard.os }}
     steps:
       - uses: actions/checkout@v7
