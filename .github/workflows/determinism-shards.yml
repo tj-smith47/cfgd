@@ -34,14 +34,18 @@ jobs:
         # One shard per OS. Each leaves `targets` empty so the harness derives
         # that OS's full shipped target set from `anodizer targets --json`
         # (cfgd maps both x86_64 and aarch64 of every OS — including
-        # aarch64-pc-windows-msvc — onto its native runner OS). Building all of
-        # an OS's targets on one runner guarantees the host-native x86_64 build
-        # is present, which the archive stage's arch-agnostic completions/man
-        # generation must execute — the same reason the all-targets publish
-        # build on ubuntu-latest can generate them once and share them into
-        # every archive. arm64 is cross-compiled from the x86_64 host, exactly
-        # as publish cross-builds it; a native windows-11-arm runner is avoided
-        # (its cosign install 404s — Sigstore ships no windows/arm64 binary).
+        # aarch64-pc-windows-msvc — onto its native runner OS). Building an
+        # OS's whole target set on a single x86_64 runner is the faithful
+        # shape for two reasons, both independent of any one target:
+        #   1. Determinism must rebuild exactly what publish ships. publish
+        #      cross-compiles aarch64 from the x86_64 host, so the check must
+        #      too — a native windows-11-arm build would exercise a different
+        #      toolchain path than the artifact users actually receive.
+        #   2. The archive stage's arch-agnostic completions/man generation
+        #      executes the built binary, so a host-native x86_64 build must
+        #      be present on the runner — the same reason the all-targets
+        #      publish build generates them once and shares them into every
+        #      archive.
         shard:
           - { os: ubuntu-latest,  label: linux,   targets: '', name: 'Linux' }
           - { os: macos-latest,   label: macos,   targets: '', name: 'macOS' }
@@ -76,6 +80,11 @@ jobs:
           name: dist-${{ inputs.crate }}-${{ matrix.shard.label }}
           path: preserved-dist/
           if-no-files-found: error
+          # The preserved dist carries dot-directories (.completions/,
+          # .manpages/) that the context manifest lists as artifacts; the
+          # action's default excludes hidden files, which silently strips
+          # them and fails publish-only's hash-verify on restore.
+          include-hidden-files: true
 
       - name: Upload determinism report
         if: always()
@@ -85,3 +94,6 @@ jobs:
           path: |
             dist/run-*/determinism.json
             dist/run-*/drift-bins/**
+          # drift-bins mirrors the dist layout, so a drifting artifact under a
+          # dot-directory would otherwise be dropped from the report.
+          include-hidden-files: true
