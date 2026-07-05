@@ -345,7 +345,9 @@ mod tests {
     fn command_path_resolves_sh_to_a_real_executable_file() {
         let p = command_path("sh").expect("sh is on PATH");
         assert!(p.is_file(), "resolved sh must be a real file: {p:?}");
-        assert_eq!(p.file_name().and_then(|f| f.to_str()), Some("sh"));
+        // Stem, not file_name: on Windows the resolved binary is `sh.exe`, so its
+        // file_name is `sh.exe` while its stem is `sh` on every platform.
+        assert_eq!(p.file_stem().and_then(|f| f.to_str()), Some("sh"));
     }
 
     #[test]

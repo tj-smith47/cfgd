@@ -1340,8 +1340,10 @@ fn resolve_tool_with_fallbacks_uses_path_when_command_available() {
         resolved.is_file(),
         "expected a real resolved path for 'sh', got {resolved:?}"
     );
+    // Stem, not file_name: on Windows the resolved binary is `sh.exe`, so its
+    // file_name is `sh.exe` while its stem is `sh` on every platform.
     assert_eq!(
-        resolved.file_name().and_then(|f| f.to_str()),
+        resolved.file_stem().and_then(|f| f.to_str()),
         Some("sh"),
         "resolved path must be the sh binary, got {resolved:?}"
     );
