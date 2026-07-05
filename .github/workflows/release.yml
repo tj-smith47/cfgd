@@ -187,7 +187,32 @@ jobs:
         with:
           version: ${{ env.PROTOC_VERSION }}
 
-      - uses: ./.github/actions/download-dist
+      # cfgd-crd is library-only: the determinism-check matrix covers only the
+      # binary trio, so no shard preserves a dist for this crate — yet
+      # `release --publish-only` refuses to start without a preserved context
+      # manifest. Produce one inline with the (build-less) harness: two
+      # hermetic source-package runs must be byte-identical before the
+      # preserved tree is staged where the release step's per-crate discovery
+      # looks (dist/<crate>/).
+      - name: Preserve dist (library-only determinism)
+        uses: tj-smith47/anodizer-action@v1
+        with:
+          version: ${{ env.ANODIZER_VERSION }}
+          auto-install: 'true'
+          determinism: 'true'
+          determinism-crate: cfgd-crd
+          preserve-dist: 'true'
+          shard-label: linux
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+
+      # The harness scratches in ./dist during its runs; only the preserved
+      # tree is the publish input.
+      - name: Stage preserved dist for publish
+        run: |
+          rm -rf dist
+          mkdir -p dist
+          mv preserved-dist/cfgd-crd dist/cfgd-crd
 
       - name: Run anodizer release (cfgd-crd)
         id: release
@@ -256,7 +281,27 @@ jobs:
         with:
           version: ${{ env.PROTOC_VERSION }}
 
-      - uses: ./.github/actions/download-dist
+      # See publish-crd: cfgd-core is library-only, so its preserved dist is
+      # produced inline rather than by the (binary-trio) determinism matrix.
+      - name: Preserve dist (library-only determinism)
+        uses: tj-smith47/anodizer-action@v1
+        with:
+          version: ${{ env.ANODIZER_VERSION }}
+          auto-install: 'true'
+          determinism: 'true'
+          determinism-crate: cfgd-core
+          preserve-dist: 'true'
+          shard-label: linux
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+
+      # The harness scratches in ./dist during its runs; only the preserved
+      # tree is the publish input.
+      - name: Stage preserved dist for publish
+        run: |
+          rm -rf dist
+          mkdir -p dist
+          mv preserved-dist/cfgd-core dist/cfgd-core
 
       - name: Run anodizer release (cfgd-core)
         id: release
@@ -304,12 +349,18 @@ jobs:
   # the dependency poll).
   publish-trio:
     name: Publish ${{ matrix.crate }}
-    needs: [tag, determinism-check, publish-core]
+    needs: [tag, determinism-check, publish-crd, publish-core]
     # Per-leg gating is done by the `tag.trio` matrix (only tagged trio crates
     # get a leg), NOT a `contains(crates, matrix.crate)` job-`if:` — `matrix`
     # is unavailable in a job-level `if:`. An empty `trio` (cfgd-core-only
     # release) yields a zero-leg matrix, so this whole job is skipped.
-    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.tag.outputs.trio != '[]' && (needs.determinism-check.result == 'success' || needs.determinism-check.result == 'skipped') && (needs.publish-core.result == 'success' || needs.publish-core.result == 'skipped') }}
+    # publish-crd must be success-or-skipped, NOT failed: a failed lib-crate
+    # leg fires rollback-on-failure, which deletes this release's tags while
+    # trio legs would still be running — each leg then resolves the previous
+    # release's tag and aborts on a tag-vs-HEAD mismatch (or worse, races the
+    # rollback's master push). A crd failure would otherwise reach the trio as
+    # publish-core=skipped, which the `if:` treats as green.
+    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.tag.outputs.trio != '[]' && (needs.determinism-check.result == 'success' || needs.determinism-check.result == 'skipped') && (needs.publish-crd.result == 'success' || needs.publish-crd.result == 'skipped') && (needs.publish-core.result == 'success' || needs.publish-core.result == 'skipped') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
