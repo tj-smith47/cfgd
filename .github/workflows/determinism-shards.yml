@@ -35,13 +35,16 @@ jobs:
           - { os: ubuntu-latest,  label: linux,           targets: '',                          name: 'Linux x86_64' }
           - { os: macos-latest,   label: macos,           targets: '',                          name: 'macOS' }
           - { os: windows-latest,  label: windows-x86_64,  targets: 'x86_64-pc-windows-msvc',    name: 'Windows x86_64' }
-          # aarch64-pc-windows-msvc is cross-compiled from the x86_64 Windows
-          # host, not a native windows-11-arm runner: on an arm64 host the tool
-          # installs resolve arm64 assets, and cosign ships no windows/arm64
-          # binary (verified through v3.1.1), so the install 404s before the
-          # harness runs. Cross from x64 keeps every tool on its x64 asset.
-          # Mirrors anodizer's own determinism matrix.
-          - { os: windows-latest,  label: windows-aarch64, targets: 'aarch64-pc-windows-msvc',   name: 'Windows aarch64' }
+          # Cross-compile the arm64 target from the x86_64 Windows host (not a
+          # native windows-11-arm runner) for two reasons: (1) tool installs
+          # resolve x64 assets — cosign ships no windows/arm64 binary (checked
+          # through v3.1.1), so a native arm64 host 404s on install; (2) the
+          # x86_64-pc-windows-msvc companion is the host-native binary the
+          # archive's completions/man step must execute — completions are
+          # arch-agnostic, generated once from any host-native build and bundled
+          # into every archive, exactly as the all-targets publish build does.
+          # A lone cross-target leaves the shard with no runnable host binary.
+          - { os: windows-latest,  label: windows-aarch64, targets: 'aarch64-pc-windows-msvc,x86_64-pc-windows-msvc', name: 'Windows aarch64' }
     runs-on: ${{ matrix.shard.os }}
     steps:
       - uses: actions/checkout@v7
