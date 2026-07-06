@@ -1928,15 +1928,31 @@ fn sign_with_ssh_does_not_hang_when_key_prompts_on_stdin() {
 // --- sign_with_gpg tests ---
 
 #[test]
+#[serial_test::serial]
 fn sign_with_gpg_requires_gpg() {
     if !cfgd_core::command_available("gpg") {
         let result = sign_with_gpg("test-nonce", "DEADBEEF");
         assert!(result.is_err());
         return;
     }
+    // Isolate in a throwaway GNUPGHOME: gpg auto-starts a gpg-agent daemon for
+    // whichever home it touches, and an agent bound to the user's real keyring
+    // would outlive the test (nextest flags it LEAK on machines where no agent
+    // was already running).
+    let tmp = tempfile::tempdir().unwrap();
+    let gnupghome = tmp.path().join("gnupghome");
+    std::fs::create_dir_all(&gnupghome).unwrap();
+    cfgd_core::set_file_permissions(&gnupghome, 0o700).unwrap();
+    let home_str = gnupghome.to_str().unwrap();
+    let _gnupg_guard = cfgd_core::test_helpers::EnvVarGuard::set("GNUPGHOME", home_str);
+
     // If gpg is available but key ID is invalid, it should fail
     let result = sign_with_gpg("test-nonce", "NONEXISTENT_KEY_ID_XXXXXXXX");
     assert!(result.is_err(), "should fail with nonexistent GPG key");
+
+    let _ = std::process::Command::new("gpgconf")
+        .args(["--homedir", home_str, "--kill", "all"])
+        .status();
 }
 
 #[test]
