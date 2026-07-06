@@ -1,0 +1,32 @@
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: base
+spec:
+  env:
+    - name: EDITOR
+      value: vim
+    - name: GIT_AUTHOR_NAME
+      value: Your Name
+    - name: GIT_AUTHOR_EMAIL
+      value: you@example.com
+
+  packages:
+    cargo:
+      - bat
+      - eza
+      - fd-find
+      - ripgrep
+
+  files:
+    managed:
+      - source: shell/.zshrc
+        target: ~/.zshrc
+      - source: git/.gitconfig.tera
+        target: ~/.gitconfig
+    permissions:
+      "~/.ssh": "700"
+      "~/.ssh/config": "600"
+
+  system:
+    shell: /bin/zsh

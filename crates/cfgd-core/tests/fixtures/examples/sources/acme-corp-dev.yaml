@@ -1,0 +1,59 @@
+apiVersion: cfgd.io/v1alpha1
+kind: ConfigSource
+metadata:
+  name: acme-corp-dev
+  version: "2.1.0"
+  description: ACME Corp developer environment baseline
+spec:
+  provides:
+    profiles:
+      - acme-base
+      - acme-backend
+      - acme-frontend
+    platformProfiles:
+      macos: acme-base
+      debian: acme-backend
+      ubuntu: acme-backend
+      fedora: acme-frontend
+      linux: acme-base
+    modules:
+      - corp-vpn
+      - corp-certs
+      - approved-editor
+
+  policy:
+    required:
+      packages:
+        brew:
+          formulae:
+            - git-secrets
+            - pre-commit
+            - aws-cli
+      files:
+        - source: linting/.eslintrc.json
+          target: ~/.eslintrc.json
+      modules:
+        - corp-vpn
+        - corp-certs
+    recommended:
+      packages:
+        brew:
+          formulae:
+            - k9s
+            - stern
+            - kubectx
+      modules:
+        - approved-editor
+    optional:
+      profiles:
+        - acme-sre
+    locked:
+      files:
+        - source: security/security-policy.yaml
+          target: ~/.config/company/security-policy.yaml
+    constraints:
+      noScripts: true
+      noSecretsRead: true
+      allowedTargetPaths:
+        - ~/.config/acme/
+        - ~/.config/company/

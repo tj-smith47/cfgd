@@ -143,7 +143,11 @@ pub struct SkillModel {
     /// The kind's JSON schema embedded as an offline fallback, stamped with the
     /// cfgd version that produced it.
     pub schema_snapshot: SchemaSnapshot,
-    /// Ground-truth examples captured from real `examples/**` files.
+    /// Ground-truth examples captured from crate-local fixture copies of the
+    /// user-facing `examples/**` files. The copies live inside the crate so
+    /// `include_str!` still resolves in the published tarball (workspace-root
+    /// paths are not packaged); a ground-truth test pins them byte-for-byte to
+    /// their workspace sources.
     pub examples: Vec<ResourceExample>,
     /// The command the skill's validate step runs, e.g. `cfgd module validate <file>`.
     pub validate_cmd: String,
@@ -214,7 +218,9 @@ pub fn skill_model_for(kind: SkillKind) -> SkillModel {
 /// `cfgd-core` crate root; `include_str!` resolves it relative to this source
 /// file (hence the `../../` prefix back to the crate root), while `source_path`
 /// resolves it from `CARGO_MANIFEST_DIR` so a test reads the same file from any
-/// working directory.
+/// working directory. `$rel` must stay inside the crate directory — a path
+/// reaching the workspace root compiles in-repo but is absent from the
+/// published tarball, failing `cargo publish`'s verify build.
 macro_rules! resource_example {
     ($rel:literal) => {
         ResourceExample {
@@ -233,28 +239,28 @@ fn examples_for(kind: SkillKind) -> Vec<ResourceExample> {
         // small-but-complete `clift` Module.
         SkillKind::Module => vec![
             resource_example!("tests/fixtures/exemplar_nvim_after.yaml"),
-            resource_example!("../../examples/modules/clift.yaml"),
+            resource_example!("tests/fixtures/examples/modules/clift.yaml"),
         ],
         SkillKind::Profile => vec![
-            resource_example!("../../examples/profiles/base.yaml"),
-            resource_example!("../../examples/profiles/work.yaml"),
+            resource_example!("tests/fixtures/examples/profiles/base.yaml"),
+            resource_example!("tests/fixtures/examples/profiles/work.yaml"),
         ],
         SkillKind::Source => vec![resource_example!(
-            "../../examples/sources/acme-corp-dev.yaml"
+            "tests/fixtures/examples/sources/acme-corp-dev.yaml"
         )],
         SkillKind::MachineConfig => {
             vec![resource_example!(
-                "../../examples/cluster/machineconfig.yaml"
+                "tests/fixtures/examples/cluster/machineconfig.yaml"
             )]
         }
         SkillKind::ConfigPolicy => {
             vec![resource_example!(
-                "../../examples/cluster/configpolicy.yaml"
+                "tests/fixtures/examples/cluster/configpolicy.yaml"
             )]
         }
         SkillKind::ClusterConfigPolicy => {
             vec![resource_example!(
-                "../../examples/cluster/clusterconfigpolicy.yaml"
+                "tests/fixtures/examples/cluster/clusterconfigpolicy.yaml"
             )]
         }
     }

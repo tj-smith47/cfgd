@@ -1,0 +1,43 @@
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: work
+spec:
+  inherits:
+    - base
+
+  env:
+    - name: EDITOR
+      value: "code --wait"
+    - name: GIT_AUTHOR_EMAIL
+      value: you@company.com
+
+  packages:
+    brew:
+      taps:
+        - homebrew/cask-fonts
+      formulae:
+        - git
+        - jq
+        - kubectl
+        - helm
+      casks:
+        - visual-studio-code
+        - wezterm
+    npm:
+      global:
+        - typescript
+        - prettier
+
+  files:
+    managed:
+      - source: k8s/kubeconfig.tera
+        target: ~/.kube/config
+
+  secrets:
+    - source: 1password://Work/GitHub/token
+      target: ~/.config/gh/token
+
+  scripts:
+    postReconcile:
+      - scripts/setup-work-env.sh

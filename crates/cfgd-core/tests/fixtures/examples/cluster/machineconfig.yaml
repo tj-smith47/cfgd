@@ -1,0 +1,26 @@
+apiVersion: cfgd.io/v1alpha1
+kind: MachineConfig
+metadata:
+  name: alice-workstation
+  namespace: team-platform
+spec:
+  hostname: alice-mbp
+  profile: work
+  moduleRefs:
+    - name: kubectl
+      required: true
+    - name: terraform
+      required: false
+  packages:
+    - name: ripgrep
+    - name: fd
+    - name: kubectl
+      version: "1.28.3"
+    - name: terraform
+      version: "1.6.0"
+  files:
+    - path: /etc/hosts.local
+      content: "10.0.1.5  internal.acme.com\n"
+      mode: "0644"
+  systemSettings:
+    net.ipv4.ip_forward: "1"

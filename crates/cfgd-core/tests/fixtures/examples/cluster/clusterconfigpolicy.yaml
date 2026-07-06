@@ -1,0 +1,24 @@
+apiVersion: cfgd.io/v1alpha1
+kind: ClusterConfigPolicy
+metadata:
+  name: org-baseline
+spec:
+  namespaceSelector:
+    matchLabels:
+      cfgd.io/managed: "true"
+  requiredModules:
+    - name: compliance-tools
+      required: true
+    - name: corp-certs
+      required: true
+  packages:
+    - name: osquery
+    - name: falco
+      version: ">=0.37"
+  settings:
+    kernel.kptr_restrict: "2"
+  security:
+    trustedRegistries:
+      - ghcr.io/acme-corp/
+      - registry.acme.internal/
+    allowUnsigned: false

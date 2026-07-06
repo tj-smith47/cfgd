@@ -246,10 +246,14 @@ tasks:
       - bash .claude/scripts/audit-tests/audit-test.sh
 
   package:
-    desc: Dry-run package all publishable crates
+    desc: Dry-run package all publishable crates (verify build included)
     deps: [_check:tmp-headroom]
     cmds:
-      - cargo package --workspace --no-verify --allow-dirty
+      # No --no-verify: the verify build compiles each crate FROM ITS TARBALL —
+      # the only local gate that catches sources escaping the crate directory
+      # (e.g. include_str! of workspace-root files), which packages fine but
+      # fails the release run's cargo publish verify.
+      - cargo package --workspace --allow-dirty
 
   snapshot:
     desc: Dry-run release pipeline (single target, no publish) using anodizer

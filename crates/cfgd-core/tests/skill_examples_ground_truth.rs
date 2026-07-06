@@ -52,6 +52,42 @@ fn every_example_matches_its_on_disk_source() {
     }
 }
 
+/// The crate-local fixture copies exist so `include_str!` resolves inside the
+/// published tarball; the user-facing canonical files stay at the workspace
+/// root `examples/`. This guard pins each copy byte-for-byte to its canonical
+/// source so the two can never drift.
+#[test]
+fn crate_fixture_examples_match_workspace_examples() {
+    let crate_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let workspace_examples = crate_root.join("../../examples");
+    if !workspace_examples.is_dir() {
+        // Published-tarball context: the workspace root isn't shipped, so
+        // there is no canonical copy to compare against.
+        return;
+    }
+    for rel in [
+        "cluster/clusterconfigpolicy.yaml",
+        "cluster/configpolicy.yaml",
+        "cluster/machineconfig.yaml",
+        "modules/clift.yaml",
+        "profiles/base.yaml",
+        "profiles/work.yaml",
+        "sources/acme-corp-dev.yaml",
+    ] {
+        let fixture = crate_root.join("tests/fixtures/examples").join(rel);
+        let canonical = workspace_examples.join(rel);
+        let fixture_body = std::fs::read_to_string(&fixture)
+            .unwrap_or_else(|e| panic!("fixture {} unreadable: {e}", fixture.display()));
+        let canonical_body = std::fs::read_to_string(&canonical)
+            .unwrap_or_else(|e| panic!("canonical {} unreadable: {e}", canonical.display()));
+        assert_eq!(
+            fixture_body, canonical_body,
+            "crate fixture drifted from workspace examples/{rel}; \
+             re-copy it: cp examples/{rel} crates/cfgd-core/tests/fixtures/examples/{rel}"
+        );
+    }
+}
+
 #[test]
 fn every_embedded_example_validates_clean() {
     // CRD kinds register in KIND_REGISTRY only under the default-on `crd`
