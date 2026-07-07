@@ -11,7 +11,7 @@ Unified Helm chart in `chart/cfgd/` ships operator + agent + CSI.
 ## Phased work
 See `.claude/PLAN.md` for the phased plan. Do not add features outside the current phase. If a phase's acceptance criteria aren't met, the phase isn't done.
 
-## Rules (auto-loaded when editing `.rs` files)
+## Rules (auto-loaded by path — `.rs` files unless noted)
 - `.claude/rules/hard-rules.md` — 6 non-negotiable rules (output routing, no unwrap in lib, provider traits, error typing, config location, process boundaries)
 - `.claude/rules/output-module.md` — Printer is the sole terminal interface
 - `.claude/rules/module-boundaries.md` — `std::process::Command` allow-list
@@ -21,6 +21,7 @@ See `.claude/PLAN.md` for the phased plan. Do not add features outside the curre
 - `.claude/rules/patterns.md` — builder, trait objects, tracing
 - `.claude/rules/testing.md` — `cargo test` gating and test placement
 - `.claude/rules/module-map.md` — full crate/module layout
+- `.claude/rules/workflows.md` — GitHub Actions SSOT map + job invariants (loads for `.github/**`)
 - `.claude/rules/user-layer-notes.md` — how user-level hooks layer on top of project hooks
 
 ## Reference docs (load on demand)
