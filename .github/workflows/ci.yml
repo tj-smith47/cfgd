@@ -6,8 +6,10 @@ on:
   pull_request:
     branches: [master]
 
+# Read-only by default; the coverage job alone elevates to contents: write
+# (its badge publish pushes to the badges branch).
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -22,20 +24,26 @@ env:
   # cache. GHA cache backend — no S3 needed.
   SCCACHE_GHA_ENABLED: "true"
   RUSTC_WRAPPER: "sccache"
-  ANODIZER_VERSION: v0.15.1
+  # SSOT: repo variable (gh variable set ANODIZER_VERSION), shared by every
+  # workflow that installs anodizer.
+  ANODIZER_VERSION: ${{ vars.ANODIZER_VERSION }}
 
 jobs:
   fmt:
     name: Formatting
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-rust
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust
         with:
           components: rustfmt
           cache: 'false'
           protoc: 'false'
           task-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Check formatting
         run: task fmt:check
 
@@ -43,15 +51,21 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-rust
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust
         with:
           components: clippy
           task-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Clippy
         run: task clippy
+
       - name: Schema drift guard
         run: task schema:check
+
       - name: Chart CRD drift guard
         run: task gen:crds:check
 
@@ -63,15 +77,20 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-rust
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust
         with:
           task-token: ${{ secrets.GITHUB_TOKEN }}
+
       # nextest gives per-test process isolation + per-test timeout: a hung
       # test is killed and named in the failure output instead of stalling
       # the whole binary for the GHA 6h cutoff (cfgd master hit a 60+min
       # macos/windows hang with `cargo test` and no log of which test).
-      - uses: taiki-e/install-action@v2
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
 
@@ -83,48 +102,125 @@ jobs:
     name: Code Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install go-task
+        uses: go-task/setup-task@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
-      - run: bash .claude/scripts/audit.sh
+
+      - name: Run code audit
+        run: task audit
+
+      # Self-test of the audit script's banned-pattern rules — keeps this job
+      # in lockstep with `task ci`, which runs audit:test after audit.
+      - name: Validate audit rules
+        run: task audit:test
+
+  msrv:
+    name: MSRV check
+    runs-on: ubuntu-latest
+    # The declared rust-version is only a promise until something compiles
+    # with exactly that toolchain; this job keeps the Cargo.toml pin honest.
+    env:
+      # Warning sets differ across compiler versions; this job proves the
+      # MSRV *compiles*, not that it is lint-clean on an older rustc.
+      RUSTFLAGS: ""
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      # Read the pin from Cargo.toml so the workspace manifest stays the
+      # single source of truth for the MSRV.
+      - name: Read MSRV from Cargo.toml
+        id: msrv
+        run: echo "version=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+
+      - name: Install MSRV toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Restore cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: msrv
+
+      - name: Install protoc
+        uses: ./.github/actions/setup-protoc
+
+      - name: Check workspace on MSRV
+        run: cargo check --workspace --all-targets
 
   cargo-audit:
     name: cargo audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: taiki-e/install-action@v2
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
-      - run: cargo audit
+
+      - name: Audit dependencies
+        run: cargo audit
 
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master'
+    permissions:
+      # publish-coverage.sh pushes the badge update to the badges branch.
+      contents: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-rust
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust
         with:
           components: llvm-tools-preview
           # Separate shared-key: this job builds with llvm-tools-preview
           # instrumentation (different target/ artifacts), so it must not
           # share or pollute the plain `ci` dependency cache.
           shared-key: ci-coverage
-      - uses: taiki-e/install-action@v2
+          task-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install coverage tools
+        uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov,cargo-nextest
+
       - name: Run coverage and update badge
         run: task coverage:publish
+
+      # Reuses the cobertura.xml the publish step just wrote — no second
+      # instrumented run. Master must never drop below the same floor that
+      # gates local `task push`.
+      - name: Enforce coverage floor
+        run: task coverage:floor
 
   package:
     name: Package (dry-run)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: ./.github/actions/setup-rust
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Rust toolchain
+        uses: ./.github/actions/setup-rust
         with:
           task-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Package all crates
         run: task package
 
@@ -134,9 +230,11 @@ jobs:
     needs: [test]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
       - name: Validate release pipeline via anodizer
         uses: tj-smith47/anodizer-action@v1
         with:
@@ -144,4 +242,3 @@ jobs:
           args: release --snapshot --single-target --clean --dry-run
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-

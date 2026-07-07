@@ -423,17 +423,25 @@ fi
 # was rebuilt this run, the xpkg must follow; when skipped, the existing xpkg
 # tag is still valid and we avoid the crank install + build + push entirely.
 if [ "$FUNCTION_DECISION" = "build" ]; then
-    # Ensure crossplane CLI (crank). Pinned to a stable release; the upstream
-    # install.sh from `main` rejects `linux / x86_64` as of late May 2026.
+    # Ensure crossplane CLI (crank). In CI the checksum-verified pinned binary
+    # is already on PATH via .github/actions/setup-crossplane (the pin's SSOT);
+    # this fallback exists for local runs only. Same version, and checksum
+    # verification on amd64 (the only arch the action pins a hash for) —
+    # the upstream install.sh from `main` is unpinned and unchecked, and
+    # rejects `linux / x86_64` as of late May 2026.
     if ! which crossplane &>/dev/null; then
-        CROSSPLANE_VERSION="v2.3.1"
+        CROSSPLANE_VERSION="v2.3.2"
+        CROSSPLANE_SHA256_AMD64="42ce17e97dff7ea28b624bf23cde836abb0783d07c5e02fc6de08f67dbd509eb"
         case "$(uname -m)" in
             x86_64|amd64) CROSSPLANE_ARCH=amd64 ;;
             aarch64|arm64) CROSSPLANE_ARCH=arm64 ;;
             *) echo "unsupported arch: $(uname -m)"; exit 1 ;;
         esac
-        curl -sL -o /usr/local/bin/crossplane \
+        curl -fsSL -o /usr/local/bin/crossplane \
             "https://releases.crossplane.io/stable/${CROSSPLANE_VERSION}/bin/linux_${CROSSPLANE_ARCH}/crank"
+        if [ "$CROSSPLANE_ARCH" = "amd64" ]; then
+            echo "${CROSSPLANE_SHA256_AMD64}  /usr/local/bin/crossplane" | sha256sum -c -
+        fi
         chmod +x /usr/local/bin/crossplane
         echo "Installed crossplane:"
         crossplane version

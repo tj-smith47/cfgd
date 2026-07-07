@@ -10,22 +10,32 @@ permissions:
   id-token: write # keyless cosign signing via Fulcio/OIDC + SLSA attestation OIDC
   attestations: write # mint SLSA build provenance (attestations.enabled, subjects mode)
 
+# Shares the Release workflow's group: both push tags/releases through
+# anodizer, and a nightly overlapping a live release run would race it on
+# repo state. cancel-in-progress stays false — never kill a publish mid-run.
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
 env:
-  ANODIZER_VERSION: v0.15.1
+  # SSOT: repo variable (gh variable set ANODIZER_VERSION), shared by every
+  # workflow that installs anodizer.
+  ANODIZER_VERSION: ${{ vars.ANODIZER_VERSION }}
 
 jobs:
   nightly:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out repository
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: ./.github/actions/setup-protoc
-        with:
-          version: "25.9"
+      - name: Install protoc
+        uses: ./.github/actions/setup-protoc
 
-      - uses: tj-smith47/anodizer-action@v1
+      - name: Run anodizer nightly release
+        uses: tj-smith47/anodizer-action@v1
         with:
           version: ${{ env.ANODIZER_VERSION }}
           args: release --nightly --no-preflight

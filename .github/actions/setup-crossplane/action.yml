@@ -1,30 +1,52 @@
 name: "Setup Crossplane CLI"
 description: "Download a pinned Crossplane CLI (crank) and verify it against a known SHA256 before use (composite, no Node runtime)."
 
+# The defaults below are the repo's single source of truth for the Crossplane
+# CLI pin — version and checksum must move together, so they live in one file.
+# The crossplane/crossplane install.sh is unpinned (always "current") and
+# performs NO checksum check on the raw `bin/` binary, so a network blip
+# yields a truncated/empty `./crossplane` that callers then treat as a
+# working CLI. This action instead downloads the exact binary for the pinned
+# version from the same CDN the official install.sh uses and verifies it
+# against the pinned hash before running it.
+#
+# The hash is pinned HERE, not taken from the CDN's sidecar crank.sha256:
+# that published file is the bundle/ tarball's manifest hash and matches
+# neither the raw bin/ binary nor the tarball itself (upstream install.sh
+# deletes it unchecked). Pinning the real binary hash in-repo is the only
+# value that actually gates this download. Recompute on a version bump:
+#   curl -fsSL https://releases.crossplane.io/stable/<ver>/bin/linux_amd64/crank | sha256sum
 inputs:
   version:
-    description: "Crossplane CLI version to install (with leading 'v', e.g. v2.3.2)."
-    required: true
+    description: "Crossplane CLI version to install (with leading 'v')."
+    required: false
+    default: "v2.3.2"
   sha256:
-    description: "Expected SHA256 of the linux_amd64 crank binary; the download is rejected on mismatch."
-    required: true
+    description: "Expected SHA256 of the linux_amd64 crank binary; the download is rejected on mismatch. Must be recomputed together with any version bump."
+    required: false
+    default: "42ce17e97dff7ea28b624bf23cde836abb0783d07c5e02fc6de08f67dbd509eb"
 
 runs:
   using: "composite"
   steps:
     - name: Install Crossplane CLI
-      # Pinned + checksum-verified. Runner is ubuntu-latest (linux_amd64).
+      # Pinned + checksum-verified; every caller runs on linux_amd64.
       # -f makes curl fail the step on any HTTP error instead of writing an
       # HTML/empty body; the explicit sha256sum -c against the pinned
       # sha256 then aborts on any truncated/corrupt download before the
-      # (non-functional) binary reaches the xpkg steps.
+      # (non-functional) binary reaches the xpkg steps. Installed onto
+      # PATH (not ./crossplane) so both workflow run-steps and scripts
+      # that resolve `crossplane` via `which` find the verified binary.
       shell: bash
       env:
         CROSSPLANE_VERSION: ${{ inputs.version }}
         CROSSPLANE_SHA256: ${{ inputs.sha256 }}
       run: |
         set -euo pipefail
-        curl -fsSL "https://releases.crossplane.io/stable/${CROSSPLANE_VERSION}/bin/linux_amd64/crank" -o crossplane
-        echo "${CROSSPLANE_SHA256}  crossplane" | sha256sum -c -
-        chmod +x crossplane
-        ./crossplane version --client
+        dest="${RUNNER_TEMP}/crossplane-bin"
+        mkdir -p "$dest"
+        curl -fsSL "https://releases.crossplane.io/stable/${CROSSPLANE_VERSION}/bin/linux_amd64/crank" -o "$dest/crossplane"
+        echo "${CROSSPLANE_SHA256}  ${dest}/crossplane" | sha256sum -c -
+        chmod +x "$dest/crossplane"
+        echo "$dest" >> "$GITHUB_PATH"
+        "$dest/crossplane" version --client

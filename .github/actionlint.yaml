@@ -1,0 +1,6 @@
+# Self-hosted runner labels actionlint can't discover from GitHub's
+# hosted-runner list. arc-cfgd is the ARC runner scale set in the
+# actions-runner-system namespace of the k3s cluster.
+self-hosted-runner:
+  labels:
+    - arc-cfgd

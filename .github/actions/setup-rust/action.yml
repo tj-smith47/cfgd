@@ -19,9 +19,9 @@ inputs:
     required: false
     default: "true"
   protoc-version:
-    description: "protoc release version (without leading 'v'). Only used when protoc == 'true'."
+    description: "protoc release version (without leading 'v'). Only used when protoc == 'true'. Empty = setup-protoc's pinned default (the repo's SSOT for the protoc pin)."
     required: false
-    default: "25.9"
+    default: ""
   task-token:
     description: "Token passed to go-task/setup-task as repo-token (raises its GitHub API rate limit). Empty = unauthenticated, matching a job that omits the token."
     required: false
@@ -30,14 +30,17 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - uses: dtolnay/rust-toolchain@stable
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
       with:
         components: ${{ inputs.components }}
 
-    - if: inputs.cache == 'true'
+    - name: Install sccache
+      if: inputs.cache == 'true'
       uses: mozilla-actions/sccache-action@v0.0.10
 
-    - if: inputs.cache == 'true'
+    - name: Restore cargo cache
+      if: inputs.cache == 'true'
       uses: Swatinem/rust-cache@v2
       with:
         # shared-key shares one dependency cache across compatible jobs;
@@ -45,11 +48,20 @@ runs:
         # the final key, so the OS matrix auto-separates.
         shared-key: ${{ inputs.shared-key }}
 
-    - if: inputs.protoc == 'true'
+    # Two invocations, not one with a forwarded input: passing an empty
+    # `version:` would override setup-protoc's default with "", so the
+    # override is forwarded only when a caller actually set one.
+    - name: Install protoc (caller-pinned version)
+      if: inputs.protoc == 'true' && inputs.protoc-version != ''
       uses: ./.github/actions/setup-protoc
       with:
         version: ${{ inputs.protoc-version }}
 
-    - uses: go-task/setup-task@v2
+    - name: Install protoc
+      if: inputs.protoc == 'true' && inputs.protoc-version == ''
+      uses: ./.github/actions/setup-protoc
+
+    - name: Install go-task
+      uses: go-task/setup-task@v2
       with:
         repo-token: ${{ inputs.task-token }}

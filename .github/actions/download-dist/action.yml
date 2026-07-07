@@ -6,6 +6,10 @@ inputs:
     description: "Directory the merged artifacts are written to."
     required: false
     default: "dist/"
+  pattern:
+    description: "Artifact-name glob to download. Narrow to one crate (dist-<crate>-*) when the caller publishes a single crate — skips sibling crates' multi-GB dists."
+    required: false
+    default: "dist-*"
 
 runs:
   using: "composite"
@@ -17,6 +21,6 @@ runs:
         # tarball is self-contained in its <crate>/ subdir thanks to the
         # harness's per-crate preserve layout (--crate <name> on
         # check determinism). No context.json collision.
-        pattern: dist-*
+        pattern: ${{ inputs.pattern }}
         path: ${{ inputs.path }}
         merge-multiple: true

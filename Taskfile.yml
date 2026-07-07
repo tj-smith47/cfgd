@@ -227,6 +227,14 @@ tasks:
           tail -n 40 target/coverage-gate.log >&2
           exit 1
         fi
+      - task: coverage:floor
+
+  coverage:floor:
+    desc: "Check an EXISTING cobertura.xml against the coverage floor (default 93; override via COVERAGE_FLOOR) without re-running the instrumented suite. Pair with coverage:check/coverage:publish."
+    preconditions:
+      - sh: test -f cobertura.xml
+        msg: "cobertura.xml not found — run task coverage:check (or coverage:publish) first."
+    cmds:
       - |
         # --raw gives the unrounded percent so a 92.99 can't pass as the
         # badge's rounded 93; the badge form is shown alongside for context.
@@ -358,6 +366,7 @@ tasks:
       - task: fmt:check
       - task: clippy
       - task: schema:check
+      - task: gen:crds:check
       - task: test
       - task: audit
       - task: audit:test
@@ -489,6 +498,9 @@ tasks:
     deps: [_check:tmp-headroom]
     vars: *artifact-vars
     cmds:
+      # Archive name mirrors .anodizer.yaml's archives name_template
+      # (ProjectName-Version-Os-Arch) — keep the two in lockstep or
+      # locally-built archives stop matching what releases ship.
       - cargo build --release --bin cfgd
       - tar -czf "cfgd-{{.VERSION_NUM}}-{{.OS}}-{{.ARCH}}.tar.gz" -C target/release cfgd
       - echo "Built{{":"}} cfgd-{{.VERSION_NUM}}-{{.OS}}-{{.ARCH}}.tar.gz"
