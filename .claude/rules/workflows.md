@@ -42,3 +42,14 @@ single-source-of-truth wiring.
 - Preflight's bump-message guard breaks the tag→CI→Release self-retrigger
   loop; don't loosen it.
 - Self-hosted runner labels for actionlint live in `.github/actionlint.yaml`.
+- Any job that `uses: ./.github/actions/...` MUST have a checkout step
+  before it (the local action file only exists on the runner after
+  checkout), and the checkout must precede any `download-artifact` step
+  (checkout's git-clean deletes files already in the workspace).
+- Reruns of a failed run execute the workflow file FROZEN at its original
+  dispatch — a workflow fix never reaches an existing run. If a push-leg
+  defect strands built artifacts, recover with a temporary dispatch
+  workflow that downloads the run's artifacts and republishes them (the
+  v0.5.0 recipe, `backfill-xpkg.yml`, lives in git history — added and
+  removed around the v0.5.0 crossplane backfill), then delete it: a
+  standing copy of push steps drifts from release.yml.
