@@ -96,6 +96,11 @@ jobs:
       # matrix expansion), so per-leg gating MUST be done by shaping the
       # matrix here rather than with a `contains(crates, matrix.crate)` guard.
       trio: ${{ steps.trio.outputs.list }}
+      # Determinism matrix: one entry per released crate with the OS shards
+      # it needs — the binary trio across all three OSes, the library crates
+      # (cfgd-crd / cfgd-core) linux-only (their preserved dist is source
+      # packaging, OS-independent, but publish-only still requires one).
+      det_matrix: ${{ steps.trio.outputs.det }}
       # SHA the freshly-pushed tags point at. When anodizer tag creates a
       # bump commit, this is that commit's SHA (HEAD moved forward by one
       # during the tag step); when the manifests were already at target
@@ -138,10 +143,12 @@ jobs:
 
       # Intersect the released crates with the binary trio so the
       # publish-trio matrix carries only the crates that actually bumped.
-      # `A - (A - $all)` is jq's set-intersection idiom: it keeps the trio
+      # `A - (A - $all)` is jq's set-intersection idiom: it keeps the
       # whitelist's own order and drops anything not in $all, yielding a
-      # compact JSON array (`["cfgd","cfgd-operator"]`, or `[]`).
-      - name: Shape publish-trio matrix
+      # compact JSON array (`["cfgd","cfgd-operator"]`, or `[]`). The
+      # determinism matrix pairs every released crate with its shard set:
+      # library crates linux-only, trio crates all three OSes.
+      - name: Shape publish and determinism matrices
         id: trio
         env:
           CRATES: ${{ steps.t.outputs.crates }}
@@ -149,20 +156,27 @@ jobs:
           list="$(jq -cn --argjson all "$CRATES" \
             '["cfgd","cfgd-csi","cfgd-operator"] - (["cfgd","cfgd-csi","cfgd-operator"] - $all)')"
           echo "list=$list" >> "$GITHUB_OUTPUT"
+          det="$(jq -cn --argjson all "$CRATES" --argjson trio "$list" '
+            [(["cfgd-crd","cfgd-core"] - (["cfgd-crd","cfgd-core"] - $all))[]
+               | {crate: ., os_labels: "[\"linux\"]"}]
+            + [$trio[] | {crate: ., os_labels: "[\"linux\",\"macos\",\"windows\"]"}]')"
+          echo "det=$det" >> "$GITHUB_OUTPUT"
 
   determinism-check:
     name: Determinism (${{ matrix.crate }})
     needs: tag
-    # trio only: library crates have no binary/package/image for the harness to diff.
-    if: needs.tag.result == 'success' && needs.tag.outputs.trio != '[]'
+    # Every released crate gets a determinism lane: the binary trio shards
+    # across all three OSes; the library crates run a single linux shard
+    # whose preserved (source-package) dist their publish leg restores.
+    if: needs.tag.result == 'success' && needs.tag.outputs.det_matrix != '[]'
     strategy:
       fail-fast: false
       matrix:
-        crate: ${{ fromJson(needs.tag.outputs.trio) }}
+        include: ${{ fromJson(needs.tag.outputs.det_matrix) }}
     # Reusable workflow: parent matrix has one entry per crate; the
-    # OS shards (one per shipped OS) are nested inside
-    # determinism-shards.yml so the Actions run summary groups all of a
-    # crate's shards under one parent line instead of fanning them flat.
+    # OS shards are nested inside determinism-shards.yml so the Actions
+    # run summary groups all of a crate's shards under one parent line
+    # instead of fanning them flat.
     # Explicit grant: a called workflow may only downgrade its caller's
     # permissions, and the shards declare packages: read — absent from this
     # workflow's read-only default.
@@ -173,6 +187,7 @@ jobs:
     with:
       crate: ${{ matrix.crate }}
       head_sha: ${{ needs.tag.outputs.head_sha }}
+      os-labels: ${{ matrix.os_labels }}
     secrets: inherit
 
   # cfgd-crd publishes FIRST and in isolation (--crate cfgd-crd). cfgd-core's
@@ -183,91 +198,26 @@ jobs:
   # Gated on cfgd-crd actually being in this release's tag set — a release that
   # bumps only cfgd-core / cfgd / cfgd-csi / cfgd-operator skips this job, and
   # publish-core's `needs: publish-crd` then resolves as skipped (publish-core's
-  # `if:` does not require publish-crd success, so it still runs).
+  # `if:` does not require publish-crd success, so it still runs). In-job
+  # rollback is enabled: this leg has no concurrent siblings.
   publish-crd:
     name: Publish cfgd-crd
     needs: [tag, determinism-check]
-    # Run even when determinism-check was skipped (cfgd-crd is library-only and
-    # produces no binaries to determinism-check).
-    if: ${{ !cancelled() && needs.tag.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd-crd') && (needs.determinism-check.result == 'success' || needs.determinism-check.result == 'skipped') }}
+    # determinism-check is required strictly: every released crate (including
+    # this library crate's linux source-package shard) has a lane there, so
+    # its dist artifact only exists when the check ran and passed.
+    if: ${{ !cancelled() && needs.tag.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd-crd') && needs.determinism-check.result == 'success' }}
     permissions:
       contents: write
       packages: write
       id-token: write
       attestations: write
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out release commit
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          ref: ${{ needs.tag.outputs.head_sha }}
-
-      - name: Install protoc
-        uses: ./.github/actions/setup-protoc
-
-      # cfgd-crd is library-only: the determinism-check matrix covers only the
-      # binary trio, so no shard preserves a dist for this crate — yet
-      # `release --publish-only` refuses to start without a preserved context
-      # manifest. Produce one inline with the (build-less) harness: two
-      # hermetic source-package runs must be byte-identical before the
-      # preserved tree is staged where the release step's per-crate discovery
-      # looks (dist/<crate>/).
-      - name: Preserve dist (library-only determinism)
-        uses: tj-smith47/anodizer-action@v1
-        with:
-          version: ${{ env.ANODIZER_VERSION }}
-          auto-install: 'true'
-          determinism: 'true'
-          determinism-crate: cfgd-crd
-          preserve-dist: 'true'
-          shard-label: linux
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-
-      # The harness scratches in ./dist during its runs; only the preserved
-      # tree is the publish input.
-      - name: Stage preserved dist for publish
-        run: |
-          rm -rf dist
-          mkdir -p dist
-          mv preserved-dist/cfgd-crd dist/cfgd-crd
-
-      - name: Run anodizer release (cfgd-crd)
-        id: release
-        uses: tj-smith47/anodizer-action@v1
-        with:
-          version: ${{ env.ANODIZER_VERSION }}
-          auto-install: 'true'
-          # Artifacts already in dist/ from the step above; action's built-in
-          # download (which matches dist-* globally) is intentionally skipped.
-          download-dist: 'false'
-          docker-registry: 'ghcr.io'
-          docker-password: ${{ secrets.GITHUB_TOKEN }}
-          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
-          apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
-          args: release --publish-only --crate cfgd-crd
-        env:
-          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
-          CLOUDSMITH_TOKEN: ${{ secrets.CLOUDSMITH_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          KREW_INDEX_TOKEN: ${{ secrets.KREW_INDEX_TOKEN }}
-          NIX_PKGS_TOKEN: ${{ secrets.NIX_PKGS_TOKEN }}
-          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
-          WINGET_PKGS_TOKEN: ${{ secrets.WINGET_PKGS_TOKEN }}
-
-      - name: Rollback on release failure
-        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
-        uses: ./.github/actions/rollback-on-failure
-        with:
-          head_sha: ${{ needs.tag.outputs.head_sha }}
-          gh_token: ${{ secrets.GH_PAT }}
+    uses: ./.github/workflows/publish-crate.yml
+    with:
+      crate: cfgd-crd
+      head_sha: ${{ needs.tag.outputs.head_sha }}
+      rollback: true
+    secrets: inherit
 
   # cfgd-core publishes after cfgd-crd and in isolation (--crate cfgd-core). The
   # three binary crates depend on cfgd-core and each polls crates.io for its
@@ -281,87 +231,25 @@ jobs:
   # publish-crd` orders core after crd but does NOT require its success in the
   # `if:` — a cfgd-core-only release (no cfgd-crd bump) skips publish-crd and
   # this job still runs (the already-published cfgd-crd on crates.io satisfies
-  # the dependency poll).
+  # the dependency poll). In-job rollback is enabled: this leg has no
+  # concurrent siblings.
   publish-core:
     name: Publish cfgd-core
     needs: [tag, determinism-check, publish-crd]
-    # Run even when determinism-check was skipped (cfgd-core is library-only and
-    # produces no binaries to determinism-check) and when publish-crd was skipped
-    # (a cfgd-core-only release does not bump cfgd-crd).
-    if: ${{ !cancelled() && needs.tag.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd-core') && (needs.determinism-check.result == 'success' || needs.determinism-check.result == 'skipped') && (needs.publish-crd.result == 'success' || needs.publish-crd.result == 'skipped') }}
+    # determinism-check is required strictly (see publish-crd); publish-crd
+    # may be skipped (a cfgd-core-only release does not bump cfgd-crd).
+    if: ${{ !cancelled() && needs.tag.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd-core') && needs.determinism-check.result == 'success' && (needs.publish-crd.result == 'success' || needs.publish-crd.result == 'skipped') }}
     permissions:
       contents: write
       packages: write
       id-token: write
       attestations: write
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out release commit
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          ref: ${{ needs.tag.outputs.head_sha }}
-
-      - name: Install protoc
-        uses: ./.github/actions/setup-protoc
-
-      # See publish-crd: cfgd-core is library-only, so its preserved dist is
-      # produced inline rather than by the (binary-trio) determinism matrix.
-      - name: Preserve dist (library-only determinism)
-        uses: tj-smith47/anodizer-action@v1
-        with:
-          version: ${{ env.ANODIZER_VERSION }}
-          auto-install: 'true'
-          determinism: 'true'
-          determinism-crate: cfgd-core
-          preserve-dist: 'true'
-          shard-label: linux
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-
-      # The harness scratches in ./dist during its runs; only the preserved
-      # tree is the publish input.
-      - name: Stage preserved dist for publish
-        run: |
-          rm -rf dist
-          mkdir -p dist
-          mv preserved-dist/cfgd-core dist/cfgd-core
-
-      - name: Run anodizer release (cfgd-core)
-        id: release
-        uses: tj-smith47/anodizer-action@v1
-        with:
-          version: ${{ env.ANODIZER_VERSION }}
-          auto-install: 'true'
-          # Artifacts already in dist/ from the step above; action's built-in
-          # download (which matches dist-* globally) is intentionally skipped.
-          download-dist: 'false'
-          docker-registry: 'ghcr.io'
-          docker-password: ${{ secrets.GITHUB_TOKEN }}
-          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
-          apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
-          args: release --publish-only --crate cfgd-core
-        env:
-          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
-          CLOUDSMITH_TOKEN: ${{ secrets.CLOUDSMITH_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          KREW_INDEX_TOKEN: ${{ secrets.KREW_INDEX_TOKEN }}
-          NIX_PKGS_TOKEN: ${{ secrets.NIX_PKGS_TOKEN }}
-          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
-          WINGET_PKGS_TOKEN: ${{ secrets.WINGET_PKGS_TOKEN }}
-
-      - name: Rollback on release failure
-        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
-        uses: ./.github/actions/rollback-on-failure
-        with:
-          head_sha: ${{ needs.tag.outputs.head_sha }}
-          gh_token: ${{ secrets.GH_PAT }}
+    uses: ./.github/workflows/publish-crate.yml
+    with:
+      crate: cfgd-core
+      head_sha: ${{ needs.tag.outputs.head_sha }}
+      rollback: true
+    secrets: inherit
 
   # cfgd / cfgd-csi / cfgd-operator publish IN PARALLEL after cfgd-core. Each
   # matrix leg runs a single-crate publish (--crate <name>) and is gated on
@@ -384,69 +272,31 @@ jobs:
     # release's tag and aborts on a tag-vs-HEAD mismatch (or worse, races the
     # rollback's master push). A crd failure would otherwise reach the trio as
     # publish-core=skipped, which the `if:` treats as green.
-    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.tag.outputs.trio != '[]' && (needs.determinism-check.result == 'success' || needs.determinism-check.result == 'skipped') && (needs.publish-crd.result == 'success' || needs.publish-crd.result == 'skipped') && (needs.publish-core.result == 'success' || needs.publish-core.result == 'skipped') }}
+    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.tag.outputs.trio != '[]' && needs.determinism-check.result == 'success' && (needs.publish-crd.result == 'success' || needs.publish-crd.result == 'skipped') && (needs.publish-core.result == 'success' || needs.publish-core.result == 'skipped') }}
     permissions:
       contents: write
       packages: write
       id-token: write
       attestations: write
-    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         crate: ${{ fromJson(needs.tag.outputs.trio) }}
-    steps:
-      - name: Check out release commit
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          ref: ${{ needs.tag.outputs.head_sha }}
-
-      - name: Install protoc
-        uses: ./.github/actions/setup-protoc
-
-      - name: Download preserved dist (${{ matrix.crate }})
-        uses: ./.github/actions/download-dist
-        with:
-          # Single-crate publish leg — sibling crates' dists are dead weight.
-          pattern: dist-${{ matrix.crate }}-*
-
-      - name: Run anodizer release (${{ matrix.crate }})
-        id: release
-        uses: tj-smith47/anodizer-action@v1
-        with:
-          version: ${{ env.ANODIZER_VERSION }}
-          auto-install: 'true'
-          # cfgd publishes a snap (snapcrafts: publisher, nested under the
-          # per-crate workspaces.cfgd block) and runs `alejandra` to format the
-          # nix derivation (nix.formatter, same nesting). Neither tool ships on
-          # GitHub runner images, and v0.9 env-preflight + v0.9.1's fail-loud
-          # alejandra abort the release if either is missing. Install them
-          # explicitly; additive with auto-install (harmless if it already
-          # covers them).
-          install: snapcraft,alejandra
-          # Artifacts already in dist/ from the step above; action's built-in
-          # download (which matches dist-* globally) is intentionally skipped.
-          download-dist: 'false'
-          docker-registry: 'ghcr.io'
-          docker-password: ${{ secrets.GITHUB_TOKEN }}
-          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
-          apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
-          args: release --publish-only --crate ${{ matrix.crate }}
-        env:
-          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
-          CLOUDSMITH_TOKEN: ${{ secrets.CLOUDSMITH_TOKEN }}
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          KREW_INDEX_TOKEN: ${{ secrets.KREW_INDEX_TOKEN }}
-          NIX_PKGS_TOKEN: ${{ secrets.NIX_PKGS_TOKEN }}
-          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
-          WINGET_PKGS_TOKEN: ${{ secrets.WINGET_PKGS_TOKEN }}
+    uses: ./.github/workflows/publish-crate.yml
+    with:
+      crate: ${{ matrix.crate }}
+      head_sha: ${{ needs.tag.outputs.head_sha }}
+      # cfgd publishes a snap (snapcrafts: publisher, nested under the
+      # per-crate workspaces.cfgd block) and runs `alejandra` to format the
+      # nix derivation (nix.formatter, same nesting). Neither tool ships on
+      # GitHub runner images, and v0.9 env-preflight + v0.9.1's fail-loud
+      # alejandra abort the release if either is missing. Install them
+      # explicitly; additive with auto-install (harmless if it already
+      # covers them).
+      install: snapcraft,alejandra
+      # rollback stays at its false default: these legs run concurrently, so
+      # rollback is the dedicated rollback-trio job below.
+    secrets: inherit
 
   # Trio rollback runs ONCE, after every leg settles — never inside a leg.
   # With fail-fast off, an in-leg rollback would delete this release's tags

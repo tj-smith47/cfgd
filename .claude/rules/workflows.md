@@ -23,9 +23,16 @@ single-source-of-truth wiring.
 
 ## Job wiring invariants
 
-- Release publish ordering: crd → core → trio (matrix) — crates.io dep polls
-  depend on it. Trio rollback is the dedicated `rollback-trio` job, never a
-  per-leg step (fail-fast off means legs run concurrently).
+- Every publish leg is a `publish-crate.yml` reusable-workflow call
+  (crd/core as ordered single calls with `rollback: true`, the trio as a
+  matrix with rollback left false). Ordering crd → core → trio is
+  load-bearing: crates.io dep polls depend on it.
+- Determinism lanes come from the tag job's `det_matrix` output: trio
+  crates shard across all three OSes, library crates linux-only (via
+  determinism-shards' `os-labels` input). Publish legs restore their
+  crate's `dist-<crate>-*` artifact — there is no inline preserve-dist.
+- Trio rollback is the dedicated `rollback-trio` job, never a per-leg
+  step (fail-fast off means legs run concurrently).
 - `permissions:` read-only at workflow level; publish jobs elevate to the
   full write set, image-push jobs to `packages: write` only.
 - Preflight's bump-message guard breaks the tag→CI→Release self-retrigger

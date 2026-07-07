@@ -1,0 +1,96 @@
+name: Publish crate
+
+# Single-crate publish leg, called once per released crate by release.yml
+# (crd and core as ordered single calls, the binary trio as a matrix).
+# Every leg has the same shape: check out the tagged SHA, restore that
+# crate's determinism-preserved dist, run `release --publish-only`.
+
+on:
+  workflow_call:
+    inputs:
+      crate:
+        description: "Crate to publish (passed to release --publish-only --crate)."
+        required: true
+        type: string
+      head_sha:
+        description: "Commit SHA the freshly-pushed tags point at; checked out so HEAD matches what release --publish-only tag-validates against."
+        required: true
+        type: string
+      install:
+        description: "Extra comma-separated tools for anodizer-action to install (e.g. snapcraft,alejandra for the cfgd snap + nix publishers). Empty = auto-install only."
+        required: false
+        type: string
+        default: ''
+      rollback:
+        description: "Roll back the release tags in-job on failure. TRUE only for legs with no concurrent siblings (crd/core) — parallel matrix legs must leave rollback to release.yml's rollback-trio job, or a failed leg deletes tags out from under still-running siblings."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write # MCP registry publish via github-oidc auth; also OIDC for SLSA attestation
+  attestations: write # mint SLSA build provenance (attestations.enabled, subjects mode)
+
+env:
+  # SSOT: repo variable (gh variable set ANODIZER_VERSION), shared by every
+  # workflow that installs anodizer.
+  ANODIZER_VERSION: ${{ vars.ANODIZER_VERSION }}
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.crate }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.head_sha }}
+
+      - name: Install protoc
+        uses: ./.github/actions/setup-protoc
+
+      - name: Download preserved dist (${{ inputs.crate }})
+        uses: ./.github/actions/download-dist
+        with:
+          # Single-crate publish leg — sibling crates' dists are dead weight.
+          pattern: dist-${{ inputs.crate }}-*
+
+      - name: Run anodizer release (${{ inputs.crate }})
+        id: release
+        uses: tj-smith47/anodizer-action@v1
+        with:
+          version: ${{ env.ANODIZER_VERSION }}
+          auto-install: 'true'
+          install: ${{ inputs.install }}
+          # Artifacts already in dist/ from the step above; action's built-in
+          # download (which matches dist-* globally) is intentionally skipped.
+          download-dist: 'false'
+          docker-registry: 'ghcr.io'
+          docker-password: ${{ secrets.GITHUB_TOKEN }}
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
+          args: release --publish-only --crate ${{ inputs.crate }}
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+          CLOUDSMITH_TOKEN: ${{ secrets.CLOUDSMITH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          KREW_INDEX_TOKEN: ${{ secrets.KREW_INDEX_TOKEN }}
+          NIX_PKGS_TOKEN: ${{ secrets.NIX_PKGS_TOKEN }}
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+          WINGET_PKGS_TOKEN: ${{ secrets.WINGET_PKGS_TOKEN }}
+
+      - name: Rollback on release failure
+        if: inputs.rollback && (failure() || cancelled()) && steps.release.outcome != 'skipped'
+        uses: ./.github/actions/rollback-on-failure
+        with:
+          head_sha: ${{ inputs.head_sha }}
+          gh_token: ${{ secrets.GH_PAT }}

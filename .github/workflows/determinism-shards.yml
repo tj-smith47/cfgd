@@ -17,6 +17,11 @@ on:
         description: "Commit SHA to check out and tag-validate against"
         required: true
         type: string
+      os-labels:
+        description: "JSON array of shard labels to run (subset of linux/macos/windows). Library crates pass [\"linux\"] — their preserved dist is OS-independent source packaging, so extra OS shards would rebuild the identical tarball three times."
+        required: false
+        type: string
+        default: '["linux","macos","windows"]'
 
 permissions:
   contents: read
@@ -29,30 +34,27 @@ env:
 
 jobs:
   shard:
-    name: ${{ matrix.shard.name }}
+    name: ${{ fromJson('{"linux":"Linux","macos":"macOS","windows":"Windows"}')[matrix.label] }}
     strategy:
       fail-fast: false
+      # One shard per OS label the caller asked for. No `targets` is passed
+      # to the harness, so it derives that OS's full shipped target set from
+      # `anodizer targets --json` (cfgd maps both x86_64 and aarch64 of every
+      # OS — including aarch64-pc-windows-msvc — onto its native runner OS).
+      # Building an OS's whole target set on a single x86_64 runner is the
+      # faithful shape for two reasons, both independent of any one target:
+      #   1. Determinism must rebuild exactly what publish ships. publish
+      #      cross-compiles aarch64 from the x86_64 host, so the check must
+      #      too — a native windows-11-arm build would exercise a different
+      #      toolchain path than the artifact users actually receive.
+      #   2. The archive stage's arch-agnostic completions/man generation
+      #      executes the built binary, so a host-native x86_64 build must
+      #      be present on the runner — the same reason the all-targets
+      #      publish build generates them once and shares them into every
+      #      archive.
       matrix:
-        # One shard per OS. Each leaves `targets` empty so the harness derives
-        # that OS's full shipped target set from `anodizer targets --json`
-        # (cfgd maps both x86_64 and aarch64 of every OS — including
-        # aarch64-pc-windows-msvc — onto its native runner OS). Building an
-        # OS's whole target set on a single x86_64 runner is the faithful
-        # shape for two reasons, both independent of any one target:
-        #   1. Determinism must rebuild exactly what publish ships. publish
-        #      cross-compiles aarch64 from the x86_64 host, so the check must
-        #      too — a native windows-11-arm build would exercise a different
-        #      toolchain path than the artifact users actually receive.
-        #   2. The archive stage's arch-agnostic completions/man generation
-        #      executes the built binary, so a host-native x86_64 build must
-        #      be present on the runner — the same reason the all-targets
-        #      publish build generates them once and shares them into every
-        #      archive.
-        shard:
-          - { os: ubuntu-latest,  label: linux,   targets: '', name: 'Linux' }
-          - { os: macos-latest,   label: macos,   targets: '', name: 'macOS' }
-          - { os: windows-latest, label: windows, targets: '', name: 'Windows' }
-    runs-on: ${{ matrix.shard.os }}
+        label: ${{ fromJson(inputs.os-labels) }}
+    runs-on: ${{ fromJson('{"linux":"ubuntu-latest","macos":"macos-latest","windows":"windows-latest"}')[matrix.label] }}
     steps:
       - name: Check out release commit
         uses: actions/checkout@v7
@@ -69,9 +71,8 @@ jobs:
           version: ${{ env.ANODIZER_VERSION }}
           auto-install: 'true'
           determinism: 'true'
-          determinism-targets: ${{ matrix.shard.targets }}
           preserve-dist: 'true'
-          shard-label: ${{ matrix.shard.label }}
+          shard-label: ${{ matrix.label }}
           determinism-crate: ${{ inputs.crate }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
@@ -80,7 +81,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: dist-${{ inputs.crate }}-${{ matrix.shard.label }}
+          name: dist-${{ inputs.crate }}-${{ matrix.label }}
           path: preserved-dist/
           if-no-files-found: error
           # Consumed by the publish jobs minutes later; a week of retention
@@ -97,7 +98,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: determinism-${{ inputs.crate }}-${{ matrix.shard.label }}
+          name: determinism-${{ inputs.crate }}-${{ matrix.label }}
           path: |
             dist/run-*/determinism.json
             dist/run-*/drift-bins/**
