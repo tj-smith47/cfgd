@@ -20,6 +20,7 @@ spec:
     url: string
     branch: string
     auth: string
+    sshStrictHostKeyChecking: AcceptNew | Yes | No
 
   daemon:
     enabled: bool
@@ -46,6 +47,7 @@ spec:
       drift: bool
       method: Desktop | Stdout | Webhook
       webhookUrl: string
+    windowsEventLog: bool
 
   secrets:
     backend: string
@@ -62,18 +64,21 @@ spec:
         url: string
         branch: string
         auth: string
+        sshStrictHostKeyChecking: AcceptNew | Yes | No
       subscription:
         profile: string
         priority: uint
         acceptRecommended: bool
         optIn:
           - string
+        allowScripts: bool
         overrides: {}
         reject: {}
       sync:
         interval: string
         autoApply: bool
         pinVersion: string
+        required: bool
 
   modules:
     registries:
@@ -105,6 +110,8 @@ spec:
       diffAdd: string
       diffRemove: string
       diffContext: string
+      accent: string
+      secondary: string
       iconOk: string
       iconWarn: string
       iconFail: string
@@ -134,6 +141,13 @@ spec:
     export:
       format: json | yaml
       path: string
+
+  update:
+    policy: Auto | Prompt | Notify | Manual
+    interval: string
+    channel: stable | prerelease
+    skills:
+      policy: Inherit | Auto | Prompt | Notify | Manual
 ```
 
 ---
@@ -164,6 +178,7 @@ spec:
 | `theme` | string or object | No | | Output theme name or detailed theme config. See [spec.theme](#spectheme). |
 | `ai` | object | No | | AI assistant configuration. See [spec.ai](#specai). |
 | `compliance` | object | No | | Continuous compliance snapshot settings. See [spec.compliance](#speccompliance). |
+| `update` | object | No | | Update policy for the cfgd binary and authored skills. See [spec.update](#specupdate). |
 
 ---
 
@@ -179,6 +194,7 @@ Can be written as a single object or as a list (first entry is the primary origi
 | `url` | string | Yes | | Remote URL. For `Git`: a git clone URL. For `Server`: the device gateway base URL. |
 | `branch` | string | No | `master` | Git branch to track. Only used when `type: Git`. |
 | `auth` | string | No | | SSH key path or credential reference for authenticated access. |
+| `sshStrictHostKeyChecking` | enum | No | `AcceptNew` | SSH `StrictHostKeyChecking` policy for git operations. See [SshHostKeyPolicy values](#sshhostkeypolicy-values). |
 
 #### OriginType values
 
@@ -186,6 +202,14 @@ Can be written as a single object or as a list (first entry is the primary origi
 |-------|-------------|
 | `Git` | Git repository (SSH or HTTPS). |
 | `Server` | cfgd device gateway HTTP endpoint. |
+
+#### SshHostKeyPolicy values
+
+| Value | Description |
+|-------|-------------|
+| `AcceptNew` | Accept first-seen keys, reject changed keys (safe default for automation). **(default)** |
+| `Yes` | Require keys to already exist in `known_hosts` (high-security environments). |
+| `No` | Accept any key without verification (insecure, not recommended). |
 
 **Examples:**
 
@@ -219,6 +243,7 @@ Controls the long-running daemon process started with `cfgd daemon`.
 | `reconcile` | object | No | | Reconciliation loop settings. See [spec.daemon.reconcile](#specdaemonreconcile). |
 | `sync` | object | No | | Git sync settings. See [spec.daemon.sync](#specdaemonsync). |
 | `notify` | object | No | | Notification settings. See [spec.daemon.notify](#specdaemonnotify). |
+| `windowsEventLog` | bool | No | `false` | Mirror daemon log output into the Windows Event Log under the `cfgd` source, in addition to the file appender at `%LOCALAPPDATA%\cfgd\daemon.log`. No effect on Unix. Read by `cfgd daemon install`; changes require reinstalling the service to take effect. |
 
 ---
 
@@ -328,7 +353,7 @@ Controls automatic git synchronisation (push/pull) in the daemon sync loop.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `backend` | string | No | `sops` | Secret backend identifier. Built-in values: `sops`. |
+| `backend` | string | No | `sops` | Secret backend identifier. Built-in values: `sops`, `age`. |
 | `sops` | object | No | | SOPS-specific configuration. See [spec.secrets.sops](#specsecretssops). |
 | `integrations` | list | No | `[]` | Additional secret integrations (1Password, Bitwarden, Vault). See [spec.secrets.integrations[]](#specsecretsintegrations). |
 
@@ -386,6 +411,7 @@ that publishes profiles and modules. See `docs/sources.md` for the full multi-so
 | `priority` | uint | No | `500` | Merge priority. Higher values win conflicts when multiple sources provide the same key. |
 | `acceptRecommended` | bool | No | `false` | Automatically accept all items in the source's `recommended` policy tier. |
 | `optIn` | list of string | No | `[]` | Explicit list of optional item names to opt in to from this source. |
+| `allowScripts` | bool | No | `false` | Opt in to running lifecycle scripts (profile-layer and source-delivered module bodies) from this source even when the source's `constraints.noScripts` would otherwise reject them. When `false`, the source's own `noScripts` constraint governs. |
 | `overrides` | object | No | | Free-form YAML overrides merged on top of the source's profile after fetching. |
 | `reject` | object | No | | Free-form YAML specifying items to reject from this source's output. |
 
@@ -398,6 +424,7 @@ that publishes profiles and modules. See `docs/sources.md` for the full multi-so
 | `interval` | string | No | `1h` | How often to pull updates from this source. Duration string: `30s`, `5m`, `1h`. |
 | `autoApply` | bool | No | `false` | Automatically apply changes from this source without user confirmation. |
 | `pinVersion` | string | No | | Pin this source to a git ref resolved against the repo's tags or commits. Accepts a semver range (`~2`, `^1.5`, `>=1.0.0`) selecting the highest matching tag, an exact tag name, or a commit SHA (7–40 hex, immutable). Mutually exclusive with `branch`; branches are not allowed as a pin. |
+| `required` | bool | No | `false` | Fail-closed marker. When `true`, a failure to load this source (fetch, manifest, signature, or an unresolvable `pinVersion`) is fatal — apply/plan/compose abort rather than silently dropping the source. When `false`, load failures warn and continue. Use it for security or team baselines that must always be composed in. |
 
 ---
 
@@ -546,7 +573,7 @@ Continuous compliance snapshot configuration. When enabled, the daemon captures 
 |-------|------|----------|---------|-------------|
 | `enabled` | bool | No | `false` | Enable compliance snapshots. |
 | `interval` | duration | No | `1h` | How often to capture a snapshot. Duration string: `30s`, `5m`, `1h`. |
-| `retention` | duration | No | `720h` | How long to keep snapshots locally before the daemon deletes them. |
+| `retention` | duration | No | `30d` | How long to keep snapshots locally before the daemon deletes them. Duration string: `30s`, `5m`, `1h`, `30d`. |
 | `scope.files` | bool | No | `true` | Include managed file state. Each present file is content-checked: its on-disk bytes are compared to its rendered source, so a file that exists but drifted is a violation (not just existence + permissions + encryption status). |
 | `scope.packages` | bool | No | `true` | Include managed package state (installed version per manager). |
 | `scope.system` | bool | No | `true` | Include system configurator state (covers `sshKeys`, `gpgKeys`, `git`, and all other configurators). |
@@ -561,7 +588,7 @@ Continuous compliance snapshot configuration. When enabled, the daemon captures 
 compliance:
   enabled: true
   interval: 1h
-  retention: 720h
+  retention: 30d
   scope:
     files: true
     packages: true
@@ -582,3 +609,46 @@ compliance:
 Compliance reports the **effective** desired state — the active profile combined with the modules it pulls in — so files, packages, and system settings contributed by a module are first-class in every compliance surface (snapshot, export, diff, history) and in the checkin summary, exactly as they appear in `cfgd verify` and `cfgd diff`. Module resources are attributed to their module in the check detail. File checks are content-aware on both profile and module files.
 
 Snapshot summaries are included in device checkin payloads to the operator gateway. The fleet dashboard shows per-device compliance scores. Use `cfgd compliance` to run a snapshot on demand, `cfgd compliance history` to list past snapshots, and `cfgd compliance diff <id1> <id2>` to compare two snapshots.
+
+---
+
+### spec.update
+
+Update policy governing self-update checks for the cfgd binary and update checks for authored
+skills (`cfgd skill update`).
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `policy` | enum | No | `Prompt` | How update checks for the cfgd binary behave. See [UpdatePolicy values](#updatepolicy-values). |
+| `interval` | duration | No | `24h` | How often to check for updates. Duration string: `30m`, `24h`, `7d`, or a plain number of seconds. |
+| `channel` | string | No | `stable` | Release channel to track. `stable` follows the latest stable release; `prerelease` also includes prereleases. Matching is case-insensitive; an unrecognised value logs a warning and falls back to `stable`. |
+| `skills` | object | No | | Update policy for authored skills. See [spec.update.skills](#specupdateskills). |
+
+#### UpdatePolicy values
+
+| Value | Description |
+|-------|-------------|
+| `Auto` | Apply updates automatically without prompting. |
+| `Prompt` | Ask before applying an available update. **(default)** |
+| `Notify` | Report that an update is available, but take no action. |
+| `Manual` | Disable automatic update checks; the user runs `cfgd upgrade` themselves. |
+
+Values are matched case-insensitively.
+
+---
+
+### spec.update.skills
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `policy` | enum | No | `Inherit` | How skill update checks behave. `Inherit` defers to the binary-level `spec.update.policy`; the other values (`Auto`, `Prompt`, `Notify`, `Manual`) mirror [UpdatePolicy values](#updatepolicy-values). |
+
+**Example:**
+```yaml
+update:
+  policy: Notify
+  interval: 24h
+  channel: stable
+  skills:
+    policy: Inherit
+```

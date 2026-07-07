@@ -22,6 +22,10 @@ spec:
     - name: string
       required: bool
 
+  debugModules:
+    - name: string
+      required: bool
+
   packages:
     - name: string
       version: semver-requirement  # optional

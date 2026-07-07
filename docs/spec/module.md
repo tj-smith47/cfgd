@@ -39,6 +39,10 @@ spec:
       target: string
       strategy: Symlink | Copy | Template | Hardlink
       private: bool
+      encryption:
+        backend: string
+        mode: InRepo | Always
+      permissions: string
 
   env:
     - name: string
@@ -233,6 +237,7 @@ same deployment strategies as profile files. Paths are resolved relative to the 
 | `target` | string | Yes | | Absolute destination path on the machine. Supports `~/` expansion. |
 | `strategy` | enum | No | Global `fileStrategy` | Deployment strategy for this file. Overrides the global default from `cfgd.yaml`. See [FileStrategy values](#filestrategy-values). |
 | `private` | bool | No | `false` | When `true`, the source file is local-only: automatically added to `.gitignore` and silently skipped on machines where it does not exist. |
+| `encryption` | object | No | | Encryption enforcement for this file. Has `backend` (`"sops"` or `"age"`) and `mode` (`InRepo` or `Always`, default `InRepo`). Same semantics as profile managed-file encryption — see the encryption fields in `docs/spec/profile.md`. |
 | `permissions` | string | No | | Octal permission mode to enforce on the deployed target file (e.g. `"755"`). Applied after deployment; ignored on Windows (NTFS uses inherited ACLs). |
 
 **Example:**

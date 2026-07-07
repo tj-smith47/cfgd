@@ -20,7 +20,9 @@ metadata:
 
 spec:
   deviceId: string
-  machineConfigRef: string
+  machineConfigRef:
+    name: string
+    namespace: string
   severity: Low | Medium | High | Critical
 
   driftDetails:
@@ -31,6 +33,13 @@ spec:
 status:
   detectedAt: string
   resolvedAt: string
+
+  conditions:
+    - type: string
+      status: string
+      reason: string
+      message: string
+      lastTransitionTime: string
 ```
 
 ---
@@ -51,7 +60,7 @@ status:
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `deviceId` | string | Yes | | Unique identifier for the device that reported the drift. Matches the device's enrollment ID in the gateway database. |
-| `machineConfigRef` | string | Yes | | Name of the `MachineConfig` resource that the device is reconciled against. |
+| `machineConfigRef` | object | Yes | | Typed reference to the `MachineConfig` resource that the device is reconciled against. See [spec.machineConfigRef](#specmachineconfigref). |
 | `severity` | enum | Yes | | Severity classification of this drift event. See [DriftSeverity values](#driftseverity-values). |
 | `driftDetails` | list | No | `[]` | Itemised list of fields that are out of sync. See [spec.driftDetails[]](#specdriftdetails). |
 
@@ -65,6 +74,24 @@ Serialised as PascalCase (no rename applied to enum variants).
 | `Medium` | Divergence that may affect reliability or observability but is not immediately dangerous. |
 | `High` | Divergence that affects security posture or cluster operation (e.g. missing kernel module, wrong sysctl). |
 | `Critical` | Divergence that constitutes an active security or availability risk. Triggers immediate alerting. |
+
+---
+
+### spec.machineConfigRef
+
+Typed reference to a `MachineConfig` resource.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | Yes | | Name of the `MachineConfig` resource. |
+| `namespace` | string | No | | Namespace of the `MachineConfig`. When omitted, the alert's own namespace is assumed. |
+
+**Example:**
+```yaml
+machineConfigRef:
+  name: alice-k8s-worker
+  namespace: team-platform
+```
 
 ---
 

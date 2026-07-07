@@ -168,7 +168,7 @@ member, merging team-level defaults with member-level overrides.
 | `username` | string | Yes | | Unique identifier for the team member. Used as the `<username>` suffix in the generated `MachineConfig` name. |
 | `sshPublicKey` | string | No | | SSH public key for device identity verification during enrollment and check-in. |
 | `profile` | string | No | | Profile override for this member. When set, takes precedence over `spec.profile`. Defaults to the team-level `spec.profile`. |
-| `hostname` | string | No | | Machine hostname. If empty on creation, the device gateway fills this in on first check-in. |
+| `hostname` | string | No | | Machine hostname. If empty on creation, the generated `MachineConfig` gets the placeholder hostname `pending-<username>` until the device checks in and reports its real hostname. |
 
 **Example:**
 ```yaml
@@ -189,8 +189,8 @@ members:
 When Crossplane reconciles a `TeamConfig`, it runs the `function-cfgd` pipeline step which:
 
 1. Iterates `spec.members[]`.
-2. For each member, generates a `MachineConfig` named `<spec.team>-<member.username>` in the same namespace.
-3. Sets `MachineConfig.spec.hostname` from `member.hostname` (or leaves it empty for gateway fill-in).
+2. For each member, generates a `MachineConfig` with the generate-name prefix `<spec.team>-<member.username>-` in the same namespace.
+3. Sets `MachineConfig.spec.hostname` from `member.hostname` (or the placeholder `pending-<member.username>` until the device checks in and reports its real hostname).
 4. Sets `MachineConfig.spec.profile` from `member.profile` if set, otherwise from `spec.profile`.
 5. Injects `policy.requiredModules` as `moduleRefs` with `required: true`.
 6. Injects `policy.recommendedModules` as `moduleRefs` with `required: false`.

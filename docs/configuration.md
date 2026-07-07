@@ -114,7 +114,7 @@ spec:
 
 All fields can be read and written programmatically via `cfgd config get <key>` and `cfgd config set <key> <value>`. See the [CLI reference](cli-reference.md) for details.
 
-Enum-valued fields (e.g. `spec.fileStrategy`, `spec.daemon.driftPolicy`, `spec.daemon.notify.method`, `spec.env.scope`, `spec.compliance.export.format`) are parsed case-insensitively — `Symlink`, `symlink`, and `SYMLINK` are all accepted. The documented PascalCase form is canonical and is what cfgd writes back.
+Enum-valued fields (e.g. `spec.fileStrategy`, `spec.daemon.driftPolicy`, `spec.daemon.notify.method`, the profile-level `spec.envScope`, `spec.compliance.export.format`) are parsed case-insensitively — `Symlink`, `symlink`, and `SYMLINK` are all accepted. The documented PascalCase form is canonical and is what cfgd writes back.
 
 ## Update behavior (`spec.update`)
 

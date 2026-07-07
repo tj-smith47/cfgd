@@ -40,11 +40,7 @@ spec:
 
 status:
   lastReconciled: string
-  driftDetected: bool
   observedGeneration: int
-
-  packageVersions:
-    package-name: version-string
 
   conditions:
     - type: string
@@ -52,6 +48,10 @@ status:
       reason: string
       message: string
       lastTransitionTime: string
+      observedGeneration: int
+
+  packageVersions:
+    package-name: version-string
 ```
 
 ---
@@ -155,10 +155,9 @@ Written by the operator after each reconciliation pass. Do not set manually.
 | Field | Type | Description |
 |-------|------|-------------|
 | `lastReconciled` | string (ISO 8601) | Timestamp of the last successful reconciliation. |
-| `driftDetected` | bool | `true` if the last reconciliation found divergence between desired and actual state. |
 | `observedGeneration` | int | The `metadata.generation` that was last processed by the controller. |
+| `conditions` | list | Standard Kubernetes condition list. Drift is reported here as a `DriftDetected` condition. See [status.conditions[]](#statusconditions). |
 | `packageVersions` | map | Reported installed versions keyed by package name (e.g. `{"kubectl": "1.28.3"}`). Versions are loose semver: `1.28`, `1.28.3`. |
-| `conditions` | list | Standard Kubernetes condition list. See [status.conditions[]](#statusconditions). |
 
 ---
 
@@ -168,11 +167,12 @@ Follows the standard Kubernetes condition convention.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `type` | string | Condition type identifier (e.g. `Reconciled`, `DriftDetected`, `Ready`). |
+| `type` | string | Condition type identifier (e.g. `Reconciled`, `DriftDetected`, `Ready`). A `DriftDetected` condition with status `"True"` means the last reconciliation found divergence between desired and actual state. |
 | `status` | string | `"True"`, `"False"`, or `"Unknown"`. |
 | `reason` | string | Short CamelCase reason token. |
 | `message` | string | Human-readable explanation. |
 | `lastTransitionTime` | string (ISO 8601) | When this condition last changed status. |
+| `observedGeneration` | int | Optional. The `metadata.generation` the condition was set against. Omitted when not set. |
 
 ---
 
