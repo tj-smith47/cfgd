@@ -107,16 +107,16 @@ fn extract_caveats_empty_output() {
 }
 
 #[test]
-fn strip_sudo_if_root_returns_slice_unchanged_when_no_sudo() {
+fn strip_sudo_for_exec_returns_slice_unchanged_when_no_sudo() {
     let cmd: &[&str] = &["apt-get", "install", "-y"];
-    let result = strip_sudo_if_root(cmd);
+    let result = strip_sudo_for_exec(cmd);
     assert_eq!(result, &["apt-get", "install", "-y"]);
 }
 
 #[test]
-fn strip_sudo_if_root_empty_slice() {
+fn strip_sudo_for_exec_empty_slice() {
     let cmd: &[&str] = &[];
-    let result = strip_sudo_if_root(cmd);
+    let result = strip_sudo_for_exec(cmd);
     assert!(result.is_empty());
 }
 
@@ -330,9 +330,9 @@ fn print_caveats_multiple_notes() {
 }
 
 #[test]
-fn strip_sudo_if_root_single_element_sudo() {
+fn strip_sudo_for_exec_single_element_sudo() {
     let cmd: &[&str] = &["sudo"];
-    let result = strip_sudo_if_root(cmd);
+    let result = strip_sudo_for_exec(cmd);
     // When running as non-root in tests, sudo stays
     if cfgd_core::is_root() {
         assert!(result.is_empty());
@@ -342,9 +342,9 @@ fn strip_sudo_if_root_single_element_sudo() {
 }
 
 #[test]
-fn strip_sudo_if_root_non_sudo_first() {
+fn strip_sudo_for_exec_non_sudo_first() {
     let cmd: &[&str] = &["apt-get", "install", "sudo"];
-    let result = strip_sudo_if_root(cmd);
+    let result = strip_sudo_for_exec(cmd);
     // "sudo" is not the first element, so unchanged
     assert_eq!(result, &["apt-get", "install", "sudo"]);
 }
@@ -576,16 +576,29 @@ fn sudo_cmd_non_root_has_program_as_first_arg() {
 }
 
 #[test]
-fn strip_sudo_if_root_with_sudo_prefix() {
+#[serial_test::serial]
+fn strip_sudo_for_exec_with_sudo_prefix() {
+    // Pin the wrapped tool's seam unset so only the privilege branch decides.
+    let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_APT_GET_BIN");
     let cmd: &[&str] = &["sudo", "apt-get", "install", "-y"];
-    let result = strip_sudo_if_root(cmd);
+    let result = strip_sudo_for_exec(cmd);
     if cfgd_core::is_root() {
         // As root, sudo is stripped
         assert_eq!(result, &["apt-get", "install", "-y"]);
     } else {
-        // As non-root, unchanged
+        // As non-root with no seam, unchanged
         assert_eq!(result, &["sudo", "apt-get", "install", "-y"]);
     }
+}
+
+#[test]
+#[serial_test::serial]
+fn strip_sudo_for_exec_strips_when_wrapped_tool_seam_is_set() {
+    // Seam set for the wrapped tool ⇒ sudo prefix dropped regardless of
+    // privilege — the shim runs as the test user (see sudo_cmd_with_seam).
+    let _g = cfgd_core::test_helpers::EnvVarGuard::set("CFGD_APT_GET_BIN", "/bin/true");
+    let cmd: &[&str] = &["sudo", "apt-get", "install", "-y"];
+    assert_eq!(strip_sudo_for_exec(cmd), &["apt-get", "install", "-y"]);
 }
 
 #[test]
@@ -1090,28 +1103,17 @@ fn bootstrap_via_system_manager_succeeds_with_apt_get_shim() {
     perms.set_mode(0o755);
     std::fs::set_permissions(&shim, perms).unwrap();
 
-    let prev_path = std::env::var_os("PATH");
-    // SAFETY: serial; PATH restored below.
-    unsafe {
-        let new_path = format!(
-            "{}:{}",
-            dir.path().display(),
-            prev_path
-                .as_ref()
-                .map(|v| v.to_string_lossy())
-                .unwrap_or_default()
-        );
-        std::env::set_var("PATH", &new_path);
-    }
+    // The env seam (not a PATH shim) is load-bearing here: as an unprivileged
+    // user, bootstrap_via_system_manager wraps the call in real `sudo`, whose
+    // secure_path would resolve the REAL apt-get — a PATH shim silently turns
+    // this test into a live `sudo apt-get install` on CI runners.
+    // sudo_cmd_with_seam short-circuits to the shim under any privilege.
+    let _seam = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_APT_GET_BIN",
+        shim.to_str().expect("tempdir path is valid UTF-8"),
+    );
     let (printer, _buf) = Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
     let result = bootstrap_via_system_manager(&printer, "snapd", "snap");
-    // SAFETY: serial.
-    unsafe {
-        match prev_path {
-            Some(v) => std::env::set_var("PATH", v),
-            None => std::env::remove_var("PATH"),
-        }
-    }
     assert!(result.is_ok(), "expected Ok when apt-get shim exits 0");
 }
 

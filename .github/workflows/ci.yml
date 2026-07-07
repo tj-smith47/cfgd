@@ -203,6 +203,16 @@ jobs:
       - name: Run coverage and update badge
         run: task coverage:publish
 
+      # Preserved so a floor failure can be diffed per-file against a local
+      # cobertura.xml — the runner covers a different environment-dependent
+      # line set than a dev box, and the badge only records a rounded percent.
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: cobertura.xml
+          retention-days: 7
+
       # Reuses the cobertura.xml the publish step just wrote — no second
       # instrumented run. Master must never drop below the same floor that
       # gates local `task push`.

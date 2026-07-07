@@ -574,7 +574,10 @@ pub(super) fn bootstrap_via_system_manager(
     manager_name: &str,
 ) -> Result<()> {
     for cmd_name in ["apt-get", "dnf", "zypper"] {
-        if command_available(cmd_name) {
+        // Probe through the same CFGD_<NAME>_BIN seam the construction below
+        // honors — a seam-shimmed tool must look available on hosts that lack
+        // the real binary (see require_tool_with_seam's pairing note).
+        if cfgd_core::command_available_with_seam(&tool_seam_var(cmd_name), cmd_name) {
             let result = printer
                 .run(
                     sudo_cmd_with_seam(cmd_name).args(["install", "-y", target_pkg]),
@@ -686,14 +689,23 @@ pub(super) fn strip_arch_suffix(name: &str) -> String {
     name.rsplit_once('.').map_or(name, |(n, _)| n).to_string()
 }
 
-/// Strip leading `"sudo"` from a command slice when already running as root.
-/// Returns the effective command slice (unchanged if not root or no sudo prefix).
-pub(super) fn strip_sudo_if_root<'a>(cmd: &'a [&'a str]) -> &'a [&'a str] {
-    if cmd.first() == Some(&"sudo") && cfgd_core::is_root() {
-        &cmd[1..]
-    } else {
-        cmd
+/// Strip leading `"sudo"` from a command slice when the wrapper would be
+/// redundant or harmful: already running as root, or the wrapped tool's
+/// `CFGD_<NAME>_BIN` seam is set (the test shim runs as the test user, and
+/// routing through the real sudo would bypass the seam — same rationale as
+/// [`sudo_cmd_with_seam`]). Returns the effective command slice.
+pub(super) fn strip_sudo_for_exec<'a>(cmd: &'a [&'a str]) -> &'a [&'a str] {
+    if cmd.first() == Some(&"sudo") {
+        if cfgd_core::is_root() {
+            return &cmd[1..];
+        }
+        if let Some(tool) = cmd.get(1)
+            && std::env::var(tool_seam_var(tool)).is_ok()
+        {
+            return &cmd[1..];
+        }
     }
+    cmd
 }
 
 /// Build a Command that prepends `sudo` only when not already running as root.

@@ -1425,11 +1425,12 @@ fn cmd_module_search_no_registries_json() {
 #[serial_test::serial]
 fn cmd_module_keys_generate_no_cosign_fails() {
     // Parallel CosignTestShim tests set CFGD_COSIGN_BIN; force require_cosign
-    // through the PATH-only branch so the missing-tool error fires here.
+    // through the PATH-only branch, and empty PATH so the missing-tool error
+    // fires whether or not the host has cosign. Spawn-exclusion guard first
+    // so it drops last, bracketing the empty-PATH window.
+    let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
-    if cfgd_core::command_available("cosign") {
-        return; // skip if cosign is actually installed
-    }
+    let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let printer = make_printer();
     let err = cmd_module_keys_generate(&printer, None).unwrap_err();
     assert!(
@@ -3692,10 +3693,9 @@ fn cmd_module_update_combined_operations() {
 #[test]
 #[serial_test::serial]
 fn cmd_module_keys_rotate_no_cosign_fails() {
+    let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
-    if cfgd_core::command_available("cosign") {
-        return;
-    }
+    let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let printer = make_printer();
     let err = cmd_module_keys_rotate(&printer, None, &[]).unwrap_err();
     assert!(
@@ -3707,11 +3707,18 @@ fn cmd_module_keys_rotate_no_cosign_fails() {
 // ─── cmd_module_keys_rotate — no existing key fails ─────────────
 
 #[test]
+#[serial_test::serial]
 fn cmd_module_keys_rotate_no_existing_key_fails() {
-    if !cfgd_core::command_available("cosign") {
-        return;
-    }
+    // Satisfy require_cosign via the seam (any existing file) so the
+    // missing-key check is reached whether or not the host has cosign;
+    // the flow errors before ever invoking the binary.
     let dir = tempfile::tempdir().unwrap();
+    let fake = dir.path().join("cosign");
+    std::fs::write(&fake, "").unwrap();
+    let _g = cfgd_core::test_helpers::EnvVarGuard::set(
+        "CFGD_COSIGN_BIN",
+        fake.to_str().expect("tempdir path is valid UTF-8"),
+    );
     let printer = make_printer();
     let err =
         cmd_module_keys_rotate(&printer, Some(dir.path().to_str().unwrap()), &[]).unwrap_err();

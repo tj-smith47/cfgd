@@ -12307,12 +12307,12 @@ fn cmd_module_build_no_module_yaml_fails() {
 #[serial_test::serial]
 fn cmd_module_keys_generate_no_cosign_fails() {
     // Parallel CosignTestShim tests set CFGD_COSIGN_BIN; force require_cosign
-    // through the PATH-only branch so the missing-tool error fires here.
+    // through the PATH-only branch, and empty PATH so the missing-tool error
+    // fires whether or not the host has cosign. Spawn-exclusion guard first
+    // so it drops last, bracketing the empty-PATH window.
+    let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
-    if cfgd_core::command_available("cosign") {
-        // Skip test if cosign is actually available
-        return;
-    }
+    let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let printer = test_printer();
 
     let result = module::cmd_module_keys_generate(&printer, None);
@@ -12323,10 +12323,9 @@ fn cmd_module_keys_generate_no_cosign_fails() {
 #[test]
 #[serial_test::serial]
 fn cmd_module_keys_rotate_no_cosign_fails() {
+    let _spawn_excl = cfgd_core::test_helpers::path_env_mutation_guard();
     let _g = cfgd_core::test_helpers::EnvVarGuard::unset("CFGD_COSIGN_BIN");
-    if cfgd_core::command_available("cosign") {
-        return;
-    }
+    let _path = cfgd_core::test_helpers::EnvVarGuard::set("PATH", "");
     let printer = test_printer();
 
     let result = module::cmd_module_keys_rotate(&printer, None, &[]);

@@ -1655,7 +1655,7 @@ fn detect_brew_system_method_returns_valid_manager() {
 
 // --- extract_caveats tests ---
 
-// --- strip_sudo_if_root tests ---
+// --- strip_sudo_for_exec tests ---
 
 // --- SimpleManager display_cmd tests ---
 
@@ -2868,7 +2868,7 @@ fn all_package_managers_bootstrap_consistency() {
     }
 }
 
-// --- strip_sudo_if_root edge cases ---
+// --- strip_sudo_for_exec edge cases ---
 
 // --- SimpleManager installed_packages_with_versions dispatch ---
 
@@ -3440,7 +3440,7 @@ fn remove_package_snap_from_packages_list() {
 
 // --- sudo_cmd() production function ---
 
-// --- strip_sudo_if_root on real root check ---
+// --- strip_sudo_for_exec on real root check ---
 
 // --- SimpleManager::is_available() dispatch with custom fn ---
 

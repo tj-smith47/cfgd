@@ -18,7 +18,7 @@ use super::parsers::{
     parse_apk_lines, parse_dnf_lines, parse_pkg_lines, parse_simple_lines, parse_yum_lines,
     parse_zypper_lines,
 };
-use super::shared::{run_pkg_cmd, run_pkg_cmd_live, strip_sudo_if_root};
+use super::shared::{run_pkg_cmd, run_pkg_cmd_live, strip_sudo_for_exec};
 use super::versions::{
     APK_BIN_ENV, APT_CACHE_BIN_ENV, DNF_BIN_ENV, DPKG_QUERY_BIN_ENV, PACMAN_BIN_ENV, PKG_BIN_ENV,
     RPM_BIN_ENV, YUM_BIN_ENV, ZYPPER_BIN_ENV, apt_aliases, dnf_aliases, list_apt_with_versions,
@@ -97,7 +97,7 @@ pub struct SimpleManager {
 
 impl SimpleManager {
     pub(super) fn display_cmd(&self, cmd_parts: &[&str], packages: &[String]) -> String {
-        let effective = strip_sudo_if_root(cmd_parts);
+        let effective = strip_sudo_for_exec(cmd_parts);
         let mut parts: Vec<&str> = effective.to_vec();
         for p in packages {
             parts.push(p);
@@ -140,7 +140,7 @@ impl PackageManager for SimpleManager {
         if packages.is_empty() {
             return Ok(());
         }
-        let effective = strip_sudo_if_root(self.install_cmd);
+        let effective = strip_sudo_for_exec(self.install_cmd);
         let label = self.display_cmd(self.install_cmd, packages);
         let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
         run_pkg_cmd_live(
@@ -157,7 +157,7 @@ impl PackageManager for SimpleManager {
         if packages.is_empty() {
             return Ok(());
         }
-        let effective = strip_sudo_if_root(self.uninstall_cmd);
+        let effective = strip_sudo_for_exec(self.uninstall_cmd);
         let label = self.display_cmd(self.uninstall_cmd, packages);
         let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
         run_pkg_cmd_live(
@@ -174,7 +174,7 @@ impl PackageManager for SimpleManager {
         let Some(update_parts) = self.update_cmd else {
             return Ok(());
         };
-        let effective = strip_sudo_if_root(update_parts);
+        let effective = strip_sudo_for_exec(update_parts);
         let label = self.display_cmd(update_parts, &[]);
         let (prog, args) = effective.split_first().unwrap_or((&"true", &[]));
         if self.ignore_update_exit {

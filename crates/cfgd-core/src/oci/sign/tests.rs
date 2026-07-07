@@ -8,11 +8,13 @@ use crate::test_helpers::EnvVarGuard;
 fn sign_artifact_rejects_when_cosign_missing() {
     // require_cosign() honors CFGD_COSIGN_BIN before consulting PATH —
     // a parallel CosignTestShim test that set the seam to a fake cosign
-    // would force ToolNotFound to NOT fire here. Pin the env to bypass.
+    // would force ToolNotFound to NOT fire here. Pin the seam unset, and
+    // empty PATH so the branch fires whether or not the host has cosign.
+    // Declared before the PATH override so it drops last, bracketing the
+    // empty-PATH window against concurrent script-interpreter spawns.
+    let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
     let _g = EnvVarGuard::unset("CFGD_COSIGN_BIN");
-    if crate::command_available("cosign") {
-        return;
-    }
+    let _path = EnvVarGuard::set("PATH", "");
     let result = sign_artifact("ghcr.io/test/mod:v1", None);
     assert!(matches!(result, Err(OciError::ToolNotFound { .. })));
 }
@@ -33,10 +35,9 @@ fn verify_signature_rejects_keyless_without_identity() {
 #[test]
 #[serial_test::serial]
 fn verify_signature_rejects_when_cosign_missing() {
+    let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
     let _g = EnvVarGuard::unset("CFGD_COSIGN_BIN");
-    if crate::command_available("cosign") {
-        return;
-    }
+    let _path = EnvVarGuard::set("PATH", "");
     let result = verify_signature(
         "ghcr.io/test/mod:v1",
         &VerifyOptions {
@@ -53,10 +54,9 @@ fn verify_signature_rejects_when_cosign_missing() {
 #[test]
 #[serial_test::serial]
 fn attach_attestation_rejects_when_cosign_missing() {
+    let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
     let _g = EnvVarGuard::unset("CFGD_COSIGN_BIN");
-    if crate::command_available("cosign") {
-        return;
-    }
+    let _path = EnvVarGuard::set("PATH", "");
     let result = attach_attestation("ghcr.io/test/mod:v1", "provenance.json", None);
     assert!(matches!(result, Err(OciError::ToolNotFound { .. })));
 }
@@ -78,10 +78,9 @@ fn verify_attestation_rejects_keyless_without_identity() {
 #[test]
 #[serial_test::serial]
 fn verify_attestation_rejects_when_cosign_missing() {
+    let _spawn_excl = crate::test_helpers::path_env_mutation_guard();
     let _g = EnvVarGuard::unset("CFGD_COSIGN_BIN");
-    if crate::command_available("cosign") {
-        return;
-    }
+    let _path = EnvVarGuard::set("PATH", "");
     let result = verify_attestation(
         "ghcr.io/test/mod:v1",
         "slsaprovenance1",

@@ -10,8 +10,7 @@ fn simple_manager_display_cmd_shows_packages() {
         &["sudo", "apt-get", "install", "-y"],
         &["curl".to_string(), "wget".to_string()],
     );
-    // display_cmd calls strip_sudo_if_root; as non-root in tests, sudo stays
-    // It concatenates effective cmd + packages
+    // display_cmd concatenates the strip_sudo_for_exec-effective cmd + packages
     assert!(label.contains("apt-get"));
     assert!(label.contains("install"));
     assert!(label.contains("curl"));
@@ -390,7 +389,7 @@ fn simple_manager_display_cmd_concatenates_correctly() {
         &["sudo", "dnf", "install", "-y"],
         &["vim".to_string(), "git".to_string()],
     );
-    // Exercises strip_sudo_if_root within display_cmd
+    // Exercises strip_sudo_for_exec within display_cmd
     if cfgd_core::is_root() {
         assert!(!label.starts_with("sudo"));
     }
@@ -445,16 +444,14 @@ mod seam_tests {
         assert_eq!(shim.invocation_count(), 0, "shim must not be invoked");
     }
 
-    /// install / uninstall / update tests below depend on `strip_sudo_if_root`
+    /// install / uninstall / update tests below depend on `strip_sudo_for_exec`
     /// removing the leading `sudo` so the shimmed binary (apt-get, dnf, etc.) is
     /// the actual program invoked — the `sudo` fallback would bypass the seam.
-    /// Each test guards itself with `cfgd_core::is_root()`.
+    /// The strip fires whenever the wrapped tool's seam env is set, so these
+    /// run identically as root and as an unprivileged CI runner.
     #[test]
     #[serial]
-    fn apt_install_invokes_apt_get_shim_with_package_args_when_root() {
-        if !cfgd_core::is_root() {
-            return;
-        }
+    fn apt_install_invokes_apt_get_shim_with_package_args() {
         let shim = ToolShim::install(APT_GET_BIN_ENV, 0, "", "");
         let printer = test_printer();
         apt_manager()
@@ -470,10 +467,7 @@ mod seam_tests {
 
     #[test]
     #[serial]
-    fn apt_uninstall_invokes_apt_get_shim_with_remove_subcommand_when_root() {
-        if !cfgd_core::is_root() {
-            return;
-        }
+    fn apt_uninstall_invokes_apt_get_shim_with_remove_subcommand() {
         let shim = ToolShim::install(APT_GET_BIN_ENV, 0, "", "");
         let printer = test_printer();
         apt_manager()
@@ -488,10 +482,7 @@ mod seam_tests {
 
     #[test]
     #[serial]
-    fn apt_install_failure_propagates_command_failed_error_when_root() {
-        if !cfgd_core::is_root() {
-            return;
-        }
+    fn apt_install_failure_propagates_command_failed_error() {
         let _shim = ToolShim::install(APT_GET_BIN_ENV, 7, "", "E: Could not get lock\n");
         let printer = test_printer();
         let err = apt_manager()
@@ -508,10 +499,7 @@ mod seam_tests {
 
     #[test]
     #[serial]
-    fn apt_update_invokes_apt_get_update_when_root() {
-        if !cfgd_core::is_root() {
-            return;
-        }
+    fn apt_update_invokes_apt_get_update() {
         let shim = ToolShim::install(APT_GET_BIN_ENV, 0, "", "");
         let printer = test_printer();
         apt_manager().update(&printer).unwrap();
@@ -525,10 +513,7 @@ mod seam_tests {
 
     #[test]
     #[serial]
-    fn dnf_update_tolerates_exit_100_via_ignore_update_exit_when_root() {
-        if !cfgd_core::is_root() {
-            return;
-        }
+    fn dnf_update_tolerates_exit_100_via_ignore_update_exit() {
         // dnf check-update returns 100 when updates are available; the manager
         // is configured with `ignore_update_exit = true`, which routes the
         // call through `printer.run` (not run_pkg_cmd_live), swallowing the
@@ -543,14 +528,9 @@ mod seam_tests {
 
     #[test]
     #[serial]
-    fn apk_install_invokes_apk_add_when_root() {
-        if !cfgd_core::is_root() {
-            return;
-        }
-        // apk_manager has no `sudo` prefix; its install_cmd is `apk add`.
-        // The seam routes through APK_BIN_ENV so the shim is invoked
-        // regardless of root status, but we still gate on is_root because
-        // `is_root` matters for the strip_sudo path consistency.
+    fn apk_install_invokes_apk_add() {
+        // apk_manager has no `sudo` prefix; its install_cmd is `apk add`,
+        // and the seam routes through APK_BIN_ENV directly.
         let shim = ToolShim::install(APK_BIN_ENV, 0, "", "");
         let printer = test_printer();
         apk_manager().install(&["curl".into()], &printer).unwrap();
@@ -561,10 +541,7 @@ mod seam_tests {
 
     #[test]
     #[serial]
-    fn pacman_install_passes_noconfirm_through_shim_when_root() {
-        if !cfgd_core::is_root() {
-            return;
-        }
+    fn pacman_install_passes_noconfirm_through_shim() {
         let shim = ToolShim::install(PACMAN_BIN_ENV, 0, "", "");
         let printer = test_printer();
         pacman_manager().install(&["vim".into()], &printer).unwrap();
@@ -578,10 +555,7 @@ mod seam_tests {
 
     #[test]
     #[serial]
-    fn pkg_install_invokes_pkg_install_when_root() {
-        if !cfgd_core::is_root() {
-            return;
-        }
+    fn pkg_install_invokes_pkg_install() {
         let shim = ToolShim::install(PKG_BIN_ENV, 0, "", "");
         let printer = test_printer();
         pkg_manager().install(&["bash".into()], &printer).unwrap();
@@ -593,10 +567,7 @@ mod seam_tests {
 
     #[test]
     #[serial]
-    fn zypper_uninstall_invokes_zypper_remove_when_root() {
-        if !cfgd_core::is_root() {
-            return;
-        }
+    fn zypper_uninstall_invokes_zypper_remove() {
         let shim = ToolShim::install(ZYPPER_BIN_ENV, 0, "", "");
         let printer = test_printer();
         zypper_manager()
