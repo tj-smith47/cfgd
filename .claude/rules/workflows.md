@@ -34,7 +34,11 @@ single-source-of-truth wiring.
 - Trio rollback is the dedicated `rollback-trio` job, never a per-leg
   step (fail-fast off means legs run concurrently).
 - `permissions:` read-only at workflow level; publish jobs elevate to the
-  full write set, image-push jobs to `packages: write` only.
+  full write set, image-push jobs to `packages: write` only. The preflight
+  job also carries `id-token: write` — not to publish, but because the
+  runtime only injects `ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN` into jobs that
+  can mint OIDC tokens, and anodizer's secret preflight validates those on
+  behalf of the MCP-registry publisher.
 - Preflight's bump-message guard breaks the tag→CI→Release self-retrigger
   loop; don't loosen it.
 - Self-hosted runner labels for actionlint live in `.github/actionlint.yaml`.

@@ -50,6 +50,13 @@ jobs:
       (github.event.workflow_run.conclusion == 'success' &&
        !startsWith(github.event.workflow_run.head_commit.message, 'chore(release): bump'))
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The runtime injects ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN only into jobs
+      # that can mint OIDC tokens; anodizer's preflight validates those env
+      # vars on behalf of the MCP-registry publisher (github-oidc auth), so
+      # without this the check fails even though every secret is present.
+      id-token: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
