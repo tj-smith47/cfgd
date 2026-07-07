@@ -445,6 +445,15 @@ jobs:
       packages: write
     runs-on: ubuntu-latest
     steps:
+      # The checkout must precede the artifact download for two reasons:
+      # setup-crossplane is a LOCAL composite action (only a checkout puts
+      # its action.yml on the runner), and checkout's git-clean would delete
+      # any xpkg files already sitting in the workspace.
+      - name: Check out release commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.tag.outputs.head_sha }}
+
       - name: Download xpkg artifacts
         uses: actions/download-artifact@v8
         with:

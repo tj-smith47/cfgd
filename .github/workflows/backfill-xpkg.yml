@@ -1,0 +1,77 @@
+name: Backfill xpkg
+
+# Recovery lane for the release crossplane-push leg. Rerunning a failed
+# Release run executes the workflow file FROZEN at its original dispatch,
+# so a defect in the push job can strand already-built xpkg artifacts with
+# no way to publish them from that run even after the workflow is fixed.
+# This workflow pushes those exact artifacts (digest-verified by
+# download-artifact) using the current, fixed workflow tree. Artifacts
+# expire after 7 days (release.yml retention) — backfill within that window.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run-id:
+        description: 'Release run ID whose xpkg-* artifacts to push.'
+        required: true
+      version:
+        description: 'Function tag version without the leading v. Defaults to the cfgd crate version at HEAD.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  push:
+    name: Push Crossplane function
+    permissions:
+      contents: read
+      # actions:read lets download-artifact reach another run's artifacts;
+      # packages:write covers the ghcr push — nothing else is written.
+      actions: read
+      packages: write
+    runs-on: ubuntu-latest
+    steps:
+      # The checkout must precede the artifact download for two reasons:
+      # setup-crossplane is a LOCAL composite action (only a checkout puts
+      # its action.yml on the runner), and checkout's git-clean would delete
+      # any xpkg files already sitting in the workspace.
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Download xpkg artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: xpkg-*
+          merge-multiple: true
+          run-id: ${{ inputs.run-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Crossplane CLI
+        uses: ./.github/actions/setup-crossplane
+
+      # A backfill normally follows a just-failed release, so HEAD's cfgd
+      # version IS the version whose artifacts were stranded; the input
+      # override exists for backfilling after master has already moved on.
+      - name: Resolve function version
+        id: v
+        env:
+          OVERRIDE: ${{ inputs.version }}
+        run: |
+          v="${OVERRIDE:-$(cargo metadata --no-deps --format-version 1 |
+            jq -r '.packages[] | select(.name == "cfgd") | .version')}"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push xpkg
+        run: |
+          crossplane --verbose xpkg push \
+            --package-files "$(echo *.xpkg | tr ' ' ,)" \
+            ghcr.io/${{ github.repository_owner }}/function-cfgd:v${{ steps.v.outputs.version }}
