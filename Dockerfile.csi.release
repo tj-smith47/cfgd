@@ -6,6 +6,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ARG TARGETOS=linux
 ARG TARGETARCH
-COPY ${TARGETOS}/${TARGETARCH}/cfgd-csi /usr/local/bin/cfgd-csi
+COPY --chmod=0755 ${TARGETOS}/${TARGETARCH}/cfgd-csi /usr/local/bin/cfgd-csi
 
 ENTRYPOINT ["cfgd-csi"]

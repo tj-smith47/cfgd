@@ -9,7 +9,7 @@ RUN adduser --disabled-password --gecos "" --uid 1000 cfgd
 
 ARG TARGETOS=linux
 ARG TARGETARCH
-COPY ${TARGETOS}/${TARGETARCH}/cfgd /usr/local/bin/cfgd
+COPY --chmod=0755 ${TARGETOS}/${TARGETARCH}/cfgd /usr/local/bin/cfgd
 
 USER cfgd
 WORKDIR /home/cfgd
