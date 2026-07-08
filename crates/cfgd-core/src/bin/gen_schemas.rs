@@ -31,8 +31,11 @@ use schemars::JsonSchema;
 use serde_json::{Map, Value};
 
 /// JSON Schema dialect for the three draft-07 documents (config, profile,
-/// source). Matches the dialect SchemaStore already serves for these files.
-const DRAFT_07: &str = "https://json-schema.org/draft-07/schema#";
+/// source). Draft-07's canonical meta-schema URI uses the `http` scheme;
+/// SchemaStore's `cli.js check` validates `$schema` against the canonical
+/// dialect URIs and rejects the non-canonical `https` draft-07 form as
+/// "Invalid or missing '$schema'" (only draft 2019-09+ / 2020-12 are `https`).
+const DRAFT_07: &str = "http://json-schema.org/draft-07/schema#";
 /// JSON Schema dialect for the module document. `cfgd-module` is registered
 /// with SchemaStore as draft-2020-12 (its catalog entry lives in the
 /// `highSchemaVersion` list); keep it so publishing stays consistent.
