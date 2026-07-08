@@ -243,6 +243,13 @@ workspaces:
               - os: windows
                 formats: [zip]
             files:
+              # LICENSE first: anodizer's krew renderer (derive_krew_files) picks the
+              # first archive file whose basename starts with "license" and flattens it
+              # to the plugin install dir preserving its name. krew's validator accepts
+              # only LICENSE/LICENSE.txt/COPYING/COPYING.txt — a dual-license project
+              # shipping only LICENSE-MIT/LICENSE-APACHE is rejected (v0.5.0 krew PR
+              # closed on exactly this), so a krew-accepted `LICENSE` must lead the list.
+              - LICENSE
               - LICENSE-MIT
               - LICENSE-APACHE
               - README.md
