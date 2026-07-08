@@ -178,9 +178,13 @@ download_and_install() {
         return
     fi
 
-    local tmp_dir
+    # tmp_dir must be a script global, not `local`: the EXIT trap fires after
+    # this function (and main) return, where a `local` is out of scope and
+    # `set -u` aborts cleanup with "tmp_dir: unbound variable" — exiting 1 even
+    # on a fully successful install. A global stays readable at trap time; the
+    # `:-` guard covers the dry-run path that returns before assignment.
     tmp_dir="$(mktemp -d)"
-    trap 'rm -rf "$tmp_dir"' EXIT
+    trap 'rm -rf "${tmp_dir:-}"' EXIT
 
     info "Downloading cfgd ${VERSION} for ${os}/${arch}..."
 
