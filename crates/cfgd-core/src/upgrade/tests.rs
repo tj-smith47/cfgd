@@ -2289,6 +2289,38 @@ mod cosign_verify_blob {
         );
     }
 
+    // Guards the identity pin against re-narrowing to a single workflow file.
+    // The release pipeline signs GitHub-release assets from the per-crate
+    // `publish-crate.yml` legs (confirmed against real published v0.5.0 asset
+    // certs), not from `release.yml`, so a `release.yml`-only pin rejected
+    // cfgd's own signatures and broke `cfgd upgrade` for every host with cosign
+    // installed. The regexp must accept ANY workflow file in the canonical repo
+    // and reject any fork / foreign repo — that fork boundary is the trust
+    // boundary, not which of cfgd's own workflows ran.
+    #[test]
+    fn cosign_identity_regexp_accepts_own_signers_rejects_forks() {
+        let re = regex::Regex::new(COSIGN_IDENTITY_REGEXP).expect("identity regexp must compile");
+        for ok in [
+            // The real signer of every published v0.5.0 asset checksum.
+            "https://github.com/tj-smith47/cfgd/.github/workflows/publish-crate.yml@refs/heads/master",
+            // The orchestrator, in case a future asset is signed there directly.
+            "https://github.com/tj-smith47/cfgd/.github/workflows/release.yml@refs/tags/v0.5.0",
+        ] {
+            assert!(re.is_match(ok), "canonical-repo signer must verify: {ok}");
+        }
+        for bad in [
+            "https://github.com/evil/cfgd/.github/workflows/release.yml@refs/heads/master",
+            "https://github.com/tj-smith47/cfgd-fork/.github/workflows/publish-crate.yml@refs/heads/master",
+            "https://gitlab.com/tj-smith47/cfgd/.github/workflows/release.yml@refs/heads/master",
+            "https://github.com/tj-smith47/cfgd/.github/workflows/nested/evil.yml@refs/heads/master",
+        ] {
+            assert!(
+                !re.is_match(bad),
+                "fork / foreign / nested signer must be rejected: {bad}"
+            );
+        }
+    }
+
     #[test]
     #[serial]
     fn run_cosign_verify_blob_passes_certificate_when_standalone_cert_present() {

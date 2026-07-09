@@ -32,12 +32,17 @@ const DEFAULT_REPO: &str = "tj-smith47/cfgd";
 /// OIDC provider that mints the workflow identity token during the release run.
 const COSIGN_OIDC_ISSUER: &str = "https://token.actions.githubusercontent.com";
 
-/// Certificate-identity regexp pinning the signer to cfgd's release workflow.
-/// Matches the Fulcio SAN URI for `.github/workflows/release.yml` on any ref of
-/// the canonical repo, so a signature minted by any other workflow (or repo) is
-/// rejected even if it chains to a valid Fulcio root.
+/// Certificate-identity regexp pinning the signer to cfgd's own release
+/// automation. Matches the Fulcio SAN URI for ANY workflow file directly under
+/// `.github/workflows/` of the canonical repo, on any ref. The release pipeline
+/// signs the GitHub-release assets (archives, nfpm packages, install.sh) from
+/// the per-crate `publish-crate.yml` legs that `release.yml` invokes, so a
+/// single-file pin (`release.yml`) rejects the project's own genuine
+/// signatures. Repo-level pinning still rejects any signature minted by another
+/// repo or a fork even if it chains to a valid Fulcio root — that fork boundary
+/// is the real trust boundary, not which of cfgd's own workflow files ran.
 const COSIGN_IDENTITY_REGEXP: &str =
-    r"^https://github\.com/tj-smith47/cfgd/\.github/workflows/release\.yml@";
+    r"^https://github\.com/tj-smith47/cfgd/\.github/workflows/[^/@]+\.ya?ml@";
 
 /// Resolve the GitHub Releases API base URL. Tests set CFGD_GITHUB_API_BASE
 /// to redirect at a mockito server; production calls fall through to the

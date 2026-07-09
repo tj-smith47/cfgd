@@ -647,6 +647,7 @@ dependencies = [
  "notify-rust",
  "openssl",
  "pretty_assertions",
+ "regex",
  "rusqlite",
  "schemars",
  "secrecy",
