@@ -257,8 +257,10 @@ CFGD_REQUIRE_COSIGN=1 cfgd upgrade
 
 The verification it performs is the same two steps as
 [Verifying downloads](#verifying-downloads): it verifies the keyless cosign
-signature over the `<archive>.sha256` file (pinned to cfgd's `release.yml`
-workflow identity), then confirms the archive matches that trusted checksum.
+signature over the `<archive>.sha256` file (pinned to a canonical-repo release
+workflow identity — the release pipeline signs each asset from the per-crate
+`publish-crate.yml` leg that `release.yml` invokes), then confirms the archive
+matches that trusted checksum.
 
 By default, if the `cosign` CLI isn't installed locally — or the release lacks
 the cosign bundle — `cfgd upgrade` emits a warning and **falls back to
@@ -272,6 +274,15 @@ A binary old enough to predate this self-upgrade logic cannot bootstrap the
 verified path. Reinstall once via any of the [install methods](#linux--macos)
 above (Homebrew, the install script, etc.); subsequent `cfgd upgrade` runs then
 work from the newer binary.
+
+> **v0.5.0 with the cosign CLI installed:** the v0.5.0 binary pinned the signer
+> identity to `release.yml` alone, but assets are actually signed by the
+> `publish-crate.yml` leg. Keyless verification of a newer release therefore
+> fails closed on v0.5.0 when `cosign` is present (no SHA256 fallback — that is
+> the intended fail-closed behavior). Reinstall once via any install method above
+> to get the v0.5.1+ binary, which pins the identity at the repository level and
+> accepts the real signer; self-upgrade then works. Hosts **without** the `cosign`
+> CLI are unaffected — they take the documented SHA256 fallback.
 
 ## Containers and Kubernetes
 
