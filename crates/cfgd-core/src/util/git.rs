@@ -370,8 +370,15 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let upstream = tmp.path().join("upstream");
         let work = tmp.path().join("work");
-        let git = |args: &[&str]| {
+        // Anchor every git child to this test's own tempdir. Without an
+        // explicit cwd the child inherits the process cwd, which concurrent
+        // #[serial] tests (CwdGuard users) point at short-lived tempdirs;
+        // a `git clone` spawned in that window dies with "this operation
+        // must be run in a work tree" once the inherited cwd is deleted.
+        let anchor = tmp.path().to_path_buf();
+        let git = move |args: &[&str]| {
             let ok = super::git_cmd_local()
+                .current_dir(&anchor)
                 .args(["-c", "commit.gpgsign=false"])
                 .args(args)
                 .status()
