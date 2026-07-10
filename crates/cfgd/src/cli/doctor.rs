@@ -1,10 +1,31 @@
 use super::*;
 use cfgd_core::output::{Doc, Printer, Role, doc::SectionBuilder};
 
+/// Sentinel `DoctorConfigCheck::error` for an absent config file. A missing
+/// config is a fresh-machine state (Warn), not a doctor failure — distinct
+/// from a present-but-unparseable one (Fail). Set, rendered, and scored
+/// against this one string.
+const CONFIG_NOT_FOUND: &str = "not found";
+
 pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
-    let (output, extras) = collect_doctor_output(cli, printer)?;
-    printer.emit(build_doctor_doc(&output, &extras));
+    // A failed verdict must fail the process so `cfgd doctor && cfgd apply`
+    // stops instead of sailing into a guaranteed-broken apply. The Doc is
+    // already emitted, so exit directly (mirroring cmd_profile_migrate)
+    // rather than return an error the central sink would re-render.
+    if !run_doctor(cli, printer)? {
+        cfgd_core::exit::ExitCode::Error.exit();
+    }
     Ok(())
+}
+
+/// Runs every doctor probe, emits the report Doc, and returns whether the
+/// verdict passed. Kept separate from the process-exit wrapper so it stays
+/// unit-testable.
+pub(crate) fn run_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<bool> {
+    let (output, extras) = collect_doctor_output(cli, printer)?;
+    let passed = all_passed(&output);
+    printer.emit(build_doctor_doc(&output, &extras));
+    Ok(passed)
 }
 
 /// Display-only doctor results that are not part of the stable JSON payload.
@@ -75,7 +96,7 @@ fn collect_doctor_output(
                 path: cli.config.display().to_string(),
                 name: None,
                 profile: None,
-                error: Some("not found".into()),
+                error: Some(CONFIG_NOT_FOUND.into()),
             },
             None,
         )
@@ -465,7 +486,7 @@ fn build_config_top(doc: Doc, cfg: &DoctorConfigCheck) -> Doc {
         doc = doc.kv_block(pairs);
         doc
     } else if let Some(err) = cfg.error.as_deref() {
-        if err == "not found" {
+        if err == CONFIG_NOT_FOUND {
             doc.status_with(
                 Role::Warn,
                 format!("Config file: {} — not found", cfg.path),
@@ -697,7 +718,7 @@ fn build_sources_section(s: SectionBuilder, sources: &[DoctorConfigSource]) -> S
 }
 
 fn all_passed(output: &DoctorOutput) -> bool {
-    output.config.valid
+    config_ok(&output.config)
         && output.git
         && output
             .package_managers
@@ -712,4 +733,11 @@ fn all_passed(output: &DoctorOutput) -> bool {
         // Legacy layout is a Warn (supported); only errored profile checks
         // (ambiguous forms, unscannable dir) fail the verdict.
         && output.profiles.iter().all(|p| p.error.is_none())
+}
+
+/// A missing config is a fresh-machine state (rendered as a Warn), not a
+/// failure; only a present-but-unparseable config fails the verdict. Mirrors
+/// the classification in `build_config_top`.
+fn config_ok(cfg: &DoctorConfigCheck) -> bool {
+    cfg.valid || cfg.error.as_deref() == Some(CONFIG_NOT_FOUND)
 }

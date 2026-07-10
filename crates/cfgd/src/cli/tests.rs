@@ -3665,7 +3665,7 @@ fn cmd_doctor_with_valid_config() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let result = super::doctor::cmd_doctor(&cli, &printer);
+    let result = super::doctor::run_doctor(&cli, &printer);
     assert!(result.is_ok(), "doctor failed: {:?}", result.err());
     printer.flush();
 
@@ -3690,7 +3690,7 @@ fn cmd_doctor_without_config() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    let result = super::doctor::cmd_doctor(&cli, &printer);
+    let result = super::doctor::run_doctor(&cli, &printer);
     assert!(result.is_ok(), "doctor failed: {:?}", result.err());
     printer.flush();
 
@@ -6278,7 +6278,7 @@ fn cmd_doctor_structured_json() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
 
-    super::doctor::cmd_doctor(&cli, &printer).unwrap();
+    super::doctor::run_doctor(&cli, &printer).unwrap();
     printer.flush();
 
     let output = buf.lock().unwrap();
@@ -10962,7 +10962,7 @@ fn cmd_doctor_without_config_succeeds() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    super::doctor::cmd_doctor(&cli, &printer).unwrap();
+    super::doctor::run_doctor(&cli, &printer).unwrap();
     printer.flush();
 
     let output = buf.lock().unwrap();
@@ -10976,7 +10976,7 @@ fn cmd_doctor_with_rich_config() {
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
-    super::doctor::cmd_doctor(&cli, &printer).unwrap();
+    super::doctor::run_doctor(&cli, &printer).unwrap();
     printer.flush();
 
     let output = buf.lock().unwrap();
@@ -12732,7 +12732,7 @@ fn json_schema_config_show() {
 #[test]
 fn json_schema_doctor() {
     let h = CliTestHarness::builder().json().build();
-    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
     let parsed = h.json_output();
     assert_json_has_fields(
         &parsed,
@@ -15591,7 +15591,7 @@ fn cmd_doctor_with_invalid_config_shows_error_but_succeeds() {
         .config("this is not valid yaml: [[[")
         .build();
 
-    let result = super::doctor::cmd_doctor(&h.cli(), h.printer());
+    let result = super::doctor::run_doctor(&h.cli(), h.printer());
     assert!(
         result.is_ok(),
         "doctor should succeed even with invalid config"
@@ -15613,7 +15613,7 @@ fn cmd_doctor_with_invalid_config_shows_error_but_succeeds() {
 fn cmd_doctor_json_has_all_top_level_fields() {
     let h = CliTestHarness::builder().json().build();
 
-    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
 
     let parsed = h.json_output();
     assert_json_has_fields(
@@ -15639,7 +15639,7 @@ fn cmd_doctor_json_has_all_top_level_fields() {
 fn cmd_doctor_json_config_section_has_expected_fields() {
     let h = CliTestHarness::builder().json().build();
 
-    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
 
     let parsed = h.json_output();
     let config = &parsed["config"];
@@ -15669,7 +15669,7 @@ spec:
         .module("test-mod", SIMPLE_MODULE_YAML)
         .build();
 
-    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
 
     let output = h.output();
     assert!(
@@ -15699,7 +15699,7 @@ spec:
         .profile("default", profile_with_missing_module)
         .build();
 
-    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
 
     let output = h.output();
     assert!(
@@ -15760,7 +15760,7 @@ fn cmd_doctor_declares_every_supported_package_manager() {
         .profile("default", ALL_MANAGERS_PROFILE_YAML)
         .json()
         .build();
-    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
 
     let parsed = h.json_output();
     let managers = parsed["packageManagers"]
@@ -15819,7 +15819,7 @@ fn cmd_doctor_shows_config_sources_section_when_sources_declared() {
     // — so the "Config Sources" section should render with the "not cached"
     // warning arm (doctor.rs lines 415-439).
     let h = CliTestHarness::builder().rich_config().build();
-    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
 
     let output = h.output();
     assert!(
@@ -15854,7 +15854,7 @@ spec:
         .json()
         .build();
 
-    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
 
     let parsed = h.json_output();
     let modules = parsed["modules"]
@@ -16298,12 +16298,27 @@ fn build_doctor_doc_all_passed_true_when_everything_ok() {
 fn build_doctor_doc_all_passed_false_when_config_invalid() {
     let mut output = base_doctor_output();
     output.config.valid = false;
-    output.config.error = Some("not found".into());
+    output.config.error = Some("yaml parse error: unexpected token".into());
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
         text.contains("Some checks failed"),
-        "all_passed must be false when config.valid=false, got: {text}"
+        "a present-but-unparseable config must fail the verdict, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_missing_config_does_not_fail_verdict() {
+    // A missing config is a fresh-machine Warn, not a failure — the verdict
+    // (and thus the process exit) must stay green.
+    let mut output = base_doctor_output();
+    output.config.valid = false;
+    output.config.error = Some("not found".into());
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("All checks passed"),
+        "missing config must not fail the doctor verdict, got: {text}"
     );
 }
 
@@ -16367,7 +16382,7 @@ spec:
         .module("tools-mod", MODULE_WITH_PACKAGES_YAML)
         .build();
 
-    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
 
     let output = h.output();
     assert!(
@@ -16403,7 +16418,7 @@ fn cmd_doctor_with_custom_package_manager_declared_exercises_custom_branch() {
         .profile("default", CUSTOM_PKG_PROFILE_YAML)
         .build();
 
-    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
 
     let output = h.output();
     assert!(
@@ -18777,7 +18792,7 @@ fn execute_enroll_dispatch() {
 fn cmd_doctor_json_flags_legacy_profiles() {
     // The default harness writes flat legacy manifests (default.yaml, work.yaml).
     let h = CliTestHarness::builder().json().build();
-    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
 
     let parsed = h.json_output();
     let profiles = parsed["profiles"]
@@ -18810,7 +18825,7 @@ fn cmd_doctor_json_canonical_profiles_not_legacy() {
         )
         .unwrap();
     }
-    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
+    super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
 
     let parsed = h.json_output();
     let profiles = parsed["profiles"].as_array().unwrap();
@@ -18824,6 +18839,23 @@ fn cmd_doctor_json_canonical_profiles_not_legacy() {
                 .ends_with(&format!("{}/profile.yaml", p["name"].as_str().unwrap()))
         );
     }
+}
+
+#[test]
+fn run_doctor_returns_false_verdict_on_ambiguous_profile() {
+    // Both a flat manifest and its canonical bundle for the same name: a
+    // hard-broken config the wrapper maps to a non-zero exit.
+    let h = CliTestHarness::builder().build();
+    let pdir = h.config_path().join("profiles");
+    let bundle = pdir.join("work");
+    std::fs::create_dir_all(&bundle).unwrap();
+    std::fs::copy(pdir.join("work.yaml"), bundle.join("profile.yaml")).unwrap();
+
+    let passed = super::doctor::run_doctor(&h.cli(), h.printer()).unwrap();
+    assert!(
+        !passed,
+        "an ambiguous profile must fail the doctor verdict (drives the non-zero exit)"
+    );
 }
 
 #[test]
