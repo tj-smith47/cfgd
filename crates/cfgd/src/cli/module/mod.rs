@@ -229,6 +229,6 @@ pub use registry::{
 
 #[cfg(test)]
 use export::export_devcontainer;
-use io::save_module_document;
+use io::{save_module_document, scaffold_module_document};
 use keys::mask_value;
 use signature::enforce_signature_policy;

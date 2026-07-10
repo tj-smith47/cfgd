@@ -207,7 +207,7 @@ pub fn cmd_module_create(
     }
 
     // Write
-    save_module_document(&doc, &module_yaml_path)?;
+    scaffold_module_document(&doc, &module_yaml_path)?;
 
     let summary_sec = printer.section(format!(
         "Created module '{}' at {}",

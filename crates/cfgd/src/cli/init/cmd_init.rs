@@ -625,6 +625,11 @@ spec:
   # sources: []
 "#
     );
+    let content = cfgd_core::config::with_schema_modeline(
+        cfgd_core::config::SchemaDocKind::Config,
+        env!("CARGO_PKG_VERSION"),
+        &content,
+    );
     cfgd_core::atomic_write_str(&dir.join("cfgd.yaml"), &content)?;
     printer.status_simple(Role::Ok, "Created cfgd.yaml");
 

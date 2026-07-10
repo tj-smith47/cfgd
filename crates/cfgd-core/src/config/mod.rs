@@ -10,6 +10,7 @@ mod ai;
 mod compliance;
 mod daemon;
 mod image_lock;
+mod modeline;
 mod module;
 mod origin;
 mod parse;
@@ -33,6 +34,7 @@ pub use daemon::{
     ReconcilePatch, ReconcilePatchKind,
 };
 pub use image_lock::{ImageLockEntry, ImagesLockfile};
+pub use modeline::{SchemaDocKind, schema_modeline, with_schema_modeline};
 pub use module::{
     ModuleDocument, ModuleFileEntry, ModuleLockEntry, ModuleLockfile, ModuleMetadata,
     ModulePackageEntry, ModuleRegistryEntry, ModuleSpec, ScriptEntry, ScriptShell, parse_module,

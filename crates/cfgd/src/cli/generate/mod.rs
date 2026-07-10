@@ -127,7 +127,10 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
 
     // 4. Create session
     let repo_root = config_dir(cli);
-    let mut session = cfgd_core::generate::session::GenerateSession::new(repo_root.clone());
+    let mut session = cfgd_core::generate::session::GenerateSession::new(
+        repo_root.clone(),
+        env!("CARGO_PKG_VERSION"),
+    );
 
     // 5. Build system prompt
     let skill = cfgd_core::generate::skill_model_for(match &args.target {

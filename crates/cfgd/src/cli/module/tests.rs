@@ -160,6 +160,36 @@ fn save_and_reload_module() {
 
     let (loaded, _) = load_module_document(dir.path(), "roundtrip").unwrap();
     assert_eq!(loaded.spec.packages[0].name, "ripgrep");
+
+    // Rewrite paths must never inject a modeline — only scaffold_module_document does.
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        raw.starts_with("apiVersion:"),
+        "save_module_document must not prepend a modeline, got: {raw}"
+    );
+}
+
+#[test]
+fn scaffold_module_document_prepends_modeline() {
+    let dir = tempfile::tempdir().unwrap();
+    let module_dir = dir.path().join("modules").join("fresh");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    let path = module_dir.join("module.yaml");
+
+    let doc = make_module_doc(vec![make_pkg("ripgrep")]);
+    scaffold_module_document(&doc, &path).unwrap();
+
+    let raw = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        raw.lines().next().unwrap(),
+        cfgd_core::config::schema_modeline(
+            cfgd_core::config::SchemaDocKind::Module,
+            env!("CARGO_PKG_VERSION")
+        )
+        .trim_end()
+    );
+    let (loaded, _) = load_module_document(dir.path(), "fresh").unwrap();
+    assert_eq!(loaded.spec.packages[0].name, "ripgrep");
 }
 
 // --- profiles_using_module ---
@@ -1012,6 +1042,23 @@ fn cmd_module_create_with_env_and_aliases() {
     cmd_module_create(&cli, &printer, &args).unwrap();
     drop(printer);
 
+    let module_yaml = dir
+        .path()
+        .join("modules")
+        .join("env-mod")
+        .join("module.yaml");
+    let raw = std::fs::read_to_string(&module_yaml).unwrap();
+    assert_eq!(
+        raw.lines().next().unwrap(),
+        cfgd_core::config::schema_modeline(
+            cfgd_core::config::SchemaDocKind::Module,
+            env!("CARGO_PKG_VERSION")
+        )
+        .trim_end(),
+        "scaffolded module.yaml must start with the schema modeline"
+    );
+
+    // load_module_document parsing doubles as the modeline round-trip proof.
     let (doc, _) = load_module_document(dir.path(), "env-mod").unwrap();
     assert_eq!(doc.spec.env.len(), 1);
     assert_eq!(doc.spec.env[0].name, "EDITOR");

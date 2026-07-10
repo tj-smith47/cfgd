@@ -836,7 +836,7 @@ schemastore:
   # rather than left dangling, so undoing it on rollback (closing/reverting the
   # upstream PR) would only churn the SchemaStore repo for no durability gain.
   retain_on_rollback: true
-  # Vendor a version-suffixed copy of each schema (cfgd-config-v<ver>.schema.json)
+  # Vendor a version-suffixed copy of each schema (cfgd-config-<ver>.json)
   # plus a `versions` map alongside the unversioned entry, so an editor can pin
   # validation to the schema shipped with a specific cfgd release. cfgd is the
   # only workspace here that registers editor-config schemas, so it is the sole

@@ -891,6 +891,18 @@ fn profile_create_minimal() {
         .join("profile.yaml");
     assert!(profile_path.exists(), "profile YAML should be created");
 
+    let raw = std::fs::read_to_string(&profile_path).unwrap();
+    assert_eq!(
+        raw.lines().next().unwrap(),
+        cfgd_core::config::schema_modeline(
+            cfgd_core::config::SchemaDocKind::Profile,
+            env!("CARGO_PKG_VERSION")
+        )
+        .trim_end(),
+        "scaffolded profile.yaml must start with the schema modeline"
+    );
+
+    // load_profile parsing below doubles as the modeline round-trip proof.
     let doc = config::load_profile(&profile_path).unwrap();
     assert_eq!(doc.metadata.name, "devops");
     assert_eq!(doc.spec.env.len(), 1);

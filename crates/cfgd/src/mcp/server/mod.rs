@@ -72,7 +72,7 @@ pub struct McpServer {
 impl McpServer {
     pub fn new(repo_root: PathBuf, home: PathBuf) -> Self {
         Self {
-            session: GenerateSession::new(repo_root),
+            session: GenerateSession::new(repo_root, env!("CARGO_PKG_VERSION")),
             home,
             managers: packages::all_package_managers(),
         }

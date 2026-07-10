@@ -1964,6 +1964,18 @@ fn source_create_scaffolds_manifest() {
     assert!(source_path.exists());
 
     let contents = std::fs::read_to_string(&source_path).unwrap();
+    assert_eq!(
+        contents.lines().next().unwrap(),
+        cfgd_core::config::schema_modeline(
+            cfgd_core::config::SchemaDocKind::ConfigSource,
+            env!("CARGO_PKG_VERSION")
+        )
+        .trim_end(),
+        "scaffolded cfgd-source.yaml must start with the schema modeline"
+    );
+    // Modeline is a YAML comment: the manifest must still parse.
+    let parsed: serde_yaml::Value = serde_yaml::from_str(&contents).unwrap();
+    assert_eq!(parsed["kind"], serde_yaml::Value::from("ConfigSource"));
     assert!(contents.contains("my-source"));
     assert!(contents.contains("Test"));
     assert!(contents.contains("1.0.0"));

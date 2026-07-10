@@ -101,7 +101,20 @@ fn scaffold_creates_structure() {
     assert!(dir.path().join(".gitignore").exists());
 
     let contents = std::fs::read_to_string(dir.path().join("cfgd.yaml")).unwrap();
+    assert_eq!(
+        contents.lines().next().unwrap(),
+        cfgd_core::config::schema_modeline(
+            cfgd_core::config::SchemaDocKind::Config,
+            env!("CARGO_PKG_VERSION")
+        )
+        .trim_end(),
+        "scaffolded cfgd.yaml must start with the schema modeline"
+    );
     assert!(contents.contains("name: test-config"));
+
+    // Modeline is a YAML comment: the real loader must still accept the file.
+    let cfg = config::load_config(&dir.path().join("cfgd.yaml")).unwrap();
+    assert_eq!(cfg.metadata.name, "test-config");
 }
 
 #[cfg(unix)]

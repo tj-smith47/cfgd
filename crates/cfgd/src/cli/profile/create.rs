@@ -246,7 +246,11 @@ pub fn cmd_profile_create(
         },
     };
 
-    let yaml = serde_yaml::to_string(&doc)?;
+    let yaml = cfgd_core::config::with_schema_modeline(
+        cfgd_core::config::SchemaDocKind::Profile,
+        env!("CARGO_PKG_VERSION"),
+        &serde_yaml::to_string(&doc)?,
+    );
     if let Some(parent) = profile_path.parent() {
         std::fs::create_dir_all(parent)?;
     }

@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn test_dispatch_unknown_tool() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let result = dispatch_tool_call(
         "nonexistent",
         &Value::Null,
@@ -16,7 +16,7 @@ fn test_dispatch_unknown_tool() {
 
 #[test]
 fn test_dispatch_get_schema() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"kind": "Module"});
     let result = dispatch_tool_call("get_schema", &input, &mut session, Path::new("/"), &[]);
     assert!(!result.is_error);
@@ -25,7 +25,7 @@ fn test_dispatch_get_schema() {
 
 #[test]
 fn test_dispatch_get_schema_profile() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"kind": "Profile"});
     let result = dispatch_tool_call("get_schema", &input, &mut session, Path::new("/"), &[]);
     assert!(!result.is_error);
@@ -34,7 +34,7 @@ fn test_dispatch_get_schema_profile() {
 
 #[test]
 fn test_dispatch_get_schema_config() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"kind": "Config"});
     let result = dispatch_tool_call("get_schema", &input, &mut session, Path::new("/"), &[]);
     assert!(!result.is_error);
@@ -43,7 +43,7 @@ fn test_dispatch_get_schema_config() {
 
 #[test]
 fn test_dispatch_get_schema_invalid_kind() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"kind": "InvalidKind"});
     let result = dispatch_tool_call("get_schema", &input, &mut session, Path::new("/"), &[]);
     assert!(result.is_error);
@@ -52,7 +52,7 @@ fn test_dispatch_get_schema_invalid_kind() {
 
 #[test]
 fn test_dispatch_get_schema_missing_kind() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({});
     let result = dispatch_tool_call("get_schema", &input, &mut session, Path::new("/"), &[]);
     assert!(result.is_error);
@@ -61,7 +61,7 @@ fn test_dispatch_get_schema_missing_kind() {
 
 #[test]
 fn test_dispatch_validate_yaml_valid() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test\nspec: {}\n";
     let input = serde_json::json!({"content": yaml, "kind": "Module"});
     let result = dispatch_tool_call("validate_yaml", &input, &mut session, Path::new("/"), &[]);
@@ -71,7 +71,7 @@ fn test_dispatch_validate_yaml_valid() {
 
 #[test]
 fn test_dispatch_validate_yaml_invalid() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"content": "not valid yaml {{", "kind": "Module"});
     let result = dispatch_tool_call("validate_yaml", &input, &mut session, Path::new("/"), &[]);
     assert!(!result.is_error); // validate_yaml itself returns a result struct, not an error
@@ -80,7 +80,7 @@ fn test_dispatch_validate_yaml_invalid() {
 
 #[test]
 fn test_dispatch_validate_yaml_missing_content() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"kind": "Module"});
     let result = dispatch_tool_call("validate_yaml", &input, &mut session, Path::new("/"), &[]);
     assert!(result.is_error);
@@ -91,7 +91,7 @@ fn test_dispatch_validate_yaml_missing_content() {
 fn test_dispatch_scan_dotfiles() {
     let tmp = tempfile::TempDir::new().unwrap();
     std::fs::write(tmp.path().join(".zshrc"), "# config").unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({});
     let result = dispatch_tool_call("scan_dotfiles", &input, &mut session, tmp.path(), &[]);
     assert!(!result.is_error);
@@ -102,7 +102,7 @@ fn test_dispatch_scan_dotfiles() {
 fn test_dispatch_scan_dotfiles_with_home_override() {
     let tmp = tempfile::TempDir::new().unwrap();
     std::fs::write(tmp.path().join(".bashrc"), "# bash").unwrap();
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"home": tmp.path().to_str().unwrap()});
     let result = dispatch_tool_call(
         "scan_dotfiles",
@@ -123,7 +123,7 @@ fn test_dispatch_scan_shell_config() {
         "alias ll='ls -la'\nexport EDITOR=nvim\n",
     )
     .unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"shell": "zsh"});
     let result = dispatch_tool_call("scan_shell_config", &input, &mut session, tmp.path(), &[]);
     assert!(!result.is_error);
@@ -133,7 +133,7 @@ fn test_dispatch_scan_shell_config() {
 
 #[test]
 fn test_dispatch_scan_shell_config_missing_shell() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({});
     let result = dispatch_tool_call(
         "scan_shell_config",
@@ -148,7 +148,7 @@ fn test_dispatch_scan_shell_config_missing_shell() {
 
 #[test]
 fn test_dispatch_scan_system_settings() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({});
     let result = dispatch_tool_call(
         "scan_system_settings",
@@ -162,7 +162,7 @@ fn test_dispatch_scan_system_settings() {
 
 #[test]
 fn test_dispatch_detect_platform() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({});
     let result = dispatch_tool_call("detect_platform", &input, &mut session, Path::new("/"), &[]);
     assert!(!result.is_error);
@@ -172,7 +172,7 @@ fn test_dispatch_detect_platform() {
 
 #[test]
 fn test_dispatch_inspect_tool_missing_name() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({});
     let result = dispatch_tool_call("inspect_tool", &input, &mut session, Path::new("/"), &[]);
     assert!(result.is_error);
@@ -183,7 +183,7 @@ fn test_dispatch_inspect_tool_missing_name() {
 fn test_dispatch_inspect_tool() {
     let tmp = tempfile::TempDir::new().unwrap();
     std::fs::write(tmp.path().join(".zshrc"), "# zsh config").unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"name": "zsh"});
     let result = dispatch_tool_call("inspect_tool", &input, &mut session, tmp.path(), &[]);
     assert!(!result.is_error);
@@ -192,7 +192,7 @@ fn test_dispatch_inspect_tool() {
 
 #[test]
 fn test_dispatch_query_package_manager_missing_manager() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"package": "neovim"});
     let result = dispatch_tool_call(
         "query_package_manager",
@@ -207,7 +207,7 @@ fn test_dispatch_query_package_manager_missing_manager() {
 
 #[test]
 fn test_dispatch_query_package_manager_missing_package() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"manager": "brew"});
     let result = dispatch_tool_call(
         "query_package_manager",
@@ -222,7 +222,7 @@ fn test_dispatch_query_package_manager_missing_package() {
 
 #[test]
 fn test_dispatch_query_package_manager_not_found() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"manager": "nonexistent", "package": "vim"});
     let result = dispatch_tool_call(
         "query_package_manager",
@@ -237,7 +237,7 @@ fn test_dispatch_query_package_manager_not_found() {
 
 #[test]
 fn test_dispatch_read_file_missing_path() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({});
     let result = dispatch_tool_call("read_file", &input, &mut session, Path::new("/"), &[]);
     assert!(result.is_error);
@@ -246,7 +246,7 @@ fn test_dispatch_read_file_missing_path() {
 
 #[test]
 fn test_dispatch_list_directory_missing_path() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({});
     let result = dispatch_tool_call("list_directory", &input, &mut session, Path::new("/"), &[]);
     assert!(result.is_error);
@@ -258,7 +258,7 @@ fn test_dispatch_read_file() {
     let tmp = tempfile::TempDir::new().unwrap();
     let file = tmp.path().join("test.txt");
     std::fs::write(&file, "hello world").unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"path": file.to_str().unwrap()});
     let result = dispatch_tool_call("read_file", &input, &mut session, tmp.path(), &[]);
     assert!(!result.is_error);
@@ -270,7 +270,7 @@ fn test_dispatch_list_directory() {
     let tmp = tempfile::TempDir::new().unwrap();
     std::fs::write(tmp.path().join("a.txt"), "").unwrap();
     std::fs::write(tmp.path().join("b.txt"), "").unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"path": tmp.path().to_str().unwrap()});
     let result = dispatch_tool_call("list_directory", &input, &mut session, tmp.path(), &[]);
     assert!(!result.is_error);
@@ -285,7 +285,8 @@ fn test_dispatch_adopt_files() {
     let src_file = src_dir.path().join("config.toml");
     std::fs::write(&src_file, "key = 'val'").unwrap();
 
-    let mut session = GenerateSession::new(repo_dir.path().to_path_buf());
+    let mut session =
+        GenerateSession::new(repo_dir.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({
         "files": [
             {"source": src_file.to_str().unwrap(), "dest": "tool/config.toml"}
@@ -298,7 +299,7 @@ fn test_dispatch_adopt_files() {
 
 #[test]
 fn test_dispatch_adopt_files_missing_files() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({});
     let result = dispatch_tool_call("adopt_files", &input, &mut session, Path::new("/"), &[]);
     assert!(result.is_error);
@@ -307,7 +308,7 @@ fn test_dispatch_adopt_files_missing_files() {
 
 #[test]
 fn test_dispatch_adopt_files_missing_source() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"files": [{"dest": "out.txt"}]});
     let result = dispatch_tool_call("adopt_files", &input, &mut session, Path::new("/"), &[]);
     assert!(result.is_error);
@@ -316,7 +317,7 @@ fn test_dispatch_adopt_files_missing_source() {
 
 #[test]
 fn test_dispatch_adopt_files_missing_dest() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"files": [{"source": "/tmp/x"}]});
     let result = dispatch_tool_call("adopt_files", &input, &mut session, Path::new("/"), &[]);
     assert!(result.is_error);
@@ -326,7 +327,7 @@ fn test_dispatch_adopt_files_missing_dest() {
 #[test]
 fn test_dispatch_write_module_yaml() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test\nspec:\n  packages:\n    - name: test-pkg\n";
     let input = serde_json::json!({"name": "test", "content": yaml});
     let result = dispatch_tool_call("write_module_yaml", &input, &mut session, tmp.path(), &[]);
@@ -338,7 +339,7 @@ fn test_dispatch_write_module_yaml() {
 #[test]
 fn test_dispatch_write_module_yaml_invalid() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"name": "bad", "content": "invalid yaml {{"});
     let result = dispatch_tool_call("write_module_yaml", &input, &mut session, tmp.path(), &[]);
     assert!(result.is_error);
@@ -346,7 +347,7 @@ fn test_dispatch_write_module_yaml_invalid() {
 
 #[test]
 fn test_dispatch_write_module_yaml_missing_name() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"content": "test"});
     let result = dispatch_tool_call(
         "write_module_yaml",
@@ -362,7 +363,7 @@ fn test_dispatch_write_module_yaml_missing_name() {
 #[test]
 fn test_dispatch_write_profile_yaml() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  modules:\n    - test\n";
     let input = serde_json::json!({"name": "base", "content": yaml});
     let result = dispatch_tool_call("write_profile_yaml", &input, &mut session, tmp.path(), &[]);
@@ -373,7 +374,7 @@ fn test_dispatch_write_profile_yaml() {
 
 #[test]
 fn test_dispatch_write_profile_yaml_missing_content() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"name": "test"});
     let result = dispatch_tool_call(
         "write_profile_yaml",
@@ -388,7 +389,7 @@ fn test_dispatch_write_profile_yaml_missing_content() {
 
 #[test]
 fn test_dispatch_list_generated_empty() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let result = dispatch_tool_call(
         "list_generated",
         &Value::Null,
@@ -403,7 +404,7 @@ fn test_dispatch_list_generated_empty() {
 #[test]
 fn test_dispatch_list_generated_after_write() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: nvim\nspec:\n  packages:\n    - name: neovim\n";
     session.write_module_yaml("nvim", yaml).unwrap();
     let result = dispatch_tool_call(
@@ -424,7 +425,7 @@ fn test_dispatch_get_existing_modules() {
     let nvim_dir = tmp.path().join("modules").join("nvim");
     std::fs::create_dir_all(&nvim_dir).unwrap();
     std::fs::write(nvim_dir.join("module.yaml"), "test").unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let result = dispatch_tool_call(
         "get_existing_modules",
         &Value::Null,
@@ -439,7 +440,7 @@ fn test_dispatch_get_existing_modules() {
 #[test]
 fn test_dispatch_get_existing_modules_empty() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let result = dispatch_tool_call(
         "get_existing_modules",
         &Value::Null,
@@ -457,7 +458,7 @@ fn test_dispatch_get_existing_profiles() {
     let profiles_dir = tmp.path().join("profiles");
     std::fs::create_dir_all(&profiles_dir).unwrap();
     std::fs::write(profiles_dir.join("base.yaml"), "test").unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let result = dispatch_tool_call(
         "get_existing_profiles",
         &Value::Null,
@@ -472,7 +473,7 @@ fn test_dispatch_get_existing_profiles() {
 #[test]
 fn test_dispatch_get_existing_profiles_empty() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let result = dispatch_tool_call(
         "get_existing_profiles",
         &Value::Null,
@@ -524,7 +525,7 @@ fn test_tool_definitions_count() {
 
 #[test]
 fn test_dispatch_scan_installed_packages_empty() {
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({});
     let result = dispatch_tool_call(
         "scan_installed_packages",
@@ -544,7 +545,7 @@ fn test_dispatch_scan_installed_packages_empty() {
 #[test]
 fn test_generate_tool_pipeline_writes_module() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
 
     // AI calls get_schema to learn Module format
     let result = dispatch_tool_call(
@@ -582,7 +583,9 @@ fn test_generate_tool_pipeline_writes_module() {
     // Verify file was written
     let module_path = tmp.path().join("modules/git/module.yaml");
     assert!(module_path.exists());
-    assert_eq!(std::fs::read_to_string(&module_path).unwrap(), module_yaml);
+    let written = std::fs::read_to_string(&module_path).unwrap();
+    assert!(written.starts_with("# yaml-language-server: $schema="));
+    assert!(written.ends_with(module_yaml));
 
     // AI calls list_generated to see what it wrote
     let result = dispatch_tool_call(
@@ -599,7 +602,7 @@ fn test_generate_tool_pipeline_writes_module() {
 #[test]
 fn test_generate_tool_pipeline_writes_profile() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
 
     let profile_yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  modules:\n    - git\n";
     let result = dispatch_tool_call(
@@ -619,7 +622,7 @@ fn test_generate_tool_pipeline_writes_profile() {
 fn test_generate_scan_dotfiles_via_dispatch() {
     let tmp = tempfile::TempDir::new().unwrap();
     std::fs::write(tmp.path().join(".gitconfig"), "[user]\nname = Test").unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
 
     let result = dispatch_tool_call(
         "scan_dotfiles",
@@ -635,7 +638,7 @@ fn test_generate_scan_dotfiles_via_dispatch() {
 #[test]
 fn test_generate_unknown_tool_returns_error() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
 
     let result = dispatch_tool_call(
         "nonexistent_tool",
@@ -651,7 +654,7 @@ fn test_generate_unknown_tool_returns_error() {
 #[test]
 fn test_generate_pipeline_module_then_profile() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
 
     // Write a module
     let module_yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: git\nspec:\n  packages:\n    - name: git\n";
@@ -715,7 +718,7 @@ fn test_generate_pipeline_module_then_profile() {
 #[test]
 fn test_generate_pipeline_invalid_yaml_does_not_write() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
 
     // validate_yaml reports invalid
     let bad_yaml = "not: valid: yaml: {{";
@@ -767,7 +770,7 @@ fn test_dispatch_read_file_underlying_error_surfaces() {
     // CfgdError::Generate(FileAccessDenied) → "Error: ..." is_error=true.
     let tmp = tempfile::TempDir::new().unwrap();
     let missing = tmp.path().join("not-on-disk.txt");
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"path": missing.to_str().unwrap()});
     let result = dispatch_tool_call("read_file", &input, &mut session, tmp.path(), &[]);
     assert!(result.is_error);
@@ -785,7 +788,7 @@ fn test_dispatch_list_directory_underlying_error_surfaces() {
     // "Error: ..." is_error=true.
     let tmp = tempfile::TempDir::new().unwrap();
     let missing = tmp.path().join("no-such-dir");
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"path": missing.to_str().unwrap()});
     let result = dispatch_tool_call("list_directory", &input, &mut session, tmp.path(), &[]);
     assert!(result.is_error);
@@ -803,7 +806,7 @@ fn test_dispatch_adopt_files_underlying_error_surfaces() {
     // "Error: ..." is_error=true. Pins the failure path of the per-pair copy
     // loop; the Ok arm is covered by test_dispatch_adopt_files.
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({
         "files": [
             {"source": "/tmp/__cfgd_test_does_not_exist__", "dest": "x.txt"}
@@ -822,7 +825,7 @@ fn test_dispatch_adopt_files_underlying_error_surfaces() {
 fn test_dispatch_validate_yaml_missing_kind() {
     // dispatch_validate_yaml second-param-check Err arm (lines 607-610):
     // content is present but 'kind' is not → "Error: 'kind' parameter is required".
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"content": "apiVersion: x"});
     let result = dispatch_tool_call("validate_yaml", &input, &mut session, Path::new("/"), &[]);
     assert!(result.is_error);
@@ -838,7 +841,7 @@ fn test_dispatch_validate_yaml_invalid_kind_value() {
     // dispatch_validate_yaml kind-parse Err arm (lines 615-619): 'kind' is
     // present but is not "Module" / "Profile" / "Config" → SchemaKind parse
     // Err → "Error: unknown schema kind" surfaced verbatim.
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"content": "anything", "kind": "NotARealKind"});
     let result = dispatch_tool_call("validate_yaml", &input, &mut session, Path::new("/"), &[]);
     assert!(result.is_error);
@@ -854,7 +857,7 @@ fn test_dispatch_write_module_yaml_missing_content() {
     // dispatch_write_module_yaml second-param-check Err arm (lines 642-645):
     // name is present but content is not → "Error: 'content' parameter is required".
     // Complements the existing _missing_name test.
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"name": "test"});
     let result = dispatch_tool_call(
         "write_module_yaml",
@@ -876,7 +879,7 @@ fn test_dispatch_write_profile_yaml_missing_name() {
     // dispatch_write_profile_yaml first-param-check Err arm (lines 664-667):
     // 'name' is missing → "Error: 'name' parameter is required". Complements
     // the existing _missing_content test.
-    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"));
+    let mut session = GenerateSession::new(PathBuf::from("/tmp/test"), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"content": "yaml goes here"});
     let result = dispatch_tool_call(
         "write_profile_yaml",
@@ -900,7 +903,7 @@ fn test_dispatch_write_profile_yaml_underlying_error_surfaces() {
     // is_error=true. Mirrors test_dispatch_write_module_yaml_invalid for the
     // profile side, which had no equivalent test.
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut session = GenerateSession::new(tmp.path().to_path_buf());
+    let mut session = GenerateSession::new(tmp.path().to_path_buf(), env!("CARGO_PKG_VERSION"));
     let input = serde_json::json!({"name": "bad", "content": "not yaml {{ unclosed"});
     let result = dispatch_tool_call("write_profile_yaml", &input, &mut session, tmp.path(), &[]);
     assert!(result.is_error);
