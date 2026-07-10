@@ -12,17 +12,21 @@ use super::Printer;
 use super::printer::PromptAnswer;
 
 /// Build an `InquireError::Custom` for the "non-interactive context asked for
-/// an interactive prompt" case — structured output, non-TTY stdin, or a piped
-/// CI runner. Hanging on `inquire` here would deadlock scripts and silently
-/// stall CI.
-fn non_interactive_err(prompt: &str) -> inquire::InquireError {
-    inquire::InquireError::Custom(
-        format!(
-            "refusing to prompt for '{prompt}' in non-interactive/structured output \
-             mode (re-run without -o json or supply the answer via a flag / env var)"
-        )
-        .into(),
-    )
+/// an interactive prompt" case. Hanging on `inquire` here would deadlock scripts
+/// and silently stall CI. The remedy differs by cause, so the message reflects
+/// which guard fired: structured output (`-o json`/`yaml`) is dropped by
+/// switching back to text output, whereas a non-TTY stdin (piped/CI invocation)
+/// can never prompt regardless of `-o`, so the only fix is to supply the answer
+/// up front via a flag or environment variable.
+fn non_interactive_err(structured: bool, prompt: &str) -> inquire::InquireError {
+    let reason = if structured {
+        "structured output is active — re-run with `-o text` on a terminal, or supply \
+         the answer via a flag / env var (e.g. `--yes` / `CFGD_YES` for confirmations)"
+    } else {
+        "stdin is not a TTY, so interactive prompts are unavailable — supply the answer \
+         via a flag / env var (e.g. `--yes` / `CFGD_YES` for confirmations)"
+    };
+    inquire::InquireError::Custom(format!("refusing to prompt for '{prompt}': {reason}").into())
 }
 
 /// True when the current process can interact with a human — stdin is a TTY.
@@ -40,7 +44,7 @@ impl Printer {
             return Ok(b);
         }
         if self.is_structured() || !stdin_is_tty() {
-            return Err(non_interactive_err(message));
+            return Err(non_interactive_err(self.is_structured(), message));
         }
         inquire::Confirm::new(message).with_default(false).prompt()
     }
@@ -60,7 +64,7 @@ impl Printer {
             });
         }
         if self.is_structured() || !stdin_is_tty() {
-            return Err(non_interactive_err(message));
+            return Err(non_interactive_err(self.is_structured(), message));
         }
         if options.is_empty() {
             return Err(inquire::InquireError::Custom("no options available".into()));
@@ -83,7 +87,7 @@ impl Printer {
             return Ok(s);
         }
         if self.is_structured() || !stdin_is_tty() {
-            return Err(non_interactive_err(message));
+            return Err(non_interactive_err(self.is_structured(), message));
         }
         inquire::Text::new(message).with_default(default).prompt()
     }
@@ -162,6 +166,36 @@ mod tests {
         assert!(
             msg.contains("non-interactive") || msg.contains("structured"),
             "expected non-interactive refusal: {msg}"
+        );
+    }
+
+    #[test]
+    fn structured_refusal_points_at_output_format_not_tty() {
+        // -o json/yaml is the cause → tell the user to drop structured output.
+        // It must NOT claim the TTY is the problem.
+        let msg = format!("{}", non_interactive_err(true, "Continue?"));
+        assert!(msg.contains("structured output"), "msg: {msg}");
+        assert!(msg.contains("-o text"), "msg: {msg}");
+        assert!(
+            !msg.contains("not a TTY"),
+            "structured cause must not blame TTY: {msg}"
+        );
+    }
+
+    #[test]
+    fn non_tty_refusal_blames_stdin_not_output_format() {
+        // Plain text on a piped stdin → the fix is a flag/env, and re-running
+        // "without -o json" is wrong guidance (no -o was passed).
+        let msg = format!("{}", non_interactive_err(false, "Continue?"));
+        assert!(msg.contains("not a TTY"), "msg: {msg}");
+        assert!(msg.contains("flag / env var"), "msg: {msg}");
+        assert!(
+            !msg.contains("-o json"),
+            "non-TTY cause must not mention -o json: {msg}"
+        );
+        assert!(
+            !msg.contains("-o text"),
+            "non-TTY cause must not suggest -o text: {msg}"
         );
     }
 
