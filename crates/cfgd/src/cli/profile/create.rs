@@ -270,7 +270,7 @@ pub fn cmd_profile_create(
         .hint(format!("Activate with: cfgd profile switch {}", name))
         .with_data(serde_json::json!({
             "name": name,
-            "path": profile_path.display().to_string(),
+            "path": cfgd_core::to_posix_string(&profile_path),
             "inherits": doc.spec.inherits,
             "modules": doc.spec.modules,
         }));
