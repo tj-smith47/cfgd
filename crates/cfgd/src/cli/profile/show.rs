@@ -127,7 +127,7 @@ pub fn cmd_profile_show(cli: &Cli, printer: &Printer, name: Option<&str>) -> any
                         cfgd_core::errors::ConfigError::ProfileNotFound { .. }
                     )
                 ) {
-                    let available = super::list_yaml_stems(&dir).unwrap_or_default();
+                    let available = super::available_profile_names(&dir);
                     let mut hints = Vec::new();
                     if !available.is_empty() {
                         hints.push(format!("Available profiles: {}", available.join(", ")));

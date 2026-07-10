@@ -333,8 +333,10 @@ pub(in crate::cli) fn scan_profile_names(
     printer: &Printer,
 ) -> anyhow::Result<Vec<String>> {
     let mut names = Vec::new();
-    cfgd_core::config::for_each_yaml_file(profiles_dir, |path| {
-        match config::load_profile(path) {
+    for entry in cfgd_core::config::scan_profiles(profiles_dir)
+        .map_err(cfgd_core::errors::CfgdError::Config)?
+    {
+        match config::load_profile(&entry.path) {
             Ok(doc) => names.push(doc.metadata.name),
             // Surface unparseable profiles instead of silently dropping them —
             // a missing profile in generated output is otherwise invisible.
@@ -342,13 +344,12 @@ pub(in crate::cli) fn scan_profile_names(
                 Role::Warn,
                 format!(
                     "Skipping profile '{}': {}",
-                    path.display(),
+                    entry.path.display(), // native-ok: human warn message, not a key
                     cfgd_core::output::collapse_to_subject_line(&e)
                 ),
             ),
         }
-        Ok(())
-    })?;
+    }
     names.sort();
     Ok(names)
 }

@@ -4598,6 +4598,71 @@ fn ensure_module_in_profile_doc_preserves_ordering_on_append() {
     assert_eq!(doc.spec.modules, vec!["a", "b", "c", "z"]);
 }
 
+// ============================================================================
+// add_module_to_profile — dual-form manifest resolution on the install path
+// ============================================================================
+
+const CANONICAL_PROFILE_YAML: &str = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: bundle\nspec:\n  modules: []\n";
+
+#[test]
+fn add_module_to_profile_canonical_form_gets_module_appended() {
+    let dir = tempfile::tempdir().unwrap();
+    let profiles_dir = dir.path().join("profiles");
+    let bundle_dir = profiles_dir.join("bundle");
+    std::fs::create_dir_all(&bundle_dir).unwrap();
+    std::fs::write(bundle_dir.join("profile.yaml"), CANONICAL_PROFILE_YAML).unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let added =
+        super::registry::add_module_to_profile(&printer, &profiles_dir, "bundle", "vim-config")
+            .unwrap();
+
+    assert!(added, "canonical-form profile must be updated, not skipped");
+    let doc = config::load_profile(&bundle_dir.join("profile.yaml")).unwrap();
+    assert_eq!(doc.spec.modules, vec!["vim-config"]);
+    assert!(
+        !profiles_dir.join("bundle.yaml").exists(),
+        "write-back must land on the found form, never a flat twin"
+    );
+}
+
+#[test]
+fn add_module_to_profile_ambiguous_forms_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let profiles_dir = dir.path().join("profiles");
+    let bundle_dir = profiles_dir.join("bundle");
+    std::fs::create_dir_all(&bundle_dir).unwrap();
+    std::fs::write(bundle_dir.join("profile.yaml"), CANONICAL_PROFILE_YAML).unwrap();
+    std::fs::write(profiles_dir.join("bundle.yaml"), CANONICAL_PROFILE_YAML).unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let err = super::registry::add_module_to_profile(&printer, &profiles_dir, "bundle", "vim")
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("ambiguous"),
+        "ambiguity must propagate, got: {err}"
+    );
+}
+
+#[test]
+fn add_module_to_profile_not_found_skips_silently() {
+    let dir = tempfile::tempdir().unwrap();
+    let profiles_dir = dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let added =
+        super::registry::add_module_to_profile(&printer, &profiles_dir, "ghost", "vim").unwrap();
+    assert!(!added, "missing profile keeps the silent-skip behavior");
+    assert!(
+        !profiles_dir.join("ghost").exists() && !profiles_dir.join("ghost.yaml").exists(),
+        "skip must not materialize any manifest"
+    );
+}
+
 #[test]
 fn ensure_module_in_profile_doc_treats_registry_prefixed_refs_as_distinct() {
     // `registry/module` is a different reference than bare `module`. Both

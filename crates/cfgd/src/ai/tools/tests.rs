@@ -368,7 +368,7 @@ fn test_dispatch_write_profile_yaml() {
     let result = dispatch_tool_call("write_profile_yaml", &input, &mut session, tmp.path(), &[]);
     assert!(!result.is_error, "Error: {}", result.content);
     assert!(result.content.contains("path"));
-    assert!(tmp.path().join("profiles/base.yaml").exists());
+    assert!(tmp.path().join("profiles/base/profile.yaml").exists());
 }
 
 #[test]
@@ -611,7 +611,7 @@ fn test_generate_tool_pipeline_writes_profile() {
     );
     assert!(!result.is_error);
 
-    let profile_path = tmp.path().join("profiles/base.yaml");
+    let profile_path = tmp.path().join("profiles/base/profile.yaml");
     assert!(profile_path.exists());
 }
 

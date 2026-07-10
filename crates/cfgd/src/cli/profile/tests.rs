@@ -828,7 +828,11 @@ fn profile_create_interactive_drives_prompts_via_harness() {
     cmd_profile_create(&cli, &printer, &args)
         .expect("interactive profile create with valid parent + no modules");
 
-    let profile_path = dir.path().join("profiles").join("interactive-child.yaml");
+    let profile_path = dir
+        .path()
+        .join("profiles")
+        .join("interactive-child")
+        .join("profile.yaml");
     assert!(
         profile_path.exists(),
         "profile YAML must be created on interactive happy path"
@@ -880,7 +884,11 @@ fn profile_create_minimal() {
         result.err()
     );
 
-    let profile_path = dir.path().join("profiles").join("devops.yaml");
+    let profile_path = dir
+        .path()
+        .join("profiles")
+        .join("devops")
+        .join("profile.yaml");
     assert!(profile_path.exists(), "profile YAML should be created");
 
     let doc = config::load_profile(&profile_path).unwrap();
@@ -906,7 +914,13 @@ fn profile_create_with_inherits() {
         result.err()
     );
 
-    let doc = config::load_profile(&dir.path().join("profiles").join("child.yaml")).unwrap();
+    let doc = config::load_profile(
+        &dir.path()
+            .join("profiles")
+            .join("child")
+            .join("profile.yaml"),
+    )
+    .unwrap();
     assert_eq!(doc.spec.inherits, vec!["default"]);
 }
 
@@ -926,7 +940,13 @@ fn profile_create_with_modules() {
         result.err()
     );
 
-    let doc = config::load_profile(&dir.path().join("profiles").join("modular.yaml")).unwrap();
+    let doc = config::load_profile(
+        &dir.path()
+            .join("profiles")
+            .join("modular")
+            .join("profile.yaml"),
+    )
+    .unwrap();
     assert_eq!(doc.spec.modules, vec!["shell"]);
 }
 
@@ -986,7 +1006,13 @@ fn profile_create_with_aliases() {
         result.err()
     );
 
-    let doc = config::load_profile(&dir.path().join("profiles").join("alias-test.yaml")).unwrap();
+    let doc = config::load_profile(
+        &dir.path()
+            .join("profiles")
+            .join("alias-test")
+            .join("profile.yaml"),
+    )
+    .unwrap();
     assert_eq!(doc.spec.aliases.len(), 1);
     assert_eq!(doc.spec.aliases[0].name, "ll");
     assert_eq!(doc.spec.aliases[0].command, "ls -la");
@@ -1005,7 +1031,13 @@ fn profile_create_with_system_settings() {
     cmd_profile_create(&cli, &printer, &args).unwrap();
     drop(printer);
 
-    let doc = config::load_profile(&dir.path().join("profiles").join("sys-test.yaml")).unwrap();
+    let doc = config::load_profile(
+        &dir.path()
+            .join("profiles")
+            .join("sys-test")
+            .join("profile.yaml"),
+    )
+    .unwrap();
     assert!(
         doc.spec.system.contains_key("sysctl"),
         "profile should have sysctl system setting"
@@ -1038,7 +1070,13 @@ fn profile_create_with_secrets() {
         result.err()
     );
 
-    let doc = config::load_profile(&dir.path().join("profiles").join("secret-test.yaml")).unwrap();
+    let doc = config::load_profile(
+        &dir.path()
+            .join("profiles")
+            .join("secret-test")
+            .join("profile.yaml"),
+    )
+    .unwrap();
     assert_eq!(doc.spec.secrets.len(), 1);
     assert_eq!(doc.spec.secrets[0].source, "secrets/key.enc");
     assert_eq!(doc.spec.secrets[0].target, Some(PathBuf::from("/tmp/key")));
@@ -1062,7 +1100,13 @@ fn profile_create_with_scripts() {
         result.err()
     );
 
-    let doc = config::load_profile(&dir.path().join("profiles").join("script-test.yaml")).unwrap();
+    let doc = config::load_profile(
+        &dir.path()
+            .join("profiles")
+            .join("script-test")
+            .join("profile.yaml"),
+    )
+    .unwrap();
     let scripts = doc.spec.scripts.unwrap();
     assert_eq!(scripts.pre_apply.len(), 1);
     assert_eq!(scripts.post_apply.len(), 1);
@@ -2614,7 +2658,13 @@ fn profile_create_with_packages() {
 
     cmd_profile_create(&cli, &printer, &args).unwrap();
 
-    let doc = config::load_profile(&dir.path().join("profiles").join("pkg-test.yaml")).unwrap();
+    let doc = config::load_profile(
+        &dir.path()
+            .join("profiles")
+            .join("pkg-test")
+            .join("profile.yaml"),
+    )
+    .unwrap();
     let pkgs = doc.spec.packages.unwrap();
     assert!(
         pkgs.brew
@@ -2693,7 +2743,13 @@ fn profile_create_with_all_script_types() {
 
     cmd_profile_create(&cli, &printer, &args).unwrap();
 
-    let doc = config::load_profile(&dir.path().join("profiles").join("all-scripts.yaml")).unwrap();
+    let doc = config::load_profile(
+        &dir.path()
+            .join("profiles")
+            .join("all-scripts")
+            .join("profile.yaml"),
+    )
+    .unwrap();
     let scripts = doc.spec.scripts.unwrap();
     assert_eq!(scripts.pre_apply.len(), 1);
     assert_eq!(scripts.post_apply.len(), 1);
@@ -3794,7 +3850,11 @@ fn profile_create_with_file_copies_source_and_populates_files_spec() {
 
     // The profile YAML must contain a files.managed entry with the right
     // source path (profiles/<name>/files/<basename>).
-    let profile_path = dir.path().join("profiles").join("fileprof.yaml");
+    let profile_path = dir
+        .path()
+        .join("profiles")
+        .join("fileprof")
+        .join("profile.yaml");
     assert!(profile_path.exists(), "profile YAML must be created");
     let doc = config::load_profile(&profile_path).unwrap();
     let files = doc
@@ -3863,7 +3923,11 @@ fn profile_create_with_file_private_writes_gitignore_entry() {
     );
 
     // The profile YAML must also mark the file as private.
-    let profile_path = dir.path().join("profiles").join("private-prof.yaml");
+    let profile_path = dir
+        .path()
+        .join("profiles")
+        .join("private-prof")
+        .join("profile.yaml");
     let doc = config::load_profile(&profile_path).unwrap();
     let files = doc.spec.files.expect("files spec must be populated");
     assert!(
@@ -3919,4 +3983,356 @@ fn profile_update_not_found_error_is_typed_profile_not_found() {
         crate::cli::exit_code_for_anyhow(&err),
         cfgd_core::exit::ExitCode::NotFound,
     );
+}
+
+// =========================================================================
+// Canonical bundle layout (profiles/<name>/profile.yaml)
+// =========================================================================
+
+#[test]
+fn profile_create_writes_canonical_bundle_form() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let mut args = make_profile_create_args("bundle");
+    args.env = vec!["FOO=bar".to_string()]; // avoid interactive
+    cmd_profile_create(&cli, &printer, &args).unwrap();
+
+    let canonical = dir
+        .path()
+        .join("profiles")
+        .join("bundle")
+        .join("profile.yaml");
+    assert!(
+        canonical.is_file(),
+        "manifest must land at the canonical path"
+    );
+    assert!(
+        !dir.path().join("profiles").join("bundle.yaml").exists(),
+        "no legacy flat manifest may be written"
+    );
+    let doc = config::load_profile(&canonical).unwrap();
+    assert_eq!(doc.kind, "Profile");
+    assert_eq!(doc.metadata.name, "bundle");
+}
+
+#[test]
+fn profile_create_refuses_existing_canonical_profile() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let mut args = make_profile_create_args("dup");
+    args.env = vec!["X=1".to_string()];
+    cmd_profile_create(&cli, &printer, &args).unwrap();
+
+    let err = cmd_profile_create(&cli, &printer, &args).unwrap_err();
+    assert!(
+        err.to_string().contains("already exists"),
+        "second create must refuse: {err}"
+    );
+}
+
+#[test]
+fn profile_create_ambiguous_forms_fails_closed() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    // 'default' exists flat via the fixture; add the canonical form too.
+    let cdir = dir.path().join("profiles").join("default");
+    std::fs::create_dir_all(&cdir).unwrap();
+    std::fs::write(cdir.join("profile.yaml"), DEFAULT_PROFILE_YAML).unwrap();
+
+    let mut args = make_profile_create_args("default");
+    args.env = vec!["X=1".to_string()];
+    let err = cmd_profile_create(&cli, &printer, &args).unwrap_err();
+    assert!(
+        err.to_string().contains("ambiguous"),
+        "ambiguous forms must fail closed, got: {err}"
+    );
+}
+
+#[test]
+fn profile_delete_canonical_removes_empty_dir() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let mut args = make_profile_create_args("bundled");
+    args.env = vec!["X=1".to_string()];
+    cmd_profile_create(&cli, &printer, &args).unwrap();
+
+    cmd_profile_delete(&cli, &printer, "bundled", true, false).unwrap();
+    assert!(
+        !dir.path().join("profiles").join("bundled").exists(),
+        "empty canonical dir must be removed with the manifest"
+    );
+}
+
+#[test]
+fn profile_delete_canonical_payload_removed_with_yes() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let mut args = make_profile_create_args("payload");
+    args.env = vec!["X=1".to_string()];
+    cmd_profile_create(&cli, &printer, &args).unwrap();
+    let files_dir = dir.path().join("profiles").join("payload").join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join(".zshrc"), "export A=1").unwrap();
+
+    cmd_profile_delete(&cli, &printer, "payload", true, false).unwrap();
+    assert!(
+        !dir.path().join("profiles").join("payload").exists(),
+        "--yes must remove the payload-bearing profile dir"
+    );
+}
+
+#[test]
+fn profile_delete_canonical_payload_prompt_declined_keeps_dir() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    // First Confirm answers "Delete profile?", second declines payload removal.
+    let (printer, _cap) = cfgd_core::output::Printer::for_test_doc_with_prompt_responses(vec![
+        cfgd_core::output::PromptAnswer::Confirm(true),
+        cfgd_core::output::PromptAnswer::Confirm(false),
+    ]);
+
+    let mut args = make_profile_create_args("kept");
+    args.env = vec!["X=1".to_string()];
+    cmd_profile_create(&cli, &printer, &args).unwrap();
+    let files_dir = dir.path().join("profiles").join("kept").join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join(".zshrc"), "export A=1").unwrap();
+
+    cmd_profile_delete(&cli, &printer, "kept", false, false).unwrap();
+    assert!(
+        !dir.path()
+            .join("profiles")
+            .join("kept")
+            .join("profile.yaml")
+            .exists(),
+        "manifest must be removed"
+    );
+    assert!(
+        files_dir.join(".zshrc").is_file(),
+        "declined payload removal must keep the payload dir"
+    );
+}
+
+#[test]
+fn profile_delete_canonical_payload_prompt_confirmed_removes_dir() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, _cap) = cfgd_core::output::Printer::for_test_doc_with_prompt_responses(vec![
+        cfgd_core::output::PromptAnswer::Confirm(true),
+        cfgd_core::output::PromptAnswer::Confirm(true),
+    ]);
+
+    let mut args = make_profile_create_args("gone");
+    args.env = vec!["X=1".to_string()];
+    cmd_profile_create(&cli, &printer, &args).unwrap();
+    let files_dir = dir.path().join("profiles").join("gone").join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join(".zshrc"), "export A=1").unwrap();
+
+    cmd_profile_delete(&cli, &printer, "gone", false, false).unwrap();
+    assert!(
+        !dir.path().join("profiles").join("gone").exists(),
+        "confirmed payload removal must delete the whole profile dir"
+    );
+}
+
+#[test]
+fn profile_delete_legacy_payload_removed_with_yes() {
+    let dir = setup_config_dir(); // legacy work.yaml
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let files_dir = dir.path().join("profiles").join("work").join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join(".zshrc"), "export A=1").unwrap();
+
+    cmd_profile_delete(&cli, &printer, "work", true, false).unwrap();
+    assert!(
+        !dir.path().join("profiles").join("work").exists(),
+        "--yes must remove the legacy payload dir and its empty parent"
+    );
+    assert!(!dir.path().join("profiles").join("work.yaml").exists());
+}
+
+#[test]
+fn profile_delete_legacy_payload_prompt_declined_keeps_payload() {
+    let dir = setup_config_dir(); // legacy work.yaml
+    let cli = test_cli(dir.path());
+    // First Confirm answers "Delete profile?", second declines payload removal.
+    let (printer, cap) = cfgd_core::output::Printer::for_test_doc_with_prompt_responses(vec![
+        cfgd_core::output::PromptAnswer::Confirm(true),
+        cfgd_core::output::PromptAnswer::Confirm(false),
+    ]);
+
+    let files_dir = dir.path().join("profiles").join("work").join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join(".zshrc"), "export A=1").unwrap();
+
+    cmd_profile_delete(&cli, &printer, "work", false, false).unwrap();
+    drop(printer);
+    assert!(
+        !dir.path().join("profiles").join("work.yaml").exists(),
+        "manifest must be removed"
+    );
+    assert!(
+        files_dir.join(".zshrc").is_file(),
+        "declined payload removal must keep the legacy files/ dir"
+    );
+    assert!(
+        cap.human().contains("Kept"),
+        "declined prompt must note the kept payload dir, got: {}",
+        cap.human()
+    );
+}
+
+#[test]
+fn profile_delete_legacy_payload_prompt_confirmed_removes_dir() {
+    let dir = setup_config_dir(); // legacy work.yaml
+    let cli = test_cli(dir.path());
+    let (printer, _cap) = cfgd_core::output::Printer::for_test_doc_with_prompt_responses(vec![
+        cfgd_core::output::PromptAnswer::Confirm(true),
+        cfgd_core::output::PromptAnswer::Confirm(true),
+    ]);
+
+    let files_dir = dir.path().join("profiles").join("work").join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join(".zshrc"), "export A=1").unwrap();
+
+    cmd_profile_delete(&cli, &printer, "work", false, false).unwrap();
+    assert!(
+        !dir.path().join("profiles").join("work").exists(),
+        "confirmed payload removal must delete files/ and the empty parent"
+    );
+}
+
+#[test]
+fn profile_delete_legacy_empty_files_dir_silent_cleanup() {
+    let dir = setup_config_dir(); // legacy work.yaml
+    let cli = test_cli(dir.path());
+    // Only the delete confirmation is queued — an empty files/ dir must not
+    // consume a payload prompt.
+    let (printer, _cap) = cfgd_core::output::Printer::for_test_doc_with_prompt_responses(vec![
+        cfgd_core::output::PromptAnswer::Confirm(true),
+    ]);
+
+    let files_dir = dir.path().join("profiles").join("work").join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+
+    cmd_profile_delete(&cli, &printer, "work", false, false).unwrap();
+    assert!(
+        !dir.path().join("profiles").join("work").exists(),
+        "empty files/ keeps the silent cleanup path"
+    );
+}
+
+#[test]
+fn profile_delete_ambiguous_forms_fails_closed() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let cdir = dir.path().join("profiles").join("work");
+    std::fs::create_dir_all(&cdir).unwrap();
+    std::fs::write(cdir.join("profile.yaml"), WORK_PROFILE_YAML).unwrap();
+
+    let err = cmd_profile_delete(&cli, &printer, "work", true, false).unwrap_err();
+    assert!(
+        err.to_string().contains("ambiguous"),
+        "ambiguous forms must fail closed, got: {err}"
+    );
+    assert!(
+        dir.path().join("profiles").join("work.yaml").is_file()
+            && cdir.join("profile.yaml").is_file(),
+        "nothing may be deleted on ambiguity"
+    );
+}
+
+#[test]
+fn profile_roundtrip_canonical_create_show_update_delete() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    // create (canonical)
+    let mut cargs = make_profile_create_args("trip");
+    cargs.env = vec!["A=1".to_string()];
+    cmd_profile_create(&cli, &printer, &cargs).unwrap();
+    let manifest = dir
+        .path()
+        .join("profiles")
+        .join("trip")
+        .join("profile.yaml");
+    assert!(manifest.is_file());
+
+    // show resolves the canonical form by name
+    cmd_profile_show(&cli, &printer, Some("trip")).unwrap();
+
+    // update writes back to the same canonical path
+    let mut uargs = make_profile_update_args();
+    uargs.env = vec!["B=2".to_string()];
+    cmd_profile_update(&cli, &printer, "trip", &uargs).unwrap();
+    let doc = config::load_profile(&manifest).unwrap();
+    assert!(doc.spec.env.iter().any(|e| e.name == "B"));
+    assert!(
+        !dir.path().join("profiles").join("trip.yaml").exists(),
+        "update must never materialize a flat manifest"
+    );
+
+    // delete removes manifest + dir
+    cmd_profile_delete(&cli, &printer, "trip", true, false).unwrap();
+    assert!(!dir.path().join("profiles").join("trip").exists());
+}
+
+#[test]
+fn profile_list_mixed_forms() {
+    let dir = setup_config_dir(); // default.yaml + work.yaml (legacy)
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let mut args = make_profile_create_args("modern");
+    args.env = vec!["X=1".to_string()];
+    cmd_profile_create(&cli, &printer, &args).unwrap();
+    drop(printer);
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    cmd_profile_list(&cli, &printer).unwrap();
+    drop(printer);
+    let output = buf.lock().unwrap();
+    for name in ["default", "work", "modern"] {
+        assert!(
+            output.contains(name),
+            "list must show both forms; missing '{name}': {output}"
+        );
+    }
+}
+
+#[test]
+fn profile_update_canonical_parent_inherits() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    // canonical parent
+    let mut pargs = make_profile_create_args("parent-bundle");
+    pargs.env = vec!["X=1".to_string()];
+    cmd_profile_create(&cli, &printer, &pargs).unwrap();
+
+    // legacy child gains the canonical parent
+    let mut uargs = make_profile_update_args();
+    uargs.inherits = vec!["parent-bundle".to_string()];
+    cmd_profile_update(&cli, &printer, "work", &uargs).unwrap();
+
+    let doc = config::load_profile(&dir.path().join("profiles").join("work.yaml")).unwrap();
+    assert!(doc.spec.inherits.contains(&"parent-bundle".to_string()));
 }

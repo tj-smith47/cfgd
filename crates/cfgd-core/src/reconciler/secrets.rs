@@ -15,12 +15,7 @@ impl<'a> super::Reconciler<'a> {
         secret_env_collector: &mut Vec<(String, String)>,
     ) -> Result<String> {
         match action {
-            SecretAction::Decrypt {
-                source,
-                target,
-                backend: _,
-                ..
-            } => {
+            SecretAction::Decrypt { source, target, .. } => {
                 let backend = self
                     .registry
                     .secret_backend

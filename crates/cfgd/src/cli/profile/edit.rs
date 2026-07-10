@@ -3,21 +3,22 @@ use cfgd_core::output::{Doc, Printer, Role};
 
 pub fn cmd_profile_edit(cli: &Cli, printer: &Printer, name: &str) -> anyhow::Result<()> {
     validate_resource_name(name, "Profile")?;
-    let profile_path = profiles_dir(cli).join(format!("{}.yaml", name));
-    if !profile_path.exists() {
-        // Carry the typed ProfileNotFound so the exit-code downcast resolves to
-        // ExitCode::NotFound (6), uniform with every other named-resource miss.
-        return Err(crate::cli::cli_error_ctx(
-            cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::ProfileNotFound {
-                name: name.to_string(),
-            })
-            .into(),
-            name,
-            "not_found",
-            format!("Profile '{}' not found", name),
-            serde_json::json!({}),
-        ));
-    }
+    let profile_path = match cfgd_core::config::find_profile_path(&profiles_dir(cli), name) {
+        Ok(p) => p,
+        Err(e @ cfgd_core::errors::ConfigError::ProfileNotFound { .. }) => {
+            // Carry the typed ProfileNotFound so the exit-code downcast resolves
+            // to ExitCode::NotFound (6), uniform with every other named-resource
+            // miss.
+            return Err(crate::cli::cli_error_ctx(
+                cfgd_core::errors::CfgdError::Config(e).into(),
+                name,
+                "not_found",
+                format!("Profile '{}' not found", name),
+                serde_json::json!({}),
+            ));
+        }
+        Err(e) => return Err(cfgd_core::errors::CfgdError::Config(e).into()),
+    };
 
     open_in_editor(&profile_path, printer)?;
 

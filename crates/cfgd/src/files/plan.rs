@@ -824,12 +824,12 @@ mod tests {
         assert!(
             matches!(&actions[0], FileAction::Update { target: t, .. } if *t == target),
             "first action should be Update, got: {:?}",
-            &actions[0]
+            actions[0]
         );
         assert!(
             matches!(&actions[1], FileAction::SetPermissions { target: t, mode: 0o600, .. } if *t == target),
             "second action should be SetPermissions, got: {:?}",
-            &actions[1]
+            actions[1]
         );
     }
 

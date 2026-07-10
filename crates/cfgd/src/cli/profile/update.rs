@@ -28,41 +28,34 @@ pub fn cmd_profile_update(
     printer.heading(format!("Update Profile: {}", name));
 
     let config_dir = config_dir(cli);
-    let profile_path = config_dir.join("profiles").join(format!("{}.yaml", name));
-    if !profile_path.exists() {
-        // Carry the typed ProfileNotFound so the exit-code downcast resolves to
-        // ExitCode::NotFound (6), uniform with every other named-resource miss.
-        return Err(crate::cli::cli_error_ctx(
-            cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::ProfileNotFound {
-                name: name.to_string(),
-            })
-            .into(),
-            name,
-            "not_found",
-            format!("Profile '{}' not found", name),
-            serde_json::json!({}),
-        ));
-    }
+    let profiles_dir = config_dir.join("profiles");
+    let profile_path = match cfgd_core::config::find_profile_path(&profiles_dir, name) {
+        Ok(p) => p,
+        Err(e @ cfgd_core::errors::ConfigError::ProfileNotFound { .. }) => {
+            // Carry the typed ProfileNotFound so the exit-code downcast resolves
+            // to ExitCode::NotFound (6), uniform with every other named-resource
+            // miss.
+            return Err(crate::cli::cli_error_ctx(
+                cfgd_core::errors::CfgdError::Config(e).into(),
+                name,
+                "not_found",
+                format!("Profile '{}' not found", name),
+                serde_json::json!({}),
+            ));
+        }
+        Err(e) => return Err(cfgd_core::errors::CfgdError::Config(e).into()),
+    };
 
     let mut doc = config::load_profile(&profile_path)?;
     let mut changes = 0u32;
 
     // Add inherits
-    let profiles_dir = config_dir.join("profiles");
     for parent in &add_inherits {
         if doc.spec.inherits.contains(parent) {
             printer.status_simple(Role::Warn, format!("Profile already inherits '{}'", parent));
             continue;
         }
-        let parent_path = profiles_dir.join(format!("{}.yaml", parent));
-        if !parent_path.exists() {
-            return Err(crate::cli::cli_error(
-                name,
-                "parent_not_found",
-                format!("Parent profile '{}' not found", parent),
-                serde_json::json!({ "parent": parent }),
-            ));
-        }
+        ensure_parent_profile_exists(&profiles_dir, name, parent)?;
         doc.spec.inherits.push(parent.clone());
         printer.status_simple(Role::Ok, format!("Added inherits: {}", parent));
         changes += 1;

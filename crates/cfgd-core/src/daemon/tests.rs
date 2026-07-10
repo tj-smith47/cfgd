@@ -2610,12 +2610,12 @@ async fn health_connection_status_endpoint() {
     assert!(
         response.contains("\"running\": true"),
         "response should contain running field: {}",
-        &response
+        response
     );
     assert!(
         response.contains("\"driftCount\": 3"),
         "response should contain driftCount field: {}",
-        &response
+        response
     );
 }
 

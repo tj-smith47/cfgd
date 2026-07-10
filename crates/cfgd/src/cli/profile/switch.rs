@@ -11,32 +11,32 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::R
         return Err(no_config_error(printer, &config_path));
     }
 
-    // Verify the target profile exists
+    // Verify the target profile exists (either layout form)
     let profiles_dir = config_dir.join("profiles");
-    let profile_path = profiles_dir.join(format!("{}.yaml", name));
-    if !profile_path.exists() {
-        let available = super::list_yaml_stems(&profiles_dir).unwrap_or_default();
-        let mut hints = Vec::new();
-        if !available.is_empty() {
-            hints.push(format!("Available profiles: {}", available.join(", ")));
+    match cfgd_core::config::find_profile_path(&profiles_dir, name) {
+        Ok(_) => {}
+        Err(e @ cfgd_core::errors::ConfigError::ProfileNotFound { .. }) => {
+            let available = super::available_profile_names(&profiles_dir);
+            let mut hints = Vec::new();
+            if !available.is_empty() {
+                hints.push(format!("Available profiles: {}", available.join(", ")));
+            }
+            // Carry the typed `ConfigError::ProfileNotFound` in the chain so the
+            // exit-code downcast in `main.rs` resolves to ExitCode::NotFound (6);
+            // the attached CliErrorMeta still drives the rich `not_found` payload.
+            return Err(crate::cli::cli_error_ctx_with_hints(
+                cfgd_core::errors::CfgdError::Config(e).into(),
+                name,
+                "not_found",
+                format!("Profile '{}' not found in {}", name, profiles_dir.posix()),
+                serde_json::json!({
+                    "profilesDir": cfgd_core::to_posix_string(&profiles_dir),
+                    "available": available,
+                }),
+                hints,
+            ));
         }
-        // Carry the typed `ConfigError::ProfileNotFound` in the chain so the
-        // exit-code downcast in `main.rs` resolves to ExitCode::NotFound (6);
-        // the attached CliErrorMeta still drives the rich `not_found` payload.
-        return Err(crate::cli::cli_error_ctx_with_hints(
-            cfgd_core::errors::CfgdError::Config(cfgd_core::errors::ConfigError::ProfileNotFound {
-                name: name.to_string(),
-            })
-            .into(),
-            name,
-            "not_found",
-            format!("Profile '{}' not found at {}", name, profile_path.posix()),
-            serde_json::json!({
-                "profilePath": profile_path.display().to_string(),
-                "available": available,
-            }),
-            hints,
-        ));
+        Err(e) => return Err(cfgd_core::errors::CfgdError::Config(e).into()),
     }
 
     // Read current config, update profile field, write back

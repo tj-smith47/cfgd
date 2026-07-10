@@ -2141,12 +2141,12 @@ fn plan_secrets_target_and_envs_produces_both_actions() {
     assert!(
         matches!(&actions[0], Action::Secret(SecretAction::Resolve { .. })),
         "First action should be Resolve, got {:?}",
-        &actions[0]
+        actions[0]
     );
     assert!(
         matches!(&actions[1], Action::Secret(SecretAction::ResolveEnv { .. })),
         "Second action should be ResolveEnv, got {:?}",
-        &actions[1]
+        actions[1]
     );
 }
 

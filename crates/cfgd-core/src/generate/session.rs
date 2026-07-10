@@ -64,9 +64,21 @@ impl GenerateSession {
             }
             .into());
         }
-        let dir = self.repo_root.join("profiles");
-        std::fs::create_dir_all(&dir)?;
-        let path = dir.join(format!("{}.yaml", name));
+        // Overwrite an existing manifest in whichever form it already has —
+        // writing canonical unconditionally beside a legacy flat file would
+        // manufacture an AmbiguousProfile state. Ambiguity propagates.
+        let profiles_dir = self.repo_root.join("profiles");
+        let path = match crate::config::find_profile_path(&profiles_dir, name) {
+            Ok(existing) => existing,
+            Err(crate::errors::ConfigError::ProfileNotFound { .. }) => {
+                let canonical = crate::config::canonical_profile_path(&profiles_dir, name);
+                if let Some(parent) = canonical.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                canonical
+            }
+            Err(e) => return Err(e.into()),
+        };
         atomic_write_str(&path, content)?;
         let key = format!("profile:{}", name);
         self.generated.insert(
@@ -105,15 +117,10 @@ impl GenerateSession {
 
     pub fn get_existing_profiles(&self) -> Result<Vec<String>, CfgdError> {
         let profiles_dir = self.repo_root.join("profiles");
-        let mut names = vec![];
-        crate::config::for_each_yaml_file(&profiles_dir, |path| {
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                names.push(stem.to_string());
-            }
-            Ok(())
-        })?;
-        names.sort();
-        Ok(names)
+        Ok(crate::config::scan_profiles(&profiles_dir)?
+            .into_iter()
+            .map(|e| e.name)
+            .collect())
     }
 }
 
@@ -143,7 +150,9 @@ mod tests {
         let profiles_dir = tmp.path().join("profiles");
         std::fs::create_dir_all(&profiles_dir).unwrap();
         std::fs::write(profiles_dir.join("base.yaml"), "test").unwrap();
-        std::fs::write(profiles_dir.join("work.yaml"), "test").unwrap();
+        let canonical_dir = profiles_dir.join("work");
+        std::fs::create_dir_all(&canonical_dir).unwrap();
+        std::fs::write(canonical_dir.join("profile.yaml"), "test").unwrap();
 
         let session = GenerateSession::new(tmp.path().to_path_buf());
         let profiles = session.get_existing_profiles().unwrap();
@@ -177,9 +186,53 @@ mod tests {
         let mut session = GenerateSession::new(tmp.path().to_path_buf());
         let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  modules:\n    - nvim\n";
         let path = session.write_profile_yaml("base", yaml).unwrap();
-        assert_eq!(path, tmp.path().join("profiles/base.yaml"));
+        assert_eq!(path, tmp.path().join("profiles/base/profile.yaml"));
         assert!(path.exists());
         assert_eq!(session.list_generated().len(), 1);
+    }
+
+    #[test]
+    fn test_write_profile_yaml_overwrites_legacy_form_without_canonical_twin() {
+        let tmp = TempDir::new().unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        let legacy = profiles_dir.join("base.yaml");
+        std::fs::write(
+            &legacy,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec: {}\n",
+        )
+        .unwrap();
+
+        let mut session = GenerateSession::new(tmp.path().to_path_buf());
+        let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec:\n  modules:\n    - nvim\n";
+        let path = session.write_profile_yaml("base", yaml).unwrap();
+
+        assert_eq!(path, legacy, "must write back to the found legacy form");
+        assert_eq!(std::fs::read_to_string(&legacy).unwrap(), yaml);
+        assert!(
+            !profiles_dir.join("base").exists(),
+            "no canonical twin may be created beside a legacy manifest"
+        );
+    }
+
+    #[test]
+    fn test_write_profile_yaml_ambiguous_forms_propagate() {
+        let tmp = TempDir::new().unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        let canonical_dir = profiles_dir.join("base");
+        std::fs::create_dir_all(&canonical_dir).unwrap();
+        std::fs::write(canonical_dir.join("profile.yaml"), "x").unwrap();
+        std::fs::write(profiles_dir.join("base.yaml"), "x").unwrap();
+
+        let mut session = GenerateSession::new(tmp.path().to_path_buf());
+        let yaml =
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: base\nspec: {}\n";
+        let err = session.write_profile_yaml("base", yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("ambiguous"),
+            "ambiguity must propagate, got: {err}"
+        );
+        assert!(session.list_generated().is_empty());
     }
 
     #[test]

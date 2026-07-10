@@ -236,24 +236,13 @@ pub fn cmd_module_add_remote(
             Some(p) => p,
             None => cfg.active_profile()?,
         };
-        let profile_path = profiles_dir(cli).join(format!("{}.yaml", profile_name));
-
-        if profile_path.exists() {
-            let contents = std::fs::read_to_string(&profile_path)?;
-            let mut doc: config::ProfileDocument = serde_yaml::from_str(&contents)?;
-
-            if ensure_module_in_profile_doc(&mut doc, &profile_module_ref) {
-                let yaml = serde_yaml::to_string(&doc)?;
-                cfgd_core::atomic_write_str(&profile_path, &yaml)?;
-                printer.status_simple(
-                    Role::Ok,
-                    format!(
-                        "Added module '{}' to profile '{}'",
-                        profile_module_ref, profile_name
-                    ),
-                );
-                added_to_profile = Some(profile_name.to_string());
-            }
+        if add_module_to_profile(
+            printer,
+            &profiles_dir(cli),
+            profile_name,
+            &profile_module_ref,
+        )? {
+            added_to_profile = Some(profile_name.to_string());
         }
     }
 
@@ -1062,6 +1051,41 @@ pub(super) fn compute_pinned_ref(git_src: &modules::GitSource, commit: &str) -> 
         .clone()
         .or_else(|| git_src.git_ref.clone())
         .unwrap_or_else(|| commit.to_string())
+}
+
+/// Append `module_ref` to the named profile's manifest on disk, resolving the
+/// manifest through the dual-form lookup so canonical `<name>/profile.yaml`
+/// profiles are written back in place (found form, never a new flat twin).
+///
+/// Returns `true` when the manifest was mutated and rewritten. A missing
+/// profile is a silent skip (`false` — the module is still locked); ambiguity
+/// and other lookup failures propagate as typed errors.
+pub(super) fn add_module_to_profile(
+    printer: &Printer,
+    profiles_dir: &Path,
+    profile_name: &str,
+    module_ref: &str,
+) -> anyhow::Result<bool> {
+    let profile_path = match cfgd_core::config::find_profile_path(profiles_dir, profile_name) {
+        Ok(p) => p,
+        Err(cfgd_core::errors::ConfigError::ProfileNotFound { .. }) => return Ok(false),
+        Err(e) => return Err(cfgd_core::errors::CfgdError::Config(e).into()),
+    };
+    let contents = std::fs::read_to_string(&profile_path)?;
+    let mut doc: config::ProfileDocument = serde_yaml::from_str(&contents)?;
+    if !ensure_module_in_profile_doc(&mut doc, module_ref) {
+        return Ok(false);
+    }
+    let yaml = serde_yaml::to_string(&doc)?;
+    cfgd_core::atomic_write_str(&profile_path, &yaml)?;
+    printer.status_simple(
+        Role::Ok,
+        format!(
+            "Added module '{}' to profile '{}'",
+            module_ref, profile_name
+        ),
+    );
+    Ok(true)
 }
 
 /// Append `module_ref` to a profile's `spec.modules` if not already listed.

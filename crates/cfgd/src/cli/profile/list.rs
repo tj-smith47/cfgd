@@ -60,7 +60,8 @@ pub fn cmd_profile_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let profiles = super::list_yaml_stems(&profiles_dir)?;
+    let profiles = cfgd_core::config::scan_profiles(&profiles_dir)
+        .map_err(cfgd_core::errors::CfgdError::Config)?;
 
     let active = cli.profile.clone().unwrap_or_else(|| {
         config::load_config(&cli.config)
@@ -70,9 +71,8 @@ pub fn cmd_profile_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
 
     let entries: Vec<super::ProfileListEntry> = profiles
         .iter()
-        .map(|name| {
-            let profile_path = profiles_dir.join(format!("{}.yaml", name));
-            let (inherits, module_count) = if let Ok(doc) = config::load_profile(&profile_path) {
+        .map(|entry| {
+            let (inherits, module_count) = if let Ok(doc) = config::load_profile(&entry.path) {
                 let inh = if doc.spec.inherits.is_empty() {
                     None
                 } else {
@@ -80,22 +80,11 @@ pub fn cmd_profile_list(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
                 };
                 (inh, doc.spec.modules.len())
             } else {
-                // Try .yml extension
-                let yml_path = profiles_dir.join(format!("{}.yml", name));
-                if let Ok(doc) = config::load_profile(&yml_path) {
-                    let inh = if doc.spec.inherits.is_empty() {
-                        None
-                    } else {
-                        Some(doc.spec.inherits.join(", "))
-                    };
-                    (inh, doc.spec.modules.len())
-                } else {
-                    (None, 0)
-                }
+                (None, 0)
             };
             super::ProfileListEntry {
-                name: name.clone(),
-                active: *name == active,
+                name: entry.name.clone(),
+                active: entry.name == active,
                 inherits,
                 module_count,
             }

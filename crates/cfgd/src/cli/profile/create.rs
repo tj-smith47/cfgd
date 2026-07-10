@@ -29,31 +29,25 @@ pub fn cmd_profile_create(
     let pdir = config_dir.join("profiles");
     std::fs::create_dir_all(&pdir)?;
 
-    let profile_path = pdir.join(format!("{}.yaml", name));
-    if profile_path.exists() {
-        return Err(crate::cli::cli_error(
-            name,
-            "already_exists",
-            format!(
-                "Profile '{}' already exists at {}",
+    // Refuse when the name already resolves in either layout form; ambiguity
+    // (both forms on disk) fails closed with the typed error.
+    match cfgd_core::config::find_profile_path(&pdir, name) {
+        Ok(existing) => {
+            return Err(crate::cli::cli_error(
                 name,
-                profile_path.posix()
-            ),
-            serde_json::json!({ "path": cfgd_core::to_posix_string(&profile_path) }),
-        ));
+                "already_exists",
+                format!("Profile '{}' already exists at {}", name, existing.posix()),
+                serde_json::json!({ "path": cfgd_core::to_posix_string(&existing) }),
+            ));
+        }
+        Err(cfgd_core::errors::ConfigError::ProfileNotFound { .. }) => {}
+        Err(e) => return Err(cfgd_core::errors::CfgdError::Config(e).into()),
     }
+    let profile_path = cfgd_core::config::canonical_profile_path(&pdir, name);
 
     // Verify inherited profiles exist
     for parent in inherits {
-        let parent_path = pdir.join(format!("{}.yaml", parent));
-        if !parent_path.exists() {
-            return Err(crate::cli::cli_error(
-                name,
-                "parent_not_found",
-                format!("Parent profile '{}' not found", parent),
-                serde_json::json!({ "parent": parent }),
-            ));
-        }
+        ensure_parent_profile_exists(&pdir, name, parent)?;
     }
 
     // Interactive mode if no flags
@@ -80,15 +74,7 @@ pub fn cmd_profile_create(
             inh_str.split(',').map(|s| s.trim().to_string()).collect()
         };
         for parent in &inh {
-            let parent_path = pdir.join(format!("{}.yaml", parent));
-            if !parent_path.exists() {
-                return Err(crate::cli::cli_error(
-                    name,
-                    "parent_not_found",
-                    format!("Parent profile '{}' not found", parent),
-                    serde_json::json!({ "parent": parent }),
-                ));
-            }
+            ensure_parent_profile_exists(&pdir, name, parent)?;
         }
 
         let mods_str = printer.prompt_text("Modules (comma-separated, or empty)", "")?;
@@ -261,6 +247,9 @@ pub fn cmd_profile_create(
     };
 
     let yaml = serde_yaml::to_string(&doc)?;
+    if let Some(parent) = profile_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     cfgd_core::atomic_write_str(&profile_path, &yaml)?;
 
     let mut out = Doc::new().status(

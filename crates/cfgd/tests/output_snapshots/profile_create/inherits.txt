@@ -2,7 +2,7 @@ Create Profile: child
 
 ⚠ Module 'nvim' not found locally — make sure it exists or is a remote module
 
-✓ Created profile 'child' at <CONFIG_DIR>/profiles/child.yaml
+✓ Created profile 'child' at <CONFIG_DIR>/profiles/child/profile.yaml
 
 Inherits  default
 Modules   nvim

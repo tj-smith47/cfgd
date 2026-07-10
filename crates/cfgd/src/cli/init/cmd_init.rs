@@ -186,10 +186,12 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
         } else {
             // Profile-based apply
             let profile_name = if let Some(name) = args.apply_profile {
-                // Validate profile exists
-                let profile_path = profiles_dir.join(format!("{}.yaml", name));
-                if !profile_path.exists() {
-                    anyhow::bail!("Profile '{}' not found at {}", name, profile_path.posix());
+                // Validate profile exists (either layout form)
+                if let Err(e) = cfgd_core::config::find_profile_path(&profiles_dir, name) {
+                    if matches!(e, cfgd_core::errors::ConfigError::ProfileNotFound { .. }) {
+                        anyhow::bail!("Profile '{}' not found in {}", name, profiles_dir.posix());
+                    }
+                    return Err(cfgd_core::errors::CfgdError::Config(e).into());
                 }
                 // Set as active profile in cfgd.yaml
                 let mut cfg = config::load_config(&config_path)?;
@@ -498,7 +500,11 @@ pub(super) fn pick_profile(profiles_dir: &Path, printer: &Printer) -> anyhow::Re
         );
     }
 
-    let names = super::list_yaml_stems(profiles_dir)?;
+    let names: Vec<String> = cfgd_core::config::scan_profiles(profiles_dir)
+        .map_err(cfgd_core::errors::CfgdError::Config)?
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
 
     if names.is_empty() {
         anyhow::bail!(

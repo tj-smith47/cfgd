@@ -73,6 +73,40 @@ fn profile_switch_happy_json() {
 }
 
 #[test]
+fn profile_switch_not_found_json_payload_is_dir_oriented() {
+    let (config_dir, state_dir) = profile_test_config_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc();
+
+    let err = cmd_profile_switch(&cli, "missing", &printer)
+        .expect_err("switching to nonexistent profile must error");
+    render_cli_error(&printer, &err);
+    drop(printer);
+
+    let json = cap.json().expect("error doc captured json");
+    assert_eq!(json["error"], "not_found");
+    assert_eq!(json["name"], "missing");
+    let profiles_dir = json["profilesDir"]
+        .as_str()
+        .expect("payload names the probed profiles dir");
+    assert!(
+        profiles_dir.ends_with("/profiles") && !profiles_dir.contains('\\'),
+        "profilesDir must be the posix profiles directory, got: {profiles_dir}"
+    );
+    assert!(
+        json.get("profilePath").is_none(),
+        "single-file profilePath key is replaced by profilesDir"
+    );
+    let available: Vec<&str> = json["available"]
+        .as_array()
+        .expect("available list present")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert_eq!(available, vec!["default", "work"]);
+}
+
+#[test]
 fn profile_switch_not_found_human() {
     let (config_dir, state_dir) = profile_test_config_setup();
     let cli = cli_for(config_dir.path(), state_dir.path());

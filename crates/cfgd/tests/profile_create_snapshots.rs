@@ -82,7 +82,12 @@ fn profile_create_happy_json() {
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["name"], "newprof");
-    assert!(json["path"].as_str().unwrap().ends_with("newprof.yaml"));
+    assert!(
+        json["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("newprof/profile.yaml")
+    );
 }
 
 #[test]

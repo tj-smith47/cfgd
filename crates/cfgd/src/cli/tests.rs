@@ -1553,7 +1553,11 @@ fn profile_create_with_flags() {
     };
     profile::cmd_profile_create(&cli, &printer, &args).unwrap();
 
-    let profile_path = dir.path().join("profiles").join("new-profile.yaml");
+    let profile_path = dir
+        .path()
+        .join("profiles")
+        .join("new-profile")
+        .join("profile.yaml");
     assert!(profile_path.exists());
 
     let doc = config::load_profile(&profile_path).unwrap();
@@ -10426,8 +10430,13 @@ fn profile_create_with_aliases() {
     };
     profile::cmd_profile_create(&cli, &printer, &args).unwrap();
 
-    let doc =
-        config::load_profile(&dir.path().join("profiles").join("alias-profile.yaml")).unwrap();
+    let doc = config::load_profile(
+        &dir.path()
+            .join("profiles")
+            .join("alias-profile")
+            .join("profile.yaml"),
+    )
+    .unwrap();
     assert_eq!(doc.spec.aliases.len(), 2);
     assert!(doc.spec.aliases.iter().any(|a| a.name == "ll"));
     assert!(doc.spec.aliases.iter().any(|a| a.name == "gs"));
@@ -10445,8 +10454,13 @@ fn profile_create_with_secrets() {
     };
     profile::cmd_profile_create(&cli, &printer, &args).unwrap();
 
-    let doc =
-        config::load_profile(&dir.path().join("profiles").join("secret-profile.yaml")).unwrap();
+    let doc = config::load_profile(
+        &dir.path()
+            .join("profiles")
+            .join("secret-profile")
+            .join("profile.yaml"),
+    )
+    .unwrap();
     assert_eq!(doc.spec.secrets.len(), 1);
     assert_eq!(doc.spec.secrets[0].source, "secrets/api.enc");
 }
@@ -10466,8 +10480,13 @@ fn profile_create_with_scripts() {
     };
     profile::cmd_profile_create(&cli, &printer, &args).unwrap();
 
-    let doc =
-        config::load_profile(&dir.path().join("profiles").join("script-profile.yaml")).unwrap();
+    let doc = config::load_profile(
+        &dir.path()
+            .join("profiles")
+            .join("script-profile")
+            .join("profile.yaml"),
+    )
+    .unwrap();
     let scripts = doc.spec.scripts.as_ref().unwrap();
     assert_eq!(scripts.pre_apply.len(), 1);
     assert_eq!(scripts.post_apply.len(), 1);
@@ -18254,7 +18273,7 @@ fn execute_profile_create_dispatch() {
         .expect("Profile Create dispatch must succeed");
     let profiles_dir = h.config_path().join("profiles");
     assert!(
-        profiles_dir.join("newprof.yaml").exists(),
+        profiles_dir.join("newprof").join("profile.yaml").exists(),
         "new profile file should have been created"
     );
 }
