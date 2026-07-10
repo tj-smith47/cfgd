@@ -83,7 +83,7 @@ pub enum ConfigError {
     ProfileNotFound { name: String },
 
     #[error(
-        "ambiguous profile '{name}': both '{a}' and '{b}' exist — run 'cfgd profile migrate {name}' or delete one of them",
+        "ambiguous profile '{name}': both '{a}' and '{b}' exist — delete or rename one of them (the canonical form is '{name}/profile.yaml')",
         a = .path_a.posix(),
         b = .path_b.posix()
     )]

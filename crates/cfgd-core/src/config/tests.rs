@@ -2191,7 +2191,7 @@ fn find_profile_path_canonical_plus_legacy_yaml_is_ambiguous() {
     let msg = err.to_string();
     assert!(msg.contains(&canonical.posix().to_string()), "{msg}");
     assert!(msg.contains(&legacy.posix().to_string()), "{msg}");
-    assert!(msg.contains("cfgd profile migrate work"), "{msg}");
+    assert!(msg.contains("delete or rename one"), "{msg}");
 }
 
 #[test]
@@ -2204,7 +2204,7 @@ fn find_profile_path_canonical_plus_legacy_yml_is_ambiguous() {
     let msg = err.to_string();
     assert!(msg.contains(&canonical.posix().to_string()), "{msg}");
     assert!(msg.contains(&legacy.posix().to_string()), "{msg}");
-    assert!(msg.contains("cfgd profile migrate work"), "{msg}");
+    assert!(msg.contains("delete or rename one"), "{msg}");
 }
 
 #[test]
@@ -2217,7 +2217,7 @@ fn find_profile_path_legacy_yaml_plus_yml_is_ambiguous() {
     let msg = err.to_string();
     assert!(msg.contains(&yaml.posix().to_string()), "{msg}");
     assert!(msg.contains(&yml.posix().to_string()), "{msg}");
-    assert!(msg.contains("delete one"), "{msg}");
+    assert!(msg.contains("delete or rename one"), "{msg}");
 }
 
 #[test]
@@ -2301,7 +2301,7 @@ fn scan_profiles_ambiguous_name_fails_closed() {
     write_legacy_profile(dir.path(), "work.yaml", "work");
     let err = scan_profiles(dir.path()).unwrap_err();
     assert!(matches!(err, ConfigError::AmbiguousProfile { ref name, .. } if name == "work"));
-    assert!(err.to_string().contains("cfgd profile migrate work"));
+    assert!(err.to_string().contains("delete or rename one"));
 }
 
 #[test]
