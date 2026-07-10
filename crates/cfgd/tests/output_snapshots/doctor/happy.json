@@ -44,6 +44,7 @@
       "name": "brew"
     }
   ],
+  "profiles": [],
   "secrets": {
     "ageKeyExists": true,
     "ageKeyPath": "/home/test/.config/sops/age/keys.txt",

@@ -29,6 +29,9 @@ pub struct DoctorProfilesDir {
     pub path: String,
     pub exists: bool,
     pub profile_count: usize,
+    /// Set when the directory exists but could not be enumerated
+    /// (e.g. permission denied); the count is meaningless then.
+    pub error: Option<String>,
 }
 
 pub struct DoctorConfigSource {
@@ -305,26 +308,15 @@ fn collect_doctor_output(
     };
 
     let profiles_dir_path = profiles_dir(cli);
-    let profiles_dir_extra = if profiles_dir_path.exists() {
-        let count = std::fs::read_dir(&profiles_dir_path)
-            .map(|entries| {
-                entries
-                    .filter_map(|e| e.ok())
-                    .filter(|e| cfgd_core::config::is_yaml_ext(&e.path()))
-                    .count()
-            })
-            .unwrap_or(0);
-        DoctorProfilesDir {
-            path: profiles_dir_path.display().to_string(),
-            exists: true,
-            profile_count: count,
-        }
-    } else {
-        DoctorProfilesDir {
-            path: profiles_dir_path.display().to_string(),
-            exists: false,
-            profile_count: 0,
-        }
+    // One ambiguity-tolerant walk feeds both the System count and the
+    // per-profile layout checks, so the two can never disagree on what counts
+    // as a profile (canonical bundles included, payload dirs excluded).
+    let profiles_scan = cfgd_core::config::scan_profiles_tolerant(&profiles_dir_path);
+    let profiles_dir_extra = DoctorProfilesDir {
+        path: profiles_dir_path.display().to_string(),
+        exists: profiles_dir_path.exists(),
+        profile_count: profiles_scan.as_ref().map(Vec::len).unwrap_or(0),
+        error: profiles_scan.as_ref().err().map(|e| e.to_string()),
     };
 
     let config_sources: Vec<DoctorConfigSource> = if cli.config.exists()
@@ -352,6 +344,36 @@ fn collect_doctor_output(
             .collect()
     } else {
         Vec::new()
+    };
+
+    let profile_layouts: Vec<DoctorProfileLayoutCheck> = match &profiles_scan {
+        Ok(entries) => entries
+            .iter()
+            .map(|entry| match entry {
+                cfgd_core::config::ProfileScanEntry::Found(found) => DoctorProfileLayoutCheck {
+                    name: found.name.clone(),
+                    legacy: found.form == cfgd_core::config::ProfileForm::LegacyFlat,
+                    path: Some(cfgd_core::to_posix_string(&found.path)),
+                    error: None,
+                },
+                cfgd_core::config::ProfileScanEntry::Ambiguous { name, error } => {
+                    DoctorProfileLayoutCheck {
+                        name: name.clone(),
+                        legacy: true,
+                        path: None,
+                        error: Some(error.to_string()),
+                    }
+                }
+            })
+            .collect(),
+        // An unreadable profiles dir is a hard failure, not "no profiles" —
+        // surface it as a failing check so it flips the doctor verdict.
+        Err(e) => vec![DoctorProfileLayoutCheck {
+            name: cfgd_core::to_posix_string(&profiles_dir_path),
+            legacy: false,
+            path: None,
+            error: Some(e.to_string()),
+        }],
     };
 
     let output = DoctorOutput {
@@ -382,6 +404,7 @@ fn collect_doctor_output(
         package_managers: manager_checks,
         modules: module_checks,
         system_configurators: configurator_checks,
+        profiles: profile_layouts,
     };
 
     let extras = DoctorExtras {
@@ -411,6 +434,7 @@ pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
         build_managers_section,
     );
     doc = doc.section_if_nonempty("Modules", &output.modules, build_modules_section);
+    doc = doc.section_if_nonempty("Profiles", &output.profiles, build_profiles_section);
     doc = doc.section("System", |s| build_system_section(s, extras));
     doc = doc.section_if_nonempty(
         "Config Sources",
@@ -562,6 +586,32 @@ fn build_modules_section(s: SectionBuilder, modules: &[DoctorModuleCheck]) -> Se
     })
 }
 
+fn build_profiles_section(
+    s: SectionBuilder,
+    profiles: &[DoctorProfileLayoutCheck],
+) -> SectionBuilder {
+    if profiles.iter().all(|p| !p.legacy && p.error.is_none()) {
+        return s.status(Role::Ok, "All profiles use the canonical bundle layout");
+    }
+    profiles.iter().fold(s, |s, p| {
+        if let Some(err) = p.error.as_deref() {
+            // Ambiguous / unscannable profiles are hard-broken (every load of
+            // them errors), unlike the supported legacy form — Fail, not Warn.
+            s.status(Role::Fail, cfgd_core::output::collapse_to_subject_line(err))
+        } else if p.legacy {
+            s.status(
+                Role::Warn,
+                format!(
+                    "profile '{}' uses the legacy flat layout — run 'cfgd profile migrate {}'",
+                    p.name, p.name
+                ),
+            )
+        } else {
+            s.status(Role::Ok, p.name.clone())
+        }
+    })
+}
+
 fn build_module_package_status(
     sub: SectionBuilder,
     pkg: &DoctorModulePackageCheck,
@@ -607,7 +657,16 @@ fn build_system_section(mut s: SectionBuilder, extras: &DoctorExtras) -> Section
         };
     }
     if let Some(pd) = extras.profiles_dir.as_ref() {
-        s = if pd.exists {
+        s = if let Some(err) = pd.error.as_deref() {
+            s.status(
+                Role::Fail,
+                format!(
+                    "Profiles directory: {} — {}",
+                    pd.path,
+                    cfgd_core::output::collapse_to_subject_line(err)
+                ),
+            )
+        } else if pd.exists {
             s.status(
                 Role::Ok,
                 format!(
@@ -650,4 +709,7 @@ fn all_passed(output: &DoctorOutput) -> bool {
                     .iter()
                     .all(|p| p.error.is_none() && (p.installed || p.skip_reason.is_some()))
         })
+        // Legacy layout is a Warn (supported); only errored profile checks
+        // (ambiguous forms, unscannable dir) fail the verdict.
+        && output.profiles.iter().all(|p| p.error.is_none())
 }

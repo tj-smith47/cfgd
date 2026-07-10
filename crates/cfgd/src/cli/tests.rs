@@ -15894,6 +15894,7 @@ fn base_doctor_output() -> super::output_types::DoctorOutput {
         package_managers: vec![],
         modules: vec![],
         system_configurators: vec![],
+        profiles: vec![],
     }
 }
 
@@ -16256,6 +16257,7 @@ fn build_doctor_doc_system_profiles_dir_missing_emits_warn() {
             path: "/etc/cfgd/profiles".into(),
             exists: false,
             profile_count: 0,
+            error: None,
         }),
         config_sources: vec![],
     };
@@ -18767,5 +18769,153 @@ fn execute_enroll_dispatch() {
     assert!(
         result.is_err(),
         "enroll with unreachable server should fail"
+    );
+}
+
+// -----------------------------------------------------------------------
+// doctor: profile layout checks
+// -----------------------------------------------------------------------
+
+#[test]
+fn cmd_doctor_json_flags_legacy_profiles() {
+    // The default harness writes flat legacy manifests (default.yaml, work.yaml).
+    let h = CliTestHarness::builder().json().build();
+    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
+
+    let parsed = h.json_output();
+    let profiles = parsed["profiles"]
+        .as_array()
+        .expect("profiles should be array");
+    assert_eq!(profiles.len(), 2);
+    for p in profiles {
+        assert_eq!(p["legacy"], true, "flat manifests are legacy: {p}");
+        let path = p["path"].as_str().expect("path should be set");
+        assert!(!path.contains('\\'), "payload paths must be posix: {path}");
+        assert!(
+            path.ends_with(&format!("{}.yaml", p["name"].as_str().unwrap())),
+            "path should be the flat manifest: {path}"
+        );
+        assert!(p["error"].is_null());
+    }
+}
+
+#[test]
+fn cmd_doctor_json_canonical_profiles_not_legacy() {
+    let h = CliTestHarness::builder().json().build();
+    // convert the harness's flat manifests to canonical bundles
+    let pdir = h.config_path().join("profiles");
+    for name in ["default", "work"] {
+        let bundle = pdir.join(name);
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::rename(
+            pdir.join(format!("{name}.yaml")),
+            bundle.join("profile.yaml"),
+        )
+        .unwrap();
+    }
+    super::doctor::cmd_doctor(&h.cli(), h.printer()).unwrap();
+
+    let parsed = h.json_output();
+    let profiles = parsed["profiles"].as_array().unwrap();
+    assert_eq!(profiles.len(), 2);
+    for p in profiles {
+        assert_eq!(p["legacy"], false, "canonical bundles are not legacy: {p}");
+        assert!(
+            p["path"]
+                .as_str()
+                .unwrap()
+                .ends_with(&format!("{}/profile.yaml", p["name"].as_str().unwrap()))
+        );
+    }
+}
+
+#[test]
+fn build_doctor_doc_legacy_profile_warns_with_migrate_hint() {
+    let mut output = base_doctor_output();
+    output.profiles = vec![super::output_types::DoctorProfileLayoutCheck {
+        name: "work".into(),
+        legacy: true,
+        path: Some("/etc/cfgd/profiles/work.yaml".into()),
+        error: None,
+    }];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains(
+            "profile 'work' uses the legacy flat layout — run 'cfgd profile migrate work'"
+        ),
+        "should warn with the migrate remediation, got: {text}"
+    );
+    assert!(
+        text.contains("All checks passed"),
+        "legacy layout is supported — a WARN must not fail doctor, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_profiles_all_canonical_ok() {
+    let mut output = base_doctor_output();
+    output.profiles = vec![super::output_types::DoctorProfileLayoutCheck {
+        name: "work".into(),
+        legacy: false,
+        path: Some("/etc/cfgd/profiles/work/profile.yaml".into()),
+        error: None,
+    }];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("All profiles use the canonical bundle layout"),
+        "should report OK when all canonical, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_ambiguous_profile_fails() {
+    let mut output = base_doctor_output();
+    output.profiles = vec![super::output_types::DoctorProfileLayoutCheck {
+        name: "work".into(),
+        legacy: true,
+        path: None,
+        error: Some("ambiguous profile 'work': both forms exist".into()),
+    }];
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("ambiguous profile 'work'"),
+        "should surface the ambiguity message, got: {text}"
+    );
+    assert!(
+        text.contains("Some checks failed"),
+        "an ambiguous profile is hard-broken (every load errors) — it must fail doctor, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_unscannable_profiles_dir_fails() {
+    let mut output = base_doctor_output();
+    output.profiles = vec![super::output_types::DoctorProfileLayoutCheck {
+        name: "/etc/cfgd/profiles".into(),
+        legacy: false,
+        path: None,
+        error: Some("failed to read /etc/cfgd/profiles: permission denied".into()),
+    }];
+    let extras = super::doctor::DoctorExtras {
+        state_store: None,
+        profiles_dir: Some(super::doctor::DoctorProfilesDir {
+            path: "/etc/cfgd/profiles".into(),
+            exists: true,
+            profile_count: 0,
+            error: Some("failed to read /etc/cfgd/profiles: permission denied".into()),
+        }),
+        config_sources: vec![],
+    };
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("Profiles directory: /etc/cfgd/profiles — failed to read"),
+        "System line must report the unreadable dir, not a bogus count, got: {text}"
+    );
+    assert!(
+        text.contains("Some checks failed"),
+        "an unscannable profiles dir must fail doctor, got: {text}"
     );
 }

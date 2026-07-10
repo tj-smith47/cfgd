@@ -4336,3 +4336,366 @@ fn profile_update_canonical_parent_inherits() {
     let doc = config::load_profile(&dir.path().join("profiles").join("work.yaml")).unwrap();
     assert!(doc.spec.inherits.contains(&"parent-bundle".to_string()));
 }
+
+// --- cmd_profile_migrate ---
+
+fn run_migrate(
+    cli: &super::super::Cli,
+    name: Option<&str>,
+    all: bool,
+    dry_run: bool,
+    yes: bool,
+) -> (anyhow::Result<usize>, String) {
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let result = migrate::run_profile_migrate(cli, &printer, name, all, dry_run, yes);
+    drop(printer);
+    let output = buf.lock().unwrap().clone();
+    (result, output)
+}
+
+#[test]
+fn profile_migrate_single_moves_legacy_to_canonical() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+
+    let (result, output) = run_migrate(&cli, Some("work"), false, false, true);
+    assert_eq!(result.unwrap(), 0);
+    assert!(
+        !dir.path().join("profiles").join("work.yaml").exists(),
+        "legacy manifest should be gone"
+    );
+    let canonical = dir
+        .path()
+        .join("profiles")
+        .join("work")
+        .join("profile.yaml");
+    assert!(canonical.is_file(), "canonical manifest should exist");
+    let doc = config::load_profile(&canonical).unwrap();
+    assert_eq!(doc.metadata.name, "work");
+    assert!(
+        output.contains("Migrated 'work'"),
+        "should report the move, got: {output}"
+    );
+    // the untouched sibling stays legacy
+    assert!(dir.path().join("profiles").join("default.yaml").is_file());
+}
+
+#[test]
+fn profile_migrate_all_moves_every_legacy_profile() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+
+    let (result, output) = run_migrate(&cli, None, true, false, true);
+    assert_eq!(result.unwrap(), 0);
+    for name in ["default", "work"] {
+        assert!(
+            !dir.path()
+                .join("profiles")
+                .join(format!("{name}.yaml"))
+                .exists(),
+            "legacy '{name}' should be gone"
+        );
+        assert!(
+            dir.path()
+                .join("profiles")
+                .join(name)
+                .join("profile.yaml")
+                .is_file(),
+            "canonical '{name}' should exist"
+        );
+    }
+    assert!(
+        output.contains("Migrated 2 profile(s)"),
+        "should summarize both moves, got: {output}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn profile_migrate_all_unreadable_dir_errors() {
+    use std::os::unix::fs::PermissionsExt;
+    if cfgd_core::is_root() {
+        return; // root bypasses mode bits; the denial cannot be simulated
+    }
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let pdir = dir.path().join("profiles");
+    std::fs::set_permissions(&pdir, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let (result, _) = run_migrate(&cli, None, true, false, true);
+    let err = result.expect_err("an unreadable profiles dir must fail, not silently do nothing");
+    assert!(
+        err.to_string().contains("failed to read"),
+        "error should name the unreadable dir, got: {err}"
+    );
+
+    std::fs::set_permissions(&pdir, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn profile_migrate_already_canonical_is_noop() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+
+    let (first, _) = run_migrate(&cli, Some("work"), false, false, true);
+    assert_eq!(first.unwrap(), 0);
+    let (second, output) = run_migrate(&cli, Some("work"), false, false, true);
+    assert_eq!(
+        second.unwrap(),
+        0,
+        "already-canonical must be a 0-exit no-op"
+    );
+    assert!(
+        output.contains("already canonical"),
+        "should report already canonical, got: {output}"
+    );
+    assert!(
+        dir.path()
+            .join("profiles")
+            .join("work")
+            .join("profile.yaml")
+            .is_file(),
+        "manifest must stay in place"
+    );
+}
+
+#[test]
+fn profile_migrate_dry_run_changes_nothing() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+
+    let (result, output) = run_migrate(&cli, None, true, true, false);
+    assert_eq!(result.unwrap(), 0);
+    assert!(
+        dir.path().join("profiles").join("work.yaml").is_file(),
+        "dry run must not move files"
+    );
+    assert!(
+        !dir.path().join("profiles").join("work").exists(),
+        "dry run must not create bundle dirs"
+    );
+    assert!(
+        output.contains("Would move") && output.contains("Dry run"),
+        "should print the move plan, got: {output}"
+    );
+}
+
+#[test]
+fn profile_migrate_single_ambiguous_refuses() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let bundle = dir.path().join("profiles").join("work");
+    std::fs::create_dir_all(&bundle).unwrap();
+    std::fs::write(bundle.join("profile.yaml"), WORK_PROFILE_YAML).unwrap();
+
+    let (result, _) = run_migrate(&cli, Some("work"), false, false, true);
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("ambiguous profile 'work'"),
+        "should surface the typed ambiguity error, got: {err}"
+    );
+    // fail closed: both forms remain untouched
+    assert!(dir.path().join("profiles").join("work.yaml").is_file());
+    assert!(bundle.join("profile.yaml").is_file());
+}
+
+#[test]
+fn profile_migrate_all_continues_past_ambiguous() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let bundle = dir.path().join("profiles").join("work");
+    std::fs::create_dir_all(&bundle).unwrap();
+    std::fs::write(bundle.join("profile.yaml"), WORK_PROFILE_YAML).unwrap();
+
+    let (result, output) = run_migrate(&cli, None, true, false, true);
+    assert_eq!(
+        result.unwrap(),
+        1,
+        "ambiguous profile counts as one failure"
+    );
+    // the clean profile still migrated
+    assert!(
+        dir.path()
+            .join("profiles")
+            .join("default")
+            .join("profile.yaml")
+            .is_file(),
+        "loop must continue past the ambiguous profile"
+    );
+    // the ambiguous one is untouched
+    assert!(dir.path().join("profiles").join("work.yaml").is_file());
+    assert!(
+        output.contains("ambiguous profile 'work'"),
+        "should report the per-profile failure, got: {output}"
+    );
+}
+
+#[test]
+fn profile_migrate_payload_dir_already_exists() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let files_dir = dir.path().join("profiles").join("work").join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join(".zshrc"), "export A=1\n").unwrap();
+
+    let (result, _) = run_migrate(&cli, Some("work"), false, false, true);
+    assert_eq!(result.unwrap(), 0);
+    assert!(
+        dir.path()
+            .join("profiles")
+            .join("work")
+            .join("profile.yaml")
+            .is_file(),
+        "manifest should join its payload dir"
+    );
+    assert!(
+        files_dir.join(".zshrc").is_file(),
+        "existing payload must be untouched"
+    );
+}
+
+fn git_in(dir: &Path, args: &[&str]) -> std::process::Output {
+    cfgd_core::git_cmd_local()
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn profile_migrate_git_work_tree_uses_git_mv() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    assert!(git_in(dir.path(), &["init", "-q"]).status.success());
+    assert!(
+        git_in(dir.path(), &["add", "profiles/work.yaml"])
+            .status
+            .success()
+    );
+    assert!(
+        git_in(
+            dir.path(),
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "-m",
+                "seed"
+            ]
+        )
+        .status
+        .success()
+    );
+
+    let (result, _) = run_migrate(&cli, Some("work"), false, false, true);
+    assert_eq!(result.unwrap(), 0);
+    assert!(
+        dir.path()
+            .join("profiles")
+            .join("work")
+            .join("profile.yaml")
+            .is_file()
+    );
+
+    // git mv stages the rename: the new path is in the index, the old is not
+    let ls = String::from_utf8_lossy(&git_in(dir.path(), &["ls-files"]).stdout).to_string();
+    assert!(
+        ls.contains("profiles/work/profile.yaml"),
+        "git index should track the canonical path, got: {ls}"
+    );
+    assert!(
+        !ls.contains("profiles/work.yaml"),
+        "git index should no longer track the legacy path, got: {ls}"
+    );
+}
+
+#[test]
+fn profile_migrate_git_untracked_falls_back_to_plain_rename() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    // work tree, but the manifest is untracked → git mv declines → fs rename
+    assert!(git_in(dir.path(), &["init", "-q"]).status.success());
+
+    let (result, output) = run_migrate(&cli, Some("work"), false, false, true);
+    assert_eq!(result.unwrap(), 0);
+    assert!(
+        dir.path()
+            .join("profiles")
+            .join("work")
+            .join("profile.yaml")
+            .is_file(),
+        "untracked manifest must still migrate via plain rename, got: {output}"
+    );
+    assert!(!dir.path().join("profiles").join("work.yaml").exists());
+}
+
+#[test]
+fn profile_migrate_prompt_decline_cancels() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+        vec![cfgd_core::output::PromptAnswer::Confirm(false)],
+        cfgd_core::output::Verbosity::Normal,
+    );
+
+    let failed =
+        migrate::run_profile_migrate(&cli, &printer, Some("work"), false, false, false).unwrap();
+    drop(printer);
+    assert_eq!(failed, 0);
+    let output = buf.lock().unwrap().clone();
+    assert!(
+        output.contains("Cancelled"),
+        "declined prompt should cancel, got: {output}"
+    );
+    assert!(
+        dir.path().join("profiles").join("work.yaml").is_file(),
+        "declined prompt must not move files"
+    );
+}
+
+#[test]
+fn profile_migrate_not_found_errors() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+
+    let (result, _) = run_migrate(&cli, Some("ghost"), false, false, true);
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("not found"),
+        "should error for a missing profile, got: {err}"
+    );
+}
+
+#[test]
+fn profile_migrate_json_payload_shape() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+
+    let failed = migrate::run_profile_migrate(&cli, &printer, None, true, false, true).unwrap();
+    drop(printer);
+    assert_eq!(failed, 0);
+    let output = buf.lock().unwrap().clone();
+    let json: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+    assert_eq!(json["migrated"], 2);
+    assert_eq!(json["failed"], 0);
+    assert_eq!(json["dryRun"], false);
+    let profiles = json["profiles"].as_array().unwrap();
+    assert_eq!(profiles.len(), 2);
+    for rec in profiles {
+        assert_eq!(rec["action"], "migrated");
+        let from = rec["from"].as_str().unwrap();
+        let to = rec["to"].as_str().unwrap();
+        assert!(!from.contains('\\'), "payload paths must be posix: {from}");
+        assert!(
+            to.ends_with(&format!("{}/profile.yaml", rec["name"].as_str().unwrap())),
+            "to should be the canonical path: {to}"
+        );
+    }
+}

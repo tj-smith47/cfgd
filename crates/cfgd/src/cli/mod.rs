@@ -584,7 +584,7 @@ pub enum Command {
 
     /// Manage profiles
     #[command(
-        long_about = "List, inspect, and switch between profiles.\n\nExamples:\n  cfgd profile list\n  cfgd profile use laptop\n  cfgd profile show server\n  cfgd profile delete old --ignore-not-found"
+        long_about = "List, inspect, and switch between profiles.\n\nExamples:\n  cfgd profile list\n  cfgd profile use laptop\n  cfgd profile show server\n  cfgd profile delete old --ignore-not-found\n  cfgd profile migrate --all"
     )]
     Profile {
         #[command(subcommand)]
@@ -1339,6 +1339,24 @@ pub enum ProfileCommand {
         #[arg(value_hint = clap::ValueHint::FilePath)]
         source: String,
     },
+    /// Migrate legacy flat profiles to the canonical bundle layout
+    #[command(
+        long_about = "Move a legacy flat profile manifest (profiles/<name>.yaml) into the canonical bundle layout (profiles/<name>/profile.yaml). The bundle directory may already exist holding files/ — the manifest joins its payload.\n\nUses 'git mv' when the config directory is a git work tree (preserving history), a plain rename otherwise. Profile references are by name, so no manifest content changes.\n\nExamples:\n  cfgd profile migrate work\n  cfgd profile migrate --all\n  cfgd profile migrate --all --dry-run\n  cfgd profile migrate work --yes"
+    )]
+    Migrate {
+        /// Profile name (or use --all)
+        #[arg(required_unless_present = "all", conflicts_with = "all")]
+        name: Option<String>,
+        /// Migrate every legacy profile
+        #[arg(long)]
+        all: bool,
+        /// Print the move plan without changing anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Skip confirmation prompt
+        #[arg(long, short, env = "CFGD_YES")]
+        yes: bool,
+    },
 }
 
 #[derive(Parser)]
@@ -1901,6 +1919,12 @@ pub fn execute(
                 ignore_not_found,
             } => profile::cmd_profile_delete(cli, printer, name, *yes, *ignore_not_found),
             ProfileCommand::Validate { source } => validate::cmd_profile_validate(printer, source),
+            ProfileCommand::Migrate {
+                name,
+                all,
+                dry_run,
+                yes,
+            } => profile::cmd_profile_migrate(cli, printer, name.as_deref(), *all, *dry_run, *yes),
         },
         Command::Doctor => doctor::cmd_doctor(cli, printer),
         Command::Paths => paths::cmd_paths(cli, printer, dir_sources),

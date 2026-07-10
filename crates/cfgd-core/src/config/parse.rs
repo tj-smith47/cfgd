@@ -388,6 +388,55 @@ pub fn find_profile_path(
     }
 }
 
+/// One name yielded by the ambiguity-tolerant walk ([`scan_profiles_tolerant`]):
+/// an unambiguous profile, or the [`ConfigError::AmbiguousProfile`] a strict
+/// load of that name would raise.
+#[derive(Debug)]
+pub enum ProfileScanEntry {
+    /// Exactly one manifest form exists for this name.
+    Found(ProfileEntry),
+    /// Multiple forms coexist on disk; `error` is the fail-closed load error.
+    Ambiguous { name: String, error: ConfigError },
+}
+
+impl ProfileScanEntry {
+    /// The profile name, regardless of variant.
+    pub fn name(&self) -> &str {
+        match self {
+            ProfileScanEntry::Found(entry) => &entry.name,
+            ProfileScanEntry::Ambiguous { name, .. } => name,
+        }
+    }
+}
+
+/// Classify one `profiles_dir` child as a profile manifest, or `None` when it
+/// is not one. The single classifier shared by [`scan_profiles`] and
+/// [`scan_profiles_tolerant`] so the two walks cannot drift.
+fn classify_profile_dir_entry(path: PathBuf) -> Option<(String, ProfileForm, PathBuf)> {
+    if path.is_dir() {
+        let manifest = path.join(PROFILE_FILENAME);
+        if !manifest.is_file() {
+            return None; // legacy payload dir (e.g. <name>/files/), not a profile
+        }
+        let name = path.file_name().and_then(|n| n.to_str())?.to_string();
+        Some((name, ProfileForm::Canonical, manifest))
+    } else if path.is_file()
+        && matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("yaml") | Some("yml")
+        )
+    {
+        // Exact lowercase extensions only (not the case-insensitive
+        // is_yaml_ext): find_profile_path probes literal `.yaml`/`.yml`,
+        // so a case-insensitive scan would enumerate profiles that are
+        // unresolvable by name.
+        let stem = path.file_stem().and_then(|s| s.to_str())?.to_string();
+        Some((stem, ProfileForm::LegacyFlat, path))
+    } else {
+        None
+    }
+}
+
 /// Enumerate every profile in `profiles_dir` in a single directory walk.
 ///
 /// Yields one [`ProfileEntry`] per profile, covering both layout forms:
@@ -397,8 +446,33 @@ pub fn find_profile_path(
 /// legacy flat profile). Entries are sorted by name. Ambiguity (both forms, or
 /// both legacy extensions, for one name) fails closed with
 /// [`ConfigError::AmbiguousProfile`]. A missing `profiles_dir` yields an empty
-/// list.
+/// list; any other I/O failure is an error.
+///
+/// The fail-closed wrapper over [`scan_profiles_tolerant`] — use that when a
+/// per-name report (including ambiguous names) is needed instead of a hard
+/// stop at the first ambiguity.
 pub fn scan_profiles(profiles_dir: &Path) -> std::result::Result<Vec<ProfileEntry>, ConfigError> {
+    let mut entries = Vec::new();
+    for entry in scan_profiles_tolerant(profiles_dir)? {
+        match entry {
+            ProfileScanEntry::Found(found) => entries.push(found),
+            ProfileScanEntry::Ambiguous { error, .. } => return Err(error),
+        }
+    }
+    Ok(entries)
+}
+
+/// Ambiguity-tolerant variant of [`scan_profiles`]: walks `profiles_dir` once
+/// and yields one [`ProfileScanEntry`] per name. A name whose forms are
+/// ambiguous (canonical + legacy, or both legacy extensions) is still
+/// enumerated — as [`ProfileScanEntry::Ambiguous`] carrying the error a strict
+/// load would raise — so callers can report each name individually
+/// (e.g. `cfgd profile migrate --all`, `cfgd doctor`). Entries are sorted by
+/// name. A missing `profiles_dir` yields an empty list; any other I/O failure
+/// (e.g. permission denied) is an error, never an empty result.
+pub fn scan_profiles_tolerant(
+    profiles_dir: &Path,
+) -> std::result::Result<Vec<ProfileScanEntry>, ConfigError> {
     let read_dir = match std::fs::read_dir(profiles_dir) {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -409,71 +483,56 @@ pub fn scan_profiles(profiles_dir: &Path) -> std::result::Result<Vec<ProfileEntr
         }
     };
 
-    let mut entries: Vec<ProfileEntry> = Vec::new();
+    let mut entries: Vec<ProfileScanEntry> = Vec::new();
     for entry in read_dir {
         let entry = entry.map_err(|e| ConfigError::Invalid {
             message: format!("failed to read {}: {}", profiles_dir.posix(), e),
         })?;
-        let path = entry.path();
-        let (name, form, manifest) = if path.is_dir() {
-            let manifest = path.join(PROFILE_FILENAME);
-            if !manifest.is_file() {
-                continue; // legacy payload dir (e.g. <name>/files/), not a profile
-            }
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            (name.to_string(), ProfileForm::Canonical, manifest)
-        } else if path.is_file()
-            && matches!(
-                path.extension().and_then(|e| e.to_str()),
-                Some("yaml") | Some("yml")
-            )
-        {
-            // Exact lowercase extensions only (not the case-insensitive
-            // is_yaml_ext): find_profile_path probes literal `.yaml`/`.yml`,
-            // so a case-insensitive scan would enumerate profiles that are
-            // unresolvable by name.
-            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                continue;
-            };
-            (stem.to_string(), ProfileForm::LegacyFlat, path)
-        } else {
+        let Some((name, form, manifest)) = classify_profile_dir_entry(entry.path()) else {
             continue;
         };
 
-        if let Some(existing) = entries.iter().find(|e| e.name == name) {
-            // read_dir order is filesystem-dependent; order the pair the way
-            // find_profile_path reports it (canonical, then `.yaml`, then
-            // `.yml`) so the error message is stable.
-            let rank = |form: ProfileForm, path: &Path| match form {
-                ProfileForm::Canonical => 0,
-                ProfileForm::LegacyFlat => {
-                    if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
-                        1
-                    } else {
-                        2
+        match entries.iter().position(|e| e.name() == name) {
+            Some(idx) => {
+                let ProfileScanEntry::Found(existing) = &entries[idx] else {
+                    continue; // a third form: the name is already ambiguous
+                };
+                // read_dir order is filesystem-dependent; order the pair the
+                // way find_profile_path reports it (canonical, then `.yaml`,
+                // then `.yml`) so the error message is stable.
+                let rank = |form: ProfileForm, path: &Path| match form {
+                    ProfileForm::Canonical => 0,
+                    ProfileForm::LegacyFlat => {
+                        if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
+                            1
+                        } else {
+                            2
+                        }
                     }
-                }
-            };
-            let (path_a, path_b) = if rank(existing.form, &existing.path) <= rank(form, &manifest) {
-                (existing.path.clone(), manifest)
-            } else {
-                (manifest, existing.path.clone())
-            };
-            return Err(ConfigError::AmbiguousProfile {
+                };
+                let (path_a, path_b) =
+                    if rank(existing.form, &existing.path) <= rank(form, &manifest) {
+                        (existing.path.clone(), manifest)
+                    } else {
+                        (manifest, existing.path.clone())
+                    };
+                entries[idx] = ProfileScanEntry::Ambiguous {
+                    name: name.clone(),
+                    error: ConfigError::AmbiguousProfile {
+                        name,
+                        path_a,
+                        path_b,
+                    },
+                };
+            }
+            None => entries.push(ProfileScanEntry::Found(ProfileEntry {
                 name,
-                path_a,
-                path_b,
-            });
+                path: manifest,
+                form,
+            })),
         }
-        entries.push(ProfileEntry {
-            name,
-            path: manifest,
-            form,
-        });
     }
 
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    entries.sort_by(|a, b| a.name().cmp(b.name()));
     Ok(entries)
 }

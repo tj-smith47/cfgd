@@ -41,8 +41,8 @@ pub use origin::{OriginSpec, OriginType, SshHostKeyPolicy};
 pub(crate) use parse::validate_api_version;
 pub use parse::{
     CONFIG_FILENAME, CONFIG_FILENAME_TOML, PROFILE_FILENAME, ProfileEntry, ProfileForm,
-    canonical_profile_path, find_profile_path, load_config, load_profile, parse_config,
-    parse_config_source, resolve_config_path, scan_profiles,
+    ProfileScanEntry, canonical_profile_path, find_profile_path, load_config, load_profile,
+    parse_config, parse_config_source, resolve_config_path, scan_profiles, scan_profiles_tolerant,
 };
 pub use platform::{PlatformInfo, detect_platform, match_platform_profile, source_profile_names};
 pub(crate) use profile_spec::profile_spec_from_value;

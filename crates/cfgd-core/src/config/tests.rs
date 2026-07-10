@@ -2341,3 +2341,101 @@ fn scan_profiles_missing_dir_is_empty() {
     let entries = scan_profiles(&dir.path().join("nope")).unwrap();
     assert!(entries.is_empty());
 }
+
+#[test]
+fn scan_profiles_tolerant_yields_both_forms_sorted() {
+    let dir = tempfile::tempdir().unwrap();
+    let legacy = write_legacy_profile(dir.path(), "zeta.yml", "zeta");
+    let canonical = write_canonical_profile(dir.path(), "alpha", &[]);
+    std::fs::create_dir_all(dir.path().join("zeta-payload").join("files")).unwrap();
+    std::fs::write(dir.path().join("README.md"), "x").unwrap();
+
+    let entries = scan_profiles_tolerant(dir.path()).unwrap();
+    assert_eq!(entries.len(), 2);
+    let ProfileScanEntry::Found(a) = &entries[0] else {
+        panic!("alpha should be unambiguous: {:?}", entries[0]);
+    };
+    assert_eq!(a.name, "alpha");
+    assert_eq!(a.form, ProfileForm::Canonical);
+    assert_eq!(a.path, canonical);
+    let ProfileScanEntry::Found(z) = &entries[1] else {
+        panic!("zeta should be unambiguous: {:?}", entries[1]);
+    };
+    assert_eq!(z.name, "zeta");
+    assert_eq!(z.form, ProfileForm::LegacyFlat);
+    assert_eq!(z.path, legacy);
+}
+
+#[test]
+fn scan_profiles_tolerant_carries_ambiguity_without_failing() {
+    let dir = tempfile::tempdir().unwrap();
+    let canonical = write_canonical_profile(dir.path(), "work", &[]);
+    let legacy = write_legacy_profile(dir.path(), "work.yaml", "work");
+    write_legacy_profile(dir.path(), "solo.yaml", "solo");
+
+    let entries = scan_profiles_tolerant(dir.path()).unwrap();
+    assert_eq!(entries.len(), 2);
+    let ProfileScanEntry::Found(solo) = &entries[0] else {
+        panic!("solo should be unambiguous: {:?}", entries[0]);
+    };
+    assert_eq!(solo.name, "solo");
+    let ProfileScanEntry::Ambiguous { name, error } = &entries[1] else {
+        panic!("work should be ambiguous: {:?}", entries[1]);
+    };
+    assert_eq!(name, "work");
+    match error {
+        ConfigError::AmbiguousProfile {
+            name,
+            path_a,
+            path_b,
+        } => {
+            assert_eq!(name, "work");
+            assert_eq!(path_a, &canonical);
+            assert_eq!(path_b, &legacy);
+        }
+        other => panic!("expected AmbiguousProfile, got {other}"),
+    }
+}
+
+#[test]
+fn scan_profiles_tolerant_three_forms_still_one_ambiguous_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    write_canonical_profile(dir.path(), "work", &[]);
+    write_legacy_profile(dir.path(), "work.yaml", "work");
+    write_legacy_profile(dir.path(), "work.yml", "work");
+
+    let entries = scan_profiles_tolerant(dir.path()).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert!(matches!(
+        &entries[0],
+        ProfileScanEntry::Ambiguous { name, .. } if name == "work"
+    ));
+}
+
+#[test]
+fn scan_profiles_tolerant_missing_dir_is_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let entries = scan_profiles_tolerant(&dir.path().join("nope")).unwrap();
+    assert!(entries.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn scan_profiles_tolerant_unreadable_dir_errors() {
+    use std::os::unix::fs::PermissionsExt;
+    if crate::is_root() {
+        return; // root bypasses mode bits; the denial cannot be simulated
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let pdir = dir.path().join("profiles");
+    std::fs::create_dir_all(&pdir).unwrap();
+    std::fs::set_permissions(&pdir, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let err = scan_profiles_tolerant(&pdir).unwrap_err();
+    assert!(
+        err.to_string().contains("failed to read"),
+        "unreadable dir must be an error, not an empty list: {err}"
+    );
+
+    std::fs::set_permissions(&pdir, std::fs::Permissions::from_mode(0o755)).unwrap();
+}

@@ -71,6 +71,7 @@ fn doctor_output_roundtrips_through_emit() {
             name: "shell".into(),
             available: true,
         }],
+        profiles: Vec::new(),
     };
 
     let actual = emit_and_parse(&payload);

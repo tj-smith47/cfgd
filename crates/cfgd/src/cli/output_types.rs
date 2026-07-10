@@ -190,6 +190,19 @@ pub struct DoctorOutput {
     pub package_managers: Vec<DoctorManagerCheck>,
     pub modules: Vec<DoctorModuleCheck>,
     pub system_configurators: Vec<DoctorConfiguratorCheck>,
+    pub profiles: Vec<DoctorProfileLayoutCheck>,
+}
+
+/// Per-profile layout-form check: canonical bundle (`profiles/<name>/profile.yaml`)
+/// vs the legacy flat form (`profiles/<name>.yaml`). `error` carries the
+/// ambiguity message when both forms coexist on disk.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorProfileLayoutCheck {
+    pub name: String,
+    pub legacy: bool,
+    pub path: Option<String>,
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -844,6 +857,12 @@ mod tests {
                 name: "systemd".to_string(),
                 available: true,
             }],
+            profiles: vec![DoctorProfileLayoutCheck {
+                name: "work".to_string(),
+                legacy: true,
+                path: Some("/etc/cfgd/profiles/work.yaml".to_string()),
+                error: None,
+            }],
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["config"]["valid"], json!(true));
@@ -852,6 +871,8 @@ mod tests {
         assert_eq!(json["packageManagers"][0]["name"], json!("brew"));
         assert_eq!(json["modules"][0]["name"], json!("shell"));
         assert_eq!(json["systemConfigurators"][0]["name"], json!("systemd"));
+        assert_eq!(json["profiles"][0]["name"], json!("work"));
+        assert_eq!(json["profiles"][0]["legacy"], json!(true));
     }
 
     #[test]

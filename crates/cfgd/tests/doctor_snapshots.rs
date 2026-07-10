@@ -93,6 +93,7 @@ fn happy_fixture() -> (DoctorOutput, DoctorExtras) {
             name: "shell".into(),
             available: true,
         }],
+        profiles: Vec::new(),
     };
     let extras = DoctorExtras {
         state_store: Some(DoctorStateStore {
@@ -103,6 +104,7 @@ fn happy_fixture() -> (DoctorOutput, DoctorExtras) {
             path: "/home/test/.config/cfgd/profiles".into(),
             exists: true,
             profile_count: 2,
+            error: None,
         }),
         config_sources: Vec::new(),
     };
@@ -167,6 +169,7 @@ fn bare_fixture() -> (DoctorOutput, DoctorExtras) {
         package_managers: vec![],
         modules: vec![],
         system_configurators: vec![],
+        profiles: Vec::new(),
     };
     let extras = DoctorExtras {
         state_store: Some(DoctorStateStore {
@@ -177,6 +180,7 @@ fn bare_fixture() -> (DoctorOutput, DoctorExtras) {
             path: "/home/test/.config/cfgd/profiles".into(),
             exists: true,
             profile_count: 0,
+            error: None,
         }),
         config_sources: vec![],
     };
