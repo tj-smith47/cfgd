@@ -256,7 +256,7 @@ it. The validating kinds are the author-facing ones:
 
 ```sh
 cfgd module validate module.yaml              # validate a file
-cfgd profile validate profiles/work.yaml
+cfgd profile validate profiles/work/profile.yaml
 cfgd source validate cfgd-source.yaml
 cfgd machineconfig validate mc.yaml
 cfgd configpolicy validate policy.yaml
@@ -412,6 +412,33 @@ cfgd profile delete dev --ignore-not-found  # exit 0 if dev doesn't exist
 (kubectl-style idempotent delete) instead of the strict not-found error
 (exit `6`). It only affects the not-found case — deleting the active profile
 still fails (exit `1`).
+
+### `cfgd profile migrate [name]`
+
+Move a legacy flat profile manifest (`profiles/<name>.yaml`) into the canonical
+bundle layout (`profiles/<name>/profile.yaml`). The bundle directory may already
+exist holding `files/` — the manifest joins its payload. Uses `git mv` when the
+config directory is a git work tree (preserving history), a plain rename
+otherwise. Profile references are by name, so no manifest content changes.
+
+```sh
+cfgd profile migrate work                   # migrate a single profile
+cfgd profile migrate --all                  # migrate every legacy profile
+cfgd profile migrate --all --dry-run        # print the move plan, change nothing
+cfgd profile migrate work --yes             # skip confirmation
+```
+
+| Flag | Description |
+|---|---|
+| `--all` | Migrate every legacy profile (mutually exclusive with `name`) |
+| `--dry-run` | Print the move plan without changing anything (exit `0`) |
+| `-y`, `--yes` | Skip the confirmation prompt (`CFGD_YES`) |
+
+Idempotent: already-canonical profiles report "already canonical" and are left
+untouched. With `--all`, migration continues past per-profile failures and exits
+non-zero if any profile failed (each is reported). An ambiguous profile — both
+`profiles/work/profile.yaml` and `profiles/work.yaml` present — is refused as a
+failure rather than migrated.
 
 ## Module Commands
 

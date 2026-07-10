@@ -41,7 +41,7 @@ cfgd skill update  (<kind> | --all) [-g|--global] [--provider <id>]
 | Kind | What the skill authors |
 |---|---|
 | `module` | a local Module (`modules/<name>/module.yaml`) |
-| `profile` | a local Profile (`profiles/<name>.yaml`) |
+| `profile` | a local Profile (`profiles/<name>/profile.yaml`; legacy flat `profiles/<name>.yaml` still supported) |
 | `source` | a ConfigSource (`cfgd-source.yaml`) |
 | `machineconfig` | a MachineConfig CRD |
 | `configpolicy` | a ConfigPolicy CRD |

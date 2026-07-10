@@ -10,7 +10,7 @@ Instead of writing YAML by hand, `cfgd generate` does the following:
 2. Sends the scan results to an AI model (Claude by default).
 3. The AI proposes a module and profile structure — which tools warrant their own modules, how profiles should inherit, what dependencies exist.
 4. For each generated YAML file, you see the full content and choose: accept, reject, give feedback, or step through it section by section.
-5. Accepted files are written to `modules/<name>/module.yaml` and `profiles/<name>.yaml` in your config repo.
+5. Accepted files are written to `modules/<name>/module.yaml` and `profiles/<name>/profile.yaml` in your config repo.
 6. When all files have been reviewed, you're offered the option to commit them.
 
 ## Full Flow Walkthrough
@@ -80,7 +80,7 @@ After all components have been reviewed, cfgd shows a summary of written files a
 Generated files
   module/nvim: modules/nvim/module.yaml
   module/tmux: modules/tmux/module.yaml
-  profile/base: profiles/base.yaml
+  profile/base: profiles/base/profile.yaml
 
 Commit all generated files? [Y/n]
 ```

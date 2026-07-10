@@ -184,7 +184,7 @@ cfgd writes a managed `~/.cfgd.env` and wires it into the user's shells and sess
 ### Example: make `EDITOR` reach everywhere
 
 ```yaml
-# profiles/workstation.yaml
+# profiles/workstation/profile.yaml
 spec:
   env:
     - name: EDITOR

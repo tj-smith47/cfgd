@@ -3,6 +3,10 @@
 A Profile document declares everything cfgd should manage on a machine: packages, files,
 environment variables, shell aliases, system configurators, secrets, and lifecycle scripts.
 Profiles are stored under `profiles/` in your config directory and referenced by name.
+The canonical layout is a bundle — `profiles/<name>/profile.yaml` alongside an optional
+`files/` payload directory (mirroring `modules/<name>/module.yaml`). The legacy flat form
+`profiles/<name>.yaml` remains fully supported; `cfgd profile migrate` moves a flat profile
+into the canonical bundle.
 
 ## Document Structure
 

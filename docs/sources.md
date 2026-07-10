@@ -600,9 +600,11 @@ spec:
 ```
 my-team-config/
 ├── cfgd-source.yaml          # source manifest (required)
-├── profiles/
-│   ├── base.yaml             # referenced in spec.provides.profiles
-│   └── backend.yaml
+├── profiles/                 # each profile is a bundle: <name>/profile.yaml (legacy flat <name>.yaml still supported)
+│   ├── base/
+│   │   └── profile.yaml       # referenced in spec.provides.profiles
+│   └── backend/
+│       └── profile.yaml
 ├── files/
 │   └── linting/.eslintrc.json
 └── modules/

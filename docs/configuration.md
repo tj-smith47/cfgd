@@ -9,9 +9,9 @@ For the complete field-by-field reference, see the [Config spec reference](spec/
 ## Editor Support
 
 cfgd publishes JSON Schemas for each config document — `cfgd.yaml`, modules
-(`modules/<name>/module.yaml`), profiles (`profiles/*.yaml`), and config sources
-(`cfgd-source.yaml`) — so editors with a YAML language server (VS Code, Neovim,
-JetBrains, …) can offer completion and inline validation.
+(`modules/<name>/module.yaml`), profiles (`profiles/<name>/profile.yaml`), and
+config sources (`cfgd-source.yaml`) — so editors with a YAML language server
+(VS Code, Neovim, JetBrains, …) can offer completion and inline validation.
 
 The schemas are self-hosted at `https://cfgd.io/schemas/` and registered with
 [SchemaStore](https://www.schemastore.org/) on each release, so for the standard
@@ -27,6 +27,14 @@ kind: Config
 ```
 
 Swap the URL for `cfgd-module`, `cfgd-profile`, or `cfgd-source` as appropriate.
+
+cfgd's scaffolders (`cfgd init`, `cfgd profile create`, `cfgd module create`, and
+AI generate) emit this modeline as the first line of every manifest they write, so
+generated files validate immediately even where the SchemaStore catalog does not
+match — including legacy flat profiles (`profiles/<name>.yaml`), files reached
+through a dot-directory, and hand-renamed manifests. The SchemaStore catalog
+associates the canonical bundle path `profiles/<name>/profile.yaml`; the modeline
+covers everything else.
 
 ## Root Config — `cfgd.yaml`
 
@@ -204,17 +212,21 @@ In daemon context, `Notify` records a structured event rather than prompting.
 ```
 my-config/
 ├── cfgd.yaml              # root config
-├── profiles/
-│   ├── base.yaml          # base profile — shared across machines
-│   ├── work.yaml          # inherits base, adds work config
-│   └── personal.yaml
+├── profiles/              # each profile is a bundle: <name>/profile.yaml + payload
+│   ├── base/
+│   │   └── profile.yaml   # base profile — shared across machines
+│   ├── work/
+│   │   ├── profile.yaml   # inherits base, adds work config
+│   │   └── files/         # profile-owned file payload (created by --file)
+│   └── personal/
+│       └── profile.yaml
 ├── modules/               # reusable config modules
 │   ├── nvim/
 │   │   ├── module.yaml
-│   │   └── config/
+│   │   └── files/
 │   └── tmux/
 │       ├── module.yaml
-│       └── config/
+│       └── files/
 ├── files/                 # source files for profiles
 │   ├── shell/
 │   │   ├── .zshrc
@@ -230,7 +242,13 @@ my-config/
     └── post-setup.sh
 ```
 
-## File Strategies
+Each profile is a self-contained bundle: a fixed-name `profiles/<name>/profile.yaml`
+manifest alongside its own `files/` payload directory (mirroring the
+`modules/<name>/module.yaml` shape). The legacy flat form `profiles/<name>.yaml`
+remains fully supported — both forms load, and existing flat profiles keep working
+untouched. Run `cfgd profile migrate <name>` (or `--all`) to move a flat profile
+into the canonical bundle form. Having both `profiles/work/profile.yaml` and
+`profiles/work.yaml` on disk is a hard error (ambiguous); migrate or delete one.
 
 Profile files support four deployment strategies:
 

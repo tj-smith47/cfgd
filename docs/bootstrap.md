@@ -139,7 +139,7 @@ The flow:
    - **Optional** — prompted with default no
    - With `--yes`: all recommended are accepted, all optional are skipped
 
-5. **Config creation** — creates `~/.config/cfgd/cfgd.yaml` with a source subscription pointing to the team repo, and a local `profiles/default.yaml` for your personal additions.
+5. **Config creation** — creates `~/.config/cfgd/cfgd.yaml` with a source subscription pointing to the team repo, and a local `profiles/default/profile.yaml` for your personal additions.
 
 6. **Bootstrap apply** — runs `cfgd plan`, shows the plan, confirms, applies, and verifies. Offers to install the daemon for continuous sync.
 
@@ -171,7 +171,7 @@ The `generate` flow:
 1. **Scan** — detects installed packages, dotfiles, shell config (aliases, exports, PATH), and system settings across all available package managers.
 2. **Propose** — the AI proposes a module and profile structure based on what it found. Each tool typically becomes one module (`nvim`, `tmux`, `zsh`, etc.).
 3. **Review** — each generated YAML file is shown to you before it is written. You can accept, request changes, or skip individual files.
-4. **Write** — accepted files are written to `modules/<name>/module.yaml` and `profiles/<name>.yaml` in the current config repo.
+4. **Write** — accepted files are written to `modules/<name>/module.yaml` and `profiles/<name>/profile.yaml` in the current config repo.
 
 You can also target a single tool or profile:
 
