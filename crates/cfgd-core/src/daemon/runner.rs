@@ -384,7 +384,13 @@ pub(super) async fn handle_compliance_tick(ctx: &DaemonLoopContext) -> Result<()
         let cc2 = cc.clone();
         let sd = ctx.state_dir_override.clone();
         let scope = ctx.scope;
+        // Carry the test-home thread-local onto the blocking-pool worker; the
+        // compliance snapshot may resolve home-relative paths that read it.
+        // Dropped across the boundary the worker falls back to the ambient
+        // $HOME (unstable under parallel tests). No-op in production.
+        let test_home = crate::test_home_override();
         tokio::task::spawn_blocking(move || {
+            let _test_home_guard = test_home.as_deref().map(crate::with_test_home_guard);
             handle_compliance_snapshot(&cp, po.as_deref(), &*hk, &cc2, sd.as_deref(), scope);
         })
         .await
