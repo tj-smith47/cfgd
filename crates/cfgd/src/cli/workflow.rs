@@ -22,7 +22,7 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
                     "No profiles or modules found — nothing to generate",
                 )
                 .with_data(serde_json::json!({
-                    "path": workflow_path.display().to_string(),
+                    "path": cfgd_core::to_posix_string(&workflow_path),
                     "profiles": Vec::<String>::new(),
                     "modules": Vec::<String>::new(),
                     "skipped": true,
@@ -45,7 +45,7 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
             Doc::new()
                 .status(Role::Info, "Skipped workflow generation")
                 .with_data(serde_json::json!({
-                    "path": workflow_path.display().to_string(),
+                    "path": cfgd_core::to_posix_string(&workflow_path),
                     "skipped": true,
                     "profiles": &profile_names,
                     "modules": &module_names,
@@ -58,7 +58,7 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
 
     std::fs::create_dir_all(&workflow_dir).map_err(|e| {
         crate::cli::cli_error(
-            workflow_path.display().to_string(),
+            cfgd_core::to_posix_string(&workflow_path),
             "write_failed",
             format!("failed to create workflow directory: {}", e),
             serde_json::json!({ "path": cfgd_core::to_posix_string(&workflow_path) }),
@@ -66,7 +66,7 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
     })?;
     cfgd_core::atomic_write_str(&workflow_path, &yaml).map_err(|e| {
         crate::cli::cli_error(
-            workflow_path.display().to_string(),
+            cfgd_core::to_posix_string(&workflow_path),
             "write_failed",
             format!("failed to write workflow file: {}", e),
             serde_json::json!({ "path": cfgd_core::to_posix_string(&workflow_path) }),
@@ -82,7 +82,7 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
             .kv("Modules", module_names.len().to_string())
             .kv("Profiles", profile_names.len().to_string())
             .with_data(serde_json::json!({
-                "path": workflow_path.display().to_string(),
+                "path": cfgd_core::to_posix_string(&workflow_path),
                 "profiles": &profile_names,
                 "modules": &module_names,
             })),
@@ -117,14 +117,20 @@ pub(super) fn generate_release_workflow_yaml(
             yaml.push_str(&format!("      - 'modules/{}/**'\n", m));
         }
         for p in profiles {
+            // Flat form (legacy) plus the canonical bundle form emitted by
+            // `cfgd profile migrate` — `profiles/<name>/**` covers the bundle
+            // manifest AND its files/ payload. Both are kept for the dual-read
+            // support window so edits to either layout still trigger a release.
             yaml.push_str(&format!("      - 'profiles/{}.yaml'\n", p));
             yaml.push_str(&format!("      - 'profiles/{}.yml'\n", p));
+            yaml.push_str(&format!("      - 'profiles/{}/**'\n", p));
         }
     } else {
         yaml.push_str(
             "    # paths: (auto-populated when modules/profiles are created)\n\
              \x20   #   - 'modules/<name>/**'\n\
-             \x20   #   - 'profiles/<name>.yaml'\n",
+             \x20   #   - 'profiles/<name>.yaml'\n\
+             \x20   #   - 'profiles/<name>/**'\n",
         );
     }
 
