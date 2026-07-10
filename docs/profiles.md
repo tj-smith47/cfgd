@@ -4,6 +4,26 @@ Profiles declare the desired state of a machine. They can inherit from other pro
 
 For the complete field-by-field reference, see the [Profile spec reference](spec/profile.md).
 
+## Layout
+
+Profiles live under `profiles/` in your config dir. The canonical layout is a **bundle** — a
+directory per profile holding `profile.yaml` next to a `files/` payload:
+
+```
+profiles/
+├── base/
+│   └── profile.yaml
+└── workstation/
+    ├── profile.yaml
+    └── files/
+        └── gitconfig
+```
+
+The legacy **flat** form — `profiles/<name>.yaml` (or `.yml`) — is still read, so existing
+configs keep working. Run [`cfgd profile migrate`](cli-reference.md#cfgd-profile-migrate-name)
+to move a flat profile into its bundle. If both forms exist for one name, cfgd fails closed
+rather than guess which wins — delete or migrate one.
+
 ## Profile YAML
 
 ```yaml
