@@ -6229,7 +6229,12 @@ async fn handle_reconcile_runs_on_drift_scripts() {
     let not = Arc::clone(&notifier);
     let sd = state_dir.clone();
     let cp = config_path.clone();
+    // The test-home override is a thread-local set on this runtime thread; carry
+    // it onto the blocking-pool worker so the onDrift script workdir resolves the
+    // test home (via `home_dir_var`) rather than the ambient $HOME.
+    let test_home = crate::test_home_override();
     tokio::task::spawn_blocking(move || {
+        let _test_home_guard = test_home.as_deref().map(crate::with_test_home_guard);
         let printer = test_printer();
         handle_reconcile(
             &cp,
