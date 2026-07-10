@@ -201,8 +201,9 @@ CFGD_REQUIRE_COSIGN=1 cfgd upgrade
 
 Each release artifact is signed with keyless cosign (Fulcio/OIDC + Rekor).
 `cfgd upgrade` verifies the keyless signature over the per-artifact
-`<archive>.sha256` file — pinned to cfgd's own `release.yml` workflow identity —
-then confirms the downloaded archive matches that trusted checksum. This is the
+`<archive>.sha256` file — pinned to a canonical-repo workflow identity (the
+`publish-crate.yml` legs that `release.yml` invokes do the signing) — then
+confirms the downloaded archive matches that trusted checksum. This is the
 same recipe documented for manual verification in
 [installation.md](installation.md#verifying-downloads).
 

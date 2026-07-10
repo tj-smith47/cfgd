@@ -221,7 +221,7 @@ curl -fsSLO "$base/$A.sha256.cosign.bundle"
 cosign verify-blob \
   --bundle "$A.sha256.cosign.bundle" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  --certificate-identity-regexp '^https://github\.com/tj-smith47/cfgd/\.github/workflows/release\.yml@' \
+  --certificate-identity-regexp '^https://github\.com/tj-smith47/cfgd/\.github/workflows/[^/@]+\.ya?ml@' \
   "$A.sha256"
 
 # 2. Verify the archive matches the (now-trusted) checksum.
@@ -231,10 +231,12 @@ echo "$(cat "$A.sha256")  $A" | sha256sum -c
 Notes:
 
 - The issuer is the GitHub Actions OIDC provider, and the
-  `--certificate-identity-regexp` pins the signer to cfgd's own `release.yml`
-  workflow. A publisher-compromise attacker cannot mint a passing signature
-  without running that exact workflow — replacing the binary and its `.sha256`
-  on a mirror is not enough.
+  `--certificate-identity-regexp` pins the signer to a workflow in cfgd's own
+  canonical repository (assets are signed by the per-crate `publish-crate.yml`
+  leg that `release.yml` invokes, so the pin is repository-level, not
+  single-file). A publisher-compromise attacker cannot mint a passing signature
+  without running a workflow in that exact repository — replacing the binary
+  and its `.sha256` on a mirror is not enough.
 - Verification requires the [`cosign` CLI](https://docs.sigstore.dev/cosign/system_config/installation/).
   Keyless verification needs network access to the Fulcio/Rekor roots, which
   cosign fetches via the bundled Sigstore TUF root.

@@ -221,7 +221,7 @@ download_and_install() {
                     cosign verify-blob \
                         --bundle "${tmp_dir}/${bundle_name}" \
                         --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-                        --certificate-identity-regexp '^https://github\.com/tj-smith47/cfgd/\.github/workflows/release\.yml@' \
+                        --certificate-identity-regexp '^https://github\.com/tj-smith47/cfgd/\.github/workflows/[^/@]+\.ya?ml@' \
                         "${tmp_dir}/${checksum_name}" >/dev/null 2>&1 || {
                         error "cosign signature verification failed — refusing to install"
                         exit 1
