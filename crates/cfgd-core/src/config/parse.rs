@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::ai::AiConfig;
 use super::compliance::ComplianceConfig;
@@ -315,16 +315,165 @@ pub fn load_profile(path: &Path) -> Result<ProfileDocument> {
     Ok(doc)
 }
 
-/// Find a profile file by name, checking `.yaml` then `.yml` extensions.
-pub(super) fn find_profile_path(profiles_dir: &Path, name: &str) -> PathBuf {
-    let yaml_path = profiles_dir.join(format!("{}.yaml", name));
-    if yaml_path.exists() {
-        return yaml_path;
+/// Fixed manifest filename inside a canonical profile bundle directory
+/// (`profiles/<name>/profile.yaml`). Mirrors the module convention
+/// (`modules/<name>/module.yaml`): fixed manifest names take no `.yml` variant.
+pub const PROFILE_FILENAME: &str = "profile.yaml";
+
+/// The on-disk layout form a profile manifest was discovered in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum ProfileForm {
+    /// Bundle form: `profiles/<name>/profile.yaml` (the canonical layout).
+    Canonical,
+    /// Flat form: `profiles/<name>.yaml` / `.yml` (supported until 1.0).
+    LegacyFlat,
+}
+
+/// A profile discovered by [`scan_profiles`]: its name, manifest path, and
+/// which layout form it uses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProfileEntry {
+    pub name: String,
+    pub path: PathBuf,
+    pub form: ProfileForm,
+}
+
+/// Canonical (write-side) manifest path for a profile:
+/// `<profiles_dir>/<name>/profile.yaml`. Pure path construction — no I/O and
+/// no existence check; readers go through [`find_profile_path`] instead.
+pub fn canonical_profile_path(profiles_dir: &Path, name: &str) -> PathBuf {
+    profiles_dir.join(name).join(PROFILE_FILENAME)
+}
+
+/// Find a profile manifest by name, probing the canonical bundle form
+/// (`<name>/profile.yaml`) first, then the legacy flat forms (`<name>.yaml`,
+/// `<name>.yml`).
+///
+/// Fails closed on ambiguity: if the canonical form coexists with a legacy
+/// file, or both legacy extensions exist, returns
+/// [`ConfigError::AmbiguousProfile`] naming both paths. Returns
+/// [`ConfigError::ProfileNotFound`] when no form exists.
+pub fn find_profile_path(
+    profiles_dir: &Path,
+    name: &str,
+) -> std::result::Result<PathBuf, ConfigError> {
+    let canonical = canonical_profile_path(profiles_dir, name);
+    let legacy_yaml = profiles_dir.join(format!("{}.yaml", name));
+    let legacy_yml = profiles_dir.join(format!("{}.yml", name));
+
+    let legacy = match (legacy_yaml.is_file(), legacy_yml.is_file()) {
+        (true, true) => {
+            return Err(ConfigError::AmbiguousProfile {
+                name: name.to_string(),
+                path_a: legacy_yaml,
+                path_b: legacy_yml,
+            });
+        }
+        (true, false) => Some(legacy_yaml),
+        (false, true) => Some(legacy_yml),
+        (false, false) => None,
+    };
+
+    match (canonical.is_file(), legacy) {
+        (true, Some(legacy)) => Err(ConfigError::AmbiguousProfile {
+            name: name.to_string(),
+            path_a: canonical,
+            path_b: legacy,
+        }),
+        (true, None) => Ok(canonical),
+        (false, Some(legacy)) => Ok(legacy),
+        (false, None) => Err(ConfigError::ProfileNotFound {
+            name: name.to_string(),
+        }),
     }
-    let yml_path = profiles_dir.join(format!("{}.yml", name));
-    if yml_path.exists() {
-        return yml_path;
+}
+
+/// Enumerate every profile in `profiles_dir` in a single directory walk.
+///
+/// Yields one [`ProfileEntry`] per profile, covering both layout forms:
+/// subdirectories containing a `profile.yaml` (canonical) and flat
+/// `<name>.yaml` / `.yml` files (legacy). A subdirectory *without* a
+/// `profile.yaml` is not a profile — it is ignored (it's the payload dir of a
+/// legacy flat profile). Entries are sorted by name. Ambiguity (both forms, or
+/// both legacy extensions, for one name) fails closed with
+/// [`ConfigError::AmbiguousProfile`]. A missing `profiles_dir` yields an empty
+/// list.
+pub fn scan_profiles(profiles_dir: &Path) -> std::result::Result<Vec<ProfileEntry>, ConfigError> {
+    let read_dir = match std::fs::read_dir(profiles_dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(ConfigError::Invalid {
+                message: format!("failed to read {}: {}", profiles_dir.posix(), e),
+            });
+        }
+    };
+
+    let mut entries: Vec<ProfileEntry> = Vec::new();
+    for entry in read_dir {
+        let entry = entry.map_err(|e| ConfigError::Invalid {
+            message: format!("failed to read {}: {}", profiles_dir.posix(), e),
+        })?;
+        let path = entry.path();
+        let (name, form, manifest) = if path.is_dir() {
+            let manifest = path.join(PROFILE_FILENAME);
+            if !manifest.is_file() {
+                continue; // legacy payload dir (e.g. <name>/files/), not a profile
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            (name.to_string(), ProfileForm::Canonical, manifest)
+        } else if path.is_file()
+            && matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("yaml") | Some("yml")
+            )
+        {
+            // Exact lowercase extensions only (not the case-insensitive
+            // is_yaml_ext): find_profile_path probes literal `.yaml`/`.yml`,
+            // so a case-insensitive scan would enumerate profiles that are
+            // unresolvable by name.
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            (stem.to_string(), ProfileForm::LegacyFlat, path)
+        } else {
+            continue;
+        };
+
+        if let Some(existing) = entries.iter().find(|e| e.name == name) {
+            // read_dir order is filesystem-dependent; order the pair the way
+            // find_profile_path reports it (canonical, then `.yaml`, then
+            // `.yml`) so the error message is stable.
+            let rank = |form: ProfileForm, path: &Path| match form {
+                ProfileForm::Canonical => 0,
+                ProfileForm::LegacyFlat => {
+                    if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
+                        1
+                    } else {
+                        2
+                    }
+                }
+            };
+            let (path_a, path_b) = if rank(existing.form, &existing.path) <= rank(form, &manifest) {
+                (existing.path.clone(), manifest)
+            } else {
+                (manifest, existing.path.clone())
+            };
+            return Err(ConfigError::AmbiguousProfile {
+                name,
+                path_a,
+                path_b,
+            });
+        }
+        entries.push(ProfileEntry {
+            name,
+            path: manifest,
+            form,
+        });
     }
-    // Fall back to .yaml so load_profile produces the expected error
-    yaml_path
+
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(entries)
 }

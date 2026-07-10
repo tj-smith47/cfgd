@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use crate::PathDisplayExt;
+
 pub type Result<T> = std::result::Result<T, CfgdError>;
 
 // Top-level variants print `"<category>: <inner>"` because `{0}` expands the
@@ -79,6 +81,17 @@ pub enum ConfigError {
 
     #[error("profile not found: {name}")]
     ProfileNotFound { name: String },
+
+    #[error(
+        "ambiguous profile '{name}': both '{a}' and '{b}' exist — run 'cfgd profile migrate {name}' or delete one of them",
+        a = .path_a.posix(),
+        b = .path_b.posix()
+    )]
+    AmbiguousProfile {
+        name: String,
+        path_a: PathBuf,
+        path_b: PathBuf,
+    },
 
     #[error("yaml parse error: {0}")]
     Yaml(#[from] serde_yaml::Error),

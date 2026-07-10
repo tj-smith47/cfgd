@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use super::parse::parse_config;
 use super::resolve::merge_layers;
 use super::*;
+use crate::PathDisplayExt;
 use crate::deep_merge_yaml;
+use crate::errors::ConfigError;
 use crate::test_helpers::{SAMPLE_CONFIG_NO_ORIGIN_YAML, SAMPLE_CONFIG_YAML, SAMPLE_PROFILE_YAML};
 
 #[test]
@@ -2104,4 +2106,238 @@ fn struct_manager_map_form_rejects_unknown_key() {
         format!("{err}").contains("unknown field"),
         "expected unknown-field error, got: {err}"
     );
+}
+
+// --- Profile bundle layout: dual-read precedence + ambiguity ---
+
+fn profile_yaml(name: &str, inherits: &[&str]) -> String {
+    let inherits_block = if inherits.is_empty() {
+        String::new()
+    } else {
+        let items: Vec<String> = inherits.iter().map(|p| format!("    - {}", p)).collect();
+        format!("  inherits:\n{}\n", items.join("\n"))
+    };
+    format!(
+        r#"apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: {name}
+spec:
+{inherits_block}  env:
+    - name: origin_{name}
+      value: "1"
+"#
+    )
+}
+
+fn write_canonical_profile(profiles_dir: &Path, name: &str, inherits: &[&str]) -> PathBuf {
+    let dir = profiles_dir.join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("profile.yaml");
+    std::fs::write(&path, profile_yaml(name, inherits)).unwrap();
+    path
+}
+
+fn write_legacy_profile(profiles_dir: &Path, filename: &str, name: &str) -> PathBuf {
+    let path = profiles_dir.join(filename);
+    std::fs::write(&path, profile_yaml(name, &[])).unwrap();
+    path
+}
+
+#[test]
+fn find_profile_path_canonical_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_canonical_profile(dir.path(), "work", &[]);
+    assert_eq!(find_profile_path(dir.path(), "work").unwrap(), path);
+}
+
+#[test]
+fn find_profile_path_legacy_yaml_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_legacy_profile(dir.path(), "work.yaml", "work");
+    assert_eq!(find_profile_path(dir.path(), "work").unwrap(), path);
+}
+
+#[test]
+fn find_profile_path_legacy_yml_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_legacy_profile(dir.path(), "work.yml", "work");
+    assert_eq!(find_profile_path(dir.path(), "work").unwrap(), path);
+}
+
+#[test]
+fn find_profile_path_missing_is_profile_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = find_profile_path(dir.path(), "work").unwrap_err();
+    assert!(matches!(err, ConfigError::ProfileNotFound { ref name } if name == "work"));
+}
+
+#[test]
+fn find_profile_path_payload_dir_without_manifest_is_not_a_profile() {
+    let dir = tempfile::tempdir().unwrap();
+    // The current legacy shape: flat manifest + <name>/files/ payload dir.
+    std::fs::create_dir_all(dir.path().join("work").join("files")).unwrap();
+    let legacy = write_legacy_profile(dir.path(), "work.yaml", "work");
+    assert_eq!(find_profile_path(dir.path(), "work").unwrap(), legacy);
+}
+
+#[test]
+fn find_profile_path_canonical_plus_legacy_yaml_is_ambiguous() {
+    let dir = tempfile::tempdir().unwrap();
+    let canonical = write_canonical_profile(dir.path(), "work", &[]);
+    let legacy = write_legacy_profile(dir.path(), "work.yaml", "work");
+    let err = find_profile_path(dir.path(), "work").unwrap_err();
+    assert!(matches!(err, ConfigError::AmbiguousProfile { .. }));
+    let msg = err.to_string();
+    assert!(msg.contains(&canonical.posix().to_string()), "{msg}");
+    assert!(msg.contains(&legacy.posix().to_string()), "{msg}");
+    assert!(msg.contains("cfgd profile migrate work"), "{msg}");
+}
+
+#[test]
+fn find_profile_path_canonical_plus_legacy_yml_is_ambiguous() {
+    let dir = tempfile::tempdir().unwrap();
+    let canonical = write_canonical_profile(dir.path(), "work", &[]);
+    let legacy = write_legacy_profile(dir.path(), "work.yml", "work");
+    let err = find_profile_path(dir.path(), "work").unwrap_err();
+    assert!(matches!(err, ConfigError::AmbiguousProfile { .. }), "{err}");
+    let msg = err.to_string();
+    assert!(msg.contains(&canonical.posix().to_string()), "{msg}");
+    assert!(msg.contains(&legacy.posix().to_string()), "{msg}");
+    assert!(msg.contains("cfgd profile migrate work"), "{msg}");
+}
+
+#[test]
+fn find_profile_path_legacy_yaml_plus_yml_is_ambiguous() {
+    let dir = tempfile::tempdir().unwrap();
+    let yaml = write_legacy_profile(dir.path(), "work.yaml", "work");
+    let yml = write_legacy_profile(dir.path(), "work.yml", "work");
+    let err = find_profile_path(dir.path(), "work").unwrap_err();
+    assert!(matches!(err, ConfigError::AmbiguousProfile { .. }));
+    let msg = err.to_string();
+    assert!(msg.contains(&yaml.posix().to_string()), "{msg}");
+    assert!(msg.contains(&yml.posix().to_string()), "{msg}");
+    assert!(msg.contains("delete one"), "{msg}");
+}
+
+#[test]
+fn canonical_profile_path_is_pure_construction() {
+    let path = canonical_profile_path(Path::new("/cfg/profiles"), "work");
+    assert_eq!(path, Path::new("/cfg/profiles/work/profile.yaml"));
+}
+
+#[test]
+fn resolve_profile_loads_canonical_form() {
+    let dir = tempfile::tempdir().unwrap();
+    write_canonical_profile(dir.path(), "work", &[]);
+    let resolved = resolve_profile("work", dir.path()).unwrap();
+    assert_eq!(resolved.layers.len(), 1);
+    assert_eq!(resolved.layers[0].profile_name, "work");
+}
+
+#[test]
+fn resolve_profile_inherits_across_both_forms() {
+    let dir = tempfile::tempdir().unwrap();
+    // legacy child inheriting a canonical parent
+    write_canonical_profile(dir.path(), "base", &[]);
+    std::fs::write(
+        dir.path().join("work.yaml"),
+        profile_yaml("work", &["base"]),
+    )
+    .unwrap();
+    let resolved = resolve_profile("work", dir.path()).unwrap();
+    assert_eq!(resolved.layers.len(), 2);
+    assert_eq!(resolved.layers[0].profile_name, "base");
+    assert_eq!(resolved.layers[1].profile_name, "work");
+
+    // canonical child inheriting a legacy parent
+    let dir2 = tempfile::tempdir().unwrap();
+    write_legacy_profile(dir2.path(), "base.yaml", "base");
+    write_canonical_profile(dir2.path(), "work", &["base"]);
+    let resolved = resolve_profile("work", dir2.path()).unwrap();
+    assert_eq!(resolved.layers.len(), 2);
+    assert_eq!(resolved.layers[0].profile_name, "base");
+    assert_eq!(resolved.layers[1].profile_name, "work");
+}
+
+#[test]
+fn resolve_profile_ambiguous_parent_fails_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    write_canonical_profile(dir.path(), "base", &[]);
+    write_legacy_profile(dir.path(), "base.yaml", "base");
+    std::fs::write(
+        dir.path().join("work.yaml"),
+        profile_yaml("work", &["base"]),
+    )
+    .unwrap();
+    let err = resolve_profile("work", dir.path()).unwrap_err();
+    assert!(err.to_string().contains("ambiguous profile 'base'"));
+}
+
+#[test]
+fn scan_profiles_yields_both_forms_sorted() {
+    let dir = tempfile::tempdir().unwrap();
+    let legacy = write_legacy_profile(dir.path(), "zeta.yml", "zeta");
+    let canonical = write_canonical_profile(dir.path(), "alpha", &[]);
+    // payload dir of a legacy profile: not a profile entry
+    std::fs::create_dir_all(dir.path().join("zeta-payload").join("files")).unwrap();
+    // non-yaml noise: ignored
+    std::fs::write(dir.path().join("README.md"), "x").unwrap();
+
+    let entries = scan_profiles(dir.path()).unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].name, "alpha");
+    assert_eq!(entries[0].form, ProfileForm::Canonical);
+    assert_eq!(entries[0].path, canonical);
+    assert_eq!(entries[1].name, "zeta");
+    assert_eq!(entries[1].form, ProfileForm::LegacyFlat);
+    assert_eq!(entries[1].path, legacy);
+}
+
+#[test]
+fn scan_profiles_ambiguous_name_fails_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    write_canonical_profile(dir.path(), "work", &[]);
+    write_legacy_profile(dir.path(), "work.yaml", "work");
+    let err = scan_profiles(dir.path()).unwrap_err();
+    assert!(matches!(err, ConfigError::AmbiguousProfile { ref name, .. } if name == "work"));
+    assert!(err.to_string().contains("cfgd profile migrate work"));
+}
+
+#[test]
+fn scan_profiles_legacy_extension_dupe_fails_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    write_legacy_profile(dir.path(), "work.yaml", "work");
+    write_legacy_profile(dir.path(), "work.yml", "work");
+    let err = scan_profiles(dir.path()).unwrap_err();
+    assert!(matches!(err, ConfigError::AmbiguousProfile { ref name, .. } if name == "work"));
+}
+
+#[test]
+fn scan_profiles_ambiguity_paths_ordered_canonical_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let canonical = write_canonical_profile(dir.path(), "work", &[]);
+    let legacy = write_legacy_profile(dir.path(), "work.yaml", "work");
+    let err = scan_profiles(dir.path()).unwrap_err();
+    match err {
+        ConfigError::AmbiguousProfile { path_a, path_b, .. } => {
+            assert_eq!(path_a, canonical);
+            assert_eq!(path_b, legacy);
+        }
+        other => panic!("expected AmbiguousProfile, got {other}"),
+    }
+}
+
+#[test]
+fn scan_profiles_ignores_uppercase_yaml_extension() {
+    let dir = tempfile::tempdir().unwrap();
+    write_legacy_profile(dir.path(), "work.YAML", "work");
+    assert!(scan_profiles(dir.path()).unwrap().is_empty());
+}
+
+#[test]
+fn scan_profiles_missing_dir_is_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let entries = scan_profiles(&dir.path().join("nope")).unwrap();
+    assert!(entries.is_empty());
 }

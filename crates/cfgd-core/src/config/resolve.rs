@@ -55,7 +55,7 @@ pub fn resolve_profile(profile_name: &str, profiles_dir: &Path) -> Result<Resolv
 
     let mut layers = Vec::new();
     for name in &resolution_order {
-        let path = find_profile_path(profiles_dir, name);
+        let path = find_profile_path(profiles_dir, name)?;
         let doc = load_profile(&path).map_err(|e| match e {
             crate::errors::CfgdError::Config(ConfigError::NotFound { .. }) => {
                 crate::errors::CfgdError::Config(ConfigError::ProfileNotFound {
@@ -95,7 +95,7 @@ fn resolve_inheritance_order(
 
     visited.push(profile_name.to_string());
 
-    let path = find_profile_path(profiles_dir, profile_name);
+    let path = find_profile_path(profiles_dir, profile_name)?;
     let doc = load_profile(&path).map_err(|e| match e {
         crate::errors::CfgdError::Config(ConfigError::NotFound { .. }) => {
             crate::errors::CfgdError::Config(ConfigError::ProfileNotFound {
