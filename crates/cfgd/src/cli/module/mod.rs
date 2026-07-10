@@ -101,14 +101,21 @@ pub(super) fn profiles_using_module(
     module_name: &str,
 ) -> anyhow::Result<Vec<String>> {
     let mut result = Vec::new();
-    cfgd_core::config::for_each_yaml_file(profiles_dir, |path| {
-        if let Ok(doc) = config::load_profile(path)
-            && doc.spec.modules.contains(&module_name.to_string())
-        {
-            result.push(doc.metadata.name.clone());
+    for prof in cfgd_core::config::scan_profile_manifests(profiles_dir)
+        .map_err(cfgd_core::errors::CfgdError::Config)?
+    {
+        // For an ambiguous name the winning form is unknowable; the impact
+        // list must never under-report, so a reference in ANY candidate
+        // manifest marks the profile as affected.
+        let uses = prof.paths.iter().any(|path| {
+            config::load_profile(path)
+                .map(|doc| doc.spec.modules.iter().any(|m| m == module_name))
+                .unwrap_or(false)
+        });
+        if uses {
+            result.push(prof.name);
         }
-        Ok(())
-    })?;
+    }
     Ok(result)
 }
 

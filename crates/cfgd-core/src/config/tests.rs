@@ -2413,6 +2413,49 @@ fn scan_profiles_tolerant_three_forms_still_one_ambiguous_entry() {
 }
 
 #[test]
+fn scan_profile_manifests_found_has_single_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let canonical = write_canonical_profile(dir.path(), "alpha", &[]);
+    let legacy = write_legacy_profile(dir.path(), "zeta.yml", "zeta");
+
+    let entries = scan_profile_manifests(dir.path()).unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].name, "alpha");
+    assert_eq!(entries[0].paths, vec![canonical]);
+    assert!(entries[0].ambiguity.is_none());
+    assert_eq!(entries[1].name, "zeta");
+    assert_eq!(entries[1].paths, vec![legacy]);
+    assert!(entries[1].ambiguity.is_none());
+}
+
+#[test]
+fn scan_profile_manifests_ambiguous_lists_every_candidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let canonical = write_canonical_profile(dir.path(), "work", &[]);
+    let yaml = write_legacy_profile(dir.path(), "work.yaml", "work");
+    let yml = write_legacy_profile(dir.path(), "work.yml", "work");
+
+    let entries = scan_profile_manifests(dir.path()).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].name, "work");
+    assert_eq!(entries[0].paths, vec![canonical, yaml, yml]);
+    assert!(matches!(
+        entries[0].ambiguity,
+        Some(ConfigError::AmbiguousProfile { ref name, .. }) if name == "work"
+    ));
+}
+
+#[test]
+fn scan_profile_manifests_missing_dir_is_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(
+        scan_profile_manifests(&dir.path().join("nope"))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn scan_profiles_tolerant_missing_dir_is_empty() {
     let dir = tempfile::tempdir().unwrap();
     let entries = scan_profiles_tolerant(&dir.path().join("nope")).unwrap();

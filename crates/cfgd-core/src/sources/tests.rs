@@ -897,6 +897,121 @@ spec:
 }
 
 #[test]
+fn load_source_profile_canonical_bundle_form() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_path = dir.path().join("my-source");
+    let bundle_dir = source_path.join(PROFILES_DIR).join("default");
+    std::fs::create_dir_all(&bundle_dir).unwrap();
+    std::fs::write(
+        bundle_dir.join("profile.yaml"),
+        r#"
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: default
+spec:
+  packages:
+    pipx:
+      - ripgrep
+"#,
+    )
+    .unwrap();
+
+    let mut mgr = SourceManager::new(dir.path());
+    insert_fake_source(&mut mgr, "my-source", source_path);
+
+    let result = mgr.load_source_profile("my-source", "default");
+    assert!(
+        result.is_ok(),
+        "canonical-form profile in a source clone must load: {:?}",
+        result.err()
+    );
+    assert_eq!(result.unwrap().metadata.name, "default");
+}
+
+#[test]
+fn load_source_profile_legacy_yml_extension() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_path = dir.path().join("my-source");
+    std::fs::create_dir_all(source_path.join(PROFILES_DIR)).unwrap();
+    std::fs::write(
+        source_path.join(PROFILES_DIR).join("default.yml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    let mut mgr = SourceManager::new(dir.path());
+    insert_fake_source(&mut mgr, "my-source", source_path);
+
+    let result = mgr.load_source_profile("my-source", "default");
+    assert!(
+        result.is_ok(),
+        ".yml legacy profile in a source clone must load: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn load_source_profile_mixed_forms_both_resolve() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_path = dir.path().join("my-source");
+    let profiles = source_path.join(PROFILES_DIR);
+    std::fs::create_dir_all(profiles.join("alpha")).unwrap();
+    std::fs::write(
+        profiles.join("alpha").join("profile.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: alpha\nspec: {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        profiles.join("beta.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: beta\nspec: {}\n",
+    )
+    .unwrap();
+
+    let mut mgr = SourceManager::new(dir.path());
+    insert_fake_source(&mut mgr, "my-source", source_path);
+
+    assert_eq!(
+        mgr.load_source_profile("my-source", "alpha")
+            .expect("canonical profile in mixed repo")
+            .metadata
+            .name,
+        "alpha"
+    );
+    assert_eq!(
+        mgr.load_source_profile("my-source", "beta")
+            .expect("flat profile in mixed repo")
+            .metadata
+            .name,
+        "beta"
+    );
+}
+
+#[test]
+fn load_source_profile_ambiguous_forms_fail_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_path = dir.path().join("my-source");
+    let profiles = source_path.join(PROFILES_DIR);
+    std::fs::create_dir_all(profiles.join("default")).unwrap();
+    let body =
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n";
+    std::fs::write(profiles.join("default").join("profile.yaml"), body).unwrap();
+    std::fs::write(profiles.join("default.yaml"), body).unwrap();
+
+    let mut mgr = SourceManager::new(dir.path());
+    insert_fake_source(&mut mgr, "my-source", source_path);
+
+    let err = mgr
+        .load_source_profile("my-source", "default")
+        .expect_err("coexisting profile forms must fail closed")
+        .to_string();
+    assert!(
+        err.to_lowercase().contains("ambiguous") || err.contains("multiple"),
+        "expected ambiguity error, got: {err}"
+    );
+}
+
+#[test]
 fn load_source_profile_missing_profile_file() {
     let dir = tempfile::tempdir().unwrap();
     let source_path = dir.path().join("my-source");

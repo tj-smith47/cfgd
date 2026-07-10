@@ -536,3 +536,52 @@ pub fn scan_profiles_tolerant(
     entries.sort_by(|a, b| a.name().cmp(b.name()));
     Ok(entries)
 }
+
+/// The on-disk manifest candidates behind one scanned profile name: exactly
+/// one path for an unambiguous profile, every coexisting form for an
+/// ambiguous one.
+#[derive(Debug)]
+pub struct ProfileManifests {
+    pub name: String,
+    /// Candidate manifest paths, ordered canonical → `.yaml` → `.yml`.
+    pub paths: Vec<PathBuf>,
+    /// The fail-closed error a strict load would raise; `Some` iff the
+    /// name is ambiguous (multiple forms coexist on disk).
+    pub ambiguity: Option<ConfigError>,
+}
+
+/// Enumerate every profile's manifest path(s) in `profiles_dir`, both layout
+/// forms included. Built on [`scan_profiles_tolerant`]; the flattened view for
+/// callers that sweep profile manifests (reference rewrites, impact scans)
+/// and must never silently miss bundle-form or ambiguous profiles the way a
+/// flat `*.yaml` directory walk does.
+pub fn scan_profile_manifests(
+    profiles_dir: &Path,
+) -> std::result::Result<Vec<ProfileManifests>, ConfigError> {
+    let mut out = Vec::new();
+    for entry in scan_profiles_tolerant(profiles_dir)? {
+        match entry {
+            ProfileScanEntry::Found(found) => out.push(ProfileManifests {
+                name: found.name,
+                paths: vec![found.path],
+                ambiguity: None,
+            }),
+            ProfileScanEntry::Ambiguous { name, error } => {
+                // The carried error names only the first two forms; re-probe
+                // all three candidates so callers advising on ambiguity see
+                // every file involved.
+                let candidates = [
+                    canonical_profile_path(profiles_dir, &name),
+                    profiles_dir.join(format!("{}.yaml", name)),
+                    profiles_dir.join(format!("{}.yml", name)),
+                ];
+                out.push(ProfileManifests {
+                    name,
+                    paths: candidates.into_iter().filter(|p| p.is_file()).collect(),
+                    ambiguity: Some(error),
+                });
+            }
+        }
+    }
+    Ok(out)
+}

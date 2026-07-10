@@ -1531,6 +1531,41 @@ fn profiles_using_module_nonexistent_dir() {
     assert!(result.is_empty());
 }
 
+#[test]
+fn profiles_using_module_sees_canonical_bundle_form() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle_dir = dir.path().join("dev");
+    std::fs::create_dir_all(&bundle_dir).unwrap();
+    std::fs::write(
+        bundle_dir.join("profile.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: dev\nspec:\n  modules:\n    - devtools\n",
+    )
+    .unwrap();
+
+    let result = profiles_using_module(dir.path(), "devtools").unwrap();
+    assert_eq!(result, vec!["dev".to_string()]);
+}
+
+#[test]
+fn profiles_using_module_includes_ambiguous_profile_when_any_form_references() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle_dir = dir.path().join("dev");
+    std::fs::create_dir_all(&bundle_dir).unwrap();
+    std::fs::write(
+        bundle_dir.join("profile.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: dev\nspec:\n  modules: []\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("dev.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: dev\nspec:\n  modules:\n    - devtools\n",
+    )
+    .unwrap();
+
+    let result = profiles_using_module(dir.path(), "devtools").unwrap();
+    assert_eq!(result, vec!["dev".to_string()]);
+}
+
 // ─── cmd_module_registry_rename cascades to profiles ────────
 
 #[test]
@@ -1559,6 +1594,74 @@ fn cmd_module_registry_rename_cascades_to_profiles() {
     assert!(
         !pdoc.spec.modules.contains(&"old/somemod".to_string()),
         "old reference should be gone"
+    );
+}
+
+#[test]
+fn cmd_module_registry_rename_cascades_to_bundle_profiles() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    cmd_module_registry_add(&cli, &printer, "https://example.com/r.git", Some("old")).unwrap();
+
+    // Flat profile referencing old/flatmod
+    let flat_path = dir.path().join("profiles").join("default.yaml");
+    std::fs::write(
+        &flat_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - old/flatmod\n",
+    )
+    .unwrap();
+    // Canonical bundle profile referencing old/bundlemod
+    let bundle_dir = dir.path().join("profiles").join("dev");
+    std::fs::create_dir_all(&bundle_dir).unwrap();
+    let bundle_path = bundle_dir.join("profile.yaml");
+    std::fs::write(
+        &bundle_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: dev\nspec:\n  modules:\n    - old/bundlemod\n",
+    )
+    .unwrap();
+
+    cmd_module_registry_rename(&cli, &printer, "old", "fresh").unwrap();
+
+    let flat = config::load_profile(&flat_path).unwrap();
+    assert_eq!(flat.spec.modules, vec!["fresh/flatmod".to_string()]);
+    let bundle = config::load_profile(&bundle_path).unwrap();
+    assert_eq!(bundle.spec.modules, vec!["fresh/bundlemod".to_string()]);
+}
+
+#[test]
+fn cmd_module_registry_rename_warns_ambiguous_profile_not_rewritten() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    cmd_module_registry_add(&cli, &printer, "https://example.com/r.git", Some("old")).unwrap();
+
+    // Both forms for 'default' → ambiguous; which file wins is undecidable
+    let flat_path = dir.path().join("profiles").join("default.yaml");
+    let ambiguous_yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - old/somemod\n";
+    std::fs::write(&flat_path, ambiguous_yaml).unwrap();
+    let bundle_dir = dir.path().join("profiles").join("default");
+    std::fs::create_dir_all(&bundle_dir).unwrap();
+    let bundle_path = bundle_dir.join("profile.yaml");
+    std::fs::write(&bundle_path, ambiguous_yaml).unwrap();
+
+    let (printer2, buf2) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    cmd_module_registry_rename(&cli, &printer2, "old", "fresh").unwrap();
+    drop(printer2);
+
+    let output = buf2.lock().unwrap();
+    assert!(
+        output.contains("default") && output.contains("not rewritten"),
+        "should warn ambiguous profile was not rewritten, got: {output}"
+    );
+    // Neither candidate may be touched — the winner is unknowable
+    assert_eq!(std::fs::read_to_string(&flat_path).unwrap(), ambiguous_yaml);
+    assert_eq!(
+        std::fs::read_to_string(&bundle_path).unwrap(),
+        ambiguous_yaml
     );
 }
 
@@ -3247,6 +3350,69 @@ fn cmd_module_registry_remove_warns_profile_refs() {
     assert!(
         output.contains("still references"),
         "should warn about profile references, got: {output}"
+    );
+}
+
+#[test]
+fn cmd_module_registry_remove_warns_bundle_profile_refs() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer1 = make_printer();
+
+    cmd_module_registry_add(&cli, &printer1, "https://example.com/reg.git", Some("team")).unwrap();
+
+    let bundle_dir = dir.path().join("profiles").join("dev");
+    std::fs::create_dir_all(&bundle_dir).unwrap();
+    std::fs::write(
+        bundle_dir.join("profile.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: dev\nspec:\n  modules:\n    - team/somemod\n",
+    )
+    .unwrap();
+
+    let (printer2, buf2) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    cmd_module_registry_remove(&cli, &printer2, "team", false).unwrap();
+    drop(printer2);
+
+    let output = buf2.lock().unwrap();
+    assert!(
+        output.contains("still references"),
+        "should warn about bundle profile references, got: {output}"
+    );
+}
+
+#[test]
+fn cmd_module_registry_remove_warns_when_only_losing_ambiguous_form_references() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer1 = make_printer();
+
+    cmd_module_registry_add(&cli, &printer1, "https://example.com/reg.git", Some("team")).unwrap();
+
+    // Ambiguous 'default': canonical form (the would-be winner) does NOT
+    // reference the registry, only the legacy flat file does
+    let bundle_dir = dir.path().join("profiles").join("default");
+    std::fs::create_dir_all(&bundle_dir).unwrap();
+    std::fs::write(
+        bundle_dir.join("profile.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules: []\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("profiles").join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  modules:\n    - team/somemod\n",
+    )
+    .unwrap();
+
+    let (printer2, buf2) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    cmd_module_registry_remove(&cli, &printer2, "team", false).unwrap();
+    drop(printer2);
+
+    let output = buf2.lock().unwrap();
+    assert!(
+        output.contains("still references"),
+        "reference in any ambiguous candidate must trigger the warning, got: {output}"
     );
 }
 

@@ -2608,37 +2608,6 @@ fn scan_module_names_finds_dirs_with_module_yaml() {
     // "empty" should not appear since it has no module.yaml
 }
 
-// --- list_yaml_stems ---
-
-#[test]
-fn list_yaml_stems_returns_sorted() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("zebra.yaml"), "").unwrap();
-    std::fs::write(dir.path().join("alpha.yaml"), "").unwrap();
-    std::fs::write(dir.path().join("middle.yaml"), "").unwrap();
-
-    let stems = super::list_yaml_stems(dir.path()).unwrap();
-    assert_eq!(stems, vec!["alpha", "middle", "zebra"]);
-}
-
-#[test]
-fn list_yaml_stems_ignores_non_yaml() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("good.yaml"), "").unwrap();
-    std::fs::write(dir.path().join("bad.txt"), "").unwrap();
-    std::fs::write(dir.path().join("also.json"), "").unwrap();
-
-    let stems = super::list_yaml_stems(dir.path()).unwrap();
-    assert_eq!(stems, vec!["good"]);
-}
-
-#[test]
-fn list_yaml_stems_empty_dir() {
-    let dir = tempfile::tempdir().unwrap();
-    let stems = super::list_yaml_stems(dir.path()).unwrap();
-    assert!(stems.is_empty());
-}
-
 // --- should_run_apply ---
 
 #[test]

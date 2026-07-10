@@ -775,19 +775,22 @@ pub fn cmd_module_registry_remove(
             let profiles_dir = config_dir.join("profiles");
             let old_prefix = format!("{}/", name);
             let mut affected_profiles: Vec<String> = Vec::new();
-            cfgd_core::config::for_each_yaml_file(&profiles_dir, |path| {
-                if let Ok(contents) = std::fs::read_to_string(path)
-                    && contents.contains(&old_prefix)
-                {
-                    let profile_name = path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-                    affected_profiles.push(profile_name);
+            for prof in cfgd_core::config::scan_profile_manifests(&profiles_dir)
+                .map_err(cfgd_core::errors::CfgdError::Config)?
+            {
+                // For an ambiguous name the winning form is unknowable, so
+                // every candidate manifest is scanned; the warning is
+                // advisory, and a reference in ANY candidate must fire it —
+                // never silently under-warn.
+                let referenced = prof.paths.iter().any(|path| {
+                    std::fs::read_to_string(path)
+                        .map(|contents| contents.contains(&old_prefix))
+                        .unwrap_or(false)
+                });
+                if referenced {
+                    affected_profiles.push(prof.name);
                 }
-                Ok(())
-            })?;
+            }
 
             if !affected_profiles.is_empty() {
                 let warn_sec = printer.section("Profile references");
@@ -919,25 +922,45 @@ pub fn cmd_module_registry_rename(
         .join("profiles");
     let old_prefix = format!("{}/", name);
     let new_prefix = format!("{}/", new_name);
-    cfgd_core::config::for_each_yaml_file(&profiles_dir, |path| {
-        let contents = std::fs::read_to_string(path)?;
-        let mut profile: config::ProfileDocument = match serde_yaml::from_str(&contents) {
-            Ok(p) => p,
-            Err(_) => return Ok(()),
-        };
-        let mut changed = false;
-        for module_ref in &mut profile.spec.modules {
-            if module_ref.starts_with(&old_prefix) {
-                *module_ref = format!("{}{}", new_prefix, &module_ref[old_prefix.len()..]);
-                changed = true;
+    let mut not_rewritten: Vec<String> = Vec::new();
+    for prof in cfgd_core::config::scan_profile_manifests(&profiles_dir)
+        .map_err(cfgd_core::errors::CfgdError::Config)?
+    {
+        if let Some(error) = &prof.ambiguity {
+            // Which candidate wins is unknowable, so no rewrite happens;
+            // surface it loudly — a silent skip would leave dangling
+            // '<old>/...' refs behind the rename.
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "Profile '{}' not rewritten — '{}/...' references left as-is: {}",
+                    prof.name,
+                    name,
+                    cfgd_core::output::collapse_to_subject_line(error)
+                ),
+            );
+            not_rewritten.push(prof.name);
+            continue;
+        }
+        for path in &prof.paths {
+            let contents = std::fs::read_to_string(path)?;
+            let mut profile: config::ProfileDocument = match serde_yaml::from_str(&contents) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let mut changed = false;
+            for module_ref in &mut profile.spec.modules {
+                if module_ref.starts_with(&old_prefix) {
+                    *module_ref = format!("{}{}", new_prefix, &module_ref[old_prefix.len()..]);
+                    changed = true;
+                }
+            }
+            if changed {
+                let yaml = serde_yaml::to_string(&profile).map_err(std::io::Error::other)?;
+                cfgd_core::atomic_write_str(path, &yaml)?;
             }
         }
-        if changed {
-            let yaml = serde_yaml::to_string(&profile).map_err(std::io::Error::other)?;
-            cfgd_core::atomic_write_str(path, &yaml)?;
-        }
-        Ok(())
-    })?;
+    }
 
     printer.emit(
         Doc::new()
@@ -948,6 +971,7 @@ pub fn cmd_module_registry_rename(
             .with_data(serde_json::json!({
                 "from": name,
                 "to": new_name,
+                "profilesNotRewritten": not_rewritten,
             })),
     );
     Ok(())

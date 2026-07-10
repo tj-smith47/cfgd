@@ -796,18 +796,21 @@ impl SourceManager {
                 name: source_name.to_string(),
             })?;
 
-        let profile_path = cached
-            .local_path
-            .join(PROFILES_DIR)
-            .join(format!("{}.yaml", profile_name));
-
-        if !profile_path.exists() {
-            return Err(SourceError::ProfileNotFound {
-                name: source_name.to_string(),
-                profile: profile_name.to_string(),
+        // Chokepoint lookup: accepts both the canonical bundle form
+        // (profiles/<name>/profile.yaml) and the legacy flat form, and fails
+        // closed when both coexist in the clone.
+        let profiles_dir = cached.local_path.join(PROFILES_DIR);
+        let profile_path = match crate::config::find_profile_path(&profiles_dir, profile_name) {
+            Ok(path) => path,
+            Err(crate::errors::ConfigError::ProfileNotFound { .. }) => {
+                return Err(SourceError::ProfileNotFound {
+                    name: source_name.to_string(),
+                    profile: profile_name.to_string(),
+                }
+                .into());
             }
-            .into());
-        }
+            Err(other) => return Err(other.into()),
+        };
 
         crate::config::load_profile(&profile_path)
     }

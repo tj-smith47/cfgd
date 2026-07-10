@@ -95,8 +95,10 @@ fn decorate_profile_not_found(
 }
 
 /// Names of subscribed sources whose on-disk profile cache contains a profile
-/// whose stem equals `profile_name`. Best-effort: a source with no cache, an
-/// unreadable dir, or no match is simply omitted (never an error).
+/// named `profile_name`, in either manifest form (canonical bundle or legacy
+/// flat). Best-effort: a source with no cache, an unreadable dir, or no match
+/// is simply omitted (never an error). An ambiguous name still counts — the
+/// source does deliver that profile, however malformed its layout.
 fn sources_providing_profile(cli: &Cli, cfg: &CfgdConfig, profile_name: &str) -> Vec<String> {
     let Ok(cache_dir) = source_cache_dir(cli) else {
         return Vec::new();
@@ -107,8 +109,8 @@ fn sources_providing_profile(cli: &Cli, cfg: &CfgdConfig, profile_name: &str) ->
         .iter()
         .filter(|spec| {
             let dir = mgr.cached_profiles_dir(&spec.name);
-            list_yaml_stems(&dir)
-                .map(|stems| stems.iter().any(|s| s == profile_name))
+            cfgd_core::config::scan_profiles_tolerant(&dir)
+                .map(|entries| entries.iter().any(|e| e.name() == profile_name))
                 .unwrap_or(false)
         })
         .map(|spec| spec.name.clone())
@@ -473,20 +475,6 @@ pub fn effective_config_file(
         (false, Some(dir)) => dir.join(cfgd_core::config::CONFIG_FILENAME),
         _ => config_value.to_path_buf(),
     }
-}
-
-/// List sorted YAML file stems in a directory (e.g. "base" from "base.yaml").
-/// Returns an empty vec if the directory doesn't exist.
-pub(in crate::cli) fn list_yaml_stems(dir: &Path) -> anyhow::Result<Vec<String>> {
-    let mut names = Vec::new();
-    cfgd_core::config::for_each_yaml_file(dir, |path| {
-        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-            names.push(stem.to_string());
-        }
-        Ok(())
-    })?;
-    names.sort();
-    Ok(names)
 }
 
 /// Build the no-config error so every command's missing-config path exits with
@@ -1254,41 +1242,78 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------------
-    // list_yaml_stems
+    // sources_providing_profile
     // ---------------------------------------------------------------------------
 
-    #[test]
-    fn list_yaml_stems_empty_dir_returns_empty() {
-        let tmp = tempdir().unwrap();
-        let stems = list_yaml_stems(tmp.path()).unwrap();
-        assert!(stems.is_empty());
+    /// Build a config subscribing to one source named `test-src`, plus a cache
+    /// layout rooted at `<tmp>/cache` for that source. Returns (cli, cfg); the
+    /// caller populates `<tmp>/cache/sources/test-src/profiles` in the form
+    /// under test.
+    fn cli_and_cfg_with_source_cache(tmp: &std::path::Path) -> (Cli, CfgdConfig) {
+        let config_yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: test-src\n      origin:\n        type: Git\n        url: https://example.com/config.git\n        branch: master\n";
+        let config_path = tmp.join("cfgd.yaml");
+        std::fs::write(&config_path, config_yaml).unwrap();
+        let cfg = config::load_config(&config_path).unwrap();
+        let mut cli = make_cli(config_path);
+        cli.cache_dir = Some(tmp.join("cache"));
+        (cli, cfg)
     }
 
     #[test]
-    fn list_yaml_stems_returns_sorted_stems() {
+    fn sources_providing_profile_sees_legacy_flat_form() {
         let tmp = tempdir().unwrap();
-        std::fs::write(tmp.path().join("zebra.yaml"), "").unwrap();
-        std::fs::write(tmp.path().join("alpha.yaml"), "").unwrap();
-        std::fs::write(tmp.path().join("middle.yml"), "").unwrap();
-        let stems = list_yaml_stems(tmp.path()).unwrap();
-        assert_eq!(stems, vec!["alpha", "middle", "zebra"]);
+        let (cli, cfg) = cli_and_cfg_with_source_cache(tmp.path());
+        let profiles = tmp.path().join("cache/sources/test-src/profiles");
+        std::fs::create_dir_all(&profiles).unwrap();
+        std::fs::write(profiles.join("team.yaml"), PROFILE_YAML).unwrap();
+
+        assert_eq!(
+            sources_providing_profile(&cli, &cfg, "team"),
+            vec!["test-src"]
+        );
     }
 
     #[test]
-    fn list_yaml_stems_ignores_non_yaml_files() {
+    fn sources_providing_profile_sees_canonical_bundle_form() {
         let tmp = tempdir().unwrap();
-        std::fs::write(tmp.path().join("notes.txt"), "").unwrap();
-        std::fs::write(tmp.path().join("config.yaml"), "").unwrap();
-        let stems = list_yaml_stems(tmp.path()).unwrap();
-        assert_eq!(stems, vec!["config"]);
+        let (cli, cfg) = cli_and_cfg_with_source_cache(tmp.path());
+        let bundle = tmp.path().join("cache/sources/test-src/profiles/team");
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::write(bundle.join("profile.yaml"), PROFILE_YAML).unwrap();
+
+        assert_eq!(
+            sources_providing_profile(&cli, &cfg, "team"),
+            vec!["test-src"]
+        );
     }
 
     #[test]
-    fn list_yaml_stems_missing_dir_returns_empty() {
+    fn sources_providing_profile_ambiguous_name_still_counts() {
         let tmp = tempdir().unwrap();
-        let missing = tmp.path().join("does-not-exist");
-        let stems = list_yaml_stems(&missing).unwrap();
-        assert!(stems.is_empty());
+        let (cli, cfg) = cli_and_cfg_with_source_cache(tmp.path());
+        // BOTH forms on disk: an ambiguous layout must still count — the
+        // source does deliver the profile, however malformed the cache.
+        let profiles = tmp.path().join("cache/sources/test-src/profiles");
+        let bundle = profiles.join("team");
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::write(bundle.join("profile.yaml"), PROFILE_YAML).unwrap();
+        std::fs::write(profiles.join("team.yaml"), PROFILE_YAML).unwrap();
+
+        assert_eq!(
+            sources_providing_profile(&cli, &cfg, "team"),
+            vec!["test-src"]
+        );
+    }
+
+    #[test]
+    fn sources_providing_profile_no_match_returns_empty() {
+        let tmp = tempdir().unwrap();
+        let (cli, cfg) = cli_and_cfg_with_source_cache(tmp.path());
+        let profiles = tmp.path().join("cache/sources/test-src/profiles");
+        std::fs::create_dir_all(&profiles).unwrap();
+        std::fs::write(profiles.join("other.yaml"), PROFILE_YAML).unwrap();
+
+        assert!(sources_providing_profile(&cli, &cfg, "team").is_empty());
     }
 
     // ---------------------------------------------------------------------------
@@ -1553,6 +1578,17 @@ mod tests {
     /// `provides.modules`). This lets composition + module resolution be asserted
     /// on a non-empty contribution of BOTH a package and a module from the source.
     fn create_local_source_repo(root: &std::path::Path, profile_name: &str) -> PathBuf {
+        create_local_source_repo_with_form(root, profile_name, false)
+    }
+
+    /// Like [`create_local_source_repo`], but `canonical` selects the profile
+    /// manifest layout inside the repo: `profiles/<name>/profile.yaml` (true)
+    /// vs the legacy flat `profiles/<name>.yaml` (false).
+    fn create_local_source_repo_with_form(
+        root: &std::path::Path,
+        profile_name: &str,
+        canonical: bool,
+    ) -> PathBuf {
         let repo_dir = root.join("source-repo");
         std::fs::create_dir_all(&repo_dir).unwrap();
 
@@ -1580,14 +1616,15 @@ mod tests {
         let profile_yaml = format!(
             "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: {profile_name}\nspec:\n  modules:\n    - source-module\n  packages:\n    cargo:\n      - source-pkg\n"
         );
-        std::fs::create_dir_all(repo_dir.join("profiles")).unwrap();
-        std::fs::write(
+        let profile_path = if canonical {
+            cfgd_core::config::canonical_profile_path(&repo_dir.join("profiles"), profile_name)
+        } else {
             repo_dir
                 .join("profiles")
-                .join(format!("{profile_name}.yaml")),
-            &profile_yaml,
-        )
-        .unwrap();
+                .join(format!("{profile_name}.yaml"))
+        };
+        std::fs::create_dir_all(profile_path.parent().unwrap()).unwrap();
+        std::fs::write(&profile_path, &profile_yaml).unwrap();
 
         // Source-delivered module body, allow-listed by the manifest above.
         let module_dir = repo_dir.join("modules").join("source-module");
@@ -1695,6 +1732,60 @@ mod tests {
                 .modules
                 .contains(&"source-module".to_string()),
             "merged modules missing source contribution: {:?}",
+            result.resolved.merged.modules
+        );
+    }
+
+    /// Same end-to-end composition, but the source repo carries its profile in
+    /// the canonical bundle form (profiles/team/profile.yaml). The clone →
+    /// subscribe → compose path must resolve it identically to the flat form.
+    #[test]
+    #[serial]
+    fn compose_with_sources_merges_canonical_form_source_profile() {
+        let tmp = tempdir().unwrap();
+        let source_repo = create_local_source_repo_with_form(tmp.path(), "team", true);
+
+        let config_yaml = format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: test-src\n      origin:\n        type: Git\n        url: {}\n        branch: master\n      subscription:\n        profile: team\n",
+            source_repo.display()
+        );
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, &config_yaml).unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(profiles_dir.join("default.yaml"), PROFILE_YAML).unwrap();
+
+        let _allow = EnvVarGuard::set("CFGD_ALLOW_LOCAL_SOURCES", "1");
+        let mut cli = make_cli(config_path.clone());
+        cli.state_dir = Some(tmp.path().join("state"));
+        cli.cache_dir = Some(tmp.path().join("cache"));
+
+        let cfg = config::load_config(&config_path).unwrap();
+        let local = empty_resolved_profile("my-module");
+        let printer = quiet_printer();
+
+        let result = compose_with_sources(
+            &cli,
+            &cfg,
+            &local,
+            &printer,
+            true,
+            composition::ConstraintMode::Enforce,
+        )
+        .unwrap();
+
+        assert!(
+            result.source_commits.contains_key("test-src"),
+            "expected source_commits to record 'test-src', got: {:?}",
+            result.source_commits
+        );
+        assert!(
+            result
+                .resolved
+                .merged
+                .modules
+                .contains(&"source-module".to_string()),
+            "canonical-form source profile not merged: {:?}",
             result.resolved.merged.modules
         );
     }

@@ -223,34 +223,6 @@ pub fn is_yaml_ext(path: &Path) -> bool {
     path.extension().is_some_and(|e| e == "yaml" || e == "yml")
 }
 
-/// Iterate over every `.yaml` / `.yml` file in `dir`, invoking `f(path)` for each.
-///
-/// - Non-existent `dir` is **not** an error — yields nothing.
-/// - Non-YAML entries, subdirectories, and unreadable entries are silently skipped.
-/// - `f`'s error short-circuits the walk (first error wins).
-///
-/// Use this instead of open-coding `std::fs::read_dir` + `is_yaml_ext` checks
-/// when scanning `<config_dir>/profiles` / `<config_dir>/modules` trees.
-pub fn for_each_yaml_file<F>(dir: &Path, mut f: F) -> std::io::Result<()>
-where
-    F: FnMut(&Path) -> std::io::Result<()>,
-{
-    if !dir.exists() {
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(dir)? {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        let path = entry.path();
-        if is_yaml_ext(&path) {
-            f(&path)?;
-        }
-    }
-    Ok(())
-}
-
 /// Build a minimal CfgdConfig for module-only operations that don't have cfgd.yaml.
 pub fn minimal_config() -> CfgdConfig {
     CfgdConfig {
@@ -333,12 +305,6 @@ mod tests {
         assert!(is_yaml_ext(Path::new("bar.yml")));
         assert!(!is_yaml_ext(Path::new("baz.toml")));
         assert!(!is_yaml_ext(Path::new("noext")));
-    }
-
-    #[test]
-    fn for_each_yaml_file_nonexistent_dir_is_ok() {
-        let r = for_each_yaml_file(Path::new("/nonexistent/path/xyz"), |_| Ok(()));
-        assert!(r.is_ok());
     }
 
     #[test]
@@ -469,21 +435,5 @@ mod tests {
             assert_eq!(p, expected, "token {token}");
         }
         serde_yaml::from_str::<SkillUpdatePolicy>("sometimes").expect_err("garbage must error");
-    }
-
-    #[test]
-    fn for_each_yaml_file_visits_yaml_files() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.yaml"), "").unwrap();
-        std::fs::write(dir.path().join("b.yml"), "").unwrap();
-        std::fs::write(dir.path().join("c.toml"), "").unwrap();
-        let mut visited = Vec::new();
-        for_each_yaml_file(dir.path(), |p| {
-            visited.push(p.file_name().unwrap().to_string_lossy().to_string());
-            Ok(())
-        })
-        .unwrap();
-        visited.sort();
-        assert_eq!(visited, vec!["a.yaml", "b.yml"]);
     }
 }

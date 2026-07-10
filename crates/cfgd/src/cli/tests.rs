@@ -3630,21 +3630,6 @@ fn parse_package_flag_bare_name_passthrough() {
     assert_eq!(pkg, "ripgrep");
 }
 
-// --- list_yaml_stems ---
-
-#[test]
-fn list_yaml_stems_finds_yaml_files() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("alpha.yaml"), "").unwrap();
-    std::fs::write(dir.path().join("beta.yml"), "").unwrap();
-    std::fs::write(dir.path().join("not-yaml.txt"), "").unwrap();
-
-    let stems = super::list_yaml_stems(dir.path()).unwrap();
-    assert!(stems.contains(&"alpha".to_string()));
-    assert!(stems.contains(&"beta".to_string()));
-    assert!(!stems.contains(&"not-yaml".to_string()));
-}
-
 // --- builtin_aliases ---
 
 #[test]
