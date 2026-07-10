@@ -280,7 +280,7 @@ work from the newer binary.
 > `publish-crate.yml` leg. Keyless verification of a newer release therefore
 > fails closed on v0.5.0 when `cosign` is present (no SHA256 fallback — that is
 > the intended fail-closed behavior). Reinstall once via any install method above
-> to get the v0.5.1+ binary, which pins the identity at the repository level and
+> to get the v0.6.0+ binary, which pins the identity at the repository level and
 > accepts the real signer; self-upgrade then works. Hosts **without** the `cosign`
 > CLI are unaffected — they take the documented SHA256 fallback.
 
