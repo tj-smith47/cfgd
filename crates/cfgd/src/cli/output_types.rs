@@ -213,6 +213,28 @@ pub struct DoctorConfigCheck {
     pub name: Option<String>,
     pub profile: Option<String>,
     pub error: Option<String>,
+    /// Typed classification driving rendering and verdict scoring. Skipped
+    /// from serialization: the consumer-facing JSON field set stays frozen —
+    /// `valid`/`error` carry the same values as before this field existed.
+    #[serde(skip)]
+    pub state: DoctorConfigState,
+}
+
+/// How the doctor config check classified the config file.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DoctorConfigState {
+    /// Present and parseable.
+    Valid,
+    /// Absent at the derived default path — a fresh-machine state: rendered
+    /// as a Warn and the verdict still passes.
+    MissingAtDefault,
+    /// Absent at a user-supplied `--config`/`CFGD_CONFIG`/`--config-dir`
+    /// path — user error: rendered as a Fail and the verdict fails, so
+    /// `cfgd doctor && cfgd apply` stops instead of apply hard-failing on
+    /// the same path.
+    MissingAtExplicit,
+    /// Present but unparseable — Fail.
+    Invalid,
 }
 
 #[derive(Serialize)]
@@ -826,6 +848,7 @@ mod tests {
                 name: Some("host".to_string()),
                 profile: Some("default".to_string()),
                 error: None,
+                state: DoctorConfigState::Valid,
             },
             git: true,
             secrets: DoctorSecretsCheck {
@@ -883,6 +906,7 @@ mod tests {
             name: None,
             profile: None,
             error: Some("missing".to_string()),
+            state: DoctorConfigState::Invalid,
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["valid"], json!(false));

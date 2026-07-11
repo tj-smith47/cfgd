@@ -621,19 +621,49 @@ fn doctor_with_valid_config_succeeds() {
         .success();
 }
 
-// --- doctor without config still succeeds (reports problems) ---
+// --- doctor with a missing config at an explicitly-given path fails ---
 
 #[test]
-fn doctor_without_config_succeeds() {
+fn doctor_with_missing_explicit_config_fails() {
     let dir = tempfile::tempdir().unwrap();
     let nonexistent = dir.path().join("gone").join("cfgd.yaml");
 
+    // CFGD_CONFIG is a user-supplied path: a typo here must stop
+    // `cfgd doctor && cfgd apply` (exit 1), not warn-and-pass.
     Command::cargo_bin("cfgd")
         .unwrap()
         .arg("doctor")
         .env("CFGD_CONFIG", &nonexistent)
         .assert()
-        .success();
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("not found"));
+}
+
+// --- doctor without config at the DEFAULT path still succeeds (fresh machine) ---
+
+// Unix-only: the default config dir honors $XDG_CONFIG_HOME/$HOME there, so the
+// test can point the DEFAULT at an empty tempdir. On Windows the default comes
+// from the Known Folders API, which env vars cannot redirect.
+#[cfg(unix)]
+#[test]
+fn doctor_without_config_at_default_path_succeeds() {
+    let home = tempfile::tempdir().unwrap();
+
+    // No CFGD_CONFIG / --config: the path is the derived default under an
+    // empty HOME — the fresh-machine contract is Warn + exit 0.
+    Command::cargo_bin("cfgd")
+        .unwrap()
+        .arg("doctor")
+        .env_remove("CFGD_CONFIG")
+        .env_remove("CFGD_CONFIG_DIR")
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .env("XDG_STATE_HOME", home.path().join(".state"))
+        .env("XDG_CACHE_HOME", home.path().join(".cache"))
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("not found"));
 }
 
 // --- log with valid config (empty state) ---

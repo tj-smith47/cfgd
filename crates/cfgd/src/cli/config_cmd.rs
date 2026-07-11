@@ -481,6 +481,7 @@ mod tests {
     fn test_cli_for(config_path: std::path::PathBuf) -> Cli {
         Cli {
             config: config_path,
+            config_explicit: false,
             profile: None,
             verbose: 0,
             quiet: true,

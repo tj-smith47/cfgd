@@ -189,6 +189,7 @@ mod tests {
         std::fs::create_dir_all(&state_dir).expect("mk state dir");
         Cli {
             config: config_path,
+            config_explicit: false,
             profile: None,
             verbose: 0,
             quiet: true,

@@ -94,6 +94,7 @@ pub fn profile_with_one_failure_setup() -> (tempfile::TempDir, tempfile::TempDir
 pub fn cli_for(config_dir: &std::path::Path, state_dir: &std::path::Path) -> Cli {
     Cli {
         config: config_dir.join("cfgd.yaml"),
+        config_explicit: false,
         profile: None,
         no_color: true,
         verbose: 0,

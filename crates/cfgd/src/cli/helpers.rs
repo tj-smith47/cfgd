@@ -913,6 +913,7 @@ mod tests {
     fn make_cli(config: PathBuf) -> Cli {
         Cli {
             config,
+            config_explicit: false,
             profile: None,
             verbose: 0,
             quiet: true,

@@ -294,6 +294,17 @@ pub struct Cli {
     #[arg(long, global = true, default_value_os_t = default_config_file(), hide_default_value = true, env = "CFGD_CONFIG")]
     pub config: PathBuf,
 
+    /// Whether the config path was supplied by the user (`--config`,
+    /// `CFGD_CONFIG`, or `--config-dir`) rather than derived as the default.
+    /// Not a parsed argument: `main.rs` sets it from clap's `ValueSource`,
+    /// the only classifier that cannot mistake an explicitly-typed value for
+    /// the default (a path-literal comparison would misclassify a user who
+    /// typed the default path). Commands that distinguish "fresh machine, no
+    /// config yet" from "config missing at the path the user pointed at"
+    /// (e.g. `doctor`) key off this.
+    #[arg(skip)]
+    pub config_explicit: bool,
+
     /// Profile to use (overrides config file)
     #[arg(long, global = true, env = "CFGD_PROFILE")]
     pub profile: Option<String>,

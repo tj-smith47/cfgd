@@ -11,9 +11,9 @@
 //! payload).
 
 use cfgd::cli::output_types::{
-    DoctorConfigCheck, DoctorConfiguratorCheck, DoctorManagerCheck, DoctorModuleCheck,
-    DoctorOutput, DoctorProviderCheck, DoctorSecretsCheck, LogOutput, PlanActionOutput, PlanOutput,
-    PlanPhaseOutput,
+    DoctorConfigCheck, DoctorConfigState, DoctorConfiguratorCheck, DoctorManagerCheck,
+    DoctorModuleCheck, DoctorOutput, DoctorProviderCheck, DoctorSecretsCheck, LogOutput,
+    PlanActionOutput, PlanOutput, PlanPhaseOutput,
 };
 use cfgd_core::output::{Doc, OutputFormat, Printer};
 use cfgd_core::state::{ApplyRecord, ApplyStatus};
@@ -40,6 +40,7 @@ fn doctor_output_roundtrips_through_emit() {
             name: Some("test-host".into()),
             profile: Some("base".into()),
             error: None,
+            state: DoctorConfigState::Valid,
         },
         git: true,
         secrets: DoctorSecretsCheck {

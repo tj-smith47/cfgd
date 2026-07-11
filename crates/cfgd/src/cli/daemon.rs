@@ -444,6 +444,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         Cli {
             config: dir.path().join("cfgd.yaml"),
+            config_explicit: false,
             profile: None,
             no_color: true,
             verbose: 0,

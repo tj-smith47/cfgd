@@ -49,6 +49,7 @@ fn strip_ansi(s: &str) -> String {
 fn cli_for(config_dir: &Path) -> cfgd::cli::Cli {
     cfgd::cli::Cli {
         config: config_dir.join("cfgd.yaml"),
+        config_explicit: false,
         profile: None,
         no_color: true,
         verbose: 0,

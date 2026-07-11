@@ -418,6 +418,7 @@ mod tests {
     fn cli_with_dirs(cache_dir: Option<PathBuf>, state_dir: Option<PathBuf>) -> Cli {
         Cli {
             config: PathBuf::from("cfgd.yaml"),
+            config_explicit: false,
             profile: None,
             verbose: 0,
             quiet: true,

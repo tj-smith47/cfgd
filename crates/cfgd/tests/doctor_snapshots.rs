@@ -13,8 +13,9 @@ use cfgd::cli::doctor::{
     DoctorConfigSource, DoctorExtras, DoctorProfilesDir, DoctorStateStore, build_doctor_doc,
 };
 use cfgd::cli::output_types::{
-    DoctorConfigCheck, DoctorConfiguratorCheck, DoctorManagerCheck, DoctorModuleCheck,
-    DoctorModulePackageCheck, DoctorOutput, DoctorProviderCheck, DoctorSecretsCheck,
+    DoctorConfigCheck, DoctorConfigState, DoctorConfiguratorCheck, DoctorManagerCheck,
+    DoctorModuleCheck, DoctorModulePackageCheck, DoctorOutput, DoctorProviderCheck,
+    DoctorSecretsCheck,
 };
 use cfgd_core::output::Printer;
 
@@ -28,6 +29,7 @@ fn happy_fixture() -> (DoctorOutput, DoctorExtras) {
             name: Some("test-host".into()),
             profile: Some("default".into()),
             error: None,
+            state: DoctorConfigState::Valid,
         },
         git: true,
         secrets: DoctorSecretsCheck {
@@ -155,6 +157,7 @@ fn bare_fixture() -> (DoctorOutput, DoctorExtras) {
             name: Some("test-host".into()),
             profile: Some("default".into()),
             error: None,
+            state: DoctorConfigState::Valid,
         },
         git: true,
         secrets: DoctorSecretsCheck {

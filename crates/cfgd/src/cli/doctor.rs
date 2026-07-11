@@ -1,11 +1,6 @@
 use super::*;
+use crate::cli::output_types::DoctorConfigState;
 use cfgd_core::output::{Doc, Printer, Role, doc::SectionBuilder};
-
-/// Sentinel `DoctorConfigCheck::error` for an absent config file. A missing
-/// config is a fresh-machine state (Warn), not a doctor failure — distinct
-/// from a present-but-unparseable one (Fail). Set, rendered, and scored
-/// against this one string.
-const CONFIG_NOT_FOUND: &str = "not found";
 
 pub(super) fn cmd_doctor(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     // A failed verdict must fail the process so `cfgd doctor && cfgd apply`
@@ -75,6 +70,7 @@ fn collect_doctor_output(
                     name: Some(cfg.metadata.name.clone()),
                     profile: cfg.spec.profile.clone(),
                     error: None,
+                    state: DoctorConfigState::Valid,
                 },
                 Some(cfg),
             ),
@@ -85,18 +81,30 @@ fn collect_doctor_output(
                     name: None,
                     profile: None,
                     error: Some(format!("{}", e)),
+                    state: DoctorConfigState::Invalid,
                 },
                 None,
             ),
         }
     } else {
+        // Missing at the derived default path = fresh machine (Warn, verdict
+        // passes); missing at a user-supplied path = the user's typo (Fail,
+        // verdict fails). The JSON `error` string stays "not found" for both
+        // so the serialized shape is unchanged; the typed state carries the
+        // distinction.
+        let state = if cli.config_explicit {
+            DoctorConfigState::MissingAtExplicit
+        } else {
+            DoctorConfigState::MissingAtDefault
+        };
         (
             DoctorConfigCheck {
                 valid: false,
                 path: cli.config.display().to_string(),
                 name: None,
                 profile: None,
-                error: Some(CONFIG_NOT_FOUND.into()),
+                error: Some("not found".into()),
+                state,
             },
             None,
         )
@@ -473,30 +481,38 @@ pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
 }
 
 fn build_config_top(doc: Doc, cfg: &DoctorConfigCheck) -> Doc {
-    if cfg.valid {
-        let mut doc = doc.status(Role::Ok, format!("Config file: {} (valid)", cfg.path));
-        let mut pairs: Vec<(String, String)> = Vec::new();
-        if let Some(name) = cfg.name.as_deref() {
-            pairs.push(("Name".into(), name.into()));
+    match cfg.state {
+        DoctorConfigState::Valid => {
+            let mut doc = doc.status(Role::Ok, format!("Config file: {} (valid)", cfg.path));
+            let mut pairs: Vec<(String, String)> = Vec::new();
+            if let Some(name) = cfg.name.as_deref() {
+                pairs.push(("Name".into(), name.into()));
+            }
+            pairs.push((
+                "Profile".into(),
+                cfg.profile.as_deref().unwrap_or("(none)").into(),
+            ));
+            doc = doc.kv_block(pairs);
+            doc
         }
-        pairs.push((
-            "Profile".into(),
-            cfg.profile.as_deref().unwrap_or("(none)").into(),
-        ));
-        doc = doc.kv_block(pairs);
-        doc
-    } else if let Some(err) = cfg.error.as_deref() {
-        if err == CONFIG_NOT_FOUND {
-            doc.status_with(
-                Role::Warn,
-                format!("Config file: {} — not found", cfg.path),
-                |sf| sf.detail("run 'cfgd init' to create one"),
-            )
-        } else {
-            doc.status(Role::Fail, format!("Config file: {} — {}", cfg.path, err))
-        }
-    } else {
-        doc.status(Role::Fail, "Config file: invalid")
+        DoctorConfigState::MissingAtDefault => doc.status_with(
+            Role::Warn,
+            format!("Config file: {} — not found", cfg.path),
+            |sf| sf.detail("run 'cfgd init' to create one"),
+        ),
+        DoctorConfigState::MissingAtExplicit => doc.status_with(
+            Role::Fail,
+            format!("Config file: {} — not found", cfg.path),
+            |sf| sf.detail("the given --config/CFGD_CONFIG path does not exist"),
+        ),
+        DoctorConfigState::Invalid => doc.status(
+            Role::Fail,
+            format!(
+                "Config file: {} — {}",
+                cfg.path,
+                cfg.error.as_deref().unwrap_or("invalid")
+            ),
+        ),
     }
 }
 
@@ -735,9 +751,13 @@ fn all_passed(output: &DoctorOutput) -> bool {
         && output.profiles.iter().all(|p| p.error.is_none())
 }
 
-/// A missing config is a fresh-machine state (rendered as a Warn), not a
-/// failure; only a present-but-unparseable config fails the verdict. Mirrors
-/// the classification in `build_config_top`.
+/// A config missing at the DEFAULT path is a fresh-machine state (rendered as
+/// a Warn), not a failure. A config missing at an explicitly-given path, or a
+/// present-but-unparseable one, fails the verdict. Mirrors the classification
+/// in `build_config_top`.
 fn config_ok(cfg: &DoctorConfigCheck) -> bool {
-    cfg.valid || cfg.error.as_deref() == Some(CONFIG_NOT_FOUND)
+    matches!(
+        cfg.state,
+        DoctorConfigState::Valid | DoctorConfigState::MissingAtDefault
+    )
 }

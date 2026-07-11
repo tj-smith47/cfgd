@@ -401,6 +401,7 @@ spec: {}
     fn test_cli_for(config_dir: &std::path::Path, state_dir: &std::path::Path) -> Cli {
         Cli {
             config: config_dir.join("cfgd.yaml"),
+            config_explicit: false,
             profile: None,
             verbose: 0,
             quiet: true,

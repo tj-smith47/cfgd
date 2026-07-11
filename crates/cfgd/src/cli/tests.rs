@@ -167,6 +167,7 @@ impl CliTestHarness {
     fn cli(&self) -> Cli {
         Cli {
             config: self.config_dir.path().join("cfgd.yaml"),
+            config_explicit: false,
             profile: None,
             no_color: true,
             verbose: 0,
@@ -1128,6 +1129,7 @@ fn test_cli_with_state(dir: &Path, state_dir: Option<PathBuf>) -> Cli {
     let cache_dir = state_dir.clone();
     Cli {
         config: dir.join("cfgd.yaml"),
+        config_explicit: false,
         profile: None,
         no_color: true,
         verbose: 0,
@@ -3549,6 +3551,7 @@ fn config_get_reads_value() {
 
     let cli = Cli {
         config: config_path.clone(),
+        config_explicit: false,
         ..test_cli(dir.path())
     };
     let printer = test_printer();
@@ -3573,6 +3576,7 @@ fn cmd_config_get_missing_key_errors() {
 
     let cli = Cli {
         config: config_path,
+        config_explicit: false,
         ..test_cli(dir.path())
     };
     let printer = test_printer();
@@ -3588,6 +3592,7 @@ fn config_set_and_get_roundtrip() {
 
     let cli = Cli {
         config: config_path.clone(),
+        config_explicit: false,
         ..test_cli(dir.path())
     };
     let printer = test_printer();
@@ -3606,6 +3611,7 @@ fn cmd_config_unset_removes_key() {
 
     let cli = Cli {
         config: config_path.clone(),
+        config_explicit: false,
         ..test_cli(dir.path())
     };
     let printer = test_printer();
@@ -3633,6 +3639,7 @@ fn cmd_config_unset_missing_key_errors() {
 
     let cli = Cli {
         config: config_path,
+        config_explicit: false,
         ..test_cli(dir.path())
     };
     let printer = test_printer();
@@ -3650,6 +3657,7 @@ fn config_show_succeeds_with_valid_config() {
 
     let cli = Cli {
         config: config_path,
+        config_explicit: false,
         ..test_cli(dir.path())
     };
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
@@ -3676,6 +3684,7 @@ fn config_show_errors_without_config() {
     let dir = tempfile::tempdir().unwrap();
     let cli = Cli {
         config: dir.path().join("nonexistent.yaml"),
+        config_explicit: false,
         ..test_cli(dir.path())
     };
 
@@ -3891,13 +3900,19 @@ fn cmd_doctor_without_config() {
 
     let cli = Cli {
         config: config_path,
+        config_explicit: false,
         ..test_cli(dir.path())
     };
     let (printer, buf) =
         cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
 
     let result = super::doctor::run_doctor(&cli, &printer);
-    assert!(result.is_ok(), "doctor failed: {:?}", result.err());
+    // Missing at the DEFAULT path is the fresh-machine state: the verdict
+    // must pass (exit 0) — pinned by S18.4-doctor in acceptance.
+    assert!(
+        result.as_ref().is_ok_and(|passed| *passed),
+        "fresh-machine doctor verdict should pass, got: {result:?}"
+    );
     printer.flush();
 
     let output = buf.lock().unwrap();
@@ -3906,6 +3921,80 @@ fn cmd_doctor_without_config() {
         output.contains("not found"),
         "should report config not found, got: {output}"
     );
+    assert!(
+        output.contains("run 'cfgd init' to create one"),
+        "fresh-machine Warn should carry the init hint, got: {output}"
+    );
+}
+
+#[test]
+fn cmd_doctor_missing_config_at_explicit_path_fails_verdict() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("typo.yaml");
+
+    let cli = Cli {
+        config: config_path.clone(),
+        config_explicit: true,
+        ..test_cli(dir.path())
+    };
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let passed = super::doctor::run_doctor(&cli, &printer).unwrap();
+    assert!(
+        !passed,
+        "missing config at an explicit --config path must fail the verdict"
+    );
+    printer.flush();
+
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains(&format!(
+            "Config file: {} — not found",
+            config_path.display()
+        )),
+        "Fail line should name the explicit path, got: {output}"
+    );
+    assert!(
+        output.contains("Some checks failed"),
+        "verdict line should be the failure form, got: {output}"
+    );
+}
+
+#[test]
+fn cmd_doctor_json_missing_config_shape_is_unchanged() {
+    // The typed DoctorConfigState must NOT leak into `-o json`: the config
+    // object keeps its frozen five-key shape and the `error` string stays
+    // "not found" for both the default-path and explicit-path cases.
+    let expected_keys = ["error", "name", "path", "profile", "valid"];
+    for explicit in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = Cli {
+            config: dir.path().join("typo.yaml"),
+            config_explicit: explicit,
+            output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+            ..test_cli(dir.path())
+        };
+        let (printer, buf) =
+            cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        super::doctor::run_doctor(&cli, &printer).unwrap();
+        printer.flush();
+
+        let output = buf.lock().unwrap();
+        let parsed = extract_json(&output);
+        let config = parsed["config"].as_object().unwrap();
+        let mut keys: Vec<&str> = config.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys, expected_keys,
+            "config JSON keys drifted (explicit={explicit})"
+        );
+        assert_eq!(
+            config["error"], "not found",
+            "error string drifted (explicit={explicit})"
+        );
+        assert_eq!(config["valid"], false);
+    }
 }
 
 // --- Command handler tests (require state store) ---
@@ -4071,6 +4160,7 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
 
     let cli = Cli {
         config: config.clone(),
+        config_explicit: false,
         profile: None,
         no_color: true,
         verbose: 0,
@@ -4563,6 +4653,7 @@ fn execute_with_no_subcommand_prints_help_and_returns_ok() {
     let h = CliTestHarness::builder().build();
     let cli = Cli {
         config: h.config_path().join("cfgd.yaml"),
+        config_explicit: false,
         profile: None,
         no_color: true,
         verbose: 0,
@@ -5094,6 +5185,7 @@ fn cmd_source_list_no_config() {
     let dir = tempfile::tempdir().unwrap();
     let cli = Cli {
         config: dir.path().join("nonexistent.yaml"),
+        config_explicit: false,
         ..test_cli_with_state(dir.path(), Some(state_dir.path().to_path_buf()))
     };
     let (printer, cap) = cfgd_core::output::Printer::for_test_doc();
@@ -9294,6 +9386,7 @@ fn cmd_config_set_creates_nested_key() {
 
     let cli = Cli {
         config: config_path.clone(),
+        config_explicit: false,
         ..test_cli(dir.path())
     };
     let printer = test_printer();
@@ -9311,6 +9404,7 @@ fn cmd_config_set_no_config_errors() {
     let dir = tempfile::tempdir().unwrap();
     let cli = Cli {
         config: dir.path().join("nonexistent.yaml"),
+        config_explicit: false,
         ..test_cli(dir.path())
     };
     let printer = test_printer();
@@ -9330,6 +9424,7 @@ fn cmd_config_unset_no_config_errors() {
     let dir = tempfile::tempdir().unwrap();
     let cli = Cli {
         config: dir.path().join("nonexistent.yaml"),
+        config_explicit: false,
         ..test_cli(dir.path())
     };
     let printer = test_printer();
@@ -16083,6 +16178,7 @@ fn base_doctor_output() -> super::output_types::DoctorOutput {
             name: Some("mybox".into()),
             profile: Some("default".into()),
             error: None,
+            state: super::output_types::DoctorConfigState::Valid,
         },
         git: true,
         secrets: super::output_types::DoctorSecretsCheck {
@@ -16117,6 +16213,7 @@ fn build_doctor_doc_config_invalid_parse_error_emits_fail() {
     let mut output = base_doctor_output();
     output.config.valid = false;
     output.config.error = Some("unexpected key 'x'".into());
+    output.config.state = super::output_types::DoctorConfigState::Invalid;
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
@@ -16134,11 +16231,12 @@ fn build_doctor_doc_config_invalid_no_error_field_emits_fail() {
     let mut output = base_doctor_output();
     output.config.valid = false;
     output.config.error = None;
+    output.config.state = super::output_types::DoctorConfigState::Invalid;
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
-        text.contains("Config file: invalid"),
-        "should show 'Config file: invalid', got: {text}"
+        text.contains("Config file: /etc/cfgd.yaml — invalid"),
+        "should show the invalid fallback, got: {text}"
     );
 }
 
@@ -16505,6 +16603,7 @@ fn build_doctor_doc_all_passed_false_when_config_invalid() {
     let mut output = base_doctor_output();
     output.config.valid = false;
     output.config.error = Some("yaml parse error: unexpected token".into());
+    output.config.state = super::output_types::DoctorConfigState::Invalid;
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
@@ -16520,11 +16619,32 @@ fn build_doctor_doc_missing_config_does_not_fail_verdict() {
     let mut output = base_doctor_output();
     output.config.valid = false;
     output.config.error = Some("not found".into());
+    output.config.state = super::output_types::DoctorConfigState::MissingAtDefault;
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);
     assert!(
         text.contains("All checks passed"),
         "missing config must not fail the doctor verdict, got: {text}"
+    );
+}
+
+#[test]
+fn build_doctor_doc_missing_config_at_explicit_path_fails_verdict() {
+    // The same "not found" payload flips the verdict when the path was
+    // user-supplied: doctor must stop `doctor && apply` on a --config typo.
+    let mut output = base_doctor_output();
+    output.config.valid = false;
+    output.config.error = Some("not found".into());
+    output.config.state = super::output_types::DoctorConfigState::MissingAtExplicit;
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("Some checks failed"),
+        "missing config at an explicit path must fail the verdict, got: {text}"
+    );
+    assert!(
+        text.contains("Config file: /etc/cfgd.yaml — not found"),
+        "Fail line should name the path, got: {text}"
     );
 }
 

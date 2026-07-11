@@ -138,6 +138,7 @@ mod tests {
     fn make_cli_with_config(config_path: &Path) -> Cli {
         Cli {
             config: config_path.to_path_buf(),
+            config_explicit: false,
             profile: None,
             no_color: true,
             verbose: 0,

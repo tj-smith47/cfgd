@@ -327,6 +327,7 @@ mod tests {
     fn cli_for(config: PathBuf) -> Cli {
         Cli {
             config,
+            config_explicit: false,
             profile: None,
             verbose: 0,
             quiet: true,

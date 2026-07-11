@@ -159,6 +159,12 @@ fn main() -> anyhow::Result<()> {
     // derives `profiles/` from the wrong parent.
     cli.config = cfgd_core::config::resolve_config_path(&cli.config);
 
+    // A `--config-dir` override also makes the resolved config path
+    // user-directed: a missing config there is the user's typo, not a fresh
+    // machine. `--scope system` alone does NOT — that repointing is still a
+    // derived default.
+    cli.config_explicit = config_is_explicit || cli.config_dir.is_some();
+
     // Resolve output format with --jsonpath backwards compat.
     // NOTE: --jsonpath is deprecated; --output jsonpath=EXPR is canonical.
     // The deprecation warning is emitted after Printer is constructed.

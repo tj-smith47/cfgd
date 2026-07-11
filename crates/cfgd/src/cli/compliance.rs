@@ -470,6 +470,7 @@ mod tests {
     fn test_cli_for(state_dir: &std::path::Path) -> Cli {
         Cli {
             config: state_dir.join("cfgd.yaml"),
+            config_explicit: false,
             profile: None,
             verbose: 0,
             quiet: true,

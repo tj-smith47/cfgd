@@ -167,10 +167,12 @@ Check system health: available package managers, configurators, module status, d
 cfgd doctor -o json   # structured health report
 ```
 
-Exits non-zero when the verdict fails (an invalid config, an unresolvable module, or a
+Exits non-zero when the verdict fails (an invalid config, a config missing at an
+explicitly-given `--config`/`CFGD_CONFIG`/`--config-dir` path, an unresolvable module, or a
 hard-broken profile such as [ambiguous layout forms](profiles.md#layout)), so
-`cfgd doctor && cfgd apply` stops instead of proceeding into a broken apply. A supported
-legacy-flat layout is a warning, not a failure — it does not affect the exit code.
+`cfgd doctor && cfgd apply` stops instead of proceeding into a broken apply. A config
+missing at the *default* path is the fresh-machine state and stays a warning (exit 0),
+as does a supported legacy-flat layout — warnings do not affect the exit code.
 
 ### `cfgd log`
 

@@ -496,6 +496,7 @@ fn setup_config_dir() -> tempfile::TempDir {
 fn test_cli(dir: &Path) -> super::super::Cli {
     super::super::Cli {
         config: dir.join("cfgd.yaml"),
+        config_explicit: false,
         profile: None,
         no_color: true,
         verbose: 0,
@@ -2907,6 +2908,7 @@ mod profile_update_module_cleanup {
     ) -> super::super::Cli {
         super::super::Cli {
             config: config_dir.join("cfgd.yaml"),
+            config_explicit: false,
             profile: None,
             no_color: true,
             verbose: 0,
@@ -4891,6 +4893,15 @@ fn profile_migrate_not_found_errors() {
     assert!(
         err.to_string().contains("not found"),
         "should error for a missing profile, got: {err}"
+    );
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "not_found");
+    // Exit-6 uniformity across every missing-profile site.
+    assert_eq!(
+        crate::cli::exit_code_for_anyhow(&err),
+        cfgd_core::exit::ExitCode::NotFound,
     );
 }
 
