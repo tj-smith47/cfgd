@@ -850,7 +850,7 @@ pub(super) async fn run_daemon_with(
         let startup_cfg = setup.cfg.clone();
         let startup_config_path = config_path.clone();
         let startup_profile_override = profile_override.clone();
-        tokio::task::spawn_blocking(move || {
+        crate::spawn_blocking_with_test_home(move || {
             run_startup_checkin_blocking(
                 &startup_config_path,
                 startup_profile_override.as_deref(),

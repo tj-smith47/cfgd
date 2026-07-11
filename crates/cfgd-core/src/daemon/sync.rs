@@ -122,13 +122,8 @@ pub(crate) async fn handle_version_check(
 
     tracing::info!("checking for cfgd updates");
 
-    // Propagate the test-home thread-local across the spawn_blocking boundary;
-    // the cache lookup reads it to redirect $HOME away from the real filesystem
-    // during tests. No-op in production.
     let channel = update_cfg.channel.clone();
-    let test_home = crate::test_home_override();
-    let check_result = tokio::task::spawn_blocking(move || {
-        let _guard = test_home.as_deref().map(crate::with_test_home_guard);
+    let check_result = crate::spawn_blocking_with_test_home(move || {
         crate::upgrade::check_latest(None, channel.as_deref(), None)
     })
     .await;
@@ -273,12 +268,10 @@ async fn apply_daemon_update(
         return;
     };
 
-    let test_home = crate::test_home_override();
     // Clone to cross the spawn_blocking boundary; the shared apply path runs the
     // user-scope skill ride-along gated by this config's effective skills policy.
     let cfg = update_cfg.clone();
-    let install = tokio::task::spawn_blocking(move || {
-        let _guard = test_home.as_deref().map(crate::with_test_home_guard);
+    let install = crate::spawn_blocking_with_test_home(move || {
         let asset = crate::upgrade::find_asset_for_platform(&release)?;
         // Shared apply path: install + invalidate cache + ride-along skill
         // refresh + restart a running daemon onto the new binary (one owner of

@@ -190,13 +190,7 @@ pub(super) async fn handle_file_change_tick(
         let state_dir = ctx.state_dir_override.clone();
         let printer = Arc::clone(&ctx.printer);
         let scope = ctx.scope;
-        // Carry the test-home thread-local onto the blocking-pool worker; the
-        // reconcile path resolves the onDrift script workdir via `home_dir_var`,
-        // which reads it. Dropped across the boundary the worker falls back to
-        // the ambient $HOME (unstable under parallel tests). No-op in production.
-        let test_home = crate::test_home_override();
-        tokio::task::spawn_blocking(move || {
-            let _test_home_guard = test_home.as_deref().map(crate::with_test_home_guard);
+        crate::spawn_blocking_with_test_home(move || {
             handle_reconcile(
                 &cp,
                 po.as_deref(),
@@ -250,9 +244,7 @@ pub(super) async fn handle_reconcile_tick(
             let state_dir = ctx.state_dir_override.clone();
             let printer = Arc::clone(&ctx.printer);
             let scope = ctx.scope;
-            let test_home = crate::test_home_override();
-            tokio::task::spawn_blocking(move || {
-                let _test_home_guard = test_home.as_deref().map(crate::with_test_home_guard);
+            crate::spawn_blocking_with_test_home(move || {
                 handle_reconcile(
                     &cp,
                     po.as_deref(),
@@ -295,9 +287,7 @@ pub(super) async fn handle_reconcile_tick(
             let printer = Arc::clone(&ctx.printer);
             let module_name = entity_name.clone();
             let scope = ctx.scope;
-            let test_home = crate::test_home_override();
-            tokio::task::spawn_blocking(move || {
-                let _test_home_guard = test_home.as_deref().map(crate::with_test_home_guard);
+            crate::spawn_blocking_with_test_home(move || {
                 handle_reconcile(
                     &cp,
                     po.as_deref(),
@@ -384,13 +374,7 @@ pub(super) async fn handle_compliance_tick(ctx: &DaemonLoopContext) -> Result<()
         let cc2 = cc.clone();
         let sd = ctx.state_dir_override.clone();
         let scope = ctx.scope;
-        // Carry the test-home thread-local onto the blocking-pool worker; the
-        // compliance snapshot may resolve home-relative paths that read it.
-        // Dropped across the boundary the worker falls back to the ambient
-        // $HOME (unstable under parallel tests). No-op in production.
-        let test_home = crate::test_home_override();
-        tokio::task::spawn_blocking(move || {
-            let _test_home_guard = test_home.as_deref().map(crate::with_test_home_guard);
+        crate::spawn_blocking_with_test_home(move || {
             handle_compliance_snapshot(&cp, po.as_deref(), &*hk, &cc2, sd.as_deref(), scope);
         })
         .await

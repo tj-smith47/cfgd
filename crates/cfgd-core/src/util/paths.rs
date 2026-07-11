@@ -46,6 +46,28 @@ where
     f()
 }
 
+/// `tokio::task::spawn_blocking` that carries the test-home thread-local onto
+/// the blocking-pool worker.
+///
+/// The override lives in a thread-local, so a plain `spawn_blocking` closure
+/// that resolves `~` / `$HOME` (via `home_dir_var`, `default_state_dir`, …)
+/// silently falls back to the ambient `$HOME` — a real-filesystem touch under
+/// parallel tests. This wrapper captures the caller's override and re-installs
+/// it as the worker's first statement, so blocking dispatch sites cannot
+/// forget the guard. In production the override is always `None`; the wrapper
+/// costs one thread-local read and is otherwise transparent.
+pub fn spawn_blocking_with_test_home<F, R>(f: F) -> tokio::task::JoinHandle<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    let test_home = test_home_override();
+    tokio::task::spawn_blocking(move || {
+        let _guard = test_home.as_deref().map(with_test_home_guard);
+        f()
+    })
+}
+
 /// Read the current test HOME override (if any). Only used internally by
 /// `home_dir_var` / `default_config_dir`, and by `tests` to assert that the
 /// guard was installed/cleared as expected.
@@ -1094,6 +1116,31 @@ mod tests {
     use super::*;
     use crate::test_helpers::EnvVarGuard;
     use std::path::{Path, PathBuf};
+
+    // --- spawn_blocking_with_test_home: override round-trips onto the worker ---
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_blocking_with_test_home_round_trips_override_into_worker() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let expected = dir.path().to_path_buf();
+        let _home = with_test_home_guard(dir.path());
+        let seen = spawn_blocking_with_test_home(test_home_override)
+            .await
+            .unwrap();
+        assert_eq!(seen, Some(expected));
+        // The worker's guard is scoped to the closure; the caller's override
+        // is untouched.
+        assert_eq!(test_home_override().as_deref(), Some(dir.path()));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_blocking_with_test_home_is_transparent_without_override() {
+        assert_eq!(test_home_override(), None);
+        let seen = spawn_blocking_with_test_home(test_home_override)
+            .await
+            .unwrap();
+        assert_eq!(seen, None);
+    }
 
     // --- resolve_* override precedence (flag/env path wins) ---
 

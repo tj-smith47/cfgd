@@ -6229,12 +6229,10 @@ async fn handle_reconcile_runs_on_drift_scripts() {
     let not = Arc::clone(&notifier);
     let sd = state_dir.clone();
     let cp = config_path.clone();
-    // The test-home override is a thread-local set on this runtime thread; carry
-    // it onto the blocking-pool worker so the onDrift script workdir resolves the
-    // test home (via `home_dir_var`) rather than the ambient $HOME.
-    let test_home = crate::test_home_override();
-    tokio::task::spawn_blocking(move || {
-        let _test_home_guard = test_home.as_deref().map(crate::with_test_home_guard);
+    // The test-home override is a thread-local set on this runtime thread; the
+    // wrapper carries it onto the blocking-pool worker so the onDrift script
+    // workdir resolves the test home (via `home_dir_var`), not the ambient $HOME.
+    crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
         handle_reconcile(
             &cp,
@@ -10014,6 +10012,75 @@ mod harness {
             "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
         );
         super::super::run_startup_checkin_blocking(&config_path, None, &cfg);
+    }
+
+    // current_thread so the test_home thread-local installed below survives
+    // across the `.await` — multi_thread can migrate the future mid-poll.
+    #[tokio::test(flavor = "current_thread")]
+    #[serial_test::serial]
+    async fn startup_checkin_spawn_respects_test_home() {
+        // Regression: the startup check-in dispatch resolves home-relative
+        // state (pending-server-config via `default_state_dir`) inside its
+        // blocking closure. Dispatched via plain `spawn_blocking` the worker
+        // lost the test-home override and fell back to the ambient $HOME.
+        // Drive the same wrapper-based dispatch shape as the daemon loop and
+        // assert the override is visible inside the closure; CFGD_STATE_DIR
+        // pins the state I/O to the tempdir (process-global env → serial) so
+        // the seeded pending config is consumed without touching real $HOME.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _sd = crate::test_helpers::EnvVarGuard::set(
+            "CFGD_STATE_DIR",
+            &tmp.path().join("state").to_string_lossy(),
+        );
+        let _g = crate::with_test_home_guard(tmp.path());
+        let config_path = tmp.path().join("cfgd.yaml");
+        let profiles_dir = tmp.path().join("profiles");
+        std::fs::create_dir_all(&profiles_dir).unwrap();
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        )
+        .unwrap();
+        std::fs::write(
+            profiles_dir.join("default.yaml"),
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  packages: {}\n",
+        )
+        .unwrap();
+        let cfg = parse_minimal_cfg(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n",
+        );
+
+        let pending_path =
+            crate::state::save_pending_server_config(&serde_json::json!({"seed": true}))
+                .expect("seed pending server config");
+        assert!(
+            pending_path.starts_with(tmp.path()),
+            "pending config must land under the tempdir, got {}",
+            pending_path.display()
+        );
+
+        let expected_home = tmp.path().to_path_buf();
+        let seen_home = crate::spawn_blocking_with_test_home(move || {
+            super::super::run_startup_checkin_blocking(&config_path, None, &cfg);
+            crate::test_home_override()
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            seen_home,
+            Some(expected_home),
+            "the startup check-in closure must run under the test-home override"
+        );
+
+        // The closure resolved the SAME test-home state dir: the seeded
+        // pending config was found and cleared. Under real-$HOME fallback it
+        // would still be present.
+        assert!(
+            crate::state::load_pending_server_config()
+                .expect("load pending")
+                .is_none(),
+            "startup check-in must consume the pending config under the test home"
+        );
     }
 
     // ----- cleanup_ipc_socket tests -----
