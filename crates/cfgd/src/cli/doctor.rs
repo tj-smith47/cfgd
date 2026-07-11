@@ -503,7 +503,7 @@ fn build_config_top(doc: Doc, cfg: &DoctorConfigCheck) -> Doc {
         DoctorConfigState::MissingAtExplicit => doc.status_with(
             Role::Fail,
             format!("Config file: {} — not found", cfg.path),
-            |sf| sf.detail("the given --config/CFGD_CONFIG path does not exist"),
+            |sf| sf.detail("the given --config/--config-dir/CFGD_CONFIG path does not exist"),
         ),
         DoctorConfigState::Invalid => doc.status(
             Role::Fail,

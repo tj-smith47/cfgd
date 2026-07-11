@@ -3967,31 +3967,40 @@ fn cmd_doctor_json_missing_config_shape_is_unchanged() {
     // object keeps its frozen five-key shape and the `error` string stays
     // "not found" for both the default-path and explicit-path cases.
     let expected_keys = ["error", "name", "path", "profile", "valid"];
-    for explicit in [false, true] {
+    let formats = [
+        cfgd_core::output::OutputFormat::Json,
+        cfgd_core::output::OutputFormat::Yaml,
+    ];
+    for (format, explicit) in formats
+        .into_iter()
+        .flat_map(|f| [(f.clone(), false), (f, true)])
+    {
         let dir = tempfile::tempdir().unwrap();
         let cli = Cli {
             config: dir.path().join("typo.yaml"),
             config_explicit: explicit,
-            output: OutputFormatArg(cfgd_core::output::OutputFormat::Json),
+            output: OutputFormatArg(format.clone()),
             ..test_cli(dir.path())
         };
-        let (printer, buf) =
-            cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+        let (printer, buf) = cfgd_core::output::Printer::for_test_with_format(format.clone());
         super::doctor::run_doctor(&cli, &printer).unwrap();
         printer.flush();
 
         let output = buf.lock().unwrap();
-        let parsed = extract_json(&output);
+        let parsed: serde_json::Value = match format {
+            cfgd_core::output::OutputFormat::Json => extract_json(&output),
+            _ => serde_yaml::from_str(output.trim()).unwrap(),
+        };
         let config = parsed["config"].as_object().unwrap();
         let mut keys: Vec<&str> = config.keys().map(String::as_str).collect();
         keys.sort_unstable();
         assert_eq!(
             keys, expected_keys,
-            "config JSON keys drifted (explicit={explicit})"
+            "config keys drifted (format={format:?}, explicit={explicit})"
         );
         assert_eq!(
             config["error"], "not found",
-            "error string drifted (explicit={explicit})"
+            "error string drifted (format={format:?}, explicit={explicit})"
         );
         assert_eq!(config["valid"], false);
     }
