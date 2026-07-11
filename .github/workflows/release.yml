@@ -40,11 +40,12 @@ jobs:
   # push on a deterministic secret-presence check across every publisher.
   preflight:
     name: Preflight secrets
-    # The bump-message guard breaks a self-retrigger loop: tag pushes the bump
-    # commit with GH_PAT (PAT pushes DO trigger workflows), CI runs on it, and
-    # its success would fire a second Release run whose tag job always dies on
-    # a non-fast-forward push (tags already exist). CI itself still runs on the
-    # bump commit for master-badge health; only the spurious Release is culled.
+    # The bump-message guard breaks a self-retrigger loop: advance-master
+    # fast-forwards master onto the bump commit with GH_PAT (PAT pushes DO
+    # trigger workflows), CI runs on it, and its success would fire a second
+    # Release run whose tag job always dies on a non-fast-forward push (tags
+    # already exist). CI itself still runs on the bump commit for
+    # master-badge health; only the spurious Release is culled.
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.conclusion == 'success' &&
@@ -129,12 +130,19 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      # Deferred-branch pattern: push only the tags now; master advances
+      # onto the bump commit in advance-master (last job), after every
+      # publish leg has succeeded — a failed release advances neither
+      # master nor publishes. Requires anodizer >= v0.16.0, where a bare
+      # `tag` is fully local in every mode and pushing is explicit
+      # (--push / --push-tags-only); under the old implicit-push default
+      # this flag does not exist and the step fails loud.
       - name: Run anodizer tag
         id: t
         uses: tj-smith47/anodizer-action@v1
         with:
           version: ${{ env.ANODIZER_VERSION }}
-          args: tag --changelog
+          args: tag --changelog --push-tags-only
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
@@ -143,7 +151,9 @@ jobs:
       # moved) or the original CI-validated SHA (if no bump was needed).
       # Either way, the freshly-pushed tags point at this SHA, so
       # downstream checkouts must use it instead of the workflow_run
-      # head_sha that was current at job start.
+      # head_sha that was current at job start. Until advance-master runs,
+      # the bump commit is reachable ONLY via the tags — it is not on
+      # master yet.
       - name: Capture tagged HEAD SHA
         id: post_tag
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -531,3 +541,44 @@ jobs:
           file: ecosystem/olm/bundle.Dockerfile
           push: true
           tags: ghcr.io/${{ github.repository_owner }}/cfgd-operator-bundle:v${{ fromJson(needs.tag.outputs.versions)['cfgd-operator'] }}
+
+  # --- Post-publish master advance ---
+  # Fast-forward master onto the bump commit only after every publish leg
+  # has succeeded (or legitimately skipped, for a partial-workspace release
+  # whose leg had nothing to do — each leg's own `if:` encodes when a skip
+  # is legitimate, so any leg that should have run and failed shows
+  # `failure` here and blocks the advance). `tag` pushed only the tags, so
+  # a failed release leaves master untouched. force=false makes GitHub
+  # enforce the fast-forward server-side. GH_PAT rather than GITHUB_TOKEN:
+  # the PAT push retriggers CI on the new master HEAD (badge health), and
+  # preflight's bump-message guard culls the spurious second Release run.
+  # When nothing bumped, head_sha is the SHA master already points at and
+  # the PATCH is a no-op.
+  advance-master:
+    name: Advance master
+    needs: [tag, determinism-check, publish-crd, publish-core, publish-trio, helm-chart, crossplane-function, crossplane-push, olm-bundle]
+    if: >-
+      ${{ !cancelled() && needs.tag.result == 'success' &&
+          (needs.determinism-check.result == 'success' || needs.determinism-check.result == 'skipped') &&
+          (needs.publish-crd.result == 'success' || needs.publish-crd.result == 'skipped') &&
+          (needs.publish-core.result == 'success' || needs.publish-core.result == 'skipped') &&
+          (needs.publish-trio.result == 'success' || needs.publish-trio.result == 'skipped') &&
+          (needs.helm-chart.result == 'success' || needs.helm-chart.result == 'skipped') &&
+          (needs.crossplane-function.result == 'success' || needs.crossplane-function.result == 'skipped') &&
+          (needs.crossplane-push.result == 'success' || needs.crossplane-push.result == 'skipped') &&
+          (needs.olm-bundle.result == 'success' || needs.olm-bundle.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fast-forward master onto the published bump commit
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          SHA: ${{ needs.tag.outputs.head_sha }}
+        run: |
+          if ! gh api -X PATCH "repos/${{ github.repository }}/git/refs/heads/master" \
+                 -f sha="$SHA" -F force=false; then
+            echo "::error::Could not fast-forward master to $SHA (master moved during release?). \
+              The release IS published — do NOT re-cut. Reconcile by hand: \
+              git fetch origin && git push origin $SHA:refs/heads/master"
+            exit 1
+          fi
