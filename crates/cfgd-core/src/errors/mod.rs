@@ -6,6 +6,16 @@ use crate::PathDisplayExt;
 
 pub type Result<T> = std::result::Result<T, CfgdError>;
 
+/// Render a path list as `'a', 'b', 'c'` (posix separators) for single-line
+/// error messages that must name every candidate.
+fn join_quoted_posix(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|p| format!("'{}'", p.posix()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 // Top-level variants print `"<category>: <inner>"` because `{0}` expands the
 // inner error's Display once. `main.rs` formats with `{}`, which emits this
 // single-layer message. Do NOT switch `main.rs` to `{:#}` — that also walks
@@ -83,15 +93,10 @@ pub enum ConfigError {
     ProfileNotFound { name: String },
 
     #[error(
-        "ambiguous profile '{name}': both '{a}' and '{b}' exist — delete or rename one of them (the canonical form is '{name}/profile.yaml')",
-        a = .path_a.posix(),
-        b = .path_b.posix()
+        "ambiguous profile '{name}': multiple forms exist ({forms}) — delete or rename one of them (the canonical form is '{name}/profile.yaml')",
+        forms = join_quoted_posix(.paths)
     )]
-    AmbiguousProfile {
-        name: String,
-        path_a: PathBuf,
-        path_b: PathBuf,
-    },
+    AmbiguousProfile { name: String, paths: Vec<PathBuf> },
 
     #[error("yaml parse error: {0}")]
     Yaml(#[from] serde_yaml::Error),

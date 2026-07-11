@@ -349,41 +349,32 @@ pub fn canonical_profile_path(profiles_dir: &Path, name: &str) -> PathBuf {
 /// (`<name>/profile.yaml`) first, then the legacy flat forms (`<name>.yaml`,
 /// `<name>.yml`).
 ///
-/// Fails closed on ambiguity: if the canonical form coexists with a legacy
-/// file, or both legacy extensions exist, returns
-/// [`ConfigError::AmbiguousProfile`] naming both paths. Returns
+/// Fails closed on ambiguity: if more than one form exists (canonical plus a
+/// legacy file, or both legacy extensions), returns
+/// [`ConfigError::AmbiguousProfile`] naming every coexisting path. Returns
 /// [`ConfigError::ProfileNotFound`] when no form exists.
 pub fn find_profile_path(
     profiles_dir: &Path,
     name: &str,
 ) -> std::result::Result<PathBuf, ConfigError> {
-    let canonical = canonical_profile_path(profiles_dir, name);
-    let legacy_yaml = profiles_dir.join(format!("{}.yaml", name));
-    let legacy_yml = profiles_dir.join(format!("{}.yml", name));
+    // Probe order doubles as the reporting order (canonical, .yaml, .yml).
+    let mut observed: Vec<PathBuf> = [
+        canonical_profile_path(profiles_dir, name),
+        profiles_dir.join(format!("{}.yaml", name)),
+        profiles_dir.join(format!("{}.yml", name)),
+    ]
+    .into_iter()
+    .filter(|p| p.is_file())
+    .collect();
 
-    let legacy = match (legacy_yaml.is_file(), legacy_yml.is_file()) {
-        (true, true) => {
-            return Err(ConfigError::AmbiguousProfile {
-                name: name.to_string(),
-                path_a: legacy_yaml,
-                path_b: legacy_yml,
-            });
-        }
-        (true, false) => Some(legacy_yaml),
-        (false, true) => Some(legacy_yml),
-        (false, false) => None,
-    };
-
-    match (canonical.is_file(), legacy) {
-        (true, Some(legacy)) => Err(ConfigError::AmbiguousProfile {
+    match observed.len() {
+        0 => Err(ConfigError::ProfileNotFound {
             name: name.to_string(),
-            path_a: canonical,
-            path_b: legacy,
         }),
-        (true, None) => Ok(canonical),
-        (false, Some(legacy)) => Ok(legacy),
-        (false, None) => Err(ConfigError::ProfileNotFound {
+        1 => Ok(observed.remove(0)),
+        _ => Err(ConfigError::AmbiguousProfile {
             name: name.to_string(),
+            paths: observed,
         }),
     }
 }
@@ -395,8 +386,14 @@ pub fn find_profile_path(
 pub enum ProfileScanEntry {
     /// Exactly one manifest form exists for this name.
     Found(ProfileEntry),
-    /// Multiple forms coexist on disk; `error` is the fail-closed load error.
-    Ambiguous { name: String, error: ConfigError },
+    /// Multiple forms coexist on disk; `paths` is every observed form
+    /// (ordered canonical → `.yaml` → `.yml`) and `error` is the fail-closed
+    /// load error naming all of them.
+    Ambiguous {
+        name: String,
+        paths: Vec<PathBuf>,
+        error: ConfigError,
+    },
 }
 
 impl ProfileScanEntry {
@@ -406,6 +403,21 @@ impl ProfileScanEntry {
             ProfileScanEntry::Found(entry) => &entry.name,
             ProfileScanEntry::Ambiguous { name, .. } => name,
         }
+    }
+}
+
+/// Reporting rank of one manifest form within a profiles dir: canonical
+/// bundle (a subdirectory's `profile.yaml`) first, then flat `.yaml`, then
+/// flat `.yml` — the order [`find_profile_path`] probes in. Canonical is
+/// detected structurally (not directly under `profiles_dir`) so a profile
+/// literally named `profile` still ranks correctly.
+fn manifest_form_rank(profiles_dir: &Path, path: &Path) -> u8 {
+    if path.parent() != Some(profiles_dir) {
+        0
+    } else if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
+        1
+    } else {
+        2
     }
 }
 
@@ -494,35 +506,24 @@ pub fn scan_profiles_tolerant(
 
         match entries.iter().position(|e| e.name() == name) {
             Some(idx) => {
-                let ProfileScanEntry::Found(existing) = &entries[idx] else {
-                    continue; // a third form: the name is already ambiguous
-                };
-                // read_dir order is filesystem-dependent; order the pair the
-                // way find_profile_path reports it (canonical, then `.yaml`,
-                // then `.yml`) so the error message is stable.
-                let rank = |form: ProfileForm, path: &Path| match form {
-                    ProfileForm::Canonical => 0,
-                    ProfileForm::LegacyFlat => {
-                        if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
-                            1
-                        } else {
-                            2
-                        }
+                // read_dir order is filesystem-dependent; order the observed
+                // forms the way find_profile_path reports them (canonical,
+                // then `.yaml`, then `.yml`) so the error message is stable.
+                let mut paths = match &mut entries[idx] {
+                    ProfileScanEntry::Found(existing) => {
+                        vec![existing.path.clone(), manifest]
+                    }
+                    ProfileScanEntry::Ambiguous { paths, .. } => {
+                        let mut paths = std::mem::take(paths);
+                        paths.push(manifest);
+                        paths
                     }
                 };
-                let (path_a, path_b) =
-                    if rank(existing.form, &existing.path) <= rank(form, &manifest) {
-                        (existing.path.clone(), manifest)
-                    } else {
-                        (manifest, existing.path.clone())
-                    };
+                paths.sort_by_key(|p| manifest_form_rank(profiles_dir, p));
                 entries[idx] = ProfileScanEntry::Ambiguous {
                     name: name.clone(),
-                    error: ConfigError::AmbiguousProfile {
-                        name,
-                        path_a,
-                        path_b,
-                    },
+                    paths: paths.clone(),
+                    error: ConfigError::AmbiguousProfile { name, paths },
                 };
             }
             None => entries.push(ProfileScanEntry::Found(ProfileEntry {
@@ -566,18 +567,10 @@ pub fn scan_profile_manifests(
                 paths: vec![found.path],
                 ambiguity: None,
             }),
-            ProfileScanEntry::Ambiguous { name, error } => {
-                // The carried error names only the first two forms; re-probe
-                // all three candidates so callers advising on ambiguity see
-                // every file involved.
-                let candidates = [
-                    canonical_profile_path(profiles_dir, &name),
-                    profiles_dir.join(format!("{}.yaml", name)),
-                    profiles_dir.join(format!("{}.yml", name)),
-                ];
+            ProfileScanEntry::Ambiguous { name, paths, error } => {
                 out.push(ProfileManifests {
                     name,
-                    paths: candidates.into_iter().filter(|p| p.is_file()).collect(),
+                    paths,
                     ambiguity: Some(error),
                 });
             }

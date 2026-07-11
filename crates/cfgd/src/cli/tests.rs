@@ -18905,7 +18905,7 @@ fn build_doctor_doc_ambiguous_profile_fails() {
         name: "work".into(),
         legacy: true,
         path: None,
-        error: Some("ambiguous profile 'work': both forms exist".into()),
+        error: Some("ambiguous profile 'work': multiple forms exist".into()),
     }];
     let extras = super::doctor::DoctorExtras::default();
     let text = emit_doc(&output, &extras);

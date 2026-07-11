@@ -21,8 +21,9 @@ profiles/
 
 The legacy **flat** form — `profiles/<name>.yaml` (or `.yml`) — is still read, so existing
 configs keep working. Run [`cfgd profile migrate`](cli-reference.md#cfgd-profile-migrate-name)
-to move a flat profile into its bundle. If both forms exist for one name, cfgd fails closed
-rather than guess which wins — delete or migrate one.
+to move a flat profile into its bundle. If more than one form exists for one name, cfgd
+fails closed rather than guess which wins — the error names every coexisting path; delete
+or migrate all but one.
 
 ## Profile YAML
 

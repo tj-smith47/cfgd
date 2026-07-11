@@ -377,7 +377,7 @@ fn collect_doctor_output(
                     path: Some(cfgd_core::to_posix_string(&found.path)),
                     error: None,
                 },
-                cfgd_core::config::ProfileScanEntry::Ambiguous { name, error } => {
+                cfgd_core::config::ProfileScanEntry::Ambiguous { name, error, .. } => {
                     DoctorProfileLayoutCheck {
                         name: name.clone(),
                         legacy: true,

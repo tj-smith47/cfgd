@@ -2221,6 +2221,27 @@ fn find_profile_path_legacy_yaml_plus_yml_is_ambiguous() {
 }
 
 #[test]
+fn find_profile_path_three_forms_names_every_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let canonical = write_canonical_profile(dir.path(), "work", &[]);
+    let yaml = write_legacy_profile(dir.path(), "work.yaml", "work");
+    let yml = write_legacy_profile(dir.path(), "work.yml", "work");
+    let err = find_profile_path(dir.path(), "work").unwrap_err();
+    match &err {
+        ConfigError::AmbiguousProfile { name, paths } => {
+            assert_eq!(name, "work");
+            assert_eq!(paths, &vec![canonical.clone(), yaml.clone(), yml.clone()]);
+        }
+        other => panic!("expected AmbiguousProfile, got {other}"),
+    }
+    let msg = err.to_string();
+    assert!(msg.contains(&canonical.posix().to_string()), "{msg}");
+    assert!(msg.contains(&yaml.posix().to_string()), "{msg}");
+    assert!(msg.contains(&yml.posix().to_string()), "{msg}");
+    assert!(msg.contains("delete or rename one"), "{msg}");
+}
+
+#[test]
 fn canonical_profile_path_is_pure_construction() {
     let path = canonical_profile_path(Path::new("/cfg/profiles"), "work");
     assert_eq!(path, Path::new("/cfg/profiles/work/profile.yaml"));
@@ -2320,9 +2341,8 @@ fn scan_profiles_ambiguity_paths_ordered_canonical_first() {
     let legacy = write_legacy_profile(dir.path(), "work.yaml", "work");
     let err = scan_profiles(dir.path()).unwrap_err();
     match err {
-        ConfigError::AmbiguousProfile { path_a, path_b, .. } => {
-            assert_eq!(path_a, canonical);
-            assert_eq!(path_b, legacy);
+        ConfigError::AmbiguousProfile { paths, .. } => {
+            assert_eq!(paths, vec![canonical, legacy]);
         }
         other => panic!("expected AmbiguousProfile, got {other}"),
     }
@@ -2379,19 +2399,15 @@ fn scan_profiles_tolerant_carries_ambiguity_without_failing() {
         panic!("solo should be unambiguous: {:?}", entries[0]);
     };
     assert_eq!(solo.name, "solo");
-    let ProfileScanEntry::Ambiguous { name, error } = &entries[1] else {
+    let ProfileScanEntry::Ambiguous { name, paths, error } = &entries[1] else {
         panic!("work should be ambiguous: {:?}", entries[1]);
     };
     assert_eq!(name, "work");
+    assert_eq!(paths, &vec![canonical.clone(), legacy.clone()]);
     match error {
-        ConfigError::AmbiguousProfile {
-            name,
-            path_a,
-            path_b,
-        } => {
+        ConfigError::AmbiguousProfile { name, paths } => {
             assert_eq!(name, "work");
-            assert_eq!(path_a, &canonical);
-            assert_eq!(path_b, &legacy);
+            assert_eq!(paths, &vec![canonical, legacy]);
         }
         other => panic!("expected AmbiguousProfile, got {other}"),
     }
@@ -2400,16 +2416,21 @@ fn scan_profiles_tolerant_carries_ambiguity_without_failing() {
 #[test]
 fn scan_profiles_tolerant_three_forms_still_one_ambiguous_entry() {
     let dir = tempfile::tempdir().unwrap();
-    write_canonical_profile(dir.path(), "work", &[]);
-    write_legacy_profile(dir.path(), "work.yaml", "work");
-    write_legacy_profile(dir.path(), "work.yml", "work");
+    let canonical = write_canonical_profile(dir.path(), "work", &[]);
+    let yaml = write_legacy_profile(dir.path(), "work.yaml", "work");
+    let yml = write_legacy_profile(dir.path(), "work.yml", "work");
 
     let entries = scan_profiles_tolerant(dir.path()).unwrap();
     assert_eq!(entries.len(), 1);
-    assert!(matches!(
-        &entries[0],
-        ProfileScanEntry::Ambiguous { name, .. } if name == "work"
-    ));
+    let ProfileScanEntry::Ambiguous { name, paths, error } = &entries[0] else {
+        panic!("work should be ambiguous: {:?}", entries[0]);
+    };
+    assert_eq!(name, "work");
+    assert_eq!(paths, &vec![canonical.clone(), yaml.clone(), yml.clone()]);
+    let msg = error.to_string();
+    assert!(msg.contains(&canonical.posix().to_string()), "{msg}");
+    assert!(msg.contains(&yaml.posix().to_string()), "{msg}");
+    assert!(msg.contains(&yml.posix().to_string()), "{msg}");
 }
 
 #[test]

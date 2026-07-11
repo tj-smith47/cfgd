@@ -141,7 +141,7 @@ pub(crate) fn run_profile_migrate(
                         from: found.path,
                     },
                 },
-                cfgd_core::config::ProfileScanEntry::Ambiguous { name, error } => {
+                cfgd_core::config::ProfileScanEntry::Ambiguous { name, error, .. } => {
                     PlanItem::Failed {
                         name,
                         reason: error.to_string(),
