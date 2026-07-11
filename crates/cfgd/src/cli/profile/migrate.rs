@@ -258,19 +258,8 @@ pub(crate) fn run_profile_migrate(
             .with_data(summary_payload(&records, false)),
     );
 
-    // Best-effort: an ambiguous profile left on disk (a recorded failure
-    // above) also breaks the workflow regeneration scan — that must not
-    // clobber the per-profile records already emitted.
-    if migrated > 0
-        && let Err(e) = maybe_update_workflow(cli, printer)
-    {
-        printer.status_simple(
-            Role::Warn,
-            format!(
-                "workflow regeneration failed: {}",
-                cfgd_core::output::collapse_to_subject_line(&*e)
-            ),
-        );
+    if migrated > 0 {
+        update_workflow_best_effort(cli, printer);
     }
 
     Ok(failed)

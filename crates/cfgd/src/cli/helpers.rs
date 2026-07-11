@@ -327,6 +327,21 @@ pub(in crate::cli) fn validate_resource_name(name: &str, kind: &str) -> anyhow::
     Ok(())
 }
 
+/// Best-effort workflow regeneration after a completed mutation: the
+/// mutation already succeeded, so a regeneration failure (e.g. an unrelated
+/// ambiguous profile on disk) warns instead of flipping the exit non-zero.
+pub(in crate::cli) fn update_workflow_best_effort(cli: &Cli, printer: &Printer) {
+    if let Err(e) = maybe_update_workflow(cli, printer) {
+        printer.status_simple(
+            Role::Warn,
+            format!(
+                "workflow regeneration failed: {}",
+                cfgd_core::output::collapse_to_subject_line(&*e)
+            ),
+        );
+    }
+}
+
 // --- Scan helpers ---
 
 /// Scan a profiles/ directory and return sorted profile names.
