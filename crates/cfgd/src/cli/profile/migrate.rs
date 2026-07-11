@@ -56,18 +56,43 @@ fn in_git_work_tree(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// `git mv` inside `work_dir`; false when git declines (e.g. untracked file),
-/// letting the caller fall back to a plain rename.
-fn git_mv(work_dir: &Path, from: &Path, to: &Path) -> bool {
-    cfgd_core::git_cmd_local()
+enum GitMvOutcome {
+    /// git staged the rename; history is preserved.
+    Moved,
+    /// git isn't applicable (file untracked, or tracking couldn't be
+    /// confirmed) — a plain rename is the correct path, not a degradation.
+    NotApplicable,
+    /// The file IS tracked and `git mv` still failed (index.lock contention,
+    /// permissions, …) — falling back loses history, so the caller must warn.
+    Failed(String),
+}
+
+/// `git mv` inside `work_dir`, distinguishing "git declined because the file
+/// isn't tracked" from "git should have worked and didn't".
+fn git_mv(work_dir: &Path, from: &Path, to: &Path) -> GitMvOutcome {
+    let tracked = cfgd_core::git_cmd_local()
+        .arg("-C")
+        .arg(work_dir)
+        .args(["ls-files", "--error-unmatch"])
+        .arg(from)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !tracked {
+        return GitMvOutcome::NotApplicable;
+    }
+    match cfgd_core::git_cmd_local()
         .arg("-C")
         .arg(work_dir)
         .arg("mv")
         .arg(from)
         .arg(to)
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    {
+        Ok(o) if o.status.success() => GitMvOutcome::Moved,
+        Ok(o) => GitMvOutcome::Failed(cfgd_core::stderr_lossy_trimmed(&o)),
+        Err(e) => GitMvOutcome::Failed(e.to_string()),
+    }
 }
 
 pub fn cmd_profile_migrate(
@@ -117,7 +142,7 @@ pub(crate) fn run_profile_migrate(
             }
             Err(e) if dry_run => vec![PlanItem::Failed {
                 name: name.to_string(),
-                reason: e.to_string(),
+                reason: cfgd_core::output::collapse_to_subject_line(&e),
             }],
             Err(e) => return Err(cfgd_core::errors::CfgdError::Config(e).into()),
         }
@@ -144,7 +169,7 @@ pub(crate) fn run_profile_migrate(
                 cfgd_core::config::ProfileScanEntry::Ambiguous { name, error, .. } => {
                     PlanItem::Failed {
                         name,
-                        reason: error.to_string(),
+                        reason: cfgd_core::output::collapse_to_subject_line(&error),
                     }
                 }
             })
@@ -176,15 +201,30 @@ pub(crate) fn run_profile_migrate(
                 other => records.push(report_no_move(printer, other)),
             }
         }
+        // The exit code must mirror a real run's: a scripted
+        // `migrate --dry-run && migrate` would otherwise proceed into a
+        // guaranteed partial failure.
+        let failed = count_action(&records, "failed");
+        let (role, summary) = if failed > 0 {
+            (
+                Role::Warn,
+                format!(
+                    "Dry run: {} profile(s) would be migrated, {} failed",
+                    move_count, failed
+                ),
+            )
+        } else {
+            (
+                Role::Info,
+                format!("Dry run: {} profile(s) would be migrated", move_count),
+            )
+        };
         printer.emit(
             Doc::new()
-                .status(
-                    Role::Info,
-                    format!("Dry run: {} profile(s) would be migrated", move_count),
-                )
+                .status(role, summary)
                 .with_data(summary_payload(&records, true)),
         );
-        return Ok(0);
+        return Ok(failed);
     }
 
     if move_count > 0 && !yes {
@@ -210,7 +250,7 @@ pub(crate) fn run_profile_migrate(
     for item in &plan {
         match item {
             PlanItem::Move { name, from, to } => {
-                match execute_move(use_git, &config_dir, from, to) {
+                match execute_move(printer, use_git, &config_dir, from, to) {
                     Ok(()) => {
                         printer.status_simple(
                             Role::Ok,
@@ -310,13 +350,34 @@ fn summary_payload(records: &[MigrationRecord], dry_run: bool) -> serde_json::Va
 
 /// Move one manifest into its bundle dir. The dir may already exist (holding
 /// `files/`). `git mv` preserves history when the config dir is a work tree;
-/// git declining (e.g. untracked manifest) falls back to a plain rename.
-fn execute_move(use_git: bool, config_dir: &Path, from: &Path, to: &Path) -> anyhow::Result<()> {
+/// an untracked manifest falls back silently to a plain rename, while a
+/// tracked one whose `git mv` failed warns first — the rename still succeeds
+/// but history is lost.
+fn execute_move(
+    printer: &Printer,
+    use_git: bool,
+    config_dir: &Path,
+    from: &Path,
+    to: &Path,
+) -> anyhow::Result<()> {
     if let Some(parent) = to.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    if use_git && git_mv(config_dir, from, to) {
-        return Ok(());
+    if use_git {
+        match git_mv(config_dir, from, to) {
+            GitMvOutcome::Moved => return Ok(()),
+            GitMvOutcome::NotApplicable => {}
+            GitMvOutcome::Failed(stderr) => {
+                printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "git mv failed for {} ({}); falling back to plain rename — git history not preserved",
+                        from.posix(),
+                        cfgd_core::output::collapse_to_subject_line(&stderr),
+                    ),
+                );
+            }
+        }
     }
     std::fs::rename(from, to)?;
     Ok(())

@@ -4494,6 +4494,73 @@ fn profile_migrate_dry_run_changes_nothing() {
 }
 
 #[test]
+fn profile_migrate_dry_run_failed_item_exits_nonzero() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    // an ambiguous profile fails planning; dry-run must report it in the
+    // failure count exactly like a real run would
+    let bundle = dir.path().join("profiles").join("work");
+    std::fs::create_dir_all(&bundle).unwrap();
+    std::fs::write(bundle.join("profile.yaml"), WORK_PROFILE_YAML).unwrap();
+
+    let (result, output) = run_migrate(&cli, None, true, true, false);
+    assert_eq!(
+        result.unwrap(),
+        1,
+        "dry run must surface the planned failure in its return count"
+    );
+    assert!(
+        output.contains("Cannot migrate 'work'"),
+        "should name the failing profile, got: {output}"
+    );
+    assert!(
+        output.contains("1 failed"),
+        "summary should count the failure, got: {output}"
+    );
+    // still a dry run: nothing moved
+    assert!(dir.path().join("profiles").join("default.yaml").is_file());
+}
+
+#[test]
+fn profile_migrate_dry_run_json_reports_failed() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let bundle = dir.path().join("profiles").join("work");
+    std::fs::create_dir_all(&bundle).unwrap();
+    std::fs::write(bundle.join("profile.yaml"), WORK_PROFILE_YAML).unwrap();
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_with_format(cfgd_core::output::OutputFormat::Json);
+
+    let failed = migrate::run_profile_migrate(&cli, &printer, None, true, true, false).unwrap();
+    drop(printer);
+    assert_eq!(failed, 1);
+    let output = buf.lock().unwrap().clone();
+    // Fail-role status lines are never suppressed, so the payload starts at
+    // the first brace.
+    let payload = &output[output.find('{').expect("payload must be present")..];
+    let json: serde_json::Value = serde_json::from_str(payload.trim())
+        .unwrap_or_else(|e| panic!("payload must be valid JSON ({e}), got: {output:?}"));
+    assert_eq!(json["failed"], 1);
+    assert_eq!(json["planned"], 1);
+    assert_eq!(json["dryRun"], true);
+    let rec = json["profiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["action"] == "failed")
+        .expect("payload must carry the failed record");
+    assert_eq!(rec["name"], "work");
+    assert!(
+        rec["reason"]
+            .as_str()
+            .unwrap()
+            .contains("ambiguous profile 'work'"),
+        "reason should carry the planning error, got: {}",
+        rec["reason"]
+    );
+}
+
+#[test]
 fn profile_migrate_single_ambiguous_refuses() {
     let dir = setup_config_dir();
     let cli = test_cli(dir.path());
@@ -4644,6 +4711,61 @@ fn profile_migrate_git_untracked_falls_back_to_plain_rename() {
         "untracked manifest must still migrate via plain rename, got: {output}"
     );
     assert!(!dir.path().join("profiles").join("work.yaml").exists());
+}
+
+#[test]
+fn profile_migrate_git_mv_failure_warns_and_falls_back() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    assert!(git_in(dir.path(), &["init", "-q"]).status.success());
+    assert!(
+        git_in(dir.path(), &["add", "profiles/work.yaml"])
+            .status
+            .success()
+    );
+    assert!(
+        git_in(
+            dir.path(),
+            &[
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "-m",
+                "seed"
+            ]
+        )
+        .status
+        .success()
+    );
+    // a stale index.lock makes `git mv` fail to lock the index while the
+    // read-only tracking check and the plain rename still succeed — a
+    // deterministic stand-in for real-world index.lock contention, and it
+    // works for any user on any OS (unlike permission tricks, which root
+    // bypasses)
+    std::fs::write(dir.path().join(".git").join("index.lock"), "").unwrap();
+
+    let (result, output) = run_migrate(&cli, Some("work"), false, false, true);
+
+    assert_eq!(result.unwrap(), 0, "fallback rename must still succeed");
+    assert!(
+        dir.path()
+            .join("profiles")
+            .join("work")
+            .join("profile.yaml")
+            .is_file(),
+        "manifest must be moved by the plain-rename fallback"
+    );
+    assert!(
+        output.contains("git mv failed for") && output.contains("plain rename"),
+        "tracked-file git mv failure must warn before falling back, got: {output}"
+    );
+    assert!(
+        output.contains("Migrated 'work'"),
+        "the move itself still reports success, got: {output}"
+    );
 }
 
 #[test]

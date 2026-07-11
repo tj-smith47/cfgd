@@ -424,7 +424,10 @@ Move a legacy flat profile manifest (`profiles/<name>.yaml`) into the canonical
 bundle layout (`profiles/<name>/profile.yaml`). The bundle directory may already
 exist holding `files/` — the manifest joins its payload. Uses `git mv` when the
 config directory is a git work tree (preserving history), a plain rename
-otherwise. Profile references are by name, so no manifest content changes.
+otherwise. If a manifest is tracked but `git mv` fails (e.g. index lock
+contention), a warning is printed and the move falls back to a plain rename —
+the migration succeeds but git history is not preserved for that file. Profile
+references are by name, so no manifest content changes.
 
 ```sh
 cfgd profile migrate work                   # migrate a single profile
@@ -436,7 +439,7 @@ cfgd profile migrate work --yes             # skip confirmation
 | Flag | Description |
 |---|---|
 | `--all` | Migrate every legacy profile (mutually exclusive with `name`) |
-| `--dry-run` | Print the move plan without changing anything (exit `0`) |
+| `--dry-run` | Print the move plan without changing anything; exits non-zero if any planned profile would fail (matching a real run) |
 | `-y`, `--yes` | Skip the confirmation prompt (`CFGD_YES`) |
 
 Idempotent: already-canonical profiles report "already canonical" and are left
