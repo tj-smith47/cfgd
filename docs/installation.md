@@ -221,7 +221,7 @@ curl -fsSLO "$base/$A.sha256.cosign.bundle"
 cosign verify-blob \
   --bundle "$A.sha256.cosign.bundle" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  --certificate-identity-regexp '^https://github\.com/tj-smith47/cfgd/\.github/workflows/(publish-crate\.ya?ml@refs/heads/master|release\.ya?ml@refs/tags/v|nightly\.ya?ml@refs/heads/master)' \
+  --certificate-identity-regexp '^https://github\.com/tj-smith47/cfgd/\.github/workflows/(publish-crate\.ya?ml@refs/heads/master$|release\.ya?ml@refs/tags/v[0-9]|nightly\.ya?ml@refs/heads/master$)' \
   "$A.sha256"
 
 # 2. Verify the archive matches the (now-trusted) checksum.

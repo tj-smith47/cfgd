@@ -48,7 +48,7 @@ const COSIGN_OIDC_ISSUER: &str = "https://token.actions.githubusercontent.com";
 /// signing workflow running on a non-canonical ref (e.g. a topic branch), or
 /// by a fork/foreign repo is rejected even if it chains to a valid Fulcio
 /// root.
-const COSIGN_IDENTITY_REGEXP: &str = r"^https://github\.com/tj-smith47/cfgd/\.github/workflows/(publish-crate\.ya?ml@refs/heads/master|release\.ya?ml@refs/tags/v|nightly\.ya?ml@refs/heads/master)";
+const COSIGN_IDENTITY_REGEXP: &str = r"^https://github\.com/tj-smith47/cfgd/\.github/workflows/(publish-crate\.ya?ml@refs/heads/master$|release\.ya?ml@refs/tags/v[0-9]|nightly\.ya?ml@refs/heads/master$)";
 
 /// Resolve the GitHub Releases API base URL. Tests set CFGD_GITHUB_API_BASE
 /// to redirect at a mockito server; production calls fall through to the

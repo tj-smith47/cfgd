@@ -2321,6 +2321,15 @@ mod cosign_verify_blob {
             "https://github.com/tj-smith47/cfgd/.github/workflows/publish-crate.yml@refs/heads/other-branch",
             "https://github.com/tj-smith47/cfgd/.github/workflows/release.yml@refs/heads/master",
             "https://github.com/tj-smith47/cfgd/.github/workflows/nightly.yml@refs/tags/v9.9.9",
+            // Suffix-extended refs: the $ anchors must reject a branch that
+            // merely STARTS with the pinned name (constructible by anyone who
+            // can create a branch and dispatch a signing workflow on it).
+            "https://github.com/tj-smith47/cfgd/.github/workflows/publish-crate.yml@refs/heads/master-evil",
+            "https://github.com/tj-smith47/cfgd/.github/workflows/publish-crate.yml@refs/heads/masterx",
+            "https://github.com/tj-smith47/cfgd/.github/workflows/nightly.yml@refs/heads/master-evil",
+            // Non-version tag: `v[0-9]` pins the tag alternative to real
+            // version tags, not any tag that merely starts with 'v'.
+            "https://github.com/tj-smith47/cfgd/.github/workflows/release.yml@refs/tags/verify-me",
         ] {
             assert!(
                 !re.is_match(bad),

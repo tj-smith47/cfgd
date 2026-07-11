@@ -60,7 +60,7 @@ of the following hold:
   cosign verify-blob \
     --certificate <asset>.pem --signature <asset>.sig \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-    --certificate-identity-regexp '^https://github\.com/tj-smith47/cfgd/\.github/workflows/(publish-crate\.ya?ml@refs/heads/master|release\.ya?ml@refs/tags/v|nightly\.ya?ml@refs/heads/master)' \
+    --certificate-identity-regexp '^https://github\.com/tj-smith47/cfgd/\.github/workflows/(publish-crate\.ya?ml@refs/heads/master$|release\.ya?ml@refs/tags/v[0-9]|nightly\.ya?ml@refs/heads/master$)' \
     <asset>
   ```
 
