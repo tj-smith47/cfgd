@@ -63,7 +63,7 @@ cfgd init --from <source> --apply --yes --install-daemon  # full one-liner boots
 | `--branch <name>` | Git branch (default: master) |
 | `--name <name>` | Config name in metadata (default: directory name) |
 | `--apply` | Apply configuration after scaffolding |
-| `--apply-profile <name>` | Activate and apply a specific profile (implies --apply, errors if not found) |
+| `--apply-profile <name>` | Activate and apply a specific profile (implies --apply, exits `6` if not found) |
 | `--apply-module <name>` | Apply a specific module (repeatable, implies --apply, errors if not found) |
 | `--yes`, `-y` | Skip confirmation prompts (used with --apply) |
 | `--install-daemon` | Install daemon service after init |
@@ -417,6 +417,12 @@ cfgd profile delete dev --ignore-not-found  # exit 0 if dev doesn't exist
 (kubectl-style idempotent delete) instead of the strict not-found error
 (exit `6`). It only affects the not-found case — deleting the active profile
 still fails (exit `1`).
+
+When the profile's directory still holds payload files (e.g. `files/`), a
+second confirmation gates removing the directory too; declining keeps it in
+place. Both confirmations are gathered before anything is deleted, so aborting
+at either prompt (Ctrl-C/EOF) leaves the profile fully intact. `--yes` skips
+both confirmations.
 
 ### `cfgd profile migrate [name]`
 
@@ -836,7 +842,7 @@ Scripted consumers rely on distinct exit codes to decide follow-up actions witho
 | `3` | No cfgd config file at the resolved path. | Any command when `--config` points to a missing file. |
 | `4` | Config file exists but failed parse or validation. | Any command when `--config` is malformed or schema-invalid. |
 | `5` | Drift detected between actual and desired state. | `cfgd diff --exit-code`, `cfgd status --exit-code`, `cfgd verify --exit-code`. |
-| `6` | A named resource was not found. | Any command naming a missing resource — e.g. `cfgd module show/delete/edit/export <missing>`, `cfgd profile show/switch/delete/edit/update <missing>`, `cfgd source show/update/remove/priority/override <missing>`, `cfgd module registry remove/rename <missing>`. The destructive verbs `module delete`, `module registry remove`, `source remove`, and `profile delete` accept `--ignore-not-found` to exit `0` instead when the target is absent. |
+| `6` | A named resource was not found. | Any command naming a missing resource — e.g. `cfgd module show/delete/edit/export <missing>`, `cfgd profile show/switch/delete/edit/update <missing>`, `cfgd source show/update/remove/priority/override <missing>`, `cfgd module registry remove/rename <missing>`, `cfgd init --apply-profile <missing>`. The destructive verbs `module delete`, `module registry remove`, `source remove`, and `profile delete` accept `--ignore-not-found` to exit `0` instead when the target is absent. |
 | `7` | `apply` ran but at least one action failed (partial or total). | `cfgd apply` when one or more actions fail. |
 | `130` | `apply` was cooperatively aborted by `SIGINT` (Ctrl-C). | `cfgd apply` interrupted with Ctrl-C; the in-flight action finishes, the lock releases, the run is recorded as `Aborted`. |
 | `143` | `apply` was cooperatively aborted by `SIGTERM`. | `cfgd apply` interrupted with `kill`; same cooperative-abort semantics as `130`. |

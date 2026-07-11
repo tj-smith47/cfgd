@@ -4160,6 +4160,12 @@ mod cmd_init_apply_orchestration {
                 msg.contains("missing-profile") && msg.contains("not found"),
                 "error should reference missing-profile: {msg}"
             );
+            // Typed routing: exit-6 uniformity with every other
+            // missing-profile site (was anyhow::bail! → exit 1).
+            assert_eq!(
+                crate::cli::exit_code_for_anyhow(&err),
+                cfgd_core::exit::ExitCode::NotFound,
+            );
         });
     }
 

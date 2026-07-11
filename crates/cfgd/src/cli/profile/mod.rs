@@ -36,6 +36,26 @@ pub(super) use backups::{
 };
 pub(super) use parsers::{parse_manager_package, parse_secret_spec, update_script_list};
 
+/// Map a profile-lookup `ConfigError` into the CLI error chain.
+/// `ProfileNotFound` carries the typed error so the exit-code downcast at the
+/// central sink resolves to `ExitCode::NotFound` (6), uniform with every other
+/// named-resource miss; any other error stays a plain `CfgdError::Config`.
+pub(in crate::cli) fn profile_lookup_error(
+    err: cfgd_core::errors::ConfigError,
+    name: &str,
+) -> anyhow::Error {
+    match err {
+        e @ cfgd_core::errors::ConfigError::ProfileNotFound { .. } => crate::cli::cli_error_ctx(
+            cfgd_core::errors::CfgdError::Config(e).into(),
+            name,
+            "not_found",
+            format!("Profile '{}' not found", name),
+            serde_json::json!({}),
+        ),
+        e => cfgd_core::errors::CfgdError::Config(e).into(),
+    }
+}
+
 pub(super) fn profiles_inheriting(
     profiles_dir: &Path,
     name: &str,

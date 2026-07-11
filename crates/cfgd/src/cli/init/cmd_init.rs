@@ -187,11 +187,10 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
             // Profile-based apply
             let profile_name = if let Some(name) = args.apply_profile {
                 // Validate profile exists (either layout form)
+                // Typed not-found routing (→ exit 6), uniform with every other
+                // named-resource miss.
                 if let Err(e) = cfgd_core::config::find_profile_path(&profiles_dir, name) {
-                    if matches!(e, cfgd_core::errors::ConfigError::ProfileNotFound { .. }) {
-                        anyhow::bail!("Profile '{}' not found in {}", name, profiles_dir.posix());
-                    }
-                    return Err(cfgd_core::errors::CfgdError::Config(e).into());
+                    return Err(crate::cli::profile::profile_lookup_error(e, name));
                 }
                 // Set as active profile in cfgd.yaml
                 let mut cfg = config::load_config(&config_path)?;

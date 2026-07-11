@@ -29,22 +29,8 @@ pub fn cmd_profile_update(
 
     let config_dir = config_dir(cli);
     let profiles_dir = config_dir.join("profiles");
-    let profile_path = match cfgd_core::config::find_profile_path(&profiles_dir, name) {
-        Ok(p) => p,
-        Err(e @ cfgd_core::errors::ConfigError::ProfileNotFound { .. }) => {
-            // Carry the typed ProfileNotFound so the exit-code downcast resolves
-            // to ExitCode::NotFound (6), uniform with every other named-resource
-            // miss.
-            return Err(crate::cli::cli_error_ctx(
-                cfgd_core::errors::CfgdError::Config(e).into(),
-                name,
-                "not_found",
-                format!("Profile '{}' not found", name),
-                serde_json::json!({}),
-            ));
-        }
-        Err(e) => return Err(cfgd_core::errors::CfgdError::Config(e).into()),
-    };
+    let profile_path = cfgd_core::config::find_profile_path(&profiles_dir, name)
+        .map_err(|e| profile_lookup_error(e, name))?;
 
     let mut doc = config::load_profile(&profile_path)?;
     let mut changes = 0u32;

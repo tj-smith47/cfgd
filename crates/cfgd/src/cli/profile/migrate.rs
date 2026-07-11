@@ -132,19 +132,13 @@ pub(crate) fn run_profile_migrate(
         match plan_for_name(&pdir, name) {
             Ok(item) => vec![item],
             Err(e @ cfgd_core::errors::ConfigError::ProfileNotFound { .. }) => {
-                return Err(crate::cli::cli_error_ctx(
-                    cfgd_core::errors::CfgdError::Config(e).into(),
-                    name,
-                    "not_found",
-                    format!("Profile '{}' not found", name),
-                    serde_json::json!({}),
-                ));
+                return Err(profile_lookup_error(e, name));
             }
             Err(e) if dry_run => vec![PlanItem::Failed {
                 name: name.to_string(),
                 reason: cfgd_core::output::collapse_to_subject_line(&e),
             }],
-            Err(e) => return Err(cfgd_core::errors::CfgdError::Config(e).into()),
+            Err(e) => return Err(profile_lookup_error(e, name)),
         }
     } else {
         debug_assert!(all, "clap requires NAME or --all");

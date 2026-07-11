@@ -1606,12 +1606,90 @@ fn profile_delete_nonexistent_fails() {
 
     let result = cmd_profile_delete(&cli, &printer, "nonexistent", true, false);
     assert!(result.is_err(), "deleting nonexistent profile should fail");
-    let err = result.unwrap_err().to_string();
+    let err = result.unwrap_err();
     assert!(
-        err.contains("not found"),
+        err.to_string().contains("not found"),
         "error should mention not found: {}",
         err
     );
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "not_found");
+    // Exit-6 uniformity across every missing-profile site.
+    assert_eq!(
+        crate::cli::exit_code_for_anyhow(&err),
+        cfgd_core::exit::ExitCode::NotFound,
+    );
+}
+
+#[test]
+fn profile_edit_nonexistent_maps_to_not_found_exit_code() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    let err = cmd_profile_edit(&cli, &printer, "nonexistent").unwrap_err();
+    assert!(
+        err.to_string().contains("not found"),
+        "error should mention not found: {err}"
+    );
+    let meta = err
+        .downcast_ref::<crate::cli::CliErrorMeta>()
+        .expect("handler returns CliErrorMeta");
+    assert_eq!(meta.error_kind, "not_found");
+    // Exit-6 uniformity across every missing-profile site.
+    assert_eq!(
+        crate::cli::exit_code_for_anyhow(&err),
+        cfgd_core::exit::ExitCode::NotFound,
+    );
+}
+
+#[test]
+fn profile_delete_aborted_second_prompt_leaves_manifest_intact() {
+    // Confirmations are gathered before any mutation: exhausting the prompt
+    // queue at the payload prompt (the Ctrl-C/EOF analogue) must error out
+    // BEFORE the manifest is removed — no partial delete.
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, _buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+        vec![cfgd_core::output::PromptAnswer::Confirm(true)],
+        cfgd_core::output::Verbosity::Normal,
+    );
+
+    let mut args = make_profile_create_args("aborted");
+    args.env = vec!["X=1".to_string()];
+    cmd_profile_create(&cli, &printer, &args).unwrap();
+    let bundle_dir = dir.path().join("profiles").join("aborted");
+    let files_dir = bundle_dir.join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join(".zshrc"), "export A=1").unwrap();
+
+    let err = cmd_profile_delete(&cli, &printer, "aborted", false, false)
+        .expect_err("aborted payload prompt must fail the command");
+    assert!(
+        err.to_string().contains("refusing to prompt"),
+        "abort surfaces the prompt failure: {err}"
+    );
+    assert!(
+        bundle_dir.join("profile.yaml").is_file(),
+        "manifest must be intact after an aborted second prompt"
+    );
+    assert!(
+        files_dir.join(".zshrc").is_file(),
+        "payload must be intact after an aborted second prompt"
+    );
+    // The delete is retryable: nothing was mutated, so a fully-confirmed
+    // retry succeeds instead of tripping over a half-deleted profile.
+    let (printer, _buf) = cfgd_core::output::Printer::for_test_with_prompt_responses_at(
+        vec![
+            cfgd_core::output::PromptAnswer::Confirm(true),
+            cfgd_core::output::PromptAnswer::Confirm(true),
+        ],
+        cfgd_core::output::Verbosity::Normal,
+    );
+    cmd_profile_delete(&cli, &printer, "aborted", false, false).unwrap();
+    assert!(!bundle_dir.exists(), "retry must complete the delete");
 }
 
 #[test]
@@ -1671,6 +1749,10 @@ fn profile_delete_cleans_files_dir() {
     cmd_profile_delete(&cli, &printer, "ephemeral", true, false).unwrap();
 
     assert!(!files_dir.exists(), "files directory should be cleaned up");
+    assert!(
+        !dir.path().join("profiles").join("ephemeral").exists(),
+        "emptied legacy parent dir should be cleaned up too"
+    );
 }
 
 #[test]

@@ -2,16 +2,41 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Doc, Printer, Role};
 
-/// Prompt-gated removal of a payload-bearing directory. `--yes` (or a
-/// confirmed prompt) removes it recursively; declining keeps it and notes
-/// what was kept — the manifest deletion above already succeeded either way.
-fn confirm_remove_payload_dir(printer: &Printer, yes: bool, dir: &Path) -> anyhow::Result<()> {
-    if yes
-        || printer.prompt_confirm(&format!(
-            "Profile directory '{}' still contains payload files — remove it too?",
-            dir.posix()
-        ))?
-    {
+/// Pre-mutation snapshot of the profile's payload directory: the dir that
+/// owns the payload (canonical `<name>/`, legacy `<name>/files/`) plus
+/// whether it holds anything beyond the manifest. `None` when the dir does
+/// not exist.
+fn payload_dir_state(
+    dir: &Path,
+    manifest: Option<&Path>,
+) -> anyhow::Result<Option<(std::path::PathBuf, bool)>> {
+    if !dir.is_dir() {
+        return Ok(None);
+    }
+    let mut has_payload = false;
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if manifest.is_some_and(|m| path == m) {
+            continue;
+        }
+        has_payload = true;
+        break;
+    }
+    Ok(Some((dir.to_path_buf(), has_payload)))
+}
+
+/// Remove the payload dir once the manifest is gone: an empty dir goes
+/// silently, a payload-bearing dir goes only with the consent gathered up
+/// front, otherwise it is kept and noted.
+fn cleanup_payload_dir(
+    printer: &Printer,
+    dir: &Path,
+    has_payload: bool,
+    remove_payload: bool,
+) -> anyhow::Result<()> {
+    if !has_payload {
+        std::fs::remove_dir(dir)?;
+    } else if remove_payload {
         std::fs::remove_dir_all(dir)?;
     } else {
         printer.status_simple(Role::Info, format!("Kept {}", dir.posix()));
@@ -32,22 +57,12 @@ pub fn cmd_profile_delete(
     let pdir = profiles_dir(cli);
     let profile_path = match cfgd_core::config::find_profile_path(&pdir, name) {
         Ok(p) => p,
-        Err(e @ cfgd_core::errors::ConfigError::ProfileNotFound { .. }) => {
-            if ignore_not_found {
-                return crate::cli::emit_not_found_ignored(printer, "profile", name);
-            }
-            // Carry the typed ProfileNotFound so the exit-code downcast resolves
-            // to ExitCode::NotFound (6). The active-profile guard below stays
-            // exit 1 — it is a precondition failure, not a not-found.
-            return Err(crate::cli::cli_error_ctx(
-                cfgd_core::errors::CfgdError::Config(e).into(),
-                name,
-                "not_found",
-                format!("Profile '{}' not found", name),
-                serde_json::json!({}),
-            ));
+        Err(cfgd_core::errors::ConfigError::ProfileNotFound { .. }) if ignore_not_found => {
+            return crate::cli::emit_not_found_ignored(printer, "profile", name);
         }
-        Err(e) => return Err(cfgd_core::errors::CfgdError::Config(e).into()),
+        // Typed not-found routing (→ exit 6). The active-profile guard below
+        // stays exit 1 — it is a precondition failure, not a not-found.
+        Err(e) => return Err(profile_lookup_error(e, name)),
     };
     let is_canonical = profile_path == cfgd_core::config::canonical_profile_path(&pdir, name);
 
@@ -82,6 +97,21 @@ pub fn cmd_profile_delete(
         ));
     }
 
+    // Snapshot payload state and gather EVERY confirmation before ANY
+    // mutation — an abort (Ctrl-C/EOF) at the second prompt must leave the
+    // manifest intact, not report a half-finished delete as a failure.
+    // `<name>/` belongs to the profile in both layouts: canonical keeps
+    // profile.yaml inside it, legacy keeps files/.
+    let profile_dir = pdir.join(name);
+    let payload = if is_canonical {
+        payload_dir_state(&profile_dir, Some(&profile_path))?
+    } else {
+        // The payload is the same kind of thing in both layouts, so a
+        // non-empty legacy files/ dir gets the same prompt gate as a
+        // payload-bearing canonical dir; empty/absent stays silent cleanup.
+        payload_dir_state(&profile_dir.join("files"), None)?
+    };
+
     if !yes && !printer.prompt_confirm(&format!("Delete profile '{}'?", name))? {
         printer.emit(
             Doc::new()
@@ -94,36 +124,26 @@ pub fn cmd_profile_delete(
         return Ok(());
     }
 
+    let remove_payload = match &payload {
+        Some((dir, true)) => {
+            yes || printer.prompt_confirm(&format!(
+                "Profile directory '{}' still contains payload files — remove it too?",
+                dir.posix()
+            ))?
+        }
+        _ => false,
+    };
+
     std::fs::remove_file(&profile_path)?;
 
-    // Clean up the profile's payload. `<name>/` belongs to the profile in both
-    // layouts: canonical keeps profile.yaml inside it, legacy keeps files/.
-    let profile_dir = pdir.join(name);
-    if is_canonical {
-        if profile_dir.is_dir() {
-            let has_payload = std::fs::read_dir(&profile_dir)?.next().is_some();
-            if !has_payload {
-                std::fs::remove_dir(&profile_dir)?;
-            } else {
-                confirm_remove_payload_dir(printer, yes, &profile_dir)?;
-            }
-        }
-    } else {
-        // The payload is the same kind of thing in both layouts, so a
-        // non-empty legacy files/ dir gets the same prompt gate as a
-        // payload-bearing canonical dir; empty/absent stays silent cleanup.
-        let files_dir = profile_dir.join("files");
-        if files_dir.is_dir() {
-            let has_payload = std::fs::read_dir(&files_dir)?.next().is_some();
-            if !has_payload {
-                std::fs::remove_dir(&files_dir)?;
-            } else {
-                confirm_remove_payload_dir(printer, yes, &files_dir)?;
-            }
-        }
-        if profile_dir.is_dir() && std::fs::read_dir(&profile_dir)?.next().is_none() {
-            std::fs::remove_dir(&profile_dir)?;
-        }
+    if let Some((dir, has_payload)) = payload {
+        cleanup_payload_dir(printer, &dir, has_payload, remove_payload)?;
+    }
+    // Legacy layout only: files/ was handled above, so the now-possibly-empty
+    // parent `<name>/` gets a silent cleanup too. The asymmetry is
+    // intentional — in the canonical layout the parent IS the payload dir.
+    if !is_canonical && profile_dir.is_dir() && std::fs::read_dir(&profile_dir)?.next().is_none() {
+        std::fs::remove_dir(&profile_dir)?;
     }
 
     printer.emit(
