@@ -213,6 +213,7 @@ Puppet is the closest philosophical match — declarative state, continuous enfo
 | [Bootstrap](docs/bootstrap.md) | `cfgd init` flow, apply options, install script |
 | [AI Generate](docs/ai-generate.md) | AI-guided config generation, MCP server setup |
 | [Authoring Skills](docs/skill.md) | `cfgd skill` installer, provider target matrix, the quality bar, generate-vs-skill |
+| [Releasing](docs/releasing.md) | CI-cut release pipeline, pre-release checklist, done-definition, failure recovery |
 
 ## Distribution
 

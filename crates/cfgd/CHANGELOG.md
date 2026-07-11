@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Documentation
+
+* add docs/releasing.md release runbook (CI-cut pipeline, pre-release checklist, SchemaStore-merge done-definition, failure recovery)
+
 ## [0.5.0] - 2026-06-17
 
 ### Features
