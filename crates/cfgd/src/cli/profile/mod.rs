@@ -36,17 +36,39 @@ pub(super) use backups::{
 };
 pub(super) use parsers::{parse_manager_package, parse_secret_spec, update_script_list};
 
-pub(super) fn profiles_inheriting(profiles_dir: &Path, name: &str) -> anyhow::Result<Vec<String>> {
+pub(super) fn profiles_inheriting(
+    profiles_dir: &Path,
+    name: &str,
+    printer: &cfgd_core::output::Printer,
+) -> anyhow::Result<Vec<String>> {
+    use cfgd_core::output::Role;
+    let warn_unparseable = |path: &Path, e: &dyn std::error::Error| {
+        printer.status_simple(
+            Role::Warn,
+            format!(
+                "Skipping profile '{}': {}",
+                path.display(), // native-ok: human warn message, not a key
+                cfgd_core::output::collapse_to_subject_line(e)
+            ),
+        );
+    };
     let mut result = Vec::new();
     for entry in cfgd_core::config::scan_profiles_tolerant(profiles_dir)
         .map_err(cfgd_core::errors::CfgdError::Config)?
     {
         match entry {
             cfgd_core::config::ProfileScanEntry::Found(found) => {
-                if let Ok(doc) = config::load_profile(&found.path)
-                    && doc.spec.inherits.contains(&name.to_string())
-                {
-                    result.push(doc.metadata.name.clone());
+                match config::load_profile(&found.path) {
+                    Ok(doc) => {
+                        if doc.spec.inherits.contains(&name.to_string()) {
+                            result.push(found.name.clone());
+                        }
+                    }
+                    // An unparseable manifest cannot be checked for
+                    // inheritance; surface it instead of silently treating it
+                    // as a non-inheritor. Not fail-closed: an unrelated broken
+                    // profile must never block deletion of this one.
+                    Err(e) => warn_unparseable(&found.path, &e),
                 }
             }
             // An ambiguous OTHER profile must not block work on this one, but
@@ -58,11 +80,17 @@ pub(super) fn profiles_inheriting(profiles_dir: &Path, name: &str) -> anyhow::Re
                 paths,
                 ..
             } => {
-                let inherits = paths.iter().any(|p| {
-                    config::load_profile(p)
-                        .map(|doc| doc.spec.inherits.contains(&name.to_string()))
-                        .unwrap_or(false)
-                });
+                let mut inherits = false;
+                for p in &paths {
+                    match config::load_profile(p) {
+                        Ok(doc) => {
+                            if doc.spec.inherits.contains(&name.to_string()) {
+                                inherits = true;
+                            }
+                        }
+                        Err(e) => warn_unparseable(p, &e),
+                    }
+                }
                 if inherits {
                     result.push(ambiguous_name);
                 }

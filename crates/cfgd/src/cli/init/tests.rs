@@ -384,6 +384,31 @@ fn pick_profile_single_profile() {
 }
 
 #[test]
+fn pick_profile_divergent_metadata_name_yields_resolvable_stem() {
+    let dir = tempfile::tempdir().unwrap();
+    let profiles_dir = dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("work.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: other\nspec: {}\n",
+    )
+    .unwrap();
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let result = pick_profile(&profiles_dir, &printer).unwrap();
+    assert_eq!(
+        result, "work",
+        "picker must yield the stem find_profile_path resolves, not metadata.name"
+    );
+    let out = buf.lock().unwrap();
+    assert!(
+        out.contains("metadata.name 'other'") && out.contains("using 'work'"),
+        "picker path must surface the divergence warn; got: {out:?}"
+    );
+}
+
+#[test]
 fn pick_profile_no_profiles_errors() {
     let dir = tempfile::tempdir().unwrap();
     let profiles_dir = dir.path().join("profiles");

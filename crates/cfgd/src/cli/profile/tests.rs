@@ -227,7 +227,10 @@ fn update_script_list_remove_from_none() {
 
 #[test]
 fn profiles_inheriting_no_dir() {
-    let result = profiles_inheriting(Path::new("/nonexistent-dir-12345"), "base").unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let result =
+        profiles_inheriting(Path::new("/nonexistent-dir-12345"), "base", &printer).unwrap();
     assert!(result.is_empty());
 }
 
@@ -237,7 +240,9 @@ fn profiles_inheriting_no_match() {
     let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: child\nspec:\n  inherits:\n    - other\n  modules: []\n".to_string();
     std::fs::write(dir.path().join("child.yaml"), &profile).unwrap();
 
-    let result = profiles_inheriting(dir.path(), "base").unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let result = profiles_inheriting(dir.path(), "base", &printer).unwrap();
     assert!(result.is_empty());
 }
 
@@ -247,7 +252,9 @@ fn profiles_inheriting_match_found() {
     let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: child\nspec:\n  inherits:\n    - base\n  modules: []\n".to_string();
     std::fs::write(dir.path().join("child.yaml"), &profile).unwrap();
 
-    let result = profiles_inheriting(dir.path(), "base").unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let result = profiles_inheriting(dir.path(), "base", &printer).unwrap();
     assert_eq!(result, vec!["child"]);
 }
 

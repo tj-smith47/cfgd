@@ -371,7 +371,23 @@ pub(in crate::cli) fn scan_profile_names(
             }
         };
         match config::load_profile(&found.path) {
-            Ok(doc) => names.push(doc.metadata.name),
+            // The scan-entry name (filename stem / bundle dir) is what
+            // `find_profile_path` resolves, so it is the name consumers can
+            // act on; a divergent metadata.name would later fail NotFound.
+            Ok(doc) => {
+                if doc.metadata.name != found.name {
+                    printer.status_simple(
+                        Role::Warn,
+                        format!(
+                            "Profile file '{}' has metadata.name '{}'; using '{}'",
+                            found.path.display(), // native-ok: human warn message, not a key
+                            doc.metadata.name,
+                            found.name
+                        ),
+                    );
+                }
+                names.push(found.name);
+            }
             // Surface unparseable profiles instead of silently dropping them —
             // a missing profile in generated output is otherwise invisible.
             Err(e) => printer.status_simple(

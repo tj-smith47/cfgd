@@ -68,7 +68,7 @@ pub fn cmd_profile_delete(
     }
 
     // Safety: refuse if inherited by other profiles
-    let inheritors = profiles_inheriting(&pdir, name)?;
+    let inheritors = profiles_inheriting(&pdir, name, printer)?;
     if !inheritors.is_empty() {
         return Err(crate::cli::cli_error(
             name,

@@ -1658,10 +1658,14 @@ fn profile_delete_succeeds() {
 #[test]
 fn profiles_inheriting_finds_children() {
     let dir = create_test_config_dir();
-    let result = profile::profiles_inheriting(&dir.path().join("profiles"), "default").unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let result =
+        profile::profiles_inheriting(&dir.path().join("profiles"), "default", &printer).unwrap();
     assert_eq!(result, vec!["work"]);
 
-    let result = profile::profiles_inheriting(&dir.path().join("profiles"), "work").unwrap();
+    let result =
+        profile::profiles_inheriting(&dir.path().join("profiles"), "work", &printer).unwrap();
     assert!(result.is_empty());
 }
 
@@ -1686,7 +1690,9 @@ fn profiles_inheriting_tolerates_unrelated_ambiguous_profile() {
     let pdir = dir.path().join("profiles");
     make_ambiguous_profile(&pdir, "amb", None);
 
-    let result = profile::profiles_inheriting(&pdir, "default").unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let result = profile::profiles_inheriting(&pdir, "default", &printer).unwrap();
     assert_eq!(
         result,
         vec!["work"],
@@ -1700,11 +1706,60 @@ fn profiles_inheriting_detects_inheritor_hidden_in_ambiguous_form() {
     let pdir = dir.path().join("profiles");
     make_ambiguous_profile(&pdir, "hidden", Some("work"));
 
-    let result = profile::profiles_inheriting(&pdir, "work").unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let result = profile::profiles_inheriting(&pdir, "work", &printer).unwrap();
     assert_eq!(
         result,
         vec!["hidden"],
         "an ambiguous profile that inherits the target must still count as an inheritor"
+    );
+}
+
+#[test]
+fn profiles_inheriting_warns_on_unparseable_manifest_and_keeps_real_inheritors() {
+    let dir = create_test_config_dir();
+    let pdir = dir.path().join("profiles");
+    std::fs::write(pdir.join("broken.yaml"), "this: [is, not, a, profile\n").unwrap();
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let result = profile::profiles_inheriting(&pdir, "default", &printer).unwrap();
+    assert_eq!(
+        result,
+        vec!["work"],
+        "unparseable manifest must not hide the parseable inheritor"
+    );
+    let out = buf.lock().unwrap();
+    assert!(
+        out.contains("Skipping profile") && out.contains("broken.yaml"),
+        "unparseable manifest must be surfaced as a warn naming its path; got: {out:?}"
+    );
+}
+
+#[test]
+fn profile_delete_still_refuses_when_parseable_inheritor_exists_beside_broken_manifest() {
+    let dir = create_test_config_dir();
+    let pdir = dir.path().join("profiles");
+    std::fs::write(pdir.join("broken.yaml"), "this: [is, not, a, profile\n").unwrap();
+    let cli = test_cli(dir.path());
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let err = profile::cmd_profile_delete(&cli, &printer, "default", true, false)
+        .expect_err("delete of an inherited profile must refuse");
+    assert!(
+        err.to_string().contains("inherited by: work"),
+        "refusal must name the parseable inheritor; got: {err}"
+    );
+    assert!(
+        dir.path().join("profiles").join("default.yaml").exists(),
+        "refused delete must leave the profile on disk"
+    );
+    let out = buf.lock().unwrap();
+    assert!(
+        out.contains("Skipping profile") && out.contains("broken.yaml"),
+        "delete guard scan must surface the unparseable manifest; got: {out:?}"
     );
 }
 
@@ -3330,6 +3385,37 @@ fn scan_profile_names_warns_and_skips_malformed() {
     assert!(
         out.contains("Skipping profile"),
         "warning must use the 'Skipping profile' shape; got: {out:?}"
+    );
+}
+
+#[test]
+fn scan_profile_names_returns_stem_and_warns_on_divergent_metadata_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let profiles_dir = dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("work.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: other\nspec:\n  packages: {}\n",
+    )
+    .unwrap();
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let names = super::scan_profile_names(&profiles_dir, &printer).unwrap();
+
+    assert_eq!(
+        names,
+        vec!["work".to_string()],
+        "scan must return the resolvable filename stem, not the divergent metadata.name"
+    );
+    let out = buf.lock().unwrap();
+    assert!(
+        out.contains("metadata.name 'other'") && out.contains("using 'work'"),
+        "divergence warn must name both the metadata.name and the stem in use; got: {out:?}"
+    );
+    assert!(
+        out.contains("work.yaml"),
+        "divergence warn must name the offending file; got: {out:?}"
     );
 }
 
