@@ -33,8 +33,6 @@ and the tree is untouched.
 
 - [ ] All intended work is committed and pushed; nothing load-bearing sits
       unpushed in the working tree.
-- [ ] `.claude/known-bugs.md` has no unchecked items (the pre-push hook
-      refuses `git push` while it does).
 - [ ] Acceptance gates for the changes in this release are green on the real
       hosts they apply to (Linux, macOS, Windows) — CI green alone does not
       clear OS-specific paths.

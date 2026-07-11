@@ -2242,6 +2242,24 @@ fn find_profile_path_three_forms_names_every_path() {
 }
 
 #[test]
+fn find_profile_path_profile_named_profile_ranks_structurally() {
+    // a bundle at profiles/profile/profile.yaml vs a flat profiles/profile.yaml:
+    // canonical detection is structural (parent dir), not name-based, so the
+    // pathological name 'profile' must still rank the bundle form first
+    let dir = tempfile::tempdir().unwrap();
+    let canonical = write_canonical_profile(dir.path(), "profile", &[]);
+    let flat = write_legacy_profile(dir.path(), "profile.yaml", "profile");
+    let err = find_profile_path(dir.path(), "profile").unwrap_err();
+    match &err {
+        ConfigError::AmbiguousProfile { name, paths } => {
+            assert_eq!(name, "profile");
+            assert_eq!(paths, &vec![canonical, flat]);
+        }
+        other => panic!("expected AmbiguousProfile, got {other}"),
+    }
+}
+
+#[test]
 fn canonical_profile_path_is_pure_construction() {
     let path = canonical_profile_path(Path::new("/cfg/profiles"), "work");
     assert_eq!(path, Path::new("/cfg/profiles/work/profile.yaml"));
