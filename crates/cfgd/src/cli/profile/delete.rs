@@ -135,7 +135,18 @@ pub fn cmd_profile_delete(
             })),
     );
 
-    maybe_update_workflow(cli, printer)?;
+    // Best-effort: the mutation above already succeeded; a workflow
+    // regeneration failure (e.g. an unrelated ambiguous profile on disk)
+    // must not flip the completed operation to a non-zero exit.
+    if let Err(e) = maybe_update_workflow(cli, printer) {
+        printer.status_simple(
+            Role::Warn,
+            format!(
+                "workflow regeneration failed: {}",
+                cfgd_core::output::collapse_to_subject_line(&*e)
+            ),
+        );
+    }
 
     Ok(())
 }

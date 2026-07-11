@@ -335,10 +335,27 @@ pub(in crate::cli) fn scan_profile_names(
     printer: &Printer,
 ) -> anyhow::Result<Vec<String>> {
     let mut names = Vec::new();
-    for entry in cfgd_core::config::scan_profiles(profiles_dir)
+    for entry in cfgd_core::config::scan_profiles_tolerant(profiles_dir)
         .map_err(cfgd_core::errors::CfgdError::Config)?
     {
-        match config::load_profile(&entry.path) {
+        let found = match entry {
+            cfgd_core::config::ProfileScanEntry::Found(found) => found,
+            // Ambiguity fails closed only for direct operations on that
+            // profile; here it gets the same warn-and-skip treatment as an
+            // unparseable manifest so unrelated work can continue.
+            cfgd_core::config::ProfileScanEntry::Ambiguous { name, error, .. } => {
+                printer.status_simple(
+                    Role::Warn,
+                    format!(
+                        "Skipping profile '{}': {}",
+                        name,
+                        cfgd_core::output::collapse_to_subject_line(&error)
+                    ),
+                );
+                continue;
+            }
+        };
+        match config::load_profile(&found.path) {
             Ok(doc) => names.push(doc.metadata.name),
             // Surface unparseable profiles instead of silently dropping them —
             // a missing profile in generated output is otherwise invisible.
@@ -346,7 +363,7 @@ pub(in crate::cli) fn scan_profile_names(
                 Role::Warn,
                 format!(
                     "Skipping profile '{}': {}",
-                    entry.path.display(), // native-ok: human warn message, not a key
+                    found.path.display(), // native-ok: human warn message, not a key
                     cfgd_core::output::collapse_to_subject_line(&e)
                 ),
             ),

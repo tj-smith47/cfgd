@@ -500,11 +500,9 @@ pub(super) fn pick_profile(profiles_dir: &Path, printer: &Printer) -> anyhow::Re
         );
     }
 
-    let names: Vec<String> = cfgd_core::config::scan_profiles(profiles_dir)
-        .map_err(cfgd_core::errors::CfgdError::Config)?
-        .into_iter()
-        .map(|e| e.name)
-        .collect();
+    // Tolerant listing: an ambiguous profile warns and is skipped instead of
+    // blocking the whole picker (only direct operations on it fail closed).
+    let names: Vec<String> = scan_profile_names(profiles_dir, printer)?;
 
     if names.is_empty() {
         anyhow::bail!(

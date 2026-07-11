@@ -136,9 +136,12 @@ impl GenerateSession {
 
     pub fn get_existing_profiles(&self) -> Result<Vec<String>, CfgdError> {
         let profiles_dir = self.repo_root.join("profiles");
-        Ok(crate::config::scan_profiles(&profiles_dir)?
+        // Tolerant scan: an ambiguous name (multiple manifest forms on disk)
+        // still EXISTS for listing purposes — the AI must see it so it never
+        // scaffolds a new profile over the collision.
+        Ok(crate::config::scan_profiles_tolerant(&profiles_dir)?
             .into_iter()
-            .map(|e| e.name)
+            .map(|e| e.name().to_string())
             .collect())
     }
 }
@@ -180,6 +183,25 @@ mod tests {
         let session = GenerateSession::new(tmp.path().to_path_buf(), VER);
         let profiles = session.get_existing_profiles().unwrap();
         assert_eq!(profiles, vec!["base", "work"]);
+    }
+
+    #[test]
+    fn test_get_existing_profiles_lists_ambiguous_names() {
+        let tmp = TempDir::new().unwrap();
+        let profiles_dir = tmp.path().join("profiles");
+        let amb_dir = profiles_dir.join("amb");
+        std::fs::create_dir_all(&amb_dir).unwrap();
+        std::fs::write(amb_dir.join("profile.yaml"), "test").unwrap();
+        std::fs::write(profiles_dir.join("amb.yaml"), "test").unwrap();
+        std::fs::write(profiles_dir.join("base.yaml"), "test").unwrap();
+
+        let session = GenerateSession::new(tmp.path().to_path_buf(), VER);
+        let profiles = session.get_existing_profiles().unwrap();
+        assert_eq!(
+            profiles,
+            vec!["amb", "base"],
+            "an ambiguous name still exists and must be listed"
+        );
     }
 
     #[test]

@@ -23,7 +23,9 @@ The legacy **flat** form — `profiles/<name>.yaml` (or `.yml`) — is still rea
 configs keep working. Run [`cfgd profile migrate`](cli-reference.md#cfgd-profile-migrate-name)
 to move a flat profile into its bundle. If more than one form exists for one name, cfgd
 fails closed rather than guess which wins — the error names every coexisting path; delete
-or migrate all but one.
+or migrate all but one. The blast radius is scoped to the ambiguous profile itself: direct
+operations on it (apply, switch, show, delete) fail, while unrelated operations — creating
+or deleting other profiles, listing, workflow generation — warn about it and continue.
 
 ## Profile YAML
 

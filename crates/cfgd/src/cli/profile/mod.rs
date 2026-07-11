@@ -38,13 +38,35 @@ pub(super) use parsers::{parse_manager_package, parse_secret_spec, update_script
 
 pub(super) fn profiles_inheriting(profiles_dir: &Path, name: &str) -> anyhow::Result<Vec<String>> {
     let mut result = Vec::new();
-    for entry in cfgd_core::config::scan_profiles(profiles_dir)
+    for entry in cfgd_core::config::scan_profiles_tolerant(profiles_dir)
         .map_err(cfgd_core::errors::CfgdError::Config)?
     {
-        if let Ok(doc) = config::load_profile(&entry.path)
-            && doc.spec.inherits.contains(&name.to_string())
-        {
-            result.push(doc.metadata.name.clone());
+        match entry {
+            cfgd_core::config::ProfileScanEntry::Found(found) => {
+                if let Ok(doc) = config::load_profile(&found.path)
+                    && doc.spec.inherits.contains(&name.to_string())
+                {
+                    result.push(doc.metadata.name.clone());
+                }
+            }
+            // An ambiguous OTHER profile must not block work on this one, but
+            // it could still inherit it invisibly — so probe every coexisting
+            // manifest form and count the name as an inheritor if any form
+            // declares the inheritance.
+            cfgd_core::config::ProfileScanEntry::Ambiguous {
+                name: ambiguous_name,
+                paths,
+                ..
+            } => {
+                let inherits = paths.iter().any(|p| {
+                    config::load_profile(p)
+                        .map(|doc| doc.spec.inherits.contains(&name.to_string()))
+                        .unwrap_or(false)
+                });
+                if inherits {
+                    result.push(ambiguous_name);
+                }
+            }
         }
     }
     Ok(result)

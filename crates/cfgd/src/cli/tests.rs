@@ -1665,6 +1665,98 @@ fn profiles_inheriting_finds_children() {
     assert!(result.is_empty());
 }
 
+/// Write both manifest forms for `name` so the profile is ambiguous on disk.
+fn make_ambiguous_profile(profiles_dir: &Path, name: &str, inherits: Option<&str>) {
+    let inherits_block = match inherits {
+        Some(parent) => format!("  inherits:\n    - {}\n", parent),
+        None => String::new(),
+    };
+    let yaml = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: {name}\nspec:\n{inherits_block}  packages: {{}}\n",
+    );
+    let bundle = profiles_dir.join(name);
+    std::fs::create_dir_all(&bundle).unwrap();
+    std::fs::write(bundle.join("profile.yaml"), &yaml).unwrap();
+    std::fs::write(profiles_dir.join(format!("{name}.yaml")), &yaml).unwrap();
+}
+
+#[test]
+fn profiles_inheriting_tolerates_unrelated_ambiguous_profile() {
+    let dir = create_test_config_dir();
+    let pdir = dir.path().join("profiles");
+    make_ambiguous_profile(&pdir, "amb", None);
+
+    let result = profile::profiles_inheriting(&pdir, "default").unwrap();
+    assert_eq!(
+        result,
+        vec!["work"],
+        "unrelated ambiguity must not error or hide the real inheritor"
+    );
+}
+
+#[test]
+fn profiles_inheriting_detects_inheritor_hidden_in_ambiguous_form() {
+    let dir = create_test_config_dir();
+    let pdir = dir.path().join("profiles");
+    make_ambiguous_profile(&pdir, "hidden", Some("work"));
+
+    let result = profile::profiles_inheriting(&pdir, "work").unwrap();
+    assert_eq!(
+        result,
+        vec!["hidden"],
+        "an ambiguous profile that inherits the target must still count as an inheritor"
+    );
+}
+
+#[test]
+fn profile_create_succeeds_despite_unrelated_ambiguous_profile() {
+    let dir = create_test_config_dir();
+    let pdir = dir.path().join("profiles");
+    make_ambiguous_profile(&pdir, "amb", None);
+    let cli = test_cli(dir.path());
+    let (printer, buf) = test_printer_capture();
+
+    // A non-empty spec flag keeps creation non-interactive (no TTY in tests).
+    let args = ProfileCreateArgs {
+        packages: vec!["cargo:bat".to_string()],
+        ..test_profile_create_args("fresh")
+    };
+    profile::cmd_profile_create(&cli, &printer, &args).unwrap();
+
+    assert!(pdir.join("fresh").join("profile.yaml").exists());
+    let out = buf.lock().unwrap();
+    assert!(
+        out.contains("Created profile 'fresh'"),
+        "success Doc must still render; got: {out:?}"
+    );
+    assert!(
+        out.contains("Skipping profile 'amb'"),
+        "ambiguous profile must surface as a warn, not an error; got: {out:?}"
+    );
+}
+
+#[test]
+fn profile_delete_succeeds_despite_unrelated_ambiguous_profile() {
+    let dir = create_test_config_dir();
+    let pdir = dir.path().join("profiles");
+    make_ambiguous_profile(&pdir, "amb", None);
+    let cli = test_cli(dir.path());
+    let (printer, buf) = test_printer_capture();
+
+    profile::cmd_profile_delete(&cli, &printer, "work", true, false).unwrap();
+
+    assert!(!pdir.join("work.yaml").exists());
+    let out = buf.lock().unwrap();
+    assert!(
+        out.contains("Deleted profile 'work'"),
+        "success Doc must still render; got: {out:?}"
+    );
+    assert!(
+        out.contains("Skipping profile 'amb'"),
+        "ambiguous profile must surface as a warn, not an error; got: {out:?}"
+    );
+}
+
 #[test]
 fn parse_manager_package_valid() {
     let (mgr, pkg) = profile::parse_manager_package("brew:curl").unwrap();
@@ -3238,6 +3330,34 @@ fn scan_profile_names_warns_and_skips_malformed() {
     assert!(
         out.contains("Skipping profile"),
         "warning must use the 'Skipping profile' shape; got: {out:?}"
+    );
+}
+
+#[test]
+fn scan_profile_names_warns_and_skips_ambiguous() {
+    let dir = tempfile::tempdir().unwrap();
+    let profiles_dir = dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("alpha.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: alpha\nspec:\n  packages: {}\n",
+    )
+    .unwrap();
+    make_ambiguous_profile(&profiles_dir, "amb", None);
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let names = super::scan_profile_names(&profiles_dir, &printer).unwrap();
+
+    assert_eq!(
+        names,
+        vec!["alpha".to_string()],
+        "ambiguous profile skipped, scan continues"
+    );
+    let out = buf.lock().unwrap();
+    assert!(
+        out.contains("Skipping profile 'amb'"),
+        "warning must name the ambiguous profile; got: {out:?}"
     );
 }
 
