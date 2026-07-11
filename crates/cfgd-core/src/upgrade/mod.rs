@@ -32,17 +32,23 @@ const DEFAULT_REPO: &str = "tj-smith47/cfgd";
 /// OIDC provider that mints the workflow identity token during the release run.
 const COSIGN_OIDC_ISSUER: &str = "https://token.actions.githubusercontent.com";
 
-/// Certificate-identity regexp pinning the signer to cfgd's own release
-/// automation. Matches the Fulcio SAN URI for ANY workflow file directly under
-/// `.github/workflows/` of the canonical repo, on any ref. The release pipeline
-/// signs the GitHub-release assets (archives, nfpm packages, install.sh) from
-/// the per-crate `publish-crate.yml` legs that `release.yml` invokes, so a
-/// single-file pin (`release.yml`) rejects the project's own genuine
-/// signatures. Repo-level pinning still rejects any signature minted by another
-/// repo or a fork even if it chains to a valid Fulcio root — that fork boundary
-/// is the real trust boundary, not which of cfgd's own workflow files ran.
-const COSIGN_IDENTITY_REGEXP: &str =
-    r"^https://github\.com/tj-smith47/cfgd/\.github/workflows/[^/@]+\.ya?ml@";
+/// Certificate-identity regexp pinning the signer to cfgd's own signing
+/// workflows, each on its legitimate ref. Exactly three workflows in the
+/// canonical repo ever hold `id-token: write` and sign release assets:
+///
+/// * `publish-crate.yml@refs/heads/master` — the per-crate release leg that
+///   `release.yml` invokes; the real signer of every published stable asset.
+/// * `release.yml@refs/tags/v*` — the release orchestrator, pinned to version
+///   tags in case a future asset is signed there directly.
+/// * `nightly.yml@refs/heads/master` — signs the rolling `nightly` prerelease
+///   that the prerelease channel's endpoint can list.
+///
+/// The per-workflow ref pin is the security win over a bare repo-level pin: a
+/// signature minted by any other workflow in this repo (e.g. `ci.yml`), by any
+/// signing workflow running on a non-canonical ref (e.g. a topic branch), or
+/// by a fork/foreign repo is rejected even if it chains to a valid Fulcio
+/// root.
+const COSIGN_IDENTITY_REGEXP: &str = r"^https://github\.com/tj-smith47/cfgd/\.github/workflows/(publish-crate\.ya?ml@refs/heads/master|release\.ya?ml@refs/tags/v|nightly\.ya?ml@refs/heads/master)";
 
 /// Resolve the GitHub Releases API base URL. Tests set CFGD_GITHUB_API_BASE
 /// to redirect at a mockito server; production calls fall through to the
@@ -91,7 +97,7 @@ struct VersionCache {
 /// * `Cosign` — keyless cosign signature verified (Fulcio/OIDC + Rekor)
 ///   against the release's per-artifact bundle. Strongest guarantee: a
 ///   publisher-compromise attacker cannot mint a signature whose Fulcio
-///   identity matches the pinned release-workflow regexp.
+///   identity matches the pinned signing-workflow regexp.
 /// * `Sha256Only` — the cosign bundle or the `cosign` CLI was unavailable;
 ///   verification fell through to the `<archive>.sha256` SHA256 comparison
 ///   only. Trusts the GitHub Releases publisher chain.
@@ -735,7 +741,7 @@ pub(crate) fn download_and_install_to(
         // Best-effort keyless cosign verification of the per-artifact
         // `.sha256` file. Bounds publisher-compromise risk: a malicious
         // release uploader cannot mint a Fulcio-backed signature whose
-        // identity matches the pinned release-workflow regexp over a
+        // identity matches the pinned signing-workflow regexp over a
         // tampered `.sha256`. When `require_cosign` is true, either skip
         // condition (no bundle, no cosign CLI) surfaces as Err here instead
         // of a silent fallback to SHA256-only.

@@ -2289,14 +2289,12 @@ mod cosign_verify_blob {
         );
     }
 
-    // Guards the identity pin against re-narrowing to a single workflow file.
-    // The release pipeline signs GitHub-release assets from the per-crate
-    // `publish-crate.yml` legs (confirmed against real published v0.5.0 asset
-    // certs), not from `release.yml`, so a `release.yml`-only pin rejected
-    // cfgd's own signatures and broke `cfgd upgrade` for every host with cosign
-    // installed. The regexp must accept ANY workflow file in the canonical repo
-    // and reject any fork / foreign repo — that fork boundary is the trust
-    // boundary, not which of cfgd's own workflows ran.
+    // Guards the identity pin: exactly the three signing workflows, each on
+    // its legitimate ref. Real v0.5.0 asset certs confirmed publish-crate.yml
+    // signs stable assets (a release.yml-only pin rejected cfgd's own
+    // signatures); nightly.yml signs the rolling prerelease. Anything else —
+    // forks, foreign hosts, nested paths, canonical-repo workflows without
+    // id-token, or a signing workflow on the wrong ref — must be rejected.
     #[test]
     fn cosign_identity_regexp_accepts_own_signers_rejects_forks() {
         let re = regex::Regex::new(COSIGN_IDENTITY_REGEXP).expect("identity regexp must compile");
@@ -2305,18 +2303,50 @@ mod cosign_verify_blob {
             "https://github.com/tj-smith47/cfgd/.github/workflows/publish-crate.yml@refs/heads/master",
             // The orchestrator, in case a future asset is signed there directly.
             "https://github.com/tj-smith47/cfgd/.github/workflows/release.yml@refs/tags/v0.5.0",
+            // The rolling `nightly` prerelease signer.
+            "https://github.com/tj-smith47/cfgd/.github/workflows/nightly.yml@refs/heads/master",
         ] {
-            assert!(re.is_match(ok), "canonical-repo signer must verify: {ok}");
+            assert!(re.is_match(ok), "canonical signer must verify: {ok}");
         }
         for bad in [
+            // Fork / foreign / nested.
             "https://github.com/evil/cfgd/.github/workflows/release.yml@refs/heads/master",
             "https://github.com/tj-smith47/cfgd-fork/.github/workflows/publish-crate.yml@refs/heads/master",
             "https://gitlab.com/tj-smith47/cfgd/.github/workflows/release.yml@refs/heads/master",
             "https://github.com/tj-smith47/cfgd/.github/workflows/nested/evil.yml@refs/heads/master",
+            // Canonical repo, but not a signing workflow.
+            "https://github.com/tj-smith47/cfgd/.github/workflows/ci.yml@refs/heads/master",
+            "https://github.com/tj-smith47/cfgd/.github/workflows/determinism-shards.yml@refs/heads/master",
+            // Signing workflow on the wrong ref.
+            "https://github.com/tj-smith47/cfgd/.github/workflows/publish-crate.yml@refs/heads/other-branch",
+            "https://github.com/tj-smith47/cfgd/.github/workflows/release.yml@refs/heads/master",
+            "https://github.com/tj-smith47/cfgd/.github/workflows/nightly.yml@refs/tags/v9.9.9",
         ] {
             assert!(
                 !re.is_match(bad),
-                "fork / foreign / nested signer must be rejected: {bad}"
+                "non-signer identity must be rejected: {bad}"
+            );
+        }
+    }
+
+    // Guards the docs / install-script copies of the identity regexp against
+    // drifting from the const (the v0.5.0 breakage shipped exactly that way).
+    #[test]
+    fn cosign_identity_regexp_docs_match_const() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .expect("workspace root");
+        for doc in [
+            "docs/installation.md",
+            "docs/releasing.md",
+            "scripts/install.sh.tpl",
+            ".anodizer.yaml",
+        ] {
+            let text = std::fs::read_to_string(root.join(doc)).expect(doc);
+            assert!(
+                text.contains(COSIGN_IDENTITY_REGEXP),
+                "{doc} must embed COSIGN_IDENTITY_REGEXP verbatim"
             );
         }
     }
