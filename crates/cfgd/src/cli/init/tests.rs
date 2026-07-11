@@ -4126,7 +4126,7 @@ mod cmd_init_apply_orchestration {
 
     #[test]
     #[serial]
-    fn cmd_init_with_apply_profile_unknown_name_bails() {
+    fn cmd_init_with_apply_profile_unknown_name_maps_to_not_found_exit_code() {
         // --apply-profile pointing at a profile that doesn't exist on disk
         // surfaces a clear error from the profile-validation arm.
         let tmp = tempfile::tempdir().unwrap();
