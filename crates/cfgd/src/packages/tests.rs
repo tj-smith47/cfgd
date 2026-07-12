@@ -2856,14 +2856,27 @@ fn all_package_managers_bootstrap_consistency() {
     .into();
 
     for m in &managers {
-        if bootstrappable.contains(m.name()) {
-            assert!(m.can_bootstrap(), "{} should be bootstrappable", m.name());
-        } else if not_bootstrappable.contains(m.name()) {
+        if not_bootstrappable.contains(m.name()) {
+            // Safety invariant (every platform): a system package manager must
+            // never report bootstrappable — cfgd cannot self-install the OS's
+            // own manager, and claiming otherwise would drive a nonsensical
+            // install attempt.
             assert!(
                 !m.can_bootstrap(),
                 "{} should NOT be bootstrappable",
                 m.name()
             );
+        } else if bootstrappable.contains(m.name()) {
+            // The positive direction is environment-conditional: each user
+            // manager can self-install only where its prerequisite tooling
+            // exists (curl, a system package manager, or pip). Those
+            // prerequisites are always present on the Linux/macOS/Windows CI
+            // runners but not on a minimal FreeBSD base, where several managers
+            // correctly report not-bootstrappable. Skip the positive assertion
+            // there rather than assert a platform whose bootstrap prerequisites
+            // this test cannot guarantee.
+            #[cfg(not(target_os = "freebsd"))]
+            assert!(m.can_bootstrap(), "{} should be bootstrappable", m.name());
         }
     }
 }

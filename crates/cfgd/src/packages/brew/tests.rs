@@ -146,8 +146,11 @@ fn parse_brew_versions_single_package_no_trailing_newline() {
 }
 
 #[test]
-fn brew_manager_path_dirs_non_empty_on_unix() {
-    if cfg!(unix) {
+fn brew_manager_path_dirs_non_empty_on_linux_macos() {
+    // Homebrew exists only on Linux and macOS; brew_path_dirs() correctly
+    // returns empty on other unices (e.g. FreeBSD), so scope the non-empty
+    // assertion to the two platforms where brew is a real manager.
+    if cfg!(any(target_os = "linux", target_os = "macos")) {
         let mgr = BrewManager;
         let dirs = mgr.path_dirs();
         assert!(!dirs.is_empty());

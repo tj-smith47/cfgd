@@ -130,8 +130,10 @@ libc = "0.2"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [target.'cfg(not(windows))'.dependencies]
-# Force vendored OpenSSL for git2/libgit2 on Linux and macOS; avoids needing
-# a system OpenSSL install while keeping SSH and HTTPS support in git2.
+# Force vendored OpenSSL for git2/libgit2 on all non-Windows targets (Linux,
+# macOS, FreeBSD); avoids needing a system OpenSSL install while keeping SSH
+# and HTTPS support in git2. Vendored build needs gmake + perl at build time
+# (present on Linux/macOS runners; FreeBSD needs `pkg install gmake perl5`).
 openssl = { version = "0.10", features = ["vendored"] }
 
 [target.'cfg(unix)'.dependencies]

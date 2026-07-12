@@ -633,8 +633,8 @@ mod tests {
 
         #[test]
         #[serial]
-        fn nix_bootstrap_runs_bash_install_pipeline_ok() {
-            let (_bin, _path) = install_named_path_shim("bash", 0, "", "");
+        fn nix_bootstrap_runs_sh_install_pipeline_ok() {
+            let (_bin, _path) = install_named_path_shim("sh", 0, "", "");
             let p = test_printer();
             NixManager.bootstrap(&p).expect("bootstrap Ok via shim");
         }
@@ -642,11 +642,11 @@ mod tests {
         #[test]
         #[serial]
         fn nix_bootstrap_propagates_nonzero_exit_as_bootstrap_failed() {
-            let (_bin, _path) = install_named_path_shim("bash", 1, "", "nix install failed");
+            let (_bin, _path) = install_named_path_shim("sh", 1, "", "nix install failed");
             let p = test_printer();
             let err = NixManager
                 .bootstrap(&p)
-                .expect_err("non-zero bash must error");
+                .expect_err("non-zero sh must error");
             let msg = err.to_string();
             assert!(
                 msg.contains("nix") || msg.contains("bootstrap"),

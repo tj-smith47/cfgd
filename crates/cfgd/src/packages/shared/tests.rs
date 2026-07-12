@@ -1449,7 +1449,7 @@ fn run_pkg_cmd_live_spawn_error_maps_to_command_failed() {
     );
 }
 
-// bootstrap_via_shell_script: thin wrapper around `bash -c <script>` with
+// bootstrap_via_shell_script: thin wrapper around `sh -c <script>` with
 // BootstrapFailed mapping. Exit-0 returns Ok; non-zero surfaces error with
 // `<manager> install script failed` so consumers see the right context.
 #[cfg(unix)]

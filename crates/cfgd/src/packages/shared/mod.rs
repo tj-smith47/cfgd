@@ -646,9 +646,15 @@ pub(super) fn bootstrap_via_brew_then_system(
     Ok(false)
 }
 
-/// Run a `bash -c <script>` install pipeline and surface non-zero exits as
+/// Run a `sh -c <script>` install pipeline and surface non-zero exits as
 /// `PackageError::BootstrapFailed`. Used by managers that bootstrap via a
-/// vendor-supplied shell-pipe installer (rustup, nix, nvm, get-pip, etc.).
+/// vendor-supplied shell-pipe installer (rustup, nix, get-pip, etc.).
+///
+/// The outer shell is POSIX `sh`, not `bash`: FreeBSD base and minimal
+/// containers ship only `/bin/sh`, and every caller's pipeline is POSIX-clean
+/// (e.g. `curl … | sh -s`). A manager whose bootstrap genuinely needs bash
+/// (npm's nvm path) invokes `bash` inside its own script string rather than
+/// relying on this helper's outer interpreter.
 pub(super) fn bootstrap_via_shell_script(
     printer: &Printer,
     manager_name: &str,
@@ -656,7 +662,7 @@ pub(super) fn bootstrap_via_shell_script(
     script: &str,
 ) -> Result<()> {
     let result = printer
-        .run(Command::new("bash").arg("-c").arg(script), label)
+        .run(Command::new("sh").arg("-c").arg(script), label)
         .map_err(|e| PackageError::BootstrapFailed {
             manager: manager_name.into(),
             message: format!("{manager_name} install failed: {e}"),
