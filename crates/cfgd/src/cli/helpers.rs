@@ -31,13 +31,30 @@ pub(in crate::cli) fn rewrite_user_yaml<T: serde::Serialize>(
     path: &Path,
     value: &T,
 ) -> anyhow::Result<()> {
-    // Best-effort capture: an unreadable original degrades to a comment-free
-    // rewrite instead of failing a write that may still succeed.
-    let original = std::fs::read_to_string(path).unwrap_or_default();
+    // A missing original is a legitimate first write (comment-free); any
+    // other read failure on an EXISTING file must abort the rewrite —
+    // atomic_write_str renames over the target regardless of its
+    // readability, which would silently strip the comments this helper
+    // exists to preserve.
+    let original = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+    rewrite_user_yaml_with_original(path, &original, value)
+}
+
+/// [`rewrite_user_yaml`] for callers that already hold the file's pre-read
+/// content, avoiding a second read of the same file.
+pub(in crate::cli) fn rewrite_user_yaml_with_original<T: serde::Serialize>(
+    path: &Path,
+    original: &str,
+    value: &T,
+) -> anyhow::Result<()> {
     let yaml = serde_yaml::to_string(value)?;
     cfgd_core::atomic_write_str(
         path,
-        &cfgd_core::config::with_leading_comments(&original, &yaml),
+        &cfgd_core::config::with_leading_comments(original, &yaml),
     )?;
     Ok(())
 }

@@ -956,7 +956,7 @@ pub fn cmd_module_registry_rename(
                 }
             }
             if changed {
-                crate::cli::helpers::rewrite_user_yaml(path, &profile)?;
+                crate::cli::helpers::rewrite_user_yaml_with_original(path, &contents, &profile)?;
             }
         }
     }

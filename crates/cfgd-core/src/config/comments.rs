@@ -11,11 +11,20 @@
 /// Return the leading comment block of a YAML document: every line from the
 /// beginning of `original` up to (not including) the first line that is
 /// neither a `#` comment nor blank. Line endings (`\n` and `\r\n`) are
-/// preserved verbatim. Empty when the document starts with content.
+/// preserved verbatim, and a UTF-8 BOM on the first line stays part of the
+/// block (so BOM'd files keep both the BOM and their comments across a
+/// rewrite). Empty when the document starts with content.
 pub fn leading_comment_block(original: &str) -> &str {
     let mut end = 0;
-    for line in original.split_inclusive('\n') {
-        let body = line.trim_start().trim_end_matches(['\n', '\r']);
+    for (i, line) in original.split_inclusive('\n').enumerate() {
+        // U+FEFF is not char::is_whitespace, so trim_start alone would
+        // misclassify a BOM'd comment line as content
+        let body = if i == 0 {
+            line.strip_prefix('\u{FEFF}').unwrap_or(line)
+        } else {
+            line
+        };
+        let body = body.trim_start().trim_end_matches(['\n', '\r']);
         if !(body.is_empty() || body.starts_with('#')) {
             break;
         }
@@ -73,6 +82,18 @@ mod tests {
     fn comment_only_file_is_captured_whole() {
         let src = "# just\n# comments\n";
         assert_eq!(leading_comment_block(src), src);
+    }
+
+    #[test]
+    fn bom_stays_part_of_the_captured_block() {
+        let src = "\u{FEFF}# banner\nkind: Config\n";
+        assert_eq!(leading_comment_block(src), "\u{FEFF}# banner\n");
+    }
+
+    #[test]
+    fn bom_without_comments_yields_empty_block() {
+        let src = "\u{FEFF}kind: Config\n";
+        assert_eq!(leading_comment_block(src), "");
     }
 
     #[test]
