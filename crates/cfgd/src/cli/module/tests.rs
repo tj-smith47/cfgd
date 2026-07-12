@@ -3219,6 +3219,10 @@ fn cmd_module_list_wide_format_emits_seven_column_table() {
 // ─── cmd_module_show — packages with aliases/platforms + resolution arms ──
 
 #[test]
+// Reads PATH through command_path for manager detection; must hold the same
+// global lock as the #[serial] PATH mutators (cli/paths.rs, cli/kubectl.rs,
+// cli/init/tests.rs) or plain `cargo test` (shared-process) races them.
+#[serial_test::serial]
 fn cmd_module_show_renders_platform_filtered_and_resolved_packages() {
     // Drives two resolve_package outcome arms in cmd_module_show:
     // - Ok(Some(_)) clean-resolved package, prints \"<n> -> <mgr> install <r>\"

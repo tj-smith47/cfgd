@@ -14636,6 +14636,10 @@ spec:
 // -----------------------------------------------------------------------
 
 #[test]
+// Reads PATH through command_path for manager detection; must hold the same
+// global lock as the #[serial] PATH mutators (cli/paths.rs, cli/kubectl.rs,
+// cli/init/tests.rs) or plain `cargo test` (shared-process) races them.
+#[serial_test::serial]
 fn cmd_plan_json_output_with_module() {
     let module_yaml = r#"apiVersion: cfgd.io/v1alpha1
 kind: Module

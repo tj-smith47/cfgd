@@ -124,6 +124,9 @@ tasks:
     vars:
       CRATE: '{{index .MATCH 0}}'
     cmds:
+      # Plain `cargo test -p <crate>` never builds cfgd-core's fake-cosign
+      # shim binary (nextest targets do it implicitly); cosign tests need it.
+      - cargo build -p cfgd-core --bins
       - cargo test -p {{.CRATE}} --features cfgd-core/test-helpers {{.CLI_ARGS}}
 
   audit:
