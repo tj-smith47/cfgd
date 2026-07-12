@@ -166,6 +166,42 @@ pub(super) fn generate_powershell_env_content(
     lines.join("\n")
 }
 
+/// Ensure the cfgd source `line` is present in an rc file's `existing` content
+/// exactly once, upgrading any stale variant of cfgd's own source line in place.
+/// Returns `None` when the file already holds exactly the desired line and no
+/// stale variant (nothing to write); `Some(new_content)` otherwise.
+///
+/// Keyed on the managed-file marker (`.cfgd.env` / `.cfgd-env.ps1`) rather than
+/// an exact-string match so that changing the loader keyword — the `source` →
+/// POSIX `.` fix — migrates a dotfile written by an older cfgd instead of
+/// appending a second, duplicate line. The desired line is placed last so it
+/// still follows any user definitions (the ordering `detect_rc_env_conflicts`
+/// relies on).
+pub(super) fn merge_source_line(existing: &str, line: &str) -> Option<String> {
+    let marker = if line.contains(".cfgd-env.ps1") {
+        ".cfgd-env.ps1"
+    } else {
+        ".cfgd.env"
+    };
+    let managed: Vec<&str> = existing.lines().filter(|l| l.contains(marker)).collect();
+    if managed.len() == 1 && managed[0] == line {
+        return None;
+    }
+    let mut kept: Vec<&str> = existing.lines().filter(|l| !l.contains(marker)).collect();
+    // Drop blank lines the removal would strand at the tail so re-running never
+    // accretes a growing gap before the appended line.
+    while matches!(kept.last(), Some(l) if l.trim().is_empty()) {
+        kept.pop();
+    }
+    let mut content = kept.join("\n");
+    if !content.is_empty() {
+        content.push('\n');
+    }
+    content.push_str(line);
+    content.push('\n');
+    Some(content)
+}
+
 /// Scan a shell rc file for `export` and `alias` definitions that appear before
 /// the cfgd source line. If any match a cfgd-managed name with a different value,
 /// return warnings advising the user to move the definition after the source line.

@@ -2223,7 +2223,7 @@ fn rc_conflict_env_different_value_warns() {
     let rc = dir.path().join(".bashrc");
     std::fs::write(
         &rc,
-        "export EDITOR=\"vim\"\n[ -f ~/.cfgd.env ] && source ~/.cfgd.env\n",
+        "export EDITOR=\"vim\"\n[ -f ~/.cfgd.env ] && . ~/.cfgd.env\n",
     )
     .unwrap();
     let env = vec![crate::config::EnvVar {
@@ -2242,7 +2242,7 @@ fn rc_conflict_env_same_value_no_warning() {
     let rc = dir.path().join(".bashrc");
     std::fs::write(
         &rc,
-        "export EDITOR=\"nvim\"\n[ -f ~/.cfgd.env ] && source ~/.cfgd.env\n",
+        "export EDITOR=\"nvim\"\n[ -f ~/.cfgd.env ] && . ~/.cfgd.env\n",
     )
     .unwrap();
     let env = vec![crate::config::EnvVar {
@@ -2259,7 +2259,7 @@ fn rc_conflict_alias_different_value_warns() {
     let rc = dir.path().join(".bashrc");
     std::fs::write(
         &rc,
-        "alias vim=\"vi\"\n[ -f ~/.cfgd.env ] && source ~/.cfgd.env\n",
+        "alias vim=\"vi\"\n[ -f ~/.cfgd.env ] && . ~/.cfgd.env\n",
     )
     .unwrap();
     let aliases = vec![crate::config::ShellAlias {
@@ -2278,7 +2278,7 @@ fn rc_conflict_after_source_line_no_warning() {
     let rc = dir.path().join(".bashrc");
     std::fs::write(
         &rc,
-        "[ -f ~/.cfgd.env ] && source ~/.cfgd.env\nexport EDITOR=\"vim\"\n",
+        "[ -f ~/.cfgd.env ] && . ~/.cfgd.env\nexport EDITOR=\"vim\"\n",
     )
     .unwrap();
     let env = vec![crate::config::EnvVar {
@@ -3073,14 +3073,14 @@ fn apply_env_inject_source_line_creates_file() {
 
     let action = EnvAction::InjectSourceLine {
         rc_path: rc_path.clone(),
-        line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
+        line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
     };
 
     let printer = test_printer();
     let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
 
     let written = std::fs::read_to_string(&rc_path).unwrap();
-    assert!(written.contains("source ~/.cfgd.env"));
+    assert!(written.contains(". ~/.cfgd.env"));
     assert!(desc.starts_with("env:inject:"));
 }
 
@@ -3092,19 +3092,52 @@ fn apply_env_inject_skips_when_already_present() {
     // Pre-write content that already mentions cfgd.env
     std::fs::write(
         &rc_path,
-        "# existing config\n[ -f ~/.cfgd.env ] && source ~/.cfgd.env\n",
+        "# existing config\n[ -f ~/.cfgd.env ] && . ~/.cfgd.env\n",
     )
     .unwrap();
 
     let action = EnvAction::InjectSourceLine {
         rc_path: rc_path.clone(),
-        line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
+        line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
     };
 
     let printer = test_printer();
     let desc = Reconciler::apply_env_action(&action, &printer).unwrap();
 
     assert!(desc.contains("skipped"), "Expected skip: {}", desc);
+}
+
+#[test]
+fn apply_env_inject_migrates_legacy_source_keyword() {
+    let dir = tempfile::tempdir().unwrap();
+    let rc_path = dir.path().join(".profile");
+
+    // A dotfile written by an older cfgd used the bash-only `source` keyword,
+    // which fails under a POSIX /bin/sh `.profile` (FreeBSD base, dash).
+    std::fs::write(
+        &rc_path,
+        "# existing config\n[ -f ~/.cfgd.env ] && source ~/.cfgd.env\n",
+    )
+    .unwrap();
+
+    let action = EnvAction::InjectSourceLine {
+        rc_path: rc_path.clone(),
+        line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
+    };
+
+    let printer = test_printer();
+    Reconciler::apply_env_action(&action, &printer).unwrap();
+
+    let written = std::fs::read_to_string(&rc_path).unwrap();
+    // The legacy line is upgraded in place, not duplicated.
+    assert!(written.contains("[ -f ~/.cfgd.env ] && . ~/.cfgd.env"));
+    assert!(!written.contains("source ~/.cfgd.env"));
+    assert_eq!(
+        written.matches(".cfgd.env").count(),
+        2, // one `[ -f ~/.cfgd.env ]` test + one `. ~/.cfgd.env` loader, single line
+        "exactly one managed source line must remain: {written:?}"
+    );
+    assert!(written.starts_with("# existing config\n"));
 }
 
 #[test]
@@ -3116,7 +3149,7 @@ fn apply_env_inject_appends_to_existing_content() {
 
     let action = EnvAction::InjectSourceLine {
         rc_path: rc_path.clone(),
-        line: "[ -f ~/.cfgd.env ] && source ~/.cfgd.env".to_string(),
+        line: "[ -f ~/.cfgd.env ] && . ~/.cfgd.env".to_string(),
     };
 
     let printer = test_printer();
@@ -3125,7 +3158,7 @@ fn apply_env_inject_appends_to_existing_content() {
     let written = std::fs::read_to_string(&rc_path).unwrap();
     assert!(written.starts_with("# my config\n"));
     assert!(written.contains("export FOO=bar"));
-    assert!(written.contains("source ~/.cfgd.env"));
+    assert!(written.contains(". ~/.cfgd.env"));
 }
 
 #[test]
@@ -5144,7 +5177,7 @@ fn action_target_path_module_returns_none() {
 fn action_target_path_env_inject_returns_none() {
     let action = Action::Env(EnvAction::InjectSourceLine {
         rc_path: PathBuf::from("/home/user/.bashrc"),
-        line: "source ~/.cfgd.env".into(),
+        line: ". ~/.cfgd.env".into(),
     });
     assert!(super::action_target_path(&action).is_none());
 }
@@ -5239,7 +5272,7 @@ fn format_action_description_env_write_and_inject() {
 
     let inject = Action::Env(EnvAction::InjectSourceLine {
         rc_path: PathBuf::from("/home/user/.bashrc"),
-        line: "source ~/.cfgd.env".into(),
+        line: ". ~/.cfgd.env".into(),
     });
     assert!(format_action_description(&inject).starts_with("env:inject:"));
 }
@@ -5679,7 +5712,7 @@ fn format_plan_items_env_actions() {
             }),
             Action::Env(EnvAction::InjectSourceLine {
                 rc_path: PathBuf::from("/home/user/.bashrc"),
-                line: "source ~/.cfgd.env".into(),
+                line: ". ~/.cfgd.env".into(),
             }),
         ],
     };
@@ -8454,7 +8487,7 @@ fn format_action_description_env_write_file() {
 fn format_action_description_env_inject_source() {
     let action = Action::Env(EnvAction::InjectSourceLine {
         rc_path: PathBuf::from("/home/user/.zshrc"),
-        line: "source ~/.cfgd.env".to_string(),
+        line: ". ~/.cfgd.env".to_string(),
     });
     let desc = format_action_description(&action);
     assert_eq!(desc, "env:inject:/home/user/.zshrc");

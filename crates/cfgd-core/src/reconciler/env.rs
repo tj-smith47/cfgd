@@ -119,21 +119,11 @@ impl<'a> super::Reconciler<'a> {
                         String::new()
                     }
                 };
-                if existing.contains(line) {
-                    // Already injected
+                let Some(content) = super::env_files::merge_source_line(&existing, line) else {
+                    // Already present as the exact desired line — nothing to write.
                     return Ok(format!("env:inject:{}:skipped", rc_path.posix()));
-                }
-                if let Some(parent) = rc_path.parent()
-                    && !parent.exists()
-                {
-                    std::fs::create_dir_all(parent)?;
-                }
-                let mut content = existing;
-                if !content.ends_with('\n') && !content.is_empty() {
-                    content.push('\n');
-                }
-                content.push_str(line);
-                content.push('\n');
+                };
+                crate::ensure_parent_dir(rc_path)?;
                 crate::atomic_write_str(rc_path, &content)?;
                 printer.status_simple(
                     Role::Ok,

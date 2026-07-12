@@ -1078,7 +1078,7 @@ fn action_resource_info_env_inject() {
 
     let action = Action::Env(EnvAction::InjectSourceLine {
         rc_path: PathBuf::from("/home/user/.bashrc"),
-        line: "source ~/.cfgd.env".into(),
+        line: ". ~/.cfgd.env".into(),
     });
     let (rtype, rid) = action_resource_info(&action);
     assert_eq!(rtype, "env-rc");

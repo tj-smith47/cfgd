@@ -19,8 +19,12 @@ use super::env_files::{
     generate_powershell_env_content,
 };
 
-/// Source line shells evaluate to load the cfgd-managed env file.
-const UNIX_SOURCE_LINE: &str = "[ -f ~/.cfgd.env ] && source ~/.cfgd.env";
+/// Source line shells evaluate to load the cfgd-managed env file. Uses the
+/// POSIX `.` builtin, not the `source` alias: `.profile` is read by `/bin/sh`
+/// (dash on Debian, the base `sh` on FreeBSD), which has no `source` — the alias
+/// exists only in bash/zsh/csh. `.` is equivalent in bash and zsh, so one line
+/// loads correctly across every shell cfgd injects into.
+const UNIX_SOURCE_LINE: &str = "[ -f ~/.cfgd.env ] && . ~/.cfgd.env";
 const PS_SOURCE_LINE: &str = ". ~/.cfgd-env.ps1";
 
 /// LaunchAgent label for the *user-scope* (`spec.env`) plist. Deliberately

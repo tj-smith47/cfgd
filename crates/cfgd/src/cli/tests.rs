@@ -15242,7 +15242,7 @@ fn action_path_system_skip() {
 fn action_path_env_inject_source_line() {
     let action = reconciler::Action::Env(reconciler::EnvAction::InjectSourceLine {
         rc_path: PathBuf::from("/home/user/.zshrc"),
-        line: "source ~/.cfgd.env".into(),
+        line: ". ~/.cfgd.env".into(),
     });
     let path = super::action_path(&PhaseName::Env, &action);
     assert_eq!(path, "env:/home/user/.zshrc");

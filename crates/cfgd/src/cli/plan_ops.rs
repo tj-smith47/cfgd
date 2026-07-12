@@ -1019,7 +1019,7 @@ mod tests {
     fn env_inject() -> Action {
         Action::Env(EnvAction::InjectSourceLine {
             rc_path: PathBuf::from("/home/user/.zshrc"),
-            line: "source ~/.cfgd.env".to_string(),
+            line: ". ~/.cfgd.env".to_string(),
         })
     }
 
