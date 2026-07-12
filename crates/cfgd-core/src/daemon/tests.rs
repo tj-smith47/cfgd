@@ -12054,17 +12054,20 @@ mod ipc_socket_security {
         let _ = handle.await;
     }
 
-    /// Drives `ensure_owner_private_dir` against `/proc/<random>/cfgd` —
-    /// `/proc` rejects directory creation even for uid 0, so create_dir_all
-    /// surfaces ENOENT and the helper returns a HealthSocketError naming
+    /// Drives `ensure_owner_private_dir` against a path whose parent component
+    /// is a regular file. `create_dir_all` then fails with ENOTDIR on every
+    /// unix regardless of uid, so the helper returns a HealthSocketError naming
     /// the offending directory. Proves the helper does not silently continue
     /// when the parent dir cannot be made owner-private.
     ///
-    /// The test suite frequently runs as root in CI/devcontainers, so the
-    /// mode-check arm (`mode & 0o077 != 0`) cannot be exercised end-to-end:
-    /// root bypasses chmod, so the helper always succeeds in lowering 0o755
-    /// to 0o700 before the re-stat. The create-failure arm here is the
-    /// negative path that fires deterministically regardless of uid; the
+    /// A file component is the portable way to force this: a `/proc/<x>` path
+    /// is creation-hostile only on Linux (FreeBSD mounts no procfs by default,
+    /// so root can mkdir under the `/proc` mountpoint and the negative path
+    /// never fires). The test suite frequently runs as root in CI/devcontainers,
+    /// so the mode-check arm (`mode & 0o077 != 0`) cannot be exercised
+    /// end-to-end — root bypasses chmod, so the helper always succeeds in
+    /// lowering 0o755 to 0o700 before the re-stat. The create-failure arm here
+    /// is the negative path that fires deterministically regardless of uid; the
     /// owner-private predicate itself is unit-tested in the sibling
     /// `owner_private_predicate_rejects_world_readable_modes` test.
     #[cfg(unix)]
@@ -12072,7 +12075,10 @@ mod ipc_socket_security {
     #[serial_test::serial]
     fn bind_socket_refuses_world_readable_parent_dir() {
         use crate::daemon::health_ipc::ensure_owner_private_dir;
-        let bogus = std::path::PathBuf::from("/proc/cfgd-blocker-test-does-not-exist/cfgd");
+        let tmp = tempfile::tempdir().unwrap();
+        let not_a_dir = tmp.path().join("not-a-dir");
+        std::fs::write(&not_a_dir, b"x").unwrap();
+        let bogus = not_a_dir.join("cfgd");
         let err = ensure_owner_private_dir(&bogus)
             .expect_err("expected refusal when parent dir cannot be made owner-private");
         let msg = format!("{err}");

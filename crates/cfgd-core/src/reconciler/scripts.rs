@@ -412,14 +412,16 @@ pub(crate) fn execute_script(
     cmd.stderr(std::process::Stdio::piped());
 
     // A spawn ENOENT here almost never means "the script is missing" — the
-    // interpreter couldn't be resolved, typically because a `spec.env` PATH
-    // entry overwrote PATH. Name the real cause instead of a bare os error 2.
+    // interpreter couldn't be resolved, either because it is not installed
+    // (e.g. `shell: bash` on a FreeBSD base that ships only POSIX sh) or
+    // because a `spec.env` PATH entry overwrote PATH. Name the real causes
+    // instead of a bare os error 2.
     let mut child = cmd.spawn().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             CfgdError::Config(ConfigError::Invalid {
                 message: format!(
-                    "could not spawn the script interpreter ({e}) — \
-                     a spec.env PATH that drops the system bin dirs is the usual cause"
+                    "could not spawn the script interpreter ({e}) — the interpreter \
+                     may not be installed, or a spec.env PATH dropped the system bin dirs"
                 ),
             })
         } else {
@@ -1201,6 +1203,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn shell_bash_runs_inline_with_bash() {
+        if !crate::command_available("bash") {
+            // The bash-specific interpreter path can only be exercised where
+            // bash exists; FreeBSD's base ships only POSIX sh, so skip rather
+            // than fail on a host that legitimately lacks bash.
+            return;
+        }
         let printer = crate::test_helpers::test_printer();
         let tmp = tempfile::tempdir().unwrap();
         let entry = ScriptEntry::Full {
@@ -1436,6 +1444,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn execute_script_uses_shell_override_for_inline_command() {
+        if !crate::command_available("bash") {
+            // Proving the override routes through bash requires bash on PATH;
+            // FreeBSD's base has only POSIX sh, so skip where bash is absent.
+            return;
+        }
         let printer = crate::test_helpers::test_printer();
         let tmp = tempfile::tempdir().unwrap();
         // BASH_VERSION is exported by bash but not by sh/dash; if the override
