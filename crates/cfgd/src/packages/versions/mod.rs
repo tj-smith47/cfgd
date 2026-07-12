@@ -145,8 +145,15 @@ pub(super) fn query_version_apk(manager: &str, package: &str) -> Result<Option<S
 }
 
 pub(super) fn query_version_pkg(manager: &str, package: &str) -> Result<Option<String>> {
+    // `pkg rquery` reads the remote catalogue database that `pkg install`
+    // resolves against. `pkg search` consults a *separate* search index that a
+    // stock host never syncs (only `pkg update` populates the catalogue, not the
+    // search index), so `pkg search -e` returns nothing even when 30k+ packages
+    // are installable — silently starving version-constraint resolution. Query
+    // `%n<TAB>%v` and match the name exactly so a pattern that expands to several
+    // packages can never yield a sibling's version.
     let output = tool_cmd(PKG_BIN_ENV, "pkg")
-        .args(["search", "-e", package])
+        .args(["rquery", "%n\t%v", package])
         .output()
         .map_err(|e| PackageError::CommandFailed {
             manager: manager.into(),
@@ -157,15 +164,13 @@ pub(super) fn query_version_pkg(manager: &str, package: &str) -> Result<Option<S
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
-        let name_ver = line.split_whitespace().next().unwrap_or("");
-        let bytes = name_ver.as_bytes();
-        for i in (0..bytes.len()).rev() {
-            if bytes[i] == b'-' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
-                let name = &name_ver[..i];
-                if name == package {
-                    return Ok(Some(name_ver[i + 1..].to_string()));
-                }
-                break;
+        let mut parts = line.splitn(2, '\t');
+        if parts.next() == Some(package)
+            && let Some(version) = parts.next()
+        {
+            let version = version.trim();
+            if !version.is_empty() {
+                return Ok(Some(version.to_string()));
             }
         }
     }

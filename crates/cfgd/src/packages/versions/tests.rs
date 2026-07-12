@@ -567,12 +567,8 @@ mod shim_tests {
     #[test]
     #[serial]
     fn query_version_pkg_returns_version_on_exact_name_match() {
-        let _shim = ToolShim::install(
-            PKG_BIN_ENV,
-            0,
-            "curl-8.5.0                     Command line tool for transferring data\n",
-            "",
-        );
+        // `pkg rquery '%n\t%v'` output: name<TAB>version, one line per match.
+        let _shim = ToolShim::install(PKG_BIN_ENV, 0, "curl\t8.5.0\n", "");
         let version = query_version_pkg("pkg", "curl").expect("query should succeed");
         assert_eq!(version, Some("8.5.0".to_string()));
     }
@@ -580,7 +576,8 @@ mod shim_tests {
     #[test]
     #[serial]
     fn query_version_pkg_returns_none_on_no_match() {
-        let _shim = ToolShim::install(PKG_BIN_ENV, 0, "wget-1.21.4    GNU Wget\n", "");
+        // A pattern expanding to a sibling package must not leak its version.
+        let _shim = ToolShim::install(PKG_BIN_ENV, 0, "wget\t1.21.4\n", "");
         let version = query_version_pkg("pkg", "curl").expect("query should succeed");
         assert_eq!(version, None);
     }
@@ -588,7 +585,7 @@ mod shim_tests {
     #[test]
     #[serial]
     fn query_version_pkg_returns_none_on_non_zero_exit() {
-        let _shim = ToolShim::install(PKG_BIN_ENV, 70, "", "pkg search failed");
+        let _shim = ToolShim::install(PKG_BIN_ENV, 70, "", "pkg rquery failed");
         let version = query_version_pkg("pkg", "curl").expect("query should not error");
         assert_eq!(version, None);
     }
