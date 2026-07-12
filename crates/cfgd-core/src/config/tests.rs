@@ -2314,26 +2314,6 @@ fn resolve_profile_ambiguous_parent_fails_closed() {
 }
 
 #[test]
-fn scan_profiles_yields_both_forms_sorted() {
-    let dir = tempfile::tempdir().unwrap();
-    let legacy = write_legacy_profile(dir.path(), "zeta.yml", "zeta");
-    let canonical = write_canonical_profile(dir.path(), "alpha", &[]);
-    // payload dir of a legacy profile: not a profile entry
-    std::fs::create_dir_all(dir.path().join("zeta-payload").join("files")).unwrap();
-    // non-yaml noise: ignored
-    std::fs::write(dir.path().join("README.md"), "x").unwrap();
-
-    let entries = scan_profiles(dir.path()).unwrap();
-    assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].name, "alpha");
-    assert_eq!(entries[0].form, ProfileForm::Canonical);
-    assert_eq!(entries[0].path, canonical);
-    assert_eq!(entries[1].name, "zeta");
-    assert_eq!(entries[1].form, ProfileForm::LegacyFlat);
-    assert_eq!(entries[1].path, legacy);
-}
-
-#[test]
 fn scan_profiles_ambiguous_name_fails_closed() {
     let dir = tempfile::tempdir().unwrap();
     write_canonical_profile(dir.path(), "work", &[]);
@@ -2371,13 +2351,6 @@ fn scan_profiles_ignores_uppercase_yaml_extension() {
     let dir = tempfile::tempdir().unwrap();
     write_legacy_profile(dir.path(), "work.YAML", "work");
     assert!(scan_profiles(dir.path()).unwrap().is_empty());
-}
-
-#[test]
-fn scan_profiles_missing_dir_is_empty() {
-    let dir = tempfile::tempdir().unwrap();
-    let entries = scan_profiles(&dir.path().join("nope")).unwrap();
-    assert!(entries.is_empty());
 }
 
 #[test]

@@ -169,9 +169,7 @@ impl SystemConfigurator for AppArmorConfigurator {
             }
 
             if let Some(content) = profile.get("content").and_then(|v| v.as_str()) {
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent)?;
-                }
+                cfgd_core::ensure_parent_dir(&path)?;
                 printer.status_simple(
                     Role::Info,
                     format!("Writing AppArmor profile: {}", path.posix()),

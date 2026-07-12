@@ -451,10 +451,9 @@ fn classify_profile_dir_entry(entry: &std::fs::DirEntry) -> Option<(String, Prof
             Some("yaml") | Some("yml")
         )
     {
-        // Exact lowercase extensions only (not the case-insensitive
-        // is_yaml_ext): find_profile_path probes literal `.yaml`/`.yml`,
-        // so a case-insensitive scan would enumerate profiles that are
-        // unresolvable by name.
+        // Exact lowercase extensions only: find_profile_path probes literal
+        // `.yaml`/`.yml`, so a looser extension match would enumerate
+        // profiles that are unresolvable by name.
         let stem = path.file_stem().and_then(|s| s.to_str())?.to_string();
         Some((stem, ProfileForm::LegacyFlat, path))
     } else {

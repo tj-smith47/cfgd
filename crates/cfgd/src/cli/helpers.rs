@@ -2,6 +2,25 @@ use super::*;
 use cfgd_core::PathDisplayExt;
 use cfgd_core::output::{Printer, Role};
 
+/// Write a freshly scaffolded manifest: prepend the editor schema modeline and
+/// write atomically.
+///
+/// Lives in the binary crate on purpose — the modeline's schema version comes
+/// from `env!("CARGO_PKG_VERSION")` evaluated HERE, so it is always the cfgd
+/// binary's version (the one the vendored SchemaStore schemas are published
+/// under), never cfgd-core's independently-versioned one (which would 404).
+/// Scaffold-only: rewrite paths of user-owned files must never inject a
+/// modeline and must not use this.
+pub(in crate::cli) fn write_scaffold(
+    kind: cfgd_core::config::SchemaDocKind,
+    path: &Path,
+    body: &str,
+) -> anyhow::Result<()> {
+    let content = cfgd_core::config::with_schema_modeline(kind, env!("CARGO_PKG_VERSION"), body);
+    cfgd_core::atomic_write_str(path, &content)?;
+    Ok(())
+}
+
 pub(in crate::cli) fn load_config_and_profile(
     cli: &Cli,
 ) -> anyhow::Result<(CfgdConfig, String, ResolvedProfile)> {

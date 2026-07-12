@@ -111,6 +111,18 @@ pub fn atomic_write(
     Ok(hash)
 }
 
+/// Create the parent directory of `target` (and every missing ancestor).
+///
+/// A no-op when `target` has no parent or the directory already exists. Use
+/// before writing a file whose directory may not exist yet; to create a named
+/// directory itself, call `create_dir_all` directly.
+pub fn ensure_parent_dir(target: &std::path::Path) -> std::result::Result<(), std::io::Error> {
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
 /// Atomically write string content to a file.
 pub fn atomic_write_str(
     target: &std::path::Path,

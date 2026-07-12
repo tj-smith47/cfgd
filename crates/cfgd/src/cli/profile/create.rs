@@ -246,15 +246,12 @@ pub fn cmd_profile_create(
         },
     };
 
-    let yaml = cfgd_core::config::with_schema_modeline(
+    cfgd_core::ensure_parent_dir(&profile_path)?;
+    crate::cli::helpers::write_scaffold(
         cfgd_core::config::SchemaDocKind::Profile,
-        env!("CARGO_PKG_VERSION"),
+        &profile_path,
         &serde_yaml::to_string(&doc)?,
-    );
-    if let Some(parent) = profile_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    cfgd_core::atomic_write_str(&profile_path, &yaml)?;
+    )?;
 
     let mut out = Doc::new().status(
         Role::Ok,

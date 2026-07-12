@@ -110,12 +110,11 @@ pub fn cmd_source_create(
         source_name, source_version, source_description, profiles_yaml, modules_yaml,
     );
 
-    let yaml = cfgd_core::config::with_schema_modeline(
+    crate::cli::helpers::write_scaffold(
         cfgd_core::config::SchemaDocKind::ConfigSource,
-        env!("CARGO_PKG_VERSION"),
+        &source_path,
         &yaml,
-    );
-    cfgd_core::atomic_write_str(&source_path, &yaml)?;
+    )?;
 
     let mut doc = Doc::new().status(
         Role::Ok,

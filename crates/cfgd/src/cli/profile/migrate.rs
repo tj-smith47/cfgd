@@ -354,9 +354,7 @@ fn execute_move(
     from: &Path,
     to: &Path,
 ) -> anyhow::Result<()> {
-    if let Some(parent) = to.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    cfgd_core::ensure_parent_dir(to)?;
     if use_git {
         match git_mv(config_dir, from, to) {
             GitMvOutcome::Moved => return Ok(()),

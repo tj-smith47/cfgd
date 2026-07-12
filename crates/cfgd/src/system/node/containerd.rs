@@ -124,9 +124,7 @@ impl SystemConfigurator for ContainerdConfigurator {
             set_toml_value(&mut current, key_str, desired_val);
         }
 
-        if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
+        cfgd_core::ensure_parent_dir(&config_path)?;
 
         let content = toml::to_string_pretty(&current).map_err(|e| {
             CfgdError::Io(std::io::Error::other(format!(

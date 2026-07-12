@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -213,16 +212,6 @@ fn default_update_interval() -> String {
     "24h".to_string()
 }
 
-/// Returns `true` if `path` has a YAML extension (`.yaml` or `.yml`,
-/// case-sensitive to match the rest of cfgd).
-///
-/// Use this instead of inlining `ext == "yaml" || ext == "yml"` checks when
-/// iterating module / profile directories — keeps the "what counts as a YAML
-/// file" decision in one place.
-pub fn is_yaml_ext(path: &Path) -> bool {
-    path.extension().is_some_and(|e| e == "yaml" || e == "yml")
-}
-
 /// Build a minimal CfgdConfig for module-only operations that don't have cfgd.yaml.
 pub fn minimal_config() -> CfgdConfig {
     CfgdConfig {
@@ -297,14 +286,6 @@ mod tests {
             spec.primary_origin().unwrap().url,
             "https://example.com/dotfiles.git"
         );
-    }
-
-    #[test]
-    fn is_yaml_ext_accepts_yaml_and_yml() {
-        assert!(is_yaml_ext(Path::new("foo.yaml")));
-        assert!(is_yaml_ext(Path::new("bar.yml")));
-        assert!(!is_yaml_ext(Path::new("baz.toml")));
-        assert!(!is_yaml_ext(Path::new("noext")));
     }
 
     #[test]

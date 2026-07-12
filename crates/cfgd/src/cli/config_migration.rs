@@ -141,9 +141,7 @@ fn keep_at_dotconfig(printer: &Printer, home: &Path) {
     // don't re-prompt on their next cfgd run. Best-effort: never block keep on a
     // sentinel-write failure.
     if let Some(marker) = pin_sentinel() {
-        if let Some(parent) = marker.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
+        let _ = cfgd_core::ensure_parent_dir(&marker);
         let _ = cfgd_core::atomic_write_str(&marker, "");
     }
 }
@@ -222,9 +220,7 @@ fn append_line_once(path: &Path, line: &str, var_marker: &str) -> std::io::Resul
     if already {
         return Ok(());
     }
-    if let Some(parent) = real.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    cfgd_core::ensure_parent_dir(&real)?;
     let mut f = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

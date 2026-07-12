@@ -61,7 +61,7 @@ pub use resolve::{
 };
 pub use root::{
     CfgdConfig, ConfigMetadata, ConfigSpec, SkillUpdateConfig, SkillUpdatePolicy, UpdateConfig,
-    UpdatePolicy, is_yaml_ext, minimal_config,
+    UpdatePolicy, minimal_config,
 };
 pub use security::{ModuleSecurityConfig, ModulesConfig, SecurityConfig};
 pub use source::{

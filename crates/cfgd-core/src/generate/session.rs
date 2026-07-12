@@ -86,9 +86,7 @@ impl GenerateSession {
             Ok(existing) => existing,
             Err(crate::errors::ConfigError::ProfileNotFound { .. }) => {
                 let canonical = crate::config::canonical_profile_path(&profiles_dir, name);
-                if let Some(parent) = canonical.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
+                crate::ensure_parent_dir(&canonical)?;
                 canonical
             }
             Err(e) => return Err(e.into()),

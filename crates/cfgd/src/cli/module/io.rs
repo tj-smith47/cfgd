@@ -20,11 +20,9 @@ pub(crate) fn scaffold_module_document(
     doc: &config::ModuleDocument,
     path: &Path,
 ) -> anyhow::Result<()> {
-    let yaml = cfgd_core::config::with_schema_modeline(
+    crate::cli::helpers::write_scaffold(
         cfgd_core::config::SchemaDocKind::Module,
-        env!("CARGO_PKG_VERSION"),
+        path,
         &serde_yaml::to_string(doc)?,
-    );
-    cfgd_core::atomic_write_str(path, &yaml)?;
-    Ok(())
+    )
 }
