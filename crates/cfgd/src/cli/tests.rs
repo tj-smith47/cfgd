@@ -5298,6 +5298,7 @@ fn cmd_apply_with_env_vars() {
 
 #[test]
 fn cmd_status_with_modules() {
+    let _pm_guard = crate::cli::registry::PackageManagerFactoryGuard::hermetic_native();
     let (config_dir, state_dir) = setup_test_env();
 
     create_module_in_dir(
@@ -6958,6 +6959,7 @@ fn cmd_verify_module_not_found() {
 
 #[test]
 fn cmd_plan_module_with_packages() {
+    let _pm_guard = crate::cli::registry::PackageManagerFactoryGuard::hermetic_native();
     let (config_dir, state_dir) = setup_test_env();
 
     create_module_in_dir(
@@ -14493,6 +14495,7 @@ fn action_path_env_write() {
 
 #[test]
 fn cmd_plan_rich_module_with_packages_env_and_files() {
+    let _pm_guard = crate::cli::registry::PackageManagerFactoryGuard::hermetic_native();
     let rich_module = r#"apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
@@ -14641,6 +14644,7 @@ spec:
 // cli/init/tests.rs) or plain `cargo test` (shared-process) races them.
 #[serial_test::serial]
 fn cmd_plan_json_output_with_module() {
+    let _pm_guard = crate::cli::registry::PackageManagerFactoryGuard::hermetic_native();
     let module_yaml = r#"apiVersion: cfgd.io/v1alpha1
 kind: Module
 metadata:
@@ -15017,13 +15021,16 @@ fn cmd_diff_module_not_found_shows_info() {
 
 #[test]
 fn cmd_diff_module_with_files_shows_file_and_package_sections() {
+    let _pm_guard = crate::cli::registry::PackageManagerFactoryGuard::hermetic_native();
     // Target lands in an isolated temp dir (never a shared path); it is left
     // absent so the renderer exercises the missing-target branch.
     let target_dir = tempfile::tempdir().unwrap();
     let target = target_dir.path().join("cfgd-diff-test-target");
+    // Fold to `/` so the YAML target matches the renderer's posix-normalized
+    // resource id on Windows (native `\` would never match; see path-handling.md).
     let module_yaml = format!(
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: diff-mod\nspec:\n  packages:\n    - name: curl\n  files:\n    - source: my-config\n      target: {}\n",
-        target.display()
+        cfgd_core::to_posix_string(&target)
     );
     let h = CliTestHarness::builder()
         .module("diff-mod", &module_yaml)

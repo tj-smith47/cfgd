@@ -3232,6 +3232,7 @@ fn cmd_module_show_renders_platform_filtered_and_resolved_packages() {
     // exercised on the resolved entry — they're computed for every package
     // regardless of resolution outcome, even though only the Err arm emits
     // them in the printed output.
+    let _pm_guard = crate::cli::registry::PackageManagerFactoryGuard::hermetic_native();
     let dir = setup_config_dir();
     let yaml = "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  \
                 name: rich\nspec:\n  packages:\n    \

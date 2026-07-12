@@ -125,7 +125,7 @@ pub(in crate::cli) fn build_registry_with_config_and_packages(
     packages: Option<&cfgd_core::config::PackagesSpec>,
 ) -> ProviderRegistry {
     let mut registry = ProviderRegistry::new();
-    registry.package_managers = packages::all_package_managers();
+    registry.package_managers = package_managers_for_registry();
 
     // Register system configurators based on OS
     use crate::system::*;
@@ -252,6 +252,130 @@ pub(in crate::cli) fn build_registry_with_config_and_packages(
     registry
 }
 
+/// The package-manager set installed into every freshly-built registry.
+///
+/// Production always returns the real built-in managers. In test builds a
+/// thread-local seam ([`PackageManagerFactoryGuard`]) can substitute a
+/// deterministic set so package-resolution tests stay hermetic regardless of
+/// which native manager the host has installed — e.g. `winget` is absent on
+/// non-interactive Windows CI hosts, which otherwise makes bare-name module
+/// packages unresolvable and fails plan/status/diff rendering tests.
+#[cfg(not(test))]
+fn package_managers_for_registry() -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
+    packages::all_package_managers()
+}
+
+#[cfg(test)]
+fn package_managers_for_registry() -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
+    PACKAGE_MANAGER_FACTORY.with(|cell| match *cell.borrow() {
+        Some(factory) => factory(),
+        None => packages::all_package_managers(),
+    })
+}
+
+/// Factory producing the package-manager set for a freshly-built registry.
+#[cfg(test)]
+type PackageManagerFactory = fn() -> Vec<Box<dyn cfgd_core::providers::PackageManager>>;
+
+#[cfg(test)]
+thread_local! {
+    static PACKAGE_MANAGER_FACTORY: std::cell::RefCell<Option<PackageManagerFactory>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// RAII guard (test-only) that overrides the package-manager set for the
+/// current thread. On drop the override is cleared, so tests stay isolated even
+/// when they run on the same thread. Hold the guard for the whole test body —
+/// the registry is rebuilt multiple times per command, so the factory (not a
+/// one-shot value) is what gets stored.
+#[cfg(test)]
+pub(in crate::cli) struct PackageManagerFactoryGuard;
+
+#[cfg(test)]
+impl PackageManagerFactoryGuard {
+    /// Install a factory producing a deterministic manager set.
+    pub(in crate::cli) fn install(factory: PackageManagerFactory) -> Self {
+        PACKAGE_MANAGER_FACTORY.with(|cell| *cell.borrow_mut() = Some(factory));
+        Self
+    }
+
+    /// Install a set where the host's native manager is replaced by an
+    /// always-available fake, so modules declaring bare-name packages resolve
+    /// on any host. Every other built-in manager is preserved unchanged.
+    pub(in crate::cli) fn hermetic_native() -> Self {
+        Self::install(hermetic_managers)
+    }
+}
+
+#[cfg(test)]
+impl Drop for PackageManagerFactoryGuard {
+    fn drop(&mut self) {
+        PACKAGE_MANAGER_FACTORY.with(|cell| *cell.borrow_mut() = None);
+    }
+}
+
+#[cfg(test)]
+fn hermetic_managers() -> Vec<Box<dyn cfgd_core::providers::PackageManager>> {
+    let native = cfgd_core::platform::Platform::detect()
+        .native_manager()
+        .to_string();
+    let mut managers: Vec<Box<dyn cfgd_core::providers::PackageManager>> =
+        packages::all_package_managers()
+            .into_iter()
+            .filter(|m| m.name() != native)
+            .collect();
+    managers.push(Box::new(FakeNativeManager { name: native }));
+    managers
+}
+
+/// Always-available stand-in for the host's native package manager. Resolves
+/// bare-name packages so plan/status/diff tests never depend on a real manager
+/// being installed; every mutating method is a no-op (tests assert on plan
+/// output, not on installs).
+#[cfg(test)]
+struct FakeNativeManager {
+    name: String,
+}
+
+#[cfg(test)]
+impl cfgd_core::providers::PackageManager for FakeNativeManager {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn is_available(&self) -> bool {
+        true
+    }
+    fn can_bootstrap(&self) -> bool {
+        false
+    }
+    fn bootstrap(&self, _printer: &cfgd_core::output::Printer) -> cfgd_core::errors::Result<()> {
+        Ok(())
+    }
+    fn installed_packages(&self) -> cfgd_core::errors::Result<std::collections::HashSet<String>> {
+        Ok(std::collections::HashSet::new())
+    }
+    fn install(
+        &self,
+        _packages: &[String],
+        _printer: &cfgd_core::output::Printer,
+    ) -> cfgd_core::errors::Result<()> {
+        Ok(())
+    }
+    fn uninstall(
+        &self,
+        _packages: &[String],
+        _printer: &cfgd_core::output::Printer,
+    ) -> cfgd_core::errors::Result<()> {
+        Ok(())
+    }
+    fn update(&self, _printer: &cfgd_core::output::Printer) -> cfgd_core::errors::Result<()> {
+        Ok(())
+    }
+    fn available_version(&self, _package: &str) -> cfgd_core::errors::Result<Option<String>> {
+        Ok(None)
+    }
+}
+
 /// Build the cfgd-installed package set (`"<manager>/<package>"` entries) from
 /// tracked state, for [`packages::plan_packages`] to bound declarative prune.
 pub(in crate::cli) fn cfgd_installed_packages(
@@ -350,6 +474,46 @@ mod tests {
             scope_arg: crate::cli::ScopeArg::User,
             command: None,
         }
+    }
+
+    // --- package-manager hermetic seam ---
+
+    #[test]
+    fn hermetic_guard_makes_native_manager_available_then_clears_on_drop() {
+        let native = cfgd_core::platform::Platform::detect()
+            .native_manager()
+            .to_string();
+
+        {
+            let _guard = PackageManagerFactoryGuard::hermetic_native();
+            let registry = build_registry_with_config(None);
+            let native_mgr = registry
+                .package_managers
+                .iter()
+                .find(|m| m.name() == native)
+                .expect("hermetic set must carry a manager named as the native manager");
+            assert!(
+                native_mgr.is_available(),
+                "hermetic native manager must report available on any host"
+            );
+            // Exactly one manager owns the native name — the fake replaced the real one.
+            assert_eq!(
+                registry
+                    .package_managers
+                    .iter()
+                    .filter(|m| m.name() == native)
+                    .count(),
+                1,
+                "the fake must replace, not duplicate, the native manager"
+            );
+        }
+
+        // Dropping the guard restores the real manager set for this thread.
+        let restored = build_registry_with_config(None);
+        assert!(
+            restored.package_managers.iter().any(|m| m.name() == native),
+            "real set still exposes the native manager by name after guard drop"
+        );
     }
 
     // --- secret_backend_from_config ---
