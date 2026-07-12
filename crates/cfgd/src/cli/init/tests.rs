@@ -2573,7 +2573,7 @@ fn cmd_init_from_git_applies_name_and_theme_overrides_together() {
 
 #[test]
 fn generate_release_workflow_yaml_empty_inputs() {
-    let yaml = generate_release_workflow_yaml(&[], &[], "master");
+    let yaml = generate_release_workflow_yaml(&[], &[], "master").unwrap();
     assert!(!yaml.is_empty(), "should produce non-empty YAML");
     assert!(yaml.contains("cfgd"), "should reference cfgd");
 }
@@ -2581,7 +2581,8 @@ fn generate_release_workflow_yaml_empty_inputs() {
 #[test]
 fn generate_release_workflow_yaml_with_modules() {
     let yaml =
-        generate_release_workflow_yaml(&["git".to_string(), "tmux".to_string()], &[], "master");
+        generate_release_workflow_yaml(&["git".to_string(), "tmux".to_string()], &[], "master")
+            .unwrap();
     assert!(
         yaml.contains("git") || yaml.contains("tmux"),
         "should reference module names"
@@ -2591,7 +2592,8 @@ fn generate_release_workflow_yaml_with_modules() {
 #[test]
 fn generate_release_workflow_yaml_with_profiles() {
     let yaml =
-        generate_release_workflow_yaml(&[], &["work".to_string(), "home".to_string()], "master");
+        generate_release_workflow_yaml(&[], &["work".to_string(), "home".to_string()], "master")
+            .unwrap();
     assert!(
         yaml.contains("work") || yaml.contains("home"),
         "should reference profile names"
@@ -2601,7 +2603,8 @@ fn generate_release_workflow_yaml_with_profiles() {
 #[test]
 fn generate_release_workflow_yaml_with_both() {
     let yaml =
-        generate_release_workflow_yaml(&["neovim".to_string()], &["base".to_string()], "master");
+        generate_release_workflow_yaml(&["neovim".to_string()], &["base".to_string()], "master")
+            .unwrap();
     assert!(!yaml.is_empty());
 }
 
@@ -2641,7 +2644,10 @@ fn scan_module_names_finds_dirs_with_module_yaml() {
     std::fs::create_dir_all(modules.join("empty")).unwrap();
     // empty module dir without module.yaml
 
-    let names = scan_module_names(&modules).unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let names = scan_module_names(&modules, &printer).unwrap();
     assert!(names.contains(&"git".to_string()));
     // "empty" should not appear since it has no module.yaml
 }

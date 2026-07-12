@@ -9,7 +9,7 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
 
     // Scan for profiles and modules
     let profile_names = scan_profile_names(&config_dir.join("profiles"), printer)?;
-    let module_names = scan_module_names(&config_dir.join("modules"))?;
+    let module_names = scan_module_names(&config_dir.join("modules"), printer)?;
 
     let default_branch =
         cfgd_core::detect_default_branch(&config_dir).unwrap_or_else(|| "master".to_string());
@@ -54,7 +54,7 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
         return Ok(());
     }
 
-    let yaml = generate_release_workflow_yaml(&module_names, &profile_names, &default_branch);
+    let yaml = generate_release_workflow_yaml(&module_names, &profile_names, &default_branch)?;
 
     std::fs::create_dir_all(&workflow_dir).map_err(|e| {
         crate::cli::cli_error(
@@ -118,7 +118,37 @@ pub(super) fn generate_release_workflow_yaml(
     modules: &[String],
     profiles: &[String],
     default_branch: &str,
-) -> String {
+) -> anyhow::Result<String> {
+    // Distinct names can fold to the same output key (`web.app` / `web-app` /
+    // `web_app` → `web_app`), which would emit duplicate YAML mapping keys
+    // GitHub rejects at load. Fail here naming the sources — silently
+    // suffixing would change which paths wire to which tag job.
+    let mut folded: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for m in modules {
+        folded
+            .entry(format!("module_{}", output_key(m)))
+            .or_default()
+            .push(format!("module '{m}'"));
+    }
+    for p in profiles {
+        folded
+            .entry(format!("profile_{}", output_key(p)))
+            .or_default()
+            .push(format!("profile '{p}'"));
+    }
+    let collisions: Vec<String> = folded
+        .into_iter()
+        .filter(|(_, sources)| sources.len() > 1)
+        .map(|(key, sources)| format!("{} <- {}", key, sources.join(", ")))
+        .collect();
+    if !collisions.is_empty() {
+        anyhow::bail!(
+            "cannot generate workflow: resource names fold to the same job-output key ({}); rename one name in each colliding set so they stay distinct after '-'/'.' fold to '_'",
+            collisions.join("; ")
+        );
+    }
+
     let mut yaml = String::new();
     let has_targets = !modules.is_empty() || !profiles.is_empty();
 
@@ -174,7 +204,7 @@ pub(super) fn generate_release_workflow_yaml(
              \x20   steps:\n\
              \x20     - run: echo \"No modules or profiles to tag yet.\"\n",
         );
-        return yaml;
+        return Ok(yaml);
     }
 
     // Detect changes job
@@ -227,12 +257,13 @@ pub(super) fn generate_release_workflow_yaml(
     }
     for p in profiles {
         let safe = output_key(p);
-        // `[./]` after the name covers BOTH manifest forms: the flat file
-        // (`profiles/<name>.yaml`) and the canonical bundle directory
-        // (`profiles/<name>/...`), while still rejecting prefix collisions
-        // (`profiles/<name>-other/...`).
+        // BRE alternation covering BOTH manifest forms while rejecting
+        // sibling prefixes: the flat file must be exactly
+        // `profiles/<name>.yaml|yml` (anchored, so `profiles/<name>.app.yaml`
+        // does not match) and the bundle form requires the `/` separator
+        // (so `profiles/<name>-other/...` does not match).
         yaml.push_str(&format!(
-            "          if echo \"$CHANGED\" | grep -q '^profiles/{}[./]'; then\n\
+            "          if echo \"$CHANGED\" | grep -q '^profiles/{}\\(\\.\\(yaml\\|yml\\)$\\|/\\)'; then\n\
              \x20           echo \"profile_{}=true\" >> $GITHUB_OUTPUT\n\
              \x20         else\n\
              \x20           echo \"profile_{}=false\" >> $GITHUB_OUTPUT\n\
@@ -318,7 +349,7 @@ pub(super) fn generate_release_workflow_yaml(
         );
     }
 
-    yaml
+    Ok(yaml)
 }
 
 pub(super) fn maybe_update_workflow(

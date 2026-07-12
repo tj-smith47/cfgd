@@ -682,7 +682,7 @@ cfgd apply
     std::fs::create_dir_all(&workflow_dir)?;
     let default_branch =
         cfgd_core::detect_default_branch(dir).unwrap_or_else(|| "master".to_string());
-    let workflow = generate_release_workflow_yaml(&[], &[], &default_branch);
+    let workflow = generate_release_workflow_yaml(&[], &[], &default_branch)?;
     cfgd_core::atomic_write_str(&workflow_dir.join("cfgd-release.yml"), &workflow)?;
     printer.status_simple(Role::Ok, "Created .github/workflows/cfgd-release.yml");
 
@@ -693,7 +693,7 @@ cfgd apply
 /// Called by init and also by module create / profile create.
 pub(crate) fn regenerate_workflow(config_dir: &Path, printer: &Printer) -> anyhow::Result<()> {
     let profiles = scan_profile_names(&config_dir.join("profiles"), printer)?;
-    let modules = scan_module_names(&config_dir.join("modules"))?;
+    let modules = scan_module_names(&config_dir.join("modules"), printer)?;
 
     if profiles.is_empty() && modules.is_empty() {
         return Ok(());
@@ -704,7 +704,7 @@ pub(crate) fn regenerate_workflow(config_dir: &Path, printer: &Printer) -> anyho
 
     let default_branch =
         cfgd_core::detect_default_branch(config_dir).unwrap_or_else(|| "master".to_string());
-    let yaml = generate_release_workflow_yaml(&modules, &profiles, &default_branch);
+    let yaml = generate_release_workflow_yaml(&modules, &profiles, &default_branch)?;
     cfgd_core::atomic_write_str(&workflow_dir.join("cfgd-release.yml"), &yaml)?;
     printer.status_simple(Role::Ok, "Generated .github/workflows/cfgd-release.yml");
 

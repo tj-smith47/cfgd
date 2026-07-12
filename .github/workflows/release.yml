@@ -144,7 +144,7 @@ jobs:
           fi
           sha="$(git rev-parse "${latest}^{commit}")"
           if ! git merge-base --is-ancestor "$sha" HEAD; then
-            echo "::error::release tag ${latest} (${sha}) is not an ancestor of the release ref: a prior run was cancelled between the tag push and advance-master, stranding the bump commit. Reconcile with: git push origin ${sha}:refs/heads/master  — then re-run this workflow."
+            echo "::error::release tag ${latest} (${sha}) is not an ancestor of the release ref: a prior run was cancelled between the tag push and advance-master, stranding the bump commit — or this run targets a ref behind the latest release tag. Reconcile with: git push origin ${sha}:refs/heads/master  — then re-run this workflow."
             exit 1
           fi
 

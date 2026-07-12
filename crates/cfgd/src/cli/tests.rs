@@ -2262,7 +2262,7 @@ fn generate_workflow_yaml_contains_all_resources() {
     let modules = vec!["neovim".to_string(), "zsh".to_string()];
     let profiles = vec!["default".to_string(), "work".to_string()];
 
-    let yaml = workflow::generate_release_workflow_yaml(&modules, &profiles, "master");
+    let yaml = workflow::generate_release_workflow_yaml(&modules, &profiles, "master").unwrap();
 
     // Header
     assert!(yaml.contains("name: cfgd Release"));
@@ -2295,7 +2295,7 @@ fn generate_workflow_yaml_modules_only() {
     let modules = vec!["vim".to_string()];
     let profiles: Vec<String> = vec![];
 
-    let yaml = workflow::generate_release_workflow_yaml(&modules, &profiles, "master");
+    let yaml = workflow::generate_release_workflow_yaml(&modules, &profiles, "master").unwrap();
 
     assert!(yaml.contains("tag-modules:"));
     assert!(!yaml.contains("tag-profiles:"));
@@ -2306,7 +2306,7 @@ fn generate_workflow_yaml_profiles_only() {
     let modules: Vec<String> = vec![];
     let profiles = vec!["default".to_string()];
 
-    let yaml = workflow::generate_release_workflow_yaml(&modules, &profiles, "master");
+    let yaml = workflow::generate_release_workflow_yaml(&modules, &profiles, "master").unwrap();
 
     assert!(!yaml.contains("tag-modules:"));
     assert!(yaml.contains("tag-profiles:"));
@@ -2378,7 +2378,7 @@ fn generate_workflow_yaml_hyphens_in_names() {
     let modules = vec!["my-module".to_string()];
     let profiles = vec!["my-profile".to_string()];
 
-    let yaml = workflow::generate_release_workflow_yaml(&modules, &profiles, "master");
+    let yaml = workflow::generate_release_workflow_yaml(&modules, &profiles, "master").unwrap();
 
     // Hyphens should be converted to underscores in output names
     assert!(yaml.contains("module_my_module"));
@@ -3458,14 +3458,18 @@ fn scan_module_names_from_dir() {
         "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: test-mod\nspec:\n  packages: []\n",
     );
     let modules_dir = dir.path().join("modules");
-    let names = super::scan_module_names(&modules_dir).unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let names = super::scan_module_names(&modules_dir, &printer).unwrap();
     assert_eq!(names, vec!["test-mod"]);
 }
 
 #[test]
 fn scan_module_names_nonexistent() {
     let dir = tempfile::tempdir().unwrap();
-    let names = super::scan_module_names(&dir.path().join("nope")).unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let names = super::scan_module_names(&dir.path().join("nope"), &printer).unwrap();
     assert_eq!(
         names,
         Vec::<String>::new(),
@@ -3508,7 +3512,7 @@ fn copy_files_to_dir_nonexistent_source_errors() {
 
 #[test]
 fn generate_release_workflow_empty() {
-    let yaml = super::workflow::generate_release_workflow_yaml(&[], &[], "master");
+    let yaml = super::workflow::generate_release_workflow_yaml(&[], &[], "master").unwrap();
     assert!(yaml.contains("placeholder:"));
     assert!(yaml.contains("No modules or profiles to tag yet"));
 }
@@ -3516,7 +3520,8 @@ fn generate_release_workflow_empty() {
 #[test]
 fn generate_release_workflow_with_modules() {
     let yaml =
-        super::workflow::generate_release_workflow_yaml(&["shell-tools".into()], &[], "master");
+        super::workflow::generate_release_workflow_yaml(&["shell-tools".into()], &[], "master")
+            .unwrap();
     assert!(yaml.contains("modules/shell-tools/**"));
     assert!(yaml.contains("tag-modules:"));
     assert!(!yaml.contains("placeholder:"));
@@ -3524,28 +3529,32 @@ fn generate_release_workflow_with_modules() {
 
 #[test]
 fn generate_release_workflow_with_profiles() {
-    let yaml = super::workflow::generate_release_workflow_yaml(&[], &["work".into()], "master");
+    let yaml =
+        super::workflow::generate_release_workflow_yaml(&[], &["work".into()], "master").unwrap();
     assert!(yaml.contains("profiles/work.yaml"));
     assert!(yaml.contains("tag-profiles:"));
 }
 
 #[test]
 fn generate_release_workflow_detect_grep_covers_flat_and_bundle_forms() {
-    let yaml = super::workflow::generate_release_workflow_yaml(&[], &["work".into()], "master");
-    // `[./]` after the name matches BOTH the flat manifest (profiles/work.yaml)
-    // and the bundle directory (profiles/work/profile.yaml) while rejecting
-    // prefix collisions (profiles/work-extra/...).
+    let yaml =
+        super::workflow::generate_release_workflow_yaml(&[], &["work".into()], "master").unwrap();
+    // BRE alternation matches BOTH the anchored flat manifest
+    // (profiles/work.yaml|yml, exactly) and the bundle directory
+    // (profiles/work/...) while rejecting sibling prefixes
+    // (profiles/work.app.yaml, profiles/work-extra/...).
     assert!(
-        yaml.contains("grep -q '^profiles/work[./]'"),
-        "detect step must grep both manifest forms, got:\n{yaml}"
+        yaml.contains("grep -q '^profiles/work\\(\\.\\(yaml\\|yml\\)$\\|/\\)'"),
+        "detect step must grep both manifest forms with anchored flat form, got:\n{yaml}"
     );
 }
 
 #[test]
 fn generate_release_workflow_escapes_dotted_profile_name() {
-    let yaml = super::workflow::generate_release_workflow_yaml(&[], &["web.app".into()], "master");
+    let yaml = super::workflow::generate_release_workflow_yaml(&[], &["web.app".into()], "master")
+        .unwrap();
     assert!(
-        yaml.contains("grep -q '^profiles/web\\.app[./]'"),
+        yaml.contains("grep -q '^profiles/web\\.app\\(\\.\\(yaml\\|yml\\)$\\|/\\)'"),
         "dot in profile name must be escaped in the detect grep, got:\n{yaml}"
     );
     // Output keys fold `.` to `_` — a literal dot would parse as a property
@@ -3556,7 +3565,8 @@ fn generate_release_workflow_escapes_dotted_profile_name() {
 
 #[test]
 fn generate_release_workflow_escapes_dotted_module_name() {
-    let yaml = super::workflow::generate_release_workflow_yaml(&["my.mod".into()], &[], "master");
+    let yaml =
+        super::workflow::generate_release_workflow_yaml(&["my.mod".into()], &[], "master").unwrap();
     assert!(
         yaml.contains("grep -q '^modules/my\\.mod/'"),
         "dot in module name must be escaped in the detect grep, got:\n{yaml}"
@@ -3566,12 +3576,115 @@ fn generate_release_workflow_escapes_dotted_module_name() {
 }
 
 #[test]
+fn generate_release_workflow_fails_on_output_key_collision() {
+    // `web.app` and `web-app` both fold to `profile_web_app` — duplicate YAML
+    // mapping keys that GitHub rejects at load, so generation must fail
+    // naming both sources.
+    let err = super::workflow::generate_release_workflow_yaml(
+        &[],
+        &["web.app".into(), "web-app".into()],
+        "master",
+    )
+    .unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("profile_web_app")
+            && msg.contains("profile 'web.app'")
+            && msg.contains("profile 'web-app'"),
+        "collision error must name the folded key and both sources, got: {msg}"
+    );
+}
+
+#[test]
+fn generate_release_workflow_module_key_collision_fails() {
+    let err = super::workflow::generate_release_workflow_yaml(
+        &["my.mod".into(), "my_mod".into()],
+        &[],
+        "master",
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("module_my_mod"), "got: {err}");
+}
+
+#[test]
+fn generate_release_workflow_module_and_profile_same_name_no_collision() {
+    // Kind prefixes keep the key spaces disjoint: module `web` and profile
+    // `web` coexist.
+    let yaml =
+        super::workflow::generate_release_workflow_yaml(&["web".into()], &["web".into()], "master")
+            .unwrap();
+    assert!(yaml.contains("module_web:") && yaml.contains("profile_web:"));
+}
+
+#[test]
+fn scan_profile_names_skips_invalid_stem() {
+    let dir = tempfile::tempdir().unwrap();
+    let profiles_dir = dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("work.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: work\nspec:\n  packages: {}\n",
+    )
+    .unwrap();
+    // Hand-dropped file whose stem would inject a quote into the generated
+    // workflow's single-quoted grep pattern.
+    std::fs::write(
+        profiles_dir.join("it's.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: its\nspec:\n  packages: {}\n",
+    )
+    .unwrap();
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let names = super::scan_profile_names(&profiles_dir, &printer).unwrap();
+
+    assert_eq!(
+        names,
+        vec!["work".to_string()],
+        "invalid stem must be skipped"
+    );
+    let out = buf.lock().unwrap();
+    assert!(
+        out.contains("Skipping profile") && out.contains("invalid characters"),
+        "invalid stem must warn with the Skipping-profile shape; got: {out:?}"
+    );
+}
+
+#[test]
+fn scan_module_names_skips_invalid_stem() {
+    let dir = tempfile::tempdir().unwrap();
+    let modules_dir = dir.path().join("modules");
+    let bad = modules_dir.join("it's");
+    std::fs::create_dir_all(&bad).unwrap();
+    std::fs::write(bad.join("module.yaml"), "spec: {}\n").unwrap();
+    let good = modules_dir.join("git");
+    std::fs::create_dir_all(&good).unwrap();
+    std::fs::write(good.join("module.yaml"), "spec: {}\n").unwrap();
+
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let names = super::scan_module_names(&modules_dir, &printer).unwrap();
+
+    assert_eq!(
+        names,
+        vec!["git".to_string()],
+        "invalid stem must be skipped"
+    );
+    let out = buf.lock().unwrap();
+    assert!(
+        out.contains("Skipping module") && out.contains("invalid characters"),
+        "invalid stem must warn with the Skipping-module shape; got: {out:?}"
+    );
+}
+
+#[test]
 fn generate_release_workflow_both() {
     let yaml = super::workflow::generate_release_workflow_yaml(
         &["git-tools".into()],
         &["personal".into()],
         "master",
-    );
+    )
+    .unwrap();
     assert!(yaml.contains("tag-modules:"));
     assert!(yaml.contains("tag-profiles:"));
     assert!(yaml.contains("detect-changes:"));
@@ -13910,7 +14023,10 @@ fn scan_module_names_finds_modules() {
     // Create a dir without module.yaml (should be ignored)
     std::fs::create_dir_all(modules_dir.join("not-a-module")).unwrap();
 
-    let names = super::scan_module_names(&modules_dir).unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    let names = super::scan_module_names(&modules_dir, &printer).unwrap();
     assert_eq!(
         names.len(),
         2,
@@ -13925,7 +14041,9 @@ fn scan_module_names_finds_modules() {
 fn scan_module_names_nonexistent_dir_returns_empty() {
     let dir = tempfile::tempdir().unwrap();
     let modules_dir = dir.path().join("no-modules");
-    let names = super::scan_module_names(&modules_dir).unwrap();
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let names = super::scan_module_names(&modules_dir, &printer).unwrap();
     assert!(
         names.is_empty(),
         "nonexistent modules dir should return empty list"
@@ -15110,7 +15228,8 @@ fn generate_release_workflow_multiple_modules() {
         &["shell-tools".into(), "git-config".into()],
         &[],
         "master",
-    );
+    )
+    .unwrap();
     // Both module paths should appear
     assert!(yaml.contains("modules/shell-tools/**"));
     assert!(yaml.contains("modules/git-config/**"));
@@ -15128,7 +15247,8 @@ fn generate_release_workflow_hyphenated_names_become_underscored() {
         &["my-cool-tools".into()],
         &["work-laptop".into()],
         "master",
-    );
+    )
+    .unwrap();
     // Hyphens in names become underscores in output variable names
     assert!(yaml.contains("module_my_cool_tools"));
     assert!(yaml.contains("profile_work_laptop"));
@@ -15136,7 +15256,7 @@ fn generate_release_workflow_hyphenated_names_become_underscored() {
 
 #[test]
 fn generate_release_workflow_empty_has_placeholder_job() {
-    let yaml = super::workflow::generate_release_workflow_yaml(&[], &[], "master");
+    let yaml = super::workflow::generate_release_workflow_yaml(&[], &[], "master").unwrap();
     // Should have commented-out paths section
     assert!(yaml.contains("# paths:"));
     // Should have placeholder job
@@ -15154,7 +15274,8 @@ fn generate_release_workflow_profiles_only() {
         &[],
         &["personal".into(), "server".into()],
         "master",
-    );
+    )
+    .unwrap();
     assert!(yaml.contains("profiles/personal.yaml"));
     assert!(yaml.contains("profiles/personal.yml"));
     assert!(yaml.contains("profiles/server.yaml"));

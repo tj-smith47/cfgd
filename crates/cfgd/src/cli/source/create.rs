@@ -59,7 +59,7 @@ pub fn cmd_source_create(
     };
 
     let profile_names = scan_profile_names(&config_dir.join("profiles"), printer)?;
-    let module_names = scan_module_names(&config_dir.join("modules"))?;
+    let module_names = scan_module_names(&config_dir.join("modules"), printer)?;
 
     // Build profiles YAML block
     let profiles_yaml = if profile_names.is_empty() {

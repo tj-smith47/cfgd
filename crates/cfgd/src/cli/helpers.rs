@@ -370,6 +370,20 @@ pub(in crate::cli) fn scan_profile_names(
                 continue;
             }
         };
+        // Scanned stems flow into generated-workflow grep patterns and bare
+        // YAML matrix lines — an invalid on-disk name (quote, newline, …)
+        // would corrupt the generated file silently, so gate it here.
+        if let Err(e) = validate_resource_name(&found.name, "profile") {
+            printer.status_simple(
+                Role::Warn,
+                format!(
+                    "Skipping profile '{}': {}",
+                    found.name.escape_default(),
+                    cfgd_core::output::collapse_to_subject_line(&*e)
+                ),
+            );
+            continue;
+        }
         match config::load_profile(&found.path) {
             // The scan-entry name (filename stem / bundle dir) is what
             // `find_profile_path` resolves, so it is the name consumers can
@@ -405,7 +419,10 @@ pub(in crate::cli) fn scan_profile_names(
 }
 
 /// Scan a modules/ directory and return sorted module names.
-pub(in crate::cli) fn scan_module_names(modules_dir: &Path) -> anyhow::Result<Vec<String>> {
+pub(in crate::cli) fn scan_module_names(
+    modules_dir: &Path,
+    printer: &Printer,
+) -> anyhow::Result<Vec<String>> {
     let mut names = Vec::new();
     if modules_dir.exists() {
         for entry in std::fs::read_dir(modules_dir)? {
@@ -415,6 +432,19 @@ pub(in crate::cli) fn scan_module_names(modules_dir: &Path) -> anyhow::Result<Ve
                 && path.join("module.yaml").exists()
                 && let Some(n) = entry.file_name().to_str()
             {
+                // Same gate as scan_profile_names: raw stems end up inside
+                // generated-workflow grep patterns and YAML matrix lines.
+                if let Err(e) = validate_resource_name(n, "module") {
+                    printer.status_simple(
+                        Role::Warn,
+                        format!(
+                            "Skipping module '{}': {}",
+                            n.escape_default(),
+                            cfgd_core::output::collapse_to_subject_line(&*e)
+                        ),
+                    );
+                    continue;
+                }
                 names.push(n.to_string());
             }
         }
@@ -1372,7 +1402,9 @@ mod tests {
     #[test]
     fn scan_module_names_empty_dir_returns_empty() {
         let tmp = tempdir().unwrap();
-        let names = scan_module_names(tmp.path()).unwrap();
+        let (printer, _buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let names = scan_module_names(tmp.path(), &printer).unwrap();
         assert!(names.is_empty());
     }
 
@@ -1387,7 +1419,9 @@ mod tests {
         std::fs::write(mod_b.join("module.yaml"), "").unwrap();
         // dir without module.yaml must NOT be included
         std::fs::create_dir_all(tmp.path().join("not-a-module")).unwrap();
-        let names = scan_module_names(tmp.path()).unwrap();
+        let (printer, _buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let names = scan_module_names(tmp.path(), &printer).unwrap();
         assert_eq!(names, vec!["alpha", "beta"]);
     }
 
@@ -1395,7 +1429,9 @@ mod tests {
     fn scan_module_names_missing_dir_returns_empty() {
         let tmp = tempdir().unwrap();
         let missing = tmp.path().join("does-not-exist");
-        let names = scan_module_names(&missing).unwrap();
+        let (printer, _buf) =
+            cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+        let names = scan_module_names(&missing, &printer).unwrap();
         assert!(names.is_empty());
     }
 
