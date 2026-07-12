@@ -108,10 +108,14 @@ fn sources_providing_profile(cli: &Cli, cfg: &CfgdConfig, profile_name: &str) ->
         .sources
         .iter()
         .filter(|spec| {
+            // Membership probe of the three known manifest paths — a full
+            // directory scan per source would stat every profile just to
+            // answer "is this one name present?".
             let dir = mgr.cached_profiles_dir(&spec.name);
-            cfgd_core::config::scan_profiles_tolerant(&dir)
-                .map(|entries| entries.iter().any(|e| e.name() == profile_name))
-                .unwrap_or(false)
+            matches!(
+                cfgd_core::config::find_profile_path(&dir, profile_name),
+                Ok(_) | Err(cfgd_core::errors::ConfigError::AmbiguousProfile { .. })
+            )
         })
         .map(|spec| spec.name.clone())
         .collect()

@@ -5,7 +5,8 @@ use serde::Serialize;
 
 use super::parse::{find_profile_path, load_profile};
 use super::profile_spec::{
-    EnvScope, FilesSpec, PackagesSpec, ProfileSpec, ScriptSpec, SecretSpec, validate_secret_specs,
+    EnvScope, FilesSpec, PackagesSpec, ProfileDocument, ProfileSpec, ScriptSpec, SecretSpec,
+    validate_secret_specs,
 };
 use super::source::{EnvVar, ShellAlias};
 use crate::errors::{ConfigError, Result};
@@ -51,27 +52,20 @@ pub struct MergedProfile {
 
 /// Resolve a profile by loading it and its full inheritance chain, then merging.
 pub fn resolve_profile(profile_name: &str, profiles_dir: &Path) -> Result<ResolvedProfile> {
+    // The order pass already parsed every manifest — consume its documents
+    // instead of re-statting and re-parsing each one.
     let resolution_order = resolve_inheritance_order(profile_name, profiles_dir, &mut vec![])?;
 
-    let mut layers = Vec::new();
-    for name in &resolution_order {
-        let path = find_profile_path(profiles_dir, name)?;
-        let doc = load_profile(&path).map_err(|e| match e {
-            crate::errors::CfgdError::Config(ConfigError::NotFound { .. }) => {
-                crate::errors::CfgdError::Config(ConfigError::ProfileNotFound {
-                    name: name.clone(),
-                })
-            }
-            other => other,
-        })?;
-        layers.push(ProfileLayer {
+    let layers: Vec<ProfileLayer> = resolution_order
+        .into_iter()
+        .map(|(name, doc)| ProfileLayer {
             source: "local".to_string(),
-            profile_name: name.clone(),
+            profile_name: name,
             priority: 1000,
             policy: LayerPolicy::Local,
             spec: doc.spec,
-        });
-    }
+        })
+        .collect();
 
     let merged = merge_layers(&layers);
 
@@ -81,12 +75,14 @@ pub fn resolve_profile(profile_name: &str, profiles_dir: &Path) -> Result<Resolv
 }
 
 /// Recursively resolve the inheritance order (depth-first, left-to-right).
-/// Returns profiles in resolution order: earliest ancestor first, active profile last.
+/// Returns `(name, parsed document)` pairs in resolution order: earliest
+/// ancestor first, active profile last. Carrying the documents lets the
+/// caller build layers without a second parse of every manifest.
 fn resolve_inheritance_order(
     profile_name: &str,
     profiles_dir: &Path,
     visited: &mut Vec<String>,
-) -> Result<Vec<String>> {
+) -> Result<Vec<(String, ProfileDocument)>> {
     if visited.contains(&profile_name.to_string()) {
         let mut chain = visited.clone();
         chain.push(profile_name.to_string());
@@ -105,17 +101,17 @@ fn resolve_inheritance_order(
         other => other,
     })?;
 
-    let mut order = Vec::new();
+    let mut order: Vec<(String, ProfileDocument)> = Vec::new();
     for parent in &doc.spec.inherits {
         let parent_order = resolve_inheritance_order(parent, profiles_dir, visited)?;
-        for name in parent_order {
-            if !order.contains(&name) {
-                order.push(name);
+        for (name, parent_doc) in parent_order {
+            if !order.iter().any(|(n, _)| *n == name) {
+                order.push((name, parent_doc));
             }
         }
     }
 
-    order.push(profile_name.to_string());
+    order.push((profile_name.to_string(), doc));
     visited.pop();
 
     Ok(order)

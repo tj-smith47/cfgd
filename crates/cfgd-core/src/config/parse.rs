@@ -424,15 +424,28 @@ fn manifest_form_rank(profiles_dir: &Path, path: &Path) -> u8 {
 /// Classify one `profiles_dir` child as a profile manifest, or `None` when it
 /// is not one. The single classifier shared by [`scan_profiles`] and
 /// [`scan_profiles_tolerant`] so the two walks cannot drift.
-fn classify_profile_dir_entry(path: PathBuf) -> Option<(String, ProfileForm, PathBuf)> {
-    if path.is_dir() {
+fn classify_profile_dir_entry(entry: &std::fs::DirEntry) -> Option<(String, ProfileForm, PathBuf)> {
+    let path = entry.path();
+    // DirEntry::file_type reuses what readdir already returned (no extra
+    // stat) — except for symlinks, where only a follow-stat can say what the
+    // link points at, matching how is_dir/is_file classified them before.
+    let file_type = entry.file_type().ok()?;
+    let (is_dir, is_file) = if file_type.is_symlink() {
+        match std::fs::metadata(&path) {
+            Ok(meta) => (meta.is_dir(), meta.is_file()),
+            Err(_) => return None, // broken symlink: not a profile
+        }
+    } else {
+        (file_type.is_dir(), file_type.is_file())
+    };
+    if is_dir {
         let manifest = path.join(PROFILE_FILENAME);
         if !manifest.is_file() {
             return None; // legacy payload dir (e.g. <name>/files/), not a profile
         }
         let name = path.file_name().and_then(|n| n.to_str())?.to_string();
         Some((name, ProfileForm::Canonical, manifest))
-    } else if path.is_file()
+    } else if is_file
         && matches!(
             path.extension().and_then(|e| e.to_str()),
             Some("yaml") | Some("yml")
@@ -495,21 +508,25 @@ pub fn scan_profiles_tolerant(
         }
     };
 
-    let mut entries: Vec<ProfileScanEntry> = Vec::new();
+    // Name-keyed map: dedup is a lookup, not a linear rescan of every entry
+    // seen so far, and BTreeMap iteration yields the sorted-by-name order the
+    // callers rely on.
+    let mut entries: std::collections::BTreeMap<String, ProfileScanEntry> =
+        std::collections::BTreeMap::new();
     for entry in read_dir {
         let entry = entry.map_err(|e| ConfigError::Invalid {
             message: format!("failed to read {}: {}", profiles_dir.posix(), e),
         })?;
-        let Some((name, form, manifest)) = classify_profile_dir_entry(entry.path()) else {
+        let Some((name, form, manifest)) = classify_profile_dir_entry(&entry) else {
             continue;
         };
 
-        match entries.iter().position(|e| e.name() == name) {
-            Some(idx) => {
+        match entries.entry(name) {
+            std::collections::btree_map::Entry::Occupied(mut occupied) => {
                 // read_dir order is filesystem-dependent; order the observed
                 // forms the way find_profile_path reports them (canonical,
                 // then `.yaml`, then `.yml`) so the error message is stable.
-                let mut paths = match &mut entries[idx] {
+                let mut paths = match occupied.get_mut() {
                     ProfileScanEntry::Found(existing) => {
                         vec![existing.path.clone(), manifest]
                     }
@@ -520,22 +537,25 @@ pub fn scan_profiles_tolerant(
                     }
                 };
                 paths.sort_by_key(|p| manifest_form_rank(profiles_dir, p));
-                entries[idx] = ProfileScanEntry::Ambiguous {
+                let name = occupied.key().clone();
+                occupied.insert(ProfileScanEntry::Ambiguous {
                     name: name.clone(),
                     paths: paths.clone(),
                     error: ConfigError::AmbiguousProfile { name, paths },
-                };
+                });
             }
-            None => entries.push(ProfileScanEntry::Found(ProfileEntry {
-                name,
-                path: manifest,
-                form,
-            })),
+            std::collections::btree_map::Entry::Vacant(vacant) => {
+                let name = vacant.key().clone();
+                vacant.insert(ProfileScanEntry::Found(ProfileEntry {
+                    name,
+                    path: manifest,
+                    form,
+                }));
+            }
         }
     }
 
-    entries.sort_by(|a, b| a.name().cmp(b.name()));
-    Ok(entries)
+    Ok(entries.into_values().collect())
 }
 
 /// The on-disk manifest candidates behind one scanned profile name: exactly
