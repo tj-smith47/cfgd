@@ -13,10 +13,10 @@ on:
     - cron: '0 4 * * *'   # 04:00 UTC daily
   workflow_dispatch:
 
+# Read-only at workflow level; only the merge leg signs, attests, and
+# publishes, so it alone elevates.
 permissions:
-  contents: write
-  id-token: write # keyless cosign signing via Fulcio/OIDC + SLSA attestation OIDC
-  attestations: write # mint SLSA build provenance (attestations.enabled, subjects mode)
+  contents: read
 
 # Shares the Release workflow's group: both push tags/releases through
 # anodizer, and a nightly overlapping a live release run would race it on
@@ -88,6 +88,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: write
+      id-token: write # keyless cosign signing via Fulcio/OIDC + SLSA attestation OIDC
+      attestations: write # mint SLSA build provenance (attestations.enabled, subjects mode)
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
