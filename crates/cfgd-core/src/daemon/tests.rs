@@ -10030,6 +10030,8 @@ mod harness {
         // (env) outranks the thread-local override, so a concurrently mutating
         // test could redirect resolution out from under these assertions.
         let tmp = tempfile::TempDir::new().unwrap();
+        let _sd = crate::test_helpers::EnvVarGuard::unset("CFGD_STATE_DIR");
+        let _sysd = crate::test_helpers::EnvVarGuard::unset("STATE_DIRECTORY");
         let _g = crate::with_test_home_guard(tmp.path());
         let resolved_state = crate::state::default_state_dir().unwrap();
         assert!(
