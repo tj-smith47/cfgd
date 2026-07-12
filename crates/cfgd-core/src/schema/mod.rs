@@ -194,7 +194,7 @@ pub static KIND_REGISTRY: &[KindEntry] = &[
     KindEntry {
         kind: "Profile",
         api_version: crate::API_VERSION,
-        location: "profiles/<name>.yaml",
+        location: "profiles/<name>/profile.yaml",
         description: "A composable layer of modules, packages, files, and settings.",
         crd: false,
         schema_fn: || schema_for!(crate::config::ProfileSpec),

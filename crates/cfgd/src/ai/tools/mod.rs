@@ -270,13 +270,13 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "write_profile_yaml".into(),
-            description: "Write a Profile YAML file to the config repo. Validates the YAML before writing. Creates profiles/<name>.yaml.".into(),
+            description: "Write a Profile YAML file to the config repo. Validates the YAML before writing. Creates profiles/<name>/profile.yaml for a new profile; an existing profile is overwritten in whichever form it already uses (including a legacy flat profiles/<name>.yaml).".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Profile name (used as filename without .yaml extension)"
+                        "description": "Profile name (used as the bundle directory name: profiles/<name>/profile.yaml)"
                     },
                     "content": {
                         "type": "string",
@@ -304,7 +304,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "get_existing_profiles".into(),
-            description: "List profile names that already exist in the config repo (profiles/<name>.yaml).".into(),
+            description: "List profile names that already exist in the config repo, in either manifest form (canonical profiles/<name>/profile.yaml or legacy flat profiles/<name>.yaml).".into(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {}

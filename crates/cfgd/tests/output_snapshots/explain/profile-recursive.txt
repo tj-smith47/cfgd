@@ -4,7 +4,7 @@ A composable layer of modules, packages, files, and settings.
 
 apiVersion  cfgd.io/v1alpha1
 kind        Profile
-location    profiles/<name>.yaml
+location    profiles/<name>/profile.yaml
 
 FIELDS (under spec)
   aliases

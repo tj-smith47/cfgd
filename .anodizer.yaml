@@ -825,14 +825,17 @@ workspaces:
 # and opens one upstream PR per release. The module + profile file_match globs
 # follow cfgd's canonical bundle layout — a manifest with a fixed filename inside
 # a per-entity directory: modules/<name>/module.yaml and profiles/<name>/profile.yaml.
-# The glob shape (filename + dir double anchor, e.g. **/profiles/*/profile.yaml)
+# The bundle glob shape (filename + dir double anchor, e.g. **/profiles/*/profile.yaml)
 # is deliberate: anchoring on BOTH the parent dir and the fixed manifest filename
 # yields zero false positives and survives a workspace-root vendored catalog
-# (empirically verified vs SchemaStore's own minimatch), unlike an over-generic
-# **/profiles/*.yaml that would associate any yaml under any profiles/ dir. The
-# legacy flat form (profiles/<name>.yaml, supported until 1.0) is NOT globbed
-# here — it is covered by the `# yaml-language-server: $schema=...` modeline the
-# scaffolders emit into every generated manifest instead.
+# (empirically verified vs SchemaStore's own minimatch).
+# Profiles additionally carry the legacy flat globs (**/profiles/*.yaml|yml) until
+# 1.0: every ≤v0.5.x scaffold is a flat file with NO schema modeline, so dropping
+# the glob silently strips editor validation from all existing configs. In
+# minimatch a lone `*` never crosses `/`, so the flat glob matches only direct
+# children of a profiles/ dir — it cannot misfire on the two-segment bundle path
+# profiles/<name>/profile.yaml. Modules have always been bundle-only
+# (modules/<name>/module.yaml); no flat glob exists to carry.
 # cfgd-module is draft-2020-12, so its catalog entry is added to the
 # highSchemaVersion list automatically.
 schemastore:
@@ -868,7 +871,8 @@ schemastore:
     - name: cfgd Profile
       crate: cfgd
       description: "cfgd Profile definition document"
-      file_match: ["**/profiles/*/profile.yaml"]
+      file_match:
+        ["**/profiles/*/profile.yaml", "**/profiles/*.yaml", "**/profiles/*.yml"]
       schema_file: schemas/cfgd-profile.schema.json
     - name: cfgd ConfigSource
       crate: cfgd

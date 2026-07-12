@@ -484,6 +484,6 @@
     }
   ],
   "kind": "Profile",
-  "location": "profiles/<name>.yaml",
+  "location": "profiles/<name>/profile.yaml",
   "name": "Profile"
 }

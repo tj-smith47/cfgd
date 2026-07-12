@@ -3,7 +3,7 @@ Available resource types
 NAME                 API/KIND                              LOCATION                          
 ─────────────────────────────────────────────────────────────────────────────────────────────
 Module               cfgd.io/v1alpha1/Module               modules/<name>/module.yaml        
-Profile              cfgd.io/v1alpha1/Profile              profiles/<name>.yaml              
+Profile              cfgd.io/v1alpha1/Profile              profiles/<name>/profile.yaml      
 ConfigSource         cfgd.io/v1alpha1/ConfigSource         cfgd-source.yaml                  
 Config               cfgd.io/v1alpha1/Config               cfgd.yaml                         
 MachineConfig        cfgd.io/v1alpha1/MachineConfig        MachineConfig CRD                 
