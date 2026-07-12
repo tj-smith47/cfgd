@@ -1,5 +1,13 @@
 name: Nightly
 
+# Sharded per-OS via anodizer's split/merge flow (`partial.by: os` in
+# .anodizer.yaml): each shard cross-builds only the targets its host OS can
+# genuinely link, then a merge leg fuses the shard dists and runs the
+# post-build pipeline (archive/sign/publish the nightly prerelease). A single
+# ubuntu runner cannot serve the whole target matrix — the darwin targets
+# link Apple frameworks (Security via rustls-native-certs) that zig cannot
+# resolve without a macOS SDK — so the darwin leg must build on a macOS host,
+# exactly like the release pipeline's determinism shards.
 on:
   schedule:
     - cron: '0 4 * * *'   # 04:00 UTC daily
@@ -23,8 +31,23 @@ env:
   ANODIZER_VERSION: ${{ vars.ANODIZER_VERSION }}
 
 jobs:
-  nightly:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      # A missing shard fails the merge's matrix.json cross-check anyway;
+      # letting the siblings finish surfaces every per-OS failure in one run.
+      fail-fast: false
+      matrix:
+        # Same runner labels as determinism-shards: linux shard cross-builds
+        # aarch64-unknown-linux-gnu (+ musl) via zig/cargo-zigbuild, macOS
+        # builds both darwin targets natively, Windows builds both msvc
+        # targets (aarch64 via the msvc cross toolchain).
+        include:
+          - { os: ubuntu-latest,  shard: linux }
+          - { os: macos-latest,   shard: darwin }
+          - { os: windows-latest, shard: windows }
+    name: Nightly build (${{ matrix.shard }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -34,11 +57,59 @@ jobs:
       - name: Install protoc
         uses: ./.github/actions/setup-protoc
 
-      - name: Run anodizer nightly release
+      # --split builds only this host's `partial.by: os` slice and writes
+      # dist/<os>/context.json + dist/matrix.json for the merge leg.
+      # auto-install provisions zig + cargo-zigbuild (and any other
+      # configured-stage tools) so `cross: auto` never silently falls back
+      # to plain cargo — the root cause of the 30+ consecutive nightly
+      # failures at the aarch64-unknown-linux-gnu aws-lc-sys build.
+      - name: Build the nightly shard (release --nightly --split)
         uses: tj-smith47/anodizer-action@v1
         with:
           version: ${{ env.ANODIZER_VERSION }}
-          args: release --nightly --no-preflight
+          auto-install: 'true'
+          args: release --nightly --split --no-preflight
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+
+      # upload-artifact drops dotfiles by default; a hidden deliverable
+      # silently stripped here would only surface as a merge-time failure.
+      - name: Upload shard dist
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-dist-${{ matrix.shard }}
+          path: dist/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Nightly publish (merge)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download shard dists
+        uses: actions/download-artifact@v8
+        with:
+          path: dist/
+          pattern: nightly-dist-*
+          merge-multiple: true
+
+      # --merge fuses the shard contexts (validated against matrix.json) and
+      # resumes the pipeline from the post-build stages, signing and
+      # publishing the nightly prerelease.
+      - name: Publish the merged nightly (release --nightly --merge)
+        uses: tj-smith47/anodizer-action@v1
+        with:
+          version: ${{ env.ANODIZER_VERSION }}
+          auto-install: 'true'
+          args: release --nightly --merge --no-preflight
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
         env:
