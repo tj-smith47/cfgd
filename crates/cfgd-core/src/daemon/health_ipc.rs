@@ -195,6 +195,7 @@ where
             "/status" => ("200 OK", serde_json::to_string_pretty(&status_response)?),
             "/drift" => {
                 let drift_events = match store_path_for_drift {
+                    // spawn-blocking-ok: closure resolves no home paths (sqlite open on an explicit store path)
                     Some(p) => tokio::task::spawn_blocking(move || {
                         StateStore::open(&p)
                             .and_then(|s| s.unresolved_drift())

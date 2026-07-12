@@ -489,6 +489,7 @@ impl Notifier {
         let body = build_webhook_payload(title, message, &crate::utc_now_iso8601());
 
         // Run webhook POST via spawn_blocking (uses tokio's bounded threadpool)
+        // spawn-blocking-ok: closure resolves no home paths (HTTP POST to a pre-built URL)
         tokio::task::spawn_blocking(move || {
             match crate::http::http_agent(crate::http::HTTP_WEBHOOK_TIMEOUT)
                 .post(&url)

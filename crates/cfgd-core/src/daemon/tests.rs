@@ -10024,15 +10024,19 @@ mod harness {
         // blocking closure. Dispatched via plain `spawn_blocking` the worker
         // lost the test-home override and fell back to the ambient $HOME.
         // Drive the same wrapper-based dispatch shape as the daemon loop and
-        // assert the override is visible inside the closure; CFGD_STATE_DIR
-        // pins the state I/O to the tempdir (process-global env → serial) so
-        // the seeded pending config is consumed without touching real $HOME.
+        // assert state resolution lands INSIDE the test home — no CFGD_STATE_DIR
+        // pin, so the wrapper and the override-honoring state resolver are
+        // proven to protect the site together. Still #[serial]: CFGD_STATE_DIR
+        // (env) outranks the thread-local override, so a concurrently mutating
+        // test could redirect resolution out from under these assertions.
         let tmp = tempfile::TempDir::new().unwrap();
-        let _sd = crate::test_helpers::EnvVarGuard::set(
-            "CFGD_STATE_DIR",
-            &tmp.path().join("state").to_string_lossy(),
-        );
         let _g = crate::with_test_home_guard(tmp.path());
+        let resolved_state = crate::state::default_state_dir().unwrap();
+        assert!(
+            resolved_state.starts_with(tmp.path()),
+            "user-scope state must resolve inside the test home, got {}",
+            resolved_state.display()
+        );
         let config_path = tmp.path().join("cfgd.yaml");
         let profiles_dir = tmp.path().join("profiles");
         std::fs::create_dir_all(&profiles_dir).unwrap();

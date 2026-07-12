@@ -23,6 +23,7 @@ pub(crate) async fn handle_sync(
 
     if auto_pull {
         let repo = repo_path.to_path_buf();
+        // spawn-blocking-ok: closure resolves no home paths (git op on an explicit repo path)
         let pull_result = tokio::task::spawn_blocking(move || git_pull(&repo)).await;
         match pull_result {
             Ok(Ok(true)) => {
@@ -30,6 +31,7 @@ pub(crate) async fn handle_sync(
                 if require_signed_commits && !allow_unsigned {
                     let src = source_name.to_string();
                     let repo = repo_path.to_path_buf();
+                    // spawn-blocking-ok: closure resolves no home paths (git op on an explicit repo path)
                     let verify_result = tokio::task::spawn_blocking(move || {
                         crate::sources::verify_head_signature(&src, &repo)
                     })
@@ -66,6 +68,7 @@ pub(crate) async fn handle_sync(
 
     if auto_push {
         let repo = repo_path.to_path_buf();
+        // spawn-blocking-ok: closure resolves no home paths (git op on an explicit repo path)
         let push_result = tokio::task::spawn_blocking(move || git_auto_commit_push(&repo)).await;
         match push_result {
             Ok(Ok(true)) => tracing::info!("sync: pushed local changes to remote"),

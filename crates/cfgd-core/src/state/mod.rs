@@ -368,6 +368,10 @@ pub fn plan_hash(data: &str) -> String {
 /// Resolves home through the same policy config discovery uses (HOME on Unix,
 /// USERPROFILE/HOME on Windows) so an unset HOME fails uniformly instead of
 /// creating an orphan state.db beside a config error.
+///
+/// Honors the [`crate::TestHomeGuard`] thread-local override (test builds
+/// resolve a Linux-shaped `~/.local/state/cfgd` under the override home) so
+/// tests never write to the real state directory.
 pub fn default_state_dir() -> Result<PathBuf> {
     default_state_dir_for(Scope::User)
 }
@@ -389,6 +393,9 @@ pub fn default_state_dir_for(scope: Scope) -> Result<PathBuf> {
     }
     if scope.is_system() {
         return Ok(system_state_dir());
+    }
+    if let Some(home) = crate::test_home_override() {
+        return Ok(home.join(".local").join("state").join("cfgd"));
     }
     // `directories` would otherwise fall back to the passwd database when HOME
     // is unset, resolving a home that config discovery cannot — the two
