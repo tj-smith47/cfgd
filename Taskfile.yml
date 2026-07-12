@@ -126,7 +126,10 @@ tasks:
     cmds:
       # Plain `cargo test -p <crate>` never builds cfgd-core's fake-cosign
       # shim binary (nextest targets do it implicitly); cosign tests need it.
-      - cargo build -p cfgd-core --bins
+      # The shim declares required-features = test-helpers, and `--bins`
+      # silently SKIPS bins with unmet required-features — the feature flag
+      # is what makes this line produce the shim at all.
+      - cargo build -p cfgd-core --bins --features cfgd-core/test-helpers
       - cargo test -p {{.CRATE}} --features cfgd-core/test-helpers {{.CLI_ARGS}}
 
   audit:

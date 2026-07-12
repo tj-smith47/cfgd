@@ -834,7 +834,13 @@ workspaces:
 # the glob silently strips editor validation from all existing configs. In
 # minimatch a lone `*` never crosses `/`, so the flat glob matches only direct
 # children of a profiles/ dir — it cannot misfire on the two-segment bundle path
-# profiles/<name>/profile.yaml. Modules have always been bundle-only
+# profiles/<name>/profile.yaml. Accepted tradeoff: profiles/*.yaml is a generic
+# shape other ecosystems also use (Chef/InSpec profiles, CI profile configs), so
+# the flat globs create catalog-wide false-positive squiggles in unrelated repos
+# and may draw SchemaStore-review pushback — carried anyway until 1.0 because
+# dropping them orphans every existing modeline-less flat scaffold; do not
+# "fix" this in either direction without revisiting that tradeoff.
+# Modules have always been bundle-only
 # (modules/<name>/module.yaml); no flat glob exists to carry.
 # cfgd-module is draft-2020-12, so its catalog entry is added to the
 # highSchemaVersion list automatically.
