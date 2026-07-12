@@ -15,7 +15,7 @@ External call sites do not change: `cfgd_core::utc_now_iso8601(...)`, `cfgd_core
 | `util/time.rs` | Timestamps + duration parsing |
 | `util/yaml_merge.rs` | YAML deep merge + Vec<EnvVar/ShellAlias>/Vec<String> mergers |
 | `util/strings.rs` | Env-var / alias parsing + validation, shell/XML/k8s-name escaping & sanitization |
-| `util/paths.rs` | `default_config_dir`, `expand_tilde`, `resolve_relative_path`, `validate_path_within`, `validate_no_traversal`, `copy_dir_recursive`, plus the test-home thread-local: `TestHomeGuard`, `with_test_home`, `with_test_home_guard` |
+| `util/paths.rs` | `default_config_dir`, `expand_tilde`, `resolve_relative_path`, `validate_path_within`, `validate_no_traversal`, `copy_dir_recursive`, plus the test-home thread-local: `TestHomeGuard`, `with_test_home`, `with_test_home_guard`, `spawn_blocking_with_test_home` |
 | `util/fs_perms.rs` | Cross-platform symlinks, permissions, exec-bit, inode/file-index identity |
 | `util/file_io.rs` | `atomic_write[_str]`, `capture_file_state[_resolved]`, `FileState` struct |
 | `util/process.rs` | Command helpers (`command_output_with_timeout`, `command_available`, `terminate_process`, `stdout/stderr_lossy_trimmed`, `is_root`, `hostname_string`, `tracing_env_filter`, `require_tool`) |
@@ -68,10 +68,6 @@ External call sites do not change: `cfgd_core::utc_now_iso8601(...)`, `cfgd_core
 - `xml_escape(s)` — escape `&<>"'` for safe XML/plist inclusion
 - `sanitize_k8s_name(name)` — RFC 1123 DNS label sanitization
 
-## Config
-
-- `cfgd_core::config::is_yaml_ext(path) -> bool` — case-insensitive `yaml`/`yml` extension predicate; use instead of open-coding `ext == "yaml" || ext == "yml"` when iterating `<profiles_dir>/*.yaml`-style directories
-
 ## Filesystem
 
 - `default_config_dir()` — cross-platform config dir (Unix `~/.config/cfgd`, Windows `AppData\Roaming\cfgd`)
@@ -81,6 +77,9 @@ External call sites do not change: `cfgd_core::utc_now_iso8601(...)`, `cfgd_core
 - `validate_no_traversal(path)` — reject paths containing `..`
 - `atomic_write(target, content)` — atomic write via temp+rename; returns SHA256 hash; use instead of `fs::write()` in ALL production code
 - `atomic_write_str(target, content)` — string variant
+- `ensure_parent_dir(target)` — create the parent directory of a file path (and ancestors) if missing; use instead of the inline `if let Some(parent) = path.parent() { create_dir_all(parent)? }` idiom before writing a file. For creating a named directory itself, call `create_dir_all` directly
+- Scaffold writes in the `cfgd` binary crate go through `write_scaffold(kind, path, body)` in `crates/cfgd/src/cli/helpers.rs` — pairs `with_schema_modeline` (pinned to the binary crate's `CARGO_PKG_VERSION` by construction) with `atomic_write_str`. Never stamp a modeline with cfgd-core's version; rewrite paths of user-owned files (e.g. `save_module_document`) stay modeline-free and must NOT use it
+- Rewrites of user-owned YAML in the `cfgd` binary crate go through `rewrite_user_yaml(path, &value)` in `crates/cfgd/src/cli/helpers.rs` — serializes via serde_yaml and re-prepends the file's existing leading comment block (banner + modeline) using `cfgd_core::config::with_leading_comments(original, serialized)` (capture primitive: `leading_comment_block(original)` in `cfgd-core/src/config/comments.rs`). Preserve-only, never inject; mid-document comments are not recoverable. Use instead of raw `serde_yaml::to_string` + `atomic_write_str` on any user-owned manifest (`mutate_config_yaml` composes `with_leading_comments` inline because it also validates)
 - `copy_dir_recursive(src, dst)` — recursively copy a directory tree
 - `create_symlink(source, target)` — cross-platform; Windows errors with Developer Mode guidance
 - `is_same_inode(a, b) -> bool` — check same file (inode+dev on Unix, file index+volume on Windows)
@@ -141,6 +140,7 @@ Reached via `cfgd_core::test_helpers::*` (the `test_helpers` module is gated beh
 
 - `EnvVarGuard::set(key, value)` / `EnvVarGuard::unset(key)` — RAII env-var save/restore (re-exported via `cfgd_core::test_helpers::EnvVarGuard`); captures prior value on construction, restores (or removes if no prior) on drop, even on panic
 - `with_test_env_var(var, value, f)` — scoped env-var override; calls `f` with the var set to `Some(v)` or removed for `None`, then restores the prior value
+- `spawn_blocking_with_test_home(f)` — `tokio::task::spawn_blocking` that captures the caller's test-home thread-local and re-installs it inside the spawned closure (plain `cfgd_core::*` export, NOT feature-gated — it's a no-op read in production). REQUIRED for every blocking dispatch whose closure may resolve `~`/`$HOME`; never pair a raw `spawn_blocking` with a hand-rolled `test_home_override()` capture
 - `CosignTestShim::install()` / `CosignTestShim::builder()...install()` — consolidated fake-cosign shim (Unix-only); writes a `/bin/sh` script under `CFGD_COSIGN_BIN` with builder-configured argv logging (`with_argv_logging`), keygen-mode key-pair writes on `generate-key-pair` (`with_keygen`), exit code (`with_exit`), and canned stderr (`with_stderr`). Captures + restores prior `CFGD_COSIGN_BIN` / `CFGD_FAKE_COSIGN_LOG` on drop. Replaces the per-file `CosignShimGuard` / `CosignShim` / `CosignKeygenShim` duplicates in `oci/sign/tests.rs`, `upgrade/tests.rs`, and `cli/module/tests.rs`
 
 ## Upgrade

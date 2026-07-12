@@ -612,6 +612,32 @@ if w4=$(rg --type rust -n '(tracing::(info|warn|error)!|anyhow!|bail!|printer\.(
   echo "$w4"
 fi
 
+log_section "Test-home-safe blocking dispatch (cfgd-core)"
+# Raw `tokio::task::spawn_blocking` in cfgd-core drops the test-home
+# thread-local on the worker thread, so any closure that resolves `~`/$HOME
+# (default_state_dir, default_config_dir, …) silently touches the real
+# filesystem under tests. Production code must use
+# `crate::spawn_blocking_with_test_home` instead. Escape hatch (mirrors the
+# native-ok convention): when the closure provably resolves no home paths,
+# annotate the call line or the line directly above it with
+#   // spawn-blocking-ok: <why the closure resolves no home paths>
+# util/paths.rs (the wrapper's own home) and test files are excluded.
+raw_spawns=$(while IFS= read -r -d '' rsfile; do
+    case "$rsfile" in
+        */util/paths.rs|*/tests.rs|*_test.rs|*/test_*.rs|*/tests_*.rs|*/test_helpers.rs|*/tests/*) continue ;;
+    esac
+    strip_test_blocks_from_file "$rsfile" | awk '
+        /tokio::task::spawn_blocking/ && !/spawn-blocking-ok/ && prev !~ /spawn-blocking-ok/ && !/^[^:]*:[0-9]+:[[:space:]]*\/\// { print }
+        { prev = $0 }
+    '
+done < <(find crates/cfgd-core/src -name '*.rs' -print0 2>/dev/null))
+if [[ -n "$raw_spawns" ]]; then
+    log_error "Raw tokio::task::spawn_blocking in cfgd-core (use crate::spawn_blocking_with_test_home, or annotate // spawn-blocking-ok: <why>):"
+    echo "$raw_spawns" | head -10
+else
+    log_ok "No raw spawn_blocking in cfgd-core production code"
+fi
+
 log_section "CLI long_about/Examples coverage (every top-level Command variant)"
 # CLAUDE.md convention: "Every top-level Command variant carries long_about
 # with an Examples: block." This gate enforces it as a regression guard so the

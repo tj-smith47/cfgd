@@ -105,6 +105,7 @@ missing from the table.
 | profile_delete               | yes               | deletion records                                   |
 | profile_edit                 | no                | opens $EDITOR; no data output                      |
 | profile_list                 | yes               | profile inventory                                  |
+| profile_migrate              | yes               | migration records consumed by scripts              |
 | profile_show                 | yes               | introspection                                      |
 | profile_switch               | yes               | switch records                                     |
 | profile_update               | yes               | update records                                     |

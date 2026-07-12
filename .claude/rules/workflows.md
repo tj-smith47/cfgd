@@ -39,8 +39,36 @@ single-source-of-truth wiring.
   runtime only injects `ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN` into jobs that
   can mint OIDC tokens, and anodizer's secret preflight validates those on
   behalf of the MCP-registry publisher.
-- Preflight's bump-message guard breaks the tag→CI→Release self-retrigger
-  loop; don't loosen it.
+- Deferred-branch release topology (anodizer >= v0.16.0, uniform-local
+  `tag`): the tag step runs `tag --changelog --push-tags-only` (tags only —
+  the bump commit is reachable ONLY via the tags until publish completes),
+  and the `advance-master` job fast-forwards master post-publish
+  (`gh api PATCH`, `force=false`, GH_PAT). Its `if:` is the drift-proof
+  collapsed form `!cancelled() && needs.tag.result == 'success' &&
+  !contains(needs.*.result, 'failure') && !contains(needs.*.result,
+  'cancelled')` — semantically "tag succeeded AND no needed job failed or
+  was cancelled; skips allowed", with the `needs.*` sweeps automatically
+  gating any job later added to the needs list. Never weaken it to a
+  per-leg `!= 'failure'` enumeration, and keep EVERY publish leg in the
+  job's `needs:` — a leg absent from needs is invisible to the gate. A
+  failed release must advance neither master nor a release. The tag job
+  also carries a pre-tag stranded-bump guard (highest `v[0-9]*` tag must
+  be an ancestor of the release ref, else fail with the
+  `git push origin <tag-sha>:refs/heads/master` reconcile command) —
+  keep it before the anodizer tag step.
+- Preflight's bump-message guard breaks the advance-master→CI→Release
+  self-retrigger loop (GH_PAT pushes DO retrigger CI — deliberately, for
+  master-badge health); don't loosen it.
+- Nightly is sharded per-OS via anodizer split/merge (`partial.by: os` in
+  `.anodizer.yaml`): three `build` shards (ubuntu/macos/windows, same runner
+  labels as determinism-shards, `auto-install: 'true'`, fail-fast off) each
+  run `release --nightly --split --no-preflight` and upload
+  `nightly-dist-<shard>` with `include-hidden-files: true`; the ubuntu
+  `publish` leg downloads all shards (`merge-multiple: true`) and runs
+  `release --nightly --merge --no-preflight`. Publish/sign secrets
+  (gpg/apk keys, CLOUDSMITH/SMTP/SNAPCRAFT/GPG_FINGERPRINT) live ONLY on the
+  merge leg; split legs get GH_PAT alone. Never collapse nightly back to a
+  single ubuntu job — darwin targets cannot zig-link without a macOS SDK.
 - Self-hosted runner labels for actionlint live in `.github/actionlint.yaml`.
 - Any job that `uses: ./.github/actions/...` MUST have a checkout step
   before it (the local action file only exists on the runner after
