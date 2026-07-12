@@ -12746,6 +12746,29 @@ fn env_targets_all_macos_adds_launchagent_not_environment_d() {
 }
 
 #[test]
+fn env_targets_all_freebsd_omits_environment_d_and_launchagent() {
+    // FreeBSD has neither systemd nor launchd: the .cfgd.env + rc source lines
+    // are its whole env surface. It must NOT get a systemd environment.d file
+    // (inert clutter no consumer reads) nor a macOS LaunchAgent plist.
+    let home = Path::new("/h");
+    let t = env_targets(
+        &one_env(),
+        &[],
+        EnvScope::All,
+        home,
+        &env_probe("/bin/sh"),
+        EnvPlatform::FreeBsd,
+    );
+    let keys = target_keys(&t);
+    assert!(keys.contains(&"file:/h/.cfgd.env".to_string()));
+    assert!(!keys.iter().any(|k| k.contains("environment.d")));
+    assert!(!keys.iter().any(|k| k.contains("LaunchAgents")));
+    // Live-session refresh still runs last under scope=All (a guarded no-op
+    // on a FreeBSD host, but the target is emitted the same way).
+    assert_eq!(keys.last().map(String::as_str), Some("session"));
+}
+
+#[test]
 fn env_targets_windows_is_ps_profiles_plus_session_on_all() {
     let home = Path::new("/h");
     let t = env_targets(

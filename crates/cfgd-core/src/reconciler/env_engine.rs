@@ -51,6 +51,7 @@ pub(super) enum EnvTarget {
 pub(super) enum EnvPlatform {
     Linux,
     MacOs,
+    FreeBsd,
     Windows,
 }
 
@@ -60,6 +61,8 @@ impl EnvPlatform {
             Self::Windows
         } else if cfg!(target_os = "macos") {
             Self::MacOs
+        } else if cfg!(target_os = "freebsd") {
+            Self::FreeBsd
         } else {
             Self::Linux
         }
@@ -124,7 +127,7 @@ pub(super) fn env_targets(
         EnvPlatform::Windows => {
             windows_targets(merged_env, merged_aliases, scope, home, probe, &mut targets)
         }
-        EnvPlatform::Linux | EnvPlatform::MacOs => unix_targets(
+        EnvPlatform::Linux | EnvPlatform::MacOs | EnvPlatform::FreeBsd => unix_targets(
             merged_env,
             merged_aliases,
             scope,
@@ -204,7 +207,10 @@ fn unix_targets(
         }
     }
 
-    // All: session-manager surfaces.
+    // All: session-manager surfaces. FreeBSD deliberately matches neither arm —
+    // it has no systemd (environment.d) and no launchd (LaunchAgent), so the
+    // `.cfgd.env` + rc source lines above are its entire env surface. Emitting a
+    // systemd environment.d file there would write inert state no consumer reads.
     if reaches_all(scope) {
         if platform == EnvPlatform::Linux {
             // systemd --user + Wayland GUI sessions read environment.d (KEY=VALUE).
