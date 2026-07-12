@@ -216,7 +216,13 @@ fn global_scope_skips_cursor_and_copilot_with_warning() {
     // The human render carries the reason text as a visible warning detail. The
     // human Doc renders on the Printer's stderr channel (structured payloads use
     // stdout); assert the reason text appears, not ANSI/role styling bytes.
-    let human = install_in(repo.path(), home.path(), &["module", "-g"])
+    //
+    // Use a fresh home: reusing the first call's home makes this a re-install, and
+    // any provider the first call already wrote (e.g. gemini, when the `gemini`
+    // CLI is on PATH so it detects Present) would trip the non-TTY overwrite
+    // prompt. The two calls check independent output formats, not idempotency.
+    let human_home = tempfile::tempdir().expect("human home tempdir");
+    let human = install_in(repo.path(), human_home.path(), &["module", "-g"])
         .assert()
         .success();
     let human_err = String::from_utf8(human.get_output().stderr.clone()).expect("utf8 stderr");
