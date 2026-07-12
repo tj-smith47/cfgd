@@ -843,7 +843,14 @@ fn extract_tarball_skips_symlink_entries_without_failing() {
     );
 }
 
+// Cache tests isolate via the `with_test_home_guard` thread-local, but
+// `default_cache_dir_for` honors the process-global `CFGD_CACHE_DIR` env above
+// that thread-local. Under threaded `cargo test`, a concurrent test that sets
+// `CFGD_CACHE_DIR` (e.g. `cache_dir_honors_cfgd_cache_dir_env`) hijacks this
+// test's cache path; `serial` joins them into one exclusion group. nextest's
+// process-per-test masks the leak, so this only bites the plain-`cargo test` runner.
 #[test]
+#[serial_test::serial]
 fn check_with_cache_returns_error_when_cached_version_is_unparseable() {
     let home = tempfile::tempdir().unwrap();
     let _guard = crate::with_test_home_guard(home.path());
@@ -1053,6 +1060,7 @@ fn update_check_fields_are_coherent() {
 }
 
 #[test]
+#[serial_test::serial]
 fn version_cache_write_and_read_roundtrip() {
     let home = tempfile::tempdir().unwrap();
     let _guard = crate::with_test_home_guard(home.path());
@@ -1077,6 +1085,7 @@ fn version_cache_write_and_read_roundtrip() {
 }
 
 #[test]
+#[serial_test::serial]
 fn read_version_cache_returns_none_after_invalidation() {
     let home = tempfile::tempdir().unwrap();
     let _guard = crate::with_test_home_guard(home.path());
@@ -2160,6 +2169,7 @@ fn check_with_cache_falls_back_to_api_on_cache_miss() {
 }
 
 #[test]
+#[serial_test::serial]
 fn check_with_cache_returns_cached_when_within_ttl() {
     let home = tempfile::tempdir().unwrap();
     let _guard = crate::with_test_home_guard(home.path());
@@ -2192,6 +2202,7 @@ fn check_with_cache_returns_cached_when_within_ttl() {
 }
 
 #[test]
+#[serial_test::serial]
 fn check_with_cache_ignores_expired_entry() {
     let home = tempfile::tempdir().unwrap();
     let _guard = crate::with_test_home_guard(home.path());
@@ -3570,6 +3581,7 @@ fn fetch_latest_release_api_error_on_invalid_json_body() {
 // --- write_version_cache and cache_dir coverage ---
 
 #[test]
+#[serial_test::serial]
 fn write_version_cache_creates_dir_and_writes_file() {
     let home = tempfile::tempdir().unwrap();
     let _guard = crate::with_test_home_guard(home.path());
@@ -3593,6 +3605,7 @@ fn write_version_cache_creates_dir_and_writes_file() {
 }
 
 #[test]
+#[serial_test::serial]
 fn write_version_cache_overwrites_existing_file() {
     let home = tempfile::tempdir().unwrap();
     let _guard = crate::with_test_home_guard(home.path());
@@ -3619,6 +3632,7 @@ fn write_version_cache_overwrites_existing_file() {
 }
 
 #[test]
+#[serial_test::serial]
 fn read_version_cache_returns_none_for_empty_file() {
     let home = tempfile::tempdir().unwrap();
     let _guard = crate::with_test_home_guard(home.path());
@@ -3634,6 +3648,7 @@ fn read_version_cache_returns_none_for_empty_file() {
 }
 
 #[test]
+#[serial_test::serial]
 fn read_version_cache_returns_none_for_invalid_json() {
     let home = tempfile::tempdir().unwrap();
     let _guard = crate::with_test_home_guard(home.path());
@@ -4586,6 +4601,7 @@ fn find_asset_for_no_asset_error_reports_resolved_os_and_go_arch() {
 // --- write_version_cache: create_dir_all failure surfaces InstallFailed ---
 
 #[test]
+#[serial_test::serial]
 fn write_version_cache_errors_when_cache_dir_path_is_blocked_by_a_file() {
     // cache_dir() resolves to <test_home>/.cache/cfgd. Plant a regular FILE at
     // <test_home>/.cache so create_dir_all(.cache/cfgd) cannot create the
