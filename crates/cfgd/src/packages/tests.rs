@@ -7,6 +7,7 @@ use super::cargo::{cargo_available, cargo_cmd};
 use super::go::{find_go, go_available, go_cmd};
 use super::npm::{find_npm, npm_available, npm_cmd};
 use super::pipx::{find_pipx, pipx_available, pipx_cmd};
+use super::shared::any_system_manager_available;
 use super::*;
 
 struct MockPackageManager {
@@ -2876,7 +2877,24 @@ fn all_package_managers_bootstrap_consistency() {
             // there rather than assert a platform whose bootstrap prerequisites
             // this test cannot guarantee.
             #[cfg(not(target_os = "freebsd"))]
-            assert!(m.can_bootstrap(), "{} should be bootstrappable", m.name());
+            {
+                // `go` alone bootstraps only through a *system* package manager
+                // (not curl, which the others fall back to), so a shell without
+                // one on PATH — e.g. brew not exported into a non-login macOS
+                // session — correctly reports it non-bootstrappable. Assert the
+                // wiring in whichever direction the environment dictates instead
+                // of a blanket true that false-fails there; CI runners have a
+                // system manager, so this still asserts go IS bootstrappable.
+                if m.name() == "go" {
+                    assert_eq!(
+                        m.can_bootstrap(),
+                        any_system_manager_available(),
+                        "go bootstrappability must track system-manager availability"
+                    );
+                } else {
+                    assert!(m.can_bootstrap(), "{} should be bootstrappable", m.name());
+                }
+            }
         }
     }
 }
