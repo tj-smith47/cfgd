@@ -130,6 +130,24 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      # A run cancelled (or runner lost) after the tag push but before
+      # advance-master leaves the bump commit reachable ONLY via the tags;
+      # the next release then wedges on a non-fast-forward tag push with
+      # nothing naming the cause. Detect the stranded state up front and
+      # fail with the exact reconcile command.
+      - name: Guard against a stranded bump commit
+        run: |
+          git fetch --tags --force --quiet origin
+          latest="$(git tag --list 'v[0-9]*' | sort -V | tail -n1)"
+          if [ -z "$latest" ]; then
+            exit 0
+          fi
+          sha="$(git rev-parse "${latest}^{commit}")"
+          if ! git merge-base --is-ancestor "$sha" HEAD; then
+            echo "::error::release tag ${latest} (${sha}) is not an ancestor of the release ref: a prior run was cancelled between the tag push and advance-master, stranding the bump commit. Reconcile with: git push origin ${sha}:refs/heads/master  — then re-run this workflow."
+            exit 1
+          fi
+
       # Deferred-branch pattern: push only the tags now; master advances
       # onto the bump commit in advance-master (last job), after every
       # publish leg has succeeded — a failed release advances neither
@@ -557,16 +575,16 @@ jobs:
   advance-master:
     name: Advance master
     needs: [tag, determinism-check, publish-crd, publish-core, publish-trio, helm-chart, crossplane-function, crossplane-push, olm-bundle]
+    # Drift-proof form of "tag succeeded AND every needed job is success or
+    # skipped": the two !contains() sweeps cover EVERY entry in needs, so a
+    # job added to the needs list is automatically gated — the per-leg
+    # success||skipped enumeration this replaces silently weakened whenever
+    # a new job joined needs without an if: clause. Semantics preserved
+    # exactly: no needed job may be failure or cancelled; skips stay legal.
     if: >-
       ${{ !cancelled() && needs.tag.result == 'success' &&
-          (needs.determinism-check.result == 'success' || needs.determinism-check.result == 'skipped') &&
-          (needs.publish-crd.result == 'success' || needs.publish-crd.result == 'skipped') &&
-          (needs.publish-core.result == 'success' || needs.publish-core.result == 'skipped') &&
-          (needs.publish-trio.result == 'success' || needs.publish-trio.result == 'skipped') &&
-          (needs.helm-chart.result == 'success' || needs.helm-chart.result == 'skipped') &&
-          (needs.crossplane-function.result == 'success' || needs.crossplane-function.result == 'skipped') &&
-          (needs.crossplane-push.result == 'success' || needs.crossplane-push.result == 'skipped') &&
-          (needs.olm-bundle.result == 'success' || needs.olm-bundle.result == 'skipped') }}
+          !contains(needs.*.result, 'failure') &&
+          !contains(needs.*.result, 'cancelled') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
