@@ -322,9 +322,14 @@ mod tests {
 
     #[test]
     fn shell_configurator_diff_matching() {
+        // Diffing the current state against itself must never report drift on
+        // any platform. Deriving `desired` from `current_state()` keeps this
+        // OS-agnostic: on Unix it reads $SHELL, on Windows the Windows Terminal
+        // default profile — comparing either against itself yields no drift.
+        // (Reading $SHELL directly here broke on Windows, where diff() compares
+        // against the Windows Terminal profile, not $SHELL.)
         let sc = ShellConfigurator;
-        let current = std::env::var("SHELL").unwrap_or_default();
-        let desired = serde_yaml::Value::String(current);
+        let desired = sc.current_state().unwrap();
         let drifts = sc.diff(&desired).unwrap();
         assert!(drifts.is_empty());
     }
