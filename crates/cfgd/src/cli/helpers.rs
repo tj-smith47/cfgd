@@ -21,6 +21,27 @@ pub(in crate::cli) fn write_scaffold(
     Ok(())
 }
 
+/// Rewrite a user-owned YAML document, re-prepending the file's existing
+/// leading comment block (banner comments and the schema modeline).
+///
+/// Counterpart to `write_scaffold`: scaffolds inject a modeline; rewrites only
+/// preserve what the file already had — never inject. Mid-document comments
+/// cannot survive the serde round-trip and remain lost.
+pub(in crate::cli) fn rewrite_user_yaml<T: serde::Serialize>(
+    path: &Path,
+    value: &T,
+) -> anyhow::Result<()> {
+    // Best-effort capture: an unreadable original degrades to a comment-free
+    // rewrite instead of failing a write that may still succeed.
+    let original = std::fs::read_to_string(path).unwrap_or_default();
+    let yaml = serde_yaml::to_string(value)?;
+    cfgd_core::atomic_write_str(
+        path,
+        &cfgd_core::config::with_leading_comments(&original, &yaml),
+    )?;
+    Ok(())
+}
+
 pub(in crate::cli) fn load_config_and_profile(
     cli: &Cli,
 ) -> anyhow::Result<(CfgdConfig, String, ResolvedProfile)> {

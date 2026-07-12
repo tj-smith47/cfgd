@@ -36,6 +36,12 @@ through a dot-directory, and hand-renamed manifests. The SchemaStore catalog
 associates the canonical bundle path `profiles/<name>/profile.yaml`; the modeline
 covers everything else.
 
+CLI commands that rewrite a manifest in place (`cfgd config set`, `cfgd module
+update`, `cfgd profile switch`, `cfgd profile update`, source mutations, …)
+preserve the file's **leading** comment block — the modeline and any banner
+comments above the first YAML key survive the rewrite. Comments elsewhere in
+the document are not preserved.
+
 ## Root Config — `cfgd.yaml`
 
 The entry point. Tells cfgd which profile to activate, where config is stored, and how the daemon behaves.

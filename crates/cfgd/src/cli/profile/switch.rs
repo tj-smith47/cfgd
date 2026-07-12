@@ -45,8 +45,7 @@ pub fn cmd_profile_switch(cli: &Cli, name: &str, printer: &Printer) -> anyhow::R
     let old_profile = cfg.spec.profile.clone().unwrap_or_default();
     cfg.spec.profile = Some(name.to_string());
 
-    let yaml = serde_yaml::to_string(&cfg)?;
-    cfgd_core::atomic_write_str(&config_path, &yaml)?;
+    crate::cli::helpers::rewrite_user_yaml(&config_path, &cfg)?;
 
     let doc = Doc::new()
         .status(

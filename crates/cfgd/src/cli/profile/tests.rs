@@ -4933,3 +4933,42 @@ fn profile_migrate_json_payload_shape() {
         );
     }
 }
+
+#[test]
+fn profile_switch_preserves_leading_comments_without_duplicating() {
+    let dir = setup_config_dir();
+    let config_path = dir.path().join("cfgd.yaml");
+    // Real scaffold writer — emits the editor schema modeline; add a user
+    // banner above it (both form the leading comment block).
+    crate::cli::helpers::write_scaffold(
+        cfgd_core::config::SchemaDocKind::Config,
+        &config_path,
+        TEST_CONFIG_YAML,
+    )
+    .unwrap();
+    let raw = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(&config_path, format!("# machine banner\n{raw}")).unwrap();
+
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+    cmd_profile_switch(&cli, "work", &printer).unwrap();
+
+    let after = std::fs::read_to_string(&config_path).unwrap();
+    let mut lines = after.lines();
+    assert_eq!(lines.next().unwrap(), "# machine banner");
+    assert!(
+        lines
+            .next()
+            .unwrap()
+            .starts_with("# yaml-language-server: $schema="),
+        "modeline must survive the rewrite: {after}"
+    );
+
+    // Second rewrite must not duplicate the block.
+    cmd_profile_switch(&cli, "default", &printer).unwrap();
+    let after2 = std::fs::read_to_string(&config_path).unwrap();
+    assert_eq!(after2.matches("# machine banner").count(), 1);
+    assert_eq!(after2.matches("yaml-language-server").count(), 1);
+    let cfg = config::load_config(&config_path).unwrap();
+    assert_eq!(cfg.spec.profile.as_deref(), Some("default"));
+}

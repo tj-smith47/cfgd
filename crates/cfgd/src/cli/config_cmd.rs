@@ -1047,4 +1047,46 @@ spec:
             "expected 'cannot traverse into non-mapping', got: {msg:?}"
         );
     }
+
+    #[test]
+    fn cmd_config_set_preserves_modeline_and_banner_without_duplicating() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("cfgd.yaml");
+        // Real scaffold writer — emits the editor schema modeline.
+        crate::cli::helpers::write_scaffold(
+            cfgd_core::config::SchemaDocKind::Config,
+            &config_path,
+            SAMPLE_CONFIG,
+        )
+        .unwrap();
+        // A user banner added by hand below the modeline.
+        let raw = std::fs::read_to_string(&config_path).unwrap();
+        let (modeline, body) = raw.split_once('\n').unwrap();
+        std::fs::write(&config_path, format!("{modeline}\n# team banner\n{body}")).unwrap();
+
+        let cli = test_cli_for(config_path.clone());
+        let printer = test_printer();
+        cmd_config_set(&cli, &printer, "theme.name", "dark").unwrap();
+
+        let after = std::fs::read_to_string(&config_path).unwrap();
+        let mut lines = after.lines();
+        assert_eq!(
+            lines.next().unwrap(),
+            modeline,
+            "modeline must survive the rewrite"
+        );
+        assert_eq!(
+            lines.next().unwrap(),
+            "# team banner",
+            "user banner must survive the rewrite"
+        );
+        assert!(after.contains("name: dark"), "mutation must land: {after}");
+
+        // Second rewrite must not duplicate the block.
+        cmd_config_set(&cli, &printer, "theme.name", "light").unwrap();
+        let after2 = std::fs::read_to_string(&config_path).unwrap();
+        assert_eq!(after2.matches("# team banner").count(), 1);
+        assert_eq!(after2.matches("yaml-language-server").count(), 1);
+        assert!(after2.contains("name: light"));
+    }
 }

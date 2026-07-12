@@ -195,8 +195,7 @@ pub fn cmd_init(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
                 // Set as active profile in cfgd.yaml
                 let mut cfg = config::load_config(&config_path)?;
                 cfg.spec.profile = Some(name.to_string());
-                let yaml = serde_yaml::to_string(&cfg)?;
-                cfgd_core::atomic_write_str(&config_path, &yaml)?;
+                crate::cli::helpers::rewrite_user_yaml(&config_path, &cfg)?;
                 printer.status_simple(Role::Ok, format!("Set active profile: {}", name));
                 name.to_string()
             } else {
@@ -398,8 +397,7 @@ fn apply_clone_overrides(
             overrides: config::ThemeOverrides::default(),
         });
     }
-    let yaml = serde_yaml::to_string(&cfg)?;
-    cfgd_core::atomic_write_str(config_path, &yaml)?;
+    crate::cli::helpers::rewrite_user_yaml(config_path, &cfg)?;
     Ok(())
 }
 

@@ -71,15 +71,13 @@ pub fn cmd_profile_update(
         if modules::is_git_source(m) {
             // Remote git URL — fetch, lock, and add to profile
             // Save profile first with current changes, then delegate to remote add
-            let yaml = serde_yaml::to_string(&doc)?;
-            cfgd_core::atomic_write_str(&profile_path, &yaml)?;
+            crate::cli::helpers::rewrite_user_yaml(&profile_path, &doc)?;
             module::cmd_module_add_remote(cli, printer, m, None, args.yes, args.allow_unsigned)?;
             // Reload profile (remote add may have modified it)
             doc = config::load_profile(&profile_path)?;
             changes += 1;
         } else if modules::is_registry_ref(m) {
-            let yaml = serde_yaml::to_string(&doc)?;
-            cfgd_core::atomic_write_str(&profile_path, &yaml)?;
+            crate::cli::helpers::rewrite_user_yaml(&profile_path, &doc)?;
             module::cmd_module_add_from_registry(cli, printer, m, args.yes, args.allow_unsigned)?;
             doc = config::load_profile(&profile_path)?;
             changes += 1;
@@ -456,8 +454,7 @@ pub fn cmd_profile_update(
         return Ok(());
     }
 
-    let yaml = serde_yaml::to_string(&doc)?;
-    cfgd_core::atomic_write_str(&profile_path, &yaml)?;
+    crate::cli::helpers::rewrite_user_yaml(&profile_path, &doc)?;
     printer.emit(
         Doc::new()
             .status(

@@ -7,6 +7,7 @@
 mod enum_de;
 
 mod ai;
+mod comments;
 mod compliance;
 mod daemon;
 mod image_lock;
@@ -28,6 +29,7 @@ mod theme;
 mod tests;
 
 pub use ai::AiConfig;
+pub use comments::{leading_comment_block, with_leading_comments};
 pub use compliance::{ComplianceConfig, ComplianceExport, ComplianceFormat, ComplianceScope};
 pub use daemon::{
     AutoApplyPolicyConfig, DaemonConfig, DriftPolicy, PolicyAction, ReconcileConfig,

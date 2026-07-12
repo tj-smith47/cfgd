@@ -309,7 +309,7 @@ where
     let contents = std::fs::read_to_string(config_path)?;
     let mut raw: serde_yaml::Value = serde_yaml::from_str(&contents)?;
     f(&mut raw)?;
-    let output = serde_yaml::to_string(&raw)?;
+    let output = cfgd_core::config::with_leading_comments(&contents, &serde_yaml::to_string(&raw)?);
     if validate {
         config::parse_config(&output, config_path)
             .map_err(|e| anyhow::anyhow!("config would become invalid: {}", e))?;

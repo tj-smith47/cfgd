@@ -6459,3 +6459,51 @@ fn cmd_module_update_remove_nonexistent_script_warns_not_found() {
         "an unmatched script removal makes no change: {output}"
     );
 }
+
+#[test]
+fn cmd_module_update_preserves_leading_comment_block() {
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let printer = make_printer();
+
+    // Real scaffolder — emits the schema modeline as the first line.
+    let create_args = super::ModuleCreateArgs {
+        description: Some("Comment keeper".to_string()),
+        ..make_module_create_args("keeper")
+    };
+    cmd_module_create(&cli, &printer, &create_args).unwrap();
+    let module_yaml = dir
+        .path()
+        .join("modules")
+        .join("keeper")
+        .join("module.yaml");
+
+    // A user banner added by hand below the modeline.
+    let raw = std::fs::read_to_string(&module_yaml).unwrap();
+    let (modeline, body) = raw.split_once('\n').unwrap();
+    let modeline = modeline.to_string();
+    std::fs::write(&module_yaml, format!("{modeline}\n# team banner\n{body}")).unwrap();
+
+    let args = super::ModuleUpdateArgs {
+        env: vec!["EDITOR=nvim".to_string()],
+        ..make_module_update_args("keeper")
+    };
+    cmd_module_update_local(&cli, &printer, &args).unwrap();
+
+    let after = std::fs::read_to_string(&module_yaml).unwrap();
+    let mut lines = after.lines();
+    assert_eq!(
+        lines.next().unwrap(),
+        modeline,
+        "modeline must survive the rewrite"
+    );
+    assert_eq!(
+        lines.next().unwrap(),
+        "# team banner",
+        "user banner must survive the rewrite"
+    );
+    assert_eq!(after.matches("# team banner").count(), 1);
+    let (doc, _) = load_module_document(dir.path(), "keeper").unwrap();
+    assert_eq!(doc.spec.env[0].name, "EDITOR");
+    assert_eq!(doc.spec.env[0].value, "nvim");
+}

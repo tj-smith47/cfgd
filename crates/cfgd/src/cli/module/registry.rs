@@ -956,8 +956,7 @@ pub fn cmd_module_registry_rename(
                 }
             }
             if changed {
-                let yaml = serde_yaml::to_string(&profile).map_err(std::io::Error::other)?;
-                cfgd_core::atomic_write_str(path, &yaml)?;
+                crate::cli::helpers::rewrite_user_yaml(path, &profile)?;
             }
         }
     }
@@ -1100,8 +1099,7 @@ pub(super) fn add_module_to_profile(
     if !ensure_module_in_profile_doc(&mut doc, module_ref) {
         return Ok(false);
     }
-    let yaml = serde_yaml::to_string(&doc)?;
-    cfgd_core::atomic_write_str(&profile_path, &yaml)?;
+    crate::cli::helpers::rewrite_user_yaml(&profile_path, &doc)?;
     printer.status_simple(
         Role::Ok,
         format!(
