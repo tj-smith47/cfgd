@@ -116,6 +116,29 @@ fn pkg_manager_has_correct_fields() {
 }
 
 #[test]
+fn pkg_package_identity_strips_version_suffix() {
+    let mgr = pkg_manager();
+    // `pkg info -q` lists `name-version`; a user declaring the versioned form
+    // must converge against the bare installed identity, not re-plan forever.
+    assert_eq!(mgr.package_identity("brotli-1.2.0,1"), "brotli");
+    assert_eq!(mgr.package_identity("wget-1.21.4_2"), "wget");
+    // A bare name is unchanged, and an embedded version-like token that is not a
+    // trailing `-<digit>` suffix (py311-pip, python39) must NOT be mangled.
+    assert_eq!(mgr.package_identity("curl"), "curl");
+    assert_eq!(mgr.package_identity("python39"), "python39");
+    assert_eq!(mgr.package_identity("py311-pip"), "py311-pip");
+}
+
+#[test]
+fn non_pkg_manager_identity_is_unchanged() {
+    // The version-suffix normalization is pkg-only; apt names pass through as-is.
+    assert_eq!(
+        apt_manager().package_identity("libfoo-1.2.0"),
+        "libfoo-1.2.0"
+    );
+}
+
+#[test]
 fn simple_manager_name_matches() {
     let managers: Vec<SimpleManager> = vec![
         apt_manager(),

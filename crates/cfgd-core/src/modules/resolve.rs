@@ -114,7 +114,10 @@ pub fn resolve_package(
         if let Some(ref min_ver) = entry.min_version {
             match mgr.available_version(&resolved_name) {
                 Ok(Some(ver)) => {
-                    if !crate::version_satisfies(&ver, &format!(">={min_ver}")) {
+                    // Manager-aware: pkg (FreeBSD) versions are not semver, so the
+                    // manager compares against its own scheme; everyone else falls
+                    // through to the loose-semver default.
+                    if !mgr.version_meets_minimum(&ver, min_ver) {
                         continue;
                     }
                     return Ok(Some(ResolvedPackage {

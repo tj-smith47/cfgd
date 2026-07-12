@@ -18,12 +18,12 @@ use super::parsers::{
     parse_apk_lines, parse_dnf_lines, parse_pkg_lines, parse_simple_lines, parse_yum_lines,
     parse_zypper_lines,
 };
-use super::shared::{run_pkg_cmd, run_pkg_cmd_live, strip_sudo_for_exec};
+use super::shared::{run_pkg_cmd, run_pkg_cmd_live, strip_sudo_for_exec, strip_version_suffix};
 use super::versions::{
     APK_BIN_ENV, APT_CACHE_BIN_ENV, DNF_BIN_ENV, DPKG_QUERY_BIN_ENV, PACMAN_BIN_ENV, PKG_BIN_ENV,
     RPM_BIN_ENV, YUM_BIN_ENV, ZYPPER_BIN_ENV, apt_aliases, dnf_aliases, list_apt_with_versions,
-    list_dnf_with_versions, query_version_apk, query_version_apt, query_version_info,
-    query_version_pkg,
+    list_dnf_with_versions, pkg_version_meets_minimum, query_version_apk, query_version_apt,
+    query_version_info, query_version_pkg,
 };
 
 pub(super) const APT_GET_BIN_ENV: &str = "CFGD_APT_GET_BIN";
@@ -222,6 +222,32 @@ impl PackageManager for SimpleManager {
             Ok(f(canonical_name))
         } else {
             Ok(vec![])
+        }
+    }
+
+    fn package_identity(&self, entry: &str) -> String {
+        if self.mgr_name == "pkg" {
+            // FreeBSD `pkg info -q` lists `name-version` (`brotli-1.2.0,1`), and
+            // the installed-side parse (`parse_pkg_lines`) strips it to the bare
+            // name. Normalize a declared entry the same way so a versioned name a
+            // user writes converges against the bare installed identity instead of
+            // re-planning an install on every reconcile.
+            strip_version_suffix(entry)
+        } else {
+            entry.to_string()
+        }
+    }
+
+    fn version_meets_minimum(&self, available: &str, min_version: &str) -> bool {
+        if self.mgr_name == "pkg" {
+            // FreeBSD pkg versions carry PORTEPOCH (`,N`) / PORTREVISION (`_N`)
+            // and are not semver, so the default semver comparison mis-orders
+            // them. Defer to pkg's own comparator. Fail-closed (not satisfied)
+            // when the comparison cannot run, matching resolve's skip-this-manager
+            // behavior on an unresolved version.
+            pkg_version_meets_minimum(available, min_version).unwrap_or(false)
+        } else {
+            cfgd_core::version_satisfies(available, &format!(">={min_version}"))
         }
     }
 }

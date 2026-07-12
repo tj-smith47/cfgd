@@ -447,8 +447,8 @@ mod shim_tests {
         PKG_BIN_ENV, RPM_BIN_ENV, YUM_BIN_ENV, ZYPPER_BIN_ENV,
     };
     use super::{
-        list_apt_with_versions, list_dnf_with_versions, query_version_apk, query_version_apt,
-        query_version_info, query_version_pkg,
+        list_apt_with_versions, list_dnf_with_versions, pkg_version_meets_minimum,
+        query_version_apk, query_version_apt, query_version_info, query_version_pkg,
     };
 
     const MISSING_BIN: &str = "/var/empty/cfgd-test-no-such-binary";
@@ -595,6 +595,50 @@ mod shim_tests {
     fn query_version_pkg_maps_spawn_failure_to_command_failed() {
         let _guard = EnvVarGuard::set(PKG_BIN_ENV, MISSING_BIN);
         let err = query_version_pkg("pkg", "curl").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CfgdError::Package(PackageError::CommandFailed { ref manager, .. }) if manager == "pkg"
+            ),
+            "expected CommandFailed{{manager:\"pkg\"}}; got: {err:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn pkg_version_meets_minimum_true_when_greater_or_equal() {
+        // `pkg version -t <available> <min>` prints `>` when available exceeds the floor.
+        let _shim = ToolShim::install(PKG_BIN_ENV, 0, ">\n", "");
+        assert!(pkg_version_meets_minimum("1.2.0,1", "1.0").expect("compare should succeed"));
+    }
+
+    #[test]
+    #[serial]
+    fn pkg_version_meets_minimum_true_on_exact_equal() {
+        let _shim = ToolShim::install(PKG_BIN_ENV, 0, "=\n", "");
+        assert!(pkg_version_meets_minimum("1.0", "1.0").expect("compare should succeed"));
+    }
+
+    #[test]
+    #[serial]
+    fn pkg_version_meets_minimum_false_when_below_floor() {
+        let _shim = ToolShim::install(PKG_BIN_ENV, 0, "<\n", "");
+        assert!(!pkg_version_meets_minimum("0.9", "1.0").expect("compare should succeed"));
+    }
+
+    #[test]
+    #[serial]
+    fn pkg_version_meets_minimum_false_on_non_zero_exit() {
+        // A malformed comparison fails closed (not satisfied), never a false pass.
+        let _shim = ToolShim::install(PKG_BIN_ENV, 1, "", "pkg version failed");
+        assert!(!pkg_version_meets_minimum("bogus", "1.0").expect("should not error"));
+    }
+
+    #[test]
+    #[serial]
+    fn pkg_version_meets_minimum_maps_spawn_failure_to_command_failed() {
+        let _guard = EnvVarGuard::set(PKG_BIN_ENV, MISSING_BIN);
+        let err = pkg_version_meets_minimum("1.0", "1.0").unwrap_err();
         assert!(
             matches!(
                 err,

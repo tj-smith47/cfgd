@@ -33,6 +33,15 @@ pub trait PackageManager: Send + Sync {
     /// Returns None if the package is not found in the manager's index.
     fn available_version(&self, package: &str) -> Result<Option<String>>;
 
+    /// Whether `available` satisfies a `>= min_version` floor. The default
+    /// compares as loose semver. Managers whose version scheme is not semver —
+    /// notably FreeBSD `pkg`, whose versions carry PORTEPOCH (`,N`) and
+    /// PORTREVISION (`_N`) suffixes — override this to defer to the manager's
+    /// own version comparator so the floor is evaluated correctly.
+    fn version_meets_minimum(&self, available: &str, min_version: &str) -> bool {
+        crate::version_satisfies(available, &format!(">={min_version}"))
+    }
+
     /// Directories to add to PATH after bootstrap. Empty for managers
     /// that are already on the system PATH (apt, dnf, etc.).
     fn path_dirs(&self) -> Vec<String> {

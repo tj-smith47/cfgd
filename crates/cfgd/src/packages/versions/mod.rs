@@ -177,6 +177,31 @@ pub(super) fn query_version_pkg(manager: &str, package: &str) -> Result<Option<S
     Ok(None)
 }
 
+/// Whether a FreeBSD package's `available` version satisfies a `>= min_version`
+/// floor, using pkg's OWN comparator. `pkg version -t <a> <b>` prints a single
+/// `<`, `=`, or `>` describing how `<a>` relates to `<b>`. FreeBSD versions carry
+/// PORTEPOCH (`,N`) and PORTREVISION (`_N`) and are not semver, so a semver parse
+/// would mis-order them (e.g. `1.2.0,1` vs `1.2.0`); deferring to `pkg version`
+/// evaluates the floor exactly as `pkg install`'s own resolver would. Returns
+/// `Ok(true)` when `available` is equal to or greater than the floor.
+pub(super) fn pkg_version_meets_minimum(available: &str, min_version: &str) -> Result<bool> {
+    let output = tool_cmd(PKG_BIN_ENV, "pkg")
+        .args(["version", "-t", available, min_version])
+        .output()
+        .map_err(|e| PackageError::CommandFailed {
+            manager: "pkg".into(),
+            source: e,
+        })?;
+    if !output.status.success() {
+        return Ok(false);
+    }
+    // `pkg version -t` emits exactly one of `<`, `=`, `>` on stdout.
+    Ok(matches!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "=" | ">"
+    ))
+}
+
 /// Parse `dpkg-query -W -f='${Package}\t${Version}\n'` output into PackageInfo.
 /// Parse tab-separated `NAME\tVERSION` output into PackageInfo.
 /// Used by both apt (dpkg-query) and rpm (rpm -qa --queryformat) parsers.
