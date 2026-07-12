@@ -98,6 +98,34 @@ jobs:
         shell: bash
         run: task test:ci
 
+  test-freebsd:
+    name: Tests (freebsd)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      # FreeBSD has no GitHub-hosted runner, so vmactions boots a real FreeBSD
+      # guest (14.3 — the same release as the acceptance VM) inside the Linux
+      # runner. The guest runs `task test:ci`, the same entrypoint every other
+      # test leg uses: it detects FreeBSD via uname and scopes to cfgd-core +
+      # cfgd (cfgd-csi/cfgd-operator are Kubernetes server-side, no FreeBSD
+      # surface), so the scope decision lives in the Taskfile SSOT, not here.
+      # rustup pins current stable (>= MSRV) to mirror that VM's toolchain;
+      # `task` (go-task) and `nextest` come from pkg, and no protoc is needed
+      # since neither in-scope crate compiles protos.
+      - name: Test on FreeBSD
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.3"
+          usesh: "true"
+          prepare: |
+            pkg install -y rustup-init git task nextest
+            rustup-init -y --default-toolchain stable --profile minimal
+          run: |
+            . "$HOME/.cargo/env"
+            task test:ci
+
   audit:
     name: Code Audit
     runs-on: ubuntu-latest

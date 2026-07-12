@@ -108,14 +108,55 @@ tasks:
       - cargo nextest run --workspace --no-fail-fast {{.CLI_ARGS}}
 
   test:ci:
-    desc: CI test entrypoint — scopes Windows to cfgd-core+cfgd (operator/csi covered by E2E).
+    desc: CI test entrypoint — scopes Windows and FreeBSD to cfgd-core+cfgd (operator/csi covered by E2E / have no FreeBSD surface).
     cmds:
       - cmd: |
           if [ "${RUNNER_OS:-}" = "Windows" ]; then
             export OPENSSL_DIR='C:/Program Files/OpenSSL'
             cargo nextest run --no-fail-fast -p cfgd-core -p cfgd {{.CLI_ARGS}}
+          elif [ "$(uname -s)" = "FreeBSD" ]; then
+            # No RUNNER_OS inside the vmactions guest; discriminate on uname.
+            # cfgd-operator (kube) and cfgd-csi (CSI, a Linux kubelet plugin)
+            # carry no FreeBSD surface, so the FreeBSD leg mirrors Windows.
+            cargo nextest run --no-fail-fast -p cfgd-core -p cfgd {{.CLI_ARGS}}
           else
             cargo nextest run --workspace --no-fail-fast {{.CLI_ARGS}}
+          fi
+
+  test:freebsd:
+    desc: "Run the FreeBSD leg locally: ensure the accept VM is up (start + poll if not), sync the tree, and run `task test:ci` on it. Rig overridable via FREEBSD_VM_* env; SHUTDOWN=1 powers the VM off after."
+    vars:
+      # Maintainer rig defaults; override via env for a different host/VM.
+      HOST: '{{.FREEBSD_VM_HOST | default "fbsd"}}'
+      VMID: '{{.FREEBSD_VM_ID | default "105"}}'
+      PVE: '{{.FREEBSD_VM_PVE | default "sir"}}'
+    cmds:
+      - cmd: |
+          set -e
+          # qm lives on the Proxmox host; ensure the guest is running before use.
+          if [ "$(ssh {{.PVE}} qm status {{.VMID}} | awk '{print $2}')" != "running" ]; then
+            echo "==> starting FreeBSD VM {{.VMID}} on {{.PVE}}"
+            ssh {{.PVE}} qm start {{.VMID}}
+          fi
+          echo "==> waiting for {{.HOST}} sshd"
+          i=0
+          until ssh -o ConnectTimeout=8 {{.HOST}} true 2>/dev/null; do
+            i=$((i + 1))
+            [ "$i" -ge 30 ] && { echo "{{.HOST}} did not become reachable" >&2; exit 1; }
+            sleep 4
+          done
+          # Provision the toolchain only when absent — a warm VM skips straight
+          # to the test run. rustup (not pkg rust) guarantees >= MSRV.
+          ssh {{.HOST}} 'command -v cargo >/dev/null 2>&1 || { pkg install -y rustup-init && rustup-init -y --default-toolchain stable --profile minimal; }'
+          ssh {{.HOST}} 'command -v task >/dev/null 2>&1 || pkg install -y task'
+          ssh {{.HOST}} 'test -x "$HOME/.cargo/bin/cargo-nextest" || command -v cargo-nextest >/dev/null 2>&1 || pkg install -y nextest'
+          echo "==> syncing tree to {{.HOST}}:cfgd"
+          rsync -a --delete --exclude .git --exclude target --exclude '*.log' ./ {{.HOST}}:cfgd/
+          echo "==> task test:ci on {{.HOST}}"
+          ssh {{.HOST}} '. "$HOME/.cargo/env"; cd cfgd && task test:ci'
+          if [ -n "{{.SHUTDOWN}}" ]; then
+            echo "==> powering off FreeBSD VM {{.VMID}}"
+            ssh {{.HOST}} 'shutdown -p now' || true
           fi
 
   test:crate:*:

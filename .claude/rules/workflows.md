@@ -69,6 +69,17 @@ single-source-of-truth wiring.
   (gpg/apk keys, CLOUDSMITH/SMTP/SNAPCRAFT/GPG_FINGERPRINT) live ONLY on the
   merge leg; split legs get GH_PAT alone. Never collapse nightly back to a
   single ubuntu job — darwin targets cannot zig-link without a macOS SDK.
+- The `test-freebsd` job in ci.yml is a `vmactions/freebsd-vm` guest (no
+  GitHub-hosted FreeBSD runner exists), pinned to the same release as the
+  acceptance VM. It runs `task test:ci` like every other test leg — the
+  FreeBSD scope decision lives in the Taskfile, not the workflow: `test:ci`
+  detects FreeBSD via `uname -s` (no `RUNNER_OS` inside the guest) and scopes
+  to `-p cfgd-core -p cfgd`, because cfgd-csi/cfgd-operator are k8s
+  server-side with no FreeBSD surface (same rationale as the Windows branch).
+  The toolchain is `rustup-init` not pkg `rust` (guarantees `>= MSRV`, mirrors
+  the VM); `task`/`nextest` come from pkg; no protoc (neither in-scope crate
+  compiles protos). `task test:freebsd` runs the same leg locally against the
+  accept VM (start-if-stopped, poll, sync, `task test:ci`).
 - Self-hosted runner labels for actionlint live in `.github/actionlint.yaml`.
 - Any job that `uses: ./.github/actions/...` MUST have a checkout step
   before it (the local action file only exists on the runner after
