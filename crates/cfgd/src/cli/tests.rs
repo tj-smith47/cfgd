@@ -3549,6 +3549,79 @@ fn generate_release_workflow_detect_grep_covers_flat_and_bundle_forms() {
     );
 }
 
+// GNU-grep-only: the emitted pattern uses GNU BRE extensions (`\|`, `$` in a
+// group) and the generated workflow pins ubuntu-latest, so behavior is pinned
+// against the real grep it will run under. BSD/macOS grep would not match.
+#[cfg(target_os = "linux")]
+#[test]
+fn generate_release_workflow_detect_grep_behavior_against_real_grep() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let fixtures = "profiles/work.yaml\n\
+                    profiles/work.yml\n\
+                    profiles/work/profile.yaml\n\
+                    profiles/work/files/x.sh\n\
+                    profiles/work.app.yaml\n\
+                    profiles/work.app/profile.yaml\n\
+                    profiles/work-extra/profile.yaml\n\
+                    profiles/workother.yaml\n\
+                    profiles/work.yaml.bak\n";
+    let run_grep = |pattern: &str| -> Vec<String> {
+        let mut child = Command::new("grep")
+            .arg(pattern)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn grep");
+        child
+            .stdin
+            .take()
+            .expect("grep stdin")
+            .write_all(fixtures.as_bytes())
+            .expect("write fixtures");
+        let out = child.wait_with_output().expect("grep output");
+        String::from_utf8(out.stdout)
+            .expect("utf8 grep output")
+            .lines()
+            .map(str::to_string)
+            .collect()
+    };
+    let extract_pattern = |yaml: &str, name: &str| -> String {
+        let needle = format!("grep -q '^profiles/{}", name.replace('.', "\\."));
+        let line = yaml
+            .lines()
+            .find(|l| l.contains(&needle))
+            .unwrap_or_else(|| panic!("no detect grep for {name} in:\n{yaml}"));
+        let start = line.find("grep -q '").expect("grep prefix") + "grep -q '".len();
+        let end = line.rfind('\'').expect("closing quote");
+        line[start..end].to_string()
+    };
+
+    let yaml = super::workflow::generate_release_workflow_yaml(
+        &[],
+        &["work".into(), "work.app".into()],
+        "master",
+    )
+    .unwrap();
+
+    assert_eq!(
+        run_grep(&extract_pattern(&yaml, "work")),
+        vec![
+            "profiles/work.yaml",
+            "profiles/work.yml",
+            "profiles/work/profile.yaml",
+            "profiles/work/files/x.sh",
+        ],
+        "work pattern must match exactly its own flat manifests and bundle subtree"
+    );
+    assert_eq!(
+        run_grep(&extract_pattern(&yaml, "work.app")),
+        vec!["profiles/work.app.yaml", "profiles/work.app/profile.yaml"],
+        "work.app pattern must match its own forms without bleeding into work.*"
+    );
+}
+
 #[test]
 fn generate_release_workflow_escapes_dotted_profile_name() {
     let yaml = super::workflow::generate_release_workflow_yaml(&[], &["web.app".into()], "master")

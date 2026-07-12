@@ -99,10 +99,15 @@ fn output_key(name: &str) -> String {
     name.replace(['-', '.'], "_")
 }
 
-/// Escape POSIX basic-regex metacharacters so a resource name interpolates
-/// into the generated `grep` patterns as a literal. Validated names only
-/// permit `.` among the specials, but escape the full BRE set for
-/// robustness. `(`/`)` stay bare: in BRE a BACKSLASHED paren is a group.
+/// Escape basic-regex metacharacters so a resource name interpolates into
+/// the generated `grep` patterns as a literal. Validated names only permit
+/// `.` among the specials, but escape the full BRE set for robustness.
+/// `(`/`)` stay bare: in BRE a BACKSLASHED paren is a group.
+///
+/// The composed patterns target GNU BRE specifically (`\|` alternation and
+/// an anchoring `$` inside a group are GNU extensions, not POSIX): the
+/// generated workflow pins `runs-on: ubuntu-latest`, so GNU grep is
+/// guaranteed. The lines are not portable to BSD/macOS grep as-is.
 fn escape_bre_literal(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for c in name.chars() {

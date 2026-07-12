@@ -335,7 +335,7 @@ pub(in crate::cli) fn update_workflow_best_effort(cli: &Cli, printer: &Printer) 
         printer.status_simple(
             Role::Warn,
             format!(
-                "workflow regeneration failed: {}",
+                "workflow regeneration failed ({}); the on-disk workflow is stale until this is resolved and the workflow is regenerated",
                 cfgd_core::output::collapse_to_subject_line(&*e)
             ),
         );
