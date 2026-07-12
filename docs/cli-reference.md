@@ -774,6 +774,8 @@ cfgd workflow generate --force   # overwrite existing
 
 Profiles whose YAML fails to parse are skipped with a warning naming the file and the parse error; the remaining valid profiles still generate.
 
+The generated workflow's change detection covers both profile manifest forms — the flat file (`profiles/<name>.yaml`) and the bundle directory (`profiles/<name>/**`) — so a push touching either layout tags a release. Names containing regex metacharacters (e.g. `web.app`) are matched literally.
+
 ### `cfgd checkin`
 
 Check in with the device gateway.

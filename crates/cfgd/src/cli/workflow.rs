@@ -91,6 +91,29 @@ pub fn cmd_workflow_generate(cli: &Cli, printer: &Printer, force: bool) -> anyho
     Ok(())
 }
 
+/// Fold a resource name into a shell/expression-safe job-output key:
+/// `-` and `.` become `_` so the key stays referenceable inside
+/// `${{ steps.changes.outputs.<key> }}` (a literal `.` would parse as a
+/// property accessor in the expression).
+fn output_key(name: &str) -> String {
+    name.replace(['-', '.'], "_")
+}
+
+/// Escape POSIX basic-regex metacharacters so a resource name interpolates
+/// into the generated `grep` patterns as a literal. Validated names only
+/// permit `.` among the specials, but escape the full BRE set for
+/// robustness. `(`/`)` stay bare: in BRE a BACKSLASHED paren is a group.
+fn escape_bre_literal(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        if matches!(c, '.' | '[' | ']' | '*' | '^' | '$' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 pub(super) fn generate_release_workflow_yaml(
     modules: &[String],
     profiles: &[String],
@@ -161,14 +184,14 @@ pub(super) fn generate_release_workflow_yaml(
          \x20   outputs:\n",
     );
     for m in modules {
-        let safe = m.replace('-', "_");
+        let safe = output_key(m);
         yaml.push_str(&format!(
             "      module_{}: ${{{{ steps.changes.outputs.module_{} }}}}\n",
             safe, safe
         ));
     }
     for p in profiles {
-        let safe = p.replace('-', "_");
+        let safe = output_key(p);
         yaml.push_str(&format!(
             "      profile_{}: ${{{{ steps.changes.outputs.profile_{} }}}}\n",
             safe, safe
@@ -190,25 +213,33 @@ pub(super) fn generate_release_workflow_yaml(
     );
 
     for m in modules {
-        let safe = m.replace('-', "_");
+        let safe = output_key(m);
         yaml.push_str(&format!(
             "          if echo \"$CHANGED\" | grep -q '^modules/{}/'; then\n\
              \x20           echo \"module_{}=true\" >> $GITHUB_OUTPUT\n\
              \x20         else\n\
              \x20           echo \"module_{}=false\" >> $GITHUB_OUTPUT\n\
              \x20         fi\n",
-            m, safe, safe
+            escape_bre_literal(m),
+            safe,
+            safe
         ));
     }
     for p in profiles {
-        let safe = p.replace('-', "_");
+        let safe = output_key(p);
+        // `[./]` after the name covers BOTH manifest forms: the flat file
+        // (`profiles/<name>.yaml`) and the canonical bundle directory
+        // (`profiles/<name>/...`), while still rejecting prefix collisions
+        // (`profiles/<name>-other/...`).
         yaml.push_str(&format!(
-            "          if echo \"$CHANGED\" | grep -q '^profiles/{}\\.'; then\n\
+            "          if echo \"$CHANGED\" | grep -q '^profiles/{}[./]'; then\n\
              \x20           echo \"profile_{}=true\" >> $GITHUB_OUTPUT\n\
              \x20         else\n\
              \x20           echo \"profile_{}=false\" >> $GITHUB_OUTPUT\n\
              \x20         fi\n",
-            p, safe, safe
+            escape_bre_literal(p),
+            safe,
+            safe
         ));
     }
 
@@ -224,7 +255,7 @@ pub(super) fn generate_release_workflow_yaml(
              \x20       include:\n",
         );
         for m in modules {
-            let safe = m.replace('-', "_");
+            let safe = output_key(m);
             yaml.push_str(&format!(
                 "          - name: {}\n\
                  \x20           changed: ${{{{ needs.detect-changes.outputs.module_{} }}}}\n",
@@ -264,7 +295,7 @@ pub(super) fn generate_release_workflow_yaml(
              \x20       include:\n",
         );
         for p in profiles {
-            let safe = p.replace('-', "_");
+            let safe = output_key(p);
             yaml.push_str(&format!(
                 "          - name: {}\n\
                  \x20           changed: ${{{{ needs.detect-changes.outputs.profile_{} }}}}\n",

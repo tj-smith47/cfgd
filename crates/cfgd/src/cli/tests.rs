@@ -3530,6 +3530,42 @@ fn generate_release_workflow_with_profiles() {
 }
 
 #[test]
+fn generate_release_workflow_detect_grep_covers_flat_and_bundle_forms() {
+    let yaml = super::workflow::generate_release_workflow_yaml(&[], &["work".into()], "master");
+    // `[./]` after the name matches BOTH the flat manifest (profiles/work.yaml)
+    // and the bundle directory (profiles/work/profile.yaml) while rejecting
+    // prefix collisions (profiles/work-extra/...).
+    assert!(
+        yaml.contains("grep -q '^profiles/work[./]'"),
+        "detect step must grep both manifest forms, got:\n{yaml}"
+    );
+}
+
+#[test]
+fn generate_release_workflow_escapes_dotted_profile_name() {
+    let yaml = super::workflow::generate_release_workflow_yaml(&[], &["web.app".into()], "master");
+    assert!(
+        yaml.contains("grep -q '^profiles/web\\.app[./]'"),
+        "dot in profile name must be escaped in the detect grep, got:\n{yaml}"
+    );
+    // Output keys fold `.` to `_` — a literal dot would parse as a property
+    // accessor inside ${{ ... }} expressions.
+    assert!(yaml.contains("profile_web_app:"));
+    assert!(!yaml.contains("profile_web.app"));
+}
+
+#[test]
+fn generate_release_workflow_escapes_dotted_module_name() {
+    let yaml = super::workflow::generate_release_workflow_yaml(&["my.mod".into()], &[], "master");
+    assert!(
+        yaml.contains("grep -q '^modules/my\\.mod/'"),
+        "dot in module name must be escaped in the detect grep, got:\n{yaml}"
+    );
+    assert!(yaml.contains("module_my_mod:"));
+    assert!(!yaml.contains("module_my.mod"));
+}
+
+#[test]
 fn generate_release_workflow_both() {
     let yaml = super::workflow::generate_release_workflow_yaml(
         &["git-tools".into()],
