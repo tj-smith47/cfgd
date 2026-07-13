@@ -3512,3 +3512,70 @@ mod bare_repo_load {
         });
     }
 }
+
+// git_checkout_detached: pins a real local clone to a tag (detaching HEAD at the
+// tagged commit) and surfaces a structured error for an unresolvable ref. No
+// network: the checkout is a purely local git operation.
+#[test]
+fn git_checkout_detached_pins_to_tag_then_errors_on_bad_ref() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir(&repo).unwrap();
+
+    // Local git runner with a fixed identity so `commit` never depends on the
+    // host's git config.
+    let git = |args: &[&str]| -> String {
+        let mut cmd = crate::git_cmd_local();
+        cmd.current_dir(&repo)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@e")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@e")
+            .args(args);
+        let out = cmd.output().expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+
+    git(&["init", "-q"]);
+    std::fs::write(repo.join("a.txt"), b"one").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "one"]);
+    let tagged = git(&["rev-parse", "HEAD"]);
+    git(&["tag", "v1"]);
+    // Advance HEAD past the tag so the checkout must actually move.
+    std::fs::write(repo.join("a.txt"), b"two").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-qm", "two"]);
+
+    let mgr = SourceManager::new(dir.path());
+    let spec = SourceManager::build_source_spec("test", "https://example.com/config.git", None);
+
+    mgr.git_checkout_detached(&spec, &repo, "v1")
+        .expect("checkout of an existing tag must succeed");
+    assert_eq!(
+        git(&["rev-parse", "HEAD"]),
+        tagged,
+        "HEAD must resolve to the tagged commit after pinning"
+    );
+    // A detached HEAD has no symbolic ref.
+    let mut sref = crate::git_cmd_local();
+    sref.current_dir(&repo).args(["symbolic-ref", "-q", "HEAD"]);
+    assert!(
+        !sref.output().expect("symbolic-ref runs").status.success(),
+        "HEAD must be detached after a pinned checkout"
+    );
+
+    let err = mgr
+        .git_checkout_detached(&spec, &repo, "no-such-ref")
+        .expect_err("an unresolvable ref must surface an error");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("no-such-ref"),
+        "error should name the offending ref: {msg}"
+    );
+}

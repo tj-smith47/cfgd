@@ -4972,3 +4972,118 @@ fn profile_switch_preserves_leading_comments_without_duplicating() {
     let cfg = config::load_config(&config_path).unwrap();
     assert_eq!(cfg.spec.profile.as_deref(), Some("default"));
 }
+
+#[test]
+fn profile_migrate_cmd_wrapper_returns_ok_on_success() {
+    // Exercises the thin `cmd_profile_migrate` CLI wrapper (not the inner
+    // `run_profile_migrate`): a clean single migration reports failed=0, so the
+    // wrapper must return Ok without hitting the non-zero-exit branch.
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let (printer, _buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+
+    migrate::cmd_profile_migrate(&cli, &printer, Some("work"), false, false, true).unwrap();
+
+    assert!(
+        dir.path()
+            .join("profiles")
+            .join("work")
+            .join("profile.yaml")
+            .is_file(),
+        "wrapper must perform the migration"
+    );
+}
+
+#[test]
+fn profile_migrate_execute_move_failure_records_failed() {
+    // A plain FILE at profiles/work blocks creation of the canonical bundle dir,
+    // so execute_move's ensure_parent_dir fails on an otherwise-valid Move item.
+    // The loop must record a "failed" action and the summary must be Fail(1).
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    std::fs::write(dir.path().join("profiles").join("work"), "blocker").unwrap();
+
+    let (result, output) = run_migrate(&cli, Some("work"), false, false, true);
+    assert_eq!(result.unwrap(), 1, "the blocked move counts as one failure");
+    assert!(
+        output.contains("Failed to migrate 'work'"),
+        "per-profile failure must be reported, got: {output}"
+    );
+    assert!(
+        output.contains("1 profile(s) failed to migrate"),
+        "summary must reflect the all-failed case, got: {output}"
+    );
+    // The legacy manifest is left in place — a failed move must not delete it.
+    assert!(dir.path().join("profiles").join("work.yaml").is_file());
+}
+
+#[test]
+fn profile_migrate_single_ambiguous_dry_run_reports_failed() {
+    // Both legacy (work.yaml) and canonical (work/profile.yaml) present → the
+    // planner's lookup errors as AmbiguousProfile. In dry-run, a single named
+    // ambiguous profile becomes a Failed plan item (not a hard error).
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let bundle = dir.path().join("profiles").join("work");
+    std::fs::create_dir_all(&bundle).unwrap();
+    std::fs::write(bundle.join("profile.yaml"), WORK_PROFILE_YAML).unwrap();
+
+    let (result, output) = run_migrate(&cli, Some("work"), false, true, true);
+    assert_eq!(
+        result.unwrap(),
+        1,
+        "ambiguous profile is one dry-run failure"
+    );
+    assert!(
+        output.contains("Cannot migrate 'work'"),
+        "ambiguity must surface as a Failed record, got: {output}"
+    );
+}
+
+#[test]
+fn profile_migrate_single_ambiguous_real_run_errors() {
+    // The same ambiguity in a real (non-dry) single-name run must abort with an
+    // error rather than guess which on-disk form is authoritative.
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let bundle = dir.path().join("profiles").join("work");
+    std::fs::create_dir_all(&bundle).unwrap();
+    std::fs::write(bundle.join("profile.yaml"), WORK_PROFILE_YAML).unwrap();
+
+    let (result, _output) = run_migrate(&cli, Some("work"), false, false, true);
+    assert!(
+        result.is_err(),
+        "ambiguous single-name real run must be a hard error"
+    );
+}
+
+#[test]
+fn profile_migrate_all_reports_already_canonical_profiles() {
+    // setup_config_dir seeds only legacy-flat profiles; add a canonical bundle so
+    // the --all scan yields an AlreadyCanonical plan item alongside the moves.
+    let dir = setup_config_dir();
+    let cli = test_cli(dir.path());
+    let bundle = dir.path().join("profiles").join("prod");
+    std::fs::create_dir_all(&bundle).unwrap();
+    std::fs::write(
+        bundle.join("profile.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: prod\nspec: {}\n",
+    )
+    .unwrap();
+
+    let (result, output) = run_migrate(&cli, None, true, false, true);
+    assert_eq!(result.unwrap(), 0, "no failures expected");
+    assert!(
+        output.contains("Profile 'prod' already canonical"),
+        "already-canonical profile must be reported, got: {output}"
+    );
+    // The legacy ones still migrated.
+    assert!(
+        dir.path()
+            .join("profiles")
+            .join("work")
+            .join("profile.yaml")
+            .is_file()
+    );
+}

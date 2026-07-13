@@ -153,4 +153,33 @@ mod tests {
         let lf2 = load_sources_lockfile(dir.path()).expect("load after no-op");
         assert_eq!(lf2.sources.len(), 1, "count unchanged after no-op");
     }
+
+    #[test]
+    fn load_sources_lockfile_errors_when_path_is_a_directory() {
+        let dir = TempDir::new().expect("tempdir");
+        // A directory named sources.lock makes path.exists() true but
+        // read_to_string fail, exercising the read-error message path.
+        std::fs::create_dir(dir.path().join(LOCKFILE_NAME)).expect("mkdir lockfile-as-dir");
+        let err = load_sources_lockfile(dir.path()).expect_err("read must fail on a directory");
+        assert!(
+            err.to_string().contains("cannot read sources lockfile"),
+            "unexpected error: {err}",
+        );
+    }
+
+    #[test]
+    fn save_sources_lockfile_errors_when_target_is_nonempty_dir() {
+        let dir = TempDir::new().expect("tempdir");
+        // sources.lock as a non-empty directory: the atomic temp+rename cannot
+        // replace it, exercising the write-error message path.
+        let lock_dir = dir.path().join(LOCKFILE_NAME);
+        std::fs::create_dir(&lock_dir).expect("mkdir lockfile-as-dir");
+        std::fs::write(lock_dir.join("occupant"), b"x").expect("occupy dir");
+        let err = save_sources_lockfile(dir.path(), &SourcesLockfile::default())
+            .expect_err("write must fail when target is a non-empty dir");
+        assert!(
+            err.to_string().contains("cannot write sources lockfile"),
+            "unexpected error: {err}",
+        );
+    }
 }

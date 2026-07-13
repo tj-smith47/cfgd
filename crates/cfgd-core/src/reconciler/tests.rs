@@ -13130,3 +13130,223 @@ fn dedup_passes_through_non_install_package_actions() {
         "Bootstrap/Uninstall/Skip must pass through untouched"
     );
 }
+
+#[test]
+fn execute_script_working_dir_is_a_file_errors() {
+    // A `working_dir` that resolves to a regular file (not a directory) must be
+    // rejected up front with a message that names the path and the kind, rather
+    // than surfacing a cryptic spawn ENOENT later.
+    let printer = test_printer();
+    let entry = ScriptEntry::Simple("echo hi".to_string());
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("not-a-dir");
+    std::fs::write(&file, "x").unwrap();
+
+    let result = super::execute_script(
+        &entry,
+        dir.path(),
+        &file,
+        &[],
+        std::time::Duration::from_secs(10),
+        &printer,
+        None,
+        None,
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("working directory is not a directory"),
+        "error must name the not-a-directory condition, got: {err}"
+    );
+}
+
+#[test]
+fn execute_script_working_dir_missing_errors() {
+    // A non-existent `working_dir` (e.g. a cleaned-up tempdir) is caught by the
+    // pre-spawn metadata probe and reported as "does not exist".
+    let printer = test_printer();
+    let entry = ScriptEntry::Simple("echo hi".to_string());
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("gone");
+
+    let result = super::execute_script(
+        &entry,
+        dir.path(),
+        &missing,
+        &[],
+        std::time::Duration::from_secs(10),
+        &printer,
+        None,
+        None,
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("working directory does not exist"),
+        "error must name the missing-directory condition, got: {err}"
+    );
+}
+
+#[test]
+fn env_targets_windows_with_git_bash_adds_unix_env_file_and_bashrc() {
+    // When a POSIX sh (Git Bash) is present, the Windows arm additionally emits
+    // the shared Unix bash env file and a ~/.bashrc source line.
+    let home = Path::new("/h");
+    let probe = EnvHostProbe {
+        shell: "/bin/bash".to_string(),
+        fish_present: false,
+        bash_profile_exists: false,
+        bash_login_exists: false,
+        git_bash_present: true,
+    };
+    let t = env_targets(
+        &one_env(),
+        &[],
+        EnvScope::All,
+        home,
+        &probe,
+        EnvPlatform::Windows,
+    );
+    let keys = target_keys(&t);
+    assert!(
+        keys.contains(&"file:/h/.cfgd.env".to_string()),
+        "Git Bash ⇒ unix env file expected, got: {keys:?}"
+    );
+    assert!(
+        keys.contains(&"src:/h/.bashrc".to_string()),
+        "Git Bash ⇒ .bashrc source line expected, got: {keys:?}"
+    );
+}
+
+#[test]
+fn env_targets_fish_present_adds_managed_fish_file() {
+    // When fish is in use (probe.fish_present), the interactive surface gains a
+    // managed conf.d/cfgd-env.fish file alongside the bash env file + rc line.
+    let home = Path::new("/h");
+    let probe = EnvHostProbe {
+        shell: "/bin/bash".to_string(),
+        fish_present: true,
+        bash_profile_exists: false,
+        bash_login_exists: false,
+        git_bash_present: false,
+    };
+    let t = env_targets(
+        &one_env(),
+        &[],
+        EnvScope::Interactive,
+        home,
+        &probe,
+        EnvPlatform::Linux,
+    );
+    let keys = target_keys(&t);
+    assert!(
+        keys.contains(&"file:/h/.config/fish/conf.d/cfgd-env.fish".to_string()),
+        "fish env file expected when fish is present, got: {keys:?}"
+    );
+}
+
+// --- execute_script idempotency guards: creates / unless / onlyIf short-circuit ---
+
+fn full_guarded_script(
+    run: &str,
+    creates: Option<String>,
+    only_if: Option<String>,
+    unless: Option<String>,
+) -> ScriptEntry {
+    ScriptEntry::Full {
+        workdir: None,
+        run: run.to_string(),
+        timeout: None,
+        idle_timeout: None,
+        continue_on_error: None,
+        shell: ScriptShell::Auto,
+        only_if,
+        unless,
+        creates,
+        interactive: false,
+    }
+}
+
+#[test]
+fn execute_script_creates_guard_skips_when_path_exists() {
+    // `creates:` names an artifact the script produces; if it already exists the
+    // script is a no-op (changed=false) and its body never runs.
+    let printer = test_printer();
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("already-there");
+    std::fs::write(&marker, "x").unwrap();
+    // Body would create a DIFFERENT file if it ran — its absence proves the skip.
+    let entry = full_guarded_script(
+        "touch should-not-exist",
+        Some(marker.to_string_lossy().into_owned()),
+        None,
+        None,
+    );
+    let (_label, changed, _out) = super::execute_script(
+        &entry,
+        dir.path(),
+        dir.path(),
+        &[],
+        std::time::Duration::from_secs(10),
+        &printer,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(!changed, "creates guard must mark the run as a no-op");
+    assert!(
+        !dir.path().join("should-not-exist").exists(),
+        "guarded body must not have executed"
+    );
+}
+
+#[test]
+fn execute_script_unless_guard_skips_when_condition_holds() {
+    // `unless:` skips when its command succeeds (the guarded state already holds).
+    let printer = test_printer();
+    let dir = tempfile::tempdir().unwrap();
+    let entry = full_guarded_script(
+        "touch should-not-exist",
+        None,
+        None,
+        Some("true".to_string()),
+    );
+    let (_label, changed, _out) = super::execute_script(
+        &entry,
+        dir.path(),
+        dir.path(),
+        &[],
+        std::time::Duration::from_secs(10),
+        &printer,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(!changed, "unless-holds must skip the body");
+    assert!(!dir.path().join("should-not-exist").exists());
+}
+
+#[test]
+fn execute_script_only_if_guard_skips_when_condition_unmet() {
+    // `onlyIf:` runs the body only when its command succeeds; a failing guard
+    // (`false`) skips the body as a clean no-op.
+    let printer = test_printer();
+    let dir = tempfile::tempdir().unwrap();
+    let entry = full_guarded_script(
+        "touch should-not-exist",
+        None,
+        Some("false".to_string()),
+        None,
+    );
+    let (_label, changed, _out) = super::execute_script(
+        &entry,
+        dir.path(),
+        dir.path(),
+        &[],
+        std::time::Duration::from_secs(10),
+        &printer,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(!changed, "onlyIf-unmet must skip the body");
+    assert!(!dir.path().join("should-not-exist").exists());
+}

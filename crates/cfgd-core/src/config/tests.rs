@@ -52,6 +52,44 @@ fn load_profile_rejects_unknown_apiversion() {
 }
 
 #[test]
+fn load_profile_missing_path_is_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("does-not-exist.yaml");
+    let err = load_profile(&path).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            crate::errors::CfgdError::Config(ConfigError::NotFound { .. })
+        ),
+        "a missing profile path must surface as ConfigError::NotFound, got: {err}",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn scan_profiles_ignores_broken_symlink() {
+    // A dangling symlink in the profiles dir has no resolvable metadata; the
+    // scanner must skip it rather than error or mistake it for a profile.
+    let dir = tempfile::tempdir().unwrap();
+    let profiles = dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles).unwrap();
+    std::fs::write(profiles.join("real.yaml"), SAMPLE_PROFILE_YAML).unwrap();
+    std::os::unix::fs::symlink(
+        profiles.join("missing-target.yaml"),
+        profiles.join("dangling.yaml"),
+    )
+    .unwrap();
+
+    let entries = scan_profiles(&profiles).unwrap();
+    let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+    assert!(names.contains(&"real"), "the real profile must be found");
+    assert!(
+        !names.contains(&"dangling"),
+        "a broken symlink must not be scanned as a profile",
+    );
+}
+
+#[test]
 fn parse_profile_yaml() {
     let doc: ProfileDocument = serde_yaml::from_str(SAMPLE_PROFILE_YAML).unwrap();
     assert_eq!(doc.metadata.name, "base");
@@ -2493,4 +2531,22 @@ fn scan_profiles_tolerant_unreadable_dir_errors() {
     );
 
     std::fs::set_permissions(&pdir, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn load_config_rejects_oversized_file() {
+    // The YAML-bomb defense caps config files at 50 MiB by metadata size, before
+    // any read. A sparse file (set_len) exceeds the cap without writing 50 MiB, so
+    // the guard fires and load_config returns an Invalid error naming "too large".
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("cfgd.yaml");
+    let f = std::fs::File::create(&cfg).unwrap();
+    f.set_len(51 * 1024 * 1024).unwrap();
+    drop(f);
+
+    let err = load_config(&cfg).unwrap_err();
+    assert!(
+        err.to_string().contains("too large"),
+        "oversized config must be rejected with a size message, got: {err}"
+    );
 }

@@ -561,3 +561,81 @@ fn resolved_dirs_system_scope_resolves_fhs_roots() {
     assert_eq!(dirs.cache, PathBuf::from("/var/cache/cfgd"));
     assert_eq!(dirs.runtime, Some(PathBuf::from("/run/cfgd")));
 }
+
+// --- copy_tree_preserving_symlinks: symlinks survive the cross-fs move fallback ---
+
+#[test]
+#[cfg(unix)]
+fn copy_tree_preserving_symlinks_recreates_symlinks_and_nested_files() {
+    let root = tempfile::TempDir::new().unwrap();
+    let src = root.path().join("src");
+    let dst = root.path().join("dst");
+    std::fs::create_dir_all(src.join("sub")).unwrap();
+    std::fs::write(src.join("top.txt"), "top").unwrap();
+    std::fs::write(src.join("sub").join("nested.txt"), "nested").unwrap();
+    // A symlink pointing at a relative target must be recreated as a symlink,
+    // not dereferenced into a copy (the whole point of this fallback helper).
+    crate::create_symlink(Path::new("top.txt"), &src.join("link")).unwrap();
+
+    copy_tree_preserving_symlinks(&src, &dst).unwrap();
+
+    assert_eq!(std::fs::read_to_string(dst.join("top.txt")).unwrap(), "top");
+    assert_eq!(
+        std::fs::read_to_string(dst.join("sub").join("nested.txt")).unwrap(),
+        "nested"
+    );
+    let link_meta = std::fs::symlink_metadata(dst.join("link")).unwrap();
+    assert!(
+        link_meta.file_type().is_symlink(),
+        "symlink entry must remain a symlink after the copy"
+    );
+    assert_eq!(
+        std::fs::read_link(dst.join("link")).unwrap(),
+        Path::new("top.txt"),
+        "symlink target must be preserved verbatim"
+    );
+}
+
+// --- capture_file_state: oversized files skip content capture (sparse-file driven) ---
+
+#[test]
+fn capture_file_state_oversized_skips_content() {
+    // A file larger than the 10 MiB backup cap must be recorded with oversized=true
+    // and no captured content/hash. A sparse file (set_len) exceeds the cap without
+    // writing 10 MiB, keeping the test instant and hermetic.
+    let dir = tempfile::TempDir::new().unwrap();
+    let big = dir.path().join("big.bin");
+    let f = std::fs::File::create(&big).unwrap();
+    f.set_len(11 * 1024 * 1024).unwrap();
+    drop(f);
+
+    let state = crate::capture_file_state(&big).unwrap().unwrap();
+    assert!(
+        state.oversized,
+        "file above the cap must be flagged oversized"
+    );
+    assert!(
+        state.content.is_empty(),
+        "oversized capture must skip content"
+    );
+    assert!(
+        state.content_hash.is_empty(),
+        "oversized capture must skip hash"
+    );
+    assert!(!state.is_symlink);
+}
+
+#[test]
+fn capture_file_resolved_state_oversized_skips_content() {
+    // The resolved-state variant applies the same cap after following symlinks.
+    let dir = tempfile::TempDir::new().unwrap();
+    let big = dir.path().join("big.bin");
+    let f = std::fs::File::create(&big).unwrap();
+    f.set_len(11 * 1024 * 1024).unwrap();
+    drop(f);
+
+    let state = crate::capture_file_resolved_state(&big).unwrap().unwrap();
+    assert!(state.oversized, "resolved capture must flag oversized");
+    assert!(state.content.is_empty());
+    assert!(state.content_hash.is_empty());
+}

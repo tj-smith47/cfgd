@@ -208,7 +208,35 @@ fn remove_rejected_from_seq(reject_map: &serde_yaml::Mapping, key: &str, target:
 mod tests {
     use crate::config::{BrewSpec, CustomManagerSpec, FlatpakSpec, PackagesSpec, SnapSpec};
 
-    use super::merge_packages;
+    use super::{merge_packages, validate_reject_keys};
+
+    #[test]
+    fn validate_reject_keys_rejects_non_string_key() {
+        // A `reject:` mapping whose key is not a string can never match one of
+        // the allowed top-level buckets, so it is caught up front as a typo
+        // rather than silently letting the unwanted item through.
+        let mut map = serde_yaml::Mapping::new();
+        map.insert(serde_yaml::Value::Number(7.into()), serde_yaml::Value::Null);
+        let reject = serde_yaml::Value::Mapping(map);
+        let err = validate_reject_keys("upstream", &reject).unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("reject"),
+            "error should name the invalid reject key, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_reject_keys_accepts_allowed_and_null() {
+        // The happy paths: a null reject value and a mapping using only allowed
+        // top-level keys both validate cleanly.
+        validate_reject_keys("upstream", &serde_yaml::Value::Null).unwrap();
+        let mut map = serde_yaml::Mapping::new();
+        map.insert(
+            serde_yaml::Value::String("packages".into()),
+            serde_yaml::Value::Null,
+        );
+        validate_reject_keys("upstream", &serde_yaml::Value::Mapping(map)).unwrap();
+    }
 
     fn brew(file: Option<&str>, formulae: &[&str], taps: &[&str], casks: &[&str]) -> BrewSpec {
         BrewSpec {

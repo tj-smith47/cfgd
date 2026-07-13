@@ -641,4 +641,19 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn rusqlite_error_converts_to_state_and_cfgd_errors() {
+        let state_err: StateError = rusqlite::Error::QueryReturnedNoRows.into();
+        assert!(
+            matches!(state_err, StateError::Database(_)),
+            "rusqlite error must map to StateError::Database",
+        );
+
+        let cfgd_err: CfgdError = rusqlite::Error::QueryReturnedNoRows.into();
+        assert!(
+            matches!(cfgd_err, CfgdError::State(StateError::Database(_))),
+            "rusqlite error must map to CfgdError::State(Database)",
+        );
+    }
 }

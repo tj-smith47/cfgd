@@ -460,6 +460,66 @@ fn all_package_managers_creates_all() {
 }
 
 #[test]
+fn all_package_managers_default_trait_contracts() {
+    // Exercise the PackageManager trait's default-derived methods on every
+    // registered manager and assert their documented contracts hold uniformly.
+    // installed_packages_with_versions is intentionally excluded: its default
+    // shells out to the real manager, which is neither present nor hermetic on
+    // CI.
+    for m in all_package_managers() {
+        let name = m.name().to_string();
+
+        // package_identity: a non-empty package name always maps to a non-empty
+        // identity. go rewrites module paths, but never to the empty string.
+        assert!(
+            !m.package_identity("ripgrep").is_empty(),
+            "{name}: package_identity of a non-empty name must be non-empty",
+        );
+
+        // persisted_uninstall: only user-scripted managers persist an uninstall
+        // command; every built-in derives it from code and returns None.
+        assert!(
+            m.persisted_uninstall().is_none(),
+            "{name}: built-in managers must not persist an uninstall command",
+        );
+
+        // package_aliases: succeeds for every manager and never yields an empty
+        // alias string (the default returns an empty list).
+        let aliases = m
+            .package_aliases("ripgrep")
+            .unwrap_or_else(|e| panic!("{name}: package_aliases errored: {e}"));
+        assert!(
+            aliases.iter().all(|a| !a.is_empty()),
+            "{name}: package aliases must be non-empty strings",
+        );
+
+        // path_dirs: PATH additions applied after bootstrap; every entry is a
+        // non-empty path fragment.
+        assert!(
+            m.path_dirs().iter().all(|d| !d.is_empty()),
+            "{name}: path_dirs entries must be non-empty",
+        );
+
+        // version_meets_minimum: the default is a loose-semver >= comparison.
+        // pkg overrides it to defer to FreeBSD `pkg version -t`, which
+        // fail-closes when the pkg binary is absent (every non-FreeBSD CI host),
+        // so its result is not asserted — only that the call returns.
+        if name == "pkg" {
+            let _ = m.version_meets_minimum("2.0.0", "1.0.0");
+        } else {
+            assert!(
+                m.version_meets_minimum("2.0.0", "1.0.0"),
+                "{name}: 2.0.0 must satisfy >=1.0.0",
+            );
+            assert!(
+                !m.version_meets_minimum("1.0.0", "2.0.0"),
+                "{name}: 1.0.0 must not satisfy >=2.0.0",
+            );
+        }
+    }
+}
+
+#[test]
 fn plan_multiple_managers() {
     let cargo_mock = MockPackageManager::new("cargo", true, vec![]);
     let npm_mock = MockPackageManager::new("npm", true, vec!["typescript"]);

@@ -3843,3 +3843,32 @@ fn apply_create_copy_with_too_long_target_filename_returns_io_error() {
         "expected ENAMETOOLONG error for atomic_write, got: {msg}"
     );
 }
+
+#[test]
+fn file_drift_one_missing_source_reports_non_matching() {
+    // A managed source that does not exist on disk must surface as a
+    // non-matching drift result (not an error), so one bad entry never masks
+    // drift on sibling files.
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path();
+    let resolved = make_resolved_profile(
+        vec![],
+        FilesSpec {
+            managed: vec![],
+            permissions: HashMap::new(),
+        },
+    );
+    let fm = CfgdFileManager::new(config_dir, &resolved).unwrap();
+
+    let missing_source = config_dir.join("files").join("does-not-exist.txt");
+    let target = config_dir.join("target").join("out.txt");
+    let result = fm.file_drift_one(&missing_source, &target, None).unwrap();
+
+    assert!(!result.matches, "missing source must be non-matching");
+    assert!(
+        result.actual.contains("source not found"),
+        "actual must explain the missing source, got: {}",
+        result.actual
+    );
+    assert_eq!(result.expected, "managed source present");
+}
