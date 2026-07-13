@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src=".github/gear.svg" width="96" alt="cfgd gear icon">
+<img src="https://raw.githubusercontent.com/tj-smith47/cfgd/master/.github/gear.svg" width="96" alt="cfgd gear icon">
 
 # cfgd
 

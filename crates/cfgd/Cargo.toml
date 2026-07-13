@@ -10,6 +10,7 @@ authors.workspace = true
 description = "Declarative, GitOps-style machine configuration state management"
 keywords = ["config", "management", "gitops", "reconciliation", "declarative"]
 categories = ["config", "command-line-utilities"]
+readme = "../../README.md"
 
 [lib]
 name = "cfgd"
