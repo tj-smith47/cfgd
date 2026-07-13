@@ -1,0 +1,90 @@
+name: Publish OIDC
+
+# The cargo (crates.io) publish for EVERY cfgd crate runs here, split out of
+# release.yml into a standalone workflow_dispatch workflow. crates.io Trusted
+# Publishing rejects the `workflow_run` event release.yml fires on ("Trusted
+# Publishing does not support the workflow_run event trigger … use push,
+# release, or workflow_dispatch") — the OIDC event_name claim is fixed per
+# workflow-run, so no job inside release.yml (nor the reusable publish-crate.yml
+# it calls, which inherits the caller's event) can present an accepted trigger.
+# workflow_dispatch is on the accepted list, so the id-token minted here carries
+# an event_name crates.io honours.
+#
+# release.yml's `dispatch-oidc` job invokes this after `determinism-check`
+# succeeds and polls it to a verdict, so the release run still reflects this
+# leg's result (and rolls the tags back if it fails). One call publishes all
+# five crates: anodizer topologically sorts the workspace, so cfgd-crd →
+# cfgd-core → the binary trio land in crates.io dependency order internally —
+# the ordering release.yml's per-crate job graph used to enforce by hand.
+#
+# The crates.io Trusted-Publisher configs must therefore name THIS file
+# (`publish-oidc.yml`) as their workflow, not release.yml — the OIDC token's
+# `workflow` claim comes from the file that actually runs `cargo publish`.
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit SHA to publish (the tagged bump commit release.yml's tag job landed on)."
+        required: true
+        default: ""
+      dist_run_id:
+        description: "Release run id whose preserved dist-* artifacts to download. release --publish-only re-emits binstall metadata from them, so the trio crates need their dist present."
+        required: true
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # SSOT: repo variable (gh variable set ANODIZER_VERSION), shared by every
+  # workflow that installs anodizer.
+  ANODIZER_VERSION: ${{ vars.ANODIZER_VERSION }}
+
+jobs:
+  publish-oidc:
+    name: Publish crates.io (OIDC)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # id-token: write injects ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN — the request
+    # env crates.io Trusted Publishing exchanges for its short-lived per-crate
+    # upload token. No stored CARGO_REGISTRY_TOKEN.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write # anodizer-action's build-provenance step attests the published .crate artifacts
+    steps:
+      - name: Check out tagged commit
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.sha }}
+
+      - name: Install protoc
+        uses: ./.github/actions/setup-protoc
+
+      - name: Download preserved dist
+        uses: ./.github/actions/download-dist
+        with:
+          # Every crate's dist: the trio's binstall metadata re-emit reads its
+          # own preserved binaries, and the library crates carry source-package
+          # dist. This runs in a SEPARATE dispatched run, so pull from the
+          # Release run that built them.
+          run-id: ${{ inputs.dist_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run anodizer release --publish-only --publishers cargo
+        uses: tj-smith47/anodizer-action@v1
+        with:
+          version: ${{ env.ANODIZER_VERSION }}
+          auto-install: 'true'
+          # Artifacts already in dist/ from the step above; the action's built-in
+          # download (which matches dist-* in the CURRENT run) is skipped.
+          download-dist: 'false'
+          # --publishers cargo is an allowlist: it deselects every publisher
+          # outside crates.io (github-release, docker, snap, homebrew, …) so
+          # this job publishes ONLY cargo, for all crates, in dependency order.
+          # The exact complement of publish-crate.yml's `--skip cargo`.
+          args: release --publish-only --publishers cargo
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}

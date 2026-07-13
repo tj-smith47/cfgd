@@ -23,10 +23,16 @@ single-source-of-truth wiring.
 
 ## Job wiring invariants
 
-- Every publish leg is a `publish-crate.yml` reusable-workflow call
-  (crd/core as ordered single calls with `rollback: true`, the trio as a
-  matrix with rollback left false). Ordering crd → core → trio is
-  load-bearing: crates.io dep polls depend on it.
+- crates.io publishing for ALL crates runs once, in the dispatched
+  `publish-oidc.yml` (`--publishers cargo`, topo-ordered — see the OIDC bullet
+  below); the crd/core libraries have no other publish target, so they have no
+  `publish-crate.yml` leg at all. The binary trio's `publish-crate.yml` calls
+  are a matrix (`--skip cargo`, rollback left false) covering only their
+  binary distribution. `dispatch-oidc` runs cargo-first and rolls the tags back
+  on failure (its in-job rollback has no concurrent sibling: `publish-trio`
+  gates on `dispatch-oidc` success); trio failures go to the `rollback-trio`
+  job. crates.io dep ordering (`cfgd-crd → cfgd-core → trio`) is load-bearing
+  and now enforced INSIDE anodizer's workspace topo-sort, not the job graph.
 - Determinism lanes come from the tag job's `det_matrix` output: trio
   crates shard across all three OSes, library crates linux-only (via
   determinism-shards' `os-labels` input). Publish legs restore their
@@ -38,13 +44,22 @@ single-source-of-truth wiring.
   job also carries `id-token: write` — not to publish, but because the
   runtime only injects `ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN` into jobs that
   can mint OIDC tokens, and anodizer's secret preflight validates those on
-  behalf of the MCP-registry publisher. The publish jobs' `id-token: write`
-  also drives crates.io Trusted Publishing (`.anodizer.yaml` cargo
-  `auth: oidc`): anodizer exchanges the id-token for a short-lived crates.io
-  token per crate — there is no stored `CARGO_REGISTRY_TOKEN`. crates.io TP
-  matches the OIDC `workflow_ref` claim, which is the top-level caller
-  (`release.yml`), so the Trusted Publisher registered on crates.io names
-  `release.yml`, NOT the reusable `publish-crate.yml` that runs cargo.
+  behalf of the MCP-registry publisher.
+- crates.io Trusted Publishing (`.anodizer.yaml` cargo `auth: oidc`) runs in a
+  DEDICATED `publish-oidc.yml` (`on: workflow_dispatch`), never in `release.yml`
+  or the reusable `publish-crate.yml`: crates.io TP rejects the `workflow_run`
+  event those fire on ("does not support the workflow_run event trigger" — the
+  OIDC `event_name` claim is fixed per trigger and checked before any
+  workflow-filename match), and `workflow_dispatch` is on its accepted list.
+  `release.yml`'s `dispatch-oidc` job fires `publish-oidc.yml` via the
+  `dispatch-and-wait` composite (a reusable `workflow_call` can't be used — it
+  would re-inherit the caller's `workflow_run` event and re-taint the claim),
+  polls it to a verdict, and rolls the tags back on cargo failure. anodizer
+  topo-sorts the workspace, so one `--publishers cargo` call publishes all five
+  crates in `cfgd-crd → cfgd-core → trio` dependency order — the trio's
+  `publish-crate.yml` legs run `--skip cargo` (the exact complement). The
+  Trusted-Publisher configs on crates.io therefore name `publish-oidc.yml` (the
+  file that runs cargo publish), NOT `release.yml`.
 - Deferred-branch release topology (anodizer >= v0.16.0, uniform-local
   `tag`): the tag step runs `tag --changelog --push-tags-only` (tags only —
   the bump commit is reachable ONLY via the tags until publish completes),

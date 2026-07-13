@@ -99,11 +99,15 @@ defaults:
       retain_on_rollback: true
       # crates.io Trusted Publishing: exchange the publish job's GitHub Actions
       # id-token for a short-lived crates.io token per crate — no stored
-      # CARGO_REGISTRY_TOKEN. The publish-crate.yml job that runs cargo is
-      # github-hosted (ubuntu-latest) with `id-token: write`, which crates.io
-      # requires. The Trusted Publisher is registered against the top-level
-      # caller workflow (release.yml) — crates.io matches the OIDC `workflow_ref`
-      # claim, which is the entry-point workflow, not the reusable publish-crate.yml.
+      # CARGO_REGISTRY_TOKEN. cargo publish runs in the standalone
+      # publish-oidc.yml (`on: workflow_dispatch`), NOT release.yml or the
+      # reusable publish-crate.yml it calls: crates.io Trusted Publishing
+      # rejects the workflow_run event those fire on ("does not support the
+      # workflow_run event trigger"), and workflow_dispatch is on its accepted
+      # list. The Trusted Publisher configs are therefore registered against
+      # publish-oidc.yml — the OIDC `workflow` claim names the file that runs
+      # cargo publish. release.yml's dispatch-oidc job fires that workflow and
+      # polls it to a verdict.
       auth: oidc
       index_timeout: 600
       # Per-crate tags fire independent Release.yml runs; downstream crates

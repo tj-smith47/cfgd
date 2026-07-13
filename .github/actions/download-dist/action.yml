@@ -10,6 +10,14 @@ inputs:
     description: "Artifact-name glob to download. Narrow to one crate (dist-<crate>-*) when the caller publishes a single crate — skips sibling crates' multi-GB dists."
     required: false
     default: "dist-*"
+  run-id:
+    description: "Release run id whose dist-* artifacts to download. Set when a SEPARATE run (the dispatched publish-oidc job) consumes the Release run's preserved dist; empty falls back to the current run."
+    required: false
+    default: ""
+  github-token:
+    description: "Token used to download artifacts from another run. Required only when run-id names a run other than the current one."
+    required: false
+    default: ""
 
 runs:
   using: "composite"
@@ -24,3 +32,5 @@ runs:
         pattern: ${{ inputs.pattern }}
         path: ${{ inputs.path }}
         merge-multiple: true
+        run-id: ${{ inputs.run-id != '' && inputs.run-id || github.run_id }}
+        github-token: ${{ inputs.github-token }}

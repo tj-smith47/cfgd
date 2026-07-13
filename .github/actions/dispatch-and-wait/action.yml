@@ -1,0 +1,78 @@
+name: Dispatch workflow and wait
+description: >-
+  Trigger a workflow_dispatch run and poll it to a terminal conclusion, failing
+  the caller if the dispatched run does not succeed. Lets a workflow_run-triggered
+  release invoke an accepted-trigger (workflow_dispatch) publish leg synchronously:
+  `gh workflow run` returns no run id, so this correlates the created run by
+  timestamp and waits on it (a reusable `workflow_call` would inherit the caller's
+  workflow_run event and taint the OIDC claim, so it cannot be used here).
+
+inputs:
+  workflow:
+    description: "Workflow file to dispatch (e.g. publish-oidc.yml)."
+    required: true
+  ref:
+    description: "Git ref the dispatched workflow runs from."
+    required: false
+    default: master
+  inputs:
+    description: "Newline-separated key=value inputs forwarded to the dispatched workflow."
+    required: false
+    default: ""
+  github-token:
+    description: "Token with actions:write (dispatch) and actions:read (poll)."
+    required: true
+  poll-interval-seconds:
+    description: "Seconds between status polls of the dispatched run."
+    required: false
+    default: "20"
+
+runs:
+  using: composite
+  steps:
+    - name: Dispatch ${{ inputs.workflow }} and wait for its conclusion
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        WF: ${{ inputs.workflow }}
+        REF: ${{ inputs.ref }}
+        WF_INPUTS: ${{ inputs.inputs }}
+        POLL: ${{ inputs.poll-interval-seconds }}
+      run: |
+        set -euo pipefail
+
+        # Fold the newline-separated key=value inputs into gh -f args.
+        args=()
+        while IFS= read -r line; do
+          [[ -z "$line" ]] && continue
+          args+=(-f "$line")
+        done <<< "$WF_INPUTS"
+
+        # gh workflow run returns no run id, so timestamp before dispatch and
+        # correlate the newest workflow_dispatch run created at/after it.
+        before=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        gh workflow run "$WF" --ref "$REF" "${args[@]}"
+
+        run_id=""
+        for _ in $(seq 1 20); do
+          sleep 6
+          run_id=$(gh run list --workflow="$WF" --event=workflow_dispatch \
+            --json databaseId,createdAt \
+            --jq "[.[] | select(.createdAt >= \"$before\")] | sort_by(.createdAt) | last | .databaseId // empty")
+          [[ -n "$run_id" ]] && break
+        done
+        [[ -n "$run_id" ]] || { echo "::error::dispatched ${WF} but could not locate the created run." >&2; exit 1; }
+        echo "dispatched ${WF} → $(gh run view "$run_id" --json url --jq .url)"
+
+        # Poll to a terminal conclusion. Not `gh run watch` (rate-limit heavy).
+        while :; do
+          IFS=$'\t' read -r status conclusion < <(gh run view "$run_id" \
+            --json status,conclusion --jq '[.status, (.conclusion // "")] | @tsv')
+          if [[ "$status" == "completed" ]]; then
+            echo "${WF} concluded: ${conclusion}"
+            [[ "$conclusion" == "success" ]] && exit 0
+            echo "::error::${WF} run ${run_id} concluded '${conclusion}'." >&2
+            exit 1
+          fi
+          sleep "$POLL"
+        done

@@ -201,7 +201,8 @@ jobs:
     needs: tag
     # Every released crate gets a determinism lane: the binary trio shards
     # across all three OSes; the library crates run a single linux shard
-    # whose preserved (source-package) dist their publish leg restores.
+    # whose preserved (source-package) dist the dispatched publish-oidc leg
+    # restores to re-emit binstall metadata.
     if: needs.tag.result == 'success' && needs.tag.outputs.det_matrix != '[]'
     strategy:
       fail-fast: false
@@ -224,89 +225,91 @@ jobs:
       os-labels: ${{ matrix.os_labels }}
     secrets: inherit
 
-  # cfgd-crd publishes FIRST and in isolation (--crate cfgd-crd). cfgd-core's
-  # `crd` feature depends on cfgd-crd and polls crates.io for its pinned
-  # cfgd-crd version via `publish.cargo.wait_for_workspace_deps` (enabled in
-  # .anodizer.yaml); ordering the crd publish ahead of cfgd-core means that
-  # poll resolves promptly instead of racing the sparse-index propagation.
-  # Gated on cfgd-crd actually being in this release's tag set — a release that
-  # bumps only cfgd-core / cfgd / cfgd-csi / cfgd-operator skips this job, and
-  # publish-core's `needs: publish-crd` then resolves as skipped (publish-core's
-  # `if:` does not require publish-crd success, so it still runs). In-job
-  # rollback is enabled: this leg has no concurrent siblings.
-  publish-crd:
-    name: Publish cfgd-crd
+  # The crates.io publish for EVERY crate runs in the dispatched
+  # publish-oidc.yml, NOT here: crates.io Trusted Publishing rejects the
+  # workflow_run event this release fires on (and the reusable publish-crate.yml
+  # inherits it), so no job here can present an OIDC event_name crates.io
+  # accepts — only a workflow_dispatch run can. anodizer topologically sorts the
+  # workspace, so one `release --publish-only --publishers cargo` publishes
+  # cfgd-crd → cfgd-core → the binary trio in crates.io dependency order
+  # internally, replacing the hand-ordered publish-crd → publish-core → trio
+  # cargo legs. This job dispatches that workflow, polls it to a verdict, and
+  # rolls back the release tags if the cargo publish fails — the in-job rollback
+  # the crd/core legs carried, now with the SAME no-concurrent-sibling
+  # guarantee: publish-trio gates on this job's success, so no binary leg is
+  # running when this rolls tags back. Runs cargo-first, before the trio, so a
+  # crates.io failure tears the release down before any binary artifact ships.
+  dispatch-oidc:
+    name: Publish crates.io (dispatch OIDC)
     needs: [tag, determinism-check]
-    # determinism-check is required strictly: every released crate (including
-    # this library crate's linux source-package shard) has a lane there, so
-    # its dist artifact only exists when the check ran and passed.
-    if: ${{ !cancelled() && needs.tag.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd-crd') && needs.determinism-check.result == 'success' }}
+    # determinism-check is required strictly: publish-oidc re-emits binstall
+    # metadata from every crate's preserved dist, which only exists when the
+    # check ran and passed. crates != '[]' means a real release (some crate
+    # bumped); cargo is never optional on a real release, so this never
+    # legitimately skips — publish-trio therefore requires it `== 'success'`.
+    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.tag.outputs.crates != '[]' && needs.determinism-check.result == 'success' }}
     permissions:
-      contents: write
-      packages: write
-      id-token: write
-      attestations: write
-    uses: ./.github/workflows/publish-crate.yml
-    with:
-      crate: cfgd-crd
-      head_sha: ${{ needs.tag.outputs.head_sha }}
-      rollback: true
-    secrets: inherit
+      contents: write # roll back release tags on cargo failure
+      actions: write # dispatch publish-oidc.yml via the Actions API
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.tag.outputs.head_sha }}
 
-  # cfgd-core publishes after cfgd-crd and in isolation (--crate cfgd-core). The
-  # three binary crates depend on cfgd-core and each polls crates.io for its
-  # pinned cfgd-core version via `publish.cargo.wait_for_workspace_deps`
-  # (enabled in .anodizer.yaml); ordering the core publish ahead of the trio
-  # means that poll resolves promptly instead of racing the sparse-index
-  # propagation. Gated on cfgd-core actually being in this release's tag set —
-  # a release that bumps only cfgd / cfgd-csi / cfgd-operator skips this job,
-  # and the trio's `needs: publish-core` then resolves as skipped (the trio's
-  # `if:` does not require publish-core success, so it still runs). `needs:
-  # publish-crd` orders core after crd but does NOT require its success in the
-  # `if:` — a cfgd-core-only release (no cfgd-crd bump) skips publish-crd and
-  # this job still runs (the already-published cfgd-crd on crates.io satisfies
-  # the dependency poll). In-job rollback is enabled: this leg has no
-  # concurrent siblings.
-  publish-core:
-    name: Publish cfgd-core
-    needs: [tag, determinism-check, publish-crd]
-    # determinism-check is required strictly (see publish-crd); publish-crd
-    # may be skipped (a cfgd-core-only release does not bump cfgd-crd).
-    if: ${{ !cancelled() && needs.tag.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd-core') && needs.determinism-check.result == 'success' && (needs.publish-crd.result == 'success' || needs.publish-crd.result == 'skipped') }}
-    permissions:
-      contents: write
-      packages: write
-      id-token: write
-      attestations: write
-    uses: ./.github/workflows/publish-crate.yml
-    with:
-      crate: cfgd-core
-      head_sha: ${{ needs.tag.outputs.head_sha }}
-      rollback: true
-    secrets: inherit
+      # rollback-on-failure shells out to anodizer; install it up front so the
+      # rollback step has it even though this job runs no anodizer-action itself.
+      - name: Install anodizer
+        uses: tj-smith47/anodizer-action@v1
+        with:
+          version: ${{ env.ANODIZER_VERSION }}
+          install-only: 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
-  # cfgd / cfgd-csi / cfgd-operator publish IN PARALLEL after cfgd-core. Each
-  # matrix leg runs a single-crate publish (--crate <name>) and is gated on
-  # that crate being in this release's tag set, so a partial-workspace release
-  # only fans out the crates that actually bumped. `needs: publish-core` orders
-  # the legs after core but does NOT require its success in the `if:` — when a
-  # release bumps a trio crate without cfgd-core, publish-core is skipped and
-  # the leg still runs (the already-published cfgd-core on crates.io satisfies
-  # the dependency poll).
+      - name: Dispatch publish-oidc.yml and wait for its verdict
+        id: dispatch
+        uses: ./.github/actions/dispatch-and-wait
+        with:
+          workflow: publish-oidc.yml
+          ref: master
+          github-token: ${{ secrets.GH_PAT }}
+          # The bump commit is reachable only via the tags until advance-master;
+          # publish-oidc checks out `sha` directly. dist_run_id is THIS release
+          # run, whose determinism-check uploaded the preserved dist.
+          inputs: |
+            sha=${{ needs.tag.outputs.head_sha }}
+            dist_run_id=${{ github.run_id }}
+
+      - name: Roll back release tags on cargo failure
+        if: ${{ (failure() || cancelled()) && steps.dispatch.outcome != 'skipped' }}
+        uses: ./.github/actions/rollback-on-failure
+        with:
+          head_sha: ${{ needs.tag.outputs.head_sha }}
+          gh_token: ${{ secrets.GH_PAT }}
+
+  # cfgd / cfgd-csi / cfgd-operator publish their binary distribution IN
+  # PARALLEL after the crates.io publish succeeds. Each matrix leg runs a
+  # single-crate publish (--crate <name> --skip cargo) and is gated on that
+  # crate being in this release's tag set, so a partial-workspace release only
+  # fans out the crates that actually bumped. `needs: dispatch-oidc` orders the
+  # legs after all crates.io publishing AND is required `== 'success'`: cargo is
+  # never optional on a real release, and a crates.io failure rolls the tags
+  # back, so a binary leg must never run against deleted tags.
   publish-trio:
     name: Publish ${{ matrix.crate }}
-    needs: [tag, determinism-check, publish-crd, publish-core]
+    needs: [tag, determinism-check, dispatch-oidc]
     # Per-leg gating is done by the `tag.trio` matrix (only tagged trio crates
     # get a leg), NOT a `contains(crates, matrix.crate)` job-`if:` — `matrix`
-    # is unavailable in a job-level `if:`. An empty `trio` (cfgd-core-only
+    # is unavailable in a job-level `if:`. An empty `trio` (library-only
     # release) yields a zero-leg matrix, so this whole job is skipped.
-    # publish-crd must be success-or-skipped, NOT failed: a failed lib-crate
-    # leg fires rollback-on-failure, which deletes this release's tags while
-    # trio legs would still be running — each leg then resolves the previous
-    # release's tag and aborts on a tag-vs-HEAD mismatch (or worse, races the
-    # rollback's master push). A crd failure would otherwise reach the trio as
-    # publish-core=skipped, which the `if:` treats as green.
-    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.tag.outputs.trio != '[]' && needs.determinism-check.result == 'success' && (needs.publish-crd.result == 'success' || needs.publish-crd.result == 'skipped') && (needs.publish-core.result == 'success' || needs.publish-core.result == 'skipped') }}
+    # dispatch-oidc must have SUCCEEDED: it publishes every crate's cargo and,
+    # on failure, deletes this release's tags — a binary leg running against
+    # deleted tags would resolve the previous release's tag and abort on a
+    # tag-vs-HEAD mismatch (or race the rollback's master push).
+    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.tag.outputs.trio != '[]' && needs.determinism-check.result == 'success' && needs.dispatch-oidc.result == 'success' }}
     permissions:
       contents: write
       packages: write
@@ -573,7 +576,7 @@ jobs:
   # the PATCH is a no-op.
   advance-master:
     name: Advance master
-    needs: [tag, determinism-check, publish-crd, publish-core, publish-trio, helm-chart, crossplane-function, crossplane-push, olm-bundle]
+    needs: [tag, determinism-check, dispatch-oidc, publish-trio, helm-chart, crossplane-function, crossplane-push, olm-bundle]
     # Drift-proof form of "tag succeeded AND every needed job is success or
     # skipped": the two !contains() sweeps cover EVERY entry in needs, so a
     # job added to the needs list is automatically gated — the per-leg

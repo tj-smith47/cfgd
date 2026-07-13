@@ -1,9 +1,13 @@
 name: Publish crate
 
-# Single-crate publish leg, called once per released crate by release.yml
-# (crd and core as ordered single calls, the binary trio as a matrix).
-# Every leg has the same shape: check out the tagged SHA, restore that
-# crate's determinism-preserved dist, run `release --publish-only`.
+# Binary-crate publish leg, called once per released trio crate (cfgd /
+# cfgd-csi / cfgd-operator) by release.yml as a matrix. Every leg has the same
+# shape: check out the tagged SHA, restore that crate's determinism-preserved
+# dist, run `release --publish-only --skip cargo` — the binary distribution
+# (github-release, docker, homebrew, snap, …). The crates.io publish for ALL
+# crates (these plus the cfgd-crd/cfgd-core libraries, which have no other
+# publish target) runs in the dispatched publish-oidc.yml, because crates.io
+# Trusted Publishing rejects the workflow_run event this reusable inherits.
 
 on:
   workflow_call:
@@ -30,7 +34,7 @@ on:
 permissions:
   contents: write
   packages: write
-  id-token: write # cargo crates.io Trusted Publishing + MCP registry github-oidc auth + OIDC for SLSA attestation
+  id-token: write # MCP registry github-oidc auth + OIDC for SLSA attestation (cargo crates.io Trusted Publishing runs in publish-oidc.yml)
   attestations: write # mint SLSA build provenance (attestations.enabled, subjects mode)
 
 env:
@@ -72,7 +76,10 @@ jobs:
           docker-password: ${{ secrets.GITHUB_TOKEN }}
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
-          args: release --publish-only --crate ${{ inputs.crate }}
+          # --skip cargo: the crates.io publish for this crate runs in the
+          # dispatched publish-oidc.yml (workflow_run taints the OIDC claim here).
+          # Exact complement of publish-oidc's `--publishers cargo`.
+          args: release --publish-only --crate ${{ inputs.crate }} --skip cargo
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
           CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
