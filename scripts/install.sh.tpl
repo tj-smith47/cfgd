@@ -86,8 +86,9 @@ EOF
 
 detect_os() {
     case "$(uname -s)" in
-        Linux*)  echo "linux" ;;
-        Darwin*) echo "darwin" ;;
+        Linux*)   echo "linux" ;;
+        Darwin*)  echo "darwin" ;;
+        FreeBSD*) echo "freebsd" ;;
         *)
             error "Unsupported OS: $(uname -s)"
             exit 1

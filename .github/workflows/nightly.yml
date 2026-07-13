@@ -40,11 +40,19 @@ jobs:
         # Same runner labels as determinism-shards: linux shard cross-builds
         # aarch64-unknown-linux-gnu (+ musl) via zig/cargo-zigbuild, macOS
         # builds both darwin targets natively, Windows builds both msvc
-        # targets (aarch64 via the msvc cross toolchain).
+        # targets (aarch64 via the msvc cross toolchain). The freebsd shard
+        # also runs on ubuntu but has no host to detect its OS from, so it
+        # pins `ANODIZER_OS: freebsd` to select the freebsd split partition
+        # and cross-builds x86_64-unknown-freebsd via the same zigbuild path
+        # (zig resolves the FreeBSD libc; `cross: auto` → zigbuild). Without
+        # this shard the freebsd partition anodizer mints from the
+        # .anodizer.yaml target has no dist and the merge's matrix.json
+        # cross-check fails.
         include:
           - { os: ubuntu-latest,  shard: linux }
           - { os: macos-latest,   shard: darwin }
           - { os: windows-latest, shard: windows }
+          - { os: ubuntu-latest,  shard: freebsd, anodizer_os: freebsd }
     name: Nightly build (${{ matrix.shard }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
@@ -71,6 +79,11 @@ jobs:
           args: release --nightly --split --no-preflight
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          # Empty for the native shards (anodizer host-detects their OS);
+          # `freebsd` for the cross-built shard, which has no FreeBSD host to
+          # detect. anodizer treats an empty value as unset (falls through to
+          # host detection), so a single uniform line serves every shard.
+          ANODIZER_OS: ${{ matrix.anodizer_os }}
 
       # upload-artifact drops dotfiles by default; a hidden deliverable
       # silently stripped here would only surface as a merge-time failure.

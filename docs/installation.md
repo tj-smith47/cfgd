@@ -88,7 +88,9 @@ Download the platform-specific archive from
 [the latest release](https://github.com/tj-smith47/cfgd/releases/latest),
 verify the checksum + signature, and place `cfgd` somewhere on `PATH`. Release
 assets are versioned and named `cfgd-<version>-<os>-<arch>.tar.gz`, where
-`<arch>` is `amd64` or `arm64` (Windows ships `.zip`).
+`<os>` is `linux`, `darwin`, `windows`, or `freebsd` and `<arch>` is `amd64` or
+`arm64` (Windows ships `.zip`; FreeBSD ships `amd64` only). The install script
+and `cfgd upgrade` resolve the matching asset for your platform automatically.
 
 ```sh
 curl -L -o cfgd.tar.gz \
