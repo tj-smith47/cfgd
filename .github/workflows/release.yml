@@ -75,7 +75,6 @@ jobs:
           args: release --preflight-secrets
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
           CLOUDSMITH_TOKEN: ${{ secrets.CLOUDSMITH_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}

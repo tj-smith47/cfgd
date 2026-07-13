@@ -97,6 +97,14 @@ defaults:
     cargo:
       required: true
       retain_on_rollback: true
+      # crates.io Trusted Publishing: exchange the publish job's GitHub Actions
+      # id-token for a short-lived crates.io token per crate — no stored
+      # CARGO_REGISTRY_TOKEN. The publish-crate.yml job that runs cargo is
+      # github-hosted (ubuntu-latest) with `id-token: write`, which crates.io
+      # requires. The Trusted Publisher is registered against the top-level
+      # caller workflow (release.yml) — crates.io matches the OIDC `workflow_ref`
+      # claim, which is the entry-point workflow, not the reusable publish-crate.yml.
+      auth: oidc
       index_timeout: 600
       # Per-crate tags fire independent Release.yml runs; downstream crates
       # (cfgd-operator depends on cfgd-core) would otherwise race the

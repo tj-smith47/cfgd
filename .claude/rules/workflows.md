@@ -38,7 +38,13 @@ single-source-of-truth wiring.
   job also carries `id-token: write` — not to publish, but because the
   runtime only injects `ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN` into jobs that
   can mint OIDC tokens, and anodizer's secret preflight validates those on
-  behalf of the MCP-registry publisher.
+  behalf of the MCP-registry publisher. The publish jobs' `id-token: write`
+  also drives crates.io Trusted Publishing (`.anodizer.yaml` cargo
+  `auth: oidc`): anodizer exchanges the id-token for a short-lived crates.io
+  token per crate — there is no stored `CARGO_REGISTRY_TOKEN`. crates.io TP
+  matches the OIDC `workflow_ref` claim, which is the top-level caller
+  (`release.yml`), so the Trusted Publisher registered on crates.io names
+  `release.yml`, NOT the reusable `publish-crate.yml` that runs cargo.
 - Deferred-branch release topology (anodizer >= v0.16.0, uniform-local
   `tag`): the tag step runs `tag --changelog --push-tags-only` (tags only —
   the bump commit is reachable ONLY via the tags until publish completes),

@@ -30,7 +30,7 @@ on:
 permissions:
   contents: write
   packages: write
-  id-token: write # MCP registry publish via github-oidc auth; also OIDC for SLSA attestation
+  id-token: write # cargo crates.io Trusted Publishing + MCP registry github-oidc auth + OIDC for SLSA attestation
   attestations: write # mint SLSA build provenance (attestations.enabled, subjects mode)
 
 env:
@@ -75,7 +75,6 @@ jobs:
           args: release --publish-only --crate ${{ inputs.crate }}
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
           CLOUDSMITH_TOKEN: ${{ secrets.CLOUDSMITH_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
