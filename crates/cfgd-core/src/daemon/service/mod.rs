@@ -12,8 +12,15 @@ mod windows_eventlog;
 pub(crate) use launchd::*;
 #[cfg(unix)]
 pub(crate) use systemd::*;
+// Private glob: brings the Windows service internals (install/start/uninstall_
+// windows_service, windows_service_main) into scope for the cfg(windows) wrapper
+// bodies below without re-exporting them. A `pub(crate)` re-export here would
+// give `run_as_windows_service` / `service_binpath_argv` two visibilities (this
+// glob's crate-scope vs the `pub use` lines just below), which the
+// ambiguous-import-visibilities lint (rust #149145) hard-errors on under
+// `-D warnings`. The two externally-visible symbols are re-exported once, below.
 #[cfg(windows)]
-pub(crate) use windows::*;
+use windows::*;
 
 pub use windows::run_as_windows_service;
 // Pure, platform-independent binPath argv builder — re-exported unconditionally
