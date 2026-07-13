@@ -150,6 +150,11 @@ tasks:
           ssh {{.HOST}} 'command -v cargo >/dev/null 2>&1 || { pkg install -y rustup-init && rustup-init -y --default-toolchain stable --profile minimal; }'
           ssh {{.HOST}} 'command -v task >/dev/null 2>&1 || pkg install -y task'
           ssh {{.HOST}} 'test -x "$HOME/.cargo/bin/cargo-nextest" || command -v cargo-nextest >/dev/null 2>&1 || pkg install -y nextest'
+          # openssl is a vendored dependency (portable binary), so openssl-sys
+          # builds OpenSSL from source — which needs gmake + perl, neither in the
+          # FreeBSD base. Mirror ci.yml's freebsd prepare so a fresh VM links it.
+          ssh {{.HOST}} 'command -v gmake >/dev/null 2>&1 || pkg install -y gmake'
+          ssh {{.HOST}} 'command -v perl >/dev/null 2>&1 || pkg install -y perl5'
           echo "==> syncing tree to {{.HOST}}:cfgd"
           rsync -a --delete --exclude .git --exclude target --exclude '*.log' ./ {{.HOST}}:cfgd/
           echo "==> task test:ci on {{.HOST}}"

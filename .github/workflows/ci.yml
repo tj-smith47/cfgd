@@ -120,7 +120,7 @@ jobs:
           release: "14.3"
           usesh: "true"
           prepare: |
-            pkg install -y rustup-init git task nextest
+            pkg install -y rustup-init git task nextest gmake perl5
             rustup-init -y --default-toolchain stable --profile minimal
           run: |
             . "$HOME/.cargo/env"
