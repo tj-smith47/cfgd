@@ -858,6 +858,13 @@ workspaces:
 # cfgd-module is draft-2020-12, so its catalog entry is added to the
 # highSchemaVersion list automatically.
 schemastore:
+  # Skip the SchemaStore publisher while the initial catalog PR
+  # (SchemaStore/schemastore#5908) is still under maintainer review: a release
+  # publish opens a second, version-suffixed PR that would compete with the one
+  # in review. Re-publishing is idempotent and self-healing (see the note
+  # below), so clearing this skip on a later release backfills the registration
+  # with no loss. Alias: `disable`.
+  skip: true
   # Retain the SchemaStore registration even if a downstream required publisher
   # fails and the release rolls back. Safe because the publisher is idempotent
   # and self-healing: the next release's pre-clone probe re-renders the catalog,
