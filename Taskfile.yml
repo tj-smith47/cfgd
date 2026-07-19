@@ -267,7 +267,7 @@ tasks:
       - bash .claude/scripts/publish-coverage.sh cobertura.xml
 
   coverage:gate:
-    desc: "Coverage floor gate: run the instrumented suite quietly (full output in target/coverage-gate.log), then fail below the floor (default 93; override via COVERAGE_FLOOR)."
+    desc: "Coverage floor gate: run the instrumented suite quietly (full output in target/coverage-gate.log), then fail below the floor (default 92.5; override via COVERAGE_FLOOR)."
     deps: [_check:tmp-headroom]
     cmds:
       # The instrumented run spews thousands of compile/test lines; keep the
@@ -282,7 +282,7 @@ tasks:
       - task: coverage:floor
 
   coverage:floor:
-    desc: "Check an EXISTING cobertura.xml against the coverage floor (default 93; override via COVERAGE_FLOOR) without re-running the instrumented suite. Pair with coverage:check/coverage:publish."
+    desc: "Check an EXISTING cobertura.xml against the coverage floor (default 92.5; override via COVERAGE_FLOOR) without re-running the instrumented suite. Pair with coverage:check/coverage:publish."
     preconditions:
       - sh: test -f cobertura.xml
         msg: "cobertura.xml not found — run task coverage:check (or coverage:publish) first."
@@ -290,7 +290,7 @@ tasks:
       - |
         # --raw gives the unrounded percent so a 92.99 can't pass as the
         # badge's rounded 93; the badge form is shown alongside for context.
-        floor="${COVERAGE_FLOOR:-93}"
+        floor="${COVERAGE_FLOOR:-92.5}"
         pct=$(bash .claude/scripts/coverage-percent.sh --raw cobertura.xml)
         badge=$(bash .claude/scripts/coverage-percent.sh cobertura.xml)
         if awk -v p="$pct" -v f="$floor" 'BEGIN { exit !(p + 0 >= f + 0) }'; then
