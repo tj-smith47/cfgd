@@ -246,7 +246,7 @@ Download the latest release from GitHub, or install via a Windows package manage
 
 ```powershell
 # Direct download (extract and add to PATH)
-Invoke-WebRequest -Uri https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.5.0-windows-amd64.zip -OutFile cfgd.zip
+Invoke-WebRequest -Uri https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.6.0-windows-amd64.zip -OutFile cfgd.zip
 Expand-Archive cfgd.zip -DestinationPath "$env:LOCALAPPDATA\cfgd"
 
 # Self-upgrade

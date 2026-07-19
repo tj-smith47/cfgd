@@ -2,6 +2,62 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-19
+
+### Features
+
+* 4be6be2f83c7 write profiles in canonical bundle form; dual-read every profile surface ([@tj-smith47](https://github.com/tj-smith47))
+* 7d0aa6282200 add 'profile migrate' + ambiguity-tolerant scan in doctor ([@tj-smith47](https://github.com/tj-smith47))
+* 0a1b8c73f92f emit SchemaStore modelines from every scaffolder ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* 5f491cf8a240 unify profile not-found mapping and gather delete confirmations up front ([@tj-smith47](https://github.com/tj-smith47))
+* f015070811d1 AmbiguousProfile names every coexisting form ([@tj-smith47](https://github.com/tj-smith47))
+* d4629d3ab68e harden leading-comment capture against BOM and read failures ([@tj-smith47](https://github.com/tj-smith47))
+* eb059aba0e42 preserve leading YAML comments across CLI rewrites ([@tj-smith47](https://github.com/tj-smith47))
+* 00e9d4409128 force rustls ring backend so the FreeBSD release binary builds ([@tj-smith47](https://github.com/tj-smith47))
+* 7b38c49f8b3c correct releasing runbook and drop hand-written changelog entry ([@tj-smith47](https://github.com/tj-smith47))
+* ea2092e1fb69 teach explain, AI tools, and SchemaStore globs the profile bundle form ([@tj-smith47](https://github.com/tj-smith47))
+* 81ac02bf3f7c exit non-zero on a failed verdict ([@tj-smith47](https://github.com/tj-smith47))
+* 9f0827a80e5c fail on missing config at an explicit path ([@tj-smith47](https://github.com/tj-smith47))
+* 48f4edd7e7f8 name --config-dir in the explicit-missing detail; pin yaml shape ([@tj-smith47](https://github.com/tj-smith47))
+* 64b9bc3518df dry-run reports plan failures in its exit code ([@tj-smith47](https://github.com/tj-smith47))
+* 80121382f26f FreeBSD pkg version-constraint + versioned-name convergence ([@tj-smith47](https://github.com/tj-smith47))
+* 620405cb328d bootstrap via POSIX sh, not bash ([@tj-smith47](https://github.com/tj-smith47))
+* 9deea882b85a query pkg version via rquery, not the unsynced search index ([@tj-smith47](https://github.com/tj-smith47))
+* 6dd8dd923677 make every profile reader accept both bundle and flat forms ([@tj-smith47](https://github.com/tj-smith47))
+* 78a00d4c5a3d posix-fold the profile create JSON path payload ([@tj-smith47](https://github.com/tj-smith47))
+* 42272cdadc48 scope ambiguity fail-closed to the ambiguous profile itself ([@tj-smith47](https://github.com/tj-smith47))
+* 2e238285911e surface unparseable manifests and name divergence in scans ([@tj-smith47](https://github.com/tj-smith47))
+* 84a938f37f36 inject POSIX '.' source line and migrate legacy 'source' ([@tj-smith47](https://github.com/tj-smith47))
+* 88785e97f76f detect bundle-form profile changes and escape grep metachars ([@tj-smith47](https://github.com/tj-smith47))
+* b2f94775b24a pin generated grep behavior to real GNU grep and clarify dialect ([@tj-smith47](https://github.com/tj-smith47))
+* f8e06c328f28 trigger generated release on canonical profile bundles ([@tj-smith47](https://github.com/tj-smith47))
+* 7de899795f89 validate scanned names, detect output-key collisions, tighten change greps ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Performance
+
+* 31f1079a57f1 stop re-parsing profiles during resolve and scanning ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Others
+
+* f64ff8632b47 give cfgd a README + rendering icon on crates.io ([@tj-smith47](https://github.com/tj-smith47))
+* 26f0ea446672 add release runbook with SchemaStore-merge done-definition ([@tj-smith47](https://github.com/tj-smith47))
+* 83b65a4ddbac consolidate best-effort workflow regeneration into one helper ([@tj-smith47](https://github.com/tj-smith47))
+* 4d3c83ae112c scaffold-write helper, ensure_parent_dir, drop dead is_yaml_ext ([@tj-smith47](https://github.com/tj-smith47))
+* 01e05dd1c3db split inline test modules into sibling tests.rs files ([@tj-smith47](https://github.com/tj-smith47))
+* c5dbe921c6ca make package-resolution tests hermetic across native managers ([@tj-smith47](https://github.com/tj-smith47))
+* 4cb00480294a make plain cargo test deterministic for PATH-reading tests ([@tj-smith47](https://github.com/tj-smith47))
+* 3974b1926669 restore >=93% line floor with error-path and conversion tests ([@tj-smith47](https://github.com/tj-smith47))
+* ab7bc5fe13f4 rename apply-profile miss test to match exit-code siblings ([@tj-smith47](https://github.com/tj-smith47))
+* 9135c503f50d make go-bootstrap assertion track its prerequisite ([@tj-smith47](https://github.com/tj-smith47))
+* ecc6c8dd873c make diff_matching hermetic across OSes ([@tj-smith47](https://github.com/tj-smith47))
+* 5fd8ee72e755 give global_scope human-render its own home to stay hermetic ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.5.0] - 2026-06-17
 
 ### Features
@@ -52,5 +108,6 @@
 * 018a7ff7b259 migrate upgrade CLI test fixtures to split/keyless contract (TJ Smith)
 * a397277605a9 serialize LOCALAPPDATA env tests to fix full-suite flake (TJ Smith)
 
-[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/tj-smith47/cfgd/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/tj-smith47/cfgd/compare/v0.4.0...v0.5.0
