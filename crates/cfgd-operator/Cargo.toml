@@ -44,8 +44,11 @@ futures = "0.3"
 axum = "0.8"
 hyper = "1"
 hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
-rustls = { version = "0.23", features = ["ring"] }
-tokio-rustls = "0.26"
+# ring provider only (see main.rs install_default): default-features = false
+# drops aws_lc_rs, whose aws-lc-sys C build cannot cross-compile to
+# x86_64-unknown-freebsd under cargo-zigbuild.
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging", "tls12"] }
 rustls-pemfile = "2"
 semver = "1"
 tower = { version = "0.5", features = ["util"] }
