@@ -324,14 +324,7 @@ jobs:
     with:
       crate: ${{ matrix.crate }}
       head_sha: ${{ needs.tag.outputs.head_sha }}
-      # cfgd publishes a snap (snapcrafts: publisher, nested under the
-      # per-crate workspaces.cfgd block) and runs `alejandra` to format the
-      # nix derivation (nix.formatter, same nesting). Neither tool ships on
-      # GitHub runner images, and v0.9 env-preflight + v0.9.1's fail-loud
-      # alejandra abort the release if either is missing. Install them
-      # explicitly; additive with auto-install (harmless if it already
-      # covers them).
-      install: snapcraft,alejandra
+      install: alejandra
       # rollback stays at its false default: these legs run concurrently, so
       # rollback is the dedicated rollback-trio job below.
     secrets: inherit

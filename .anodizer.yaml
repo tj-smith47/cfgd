@@ -656,6 +656,12 @@ workspaces:
                 key_file: "{{ .Env.APK_PRIVATE_KEY_PATH }}"
         snapcrafts:
           - id: default
+            # Disabled: the snap requires classic confinement (cfgd configures the
+            # whole machine — reads hidden paths, writes outside $HOME, execs
+            # external binaries — which strict confinement blocks), but the Snap
+            # Store denied the classic-confinement request, so the upload can never
+            # be accepted. Re-enable if that review is later granted.
+            skip: true
             # gnu only, mirroring `archives`: the musl build is package-only
             # (nfpm) and shares the linux-amd64 platform, so without this filter
             # both the gnu and musl builds render the same `cfgd_<v>_linux_amd64.snap`
