@@ -31,6 +31,10 @@ on:
         description: "Release run id whose preserved dist-* artifacts to download. release --publish-only re-emits binstall metadata from them, so the trio crates need their dist present."
         required: true
         default: ""
+      crate:
+        description: "Single crate to publish (e.g. cfgd-operator). Empty = all workspace crates in dependency order. Set for a scoped recovery dispatch when a prior run published some crates but not others: narrows the dist download to dist-<crate>-* so anodizer's per-crate publish-only loop iterates one crate, keeping an earlier binstall crate's manifest write from tripping a sibling's clean-tree guard."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -72,6 +76,9 @@ jobs:
           # Release run that built them.
           run-id: ${{ inputs.dist_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          # Scoped dispatch pulls only that crate's dist so the publish-only
+          # loop iterates a single crate; empty = every crate's dist.
+          pattern: ${{ inputs.crate != '' && format('dist-{0}-*', inputs.crate) || '' }}
 
       - name: Run anodizer release --publish-only --publishers cargo
         uses: tj-smith47/anodizer-action@v1
@@ -84,7 +91,8 @@ jobs:
           # --publishers cargo is an allowlist: it deselects every publisher
           # outside crates.io (github-release, docker, snap, homebrew, …) so
           # this job publishes ONLY cargo, for all crates, in dependency order.
-          # The exact complement of publish-crate.yml's `--skip cargo`.
-          args: release --publish-only --publishers cargo
+          # The exact complement of publish-crate.yml's `--skip cargo`. A scoped
+          # dispatch appends --crate so only that crate publishes.
+          args: release --publish-only --publishers cargo${{ inputs.crate != '' && format(' --crate {0}', inputs.crate) || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
