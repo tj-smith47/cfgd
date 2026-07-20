@@ -14,6 +14,10 @@ inputs:
     description: "rust-cache shared-key — folds with OS + Cargo.lock hash to form the final cache key. Only used when cache == 'true'."
     required: false
     default: "ci"
+  cache-save:
+    description: "When 'false', rust-cache restores but never saves. Set 'false' for jobs whose target/ is large and single-use (instrumented coverage): saving overflows the runner disk and the artifacts are useless to reuse."
+    required: false
+    default: "true"
   protoc:
     description: "When 'true', install protoc via the setup-protoc composite."
     required: false
@@ -47,6 +51,7 @@ runs:
         # rust-cache still folds the Cargo.lock hash + toolchain + OS into
         # the final key, so the OS matrix auto-separates.
         shared-key: ${{ inputs.shared-key }}
+        save-if: ${{ inputs.cache-save }}
 
     # Two invocations, not one with a forwarded input: passing an empty
     # `version:` would override setup-protoc's default with "", so the

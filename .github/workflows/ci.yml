@@ -221,6 +221,11 @@ jobs:
           # instrumentation (different target/ artifacts), so it must not
           # share or pollute the plain `ci` dependency cache.
           shared-key: ci-coverage
+          # Restore only, never save: the instrumented target/ is single-use
+          # and large enough that rust-cache's post-save exhausts the runner
+          # disk ("No space left on device"), failing the job after coverage
+          # already passed.
+          cache-save: 'false'
           task-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install coverage tools
