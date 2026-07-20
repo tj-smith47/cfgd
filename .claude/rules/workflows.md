@@ -28,11 +28,23 @@ single-source-of-truth wiring.
   below); the crd/core libraries have no other publish target, so they have no
   `publish-crate.yml` leg at all. The binary trio's `publish-crate.yml` calls
   are a matrix (`--skip cargo`, rollback left false) covering only their
-  binary distribution. `dispatch-oidc` runs cargo-first and rolls the tags back
-  on failure (its in-job rollback has no concurrent sibling: `publish-trio`
-  gates on `dispatch-oidc` success); trio failures go to the `rollback-trio`
-  job. crates.io dep ordering (`cfgd-crd → cfgd-core → trio`) is load-bearing
-  and now enforced INSIDE anodizer's workspace topo-sort, not the job graph.
+  binary distribution — and they run FIRST, ahead of `dispatch-oidc`:
+  `publish-trio`'s `github-release` publisher creates the release + binary
+  assets that cargo's verify-release gate requires for a binary crate (its
+  binstall `pkg_url` must resolve, never 404), and crates.io is append-only
+  while the release + tags are deletable, so the irreversible cargo leg goes
+  LAST. `publish-trio` needs only `[tag, determinism-check]`; `dispatch-oidc`
+  needs `[tag, determinism-check, publish-trio]` and gates on `publish-trio`
+  not-failed (a SKIPPED trio — library-only release — still publishes the
+  libraries, which have no gate). `dispatch-oidc` rolls the tags + the trio's
+  GitHub releases back on cargo failure; trio failures go to the `rollback-trio`
+  job. The two rollbacks are mutually exclusive: a trio failure skips
+  `dispatch-oidc`, and `dispatch-oidc`'s in-job rollback runs only after every
+  trio leg has settled, so neither races the other. helm/crossplane/olm gate on
+  BOTH `publish-trio` and `dispatch-oidc` success (cargo is no longer transitive
+  via trio). crates.io dep ordering (`cfgd-crd → cfgd-core → trio`) is
+  load-bearing and enforced INSIDE anodizer's workspace topo-sort, not the job
+  graph.
 - Determinism lanes come from the tag job's `det_matrix` output: trio
   crates shard across all three OSes, library crates linux-only (via
   determinism-shards' `os-labels` input). Publish legs restore their
@@ -54,9 +66,10 @@ single-source-of-truth wiring.
   `release.yml`'s `dispatch-oidc` job fires `publish-oidc.yml` via the
   `dispatch-and-wait` composite (a reusable `workflow_call` can't be used — it
   would re-inherit the caller's `workflow_run` event and re-taint the claim),
-  polls it to a verdict, and rolls the tags back on cargo failure. anodizer
-  topo-sorts the workspace, so one `--publishers cargo` call publishes all five
-  crates in `cfgd-crd → cfgd-core → trio` dependency order — the trio's
+  polls it to a verdict, and rolls the tags + the trio's GitHub releases back on
+  cargo failure. anodizer topo-sorts the workspace, so one `--publishers cargo`
+  call publishes all five crates in `cfgd-crd → cfgd-core → trio` dependency
+  order — the trio's
   `publish-crate.yml` legs run `--skip cargo` (the exact complement). The
   Trusted-Publisher configs on crates.io therefore name `publish-oidc.yml` (the
   file that runs cargo publish), NOT `release.yml`.

@@ -233,23 +233,26 @@ jobs:
   # workspace, so one `release --publish-only --publishers cargo` publishes
   # cfgd-crd → cfgd-core → the binary trio in crates.io dependency order
   # internally, replacing the hand-ordered publish-crd → publish-core → trio
-  # cargo legs. This job dispatches that workflow, polls it to a verdict, and
-  # rolls back the release tags if the cargo publish fails — the in-job rollback
-  # the crd/core legs carried, now with the SAME no-concurrent-sibling
-  # guarantee: publish-trio gates on this job's success, so no binary leg is
-  # running when this rolls tags back. Runs cargo-first, before the trio, so a
-  # crates.io failure tears the release down before any binary artifact ships.
+  # cargo legs. This job dispatches that workflow, polls it to a verdict, and rolls
+  # back on cargo failure. It runs cargo-LAST, after publish-trio: anodizer's
+  # cargo publisher refuses to burn a binary crate until its GitHub release +
+  # assets exist (the embedded binstall pkg_url must not 404), and crates.io is
+  # append-only while the release + tags are deletable — so the irreversible leg
+  # goes last, its rollback tearing down the reversible tags + the releases the
+  # trio created. (The v0.6.0 partial-publish was this ordering inverted.)
   dispatch-oidc:
     name: Publish crates.io (dispatch OIDC)
-    needs: [tag, determinism-check]
-    # determinism-check is required strictly: publish-oidc re-emits binstall
-    # metadata from every crate's preserved dist, which only exists when the
-    # check ran and passed. crates != '[]' means a real release (some crate
-    # bumped); cargo is never optional on a real release, so this never
-    # legitimately skips — publish-trio therefore requires it `== 'success'`.
-    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.tag.outputs.crates != '[]' && needs.determinism-check.result == 'success' }}
+    needs: [tag, determinism-check, publish-trio]
+    # A skipped trio is legal (library-only release: no binary assets, no gate),
+    # so gate on trio-not-failed, not trio-success.
+    if: >-
+      ${{ !cancelled() && needs.tag.result == 'success' &&
+          needs.tag.outputs.crates != '[]' &&
+          needs.determinism-check.result == 'success' &&
+          needs.publish-trio.result != 'failure' &&
+          needs.publish-trio.result != 'cancelled' }}
     permissions:
-      contents: write # roll back release tags on cargo failure
+      contents: write # roll back tags + the trio's GitHub releases on cargo failure
       actions: write # dispatch publish-oidc.yml via the Actions API
     runs-on: ubuntu-latest
     steps:
@@ -283,7 +286,7 @@ jobs:
             sha=${{ needs.tag.outputs.head_sha }}
             dist_run_id=${{ github.run_id }}
 
-      - name: Roll back release tags on cargo failure
+      - name: Roll back tags + the trio's GitHub releases on cargo failure
         if: ${{ (failure() || cancelled()) && steps.dispatch.outcome != 'skipped' }}
         uses: ./.github/actions/rollback-on-failure
         with:
@@ -291,25 +294,23 @@ jobs:
           gh_token: ${{ secrets.GH_PAT }}
 
   # cfgd / cfgd-csi / cfgd-operator publish their binary distribution IN
-  # PARALLEL after the crates.io publish succeeds. Each matrix leg runs a
-  # single-crate publish (--crate <name> --skip cargo) and is gated on that
-  # crate being in this release's tag set, so a partial-workspace release only
-  # fans out the crates that actually bumped. `needs: dispatch-oidc` orders the
-  # legs after all crates.io publishing AND is required `== 'success'`: cargo is
-  # never optional on a real release, and a crates.io failure rolls the tags
-  # back, so a binary leg must never run against deleted tags.
+  # PARALLEL — this is the FIRST publish job, ahead of the crates.io publish
+  # (dispatch-oidc), because each binary crate's `github-release` publisher
+  # creates the GitHub release + assets that cargo's verify-release gate then
+  # requires. Each matrix leg runs a single-crate publish
+  # (--crate <name> --skip cargo — cargo is the dispatch-oidc leg's job) and is
+  # gated on that crate being in this release's tag set, so a partial-workspace
+  # release only fans out the crates that actually bumped.
   publish-trio:
     name: Publish ${{ matrix.crate }}
-    needs: [tag, determinism-check, dispatch-oidc]
+    needs: [tag, determinism-check]
     # Per-leg gating is done by the `tag.trio` matrix (only tagged trio crates
     # get a leg), NOT a `contains(crates, matrix.crate)` job-`if:` — `matrix`
     # is unavailable in a job-level `if:`. An empty `trio` (library-only
-    # release) yields a zero-leg matrix, so this whole job is skipped.
-    # dispatch-oidc must have SUCCEEDED: it publishes every crate's cargo and,
-    # on failure, deletes this release's tags — a binary leg running against
-    # deleted tags would resolve the previous release's tag and abort on a
-    # tag-vs-HEAD mismatch (or race the rollback's master push).
-    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.tag.outputs.trio != '[]' && needs.determinism-check.result == 'success' && needs.dispatch-oidc.result == 'success' }}
+    # release) yields a zero-leg matrix, so this whole job is skipped and
+    # dispatch-oidc still publishes the libraries (they have no binary assets
+    # and no verify-release gate).
+    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.tag.outputs.trio != '[]' && needs.determinism-check.result == 'success' }}
     permissions:
       contents: write
       packages: write
@@ -338,9 +339,11 @@ jobs:
   # Trio rollback runs ONCE, after every leg settles — never inside a leg.
   # With fail-fast off, an in-leg rollback would delete this release's tags
   # while sibling legs are still publishing (tag-vs-HEAD failures mid-run),
-  # and two failed legs would race two concurrent rollback pushes. The
-  # single-crate publish jobs (crd/core) keep their in-job rollback: they
-  # have no concurrent siblings.
+  # and two failed legs would race two concurrent rollback pushes. Trio runs
+  # before any crates.io burn, so this cleanly deletes the tags + the releases
+  # the legs created. dispatch-oidc (cargo, later, no concurrent sibling) keeps
+  # its own in-job rollback; the two are mutually exclusive (this fires only on
+  # trio failure, which skips dispatch-oidc).
   rollback-trio:
     name: Rollback on trio failure
     needs: [tag, publish-trio]
@@ -374,15 +377,19 @@ jobs:
   # --- Helm chart publish ---
   helm-chart:
     name: Publish Helm chart
-    needs: [tag, publish-trio]
-    # Require publish-trio to have actually succeeded: a Helm chart whose
-    # appVersion points at a cfgd crate version that never reached crates.io
-    # is a silently-broken release. `== 'success'` blocks both the failed-leg
-    # case AND the skipped-trio case (a core-only release shapes an empty trio
-    # matrix → publish-trio resolves `skipped` → this job must not push a chart
-    # for a release that did not bump cfgd). The `contains(crates, cfgd)` guard
-    # still scopes the chart push to releases that include the cfgd crate.
-    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.publish-trio.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd') }}
+    needs: [tag, publish-trio, dispatch-oidc]
+    # A Helm chart whose appVersion points at a cfgd crate version that never
+    # reached crates.io is a silently-broken release, so require BOTH the binary
+    # publish (publish-trio, which builds the images) AND the crates.io publish
+    # (dispatch-oidc, now the terminal leg) to have succeeded. `== 'success'` on
+    # publish-trio also blocks the skipped-trio case (a core-only release → empty
+    # trio matrix → skipped → no chart). The `contains(crates, cfgd)` guard
+    # scopes the push to releases that include the cfgd crate.
+    if: >-
+      ${{ !cancelled() && needs.tag.result == 'success' &&
+          needs.publish-trio.result == 'success' &&
+          needs.dispatch-oidc.result == 'success' &&
+          contains(fromJson(needs.tag.outputs.crates), 'cfgd') }}
     permissions:
       contents: read
       packages: write
@@ -412,12 +419,17 @@ jobs:
   # --- Crossplane function publish ---
   crossplane-function:
     name: Publish Crossplane function
-    needs: [tag, publish-trio]
-    # See helm-chart's `if:` — require publish-trio `== 'success'` so the
-    # function image is never pushed for a release whose cfgd crate did not
-    # actually publish (failed leg) or that did not bump cfgd at all (empty
-    # trio matrix → skipped). The `contains(crates, cfgd)` guard scopes it.
-    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.publish-trio.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd') }}
+    needs: [tag, publish-trio, dispatch-oidc]
+    # See helm-chart's `if:` — require both publish-trio and dispatch-oidc
+    # `== 'success'` so the function image is never pushed for a release whose
+    # cfgd crate did not fully publish (failed binary or cargo leg) or that did
+    # not bump cfgd at all (empty trio matrix → skipped). `contains(crates,
+    # cfgd)` scopes it.
+    if: >-
+      ${{ !cancelled() && needs.tag.result == 'success' &&
+          needs.publish-trio.result == 'success' &&
+          needs.dispatch-oidc.result == 'success' &&
+          contains(fromJson(needs.tag.outputs.crates), 'cfgd') }}
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -510,13 +522,17 @@ jobs:
   # --- OLM bundle publish ---
   olm-bundle:
     name: Publish OLM bundle
-    needs: [tag, publish-trio]
-    # See helm-chart's `if:` — require publish-trio `== 'success'` so the OLM
-    # bundle (whose CSV pins cfgd-operator:vX) is never pushed for a release
-    # whose cfgd-operator crate did not actually publish (failed leg) or that
-    # did not bump cfgd-operator at all (empty trio matrix → skipped). The
-    # `contains(crates, cfgd-operator)` guard scopes it.
-    if: ${{ !cancelled() && needs.tag.result == 'success' && needs.publish-trio.result == 'success' && contains(fromJson(needs.tag.outputs.crates), 'cfgd-operator') }}
+    needs: [tag, publish-trio, dispatch-oidc]
+    # See helm-chart's `if:` — require both publish-trio and dispatch-oidc
+    # `== 'success'` so the OLM bundle (whose CSV pins cfgd-operator:vX) is never
+    # pushed for a release whose cfgd-operator crate did not fully publish
+    # (failed binary or cargo leg) or that did not bump cfgd-operator at all
+    # (empty trio matrix → skipped). `contains(crates, cfgd-operator)` scopes it.
+    if: >-
+      ${{ !cancelled() && needs.tag.result == 'success' &&
+          needs.publish-trio.result == 'success' &&
+          needs.dispatch-oidc.result == 'success' &&
+          contains(fromJson(needs.tag.outputs.crates), 'cfgd-operator') }}
     permissions:
       contents: read
       packages: write
