@@ -16,6 +16,7 @@ single-source-of-truth wiring.
 | Pin | Single source | Consumers |
 |---|---|---|
 | anodizer version | repo variable `ANODIZER_VERSION` (`gh variable set`) | release, ci, nightly, determinism-shards (all via `env: ${{ vars.ANODIZER_VERSION }}`) |
+| release publisher skip (operator override, empty default) | repo variable `RELEASE_SKIP_PUBLISHERS` | release.yml publish-trio → publish-crate.yml `skip:` input (appended to the mandatory `cargo` skip) — set to skip publishers a prior partial run already submitted; clear it once the release completes |
 | protoc version | `.github/actions/setup-protoc` input default | setup-rust composite, release/nightly/determinism-shards (call bare, no `version:`) |
 | crossplane version + sha256 | `.github/actions/setup-crossplane` input defaults | release (function/push jobs), e2e-setup; `tests/e2e/setup-cluster.sh` fallback mirrors it for local runs |
 | cosign version | `COSIGN_VERSION` env in e2e.yml | both cosign-installer steps |

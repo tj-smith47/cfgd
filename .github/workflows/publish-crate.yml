@@ -25,6 +25,11 @@ on:
         required: false
         type: string
         default: ''
+      skip:
+        description: "Extra comma-separated publishers/stages to skip, appended to the mandatory `cargo` skip. Operator escape-hatch — e.g. skip a publisher a prior partial run already submitted, so a recovery re-cut doesn't re-drive it. Empty = skip only cargo."
+        required: false
+        type: string
+        default: ''
       rollback:
         description: "Roll back the release tags in-job on failure. TRUE only for legs with no concurrent siblings (crd/core) — parallel matrix legs must leave rollback to release.yml's rollback-trio job, or a failed leg deletes tags out from under still-running siblings."
         required: false
@@ -78,8 +83,9 @@ jobs:
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
           # --skip cargo: the crates.io publish for this crate runs in the
           # dispatched publish-oidc.yml (workflow_run taints the OIDC claim here).
-          # Exact complement of publish-oidc's `--publishers cargo`.
-          args: release --publish-only --crate ${{ inputs.crate }} --skip cargo
+          # Exact complement of publish-oidc's `--publishers cargo`. The `skip`
+          # input appends any operator-supplied publishers to the same denylist.
+          args: release --publish-only --crate ${{ inputs.crate }} --skip cargo${{ inputs.skip != '' && format(',{0}', inputs.skip) || '' }}
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
           CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}

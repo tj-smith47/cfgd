@@ -325,6 +325,10 @@ jobs:
       crate: ${{ matrix.crate }}
       head_sha: ${{ needs.tag.outputs.head_sha }}
       install: alejandra
+      # Operator escape-hatch (SSOT repo variable, empty by default): skip
+      # publishers a prior partial run already submitted so a recovery re-cut
+      # doesn't re-drive them (chocolatey moderation block / duplicate PRs).
+      skip: ${{ vars.RELEASE_SKIP_PUBLISHERS }}
       # rollback stays at its false default: these legs run concurrently, so
       # rollback is the dedicated rollback-trio job below.
     secrets: inherit
