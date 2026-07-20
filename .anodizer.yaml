@@ -991,6 +991,16 @@ signs:
       - "--yes"
       - "{{ Artifact }}"
     if: "{{ not .IsSnapshot }}"
+    # Pin the post-sign self-verify identity. Keyless cosign records the
+    # job_workflow_ref of the workflow that runs the signing as the cert SAN:
+    # the reusable publish-crate.yml (trio release), release.yml on a tag, or
+    # nightly.yml. anodizer's fallback derives the identity from
+    # GITHUB_WORKFLOW_REF (the ENTRY workflow), which in a reusable-workflow
+    # call is release.yml — never matching the publish-crate.yml SAN. Same
+    # identity set the consumer verify contract documents above.
+    verify: &cosign_keyless_verify
+      certificate_identity_regexp: '^https://github\.com/tj-smith47/cfgd/\.github/workflows/(publish-crate\.ya?ml@refs/heads/master$|release\.ya?ml@refs/tags/v[0-9]|nightly\.ya?ml@refs/heads/master$)'
+      certificate_oidc_issuer: https://token.actions.githubusercontent.com
   - id: source
     artifacts: source
     cmd: gpg
@@ -1018,6 +1028,7 @@ binary_signs:
       - "--yes"
       - "{{ Artifact }}"
     if: "{{ not .IsSnapshot }}"
+    verify: *cosign_keyless_verify
 
 # Cosign-based Docker image signing for all 3 images.
 docker_signs:
@@ -1029,6 +1040,7 @@ docker_signs:
       - "--yes"
       - "{{ Artifact }}"
     if: "{{ not .IsSnapshot }}"
+    verify: *cosign_keyless_verify
 
 source:
   enabled: true
