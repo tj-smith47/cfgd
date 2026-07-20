@@ -2,6 +2,58 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-20
+
+### Features
+
+* 4be6be2f83c7 write profiles in canonical bundle form; dual-read every profile surface ([@tj-smith47](https://github.com/tj-smith47))
+* e61d837dacb3 profile bundle layout — dual-read profiles/<name>/profile.yaml ([@tj-smith47](https://github.com/tj-smith47))
+* 7d0aa6282200 add 'profile migrate' + ambiguity-tolerant scan in doctor ([@tj-smith47](https://github.com/tj-smith47))
+* 0a1b8c73f92f emit SchemaStore modelines from every scaffolder ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* f015070811d1 AmbiguousProfile names every coexisting form ([@tj-smith47](https://github.com/tj-smith47))
+* d32f7b5efe05 drop misleading migrate hint from AmbiguousProfile error ([@tj-smith47](https://github.com/tj-smith47))
+* d4629d3ab68e harden leading-comment capture against BOM and read failures ([@tj-smith47](https://github.com/tj-smith47))
+* eb059aba0e42 preserve leading YAML comments across CLI rewrites ([@tj-smith47](https://github.com/tj-smith47))
+* c28e50ca2243 guard test-home across compliance-tick spawn_blocking ([@tj-smith47](https://github.com/tj-smith47))
+* 9a0d769b71b4 propagate the test-home override across git sync thread hops ([@tj-smith47](https://github.com/tj-smith47))
+* 42cf1b6ff7bd resolve home before spawn_blocking in reconcile ([@tj-smith47](https://github.com/tj-smith47))
+* 3cad906f0fc6 route every spawn_blocking through the test-home-preserving wrapper ([@tj-smith47](https://github.com/tj-smith47))
+* 5ac7cca8d2f6 scope windows service import privately to avoid ambiguous-import-visibilities ([@tj-smith47](https://github.com/tj-smith47))
+* 7b38c49f8b3c correct releasing runbook and drop hand-written changelog entry ([@tj-smith47](https://github.com/tj-smith47))
+* ea2092e1fb69 teach explain, AI tools, and SchemaStore globs the profile bundle form ([@tj-smith47](https://github.com/tj-smith47))
+* dd7b115d5082 non-interactive prompt refusal names the real cause ([@tj-smith47](https://github.com/tj-smith47))
+* 80121382f26f FreeBSD pkg version-constraint + versioned-name convergence ([@tj-smith47](https://github.com/tj-smith47))
+* 620405cb328d bootstrap via POSIX sh, not bash ([@tj-smith47](https://github.com/tj-smith47))
+* 6dd8dd923677 make every profile reader accept both bundle and flat forms ([@tj-smith47](https://github.com/tj-smith47))
+* 42272cdadc48 scope ambiguity fail-closed to the ambiguous profile itself ([@tj-smith47](https://github.com/tj-smith47))
+* 7d350d347475 clarify interpreter-spawn error; portable cfg(unix) tests ([@tj-smith47](https://github.com/tj-smith47))
+* 84a938f37f36 inject POSIX '.' source line and migrate legacy 'source' ([@tj-smith47](https://github.com/tj-smith47))
+* 5f446f6ff0ab omit inert environment.d file on FreeBSD ([@tj-smith47](https://github.com/tj-smith47))
+* 85b30911ad53 use canonical http draft-07 $schema URI ([@tj-smith47](https://github.com/tj-smith47))
+* 222f7c1464a0 honor the test-home override in user-scope state resolution ([@tj-smith47](https://github.com/tj-smith47))
+* 0acc303a175b anchor detached-checkout git spawns to the test tempdir ([@tj-smith47](https://github.com/tj-smith47))
+* 68953952fc16 accept any canonical-repo workflow as the cosign signer ([@tj-smith47](https://github.com/tj-smith47))
+* 0a1a570eac82 anchor cosign ref pins; restrict tag alternative to version tags ([@tj-smith47](https://github.com/tj-smith47))
+* 3de7afd6bf27 pin cosign identity to the three signing workflows ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Performance
+
+* 31f1079a57f1 stop re-parsing profiles during resolve and scanning ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Others
+
+* f1c282a0d707 revert stranded v0.6.0 stamp for clean re-cut ([@tj-smith47](https://github.com/tj-smith47))
+* 4d3c83ae112c scaffold-write helper, ensure_parent_dir, drop dead is_yaml_ext ([@tj-smith47](https://github.com/tj-smith47))
+* 01e05dd1c3db split inline test modules into sibling tests.rs files ([@tj-smith47](https://github.com/tj-smith47))
+* 3974b1926669 restore >=93% line floor with error-path and conversion tests ([@tj-smith47](https://github.com/tj-smith47))
+* ccaef554088b serialize version-cache tests against CFGD_CACHE_DIR leak ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.5.0] - 2026-06-17
 
 ### Features
@@ -48,5 +100,6 @@
 * b3a2b1383c79 drop orphaned OciError::SignatureRequired variant (TJ Smith)
 * 1dc200e1e6d6 pin client to real release manifest (ground-truth contract test) (TJ Smith)
 
-[Unreleased]: https://github.com/tj-smith47/cfgd/compare/core-v0.5.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/core-v0.6.0...HEAD
+[0.6.0]: https://github.com/tj-smith47/cfgd/compare/core-v0.5.0...core-v0.6.0
 [0.5.0]: https://github.com/tj-smith47/cfgd/compare/core-v0.4.0...core-v0.5.0

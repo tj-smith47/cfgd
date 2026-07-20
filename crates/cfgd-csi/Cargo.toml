@@ -23,7 +23,7 @@ path = "src/main.rs"
 # default-features = false drops the `crd` feature: the CSI node plugin never
 # reads CRD schemas, so it keeps the kube/k8s-openapi stack (pulled by cfgd-crd)
 # out of its binary. See cfgd-core's KIND_REGISTRY docs.
-cfgd-core = { path = "../cfgd-core", version = "0.5.0", default-features = false }
+cfgd-core = { path = "../cfgd-core", version = "0.6.0", default-features = false }
 tonic = "0.14"
 tonic-prost = "0.14"
 prost = "0.14"
@@ -46,7 +46,7 @@ nix = { version = "0.31", features = ["mount", "fs"] }
 tonic-prost-build = "0.14"
 
 [dev-dependencies]
-cfgd-core = { path = "../cfgd-core", version = "0.5.0", default-features = false, features = ["test-helpers"] }
+cfgd-core = { path = "../cfgd-core", version = "0.6.0", default-features = false, features = ["test-helpers"] }
 tempfile = "3"
 tower = "0.5"
 # Serial tests for env-var-mutating tests (CSI_ENDPOINT, CACHE_DIR, METRICS_PORT, etc.)

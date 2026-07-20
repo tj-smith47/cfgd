@@ -1,6 +1,6 @@
 [package]
 name = "cfgd"
-version = "0.5.0"
+version = "0.6.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -21,7 +21,7 @@ name = "cfgd"
 path = "src/main.rs"
 
 [dependencies]
-cfgd-core = { path = "../cfgd-core", version = "0.5.0" }
+cfgd-core = { path = "../cfgd-core", version = "0.6.0" }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 clap_mangen = "0.3"
@@ -67,7 +67,7 @@ windows-service = "0.8"
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
-cfgd-core = { path = "../cfgd-core", version = "0.5.0", features = ["test-helpers"] }
+cfgd-core = { path = "../cfgd-core", version = "0.6.0", features = ["test-helpers"] }
 # Test-only: the cfgd binary is the only crate that sees both the cfgd-crd
 # validity predicate and the cfgd-core OCI parser, so the cross-crate agreement
 # guard (tests/oci_ref_agreement.rs) lives here. Dev-only keeps cfgd-crd at the
