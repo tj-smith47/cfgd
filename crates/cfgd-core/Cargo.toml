@@ -5,7 +5,7 @@
 # .anodizer.yaml) updates those pins automatically on bump.
 [package]
 name = "cfgd-core"
-version = "0.6.0"
+version = "0.5.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true

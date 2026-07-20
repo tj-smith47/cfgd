@@ -2,12 +2,6 @@
 
 ## [Unreleased]
 
-## [0.5.1] - 2026-07-19
-
-### Bug Fixes
-
-* 00e9d4409128 force rustls ring backend so the FreeBSD release binary builds ([@tj-smith47](https://github.com/tj-smith47))
-
 ## [0.5.0] - 2026-06-17
 
 ### Features
@@ -31,6 +25,5 @@
 * ac2efacbcbc3 extract cfgd-crd crate (types + validate) from operator ([@tj-smith47](https://github.com/tj-smith47))
 * d7d3bf6bc720 gen_crds render_all + file-writing, sourced from cfgd-crd ([@tj-smith47](https://github.com/tj-smith47))
 
-[Unreleased]: https://github.com/tj-smith47/cfgd/compare/operator-v0.5.1...HEAD
-[0.5.1]: https://github.com/tj-smith47/cfgd/compare/operator-v0.5.0...operator-v0.5.1
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/operator-v0.5.0...HEAD
 [0.5.0]: https://github.com/tj-smith47/cfgd/compare/operator-v0.4.0...operator-v0.5.0
