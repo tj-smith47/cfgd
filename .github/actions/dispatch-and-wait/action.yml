@@ -19,6 +19,15 @@ inputs:
     description: "Newline-separated key=value inputs forwarded to the dispatched workflow."
     required: false
     default: ""
+  crates:
+    description: >-
+      Optional space-separated crate list. When set, the workflow is dispatched
+      once per crate SERIALLY (each dispatch waits for the prior to conclude
+      before the next is created), injecting `crate=<name>` into the forwarded
+      inputs; the first non-success aborts the rest. Empty = a single dispatch
+      with `inputs` exactly as given.
+    required: false
+    default: ""
   github-token:
     description: "Token with actions:write (dispatch) and actions:read (poll)."
     required: true
@@ -37,42 +46,62 @@ runs:
         WF: ${{ inputs.workflow }}
         REF: ${{ inputs.ref }}
         WF_INPUTS: ${{ inputs.inputs }}
+        CRATES: ${{ inputs.crates }}
         POLL: ${{ inputs.poll-interval-seconds }}
       run: |
         set -euo pipefail
 
-        # Fold the newline-separated key=value inputs into gh -f args.
-        args=()
+        # Fold the newline-separated key=value inputs into the base gh -f args
+        # once; per-crate dispatches append a `crate=<name>` arg to this.
+        base_args=()
         while IFS= read -r line; do
           [[ -z "$line" ]] && continue
-          args+=(-f "$line")
+          base_args+=(-f "$line")
         done <<< "$WF_INPUTS"
 
-        # gh workflow run returns no run id, so timestamp before dispatch and
-        # correlate the newest workflow_dispatch run created at/after it.
-        before=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-        gh workflow run "$WF" --ref "$REF" "${args[@]}"
+        # Dispatch one run (with any extra -f args), correlate the created run
+        # by timestamp (gh workflow run returns no id), and poll it to a
+        # terminal conclusion — returning non-zero if it does not succeed.
+        dispatch_and_wait() {
+          local label="$1"; shift
+          local before run_id status conclusion
 
-        run_id=""
-        for _ in $(seq 1 20); do
-          sleep 6
-          run_id=$(gh run list --workflow="$WF" --event=workflow_dispatch \
-            --json databaseId,createdAt \
-            --jq "[.[] | select(.createdAt >= \"$before\")] | sort_by(.createdAt) | last | .databaseId // empty")
-          [[ -n "$run_id" ]] && break
-        done
-        [[ -n "$run_id" ]] || { echo "::error::dispatched ${WF} but could not locate the created run." >&2; exit 1; }
-        echo "dispatched ${WF} → $(gh run view "$run_id" --json url --jq .url)"
+          before=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          gh workflow run "$WF" --ref "$REF" "${base_args[@]}" "$@"
 
-        # Poll to a terminal conclusion. Not `gh run watch` (rate-limit heavy).
-        while :; do
-          IFS=$'\t' read -r status conclusion < <(gh run view "$run_id" \
-            --json status,conclusion --jq '[.status, (.conclusion // "")] | @tsv')
-          if [[ "$status" == "completed" ]]; then
-            echo "${WF} concluded: ${conclusion}"
-            [[ "$conclusion" == "success" ]] && exit 0
-            echo "::error::${WF} run ${run_id} concluded '${conclusion}'." >&2
-            exit 1
-          fi
-          sleep "$POLL"
-        done
+          run_id=""
+          for _ in $(seq 1 20); do
+            sleep 6
+            run_id=$(gh run list --workflow="$WF" --event=workflow_dispatch \
+              --json databaseId,createdAt \
+              --jq "[.[] | select(.createdAt >= \"$before\")] | sort_by(.createdAt) | last | .databaseId // empty")
+            [[ -n "$run_id" ]] && break
+          done
+          [[ -n "$run_id" ]] || { echo "::error::dispatched ${WF}${label} but could not locate the created run." >&2; return 1; }
+          echo "dispatched ${WF}${label} → $(gh run view "$run_id" --json url --jq .url)"
+
+          # Poll to a terminal conclusion. Not `gh run watch` (rate-limit heavy).
+          while :; do
+            IFS=$'\t' read -r status conclusion < <(gh run view "$run_id" \
+              --json status,conclusion --jq '[.status, (.conclusion // "")] | @tsv')
+            if [[ "$status" == "completed" ]]; then
+              echo "${WF}${label} concluded: ${conclusion}"
+              [[ "$conclusion" == "success" ]] && return 0
+              echo "::error::${WF} run ${run_id}${label} concluded '${conclusion}'." >&2
+              return 1
+            fi
+            sleep "$POLL"
+          done
+        }
+
+        # A crate list fans out one SERIAL dispatch per crate (each waits for the
+        # prior to conclude, so the timestamp correlation never races two live
+        # dispatches), injecting `crate=<name>`; set -e aborts the loop on the
+        # first non-success. Empty = a single dispatch with the inputs as given.
+        if [[ -n "${CRATES// }" ]]; then
+          for crate in $CRATES; do
+            dispatch_and_wait " (crate=${crate})" -f "crate=${crate}"
+          done
+        else
+          dispatch_and_wait ""
+        fi

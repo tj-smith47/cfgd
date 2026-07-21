@@ -235,15 +235,28 @@ echo "  All pre-flight checks passed"
 # single `cargo build` pass; the `crds` stage exposes just the gen-crds
 # binary. Buildx extracts it into the local filesystem — populates the
 # layer cache that the subsequent runtime build reuses (no second compile).
+# Registry-backed buildx cache flags for one image scope, or nothing when
+# caching is disabled (local runs). Emitted onto a buildx arg array via mapfile.
+# `type=registry` (a `:buildcache` tag beside the image in ghcr) replaces
+# `type=gha`: GitHub's Actions cache is a 10GB/repo LRU pool, and three
+# mode=max image caches evict one another between runs, so every push
+# recompiled the cargo-chef dependency layer from cold and overran the setup
+# timeout. The registry cache has no LRU eviction, so an unchanged dependency
+# layer restores across runs and the build stays warm.
+buildcache_args() {
+    [ "${SCCACHE_GHA_ENABLED:-}" = "true" ] || return 0
+    local ref="${REGISTRY}/$1:buildcache"
+    printf '%s\n' "--cache-from" "type=registry,ref=${ref}" \
+                  "--cache-to" "type=registry,ref=${ref},mode=max"
+}
+
 echo "Extracting cfgd-gen-crds from Dockerfile.operator..."
 mkdir -p "$REPO_ROOT/target/release"
 crds_args=(buildx build --target crds
     --output "type=local,dest=$REPO_ROOT/target/release"
     -f "$REPO_ROOT/Dockerfile.operator")
-if [ "${SCCACHE_GHA_ENABLED:-}" = "true" ]; then
-    crds_args+=(--cache-from "type=gha,scope=cfgd-operator"
-                --cache-to "type=gha,mode=max,scope=cfgd-operator")
-fi
+mapfile -t _crds_cache < <(buildcache_args cfgd-operator)
+crds_args+=("${_crds_cache[@]}")
 docker "${crds_args[@]}" "$REPO_ROOT"
 
 # --- Step 3: Build and push images ---
@@ -335,15 +348,15 @@ image_decision() {
     echo "build"
 }
 
-# buildx + GHA cache: unchanged layers restore from per-image scope cache
-# instead of recompiling. Gated on SCCACHE_GHA_ENABLED so local invocations
-# without GHA cache fall back to a plain `docker buildx build --load`.
+# buildx + registry cache: unchanged layers restore from the per-image
+# `:buildcache` tag instead of recompiling (see buildcache_args for why
+# registry, not gha). Gated on SCCACHE_GHA_ENABLED so local invocations without
+# a registry fall back to a plain `docker buildx build --load`.
 build_image() {
     local dockerfile="$1" tag="$2" context="$3" scope="$4"
     local args=(buildx build --load -f "$dockerfile" -t "$tag" "$context")
-    if [ "${SCCACHE_GHA_ENABLED:-}" = "true" ]; then
-        args+=(--cache-from "type=gha,scope=${scope}" --cache-to "type=gha,mode=max,scope=${scope}")
-    fi
+    mapfile -t _img_cache < <(buildcache_args "$scope")
+    args+=("${_img_cache[@]}")
     docker "${args[@]}"
 }
 

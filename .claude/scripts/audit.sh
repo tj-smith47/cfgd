@@ -776,6 +776,54 @@ else
     log_error "CLI enum file not found: $cli_mod (long_about gate could not run)"
 fi
 
+log_section "Publisher-secret env lockstep (release.yml preflight ↔ publish-crate.yml)"
+# The anodizer-action publisher secrets are enumerated as an `env:` block in
+# TWO workflows: release.yml's preflight (--preflight-secrets) validates the
+# full set up front, and publish-crate.yml's publish leg feeds the same set to
+# the actual managers. GHA forbids sharing the block (no YAML anchors; a
+# composite action has no `secrets` context; anodizer-action reads creds from
+# process env by fixed names), so the two lists must stay identical by hand. A
+# secret added to one but not the other is a SILENT drift: preflight passes,
+# then ~40min into a real release a manager publish fails on a missing token,
+# or a manager silently no-ops. This gate extracts the key set from each file
+# and fails loud on any divergence, before it can reach a release run.
+#
+# Selector: the block is the LONGEST contiguous run of
+# `KEY: ${{ secrets.* }}` env lines in each file — that isolates the 12-key
+# publisher block from the isolated single-GITHUB_TOKEN env lines other jobs
+# carry. Compares the sorted KEY names (not the secret values: GITHUB_TOKEN
+# legitimately maps to secrets.GH_PAT).
+rel_wf=".github/workflows/release.yml"
+pub_wf=".github/workflows/publish-crate.yml"
+longest_secret_env_block() {
+    # Emit the sorted KEY names of the longest contiguous run of
+    # `<KEY>: ${{ secrets.* }}` env lines in "$1".
+    awk '
+        /^[[:space:]]+[A-Z_]+:[[:space:]]*\$\{\{[[:space:]]*secrets\./ {
+            key = $0; sub(/^[[:space:]]+/, "", key); sub(/:.*/, "", key)
+            if (NR == prev + 1) { run = run "\n" key; cnt++ }
+            else                { run = key;          cnt = 1 }
+            if (cnt > best) { best = cnt; bestrun = run }
+            prev = NR
+        }
+        END { if (best > 0) print bestrun }
+    ' "$1" | sort
+}
+if [[ -f "$rel_wf" && -f "$pub_wf" ]]; then
+    rel_keys=$(longest_secret_env_block "$rel_wf")
+    pub_keys=$(longest_secret_env_block "$pub_wf")
+    if [[ -z "$rel_keys" || -z "$pub_keys" ]]; then
+        log_error "Publisher-secret env block not found in one of the workflows (selector drifted): release=$(printf %s "$rel_keys" | grep -c .) publish-crate=$(printf %s "$pub_keys" | grep -c .) keys"
+    elif [[ "$rel_keys" != "$pub_keys" ]]; then
+        log_error "Publisher-secret env blocks drifted between $rel_wf and $pub_wf:"
+        diff <(printf '%s\n' "$rel_keys") <(printf '%s\n' "$pub_keys") | grep -E '^[<>]' || true
+    else
+        log_ok "Publisher-secret env blocks identical ($(printf '%s\n' "$rel_keys" | grep -c .) keys)"
+    fi
+else
+    log_error "Publisher-secret lockstep gate could not run (missing $rel_wf or $pub_wf)"
+fi
+
 # --- Summary ---
 printf "\n"
 _bold; printf "=== Audit Complete: %d errors, %d warnings ===\n" "$ERRORS" "$WARNINGS"; _reset

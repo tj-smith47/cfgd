@@ -108,6 +108,13 @@ jobs:
       # (cfgd-crd / cfgd-core) linux-only (their preserved dist is source
       # packaging, OS-independent, but publish-only still requires one).
       det_matrix: ${{ steps.trio.outputs.det }}
+      # Released crates in crates.io dependency order, space-separated, for
+      # dispatch-oidc's per-crate SERIAL cargo publish (cfgd-crd → cfgd-core →
+      # cfgd → cfgd-operator → cfgd-csi ∩ released). One crate per dispatch
+      # keeps anodizer's per-crate publish-only loop single-crate, so an
+      # earlier binstall crate's in-tree Cargo.toml write can never dirty a
+      # sibling's clean-tree guard (the v0.6.0 tree-leak blocker).
+      publish_order: ${{ steps.trio.outputs.publish }}
       # SHA the freshly-pushed tags point at. When anodizer tag creates a
       # bump commit, this is that commit's SHA (HEAD moved forward by one
       # during the tag step); when the manifests were already at target
@@ -175,26 +182,42 @@ jobs:
         id: post_tag
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      # Intersect the released crates with the binary trio so the
-      # publish-trio matrix carries only the crates that actually bumped.
-      # `A - (A - $all)` is jq's set-intersection idiom: it keeps the
-      # whitelist's own order and drops anything not in $all, yielding a
-      # compact JSON array (`["cfgd","cfgd-operator"]`, or `[]`). The
-      # determinism matrix pairs every released crate with its shard set:
-      # library crates linux-only, trio crates all three OSes.
+      # Shape every crate-scoped fan-out from one released-crate set. `W - (W -
+      # $all)` is jq's set-intersection idiom: it keeps whitelist W's own order
+      # and drops anything not released this run, yielding a compact JSON array
+      # (`["cfgd","cfgd-operator"]`, or `[]`).
+      #   list   → publish-trio matrix: released ∩ binary trio (github-release,
+      #            docker, all-OS determinism).
+      #   det    → determinism matrix: every released crate paired with its OS
+      #            shards — libraries linux-only (their preserved dist is
+      #            OS-independent source packaging), trio crates all three OSes.
+      #   publish→ dispatch-oidc's per-crate serial cargo order (deps precede
+      #            dependents; a scoped --crate publish resolves its already-
+      #            published deps from crates.io), space-separated.
       - name: Shape publish and determinism matrices
         id: trio
         env:
           CRATES: ${{ steps.t.outputs.crates }}
         run: |
-          list="$(jq -cn --argjson all "$CRATES" \
-            '["cfgd","cfgd-csi","cfgd-operator"] - (["cfgd","cfgd-csi","cfgd-operator"] - $all)')"
+          # SSOT crate partitions — the ONLY place these literals live. `libs`
+          # and `trio` partition the workspace by publish target; `order` is the
+          # crates.io dependency topo-sort across both.
+          libs='["cfgd-crd","cfgd-core"]'
+          trio='["cfgd","cfgd-csi","cfgd-operator"]'
+          order='["cfgd-crd","cfgd-core","cfgd","cfgd-operator","cfgd-csi"]'
+
+          list="$(jq -cn --argjson all "$CRATES" --argjson trio "$trio" \
+            '$trio - ($trio - $all)')"
           echo "list=$list" >> "$GITHUB_OUTPUT"
-          det="$(jq -cn --argjson all "$CRATES" --argjson trio "$list" '
-            [(["cfgd-crd","cfgd-core"] - (["cfgd-crd","cfgd-core"] - $all))[]
-               | {crate: ., os_labels: "[\"linux\"]"}]
+
+          det="$(jq -cn --argjson all "$CRATES" --argjson trio "$list" --argjson libs "$libs" '
+            [($libs - ($libs - $all))[] | {crate: ., os_labels: "[\"linux\"]"}]
             + [$trio[] | {crate: ., os_labels: "[\"linux\",\"macos\",\"windows\"]"}]')"
           echo "det=$det" >> "$GITHUB_OUTPUT"
+
+          publish="$(jq -rn --argjson all "$CRATES" --argjson order "$order" \
+            '[$order[] | select(. as $c | $all | index($c))] | join(" ")')"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
 
   determinism-check:
     name: Determinism (${{ matrix.crate }})
@@ -272,13 +295,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
-      - name: Dispatch publish-oidc.yml and wait for its verdict
+      - name: Dispatch publish-oidc.yml per crate and wait for each verdict
         id: dispatch
         uses: ./.github/actions/dispatch-and-wait
         with:
           workflow: publish-oidc.yml
           ref: master
           github-token: ${{ secrets.GH_PAT }}
+          # One SERIAL dispatch per released crate in crates.io dependency
+          # order. Each scoped `crate=<name>` dispatch runs anodizer's
+          # publish-only loop over a single crate, so an earlier binstall
+          # crate's in-tree Cargo.toml write cannot dirty a later crate's
+          # clean-tree guard (the v0.6.0 tree-leak blocker). Serial order also
+          # guarantees each crate's crates.io deps are already published before
+          # it burns, and fails the first crate BEFORE any burn if its dist is
+          # missing — so a bad shard can never strand a partial release.
+          crates: ${{ needs.tag.outputs.publish_order }}
           # The bump commit is reachable only via the tags until advance-master;
           # publish-oidc checks out `sha` directly. dist_run_id is THIS release
           # run, whose determinism-check uploaded the preserved dist.
@@ -401,11 +433,9 @@ jobs:
         uses: azure/setup-helm@v5
 
       - name: Log in to ghcr.io
-        uses: docker/login-action@v4
+        uses: ./.github/actions/ghcr-login
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Package and push Helm chart
         run: |
@@ -503,11 +533,9 @@ jobs:
         uses: ./.github/actions/setup-crossplane
 
       - name: Log in to ghcr.io
-        uses: docker/login-action@v4
+        uses: ./.github/actions/ghcr-login
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Push xpkg
         run: |
@@ -541,11 +569,9 @@ jobs:
           ref: ${{ needs.tag.outputs.head_sha }}
 
       - name: Log in to ghcr.io
-        uses: docker/login-action@v4
+        uses: ./.github/actions/ghcr-login
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update CSV version and image references
         run: |

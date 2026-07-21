@@ -28,13 +28,16 @@ git:
   prerelease_suffix: "-"
 
 tag:
-  # Require an explicit bump signal per commit range. Release-worthy signals
-  # are `#major` / `#minor` / `#patch` tokens OR Conventional Commit markers
-  # (`feat:` -> minor, `fix:` / `perf:` / `revert:` -> patch, `BREAKING CHANGE`
-  # footer or `<type>!:` shorthand -> major). Ranges containing only chore /
-  # docs / style / refactor / test / build / ci commits no-op, so autotag
-  # won't mint a spurious patch bump after a stable crate's test or chore
-  # touch.
+  # Require an explicit bump signal per commit range. The ONLY signals autotag
+  # honours are Conventional Commit markers on a commit's SUBJECT line
+  # (`feat:` -> minor, `fix:` / `perf:` / `revert:` -> patch, `<type>!:`
+  # shorthand or a `BREAKING CHANGE` / `BREAKING-CHANGE` note anywhere ->
+  # major). There is NO `#patch` / `#minor` / `#major` hashtag-token support —
+  # a token in the body is ignored (classify_commit in anodizer_core reads only
+  # the subject prefix). Ranges containing only chore / docs / style / refactor
+  # / test / build / ci commits — including `chore(deps)` dependency bumps —
+  # no-op, so autotag won't mint a spurious patch bump after a stable crate's
+  # chore touch. A dep bump that should ship uses a `fix(deps):` subject.
   default_bump: none
   # Scan the full commit range between the last tag and HEAD (per crate path)
   # so a release-worthy `fix:` / `feat:` / `BREAKING CHANGE` commit further

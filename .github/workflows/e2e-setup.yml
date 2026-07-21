@@ -14,7 +14,13 @@ jobs:
   setup:
     name: "Build & Setup Infrastructure"
     runs-on: arc-cfgd
-    timeout-minutes: 20
+    # Headroom for a fully-cold build: when Cargo.lock changes, the cargo-chef
+    # dependency layer of all three images recompiles from scratch (the registry
+    # :buildcache holds only the prior recipe). A warm build finishes in ~8min
+    # and exits early, so the ceiling only bites the rare cold run — a too-tight
+    # cap was reported as a `cancelled` run (timed-out jobs surface as cancelled)
+    # on every dependency bump.
+    timeout-minutes: 90
     outputs:
       image-tag: ${{ steps.tags.outputs.tag }}
     steps:
