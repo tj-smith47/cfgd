@@ -118,6 +118,17 @@ jobs:
           pattern: nightly-dist-*
           merge-multiple: true
 
+      # actions/upload-artifact + download-artifact do not preserve the unix
+      # execute bit, so the shard binaries arrive non-executable. anodizer's
+      # archive stage runs `cfgd completion bash` against the linux binary to
+      # emit shell completions; a non-executable binary fails with exit 126
+      # (Permission denied) and aborts the whole merge (every nightly since the
+      # split/merge move failed here). Restore +x on every platform binary
+      # before the merge resumes — also ensures the unix archives ship an
+      # executable binary, not just that completion generation succeeds.
+      - name: Restore execute bit on shard binaries
+        run: find dist -type f \( -name cfgd -o -name cfgd-operator -o -name cfgd-csi -o -name cfgd-gen-crds \) -exec chmod +x {} +
+
       # --merge fuses the shard contexts (validated against matrix.json) and
       # resumes the pipeline from the post-build stages, signing and
       # publishing the nightly prerelease.
