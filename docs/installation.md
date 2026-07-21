@@ -94,7 +94,7 @@ and `cfgd upgrade` resolve the matching asset for your platform automatically.
 
 ```sh
 curl -L -o cfgd.tar.gz \
-  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.6.0-linux-amd64.tar.gz
+  https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.6.1-linux-amd64.tar.gz
 tar -xzf cfgd.tar.gz
 install -m 0755 cfgd /usr/local/bin/cfgd
 ```
@@ -159,7 +159,7 @@ in CI runners or developer images). `choco upgrade cfgd` upgrades, and
 ### Direct download
 
 ```powershell
-Invoke-WebRequest -Uri https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.6.0-windows-amd64.zip -OutFile cfgd.zip
+Invoke-WebRequest -Uri https://github.com/tj-smith47/cfgd/releases/latest/download/cfgd-0.6.1-windows-amd64.zip -OutFile cfgd.zip
 Expand-Archive cfgd.zip -DestinationPath C:\Tools\cfgd
 # Add C:\Tools\cfgd to your PATH (System Properties → Environment Variables)
 ```
@@ -198,7 +198,7 @@ To verify the signature on a downloaded archive by hand, see
 
 Each release artifact is signed with **keyless cosign** (Fulcio/OIDC + Rekor) —
 there is no long-lived public key to trust. For every archive `<archive>` (for
-example `cfgd-0.6.0-linux-amd64.tar.gz`) the release publishes:
+example `cfgd-0.6.1-linux-amd64.tar.gz`) the release publishes:
 
 | Asset | Purpose |
 |---|---|
@@ -210,7 +210,7 @@ To verify a download, run the two steps below. This is exactly what
 `cfgd upgrade` performs internally:
 
 ```sh
-VER=0.6.0; ARCH=amd64; OS=linux          # adjust: amd64|arm64, linux|darwin|windows
+VER=0.6.1; ARCH=amd64; OS=linux          # adjust: amd64|arm64, linux|darwin|windows
 A="cfgd-${VER}-${OS}-${ARCH}.tar.gz"
 base="https://github.com/tj-smith47/cfgd/releases/download/v${VER}"
 curl -fsSLO "$base/$A"
@@ -281,12 +281,12 @@ verified path. Reinstall once via any of the [install methods](#linux--macos)
 above (Homebrew, the install script, etc.); subsequent `cfgd upgrade` runs then
 work from the newer binary.
 
-> **v0.6.0 with the cosign CLI installed:** the v0.6.0 binary pinned the signer
+> **v0.6.1 with the cosign CLI installed:** the v0.6.1 binary pinned the signer
 > identity to `release.yml` alone, but assets are actually signed by the
 > `publish-crate.yml` leg. Keyless verification of a newer release therefore
-> fails closed on v0.6.0 when `cosign` is present (no SHA256 fallback — that is
+> fails closed on v0.6.1 when `cosign` is present (no SHA256 fallback — that is
 > the intended fail-closed behavior). Reinstall once via any install method above
-> to get the v0.6.0+ binary, which pins the identity at the repository level and
+> to get the v0.6.1+ binary, which pins the identity at the repository level and
 > accepts the real signer; self-upgrade then works. Hosts **without** the `cosign`
 > CLI are unaffected — they take the documented SHA256 fallback.
 
@@ -349,18 +349,18 @@ lookup, that field degrades gracefully (`not connected` / `not deployed` /
 
 ```sh
 $ kubectl cfgd version
-Client        0.6.0
+Client        0.6.1
 Server (k8s)  1.31
-Operator      0.6.0
-CSI           0.6.0
+Operator      0.6.1
+CSI           0.6.1
 
 $ kubectl cfgd version --namespace cfgd-system -o json
 {
-  "version": "0.6.0",
+  "version": "0.6.1",
   "kubectl": "1.31",
-  "operator": "0.6.0",
-  "csi": "0.6.0",
-  "cfgd": "0.6.0"
+  "operator": "0.6.1",
+  "csi": "0.6.1",
+  "cfgd": "0.6.1"
 }
 ```
 

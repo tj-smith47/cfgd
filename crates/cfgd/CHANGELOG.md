@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-07-21
+
+### Bug Fixes
+
+* 0bf799c7b2b5 bump the cargo group across 1 directory with 8 updates ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.6.0] - 2026-07-20
 
 ### Features
@@ -111,6 +117,7 @@
 * 018a7ff7b259 migrate upgrade CLI test fixtures to split/keyless contract (TJ Smith)
 * a397277605a9 serialize LOCALAPPDATA env tests to fix full-suite flake (TJ Smith)
 
-[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/tj-smith47/cfgd/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/tj-smith47/cfgd/compare/v0.4.0...v0.5.0
