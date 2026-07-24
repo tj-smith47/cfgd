@@ -20,8 +20,8 @@ use std::path::Path;
 
 use cfgd::cli::error::render_cli_error;
 use cfgd::cli::module;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, Printer, Role};
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -63,7 +63,7 @@ fn module_build_missing_yaml_human() {
 
     let stripped =
         cfgd_core::normalize_for_snapshot(&strip_ansi(&cap.human()), &[(dir.path(), "<DIR>")]);
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_build/missing_yaml.txt",
         &stripped,
@@ -104,7 +104,7 @@ fn module_build_bridge_one_blank_line() {
         !captured.contains("\n\n\n"),
         "bridge has duplicate blank line:\n{captured}"
     );
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_build/bridge.txt",
         &captured,

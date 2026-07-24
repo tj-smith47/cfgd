@@ -22,8 +22,8 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::profile::cmd_profile_update;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Printer, PromptAnswer};
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use serial_test::serial;
 
 use common::{
@@ -63,7 +63,7 @@ fn profile_update_happy_human() {
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "profile_update/happy.txt",
         &stripped,
@@ -98,7 +98,7 @@ fn profile_update_no_changes_human() {
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "profile_update/no_changes.txt",
         &stripped,
@@ -133,7 +133,7 @@ fn profile_update_add_remove_mixed_human() {
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "profile_update/add_remove_mixed.txt",
         &stripped,
@@ -180,7 +180,7 @@ fn profile_update_add_module_remote_hybrid_human() {
     let stripped = stripped.replace("file:///<BARE>", "file://<BARE>");
     // Mask the 40-char hex commit SHA — git2 generates a new one each test run.
     let stripped = mask_commit_sha(&stripped);
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "profile_update/add_module_remote_hybrid.txt",
         &stripped,

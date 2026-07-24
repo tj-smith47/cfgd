@@ -15,8 +15,8 @@ use std::path::Path;
 
 use cfgd::cli::checkin::build_checkin_doc;
 use cfgd::cli::output_types::CheckinOutput;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, Printer, Role};
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use pretty_assertions::assert_eq;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
@@ -43,7 +43,7 @@ fn checkin_happy_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "checkin/happy.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "checkin/happy.txt", &stripped);
 }
 
 /// JSON payload roundtrip — CheckinOutput shape via build_checkin_doc + cap.json().
@@ -85,7 +85,7 @@ fn checkin_drift_reported_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "checkin/drift_reported.txt",
         &stripped,
@@ -105,7 +105,7 @@ fn checkin_no_drift_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "checkin/no_drift.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "checkin/no_drift.txt", &stripped);
 }
 
 /// Server pushed a desired config — `Role::Warn` status precedes the nested
@@ -136,7 +136,7 @@ fn checkin_server_pushed_config_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "checkin/server_pushed_config.txt",
         &stripped,
@@ -181,7 +181,7 @@ fn checkin_bridge_one_blank_line() {
         "bridge has duplicate blank line:\n{captured}"
     );
 
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "checkin/bridge.txt", &captured);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "checkin/bridge.txt", &captured);
 }
 
 // ─────────────────────────────────────────────────────

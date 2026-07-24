@@ -21,10 +21,10 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::config_cmd;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Printer, PromptAnswer};
 #[cfg(unix)]
 use cfgd_core::test_helpers::EditorGuard;
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 #[cfg(unix)]
 use serial_test::serial;
 
@@ -70,7 +70,7 @@ fn config_edit_valid_human() {
     drop(printer);
 
     let stripped = normalize_paths(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "config_edit/valid.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "config_edit/valid.txt", &stripped);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["valid"], true);
@@ -106,7 +106,7 @@ fn config_edit_validation_error_accept_retry_human() {
     drop(printer);
 
     let stripped = normalize_paths(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "config_edit/validation_error_accept_retry.txt",
         &stripped,
@@ -131,7 +131,7 @@ fn config_edit_validation_error_decline_human() {
     drop(printer);
 
     let stripped = normalize_paths(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "config_edit/validation_error_decline.txt",
         &stripped,

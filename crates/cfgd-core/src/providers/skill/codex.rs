@@ -75,7 +75,7 @@ mod tests {
 
     #[test]
     fn codex_renders_managed_section_with_delimiters() {
-        let model = skill_model_for(SkillKind::Module);
+        let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
         let r = CodexProvider
             .render(&model)
             .expect("render is infallible for these fixtures");
@@ -88,7 +88,7 @@ mod tests {
 
     #[test]
     fn contents_is_empty_and_payload_rides_in_the_block() {
-        let model = skill_model_for(SkillKind::Profile);
+        let model = skill_model_for(SkillKind::Profile, env!("CARGO_PKG_VERSION"));
         let r = CodexProvider
             .render(&model)
             .expect("render is infallible for these fixtures");

@@ -22,9 +22,9 @@ use std::path::Path;
 
 use cfgd::cli::log::{build_log_doc, cmd_log};
 use cfgd::cli::output_types::LogOutput;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::Printer;
 use cfgd_core::state::ApplyStatus;
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use pretty_assertions::assert_eq;
 
 use common::{log_history_setup, log_show_output_no_journal_setup, log_show_output_setup};
@@ -42,7 +42,7 @@ fn log_empty_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "log/empty.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "log/empty.txt", &stripped);
 }
 
 /// JSON payload roundtrip — LogOutput shape via build_log_doc + cap.json().
@@ -81,7 +81,7 @@ fn log_multi_row_human() {
 
     let normalized = normalize_timestamps(&cap.human());
     let stripped = strip_ansi(&normalized);
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "log/multi_row.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "log/multi_row.txt", &stripped);
 }
 
 /// `--show-output <apply_id>` against an apply whose journal entries carry
@@ -110,7 +110,7 @@ fn log_show_output_happy_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "log/show_output_happy.txt",
         &stripped,
@@ -133,7 +133,7 @@ fn log_show_output_empty_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "log/show_output_empty.txt",
         &stripped,
@@ -154,7 +154,7 @@ fn log_show_output_no_journal_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "log/show_output_no_journal.txt",
         &stripped,

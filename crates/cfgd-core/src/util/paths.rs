@@ -910,26 +910,25 @@ pub fn normalize_line_endings(s: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// The cfgd crate version baked into version-bearing CLI output
-/// (`plugin version`, `upgrade --check`, ...). cfgd and cfgd-core are
-/// version-synced in lockstep by anodizer (`version_sync` in `.anodizer.yaml`),
-/// so cfgd-core's own `CARGO_PKG_VERSION` equals the cfgd binary's at every
-/// release — making it the stable source for version normalization.
-pub const CURRENT_CFGD_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Replace the exact current cfgd version literal with a stable `<VERSION>`
+/// Replace the exact running cfgd version literal with a stable `<VERSION>`
 /// placeholder so version-bearing snapshot goldens survive release bumps
 /// without per-bump edits.
 ///
-/// Only the *exact* current version is substituted — a genuinely wrong
+/// `cfgd_version` is the *binary crate's* `env!("CARGO_PKG_VERSION")`, passed
+/// by the caller. cfgd-core's own crate version is NOT a valid substitute:
+/// crates version independently (per-crate tags/bumps), so the two drift the
+/// moment one releases without the other — see the same rule on
+/// `config::modeline`.
+///
+/// Only the *exact* running version is substituted — a genuinely wrong
 /// version (e.g. a stale `0.3.0` leaking into output) still fails to match
 /// `<VERSION>` and surfaces as a snapshot mismatch, so real version bugs are
 /// not masked. Fixture version strings (package versions, pinned tags, mocked
 /// release numbers) are left untouched because they never equal the running
 /// crate version.
-pub fn normalize_cfgd_version(s: &str) -> std::borrow::Cow<'_, str> {
-    if s.contains(CURRENT_CFGD_VERSION) {
-        std::borrow::Cow::Owned(s.replace(CURRENT_CFGD_VERSION, "<VERSION>"))
+pub fn normalize_cfgd_version<'a>(s: &'a str, cfgd_version: &str) -> std::borrow::Cow<'a, str> {
+    if !cfgd_version.is_empty() && s.contains(cfgd_version) {
+        std::borrow::Cow::Owned(s.replace(cfgd_version, "<VERSION>"))
     } else {
         std::borrow::Cow::Borrowed(s)
     }

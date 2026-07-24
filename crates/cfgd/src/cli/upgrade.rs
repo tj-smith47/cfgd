@@ -20,16 +20,17 @@ pub fn cmd_upgrade(
     let channel = update_cfg.channel.as_deref();
 
     if check_only {
-        let check = upgrade::check_latest(None, channel, Some(printer)).map_err(|e| {
-            let msg = format!("Failed to check latest version: {e}");
-            crate::cli::cli_error_ctx(
-                e.into(),
-                env!("CARGO_PKG_VERSION"),
-                "check_failed",
-                msg,
-                serde_json::json!({ "currentVersion": env!("CARGO_PKG_VERSION") }),
-            )
-        })?;
+        let check = upgrade::check_latest(env!("CARGO_PKG_VERSION"), None, channel, Some(printer))
+            .map_err(|e| {
+                let msg = format!("Failed to check latest version: {e}");
+                crate::cli::cli_error_ctx(
+                    e.into(),
+                    env!("CARGO_PKG_VERSION"),
+                    "check_failed",
+                    msg,
+                    serde_json::json!({ "currentVersion": env!("CARGO_PKG_VERSION") }),
+                )
+            })?;
 
         if check.update_available {
             printer.emit(
@@ -66,16 +67,17 @@ pub fn cmd_upgrade(
 
     printer.heading("Upgrade");
 
-    let check = upgrade::check_latest(None, channel, Some(printer)).map_err(|e| {
-        let msg = format!("Failed to check latest version: {e}");
-        crate::cli::cli_error_ctx(
-            e.into(),
-            env!("CARGO_PKG_VERSION"),
-            "check_failed",
-            msg,
-            serde_json::json!({ "currentVersion": env!("CARGO_PKG_VERSION") }),
-        )
-    })?;
+    let check = upgrade::check_latest(env!("CARGO_PKG_VERSION"), None, channel, Some(printer))
+        .map_err(|e| {
+            let msg = format!("Failed to check latest version: {e}");
+            crate::cli::cli_error_ctx(
+                e.into(),
+                env!("CARGO_PKG_VERSION"),
+                "check_failed",
+                msg,
+                serde_json::json!({ "currentVersion": env!("CARGO_PKG_VERSION") }),
+            )
+        })?;
 
     if !check.update_available {
         printer.emit(
@@ -137,35 +139,41 @@ pub fn cmd_upgrade(
         }
     }
 
-    let applied =
-        upgrade::install_release(release, asset, require_cosign, &update_cfg, Some(printer))
-            .map_err(|e| {
-                // Strict-cosign failures get a distinct error kind so structured
-                // consumers can route them differently from generic install
-                // failures (network, disk, archive corruption).
-                let kind = if matches!(
-                    &e,
-                    cfgd_core::errors::CfgdError::Upgrade(
-                        cfgd_core::errors::UpgradeError::CosignRequired { .. }
-                    )
-                ) {
-                    "cosign_required"
-                } else {
-                    "install_failed"
-                };
-                let msg = format!("download/install failed: {e}");
-                crate::cli::cli_error_ctx(
-                    e.into(),
-                    check.latest.to_string(),
-                    kind,
-                    msg,
-                    serde_json::json!({
-                        "currentVersion": check.current.to_string(),
-                        "latestVersion": check.latest.to_string(),
-                        "requireCosign": require_cosign,
-                    }),
-                )
-            })?;
+    let applied = upgrade::install_release(
+        release,
+        asset,
+        require_cosign,
+        &update_cfg,
+        env!("CARGO_PKG_VERSION"),
+        Some(printer),
+    )
+    .map_err(|e| {
+        // Strict-cosign failures get a distinct error kind so structured
+        // consumers can route them differently from generic install
+        // failures (network, disk, archive corruption).
+        let kind = if matches!(
+            &e,
+            cfgd_core::errors::CfgdError::Upgrade(
+                cfgd_core::errors::UpgradeError::CosignRequired { .. }
+            )
+        ) {
+            "cosign_required"
+        } else {
+            "install_failed"
+        };
+        let msg = format!("download/install failed: {e}");
+        crate::cli::cli_error_ctx(
+            e.into(),
+            check.latest.to_string(),
+            kind,
+            msg,
+            serde_json::json!({
+                "currentVersion": check.current.to_string(),
+                "latestVersion": check.latest.to_string(),
+                "requireCosign": require_cosign,
+            }),
+        )
+    })?;
     let report = &applied.report;
 
     printer.emit(
@@ -228,7 +236,8 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
         interactive,
         assume_yes,
         fetch: Box::new(|channel| {
-            upgrade::check_latest(None, channel, None).map_err(unwrap_upgrade_err)
+            upgrade::check_latest(env!("CARGO_PKG_VERSION"), None, channel, None)
+                .map_err(unwrap_upgrade_err)
         }),
         confirm: Box::new(|c| {
             printer
@@ -249,7 +258,7 @@ pub fn startup_update_check(printer: &Printer, config_path: &std::path::Path, as
             );
         }),
         apply: Box::new(|c| apply_startup_update(printer, &update_cfg, c)),
-        record_checked: Box::new(upgrade::record_check_at),
+        record_checked: Box::new(|now| upgrade::record_check_at(env!("CARGO_PKG_VERSION"), now)),
     };
 
     let outcome = upgrade::run_update_check(&update_cfg, now, None, &mut effects);
@@ -287,7 +296,11 @@ fn surface_stale_skills(
         .as_ref()
         .map(|u| u.update_available)
         .unwrap_or(false);
-    let result = upgrade::run_standalone_skill_action(update_cfg, binary_available);
+    let result = upgrade::run_standalone_skill_action(
+        update_cfg,
+        binary_available,
+        env!("CARGO_PKG_VERSION"),
+    );
     if let StandaloneSkillOutcome::NoticeNeeded(staleness) = result {
         emit_skill_stale_notice(printer, staleness);
     }
@@ -342,7 +355,14 @@ fn apply_startup_update(
             return false;
         }
     };
-    match upgrade::install_release(release, asset, false, update_cfg, Some(printer)) {
+    match upgrade::install_release(
+        release,
+        asset,
+        false,
+        update_cfg,
+        env!("CARGO_PKG_VERSION"),
+        Some(printer),
+    ) {
         Ok(applied) => {
             let report = &applied.report;
             printer.emit(
@@ -965,7 +985,7 @@ mod tests {
     /// Install a claude-code skill at `scope`, then stale its version stamp.
     fn seed_stale(kind: SkillKind, scope: SkillScope) -> std::path::PathBuf {
         let path = ClaudeCodeProvider
-            .install(&skill_model_for(kind), scope)
+            .install(&skill_model_for(kind, env!("CARGO_PKG_VERSION")), scope)
             .expect("install skill");
         let body = std::fs::read_to_string(&path).expect("read skill");
         let staled = body

@@ -23,8 +23,8 @@ use std::path::Path;
 
 use cfgd::cli::output_types::{PlanActionOutput, PlanOutput, PlanPhaseOutput};
 use cfgd::cli::plan::cmd_plan;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, Printer};
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use pretty_assertions::assert_eq;
 
 use common::{
@@ -77,7 +77,7 @@ fn plan_happy_human() {
     let normalized =
         normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
     let stripped = strip_ansi(&normalized);
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "plan/happy.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "plan/happy.txt", &stripped);
 }
 
 #[test]
@@ -145,7 +145,7 @@ fn plan_empty_human() {
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path(), &[]);
     let stripped = strip_ansi(&normalized);
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "plan/empty.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "plan/empty.txt", &stripped);
 }
 
 #[test]
@@ -172,7 +172,7 @@ fn plan_module_only_human() {
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path(), &[]);
     let stripped = strip_ansi(&normalized);
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "plan/module_only.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "plan/module_only.txt", &stripped);
 }
 
 #[test]
@@ -192,7 +192,7 @@ fn plan_with_pending_human() {
     let normalized =
         normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
     let stripped = strip_ansi(&normalized);
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "plan/with_pending.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "plan/with_pending.txt", &stripped);
 }
 
 // ─────────────────────────────────────────────────────

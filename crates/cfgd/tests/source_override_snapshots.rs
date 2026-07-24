@@ -16,8 +16,8 @@ use std::path::Path;
 use cfgd::cli::SourceOverrideAction;
 use cfgd::cli::error::render_cli_error;
 use cfgd::cli::source::cmd_source_override;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::Printer;
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 
 use common::{cli_for, source_test_config_with_source_setup};
 
@@ -64,7 +64,7 @@ fn source_override_accept_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "source_override/accept.txt",
         &stripped,
@@ -122,7 +122,7 @@ fn source_override_reject_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "source_override/reject.txt",
         &stripped,
@@ -153,7 +153,7 @@ fn source_override_not_found_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "source_override/not_found.txt",
         &stripped,

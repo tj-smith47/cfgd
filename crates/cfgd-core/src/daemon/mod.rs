@@ -690,6 +690,10 @@ pub(super) fn build_pre_loop_setup(
 
 // --- Main Daemon Entry Point ---
 
+/// `cfgd_version` is the running binary's `env!("CARGO_PKG_VERSION")` — the
+/// daemon's self-update check and skill-staleness probes compare against the
+/// binary that is actually running, never cfgd-core's own crate version (the
+/// crates version independently).
 pub async fn run_daemon(
     config_path: PathBuf,
     profile_override: Option<String>,
@@ -697,6 +701,7 @@ pub async fn run_daemon(
     printer: Arc<Printer>,
     hooks: Arc<dyn DaemonHooks>,
     scope: crate::Scope,
+    cfgd_version: &str,
 ) -> Result<()> {
     // Resolve the bind socket once at the entry point so the `--runtime-dir`
     // flag reaches the daemon (env/default when `None`); the client side
@@ -711,6 +716,7 @@ pub async fn run_daemon(
             scope,
             ..DaemonRunOverrides::default()
         },
+        cfgd_version,
     )
     .await
 }
@@ -778,6 +784,7 @@ pub(super) async fn run_daemon_with(
     printer: Arc<Printer>,
     hooks: Arc<dyn DaemonHooks>,
     overrides: DaemonRunOverrides,
+    cfgd_version: &str,
 ) -> Result<()> {
     printer.heading("Daemon");
     printer.status_simple(Role::Info, "Starting cfgd daemon...");
@@ -964,6 +971,7 @@ pub(super) async fn run_daemon_with(
         state_dir_override: resolved_state_dir.clone(),
         managed_paths: setup.managed_paths.clone(),
         scope: overrides.scope,
+        cfgd_version: cfgd_version.to_string(),
     };
 
     let loop_result = run_daemon_loop(

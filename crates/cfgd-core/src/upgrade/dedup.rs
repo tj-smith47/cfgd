@@ -112,7 +112,7 @@ pub struct RideAlongOutcome {
 /// Failures to refresh an individual skill are logged and skipped rather than
 /// aborting the post-upgrade tail: the binary upgrade has already succeeded, and
 /// a stale skill is a far smaller problem than a panicked upgrade path.
-pub fn refresh_user_scope_skills(cfg: &UpdateConfig) -> RideAlongOutcome {
+pub fn refresh_user_scope_skills(cfg: &UpdateConfig, cfgd_version: &str) -> RideAlongOutcome {
     let policy = cfg.effective_skill_policy();
     // Only Auto/Prompt write during the ride-along; Notify/Manual never do.
     let should_write = matches!(policy, UpdatePolicy::Auto | UpdatePolicy::Prompt);
@@ -124,7 +124,7 @@ pub fn refresh_user_scope_skills(cfg: &UpdateConfig) -> RideAlongOutcome {
     for provider in all_skill_providers() {
         // Drive strictly off what is already present at user scope: never
         // newly install a kind the user did not have.
-        let installed = match provider.list(SkillScope::User) {
+        let installed = match provider.list(SkillScope::User, cfgd_version) {
             Ok(list) => list,
             Err(e) => {
                 tracing::warn!(
@@ -136,7 +136,7 @@ pub fn refresh_user_scope_skills(cfg: &UpdateConfig) -> RideAlongOutcome {
             }
         };
         for skill in installed {
-            let model = crate::generate::skill_model_for(skill.kind);
+            let model = crate::generate::skill_model_for(skill.kind, cfgd_version);
             // SkillScope::User is the ONLY scope passed here — the git-safety
             // invariant (no auto-write of tracked project files) holds by
             // construction.
@@ -180,10 +180,10 @@ impl SkillStaleness {
 /// Count stale installed skills at `scope` across every provider. A provider
 /// whose `list` errors contributes zero (best-effort: a transient read hiccup
 /// must not fabricate a phantom stale surface).
-fn count_stale_skills(scope: SkillScope) -> usize {
+fn count_stale_skills(scope: SkillScope, cfgd_version: &str) -> usize {
     all_skill_providers()
         .iter()
-        .map(|p| match p.list(scope) {
+        .map(|p| match p.list(scope, cfgd_version) {
             Ok(skills) => skills.iter().filter(|s| s.stale).count(),
             Err(e) => {
                 tracing::debug!(
@@ -201,10 +201,10 @@ fn count_stale_skills(scope: SkillScope) -> usize {
 /// Aggregate stale-skill counts at both scopes — the input the rule-3 path feeds
 /// into [`compute_update_surfaces`] (as `skills_stale = staleness.any()`) and
 /// reports in the single consolidated notice.
-pub fn aggregate_skill_staleness() -> SkillStaleness {
+pub fn aggregate_skill_staleness(cfgd_version: &str) -> SkillStaleness {
     SkillStaleness {
-        user: count_stale_skills(SkillScope::User),
-        project: count_stale_skills(SkillScope::Project),
+        user: count_stale_skills(SkillScope::User, cfgd_version),
+        project: count_stale_skills(SkillScope::Project, cfgd_version),
     }
 }
 
@@ -288,8 +288,9 @@ pub enum StandaloneSkillOutcome {
 pub fn run_standalone_skill_action(
     cfg: &UpdateConfig,
     binary_available: bool,
+    cfgd_version: &str,
 ) -> StandaloneSkillOutcome {
-    let staleness = aggregate_skill_staleness();
+    let staleness = aggregate_skill_staleness(cfgd_version);
     let surfaces = compute_update_surfaces(binary_available, staleness.any());
     if !surfaces.shows_skills {
         // Rule 1 (binary pending) or nothing stale.
@@ -299,11 +300,11 @@ pub fn run_standalone_skill_action(
     match resolve_standalone_skill_action(cfg) {
         StandaloneSkillAction::RefreshUserThenNoticeProject => {
             // Auto: re-render user-scope in place; project-scope is never written.
-            let _ = refresh_user_scope_skills(cfg);
+            let _ = refresh_user_scope_skills(cfg, cfgd_version);
             // After refreshing user-scope, only project-scope skills can remain
             // stale — surface those (and only those) so the user can
             // `cfgd skill update` and commit deliberately.
-            let remaining = aggregate_skill_staleness();
+            let remaining = aggregate_skill_staleness(cfgd_version);
             if remaining.project > 0 {
                 StandaloneSkillOutcome::NoticeNeeded(remaining)
             } else {
@@ -351,7 +352,10 @@ mod tests {
     /// comment, so the running version is rewritten in place.
     fn seed_stale_codex_user_skill() {
         let path = CodexProvider
-            .install(&skill_model_for(SkillKind::Module), SkillScope::User)
+            .install(
+                &skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION")),
+                SkillScope::User,
+            )
             .expect("install codex user skill");
         let body = std::fs::read_to_string(&path).expect("read AGENTS.md");
         let staled = body.replace(env!("CARGO_PKG_VERSION"), "0.0.1");
@@ -386,7 +390,8 @@ mod tests {
             // Break the claude provider's `list` with the EISDIR idiom.
             make_claude_list_error(home.path());
 
-            let staleness = with_trace_subscriber(aggregate_skill_staleness);
+            let staleness =
+                with_trace_subscriber(|| aggregate_skill_staleness(env!("CARGO_PKG_VERSION")));
             assert_eq!(
                 staleness.user, 1,
                 "claude list-error swallowed to 0; codex's stale skill still counted: {staleness:?}"
@@ -411,7 +416,9 @@ mod tests {
         crate::with_test_home(home.path(), || {
             make_claude_list_error(home.path());
 
-            let outcome = with_trace_subscriber(|| refresh_user_scope_skills(&auto_cfg()));
+            let outcome = with_trace_subscriber(|| {
+                refresh_user_scope_skills(&auto_cfg(), env!("CARGO_PKG_VERSION"))
+            });
             assert!(
                 !outcome.user_scope_skills_refreshed,
                 "list-errored provider skipped; nothing else present to refresh"
@@ -435,7 +442,10 @@ mod tests {
             // Install with a WORKING runtime dir so the skill is genuinely present.
             let _rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
             CodexProvider
-                .install(&skill_model_for(SkillKind::Module), SkillScope::User)
+                .install(
+                    &skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION")),
+                    SkillScope::User,
+                )
                 .expect("install codex user skill");
             drop(_rt);
 
@@ -445,7 +455,9 @@ mod tests {
             std::fs::write(&bad, b"not a dir").expect("write runtime-blocking file");
             let _bad_rt = EnvVarGuard::set("CFGD_RUNTIME_DIR", &bad.to_string_lossy());
 
-            with_trace_subscriber(|| refresh_user_scope_skills(&auto_cfg()))
+            with_trace_subscriber(|| {
+                refresh_user_scope_skills(&auto_cfg(), env!("CARGO_PKG_VERSION"))
+            })
         });
 
         // The codex skill was present (list succeeds, no lock) but its re-render

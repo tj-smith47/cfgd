@@ -590,7 +590,13 @@ pub fn file_url(path: &Path) -> String {
 /// [`crate::normalize_for_snapshot`] BEFORE handing it to this function;
 /// keeping the CRLF fold here guards against the harness regressing back to
 /// host-dependent line endings.
-pub fn assert_snapshot_golden(base: &Path, name: &str, actual: &str) {
+///
+/// `cfgd_version` is the version literal folded to `<VERSION>` on both sides
+/// — the *consuming test crate's* `env!("CARGO_PKG_VERSION")`, never
+/// cfgd-core's own (crates version independently). Invoke through the
+/// [`crate::assert_snapshot_golden!`] macro, which captures the invoking
+/// crate's version automatically.
+pub fn assert_snapshot_golden(base: &Path, name: &str, actual: &str, cfgd_version: &str) {
     let path = base.join(name);
     if std::env::var("INSTA_UPDATE").as_deref() == Ok("always") || !path.exists() {
         if let Some(parent) = path.parent() {
@@ -598,7 +604,7 @@ pub fn assert_snapshot_golden(base: &Path, name: &str, actual: &str) {
         }
         // Regenerate with the version folded to `<VERSION>` so regenerated
         // goldens stay version-agnostic rather than re-pinning the literal.
-        let regen = crate::normalize_cfgd_version(actual);
+        let regen = crate::normalize_cfgd_version(actual, cfgd_version);
         std::fs::write(&path, regen.as_ref()).expect("write snapshot golden");
         return;
     }
@@ -609,9 +615,28 @@ pub fn assert_snapshot_golden(base: &Path, name: &str, actual: &str) {
     // the placeholder.
     let actual_lf = crate::normalize_line_endings(actual);
     let expected_lf = crate::normalize_line_endings(&expected);
-    let actual_norm = crate::normalize_cfgd_version(&actual_lf);
-    let expected_norm = crate::normalize_cfgd_version(&expected_lf);
+    let actual_norm = crate::normalize_cfgd_version(&actual_lf, cfgd_version);
+    let expected_norm = crate::normalize_cfgd_version(&expected_lf, cfgd_version);
     pretty_assertions::assert_eq!(actual_norm, expected_norm, "snapshot mismatch: {name}");
+}
+
+/// Snapshot-golden assertion that folds the *invoking crate's* running
+/// version to `<VERSION>`.
+///
+/// A macro rather than a function so `env!("CARGO_PKG_VERSION")` expands in
+/// the test crate that owns the captured output (the cfgd binary crate for
+/// CLI snapshots) — cfgd-core's own version is wrong the moment the crates'
+/// release cadences diverge.
+#[macro_export]
+macro_rules! assert_snapshot_golden {
+    ($base:expr, $name:expr, $actual:expr $(,)?) => {
+        $crate::test_helpers::assert_snapshot_golden(
+            $base,
+            $name,
+            $actual,
+            env!("CARGO_PKG_VERSION"),
+        )
+    };
 }
 
 /// Initialize a minimal git repository at `dir` with an initial commit.
@@ -2123,7 +2148,10 @@ pub fn seed_stale_skill(
     use crate::providers::skill::{ClaudeCodeProvider, SkillProvider};
 
     let path = ClaudeCodeProvider
-        .install(&crate::generate::skill_model_for(kind), scope)
+        .install(
+            &crate::generate::skill_model_for(kind, env!("CARGO_PKG_VERSION")),
+            scope,
+        )
         .expect("install skill");
     let body = std::fs::read_to_string(&path).expect("read installed skill");
     let staled = body
@@ -2302,12 +2330,22 @@ mod tests {
         let name = "nested/out.txt";
         // Golden does not yet exist → the regen branch writes it and returns
         // without asserting, creating the parent dir along the way.
-        assert_snapshot_golden(dir.path(), name, "regenerated body\n");
+        assert_snapshot_golden(
+            dir.path(),
+            name,
+            "regenerated body\n",
+            env!("CARGO_PKG_VERSION"),
+        );
         let written = std::fs::read_to_string(dir.path().join(name)).unwrap();
         assert_eq!(written, "regenerated body\n");
 
         // A matching second call now takes the compare branch without panicking.
-        assert_snapshot_golden(dir.path(), name, "regenerated body\n");
+        assert_snapshot_golden(
+            dir.path(),
+            name,
+            "regenerated body\n",
+            env!("CARGO_PKG_VERSION"),
+        );
     }
 
     #[test]

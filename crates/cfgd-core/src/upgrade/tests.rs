@@ -3,7 +3,8 @@ use std::time::SystemTime;
 
 #[test]
 fn current_version_is_valid_semver() {
-    let v = current_version().expect("CARGO_PKG_VERSION should be valid semver");
+    let v = parse_current_version(env!("CARGO_PKG_VERSION"))
+        .expect("CARGO_PKG_VERSION should be valid semver");
     assert_eq!(
         v.to_string(),
         env!("CARGO_PKG_VERSION"),
@@ -871,8 +872,13 @@ fn check_with_cache_returns_error_when_cached_version_is_unparseable() {
     })
     .expect("cache seed");
 
-    let err = check_with_cache(Some("does/not/matter"), None, None)
-        .expect_err("unparseable cached version must surface as Err, not silent fallthrough");
+    let err = check_with_cache(
+        env!("CARGO_PKG_VERSION"),
+        Some("does/not/matter"),
+        None,
+        None,
+    )
+    .expect_err("unparseable cached version must surface as Err, not silent fallthrough");
     let msg = err.to_string();
     assert!(
         msg.contains("cached version") && msg.contains("parse"),
@@ -988,7 +994,7 @@ fn record_check_at_creates_cache_when_none_exists() {
         last_checked_secs().is_none(),
         "precondition: no cache means no recorded check"
     );
-    record_check_at(1_700_000_000);
+    record_check_at(env!("CARGO_PKG_VERSION"), 1_700_000_000);
     assert_eq!(
         last_checked_secs(),
         Some(1_700_000_000),
@@ -1011,7 +1017,7 @@ fn record_check_at_updates_timestamp_on_existing_cache() {
     };
     write_version_cache(&seeded).expect("seed cache write must succeed");
 
-    record_check_at(1_700_009_999);
+    record_check_at(env!("CARGO_PKG_VERSION"), 1_700_009_999);
     assert_eq!(
         last_checked_secs(),
         Some(1_700_009_999),
@@ -2188,8 +2194,13 @@ fn check_with_cache_returns_cached_when_within_ttl() {
     write_version_cache(&cached).expect("cache seed must succeed in tempdir");
 
     // No mock server — if the call reaches the API it will fail loudly.
-    let result = check_with_cache(Some("does/not/matter"), None, None)
-        .expect("cache hit must short-circuit to local data, never touch the network");
+    let result = check_with_cache(
+        env!("CARGO_PKG_VERSION"),
+        Some("does/not/matter"),
+        None,
+        None,
+    )
+    .expect("cache hit must short-circuit to local data, never touch the network");
     assert_eq!(
         result.latest,
         Version::new(123, 0, 0),
@@ -3826,7 +3837,7 @@ mod api_base_env_shim {
         let mock = mock_release_response(&mut server);
         let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_latest(Some("test/repo"), None, None)
+        let result = check_latest(env!("CARGO_PKG_VERSION"), Some("test/repo"), None, None)
             .expect("env-shim redirect should make the call succeed against mockito");
         mock.assert();
 
@@ -3857,7 +3868,7 @@ mod api_base_env_shim {
         let mock = mock_release_response(&mut server);
         let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_with_cache(Some("test/repo"), None, None)
+        let result = check_with_cache(env!("CARGO_PKG_VERSION"), Some("test/repo"), None, None)
             .expect("cache miss + env-shim redirect should succeed");
         mock.assert();
         assert_eq!(result.latest, Version::new(999, 0, 0));
@@ -3910,7 +3921,7 @@ mod api_base_env_shim {
             .create();
         let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_with_cache(Some("test/repo"), None, None)
+        let result = check_with_cache(env!("CARGO_PKG_VERSION"), Some("test/repo"), None, None)
             .expect("expired cache + API success should succeed");
         mock.assert();
         assert_eq!(
@@ -3931,7 +3942,7 @@ mod api_base_env_shim {
     #[test]
     #[serial]
     fn check_latest_with_none_repo_uses_default() {
-        // check_latest(None, ...) should use DEFAULT_REPO ("tj-smith47/cfgd").
+        // check_latest(env!("CARGO_PKG_VERSION"), None, ...) should use DEFAULT_REPO ("tj-smith47/cfgd").
         let mut server = mockito::Server::new();
         let mock = server
             .mock("GET", "/repos/tj-smith47/cfgd/releases/latest")
@@ -3941,8 +3952,8 @@ mod api_base_env_shim {
             .create();
         let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let result =
-            check_latest(None, None, None).expect("None repo should use default and hit mockito");
+        let result = check_latest(env!("CARGO_PKG_VERSION"), None, None, None)
+            .expect("None repo should use default and hit mockito");
         mock.assert();
         assert_eq!(result.latest, Version::new(777, 0, 0));
     }
@@ -3950,7 +3961,7 @@ mod api_base_env_shim {
     #[test]
     #[serial]
     fn check_with_cache_none_repo_uses_default() {
-        // check_with_cache(None, ...) should use DEFAULT_REPO.
+        // check_with_cache(env!("CARGO_PKG_VERSION"), None, ...) should use DEFAULT_REPO.
         let home = tempfile::tempdir().unwrap();
         let _home_guard = crate::with_test_home_guard(home.path());
 
@@ -3963,7 +3974,7 @@ mod api_base_env_shim {
             .create();
         let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_with_cache(None, None, None)
+        let result = check_with_cache(env!("CARGO_PKG_VERSION"), None, None, None)
             .expect("None repo should use default and hit mockito");
         mock.assert();
         assert_eq!(result.latest, Version::new(666, 0, 0));
@@ -4017,8 +4028,13 @@ mod api_base_env_shim {
             .create();
         let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_latest(Some("test/repo"), Some("prerelease"), None)
-            .expect("prerelease channel should hit the list endpoint");
+        let result = check_latest(
+            env!("CARGO_PKG_VERSION"),
+            Some("test/repo"),
+            Some("prerelease"),
+            None,
+        )
+        .expect("prerelease channel should hit the list endpoint");
         list_mock.assert();
         latest_mock.assert();
 
@@ -4055,8 +4071,13 @@ mod api_base_env_shim {
             .create();
         let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_latest(Some("test/repo"), Some("stable"), None)
-            .expect("stable channel should hit releases/latest");
+        let result = check_latest(
+            env!("CARGO_PKG_VERSION"),
+            Some("test/repo"),
+            Some("stable"),
+            None,
+        )
+        .expect("stable channel should hit releases/latest");
         latest_mock.assert();
         list_mock.assert();
         assert_eq!(
@@ -4085,7 +4106,7 @@ mod api_base_env_shim {
             .create();
         let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_latest(Some("test/repo"), None, None)
+        let result = check_latest(env!("CARGO_PKG_VERSION"), Some("test/repo"), None, None)
             .expect("None channel should hit releases/latest");
         latest_mock.assert();
         list_mock.assert();
@@ -4116,8 +4137,13 @@ mod api_base_env_shim {
             .create();
         let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let result = check_latest(Some("test/repo"), Some("nightly"), None)
-            .expect("unknown channel must fall back to stable, never error");
+        let result = check_latest(
+            env!("CARGO_PKG_VERSION"),
+            Some("test/repo"),
+            Some("nightly"),
+            None,
+        )
+        .expect("unknown channel must fall back to stable, never error");
         latest_mock.assert();
         list_mock.assert();
         assert_eq!(
@@ -4140,8 +4166,13 @@ mod api_base_env_shim {
             .create();
         let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let err = check_latest(Some("test/repo"), Some("prerelease"), None)
-            .expect_err("invalid JSON body must surface as an error");
+        let err = check_latest(
+            env!("CARGO_PKG_VERSION"),
+            Some("test/repo"),
+            Some("prerelease"),
+            None,
+        )
+        .expect_err("invalid JSON body must surface as an error");
         let msg = err.to_string();
         assert!(
             msg.contains("invalid JSON"),
@@ -4163,8 +4194,13 @@ mod api_base_env_shim {
             .create();
         let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let err = check_latest(Some("test/repo"), Some("prerelease"), None)
-            .expect_err("a JSON object is not a releases array");
+        let err = check_latest(
+            env!("CARGO_PKG_VERSION"),
+            Some("test/repo"),
+            Some("prerelease"),
+            None,
+        )
+        .expect_err("a JSON object is not a releases array");
         let msg = err.to_string();
         assert!(
             msg.contains("releases list response was not a JSON array"),
@@ -4186,8 +4222,13 @@ mod api_base_env_shim {
             .create();
         let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let err = check_latest(Some("test/repo"), Some("prerelease"), None)
-            .expect_err("an empty releases array yields no parseable release");
+        let err = check_latest(
+            env!("CARGO_PKG_VERSION"),
+            Some("test/repo"),
+            Some("prerelease"),
+            None,
+        )
+        .expect_err("an empty releases array yields no parseable release");
         let msg = err.to_string();
         assert!(
             msg.contains("no parseable release found"),
@@ -4209,8 +4250,13 @@ mod api_base_env_shim {
             .create();
         let _env = EnvVarGuard::set(GITHUB_API_BASE_ENV, &server.url());
 
-        let err = check_latest(Some("test/repo"), Some("prerelease"), None)
-            .expect_err("all-unparseable tags leave no selectable release");
+        let err = check_latest(
+            env!("CARGO_PKG_VERSION"),
+            Some("test/repo"),
+            Some("prerelease"),
+            None,
+        )
+        .expect_err("all-unparseable tags leave no selectable release");
         let msg = err.to_string();
         assert!(
             msg.contains("no parseable release found"),

@@ -110,6 +110,7 @@ pub(crate) async fn handle_version_check(
     update_cfg: &config::UpdateConfig,
     state: &Arc<Mutex<DaemonState>>,
     notifier: &Arc<Notifier>,
+    cfgd_version: &str,
 ) {
     use crate::config::UpdatePolicy;
     use crate::upgrade::UpdateAction;
@@ -129,12 +130,13 @@ pub(crate) async fn handle_version_check(
     tracing::info!("checking for cfgd updates");
 
     let channel = update_cfg.channel.clone();
+    let version_for_check = cfgd_version.to_string();
     let check_result = crate::spawn_blocking_with_test_home(move || {
-        crate::upgrade::check_latest(None, channel.as_deref(), None)
+        crate::upgrade::check_latest(&version_for_check, None, channel.as_deref(), None)
     })
     .await;
 
-    crate::upgrade::record_check_at(now);
+    crate::upgrade::record_check_at(cfgd_version, now);
 
     let check = match check_result {
         Ok(Ok(c)) => c,
@@ -153,7 +155,7 @@ pub(crate) async fn handle_version_check(
         // Binary current → the §9 consolidated skill-stale surface may apply
         // (rule 3). Rule 1 means this only runs when no binary update is
         // pending, so the two surfaces can never both fire.
-        surface_stale_skills(update_cfg, state, notifier).await;
+        surface_stale_skills(update_cfg, state, notifier, cfgd_version).await;
         return;
     }
 
@@ -165,7 +167,15 @@ pub(crate) async fn handle_version_check(
     // the same action via `install_release`.
     match crate::upgrade::resolve_action(policy, false, false) {
         UpdateAction::Apply if policy == UpdatePolicy::Auto => {
-            apply_daemon_update(update_cfg, &check, &version_str, state, notifier).await;
+            apply_daemon_update(
+                update_cfg,
+                &check,
+                &version_str,
+                state,
+                notifier,
+                cfgd_version,
+            )
+            .await;
         }
         // Interactive Prompt cannot apply in the daemon; resolve_action already
         // degraded a non-interactive Prompt to Surface, so this arm only covers
@@ -222,13 +232,14 @@ async fn surface_stale_skills(
     update_cfg: &config::UpdateConfig,
     state: &Arc<Mutex<DaemonState>>,
     notifier: &Arc<Notifier>,
+    cfgd_version: &str,
 ) {
     use crate::upgrade::StandaloneSkillOutcome;
 
     // Binary is current here (caller gates on `!update_available`), so
     // binary_available is false and rule 3 governs.
     if let StandaloneSkillOutcome::NoticeNeeded(staleness) =
-        crate::upgrade::run_standalone_skill_action(update_cfg, false)
+        crate::upgrade::run_standalone_skill_action(update_cfg, false, cfgd_version)
     {
         notify_stale_skills_once(staleness, state, notifier).await;
     }
@@ -267,6 +278,7 @@ async fn apply_daemon_update(
     version_str: &str,
     state: &Arc<Mutex<DaemonState>>,
     notifier: &Arc<Notifier>,
+    cfgd_version: &str,
 ) {
     let Some(release) = check.release.clone() else {
         tracing::warn!("auto-update: release info unavailable; surfacing instead");
@@ -277,12 +289,13 @@ async fn apply_daemon_update(
     // Clone to cross the spawn_blocking boundary; the shared apply path runs the
     // user-scope skill ride-along gated by this config's effective skills policy.
     let cfg = update_cfg.clone();
+    let running_version = cfgd_version.to_string();
     let install = crate::spawn_blocking_with_test_home(move || {
         let asset = crate::upgrade::find_asset_for_platform(&release)?;
         // Shared apply path: install + invalidate cache + ride-along skill
         // refresh + restart a running daemon onto the new binary (one owner of
         // that ordering invariant).
-        crate::upgrade::install_release(&release, asset, false, &cfg, None)
+        crate::upgrade::install_release(&release, asset, false, &cfg, &running_version, None)
     })
     .await;
 

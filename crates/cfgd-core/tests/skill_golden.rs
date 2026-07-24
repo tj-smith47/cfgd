@@ -107,7 +107,7 @@ fn golden_path(provider: &str, token: &str) -> String {
 fn check_provider_goldens(provider: &dyn SkillProvider) {
     let bless = std::env::var("CFGD_BLESS_SKILL").is_ok();
     for kind in ALL_KINDS {
-        let model = skill_model_for(kind);
+        let model = skill_model_for(kind, env!("CARGO_PKG_VERSION"));
         // Snapshot the bytes the provider actually writes to a fresh target. A
         // whole-file provider's are its `contents`; a managed-section provider's
         // (codex) `contents` is empty — its payload is the spliced block — so

@@ -133,10 +133,13 @@ pub fn cmd_generate(cli: &Cli, printer: &Printer, args: &GenerateArgs) -> anyhow
     );
 
     // 5. Build system prompt
-    let skill = cfgd_core::generate::skill_model_for(match &args.target {
-        Some(GenerateTarget::Profile { .. }) => cfgd_core::generate::SkillKind::Profile,
-        _ => cfgd_core::generate::SkillKind::Module,
-    })
+    let skill = cfgd_core::generate::skill_model_for(
+        match &args.target {
+            Some(GenerateTarget::Profile { .. }) => cfgd_core::generate::SkillKind::Profile,
+            _ => cfgd_core::generate::SkillKind::Module,
+        },
+        env!("CARGO_PKG_VERSION"),
+    )
     .render_system_prompt();
     let mode_context = match &args.target {
         None => "Mode: full — scan system, propose structure, generate all profiles and modules."

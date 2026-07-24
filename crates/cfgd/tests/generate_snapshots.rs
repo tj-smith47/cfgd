@@ -23,8 +23,8 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::generate::{self, GenerateArgs};
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, OutputFormat, Printer, Role};
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -91,7 +91,7 @@ fn generate_scan_only_empty_home_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "generate/scan_only.txt",
         &stripped,
@@ -152,5 +152,5 @@ fn generate_bridge_one_blank_line() {
         !captured.contains("\n\n\n"),
         "bridge has duplicate blank line:\n{captured}"
     );
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "generate/bridge.txt", &captured);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "generate/bridge.txt", &captured);
 }

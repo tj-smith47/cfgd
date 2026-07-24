@@ -24,8 +24,8 @@ use std::path::Path;
 use cfgd::cli::output_types::ProfileListEntry;
 use cfgd::cli::profile::cmd_profile_list;
 use cfgd::cli::profile::list::{build_profile_list_doc, build_profile_list_missing_doc};
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::Printer;
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 
 use common::{cli_for, profile_test_config_setup};
 
@@ -76,7 +76,7 @@ fn profile_list_happy_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "profile_list/happy.txt",
         &stripped,
@@ -113,7 +113,7 @@ fn profile_list_empty_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "profile_list/empty.txt",
         &stripped,

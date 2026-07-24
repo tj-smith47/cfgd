@@ -11,8 +11,8 @@ use std::path::Path;
 
 use cfgd::cli::error::render_cli_error;
 use cfgd::cli::module;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::Printer;
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 
 use common::cli_for;
 
@@ -91,7 +91,7 @@ fn module_export_happy_human() {
         config_dir.path(),
         output_dir.path(),
     );
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_export/happy.txt",
         &stripped,
@@ -147,7 +147,7 @@ fn module_export_not_found_human() {
         config_dir.path(),
         output_dir.path(),
     );
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_export/not_found.txt",
         &stripped,

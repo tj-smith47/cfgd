@@ -30,8 +30,8 @@
 use std::path::Path;
 
 use cfgd::cli::init::{InitArgs, cmd_init};
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::Printer;
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -67,7 +67,7 @@ fn init_happy_human() {
     // key share the posix separator convention on Windows.
     let normalized =
         cfgd_core::normalize_for_snapshot(&strip_ansi(&cap.human()), &[(&target, "<TARGET_DIR>")]);
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "init/happy.txt", &normalized);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "init/happy.txt", &normalized);
 }
 
 #[test]
@@ -105,7 +105,7 @@ fn init_happy_json() {
         );
     }
     let actual = serde_json::to_string_pretty(&json).unwrap();
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "init/happy.json", &actual);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "init/happy.json", &actual);
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn init_already_initialized_human() {
 
     let normalized =
         cfgd_core::normalize_for_snapshot(&strip_ansi(&cap.human()), &[(&target, "<TARGET_DIR>")]);
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "init/already_initialized.txt",
         &normalized,
@@ -221,7 +221,7 @@ fn init_with_apply_renders_apply_status_streaming() {
 
     let normalized =
         cfgd_core::normalize_for_snapshot(&strip_ansi(&cap.human()), &[(&target, "<TARGET_DIR>")]);
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "init/with_apply_renders_apply_status_streaming.txt",
         &normalized,
@@ -282,7 +282,7 @@ fn init_apply_then_next_steps_bridge_invariant() {
         "expected at most one blank line between streaming and buffered, got:\n{captured}"
     );
 
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "init/apply_then_next_steps.txt",
         &captured,

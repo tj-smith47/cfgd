@@ -17,8 +17,8 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::workflow;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{OutputFormat, Printer};
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 
 use common::{cli_for, workflow_empty_test_setup, workflow_test_setup};
 
@@ -56,7 +56,7 @@ fn workflow_generate_happy_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "workflow_generate/happy.txt",
         &stripped,
@@ -93,7 +93,7 @@ fn workflow_generate_no_profiles_warning_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "workflow_generate/no_profiles_warning.txt",
         &stripped,
@@ -130,7 +130,7 @@ fn workflow_generate_skipped_human() {
     assert_eq!(after, "# on-disk content\n");
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "workflow_generate/skipped.txt",
         &stripped,

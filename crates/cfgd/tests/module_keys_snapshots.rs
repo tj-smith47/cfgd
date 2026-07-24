@@ -16,11 +16,11 @@ mod common;
 #[cfg(unix)]
 use cfgd::cli::module;
 #[cfg(unix)]
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
+#[cfg(unix)]
 use cfgd_core::output::Printer;
 #[cfg(unix)]
 use cfgd_core::test_helpers::CosignTestShim;
-#[cfg(unix)]
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 #[cfg(unix)]
 use serial_test::serial;
 #[cfg(unix)]
@@ -95,7 +95,7 @@ fn module_keys_list_empty_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(&snap_root, "module_keys/list_empty.txt", &stripped);
+    assert_snapshot!(&snap_root, "module_keys/list_empty.txt", &stripped);
 
     let json = cap.json().expect("doc captured json");
     assert!(json.is_array(), "list payload is a Vec<KeyListEntry>");
@@ -142,7 +142,7 @@ fn module_keys_generate_happy_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human()).replace(dir_str, "<DIR>");
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_keys_generate/happy.txt",
         &stripped,
@@ -221,7 +221,7 @@ fn module_keys_rotate_happy_human() {
     drop(printer);
 
     let stripped = mask_timestamp(&strip_ansi(&cap.human()).replace(dir_str, "<DIR>"));
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_keys_rotate/happy.txt",
         &stripped,
@@ -312,7 +312,7 @@ fn module_keys_rotate_bridge_one_blank_line() {
     );
 
     let stripped = mask_timestamp(&strip_ansi(&combined).replace(dir_str, "<DIR>"));
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_keys_rotate/bridge.txt",
         &stripped,

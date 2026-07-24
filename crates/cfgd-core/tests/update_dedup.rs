@@ -77,11 +77,16 @@ fn rule2_skill_refresh_rides_along_with_binary_upgrade_no_second_prompt() {
         // A user-scope skill must already be installed for the ride-along to
         // refresh it (never freshly installs a kind the user never had).
         ClaudeCodeProvider
-            .install(&skill_model_for(SkillKind::Module), SkillScope::User)
+            .install(
+                &skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION")),
+                SkillScope::User,
+            )
             .expect("seed a user-scope skill");
 
-        let outcome =
-            refresh_user_scope_skills(&cfg(UpdatePolicy::Auto, SkillUpdatePolicy::Inherit));
+        let outcome = refresh_user_scope_skills(
+            &cfg(UpdatePolicy::Auto, SkillUpdatePolicy::Inherit),
+            env!("CARGO_PKG_VERSION"),
+        );
 
         assert_eq!(outcome.prompt_count, 0, "ride-along never prompts");
         assert!(
@@ -101,8 +106,10 @@ fn ride_along_does_not_install_kinds_the_user_never_had() {
     let _runtime_env = EnvVarGuard::set("CFGD_RUNTIME_DIR", &runtime.path().to_string_lossy());
 
     with_test_home(home.path(), || {
-        let outcome =
-            refresh_user_scope_skills(&cfg(UpdatePolicy::Auto, SkillUpdatePolicy::Inherit));
+        let outcome = refresh_user_scope_skills(
+            &cfg(UpdatePolicy::Auto, SkillUpdatePolicy::Inherit),
+            env!("CARGO_PKG_VERSION"),
+        );
         assert!(
             !outcome.user_scope_skills_refreshed,
             "nothing installed → nothing refreshed"
@@ -127,11 +134,17 @@ fn notify_and_manual_policies_do_not_write_during_ride_along() {
 
     with_test_home(home.path(), || {
         ClaudeCodeProvider
-            .install(&skill_model_for(SkillKind::Module), SkillScope::User)
+            .install(
+                &skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION")),
+                SkillScope::User,
+            )
             .expect("seed a user-scope skill");
 
         for policy in [SkillUpdatePolicy::Notify, SkillUpdatePolicy::Manual] {
-            let outcome = refresh_user_scope_skills(&cfg(UpdatePolicy::Auto, policy));
+            let outcome = refresh_user_scope_skills(
+                &cfg(UpdatePolicy::Auto, policy),
+                env!("CARGO_PKG_VERSION"),
+            );
             assert!(
                 !outcome.user_scope_skills_refreshed,
                 "{policy:?} must not write during ride-along"
@@ -157,13 +170,18 @@ fn project_scope_skills_are_never_auto_rewritten() {
     with_test_home(home.path(), || {
         // Install the skill at PROJECT scope and capture its on-disk bytes.
         let project_path = ClaudeCodeProvider
-            .install(&skill_model_for(SkillKind::Module), SkillScope::Project)
+            .install(
+                &skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION")),
+                SkillScope::Project,
+            )
             .expect("seed a project-scope skill");
         let before = std::fs::read(&project_path).expect("read project skill");
 
         // Run the ride-along with an effective-Auto policy.
-        let outcome =
-            refresh_user_scope_skills(&cfg(UpdatePolicy::Auto, SkillUpdatePolicy::Inherit));
+        let outcome = refresh_user_scope_skills(
+            &cfg(UpdatePolicy::Auto, SkillUpdatePolicy::Inherit),
+            env!("CARGO_PKG_VERSION"),
+        );
 
         // No user-scope skill was present, so nothing rode along; and crucially
         // the project file is byte-identical (never auto-written, by construction
@@ -196,7 +214,7 @@ fn aggregate_counts_stale_skills_per_scope() {
         seed_stale_skill(SkillKind::Profile, SkillScope::User);
         seed_stale_skill(SkillKind::Module, SkillScope::Project);
 
-        let staleness = aggregate_skill_staleness();
+        let staleness = aggregate_skill_staleness(env!("CARGO_PKG_VERSION"));
         assert_eq!(staleness.user, 2, "two stale user skills: {staleness:?}");
         assert_eq!(
             staleness.project, 1,
@@ -218,7 +236,7 @@ fn binary_pending_suppresses_wired_skill_surface() {
     with_test_home(home.path(), || {
         seed_stale_skill(SkillKind::Module, SkillScope::User);
 
-        let staleness = aggregate_skill_staleness();
+        let staleness = aggregate_skill_staleness(env!("CARGO_PKG_VERSION"));
         assert!(staleness.any(), "skill is stale");
         let surfaces = compute_update_surfaces(/*binary_available=*/ true, staleness.any());
         assert!(
@@ -244,14 +262,16 @@ fn auto_standalone_refresh_clears_user_staleness_only() {
         let project_path = seed_stale_skill(SkillKind::Module, SkillScope::Project);
         let project_before = std::fs::read(&project_path).expect("read project skill");
 
-        let before = aggregate_skill_staleness();
+        let before = aggregate_skill_staleness(env!("CARGO_PKG_VERSION"));
         assert_eq!((before.user, before.project), (1, 1));
 
-        let outcome =
-            refresh_user_scope_skills(&cfg(UpdatePolicy::Auto, SkillUpdatePolicy::Inherit));
+        let outcome = refresh_user_scope_skills(
+            &cfg(UpdatePolicy::Auto, SkillUpdatePolicy::Inherit),
+            env!("CARGO_PKG_VERSION"),
+        );
         assert!(outcome.user_scope_skills_refreshed);
 
-        let after = aggregate_skill_staleness();
+        let after = aggregate_skill_staleness(env!("CARGO_PKG_VERSION"));
         assert_eq!(
             after.user, 0,
             "user staleness cleared by refresh: {after:?}"
@@ -284,6 +304,7 @@ fn run_action_notify_yields_one_consolidated_notice_both_scopes() {
         let result = run_standalone_skill_action(
             &cfg(UpdatePolicy::Notify, SkillUpdatePolicy::Inherit),
             false,
+            env!("CARGO_PKG_VERSION"),
         );
         assert_eq!(
             result,
@@ -309,6 +330,7 @@ fn run_action_binary_pending_suppresses() {
         let result = run_standalone_skill_action(
             &cfg(UpdatePolicy::Notify, SkillUpdatePolicy::Inherit),
             true,
+            env!("CARGO_PKG_VERSION"),
         );
         assert_eq!(result, StandaloneSkillOutcome::Suppressed);
     });
@@ -331,6 +353,7 @@ fn run_action_auto_refreshes_user_then_notices_project_only() {
         let result = run_standalone_skill_action(
             &cfg(UpdatePolicy::Auto, SkillUpdatePolicy::Inherit),
             false,
+            env!("CARGO_PKG_VERSION"),
         );
         // User-scope refreshed in place → remaining notice covers project only.
         assert_eq!(
@@ -361,6 +384,7 @@ fn run_action_auto_with_only_user_stale_is_refreshed_no_notice() {
         let result = run_standalone_skill_action(
             &cfg(UpdatePolicy::Auto, SkillUpdatePolicy::Inherit),
             false,
+            env!("CARGO_PKG_VERSION"),
         );
         assert_eq!(
             result,
@@ -368,7 +392,7 @@ fn run_action_auto_with_only_user_stale_is_refreshed_no_notice() {
             "Auto with only user-scope stale → refreshed, no notice needed"
         );
         assert_eq!(
-            aggregate_skill_staleness().user,
+            aggregate_skill_staleness(env!("CARGO_PKG_VERSION")).user,
             0,
             "user staleness cleared"
         );
@@ -387,6 +411,7 @@ fn run_action_manual_is_silent() {
         let result = run_standalone_skill_action(
             &cfg(UpdatePolicy::Manual, SkillUpdatePolicy::Inherit),
             false,
+            env!("CARGO_PKG_VERSION"),
         );
         assert_eq!(result, StandaloneSkillOutcome::Silent);
     });
@@ -404,6 +429,7 @@ fn run_action_nothing_stale_is_suppressed() {
         let result = run_standalone_skill_action(
             &cfg(UpdatePolicy::Notify, SkillUpdatePolicy::Inherit),
             false,
+            env!("CARGO_PKG_VERSION"),
         );
         assert_eq!(result, StandaloneSkillOutcome::Suppressed);
     });

@@ -21,8 +21,8 @@ use std::path::Path;
 
 use cfgd::cli::error::render_cli_error;
 use cfgd::cli::source::cmd_source_add;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::Printer;
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use serial_test::serial;
 
 use common::{
@@ -95,7 +95,7 @@ fn source_add_happy_human() {
         config_dir.path(),
         state_dir.path(),
     );
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "source_add/happy.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "source_add/happy.txt", &stripped);
 }
 
 #[test]
@@ -140,7 +140,7 @@ fn source_add_already_exists_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "source_add/already_exists.txt",
         &stripped,
@@ -182,7 +182,7 @@ fn source_add_clone_failure_human() {
         config_dir.path(),
         state_dir.path(),
     );
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "source_add/clone_failure.txt",
         &stripped,
@@ -237,5 +237,5 @@ fn source_add_bridge_one_blank_line() {
         config_dir.path(),
         state_dir.path(),
     );
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "source_add/bridge.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "source_add/bridge.txt", &stripped);
 }

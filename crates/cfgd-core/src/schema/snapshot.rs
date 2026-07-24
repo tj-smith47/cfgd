@@ -21,10 +21,14 @@ pub struct SchemaSnapshot {
 }
 
 /// Capture a [`SchemaSnapshot`] for one registry entry, stamped with the
-/// current cfgd version.
-pub fn snapshot_for(entry: &KindEntry) -> SchemaSnapshot {
+/// running cfgd version.
+///
+/// `cfgd_version` is the binary crate's `env!("CARGO_PKG_VERSION")`, passed by
+/// the caller — cfgd-core's own crate version is not a valid substitute
+/// because the crates version independently.
+pub fn snapshot_for(entry: &KindEntry, cfgd_version: &str) -> SchemaSnapshot {
     SchemaSnapshot {
-        cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+        cfgd_version: cfgd_version.to_string(),
         json_schema: entry.json_schema(),
     }
 }
@@ -40,8 +44,8 @@ mod tests {
             .iter()
             .find(|e| e.kind == "Module" && !e.crd)
             .unwrap();
-        let snap = snapshot_for(entry);
-        assert_eq!(snap.cfgd_version, env!("CARGO_PKG_VERSION"));
+        let snap = snapshot_for(entry, "1.2.3");
+        assert_eq!(snap.cfgd_version, "1.2.3");
         assert!(
             snap.json_schema.contains("packages"),
             "snapshot should carry the live schema"

@@ -15,8 +15,8 @@ use std::path::Path;
 
 use cfgd::cli::error::render_cli_error;
 use cfgd::cli::source::cmd_source_priority;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::Printer;
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 
 use common::{cli_for, source_test_config_with_source_setup};
 
@@ -55,7 +55,7 @@ fn source_priority_happy_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "source_priority/happy.txt",
         &stripped,
@@ -97,7 +97,7 @@ fn source_priority_view_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "source_priority/view.txt",
         &stripped,
@@ -121,7 +121,7 @@ fn source_priority_not_found_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "source_priority/not_found.txt",
         &stripped,

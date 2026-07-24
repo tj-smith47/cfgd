@@ -21,8 +21,8 @@ use std::path::Path;
 
 use cfgd::cli::error::render_cli_error;
 use cfgd::cli::source::{cmd_source_add, cmd_source_replace};
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::Printer;
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use serial_test::serial;
 
 use common::{cli_for, make_bare_source_repo, source_add_args, source_test_config_setup};
@@ -102,7 +102,7 @@ fn source_replace_happy_human() {
             (state_dir.path(), "<STATE_DIR>"),
         ],
     );
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "source_replace/happy.txt",
         &stripped,
@@ -124,7 +124,7 @@ fn source_replace_happy_human() {
             (bare_root.path(), "<BARE_ROOT>"),
         ],
     );
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "source_replace/happy.json",
         &normalized_json,
@@ -143,7 +143,7 @@ fn source_replace_not_found_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "source_replace/not_found.txt",
         &stripped,

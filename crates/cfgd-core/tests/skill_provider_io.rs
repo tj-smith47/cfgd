@@ -18,7 +18,7 @@ fn install_then_remove_is_clean_roundtrip() {
     let home = tempfile::tempdir().expect("tempdir");
     with_test_home(home.path(), || {
         let provider = ClaudeCodeProvider;
-        let model = skill_model_for(SkillKind::Module);
+        let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
 
         let path = provider
             .install(&model, SkillScope::User)
@@ -49,7 +49,11 @@ fn install_then_remove_is_clean_roundtrip() {
 
         // remove deletes the file AND the now-empty cfgd-<kind> parent dir.
         let removed = provider
-            .remove(SkillKind::Module, SkillScope::User)
+            .remove(
+                SkillKind::Module,
+                SkillScope::User,
+                env!("CARGO_PKG_VERSION"),
+            )
             .expect("remove succeeds");
         assert_eq!(removed.as_deref(), Some(path.as_path()));
         assert!(!path.exists(), "SKILL.md must be gone after remove");
@@ -57,7 +61,11 @@ fn install_then_remove_is_clean_roundtrip() {
 
         // A second remove is a reported no-op (nothing installed → None).
         let again = provider
-            .remove(SkillKind::Module, SkillScope::User)
+            .remove(
+                SkillKind::Module,
+                SkillScope::User,
+                env!("CARGO_PKG_VERSION"),
+            )
             .expect("second remove succeeds");
         assert_eq!(again, None, "remove on absent skill is a None no-op");
     });
@@ -69,7 +77,7 @@ fn agents_md_managed_section_surgery_preserves_user_content() {
     let home = tempfile::tempdir().expect("tempdir");
     with_test_home(home.path(), || {
         let provider = CodexProvider;
-        let model = skill_model_for(SkillKind::Module);
+        let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
 
         let target = provider
             .target_path(SkillKind::Module, SkillScope::User)
@@ -109,7 +117,11 @@ fn agents_md_managed_section_surgery_preserves_user_content() {
 
         // remove excises ONLY the block, leaving the file with user content intact.
         let removed = provider
-            .remove(SkillKind::Module, SkillScope::User)
+            .remove(
+                SkillKind::Module,
+                SkillScope::User,
+                env!("CARGO_PKG_VERSION"),
+            )
             .expect("codex remove succeeds");
         assert_eq!(removed.as_deref(), Some(target.as_path()));
         let after_remove =
@@ -135,7 +147,7 @@ fn agents_md_inplace_block_preserves_trailing_user_content() {
     let home = tempfile::tempdir().expect("tempdir");
     with_test_home(home.path(), || {
         let provider = CodexProvider;
-        let model = skill_model_for(SkillKind::Module);
+        let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
 
         let target = provider
             .target_path(SkillKind::Module, SkillScope::User)
@@ -202,7 +214,11 @@ fn agents_md_inplace_block_preserves_trailing_user_content() {
         // remove excises only the block; both halves of user prose round-trip
         // (modulo the documented blank-line collapse around the excised span).
         let removed = provider
-            .remove(SkillKind::Module, SkillScope::User)
+            .remove(
+                SkillKind::Module,
+                SkillScope::User,
+                env!("CARGO_PKG_VERSION"),
+            )
             .expect("codex remove succeeds");
         assert_eq!(removed.as_deref(), Some(target.as_path()));
         let after_remove = std::fs::read_to_string(&target).expect("file survives remove");
@@ -240,7 +256,7 @@ fn project_scope_install_leaves_no_lock_file_in_project_dir() {
 
     with_test_home(home.path(), || {
         let provider = CodexProvider;
-        let model = skill_model_for(SkillKind::Module);
+        let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
 
         let target = provider
             .target_path(SkillKind::Module, SkillScope::Project)
@@ -369,7 +385,7 @@ fn concurrent_installs_of_different_kinds_dont_corrupt_delimiters() {
     let install_kind = |kind: SkillKind, hp: std::path::PathBuf| {
         std::thread::spawn(move || {
             with_test_home(&hp, || {
-                let model = skill_model_for(kind);
+                let model = skill_model_for(kind, env!("CARGO_PKG_VERSION"));
                 loop {
                     match CodexProvider.install(&model, SkillScope::User) {
                         Ok(_) => break,
@@ -449,13 +465,19 @@ fn concurrent_installs_of_different_kinds_dont_corrupt_delimiters() {
     // Both kinds' bodies are present and the version stamp parses out of the file.
     with_test_home(home.path(), || {
         let profile_body = CodexProvider
-            .render(&skill_model_for(SkillKind::Profile))
+            .render(&skill_model_for(
+                SkillKind::Profile,
+                env!("CARGO_PKG_VERSION"),
+            ))
             .expect("render is infallible for these fixtures")
             .managed_section
             .expect("profile section")
             .body;
         let source_body = CodexProvider
-            .render(&skill_model_for(SkillKind::Source))
+            .render(&skill_model_for(
+                SkillKind::Source,
+                env!("CARGO_PKG_VERSION"),
+            ))
             .expect("render is infallible for these fixtures")
             .managed_section
             .expect("source section")
@@ -478,7 +500,7 @@ fn reinstall_is_idempotent_noop_diff() {
     with_test_home(home.path(), || {
         // Whole-file provider (claude-code): second write == first write byte-for-byte.
         let claude = ClaudeCodeProvider;
-        let cmodel = skill_model_for(SkillKind::Profile);
+        let cmodel = skill_model_for(SkillKind::Profile, env!("CARGO_PKG_VERSION"));
         let cpath = claude
             .install(&cmodel, SkillScope::User)
             .expect("first claude install");
@@ -496,7 +518,7 @@ fn reinstall_is_idempotent_noop_diff() {
         // Managed-section provider (codex): re-splicing the same block must not
         // duplicate it or drift surrounding bytes.
         let codex = CodexProvider;
-        let xmodel = skill_model_for(SkillKind::Profile);
+        let xmodel = skill_model_for(SkillKind::Profile, env!("CARGO_PKG_VERSION"));
         let xtarget = codex
             .target_path(SkillKind::Profile, SkillScope::User)
             .expect("codex user target");
@@ -531,11 +553,11 @@ fn list_reports_installed_skill_with_current_version_not_stale() {
     let home = tempfile::tempdir().expect("tempdir");
     with_test_home(home.path(), || {
         let provider = ClaudeCodeProvider;
-        let model = skill_model_for(SkillKind::Source);
+        let model = skill_model_for(SkillKind::Source, env!("CARGO_PKG_VERSION"));
 
         // Nothing installed yet: list at this scope is empty.
         let before = provider
-            .list(SkillScope::User)
+            .list(SkillScope::User, env!("CARGO_PKG_VERSION"))
             .expect("list before install");
         assert!(
             before.is_empty(),
@@ -544,7 +566,9 @@ fn list_reports_installed_skill_with_current_version_not_stale() {
 
         let path = provider.install(&model, SkillScope::User).expect("install");
 
-        let listed = provider.list(SkillScope::User).expect("list after install");
+        let listed = provider
+            .list(SkillScope::User, env!("CARGO_PKG_VERSION"))
+            .expect("list after install");
         assert_eq!(
             listed.len(),
             1,

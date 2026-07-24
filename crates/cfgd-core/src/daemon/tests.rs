@@ -7464,6 +7464,7 @@ mod harness {
         let (printer, buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let ctx = DaemonLoopContext {
+            cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             state: Arc::clone(&state),
             hooks: Arc::new(NoopHooks),
             notifier,
@@ -8192,6 +8193,7 @@ mod harness {
         let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let ctx = DaemonLoopContext {
+            cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             state: Arc::clone(&state),
             hooks: Arc::new(PanickingPlanFilesHooks),
             notifier,
@@ -8266,6 +8268,7 @@ mod harness {
         let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
         let ctx = DaemonLoopContext {
+            cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             state: Arc::clone(&state),
             hooks: Arc::new(PanickingRegistryHooks),
             notifier,
@@ -8513,6 +8516,7 @@ mod harness {
             build_registry_calls: Arc::clone(&build_registry_calls),
         });
         let ctx = DaemonLoopContext {
+            cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             state: Arc::clone(&state),
             hooks,
             notifier,
@@ -8586,6 +8590,7 @@ mod harness {
             build_registry_calls: Arc::clone(&build_registry_calls),
         });
         let ctx = DaemonLoopContext {
+            cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             state: Arc::clone(&state),
             hooks,
             notifier,
@@ -8644,6 +8649,7 @@ mod harness {
             build_registry_calls: Arc::clone(&build_registry_calls),
         });
         let ctx = DaemonLoopContext {
+            cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             state: Arc::clone(&state),
             hooks,
             notifier,
@@ -9454,7 +9460,8 @@ mod harness {
         let state = Arc::new(Mutex::new(DaemonState::new()));
         let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
         let _g = crate::with_test_home_guard(&home);
-        super::super::sync::handle_version_check(cfg, &state, &notifier).await;
+        super::super::sync::handle_version_check(cfg, &state, &notifier, env!("CARGO_PKG_VERSION"))
+            .await;
         state
     }
 
@@ -9612,12 +9619,18 @@ mod harness {
 
         // Stamp a check "now" into the test-home version cache; with the default
         // 24h interval, the next tick is well within the window.
-        crate::upgrade::record_check_at(crate::unix_secs_now());
+        crate::upgrade::record_check_at(env!("CARGO_PKG_VERSION"), crate::unix_secs_now());
 
         // No mock server: a network call would error, proving the gate short-circuits.
         let state = Arc::new(Mutex::new(DaemonState::new()));
         let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
-        super::super::sync::handle_version_check(&notify_update_cfg(), &state, &notifier).await;
+        super::super::sync::handle_version_check(
+            &notify_update_cfg(),
+            &state,
+            &notifier,
+            env!("CARGO_PKG_VERSION"),
+        )
+        .await;
 
         let st = state.lock().await;
         assert!(
@@ -10203,6 +10216,7 @@ mod harness {
             Arc::clone(&printer),
             hooks,
             overrides,
+            env!("CARGO_PKG_VERSION"),
         ));
 
         // Give the loop a tick to enter the select! arm
@@ -10250,6 +10264,7 @@ mod harness {
             Arc::clone(&printer),
             hooks,
             overrides,
+            env!("CARGO_PKG_VERSION"),
         ));
 
         // Drive a reconcile tick (default task __default__ is auto-built
@@ -10299,6 +10314,7 @@ mod harness {
             Arc::clone(&printer),
             hooks,
             overrides,
+            env!("CARGO_PKG_VERSION"),
         ));
 
         senders.sync_tx.send(()).await.unwrap();
@@ -10330,6 +10346,7 @@ mod harness {
             Arc::clone(&printer),
             hooks,
             overrides,
+            env!("CARGO_PKG_VERSION"),
         ));
 
         // Wait until the daemon has finished its pre-loop setup — signalled by
@@ -10391,6 +10408,7 @@ mod harness {
             Arc::clone(&printer),
             hooks,
             overrides,
+            env!("CARGO_PKG_VERSION"),
         ));
 
         // Push a synthetic file-change path. The path doesn't need to map to
@@ -10427,6 +10445,7 @@ mod harness {
             Arc::clone(&printer),
             hooks,
             overrides,
+            env!("CARGO_PKG_VERSION"),
         ));
 
         senders.compliance_tx.send(()).await.unwrap();
@@ -10469,6 +10488,7 @@ mod harness {
             Arc::clone(&printer),
             hooks,
             overrides,
+            env!("CARGO_PKG_VERSION"),
         ));
 
         // Give the health server time to bind the socket.
@@ -10521,6 +10541,7 @@ mod harness {
             Arc::clone(&printer),
             hooks,
             overrides,
+            env!("CARGO_PKG_VERSION"),
         )
         .await;
         let err = result.expect_err("expect AlreadyRunning error");
@@ -10800,6 +10821,7 @@ mod harness {
             Arc::clone(&printer),
             hooks,
             overrides,
+            env!("CARGO_PKG_VERSION"),
         ));
 
         // Give the daemon time to bind everything, spawn pumps, and emit the
@@ -11040,6 +11062,7 @@ mod harness {
             Arc::clone(&printer),
             hooks,
             overrides,
+            env!("CARGO_PKG_VERSION"),
         ));
 
         tokio::time::sleep(StdDuration::from_millis(20)).await;
@@ -11094,6 +11117,7 @@ mod harness {
             Arc::clone(&printer),
             hooks,
             overrides,
+            env!("CARGO_PKG_VERSION"),
         ));
 
         tokio::time::sleep(StdDuration::from_millis(20)).await;
@@ -12798,7 +12822,16 @@ mod tests_run_daemon_wrapper {
         let printer = Arc::new(test_printer());
         let hooks: Arc<dyn DaemonHooks> = Arc::new(StubHooks2);
         let bogus_path = PathBuf::from("/nonexistent-cfgd-cfg-7f9a/does-not-exist.yaml");
-        let result = run_daemon(bogus_path, None, None, printer, hooks, crate::Scope::User).await;
+        let result = run_daemon(
+            bogus_path,
+            None,
+            None,
+            printer,
+            hooks,
+            crate::Scope::User,
+            env!("CARGO_PKG_VERSION"),
+        )
+        .await;
         assert!(
             result.is_err(),
             "missing config must propagate as Err, got Ok"

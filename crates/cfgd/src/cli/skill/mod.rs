@@ -281,7 +281,7 @@ pub fn cmd_skill_install(
     yes: bool,
 ) -> anyhow::Result<()> {
     let scope = resolve_scope(global);
-    let model = cfgd_core::generate::skill_model_for(kind.to_core());
+    let model = cfgd_core::generate::skill_model_for(kind.to_core(), env!("CARGO_PKG_VERSION"));
 
     let all = all_skill_providers();
     validate_provider_ids(&all, providers)?;
@@ -374,7 +374,7 @@ fn skill_already_installed(
 ) -> bool {
     let core_kind = kind.to_core();
     provider
-        .list(scope)
+        .list(scope, env!("CARGO_PKG_VERSION"))
         .map(|installed| installed.iter().any(|s| s.kind == core_kind))
         .unwrap_or(false)
 }
@@ -397,13 +397,15 @@ pub fn cmd_skill_list(printer: &Printer, global: bool) -> anyhow::Result<()> {
     let scope = resolve_scope(global);
     let mut installed: Vec<InstalledSkill> = Vec::new();
     for provider in &all_skill_providers() {
-        let listed = provider.list(scope).map_err(|e| {
-            anyhow!(
-                "listing {} skills failed: {}",
-                provider.id(),
-                collapse_to_subject_line(&e)
-            )
-        })?;
+        let listed = provider
+            .list(scope, env!("CARGO_PKG_VERSION"))
+            .map_err(|e| {
+                anyhow!(
+                    "listing {} skills failed: {}",
+                    provider.id(),
+                    collapse_to_subject_line(&e)
+                )
+            })?;
         installed.extend(listed);
     }
 
@@ -507,7 +509,7 @@ pub fn cmd_skill_remove(
     let mut any_failure = false;
     for provider in &targets {
         let id = provider.id().to_string();
-        match provider.remove(core_kind, scope) {
+        match provider.remove(core_kind, scope, env!("CARGO_PKG_VERSION")) {
             Ok(Some(path)) => results.push(SkillInstallResult::removed(id, path)),
             Ok(None) => results.push(SkillInstallResult::skipped(id, "not installed")),
             Err(e) => {
@@ -552,7 +554,7 @@ fn update_one(
     scope: SkillScope,
 ) -> SkillInstallResult {
     let id = provider.id().to_string();
-    let model = cfgd_core::generate::skill_model_for(core_kind);
+    let model = cfgd_core::generate::skill_model_for(core_kind, env!("CARGO_PKG_VERSION"));
     match provider.install(&model, scope) {
         Ok(path) => SkillInstallResult::updated(id, path),
         Err(e) => SkillInstallResult::failed(id, install_failure_reason(&e)),
@@ -582,13 +584,15 @@ pub fn cmd_skill_update(
     if all {
         // Enumerate currently-installed skills and re-render each in place.
         for provider in registry.iter().filter(|p| is_target(p.id(), providers)) {
-            let listed = provider.list(scope).map_err(|e| {
-                anyhow!(
-                    "listing {} skills failed: {}",
-                    provider.id(),
-                    collapse_to_subject_line(&e)
-                )
-            })?;
+            let listed = provider
+                .list(scope, env!("CARGO_PKG_VERSION"))
+                .map_err(|e| {
+                    anyhow!(
+                        "listing {} skills failed: {}",
+                        provider.id(),
+                        collapse_to_subject_line(&e)
+                    )
+                })?;
             for s in listed {
                 let r = update_one(provider.as_ref(), s.kind, scope);
                 if matches!(r.status, SkillResultStatus::Failed) {

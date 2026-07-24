@@ -27,8 +27,8 @@ use std::path::Path;
 
 use cfgd::cli::apply::{build_apply_doc, cmd_apply, run_apply};
 use cfgd::cli::output_types::ApplyOutput;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, Printer, Role};
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use pretty_assertions::assert_eq;
 
 use common::{
@@ -121,7 +121,7 @@ fn apply_happy_human() {
     let normalized =
         normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
     let stripped = normalize_duration(&strip_ansi(&normalized));
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "apply/happy.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "apply/happy.txt", &stripped);
 }
 
 #[test]
@@ -159,7 +159,7 @@ fn apply_dry_run_human() {
     let normalized =
         normalize_tempdir_paths(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
     let stripped = strip_ansi(&normalized);
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "apply/dry_run.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "apply/dry_run.txt", &stripped);
 }
 
 #[test]
@@ -216,7 +216,7 @@ fn apply_with_failures_human() {
         &[(&target_ok, "<TARGET_OK>"), (&target_fail, "<TARGET_FAIL>")],
     );
     let stripped = normalize_duration(&strip_ansi(&normalized));
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "apply/with_failures.txt",
         &stripped,
@@ -257,7 +257,7 @@ fn apply_bridge_one_blank_line() {
         "bridge has duplicate blank line:\n{captured}"
     );
 
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "apply/bridge.txt", &captured);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "apply/bridge.txt", &captured);
 }
 
 // ─────────────────────────────────────────────────────

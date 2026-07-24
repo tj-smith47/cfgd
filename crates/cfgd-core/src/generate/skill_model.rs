@@ -189,8 +189,14 @@ over training-knowledge recall, and state explicitly when you could not confirm 
 pub const LEGACY_GENERATE_PROMPT: &str = include_str!("skill.md");
 
 /// Build the [`SkillModel`] for a given kind.
-pub fn skill_model_for(kind: SkillKind) -> SkillModel {
-    let cfgd_version = current_cfgd_version();
+///
+/// `cfgd_version` is the running binary's `env!("CARGO_PKG_VERSION")`, passed
+/// by the caller — cfgd-core's own crate version is not a valid substitute
+/// because the crates version independently, and the rendered skill's version
+/// stamp must equal the binary that installed it (staleness detection compares
+/// the two).
+pub fn skill_model_for(kind: SkillKind, cfgd_version: &str) -> SkillModel {
+    let cfgd_version = parse_cfgd_version(cfgd_version);
     let kind_word = kind.as_str();
     let token = kind.command_token();
     SkillModel {
@@ -205,7 +211,7 @@ pub fn skill_model_for(kind: SkillKind) -> SkillModel {
             explain_kind: token,
             drill_hint: true,
         },
-        schema_snapshot: schema_snapshot_for(kind),
+        schema_snapshot: schema_snapshot_for(kind, &cfgd_version.to_string()),
         examples: examples_for(kind),
         validate_cmd: format!("cfgd {token} validate <file>"),
         min_cfgd_version: version_floor(&cfgd_version),
@@ -290,22 +296,21 @@ choice — demonstrating the quality bar a skill must reach for."
 /// CRD entries only exist when the default-on `crd` feature is enabled, so a
 /// missing entry yields a snapshot with an empty `json_schema` (stamped with the
 /// current version) rather than panicking.
-fn schema_snapshot_for(kind: SkillKind) -> SchemaSnapshot {
+fn schema_snapshot_for(kind: SkillKind, cfgd_version: &str) -> SchemaSnapshot {
     match entry_for_kind(kind.descriptor().registry_kind) {
-        Some(entry) => snapshot_for(entry),
+        Some(entry) => snapshot_for(entry, cfgd_version),
         None => SchemaSnapshot {
-            cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
+            cfgd_version: cfgd_version.to_string(),
             json_schema: String::new(),
         },
     }
 }
 
-/// The running cfgd version, parsed from `CARGO_PKG_VERSION`. Falls back to
-/// `0.0.0` if the crate version is ever unparseable (it always parses for a
-/// released build), keeping this panic-free for library code.
-fn current_cfgd_version() -> semver::Version {
-    semver::Version::parse(env!("CARGO_PKG_VERSION"))
-        .unwrap_or_else(|_| semver::Version::new(0, 0, 0))
+/// Parse the caller-supplied running cfgd version. Falls back to `0.0.0` if
+/// the version is ever unparseable (it always parses for a released build),
+/// keeping this panic-free for library code.
+fn parse_cfgd_version(cfgd_version: &str) -> semver::Version {
+    semver::Version::parse(cfgd_version).unwrap_or_else(|_| semver::Version::new(0, 0, 0))
 }
 
 /// The patch-zero floor of a version (e.g. `0.4.3` -> `0.4.0`), used as the
@@ -320,34 +325,34 @@ mod tests {
 
     #[test]
     fn render_system_prompt_equals_embedded_legacy_prompt() {
-        let model = skill_model_for(SkillKind::Module);
+        let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
         assert_eq!(model.render_system_prompt(), LEGACY_GENERATE_PROMPT);
     }
 
     #[test]
     fn render_system_prompt_is_kind_agnostic() {
         assert_eq!(
-            skill_model_for(SkillKind::Profile).render_system_prompt(),
-            skill_model_for(SkillKind::Module).render_system_prompt()
+            skill_model_for(SkillKind::Profile, env!("CARGO_PKG_VERSION")).render_system_prompt(),
+            skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION")).render_system_prompt()
         );
     }
 
     #[test]
     fn validate_cmd_is_verb_first_per_kind() {
         assert_eq!(
-            skill_model_for(SkillKind::Module).validate_cmd,
+            skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION")).validate_cmd,
             "cfgd module validate <file>"
         );
         assert_eq!(
-            skill_model_for(SkillKind::ClusterConfigPolicy).validate_cmd,
+            skill_model_for(SkillKind::ClusterConfigPolicy, env!("CARGO_PKG_VERSION")).validate_cmd,
             "cfgd clusterconfigpolicy validate <file>"
         );
     }
 
     #[test]
     fn min_version_floors_patch_to_zero() {
-        let m = skill_model_for(SkillKind::Profile);
-        let running = current_cfgd_version();
+        let m = skill_model_for(SkillKind::Profile, env!("CARGO_PKG_VERSION"));
+        let running = parse_cfgd_version(env!("CARGO_PKG_VERSION"));
         assert_eq!(m.min_cfgd_version.patch, 0);
         assert_eq!(m.min_cfgd_version.major, running.major);
         assert_eq!(m.min_cfgd_version.minor, running.minor);
@@ -355,7 +360,7 @@ mod tests {
 
     #[test]
     fn schema_snapshot_carries_live_schema_for_local_kind() {
-        let m = skill_model_for(SkillKind::Module);
+        let m = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
         assert_eq!(m.schema_snapshot.cfgd_version, env!("CARGO_PKG_VERSION"));
         assert!(
             m.schema_snapshot.json_schema.contains("packages"),
@@ -366,7 +371,7 @@ mod tests {
     #[cfg(feature = "crd")]
     #[test]
     fn schema_snapshot_carries_live_schema_for_crd_kind() {
-        let m = skill_model_for(SkillKind::ClusterConfigPolicy);
+        let m = skill_model_for(SkillKind::ClusterConfigPolicy, env!("CARGO_PKG_VERSION"));
         assert!(
             !m.schema_snapshot.json_schema.is_empty(),
             "CRD-kind snapshot should carry the live registry schema when the crd feature is on"

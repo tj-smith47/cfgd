@@ -13,8 +13,8 @@ use std::path::Path;
 
 use cfgd::cli::output_types::RollbackOutput;
 use cfgd::cli::rollback::{build_rollback_doc, cmd_rollback};
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, Printer, PromptAnswer, Role, Verbosity};
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use pretty_assertions::assert_eq;
 
 use common::{
@@ -40,7 +40,7 @@ fn rollback_happy_human() {
         .human()
         .replace(&target.display().to_string(), "<TARGET>");
     let stripped = strip_ansi(&normalized);
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "rollback/happy.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "rollback/happy.txt", &stripped);
 }
 
 /// JSON payload roundtrip — RollbackOutput shape via build_rollback_doc + cap.json().
@@ -77,7 +77,7 @@ fn rollback_no_changes_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "rollback/no_changes.txt",
         &stripped,
@@ -104,7 +104,7 @@ fn rollback_accept_human() {
     let raw = buf.lock().unwrap().clone();
     let normalized = raw.replace(&target.display().to_string(), "<TARGET>");
     let stripped = strip_ansi(&normalized);
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "rollback/accept.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "rollback/accept.txt", &stripped);
 }
 
 /// `yes=false` + `PromptAnswer::Confirm(false)` drives the rejection path:
@@ -125,7 +125,7 @@ fn rollback_aborted_human() {
     let raw = buf.lock().unwrap().clone();
     let normalized = raw.replace(&target.display().to_string(), "<TARGET>");
     let stripped = strip_ansi(&normalized);
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "rollback/aborted.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "rollback/aborted.txt", &stripped);
 }
 
 /// Seeded state has a non-file (package) action after the target apply.
@@ -143,7 +143,7 @@ fn rollback_non_file_actions_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "rollback/non_file_actions.txt",
         &stripped,
@@ -187,7 +187,7 @@ fn rollback_bridge_one_blank_line() {
         "bridge has duplicate blank line:\n{captured}"
     );
 
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "rollback/bridge.txt", &captured);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "rollback/bridge.txt", &captured);
 }
 
 // ─────────────────────────────────────────────────────

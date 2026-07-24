@@ -83,7 +83,7 @@ mod tests {
 
     #[test]
     fn copilot_renders_prompt_md_with_agent_mode() {
-        let model = skill_model_for(SkillKind::Module);
+        let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
         let r = CopilotProvider
             .render(&model)
             .expect("render is infallible for these fixtures");
@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn frontmatter_carries_version_stamp_keys_that_parse() {
-        let model = skill_model_for(SkillKind::Profile);
+        let model = skill_model_for(SkillKind::Profile, env!("CARGO_PKG_VERSION"));
         let r = CopilotProvider
             .render(&model)
             .expect("render is infallible for these fixtures");

@@ -15,8 +15,8 @@ use std::path::Path;
 
 use cfgd::cli::error::render_cli_error;
 use cfgd::cli::source::cmd_source_create;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::Printer;
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 
 use common::{cli_for, normalize_profile_paths, source_test_config_setup};
 
@@ -57,7 +57,7 @@ fn source_create_happy_human() {
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "source_create/happy.txt",
         &stripped,
@@ -98,7 +98,7 @@ fn source_create_already_exists_human() {
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "source_create/already_exists.txt",
         &stripped,

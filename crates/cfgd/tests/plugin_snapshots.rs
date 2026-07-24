@@ -21,9 +21,9 @@ use std::path::Path;
 
 use cfgd::cli::error::render_cli_error;
 use cfgd::cli::plugin;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::Printer;
 use cfgd_core::test_helpers::EnvVarGuard;
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use serial_test::serial;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
@@ -58,7 +58,7 @@ fn plugin_debug_module_required_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "plugin_debug/module_required.txt",
         &stripped,
@@ -99,7 +99,7 @@ fn plugin_exec_module_required_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "plugin_exec/module_required.txt",
         &stripped,
@@ -122,7 +122,7 @@ fn plugin_exec_command_required_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "plugin_exec/command_required.txt",
         &stripped,
@@ -146,7 +146,7 @@ fn plugin_inject_module_required_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "plugin_inject/module_required.txt",
         &stripped,
@@ -170,7 +170,7 @@ fn plugin_inject_invalid_resource_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "plugin_inject/invalid_resource.txt",
         &stripped,
@@ -198,7 +198,7 @@ fn plugin_version_disconnected_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "plugin_version/disconnected.txt",
         &stripped,

@@ -20,8 +20,8 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::module;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Printer, PromptAnswer};
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::test_helpers::test_printer;
 use serial_test::serial;
 
@@ -198,7 +198,7 @@ fn module_upgrade_no_change_human_json() {
     let mut stripped =
         strip_ansi(&cap.human()).replace(&config_dir.path().display().to_string(), "<CONFIG_DIR>");
     stripped = mask_commit_sha(&stripped);
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_upgrade/no_change.txt",
         &stripped,
@@ -239,7 +239,7 @@ fn module_upgrade_cancelled_human() {
         strip_ansi(&cap.human()).replace(&config_dir.path().display().to_string(), "<CONFIG_DIR>");
     stripped = mask_commit_sha(&stripped);
     stripped = mask_integrity(&stripped);
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_upgrade/cancelled.txt",
         &stripped,
@@ -275,7 +275,7 @@ fn module_upgrade_happy_human_json() {
         strip_ansi(&cap.human()).replace(&config_dir.path().display().to_string(), "<CONFIG_DIR>");
     stripped = mask_commit_sha(&stripped);
     stripped = mask_integrity(&stripped);
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_upgrade/happy.txt",
         &stripped,

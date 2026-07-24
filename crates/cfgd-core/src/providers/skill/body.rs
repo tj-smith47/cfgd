@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn skill_body_contains_protocol_validate_and_version_stamp() {
-        let model = skill_model_for(SkillKind::Module);
+        let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
         let body = render_skill_body(&model);
         assert!(body.contains("cfgd explain module")); // step 1 field walk
         assert!(body.contains(&model.validate_cmd)); // step 5 validate
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn fallback_schema_block_is_present_and_fenced() {
-        let model = skill_model_for(SkillKind::Module);
+        let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
         let body = render_skill_body(&model);
         assert!(body.contains("## Fallback schema (if cfgd is unavailable)"));
         assert!(body.contains("```json"));
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn version_stamp_carries_both_rendering_and_floor_versions() {
-        let model = skill_model_for(SkillKind::Module);
+        let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
         let body = render_skill_body(&model);
         // Assemble the expected stamp from literal fragments — with the real
         // middot baked into the literal — rather than the renderer's own format
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn all_six_protocol_steps_are_present_in_order() {
-        let model = skill_model_for(SkillKind::Profile);
+        let model = skill_model_for(SkillKind::Profile, env!("CARGO_PKG_VERSION"));
         let body = render_skill_body(&model);
         let mut last = 0;
         for marker in [
@@ -235,10 +235,16 @@ mod tests {
 
     #[test]
     fn exemplar_rendered_only_when_present() {
-        let with = render_skill_body(&skill_model_for(SkillKind::Module));
+        let with = render_skill_body(&skill_model_for(
+            SkillKind::Module,
+            env!("CARGO_PKG_VERSION"),
+        ));
         assert!(with.contains("## Worked exemplar (the quality bar)"));
         // Source has no exemplar, so the section is omitted entirely.
-        let without = render_skill_body(&skill_model_for(SkillKind::Source));
+        let without = render_skill_body(&skill_model_for(
+            SkillKind::Source,
+            env!("CARGO_PKG_VERSION"),
+        ));
         assert!(!without.contains("## Worked exemplar"));
     }
 }

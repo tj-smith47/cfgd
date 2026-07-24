@@ -24,9 +24,9 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::profile::cmd_profile_edit;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Printer, PromptAnswer};
 use cfgd_core::test_helpers::EnvVarGuard;
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use serial_test::serial;
 
 use common::{cli_for, normalize_profile_paths, profile_test_config_setup};
@@ -74,7 +74,7 @@ fn profile_edit_valid_human() {
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "profile_edit/valid.txt",
         &stripped,
@@ -123,7 +123,7 @@ fn profile_edit_validation_error_decline_human() {
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "profile_edit/validation_error_decline.txt",
         &stripped,
@@ -168,7 +168,7 @@ fn profile_edit_validation_error_accept_retry_human() {
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "profile_edit/validation_error_accept_retry.txt",
         &stripped,

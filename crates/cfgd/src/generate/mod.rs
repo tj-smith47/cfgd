@@ -10,6 +10,9 @@ pub mod scan;
 /// prompt text has one home; the CLI generate path and both MCP surfaces
 /// (`cfgd_generate*` prompts, `cfgd://skill/generate` resource) render from it.
 pub static GENERATE_SKILL: LazyLock<String> = LazyLock::new(|| {
-    cfgd_core::generate::skill_model_for(cfgd_core::generate::SkillKind::Module)
-        .render_system_prompt()
+    cfgd_core::generate::skill_model_for(
+        cfgd_core::generate::SkillKind::Module,
+        env!("CARGO_PKG_VERSION"),
+    )
+    .render_system_prompt()
 });

@@ -1323,22 +1323,35 @@ fn normalize_line_endings_owns_when_crlf() {
 }
 
 #[test]
-fn normalize_cfgd_version_folds_current_version_only() {
-    let line = format!("Client        {CURRENT_CFGD_VERSION}\n");
-    assert_eq!(normalize_cfgd_version(&line), "Client        <VERSION>\n");
+fn normalize_cfgd_version_folds_passed_version_only() {
+    let line = "Client        1.2.3\n";
+    assert_eq!(
+        normalize_cfgd_version(line, "1.2.3"),
+        "Client        <VERSION>\n"
+    );
 }
 
 #[test]
 fn normalize_cfgd_version_leaves_other_versions_intact() {
     // A genuinely wrong version must NOT fold to `<VERSION>`, so a real
-    // version regression still trips the snapshot diff. `9999.9999.9999` can
-    // never equal the running crate version nor contain it as a substring.
+    // version regression still trips the snapshot diff.
     let line = "✓ cfgd 9999.9999.9999 is up to date\n";
     assert!(matches!(
-        normalize_cfgd_version(line),
+        normalize_cfgd_version(line, "1.2.3"),
         std::borrow::Cow::Borrowed(_)
     ));
-    assert!(!normalize_cfgd_version(line).contains("<VERSION>"));
+    assert!(!normalize_cfgd_version(line, "1.2.3").contains("<VERSION>"));
+}
+
+#[test]
+fn normalize_cfgd_version_empty_version_folds_nothing() {
+    // An empty running version must never fold the empty string (which every
+    // string "contains") into a corrupted golden.
+    let line = "Client        1.2.3\n";
+    assert!(matches!(
+        normalize_cfgd_version(line, ""),
+        std::borrow::Cow::Borrowed(_)
+    ));
 }
 
 #[test]

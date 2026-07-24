@@ -14,8 +14,8 @@ use std::path::Path;
 
 use cfgd::cli::output_types::PullOutput;
 use cfgd::cli::pull::{build_pull_doc, cmd_pull, render_pull};
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::Printer;
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use pretty_assertions::assert_eq;
 
 use common::{cli_for, tiny_profile_setup};
@@ -38,7 +38,7 @@ fn pull_pulled_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "pull/pulled.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "pull/pulled.txt", &stripped);
 }
 
 /// JSON payload roundtrip — PullOutput shape via build_pull_doc + cap.json().
@@ -67,7 +67,7 @@ fn pull_up_to_date_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "pull/up_to_date.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "pull/up_to_date.txt", &stripped);
 }
 
 /// Real `cmd_pull` against a tempdir config_dir that is NOT a git repo —
@@ -85,7 +85,7 @@ fn pull_failed_human() {
 
     let normalized = normalize_libgit2_paths(&cap.human(), config_dir.path());
     let stripped = strip_ansi(&normalized);
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "pull/failed.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "pull/failed.txt", &stripped);
 }
 
 // ─────────────────────────────────────────────────────

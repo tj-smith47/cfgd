@@ -49,6 +49,10 @@ pub(super) struct DaemonLoopContext {
     pub managed_paths: Vec<PathBuf>,
     /// Deployment scope that selects FHS vs XDG directory roots.
     pub scope: crate::Scope,
+    /// The running cfgd binary's version (its `env!("CARGO_PKG_VERSION")`),
+    /// passed in by the binary — the daemon's update check and skill-staleness
+    /// probes compare against the *binary*, never cfgd-core's own version.
+    pub cfgd_version: String,
 }
 
 pub(super) struct DaemonTriggers {
@@ -361,7 +365,7 @@ pub(super) async fn handle_version_check_tick(ctx: &DaemonLoopContext) -> Result
         .ok()
         .and_then(|c| c.spec.update)
         .unwrap_or_default();
-    handle_version_check(&update_cfg, &ctx.state, &ctx.notifier).await;
+    handle_version_check(&update_cfg, &ctx.state, &ctx.notifier, &ctx.cfgd_version).await;
     Ok(())
 }
 

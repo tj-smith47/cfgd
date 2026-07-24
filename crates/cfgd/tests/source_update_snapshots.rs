@@ -27,8 +27,8 @@ use std::path::Path;
 
 use cfgd::cli::error::render_cli_error;
 use cfgd::cli::source::{cmd_source_add, cmd_source_update};
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Printer, PromptAnswer};
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use serial_test::serial;
 
 use common::{
@@ -126,7 +126,7 @@ fn source_update_no_sources_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "source_update/no_sources.txt",
         &stripped,
@@ -150,7 +150,7 @@ fn source_update_not_found_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "source_update/not_found.txt",
         &stripped,
@@ -190,7 +190,7 @@ fn source_update_happy_human() {
         config_dir.path(),
         state_dir.path(),
     );
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "source_update/happy.txt",
         &stripped,
@@ -275,7 +275,7 @@ fn source_update_accept_human() {
         config_dir.path(),
         state_dir.path(),
     );
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "source_update/accept.txt",
         &stripped,
@@ -293,7 +293,7 @@ fn source_update_accept_human() {
         }
     }
     let json_pretty = serde_json::to_string_pretty(&json).unwrap();
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "source_update/accept.json",
         &json_pretty,
@@ -319,7 +319,7 @@ fn source_update_rejection_human() {
         config_dir.path(),
         state_dir.path(),
     );
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "source_update/rejection.txt",
         &stripped,
@@ -367,7 +367,7 @@ fn source_update_bridge_one_blank_line() {
         config_dir.path(),
         state_dir.path(),
     );
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "source_update/bridge.txt",
         &stripped,

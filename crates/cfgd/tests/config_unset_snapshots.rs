@@ -12,8 +12,8 @@ use std::path::Path;
 
 use cfgd::cli::config_cmd;
 use cfgd::cli::error::render_cli_error;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{OutputFormat, Printer};
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 
 use common::{cli_for, config_test_setup};
 
@@ -47,7 +47,7 @@ fn config_unset_happy_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "config_unset/happy.txt",
         &stripped,
@@ -81,7 +81,7 @@ fn config_unset_not_found_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "config_unset/not_found.txt",
         &stripped,

@@ -7,7 +7,7 @@ use cfgd_core::generate::{SkillKind, skill_model_for};
 
 #[test]
 fn module_example_matches_on_disk_source() {
-    let model = skill_model_for(SkillKind::Module);
+    let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
     let ex = model.examples.first().expect("module example present");
     let on_disk = std::fs::read_to_string(ex.source_path()).unwrap();
     assert_eq!(
@@ -27,7 +27,7 @@ fn every_example_matches_its_on_disk_source() {
         SkillKind::ConfigPolicy,
         SkillKind::ClusterConfigPolicy,
     ] {
-        let model = skill_model_for(kind);
+        let model = skill_model_for(kind, env!("CARGO_PKG_VERSION"));
         assert!(
             !model.examples.is_empty(),
             "{} has no ground-truth examples",
@@ -104,7 +104,7 @@ fn every_embedded_example_validates_clean() {
     let crd_kinds: [SkillKind; 0] = [];
 
     for kind in local_kinds.into_iter().chain(crd_kinds) {
-        let model = skill_model_for(kind);
+        let model = skill_model_for(kind, env!("CARGO_PKG_VERSION"));
         for ex in &model.examples {
             let result = validate_document(&ex.contents);
             assert!(
@@ -124,7 +124,7 @@ fn every_embedded_example_validates_clean() {
 #[cfg(not(feature = "crd"))]
 #[test]
 fn crd_kind_snapshot_falls_back_to_empty_schema_when_crd_off() {
-    let model = skill_model_for(SkillKind::ClusterConfigPolicy);
+    let model = skill_model_for(SkillKind::ClusterConfigPolicy, env!("CARGO_PKG_VERSION"));
     assert!(
         model.schema_snapshot.json_schema.is_empty(),
         "CRD-kind snapshot should be empty when the crd feature is off"
@@ -138,7 +138,7 @@ fn crd_kind_snapshot_falls_back_to_empty_schema_when_crd_off() {
 
 #[test]
 fn module_exemplar_carries_before_and_after() {
-    let model = skill_model_for(SkillKind::Module);
+    let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
     assert!(
         !model.exemplar.before.trim().is_empty(),
         "exemplar before is empty"

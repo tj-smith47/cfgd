@@ -25,9 +25,9 @@
 use std::path::Path;
 
 use cfgd::cli::upgrade;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, OutputFormat, Printer, Role};
 use cfgd_core::test_helpers::EnvVarGuard;
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use serial_test::serial;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
@@ -89,7 +89,7 @@ fn upgrade_check_up_to_date_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "upgrade/up_to_date.txt",
         &stripped,
@@ -168,5 +168,5 @@ fn upgrade_bridge_one_blank_line() {
         !captured.contains("\n\n\n"),
         "bridge has duplicate blank line:\n{captured}"
     );
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "upgrade/bridge.txt", &captured);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "upgrade/bridge.txt", &captured);
 }

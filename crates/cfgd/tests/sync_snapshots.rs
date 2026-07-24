@@ -7,9 +7,9 @@ use std::path::Path;
 
 use cfgd::cli::output_types::{SourceSyncOutput, SyncOutput};
 use cfgd::cli::sync::{build_sync_doc, cmd_sync};
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, Printer, Role};
 use cfgd_core::test_helpers::EnvVarGuard;
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use pretty_assertions::assert_eq;
 use serial_test::serial;
 
@@ -92,7 +92,7 @@ fn sync_happy_human() {
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
     let normalized = normalize_commit_hashes(&normalized);
     let stripped = strip_ansi(&normalized);
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "sync/happy.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "sync/happy.txt", &stripped);
 }
 
 /// JSON payload roundtrip — SyncOutput shape via build_sync_doc + cap.json().
@@ -126,7 +126,7 @@ fn sync_no_sources_human() {
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
     let stripped = strip_ansi(&normalized);
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "sync/no_sources.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "sync/no_sources.txt", &stripped);
 }
 
 /// Permission-rejection path skips the source and prints a Skipped status.
@@ -151,7 +151,7 @@ fn sync_perm_changes_rejection_human() {
     let raw = buf.lock().unwrap().clone();
     let normalized = normalize_tempdir_paths(&raw, config_dir.path());
     let stripped = strip_ansi(&normalized);
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "sync/perm_changes.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "sync/perm_changes.txt", &stripped);
 }
 
 /// Permission-acceptance path emits the canonical "'X' synced" line after the prompt.
@@ -177,7 +177,7 @@ fn sync_perm_changes_accept_human() {
     let normalized = normalize_tempdir_paths(&raw, config_dir.path());
     let normalized = normalize_commit_hashes(&normalized);
     let stripped = strip_ansi(&normalized);
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "sync/perm_changes_accept.txt",
         &stripped,
@@ -200,7 +200,7 @@ fn sync_source_failure_human() {
 
     let normalized = normalize_tempdir_paths(&cap.human(), config_dir.path());
     let stripped = strip_ansi(&normalized);
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "sync/source_failure.txt",
         &stripped,
@@ -234,7 +234,7 @@ fn sync_bridge_one_blank_line() {
         "bridge has duplicate blank line:\n{captured}"
     );
 
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "sync/bridge.txt", &captured);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "sync/bridge.txt", &captured);
 }
 
 // ─────────────────────────────────────────────────────

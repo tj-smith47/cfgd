@@ -18,8 +18,8 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::module;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::Printer;
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use serial_test::serial;
 
 use common::cli_for;
@@ -133,7 +133,7 @@ fn module_search_bridge_one_blank_line() {
     stripped = stripped.replace(&reg_url, "<REG_URL>");
     stripped = stripped.replace(&src.display().to_string(), "<REG_SRC>");
     stripped = stripped.replace(&src_root.path().display().to_string(), "<REG_ROOT>");
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_search/bridge.txt",
         &stripped,
@@ -162,7 +162,7 @@ fn search_happy_human() {
     stripped = stripped.replace(&reg_url, "<REG_URL>");
     stripped = stripped.replace(&src.display().to_string(), "<REG_SRC>");
     stripped = stripped.replace(&src_root.path().display().to_string(), "<REG_ROOT>");
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_search/happy.txt",
         &stripped,

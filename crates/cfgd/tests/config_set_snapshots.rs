@@ -11,8 +11,8 @@ mod common;
 use std::path::Path;
 
 use cfgd::cli::config_cmd;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{OutputFormat, Printer};
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 
 use common::{cli_for, config_test_setup};
 
@@ -46,7 +46,7 @@ fn config_set_happy_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "config_set/happy.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "config_set/happy.txt", &stripped);
 }
 
 #[test]
@@ -74,7 +74,7 @@ fn config_set_creates_new_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "config_set/creates_new.txt",
         &stripped,

@@ -22,8 +22,8 @@ use std::path::Path;
 
 use cfgd::cli::error::render_cli_error;
 use cfgd::cli::profile::cmd_profile_delete;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Printer, PromptAnswer};
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 
 use common::{cli_for, normalize_profile_paths, profile_test_config_setup};
 
@@ -59,7 +59,7 @@ fn profile_delete_happy_human() {
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "profile_delete/happy.txt",
         &stripped,
@@ -92,7 +92,7 @@ fn profile_delete_cancelled_human() {
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "profile_delete/cancelled.txt",
         &stripped,
@@ -129,7 +129,7 @@ fn profile_delete_active_profile_refused_human() {
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "profile_delete/active_profile_refused.txt",
         &stripped,
@@ -158,7 +158,7 @@ fn profile_delete_inheritor_refused_human() {
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "profile_delete/inheritor_refused.txt",
         &stripped,

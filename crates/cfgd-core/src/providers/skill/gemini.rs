@@ -104,7 +104,7 @@ mod tests {
 
     #[test]
     fn gemini_renders_valid_toml_command() {
-        let model = skill_model_for(SkillKind::Module);
+        let model = skill_model_for(SkillKind::Module, env!("CARGO_PKG_VERSION"));
         let r = GeminiProvider
             .render(&model)
             .expect("render is infallible for these fixtures");
@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn toml_carries_version_stamp_keys_that_parse() {
-        let model = skill_model_for(SkillKind::Profile);
+        let model = skill_model_for(SkillKind::Profile, env!("CARGO_PKG_VERSION"));
         let r = GeminiProvider
             .render(&model)
             .expect("render is infallible for these fixtures");

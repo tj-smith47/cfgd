@@ -20,8 +20,8 @@ use std::path::Path;
 use cfgd::cli::output_types::SourceListEntry;
 use cfgd::cli::source::cmd_source_list;
 use cfgd::cli::source::list::{build_source_list_doc, build_source_list_no_config_doc};
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::Printer;
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 
 use common::{cli_for, source_test_config_setup, source_test_config_with_source_setup};
 
@@ -71,7 +71,7 @@ fn source_list_happy_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "source_list/happy.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "source_list/happy.txt", &stripped);
 }
 
 #[test]
@@ -97,7 +97,7 @@ fn source_list_empty_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "source_list/empty.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "source_list/empty.txt", &stripped);
 }
 
 #[test]

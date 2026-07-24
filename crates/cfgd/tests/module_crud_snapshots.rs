@@ -25,11 +25,11 @@ use std::path::Path;
 
 use cfgd::cli::error::render_cli_error;
 use cfgd::cli::module;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::config::{ModuleLockEntry, ModuleLockfile};
 use cfgd_core::output::{Printer, PromptAnswer};
 #[cfg(unix)]
 use cfgd_core::test_helpers::EditorGuard;
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use serial_test::serial;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
@@ -109,7 +109,7 @@ fn module_create_happy_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_create/happy.txt",
         &stripped,
@@ -171,7 +171,7 @@ fn module_create_already_exists_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_create/already_exists.txt",
         &stripped,
@@ -211,7 +211,7 @@ fn module_update_happy_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_update/happy.txt",
         &stripped,
@@ -249,7 +249,7 @@ fn module_update_no_changes_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_update/no_changes.txt",
         &stripped,
@@ -283,7 +283,7 @@ fn module_update_not_found_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_update/not_found.txt",
         &stripped,
@@ -311,7 +311,7 @@ fn module_delete_happy_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_delete/happy.txt",
         &stripped,
@@ -338,7 +338,7 @@ fn module_delete_cancelled_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_delete/cancelled.txt",
         &stripped,
@@ -360,7 +360,7 @@ fn module_delete_not_found_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_delete/not_found.txt",
         &stripped,
@@ -386,7 +386,7 @@ fn module_edit_valid_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "module_edit/valid.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "module_edit/valid.txt", &stripped);
 
     let json = cap.json().expect("doc captured json");
     assert_eq!(json["valid"], true);
@@ -405,7 +405,7 @@ fn module_edit_not_found_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_edit/not_found.txt",
         &stripped,

@@ -26,9 +26,9 @@ use std::path::Path;
 
 use cfgd::cli::error::render_cli_error;
 use cfgd::cli::secret;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::Printer;
 use cfgd_core::test_helpers::EditorGuard;
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::with_test_home_guard;
 use serial_test::serial;
 
@@ -81,7 +81,7 @@ fn secret_init_happy_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), home.path(), config_dir.path());
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "secret_init/happy.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "secret_init/happy.txt", &stripped);
 }
 
 #[test]
@@ -134,7 +134,7 @@ fn secret_init_already_initialized_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), home.path(), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "secret_init/already_initialized.txt",
         &stripped,
@@ -177,7 +177,7 @@ fn secret_encrypt_happy_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), home.path(), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "secret_encrypt/happy.txt",
         &stripped,
@@ -285,7 +285,7 @@ fn secret_decrypt_happy_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), home.path(), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "secret_decrypt/happy.txt",
         &stripped,
@@ -365,5 +365,5 @@ fn secret_edit_happy_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), home.path(), config_dir.path());
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "secret_edit/happy.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "secret_edit/happy.txt", &stripped);
 }

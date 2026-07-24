@@ -59,6 +59,7 @@ pub(super) fn cmd_daemon(
             daemon_printer,
             hooks,
             cli.scope(),
+            env!("CARGO_PKG_VERSION"),
         )
         .await
     });

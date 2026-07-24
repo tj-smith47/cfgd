@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 
 use cfgd::cli::diff::{build_diff_doc, cmd_diff};
 use cfgd::cli::output_types::{DiffOutput, DiffSummary, PackageDrift, SystemDriftOutput};
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Doc, Printer, Role};
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use pretty_assertions::assert_eq;
 
 use common::cli_for;
@@ -156,7 +156,7 @@ fn diff_no_drift_human() {
 
     let normalized = normalize(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
     let stripped = strip_ansi(&normalized);
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "diff/no_drift.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "diff/no_drift.txt", &stripped);
 }
 
 /// JSON payload roundtrip — DiffOutput shape via build_diff_doc + cap.json().
@@ -199,7 +199,7 @@ fn diff_file_drift_human() {
 
     let normalized = normalize(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
     let stripped = strip_ansi(&normalized);
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "diff/file_drift.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "diff/file_drift.txt", &stripped);
 }
 
 /// Profile declares a custom package manager whose `is_installed` script
@@ -217,7 +217,7 @@ fn diff_package_drift_human() {
 
     let normalized = normalize(&cap.human(), config_dir.path(), &[(&target, "<TARGET>")]);
     let stripped = strip_ansi(&normalized);
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "diff/package_drift.txt",
         &stripped,
@@ -251,7 +251,7 @@ fn diff_system_drift_human() {
     drop(printer);
 
     let stripped = strip_ansi(&cap.human());
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "diff/system_drift.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "diff/system_drift.txt", &stripped);
 }
 
 /// `--module <name>` branch of `cmd_diff` — drives the parallel Files +
@@ -268,7 +268,7 @@ fn diff_module_only_human() {
 
     let normalized = normalize(&cap.human(), config_dir.path(), &[]);
     let stripped = strip_ansi(&normalized);
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "diff/module_only.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "diff/module_only.txt", &stripped);
 }
 
 /// Bridge invariant: streaming sections drop, then buffered Doc emits — the
@@ -316,7 +316,7 @@ fn diff_bridge_one_blank_line() {
         "bridge has duplicate blank line:\n{captured}"
     );
 
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "diff/bridge.txt", &captured);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "diff/bridge.txt", &captured);
 }
 
 // ─────────────────────────────────────────────────────

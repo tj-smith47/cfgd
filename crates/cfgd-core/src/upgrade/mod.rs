@@ -152,10 +152,16 @@ pub struct UpdateCheck {
     pub release: Option<ReleaseInfo>,
 }
 
-/// Return the compiled-in version of cfgd.
-pub fn current_version() -> std::result::Result<Version, UpgradeError> {
-    Version::parse(env!("CARGO_PKG_VERSION")).map_err(|e| UpgradeError::VersionParse {
-        message: format!("cannot parse compiled version: {}", e),
+/// Parse the caller-supplied running cfgd version (the binary crate's
+/// `env!("CARGO_PKG_VERSION")`).
+///
+/// cfgd-core's own crate version is not a valid substitute: the crates version
+/// independently, and an upgrade check comparing GitHub's latest release
+/// against the *library's* version mis-reports the binary as outdated (or
+/// current) the moment the two drift.
+pub fn parse_current_version(cfgd_version: &str) -> std::result::Result<Version, UpgradeError> {
+    Version::parse(cfgd_version).map_err(|e| UpgradeError::VersionParse {
+        message: format!("cannot parse running version {:?}: {}", cfgd_version, e),
     })
 }
 
@@ -862,6 +868,7 @@ pub fn install_release(
     asset: &ReleaseAsset,
     require_cosign: bool,
     cfg: &crate::config::UpdateConfig,
+    cfgd_version: &str,
     printer: Option<&Printer>,
 ) -> Result<AppliedUpdate> {
     let report = download_and_install(release, asset, require_cosign, printer)?;
@@ -873,7 +880,7 @@ pub fn install_release(
     // applied upgrade (no second prompt). Gated by the effective skills policy;
     // project scope is never touched. Best-effort — a refresh failure must not
     // unwind a binary upgrade that already succeeded.
-    let skill_refresh = refresh_user_scope_skills(cfg);
+    let skill_refresh = refresh_user_scope_skills(cfg, cfgd_version);
     let daemon_restarted = restart_daemon_if_running();
     Ok(AppliedUpdate {
         report,
@@ -1030,15 +1037,17 @@ pub fn cleanup_old_binary() {
 
 /// Check for an update, using a 24h disk cache to avoid excessive API calls.
 ///
-/// `channel` selects which release stream to track on a cache miss (see
-/// [`check_latest`]).
+/// `cfgd_version` is the running binary's version (see
+/// [`parse_current_version`]). `channel` selects which release stream to track
+/// on a cache miss (see [`check_latest`]).
 pub fn check_with_cache(
+    cfgd_version: &str,
     repo: Option<&str>,
     channel: Option<&str>,
     printer: Option<&Printer>,
 ) -> Result<UpdateCheck> {
     let repo = repo.unwrap_or(DEFAULT_REPO);
-    let current = current_version()?;
+    let current = parse_current_version(cfgd_version)?;
 
     // Try reading from cache
     if let Some(cache) = read_version_cache() {
@@ -1060,7 +1069,7 @@ pub fn check_with_cache(
     }
 
     // Cache miss or expired — fall through to fresh check + update cache
-    let check = check_latest(Some(repo), channel, printer)?;
+    let check = check_latest(cfgd_version, Some(repo), channel, printer)?;
 
     let _ = write_version_cache(&VersionCache {
         checked_at_secs: crate::unix_secs_now(),
@@ -1078,17 +1087,20 @@ pub fn check_with_cache(
 
 /// Check for an update without using cache. Always queries the API.
 ///
-/// `channel` selects which release stream to track: `None`, `Some("stable")`,
-/// or any unrecognized value tracks stable releases (`releases/latest`, which
-/// excludes prereleases); `Some("prerelease")` tracks the newest release
-/// including prereleases. Matching is case-insensitive.
+/// `cfgd_version` is the running binary's version (see
+/// [`parse_current_version`]). `channel` selects which release stream to
+/// track: `None`, `Some("stable")`, or any unrecognized value tracks stable
+/// releases (`releases/latest`, which excludes prereleases);
+/// `Some("prerelease")` tracks the newest release including prereleases.
+/// Matching is case-insensitive.
 pub fn check_latest(
+    cfgd_version: &str,
     repo: Option<&str>,
     channel: Option<&str>,
     printer: Option<&Printer>,
 ) -> Result<UpdateCheck> {
     let repo = repo.unwrap_or(DEFAULT_REPO);
-    let current = current_version()?;
+    let current = parse_current_version(cfgd_version)?;
     let release = fetch_release_for_channel(&github_api_base(), repo, channel, printer)?;
     let update_available = release.version > current;
 
@@ -1152,10 +1164,12 @@ pub fn last_checked_secs() -> Option<u64> {
 /// timestamp on the persisted cache. Best-effort: a write failure is logged and
 /// swallowed so a non-writable cache dir never fails a normal command.
 ///
-/// Preserves the cached version strings when a prior cache exists; otherwise it
-/// stamps the timestamp against the running version with empty latest fields
-/// (which a subsequent real check overwrites via [`check_with_cache`]).
-pub fn record_check_at(now: u64) {
+/// `cfgd_version` is the running binary's version (see
+/// [`parse_current_version`]). Preserves the cached version strings when a
+/// prior cache exists; otherwise it stamps the timestamp against the running
+/// version with empty latest fields (which a subsequent real check overwrites
+/// via [`check_with_cache`]).
+pub fn record_check_at(cfgd_version: &str, now: u64) {
     let cache = match read_version_cache() {
         Some(mut c) => {
             c.checked_at_secs = now;
@@ -1164,8 +1178,10 @@ pub fn record_check_at(now: u64) {
         None => VersionCache {
             checked_at_secs: now,
             latest_tag: String::new(),
-            latest_version: current_version().map(|v| v.to_string()).unwrap_or_default(),
-            current_version: env!("CARGO_PKG_VERSION").to_string(),
+            latest_version: parse_current_version(cfgd_version)
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            current_version: cfgd_version.to_string(),
         },
     };
     if let Err(e) = write_version_cache(&cache) {

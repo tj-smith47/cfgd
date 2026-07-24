@@ -31,8 +31,8 @@ use std::path::Path;
 
 use cfgd::cli::error::render_cli_error;
 use cfgd::cli::module;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Printer, PromptAnswer};
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::test_helpers::test_printer;
 use serial_test::serial;
 
@@ -122,7 +122,7 @@ fn module_registry_add_happy_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_registry_add/happy.txt",
         &stripped,
@@ -176,7 +176,7 @@ fn module_registry_add_already_configured_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_registry_add/already_configured.txt",
         &stripped,
@@ -198,7 +198,7 @@ fn module_registry_remove_happy_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_registry_remove/happy.txt",
         &stripped,
@@ -223,7 +223,7 @@ fn module_registry_remove_not_found_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_registry_remove/not_found.txt",
         &stripped,
@@ -249,7 +249,7 @@ fn module_registry_rename_happy_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_registry_rename/happy.txt",
         &stripped,
@@ -276,7 +276,7 @@ fn module_registry_list_empty_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_registry_list/empty.txt",
         &stripped,
@@ -301,7 +301,7 @@ fn module_registry_list_with_entries_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_registry_list/with_entries.txt",
         &stripped,
@@ -363,7 +363,7 @@ fn module_add_bridge_one_blank_line() {
     // unix shape so a single golden survives both platforms.
     let stripped = stripped.replace("file:///<BARE>", "file://<BARE>");
     let stripped = mask_commit_sha(&stripped);
-    assert_snapshot(Path::new(SNAPSHOT_ROOT), "module_add/bridge.txt", &stripped);
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "module_add/bridge.txt", &stripped);
 }
 
 #[test]
@@ -446,7 +446,7 @@ fn module_add_from_registry_bridge_one_blank_line() {
     // comment in `module_add_bridge_one_blank_line`).
     let stripped = stripped.replace("file:///<REG_SRC>", "file://<REG_SRC>");
     let stripped = mask_commit_sha(&stripped);
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_add_from_registry/bridge.txt",
         &stripped,
@@ -465,7 +465,7 @@ fn module_search_no_registries_human() {
     drop(printer);
 
     let stripped = normalize(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "module_search/no_registries.txt",
         &stripped,

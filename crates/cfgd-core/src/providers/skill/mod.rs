@@ -224,11 +224,18 @@ pub trait SkillProvider: Send + Sync {
     /// directory). Managed-section providers excise only the cfgd-managed block
     /// under the same advisory lock, leaving surrounding bytes byte-identical.
     /// Returns the path acted on, or `None` when nothing was installed.
-    fn remove(&self, kind: SkillKind, scope: SkillScope) -> Result<Option<PathBuf>> {
+    ///
+    /// `cfgd_version` is the running binary's version (see [`SkillProvider::list`]).
+    fn remove(
+        &self,
+        kind: SkillKind,
+        scope: SkillScope,
+        cfgd_version: &str,
+    ) -> Result<Option<PathBuf>> {
         let Some(target) = self.target_path(kind, scope) else {
             return Ok(None);
         };
-        let rendered = self.render(&crate::generate::skill_model_for(kind))?;
+        let rendered = self.render(&crate::generate::skill_model_for(kind, cfgd_version))?;
 
         match &rendered.managed_section {
             None => {
@@ -257,14 +264,19 @@ pub trait SkillProvider: Send + Sync {
 
     /// List the skills this provider has installed at `scope`, comparing each
     /// file's stamped cfgd version to the running version to flag staleness.
-    fn list(&self, scope: SkillScope) -> Result<Vec<InstalledSkill>> {
-        let running = running_cfgd_version();
+    ///
+    /// `cfgd_version` is the running binary's `env!("CARGO_PKG_VERSION")`,
+    /// passed by the caller — cfgd-core's own crate version is not a valid
+    /// substitute because the crates version independently, and a wrong value
+    /// here mis-flags every installed skill's staleness.
+    fn list(&self, scope: SkillScope, cfgd_version: &str) -> Result<Vec<InstalledSkill>> {
+        let running = cfgd_version;
         let mut out = Vec::new();
         for kind in ALL_SKILL_KINDS {
             let Some(target) = self.target_path(kind, scope) else {
                 continue;
             };
-            let rendered = self.render(&crate::generate::skill_model_for(kind))?;
+            let rendered = self.render(&crate::generate::skill_model_for(kind, cfgd_version))?;
             let present = match &rendered.managed_section {
                 None => target.exists(),
                 Some(section) => read_to_string_optional(&target)?
@@ -302,11 +314,6 @@ const ALL_SKILL_KINDS: [SkillKind; 6] = [
     SkillKind::ConfigPolicy,
     SkillKind::ClusterConfigPolicy,
 ];
-
-/// The cfgd version this binary reports, used to flag stale installed skills.
-fn running_cfgd_version() -> String {
-    env!("CARGO_PKG_VERSION").to_string()
-}
 
 /// Acquire the advisory lock guarding a managed-section file's read-modify-write.
 ///

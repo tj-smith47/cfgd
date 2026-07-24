@@ -23,8 +23,8 @@ use std::path::Path;
 
 use cfgd::cli::error::render_cli_error;
 use cfgd::cli::profile::cmd_profile_create;
+use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::{Printer, PromptAnswer};
-use cfgd_core::test_helpers::assert_snapshot_golden as assert_snapshot;
 
 use common::{cli_for, normalize_profile_paths, profile_create_args, profile_test_config_setup};
 
@@ -62,7 +62,7 @@ fn profile_create_happy_human() {
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "profile_create/happy.txt",
         &stripped,
@@ -103,7 +103,7 @@ fn profile_create_inherits_human() {
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "profile_create/inherits.txt",
         &stripped,
@@ -127,7 +127,7 @@ fn profile_create_interactive_human() {
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "profile_create/interactive.txt",
         &stripped,
@@ -151,7 +151,7 @@ fn profile_create_already_exists_human() {
     drop(printer);
 
     let stripped = normalize_profile_paths(&strip_ansi(&cap.human()), config_dir.path());
-    assert_snapshot(
+    assert_snapshot!(
         Path::new(SNAPSHOT_ROOT),
         "profile_create/already_exists.txt",
         &stripped,
