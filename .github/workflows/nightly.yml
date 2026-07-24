@@ -76,7 +76,12 @@ jobs:
         with:
           version: ${{ env.ANODIZER_VERSION }}
           auto-install: 'true'
-          args: release --nightly --split --no-preflight
+          # --all --force pins crate selection to the full workspace. Without
+          # it anodizer selects crates from tags at HEAD, so a leftover
+          # nightly-minted tag (e.g. operator-v0.5.1-<sha>-nightly) narrows
+          # the build-target union to the operator/csi linux triples and the
+          # freebsd/darwin/windows shards fail with "no matching targets".
+          args: release --nightly --split --all --force --no-preflight
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           # Empty for the native shards (anodizer host-detects their OS);
@@ -137,7 +142,10 @@ jobs:
         with:
           version: ${{ env.ANODIZER_VERSION }}
           auto-install: 'true'
-          args: release --nightly --merge --no-preflight
+          # --all --force: same crate-selection pin as the split legs; the
+          # merge validates shard contexts against its own selection, so the
+          # two must agree.
+          args: release --nightly --merge --all --force --no-preflight
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
         env:
