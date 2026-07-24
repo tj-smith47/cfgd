@@ -509,12 +509,11 @@ workspaces:
             description: |
               kubectl-cfgd attaches cfgd modules — portable bundles of CLI
               tools, dotfiles, shell config, and packages — to running
-              Kubernetes workloads without rebuilding the upstream image:
-
-                kubectl cfgd inject deploy/web -m nvim:1.2  # patch template, roll out
-                kubectl cfgd debug web-xyz -m nvim:1.2      # ephemeral debug container
-                kubectl cfgd exec web-xyz -m nvim:1.2 -- nvim
-                kubectl cfgd status                         # fleet-wide module status
+              Kubernetes workloads without rebuilding the upstream image.
+              It can patch a workload's pod template to roll modules out,
+              start an ephemeral debug container with modules mounted, exec
+              into a pod with modules available, and report fleet-wide
+              module status.
 
               Modules are mounted by the cfgd CSI driver and admission webhook.
               To declare and reconcile local machine state, install the cfgd CLI.
