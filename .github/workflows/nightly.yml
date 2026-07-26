@@ -76,11 +76,12 @@ jobs:
         with:
           version: ${{ env.ANODIZER_VERSION }}
           auto-install: 'true'
-          # --all --force pins crate selection to the full workspace. Without
-          # it anodizer selects crates from tags at HEAD, so a leftover
-          # nightly-minted tag (e.g. operator-v0.5.1-<sha>-nightly) narrows
-          # the build-target union to the operator/csi linux triples and the
-          # freebsd/darwin/windows shards fail with "no matching targets".
+          # --all --force pins crate selection to the full workspace. A nightly
+          # must cover every crate regardless of change detection, and without
+          # these flags selection derives from the tags at HEAD — so the day a
+          # release tag lands on master the build-target union narrows to that
+          # crate's triples and the other shards fail with "no matching
+          # targets".
           args: release --nightly --split --all --force
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
