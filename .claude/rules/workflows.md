@@ -97,10 +97,10 @@ single-source-of-truth wiring.
 - Nightly is sharded per-OS via anodizer split/merge (`partial.by: os` in
   `.anodizer.yaml`): three `build` shards (ubuntu/macos/windows, same runner
   labels as determinism-shards, `auto-install: 'true'`, fail-fast off) each
-  run `release --nightly --split --no-preflight` and upload
+  run `release --nightly --split` and upload
   `nightly-dist-<shard>` with `include-hidden-files: true`; the ubuntu
   `publish` leg downloads all shards (`merge-multiple: true`) and runs
-  `release --nightly --merge --no-preflight`. Publish/sign secrets
+  `release --nightly --merge`. Publish/sign secrets
   (gpg/apk keys, CLOUDSMITH/SMTP/SNAPCRAFT/GPG_FINGERPRINT) live ONLY on the
   merge leg; split legs get GH_PAT alone. Never collapse nightly back to a
   single ubuntu job — darwin targets cannot zig-link without a macOS SDK.

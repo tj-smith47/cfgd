@@ -930,19 +930,26 @@ changelog:
     per_crate: true
   filters:
     exclude:
-      - "^docs:"
-      - "^ci:"
-      - "^chore:"
-      - "^style:"
+      # Every pattern carries the optional-scope group. Filters match the raw
+      # subject, so a bare "^docs:" misses "docs(operator): ..." and the commit
+      # lands in Others; a bare "^test" matches any subject merely starting with
+      # those letters. The explicit form is wrong in neither direction.
+      - "^docs(\\(.*\\))?!?:"
+      - "^ci(\\(.*\\))?!?:"
+      - "^chore(\\(.*\\))?!?:"
+      - "^style(\\(.*\\))?!?:"
+      - "^build(\\(.*\\))?!?:"
+      - "^test(\\(.*\\))?!?:"
+      - "^revert(\\(.*\\))?!?:"
   groups:
     - title: Features
-      regexp: "^feat"
+      regexp: "^feat(\\(.*\\))?!?:"
       order: 0
     - title: Bug Fixes
-      regexp: "^fix"
+      regexp: "^(fix|refactor)(\\(.*\\))?!?:"
       order: 1
     - title: Performance
-      regexp: "^perf"
+      regexp: "^perf(\\(.*\\))?!?:"
       order: 2
     - title: Others
       order: 999
