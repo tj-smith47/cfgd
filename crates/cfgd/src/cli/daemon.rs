@@ -410,7 +410,7 @@ pub fn build_daemon_uninstall_doc(payload: &DaemonUninstallOutput, scope: cfgd_c
 pub(super) fn cmd_daemon_service() -> anyhow::Result<()> {
     let hooks: std::sync::Arc<dyn cfgd_core::daemon::DaemonHooks> =
         std::sync::Arc::new(WorkstationDaemonHooks);
-    cfgd_core::daemon::run_as_windows_service(hooks)?;
+    cfgd_core::daemon::run_as_windows_service(hooks, env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
 
