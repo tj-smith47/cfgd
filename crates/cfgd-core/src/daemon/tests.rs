@@ -7962,9 +7962,9 @@ mod harness {
         ));
         // Immediately request shutdown.
         senders.shutdown_tx.send(()).unwrap();
-        let result = tokio::time::timeout(StdDuration::from_secs(2), handle)
+        let result = tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
             .await
-            .expect("loop did not exit within 2s")
+            .expect("loop did not exit after shutdown")
             .expect("join error");
         assert!(result.is_ok());
     }
@@ -7999,9 +7999,9 @@ mod harness {
         // Give the loop a moment to process before shutdown.
         tokio::time::sleep(StdDuration::from_millis(100)).await;
         senders.shutdown_tx.send(()).unwrap();
-        tokio::time::timeout(StdDuration::from_secs(2), handle)
+        tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
             .await
-            .expect("loop did not exit within 2s")
+            .expect("loop did not exit after shutdown")
             .expect("join error")
             .expect("loop returned Err");
         assert_eq!(reconcile_secs_observe.load(Ordering::Relaxed), 77);
@@ -8034,9 +8034,9 @@ mod harness {
         }
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         senders.shutdown_tx.send(()).unwrap();
-        tokio::time::timeout(StdDuration::from_secs(2), handle)
+        tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
             .await
-            .expect("loop did not exit within 2s")
+            .expect("loop did not exit after shutdown")
             .expect("join error")
             .expect("loop returned Err");
         let st = state.lock().await;
@@ -8064,9 +8064,9 @@ mod harness {
         senders.sync_tx.send(()).await.unwrap();
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         senders.shutdown_tx.send(()).unwrap();
-        tokio::time::timeout(StdDuration::from_secs(2), handle)
+        tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
             .await
-            .expect("loop did not exit within 2s")
+            .expect("loop did not exit after shutdown")
             .expect("join error")
             .expect("loop returned Err");
         let st = state.lock().await;
@@ -8092,9 +8092,9 @@ mod harness {
         senders.compliance_tx.send(()).await.unwrap();
         tokio::time::sleep(StdDuration::from_millis(50)).await;
         senders.shutdown_tx.send(()).unwrap();
-        tokio::time::timeout(StdDuration::from_secs(2), handle)
+        tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
             .await
-            .expect("loop did not exit within 2s")
+            .expect("loop did not exit after shutdown")
             .expect("join error")
             .expect("loop returned Err");
     }
@@ -8114,10 +8114,28 @@ mod harness {
     // and then assert that the loop still services subsequent ticks and
     // exits cleanly on shutdown.
 
+    /// Budget for "the loop exited after shutdown". This bounds a HANG, not
+    /// the loop's speed: a deadlocked select! never exits at any budget, while
+    /// a live one exits in milliseconds. Sizing it near the observed runtime
+    /// converts runner contention into a test failure — the 2s/3s budgets this
+    /// replaced completed in 0.3-1.2s on a dedicated Windows host and blew
+    /// past 3s on a 2-vCPU hosted runner, where nextest schedules other tests
+    /// against the same cores.
+    const LOOP_EXIT_BUDGET: StdDuration = StdDuration::from_secs(30);
+
     /// `DaemonHooks` that panics in `plan_files`. Used to drive
     /// `handle_reconcile_tick` into a `JoinError` so the loop's recovery
     /// behavior is observable.
-    struct PanickingPlanFilesHooks;
+    ///
+    /// The hook announces itself on `ran` immediately before panicking, so a
+    /// test can await the panic having actually happened instead of sleeping
+    /// for a duration it hopes is long enough. Without that signal a loaded
+    /// runner can deliver `shutdown` while the panicking tick is still queued;
+    /// the loop then breaks without ever exercising the continue-on-error path
+    /// the test exists to prove, and passes for the wrong reason.
+    struct PanickingPlanFilesHooks {
+        ran: tokio::sync::mpsc::UnboundedSender<()>,
+    }
 
     impl DaemonHooks for PanickingPlanFilesHooks {
         fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
@@ -8128,6 +8146,7 @@ mod harness {
             _: &Path,
             _: &ResolvedProfile,
         ) -> crate::errors::Result<Vec<FileAction>> {
+            let _ = self.ran.send(());
             panic!("intentional panic in plan_files (test fixture)")
         }
         fn plan_packages(
@@ -8185,17 +8204,25 @@ mod harness {
     }
 
     /// Build a `DaemonLoopContext` whose `hooks` panic inside `plan_files`.
+    ///
+    /// The third element receives one message per `plan_files` entry; await it
+    /// to sequence a test against the panic instead of against a sleep.
     fn make_panicking_plan_files_ctx(
         tmp: &tempfile::TempDir,
-    ) -> (DaemonLoopContext, Arc<Mutex<DaemonState>>) {
+    ) -> (
+        DaemonLoopContext,
+        Arc<Mutex<DaemonState>>,
+        tokio::sync::mpsc::UnboundedReceiver<()>,
+    ) {
         let state = Arc::new(Mutex::new(DaemonState::new()));
         let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
         let (printer, _buf) = Printer::for_test_at(crate::output::Verbosity::Normal);
         let printer = Arc::new(printer);
+        let (ran_tx, ran_rx) = tokio::sync::mpsc::unbounded_channel();
         let ctx = DaemonLoopContext {
             cfgd_version: env!("CARGO_PKG_VERSION").to_string(),
             state: Arc::clone(&state),
-            hooks: Arc::new(PanickingPlanFilesHooks),
+            hooks: Arc::new(PanickingPlanFilesHooks { ran: ran_tx }),
             notifier,
             config_path: write_happy_path_config(tmp),
             profile_override: None,
@@ -8207,7 +8234,16 @@ mod harness {
             managed_paths: Vec::new(),
             scope: crate::Scope::User,
         };
-        (ctx, state)
+        (ctx, state, ran_rx)
+    }
+
+    /// Await the panicking `plan_files` having actually run, so a test can send
+    /// `shutdown` knowing the continue-on-error path was exercised.
+    async fn await_panicking_tick(rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>) {
+        tokio::time::timeout(LOOP_EXIT_BUDGET, rx.recv())
+            .await
+            .expect("panicking plan_files never ran")
+            .expect("panicking hook was dropped without running");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -8215,7 +8251,7 @@ mod harness {
     async fn select_loop_continues_after_reconcile_tick_panic() {
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
-        let (ctx, _state) = make_panicking_plan_files_ctx(&tmp);
+        let (ctx, _state, mut ran_rx) = make_panicking_plan_files_ctx(&tmp);
         let (triggers, senders) = make_triggers();
         let reconcile_secs = Arc::new(AtomicU64::new(300));
         let sync_secs = Arc::new(AtomicU64::new(300));
@@ -8237,15 +8273,14 @@ mod harness {
         // Reconcile tick triggers the panicking plan_files inside
         // spawn_blocking; the loop should log and continue.
         senders.reconcile_tx.send(()).await.unwrap();
-        tokio::time::sleep(StdDuration::from_millis(150)).await;
+        await_panicking_tick(&mut ran_rx).await;
         // Fire a no-op sync tick to prove the loop is still alive and
         // processing further dispatches.
         senders.sync_tx.send(()).await.unwrap();
-        tokio::time::sleep(StdDuration::from_millis(50)).await;
         senders.shutdown_tx.send(()).unwrap();
-        tokio::time::timeout(StdDuration::from_secs(3), handle)
+        tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
             .await
-            .expect("loop did not exit within 3s")
+            .expect("loop did not exit after shutdown")
             .expect("join error")
             .expect("loop returned Err — should have logged and continued");
     }
@@ -8296,9 +8331,9 @@ mod harness {
         senders.compliance_tx.send(()).await.unwrap();
         tokio::time::sleep(StdDuration::from_millis(150)).await;
         senders.shutdown_tx.send(()).unwrap();
-        tokio::time::timeout(StdDuration::from_secs(3), handle)
+        tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
             .await
-            .expect("loop did not exit within 3s")
+            .expect("loop did not exit after shutdown")
             .expect("join error")
             .expect("loop returned Err — should have logged and continued");
     }
@@ -8313,7 +8348,7 @@ mod harness {
         // servicing both error and panic flavors of failure.
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
-        let (ctx, _state) = make_panicking_plan_files_ctx(&tmp);
+        let (ctx, _state, mut ran_rx) = make_panicking_plan_files_ctx(&tmp);
         let (triggers, senders) = make_triggers();
         let reconcile_secs = Arc::new(AtomicU64::new(300));
         let sync_secs = Arc::new(AtomicU64::new(300));
@@ -8344,13 +8379,12 @@ mod harness {
             sync_secs,
         ));
         senders.sync_tx.send(()).await.unwrap();
-        tokio::time::sleep(StdDuration::from_millis(50)).await;
         senders.reconcile_tx.send(()).await.unwrap();
-        tokio::time::sleep(StdDuration::from_millis(150)).await;
+        await_panicking_tick(&mut ran_rx).await;
         senders.shutdown_tx.send(()).unwrap();
-        tokio::time::timeout(StdDuration::from_secs(3), handle)
+        tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
             .await
-            .expect("loop did not exit within 3s")
+            .expect("loop did not exit after shutdown")
             .expect("join error")
             .expect("loop returned Err — should have logged and continued");
     }
@@ -8366,7 +8400,7 @@ mod harness {
         // continue-on-error behavior is engaged, then shutdown.
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
-        let (ctx, _state) = make_panicking_plan_files_ctx(&tmp);
+        let (ctx, _state, mut ran_rx) = make_panicking_plan_files_ctx(&tmp);
         let (triggers, senders) = make_triggers();
         let reconcile_secs = Arc::new(AtomicU64::new(300));
         let sync_secs = Arc::new(AtomicU64::new(300));
@@ -8386,13 +8420,12 @@ mod harness {
             sync_secs,
         ));
         senders.version_check_tx.send(()).await.unwrap();
-        tokio::time::sleep(StdDuration::from_millis(100)).await;
         senders.reconcile_tx.send(()).await.unwrap();
-        tokio::time::sleep(StdDuration::from_millis(150)).await;
+        await_panicking_tick(&mut ran_rx).await;
         senders.shutdown_tx.send(()).unwrap();
-        tokio::time::timeout(StdDuration::from_secs(3), handle)
+        tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
             .await
-            .expect("loop did not exit within 3s")
+            .expect("loop did not exit after shutdown")
             .expect("join error")
             .expect("loop returned Err — should have logged and continued");
     }
@@ -8406,7 +8439,7 @@ mod harness {
         // arrives, and this test would observe that as a JoinError.
         let tmp = tempfile::TempDir::new().unwrap();
         let _g = crate::with_test_home_guard(tmp.path());
-        let (ctx, _state) = make_panicking_plan_files_ctx(&tmp);
+        let (ctx, _state, mut ran_rx) = make_panicking_plan_files_ctx(&tmp);
         let (triggers, senders) = make_triggers();
         let reconcile_secs = Arc::new(AtomicU64::new(300));
         let sync_secs = Arc::new(AtomicU64::new(300));
@@ -8425,18 +8458,17 @@ mod harness {
             reconcile_secs,
             sync_secs,
         ));
+        // Both ticks must be observed panicking before shutdown, otherwise a
+        // slow runner can leave the second one unprocessed and the test proves
+        // recovery from one panic rather than from a repeated one.
         senders.reconcile_tx.send(()).await.unwrap();
-        tokio::time::sleep(StdDuration::from_millis(100)).await;
+        await_panicking_tick(&mut ran_rx).await;
         senders.reconcile_tx.send(()).await.unwrap();
-        tokio::time::sleep(StdDuration::from_millis(100)).await;
+        await_panicking_tick(&mut ran_rx).await;
         senders.shutdown_tx.send(()).unwrap();
-        // 30s, not 3s — Windows CI runners under cargo-llvm-cov instrumentation
-        // run this exit path at ~3.8s vs ~0.3s un-instrumented (an order-of-
-        // magnitude slowdown that's not the daemon's fault). Generous slack so
-        // a slow runner is never the bug.
-        let result = tokio::time::timeout(StdDuration::from_secs(30), handle)
+        let result = tokio::time::timeout(LOOP_EXIT_BUDGET, handle)
             .await
-            .expect("loop did not exit within 30s")
+            .expect("loop did not exit after shutdown")
             .expect("join error");
         assert!(
             result.is_ok(),
