@@ -6,6 +6,12 @@ use axum::routing::post;
 use axum::{Json, Router};
 use cfgd_core::PathDisplayExt;
 use hyper_util::rt::{TokioExecutor, TokioIo};
+// Reached through json_patch's re-export rather than a direct `jsonptr`
+// dependency: `PatchOperation::path` is typed against whichever jsonptr
+// json_patch itself links, so a separately-versioned direct dep compiles only
+// while the two happen to resolve to the same version and breaks with a
+// same-name/different-type mismatch the moment either side moves.
+use json_patch::jsonptr;
 use kube::Client;
 use kube::api::{Api, ListParams};
 use kube::core::DynamicObject;

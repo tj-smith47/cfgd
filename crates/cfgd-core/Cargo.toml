@@ -166,7 +166,7 @@ optional = true
 
 [dev-dependencies]
 tempfile = "3"
-serial_test = "3"
+serial_test = "4"
 mockito = "1"
 tracing-test = "0.2"
 regex = "1"

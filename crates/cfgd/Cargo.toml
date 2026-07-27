@@ -73,7 +73,7 @@ cfgd-core = { path = "../cfgd-core", version = "0.6.0", features = ["test-helper
 # guard (tests/oci_ref_agreement.rs) lives here. Dev-only keeps cfgd-crd at the
 # bottom of the runtime dependency graph (cfgd never links it at runtime).
 cfgd-crd = { path = "../cfgd-crd", version = "0.5.0" }
-serial_test = "3"
+serial_test = "4"
 mockito = "1"
 # Test-only: build `UpdateCheck` fixtures (its public `current`/`latest` fields
 # are `semver::Version`) for the §9 wired skill-surface tests.
