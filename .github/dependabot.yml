@@ -13,7 +13,13 @@ updates:
       cargo:
         patterns: ["*"]
   - package-ecosystem: "github-actions"
-    directory: "/"
+    # `directory: "/"` reaches .github/workflows plus a ROOT-level action.yml —
+    # it never descends into .github/actions/<name>/action.yml, so the pins in
+    # all seven composite actions go untracked and rot behind the workflows
+    # Dependabot does see. Only the plural `directories` key accepts globs.
+    directories:
+      - "/"
+      - "/.github/actions/*"
     schedule:
       interval: "weekly"
     commit-message:
