@@ -284,13 +284,23 @@ pub(crate) fn uninstall_windows_service() -> Result<()> {
 #[cfg(windows)]
 static SERVICE_HOOKS: std::sync::OnceLock<Arc<dyn DaemonHooks>> = std::sync::OnceLock::new();
 
-/// Run the daemon as a Windows Service. Called by the SCM (Service Control Manager),
-/// not directly by users. `hooks` provides the binary-specific provider implementations.
+/// Running binary's version, stored beside [`SERVICE_HOOKS`] for the same reason:
+/// the SCM re-enters through `ffi_service_main`, which takes no arguments, so
+/// everything the daemon loop needs has to cross that boundary through a static.
+/// It cannot fall back to this crate's own `CARGO_PKG_VERSION` — cfgd-core
+/// versions independently of the binary, and the daemon reports the binary's.
 #[cfg(windows)]
-pub fn run_as_windows_service(hooks: Arc<dyn DaemonHooks>) -> Result<()> {
+static SERVICE_VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Run the daemon as a Windows Service. Called by the SCM (Service Control Manager),
+/// not directly by users. `hooks` provides the binary-specific provider implementations,
+/// and `cfgd_version` the running binary's `env!("CARGO_PKG_VERSION")`.
+#[cfg(windows)]
+pub fn run_as_windows_service(hooks: Arc<dyn DaemonHooks>, cfgd_version: &str) -> Result<()> {
     use windows_service::service_dispatcher;
     // Store hooks before dispatching — ffi_service_main retrieves them via OnceLock.
     let _ = SERVICE_HOOKS.set(hooks);
+    let _ = SERVICE_VERSION.set(cfgd_version.to_string());
     service_dispatcher::start("cfgd", ffi_service_main).map_err(|e| DaemonError::ServiceError {
         message: format!("failed to start service dispatcher: {}", e),
     })?;
@@ -299,7 +309,7 @@ pub fn run_as_windows_service(hooks: Arc<dyn DaemonHooks>) -> Result<()> {
 
 /// Windows Service mode is only available on Windows.
 #[cfg(not(windows))]
-pub fn run_as_windows_service(_hooks: Arc<dyn DaemonHooks>) -> Result<()> {
+pub fn run_as_windows_service(_hooks: Arc<dyn DaemonHooks>, _cfgd_version: &str) -> Result<()> {
     Err(DaemonError::ServiceError {
         message: "Windows Service mode is only available on Windows".to_string(),
     }
@@ -442,6 +452,10 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
         .get()
         .ok_or("SERVICE_HOOKS not initialized — run_as_windows_service must be called first")?
         .clone();
+    let cfgd_version = SERVICE_VERSION
+        .get()
+        .ok_or("SERVICE_VERSION not initialized — run_as_windows_service must be called first")?
+        .clone();
 
     // Create the tokio runtime on the main service thread so we can shut it down gracefully
     let rt = tokio::runtime::Runtime::new()?;
@@ -450,7 +464,16 @@ pub(crate) fn windows_service_main() -> std::result::Result<(), Box<dyn std::err
     // Spawn the daemon loop on the runtime
     rt.spawn(async move {
         // Windows service has no CLI runtime override; env/default socket.
-        if let Err(e) = run_daemon(config_path, profile_override, None, printer, hooks, scope).await
+        if let Err(e) = run_daemon(
+            config_path,
+            profile_override,
+            None,
+            printer,
+            hooks,
+            scope,
+            &cfgd_version,
+        )
+        .await
         {
             tracing::error!(error = %e, "daemon error");
         }

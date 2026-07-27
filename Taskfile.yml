@@ -401,6 +401,17 @@ tasks:
           git add -- "$f"
         done
 
+  check:windows:
+    desc: "Type-check the cfg(windows) code paths that no Linux/macOS/FreeBSD build compiles."
+    # `task ci` deliberately excludes cross-platform builds, so a signature change
+    # that misses a #[cfg(windows)] call site type-checks clean on every other
+    # host and only fails on the Windows CI runner, after the push. Needs the
+    # mingw target (rustup target add x86_64-pc-windows-gnu) plus mingw-w64. The
+    # gnu target rather than msvc because ring's build script rejects a GNU
+    # compiler for msvc, aborting the check before any cfgd crate is reached.
+    cmds:
+      - cargo check --target x86_64-pc-windows-gnu -p cfgd-core -p cfgd
+
   push:
     desc: "Coverage-gated push. Usage: task push [-- <git push args>] (defaults to origin master)."
     preconditions:
