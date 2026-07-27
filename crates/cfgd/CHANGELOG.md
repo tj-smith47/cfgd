@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-07-27
+
+### Bug Fixes
+
+* f8699c78b76d thread the running binary version through cfgd-core APIs ([@tj-smith47](https://github.com/tj-smith47))
+* 822dad04b559 thread the binary version into the Windows service path ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.6.1] - 2026-07-21
 
 ### Bug Fixes
@@ -117,7 +124,8 @@
 * 018a7ff7b259 migrate upgrade CLI test fixtures to split/keyless contract (TJ Smith)
 * a397277605a9 serialize LOCALAPPDATA env tests to fix full-suite flake (TJ Smith)
 
-[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/tj-smith47/cfgd/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/tj-smith47/cfgd/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/tj-smith47/cfgd/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/tj-smith47/cfgd/compare/v0.4.0...v0.5.0
