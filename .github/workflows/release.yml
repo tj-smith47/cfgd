@@ -141,6 +141,16 @@ jobs:
       # the next release then wedges on a non-fast-forward tag push with
       # nothing naming the cause. Detect the stranded state up front and
       # fail with the exact reconcile command.
+      #
+      # Requiring the tag itself to be an ancestor is unsatisfiable once
+      # master protects against force-push and non-linear history: the
+      # stranded writeback can then be neither merged nor reconciled, and
+      # re-applying it (cherry-pick) yields a DIFFERENT sha that never
+      # satisfies the check. Master advancing past the tag's parent is the
+      # state that actually matters — the tag's feature commits are already
+      # present and only the mechanical writeback is missing, which the next
+      # cut regenerates at a higher version. Block only the true pre-bump
+      # stranding, where master still sits exactly at the tag's parent.
       - name: Guard against a stranded bump commit
         run: |
           git fetch --tags --force --quiet origin
@@ -149,10 +159,17 @@ jobs:
             exit 0
           fi
           sha="$(git rev-parse "${latest}^{commit}")"
-          if ! git merge-base --is-ancestor "$sha" HEAD; then
-            echo "::error::release tag ${latest} (${sha}) is not an ancestor of the release ref: a prior run was cancelled between the tag push and advance-master, stranding the bump commit — or this run targets a ref behind the latest release tag. Reconcile with: git push origin ${sha}:refs/heads/master  — then re-run this workflow."
-            exit 1
+          if git merge-base --is-ancestor "$sha" HEAD; then
+            exit 0
           fi
+          parent="$(git rev-parse "${sha}^" 2>/dev/null || echo '')"
+          if [ -n "$parent" ] && git merge-base --is-ancestor "$parent" HEAD \
+             && [ "$(git rev-list --count "${parent}..HEAD")" -gt 0 ]; then
+            echo "::warning::release tag ${latest} bump-writeback (${sha}) is not on master: its advance-master step was skipped, but master has advanced past the tag's parent by $(git rev-list --count "${parent}..HEAD") commit(s). The tag's feature content is present and a new, higher version will be cut. Proceeding."
+            exit 0
+          fi
+          echo "::error::release tag ${latest} (${sha}) is not an ancestor of master and master has not advanced past the tag's parent: a prior run stranded the bump commit. Reconcile with: git push origin ${sha}:refs/heads/master  — then re-run this workflow."
+          exit 1
 
       # Deferred-branch pattern: push only the tags now; master advances
       # onto the bump commit in advance-master (last job), after every
