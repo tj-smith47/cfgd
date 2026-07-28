@@ -146,12 +146,21 @@ jobs:
           # --all --force: same crate-selection pin as the split legs; the
           # merge validates shard contexts against its own selection, so the
           # two must agree.
-          args: release --nightly --merge --all --force
+          #
+          # A nightly's product is the single rolling prerelease `nightly:`
+          # configures — every other publisher belongs to a real release, and
+          # preflight validates the secrets of whatever is selected, so an
+          # unscoped run demands CHOCOLATEY_API_KEY/AUR_SSH_KEY that a nightly
+          # has no business holding. `--publishers` is a whitelist rather than a
+          # `--skip` denylist so adding a publisher to .anodizer.yaml later
+          # cannot silently widen the nightly's blast radius. `--skip` covers
+          # announce, a STAGE the whitelist cannot reach: a nightly that mailed
+          # itself out every morning is noise, not signal.
+          args: >-
+            release --nightly --merge --all --force
+            --publishers github-release --skip announce
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
         env:
-          CLOUDSMITH_TOKEN: ${{ secrets.CLOUDSMITH_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
-          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
