@@ -277,7 +277,11 @@ fn prepare_json_overlay(
                     return Err(shape_error(
                         target,
                         ModifyFormat::Json,
-                        format!("object keys must be strings, but {path}{key:?} is not"),
+                        format!(
+                            "object keys must be strings, but {} has a non-string key: {}",
+                            json_path_label(path),
+                            yaml_key_label(key)
+                        ),
                     )
                     .into());
                 };
@@ -305,8 +309,8 @@ fn prepare_json_overlay(
                 target,
                 ModifyFormat::Json,
                 format!(
-                    "{}{n} is not representable in JSON (no NaN or Infinity)",
-                    path
+                    "{} is {n} — JSON has no NaN or Infinity",
+                    json_path_label(path)
                 ),
             )
             .into());
@@ -314,6 +318,35 @@ fn prepare_json_overlay(
         serde_yaml::Value::Tagged(tagged) => prepare_json_overlay(&tagged.value, target, path)?,
         other => other.clone(),
     })
+}
+
+/// Render the overlay path for an operator-facing message.
+///
+/// The buffer carries a trailing `.` so the walk can append a segment cheaply;
+/// an error message must not show that separator dangling against whatever
+/// follows it (`list.[1]..inf`).
+fn json_path_label(path: &str) -> String {
+    let trimmed = path.trim_end_matches('.');
+    if trimmed.is_empty() {
+        "the overlay root".to_string()
+    } else {
+        format!("'{trimmed}'")
+    }
+}
+
+/// Render a mapping key the way the author wrote it in YAML, never as a Rust
+/// `Debug` form (`Number(42)`) — the message is read by an operator fixing
+/// their own config, not by someone reading cfgd's source.
+fn yaml_key_label(key: &serde_yaml::Value) -> String {
+    match key {
+        serde_yaml::Value::Null => "null".to_string(),
+        serde_yaml::Value::Bool(b) => b.to_string(),
+        serde_yaml::Value::Number(n) => n.to_string(),
+        serde_yaml::Value::String(s) => s.clone(),
+        serde_yaml::Value::Sequence(_) => "a list".to_string(),
+        serde_yaml::Value::Mapping(_) => "a mapping".to_string(),
+        serde_yaml::Value::Tagged(tagged) => yaml_key_label(&tagged.value),
+    }
 }
 
 /// Parse JSON text into an insertion-ordered [`serde_yaml::Value`], resolving a

@@ -953,14 +953,31 @@ fn json_rejects_non_string_keys() {
     // against a number key and append a duplicate on every reconcile.
     let err = apply_err("{}", &spec(None, "42: value\n"), "/tmp/a.json");
     assert_ensure_shape(&err);
-    assert!(err.to_string().contains("must be strings"), "{err}");
+    assert!(
+        err.to_string()
+            .contains("object keys must be strings, but the overlay root has a non-string key: 42"),
+        "{err}"
+    );
 }
 
 #[test]
 fn json_rejects_a_non_string_key_nested_in_the_overlay() {
     let err = apply_err("{}", &spec(None, "editor:\n  42: value\n"), "/tmp/a.json");
     assert_ensure_shape(&err);
-    assert!(err.to_string().contains("editor."), "names the path: {err}");
+    assert!(
+        err.to_string()
+            .contains("but 'editor' has a non-string key: 42"),
+        "names the path without a dangling separator: {err}"
+    );
+}
+
+#[test]
+fn json_renders_a_structured_key_without_a_debug_form() {
+    let err = apply_err("{}", &spec(None, "? [a, b]\n: value\n"), "/tmp/a.json");
+    assert_ensure_shape(&err);
+    let text = err.to_string();
+    assert!(text.contains("has a non-string key: a list"), "{text}");
+    assert!(!text.contains("Sequence("), "no Debug form leaked: {text}");
 }
 
 #[test]
@@ -970,20 +987,28 @@ fn json_rejects_a_non_string_key_inside_a_sequence() {
     let err = apply_err("{}", &spec(None, "list:\n  - 42: x\n"), "/tmp/a.json");
     assert_ensure_shape(&err);
     assert!(
-        err.to_string().contains("list.[0]."),
+        err.to_string()
+            .contains("but 'list.[0]' has a non-string key: 42"),
         "names the path: {err}"
     );
 }
 
 #[test]
 fn json_rejects_non_finite_numbers() {
-    for ensure in ["ratio: .nan\n", "ratio: .inf\n", "ratio: -.inf\n"] {
+    for (ensure, rendered) in [
+        ("ratio: .nan\n", "'ratio' is .nan"),
+        ("ratio: .inf\n", "'ratio' is .inf"),
+        ("ratio: -.inf\n", "'ratio' is -.inf"),
+    ] {
         let err = apply_err("{}", &spec(None, ensure), "/tmp/a.json");
         assert_ensure_shape(&err);
+        let text = err.to_string();
         assert!(
-            err.to_string().contains("NaN or Infinity"),
-            "explains why: {err}"
+            text.contains(rendered),
+            "names the location and value cleanly: {text}"
         );
+        assert!(text.contains("JSON has no NaN or Infinity"), "{text}");
+        assert!(!text.contains(".."), "no doubled separator: {text}");
     }
 }
 
@@ -991,7 +1016,9 @@ fn json_rejects_non_finite_numbers() {
 fn json_rejects_a_non_finite_number_nested_in_a_sequence() {
     let err = apply_err("{}", &spec(None, "list: [1, .inf]\n"), "/tmp/a.json");
     assert_ensure_shape(&err);
-    assert!(err.to_string().contains("list.[1]."), "names it: {err}");
+    let text = err.to_string();
+    assert!(text.contains("'list.[1]' is .inf"), "names it: {text}");
+    assert!(!text.contains(".."), "no doubled separator: {text}");
 }
 
 #[test]
@@ -1034,12 +1061,6 @@ fn json_target_with_nested_duplicate_keys_takes_the_last_occurrence() {
     );
     let parsed: serde_yaml::Value = serde_json::from_str(&out).expect("valid json");
     assert_eq!(parsed["outer"]["k"], serde_yaml::Value::from(2));
-}
-
-#[test]
-fn json_rejects_a_structured_key() {
-    let err = apply_err("{}", &spec(None, "? [a, b]\n: value\n"), "/tmp/a.json");
-    assert_ensure_shape(&err);
 }
 
 #[test]
