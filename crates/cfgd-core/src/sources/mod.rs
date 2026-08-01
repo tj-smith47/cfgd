@@ -25,7 +25,7 @@ use crate::config::{
 use crate::errors::{Result, SourceError};
 use crate::output::{Printer, Role};
 
-const SOURCE_MANIFEST_FILE: &str = "cfgd-source.yaml";
+pub(crate) const SOURCE_MANIFEST_FILE: &str = "cfgd-source.yaml";
 const PROFILES_DIR: &str = "profiles";
 
 /// Cached state for a single config source.

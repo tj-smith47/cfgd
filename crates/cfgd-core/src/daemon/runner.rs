@@ -462,10 +462,11 @@ pub(super) async fn handle_backup_tick(
         match config::load_config(&ctx.config_path) {
             Ok(cfg) => {
                 if refresh_backup_timers(ctx, &cfg, backup_timers, now).is_some() {
+                    let (role, note) = backup_timers.reload_line_qualifier();
                     ctx.printer.status_simple(
-                        Role::Ok,
+                        role,
                         format!(
-                            "Backup schedules restored: {} scheduled",
+                            "Backup schedules restored: {} scheduled{note}",
                             backup_timers.len()
                         ),
                     );
@@ -648,10 +649,11 @@ pub(super) fn apply_sighup_reload(
                 );
             }
             if let Some(b) = backups.filter(|b| !b.is_empty()) {
+                let (role, note) = backup_timers.reload_line_qualifier();
                 printer.status_simple(
-                    Role::Ok,
+                    role,
                     format!(
-                        "Backup schedules reloaded: {} added, {} removed, {} rescheduled",
+                        "Backup schedules reloaded: {} added, {} removed, {} rescheduled{note}",
                         b.added, b.removed, b.rescheduled
                     ),
                 );

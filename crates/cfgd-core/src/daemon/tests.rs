@@ -14068,6 +14068,175 @@ mod backup_timers {
         );
     }
 
+    /// A config declaring a source whose cache is present but unreadable — the
+    /// "source cache caught mid-rewrite" case. The profile resolves locally,
+    /// `compose_daemon_desired_state` fails on the manifest, and
+    /// `resolve_backup_tasks` hands back the locally-declared set marked
+    /// degraded: the exact state the adopt branch runs in. (A source that was
+    /// never fetched is only WARNED about, not an error, so it cannot produce
+    /// this state.)
+    fn write_config_with_broken_source_cache(
+        tmp: &tempfile::TempDir,
+        backups_yaml: &str,
+    ) -> PathBuf {
+        let cache = tmp
+            .path()
+            .join(".cache")
+            .join("cfgd")
+            .join("sources")
+            .join("team");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(
+            cache.join(crate::sources::SOURCE_MANIFEST_FILE),
+            "::: not a manifest :::",
+        )
+        .unwrap();
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(
+            &config_path,
+            "apiVersion: cfgd.io/v1alpha1\nkind: Cfgd\nmetadata:\n  name: t\nspec:\n  profile: default\n  sources:\n    - name: team\n      origin:\n        type: Git\n        url: https://example.invalid/team.git\n      subscription:\n        profile: team\n        priority: 500\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
+        std::fs::write(
+            tmp.path().join("profiles").join("default.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n  backups:\n{backups_yaml}"
+            ),
+        )
+        .unwrap();
+        config_path
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_retry_that_adopts_a_partial_set_says_so_instead_of_reporting_an_all_clear() {
+        // The recovery path the startup retry opens: booted on a broken
+        // profile (0 timers), profile since fixed, sources still unavailable.
+        // The set genuinely improved — and it is NOT an all-clear. The retry is
+        // still armed, and once the one-shot first-fire deferral expires a unit
+        // a source overrides runs against the LOCAL destination and its prune
+        // drops the source-era retention rows.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"x").unwrap();
+        let (mut ctx, _state, buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_config_with_broken_source_cache(
+            &tmp,
+            &format!(
+                "    - name: db\n      source: {}\n      schedule: 1h\n",
+                crate::to_posix_string(&source)
+            ),
+        );
+
+        let mut set = BackupTimers::empty_with_retry(Instant::now() - StdDuration::from_secs(3600));
+        assert!(set.retry_due(Instant::now()));
+
+        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+
+        assert_eq!(set.len(), 1, "the local set must be adopted");
+        assert_eq!(
+            set.degraded_reason(),
+            Some(crate::daemon::backup::DegradedReason::SourcesUnavailable),
+            "adopting a partial set must not clear the degraded state"
+        );
+
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains(
+                "Backup schedules restored: 1 scheduled (source composition unavailable)"
+            ),
+            "the line must name what is still missing: {captured}"
+        );
+        assert!(
+            !captured.contains("✓ Backup schedules restored"),
+            "an unqualified all-clear tick would report a healthy set that is not: {captured}"
+        );
+        assert!(
+            captured.contains("⚠ Backup schedules restored"),
+            "a partial set is a warning, not an Ok: {captured}"
+        );
+    }
+
+    #[test]
+    fn a_sighup_that_adopts_a_partial_set_says_so_instead_of_reporting_an_all_clear() {
+        // Same state, reached the other way: a SIGHUP arriving while nothing is
+        // running adopts rather than refusing (there is nothing to protect), so
+        // its completion line carries the same qualifier the tick's does.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"x").unwrap();
+        let config_path = write_config_with_broken_source_cache(
+            &tmp,
+            &format!(
+                "    - name: db\n      source: {}\n      schedule: 1h\n",
+                crate::to_posix_string(&source)
+            ),
+        );
+        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
+        let reconcile_secs = AtomicU64::new(300);
+        let sync_secs = AtomicU64::new(300);
+
+        let mut set = BackupTimers::empty();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+
+        assert_eq!(set.len(), 1);
+        assert_eq!(
+            set.degraded_reason(),
+            Some(crate::daemon::backup::DegradedReason::SourcesUnavailable)
+        );
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains(
+                "Backup schedules reloaded: 1 added, 0 removed, 0 rescheduled (source composition unavailable)"
+            ),
+            "the reload line must name what is still missing: {captured}"
+        );
+        assert!(
+            !captured.contains("✓ Backup schedules reloaded"),
+            "an unqualified all-clear would tell the operator their edit landed in full: {captured}"
+        );
+        assert!(
+            captured.contains("⚠ Backup schedules reloaded"),
+            "a partial reload is a warning, not an Ok: {captured}"
+        );
+    }
+
+    #[test]
+    fn a_fully_resolved_reload_still_reports_a_plain_all_clear() {
+        // The qualifier must ride ONLY the degraded state: a healthy reload has
+        // to stay a bare Ok, or the warning stops meaning anything.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let source = tmp.path().join("data.db");
+        std::fs::write(&source, b"x").unwrap();
+        let config_path = write_config_with_backups(
+            &tmp,
+            &format!(
+                "    - name: db\n      source: {}\n      schedule: 1h\n",
+                crate::to_posix_string(&source)
+            ),
+        );
+        let (ctx, buf) = sighup_ctx(&tmp, &config_path);
+        let reconcile_secs = AtomicU64::new(300);
+        let sync_secs = AtomicU64::new(300);
+
+        let mut set = BackupTimers::empty();
+        runner::apply_sighup_reload(&ctx, &reconcile_secs, &sync_secs, &mut set);
+
+        assert!(!set.is_degraded());
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("✓ Backup schedules reloaded: 1 added, 0 removed, 0 rescheduled"),
+            "got: {captured}"
+        );
+        assert!(
+            !captured.contains("unavailable") && !captured.contains("unresolved"),
+            "a clean reload must carry no qualifier: {captured}"
+        );
+    }
+
     #[test]
     fn a_startup_that_cannot_resolve_the_profile_still_arms_a_retry() {
         // Startup is the one moment with no prior set to keep, so an

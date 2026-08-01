@@ -462,6 +462,24 @@ impl BackupTimers {
         self.degraded
     }
 
+    /// Role and suffix for a line reporting a schedule change, given the state
+    /// the set is in AFTER that change.
+    ///
+    /// A set that adopted a partial resolution has changed for the better and
+    /// is still not an all-clear: the retry is armed, and once the one-shot
+    /// first-fire deferral expires, a unit a source overrides runs against the
+    /// LOCAL destination and its prune drops the source-era retention rows. A
+    /// bare `✓ ... restored: 2 scheduled` would have the terminal reporting
+    /// everything is fine while exactly that is queued up, so the same
+    /// qualifier the startup banner carries rides these lines too — from one
+    /// place, so the two cannot drift apart.
+    pub(super) fn reload_line_qualifier(&self) -> (Role, &'static str) {
+        match self.degraded {
+            Some(reason) => (Role::Warn, reason.banner_note()),
+            None => (Role::Ok, ""),
+        }
+    }
+
     /// The soonest thing the loop must wake for: a fire, or the re-resolve.
     pub(super) fn next_deadline(&self) -> Option<Instant> {
         self.tasks

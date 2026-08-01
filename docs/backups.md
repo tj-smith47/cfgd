@@ -404,6 +404,17 @@ Timer behaviour:
   ```console
   ✓ Backup schedules restored: 3 scheduled
   ```
+
+  A recovery that is only *partial* — the profile parses again but sources are still unavailable —
+  says so on the same line rather than reporting an all-clear, because the retry is still armed and
+  a unit a source overrides would back up to its **local** destination once the first-fire deferral
+  expires:
+
+  ```console
+  ⚠ Backup schedules restored: 3 scheduled (source composition unavailable)
+  ```
+
+  The `SIGHUP` completion line carries the same qualifier when a reload adopts a partial set.
 - **A unit never overlaps itself.** The daemon's loop runs one tick at a time and waits for a run to
   finish, so a unit's next fire is not even evaluated while its own run is in flight. Fires that
   elapse during a long run are **skipped**, not queued: cfgd logs how many were passed over and arms
