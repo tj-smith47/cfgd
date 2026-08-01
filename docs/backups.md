@@ -41,19 +41,32 @@ A schedule-less backup (no `schedule`) also runs automatically during `cfgd appl
 reconciler's file/package/module phases (skipped in `--dry-run`, shown in the plan preview
 instead). A scheduled backup runs only via `cfgd backup run` or the daemon.
 
+Each schedule-less backup runs independently during apply — a unit that fails to complete (source
+missing, a hook errored, or a state-store write failure) is reported as a `✗`/`Warn` status and
+counted against the exit code, but does **not** abort the remaining backups or the rest of apply.
+A failed or unclean unit downgrades the apply's overall status from `success` to `partial`, which
+exits nonzero (`ExitCode::ApplyFailed`, code `7`) the same way a failed reconciler action would —
+see [Exit Codes](cli-reference.md#exit-codes).
+
 ```console
 $ cfgd backup run
 Run Backups
-  ✓ backup 'openlist-db'
-  ✓ backup 'weekly'
+
+✓ backup 'openlist-db'
+
+✓ backup 'weekly'
 
 $ cfgd backup run openlist-db
 Run Backups
-  ✓ backup 'openlist-db'
+
+✓ backup 'openlist-db'
 
 $ cfgd backup run missing-name
-Error: Backup 'missing-name' not found
-  hint: valid backups: openlist-db, weekly
+Run Backups
+
+✗ Backup 'missing-name' not found
+
+→ valid backups: openlist-db, weekly
 
 $ cfgd backup list
 Backups
@@ -72,11 +85,19 @@ $ cfgd --output json backup run openlist-db
     "destinationPath": "/home/me/.local/state/cfgd/backups/openlist-db/data.db.20260801T031500Z"
   }
 ]
+
+$ cfgd --output json backup run missing-name
+{
+  "error": "not_found",
+  "hint": "valid backups: openlist-db, weekly",
+  "name": "missing-name"
+}
 ```
 
 `cfgd backup run [name]` runs every declared backup when `name` is omitted, or just the named one.
 An unknown name is a typed error (exit code `6`, see [Exit Codes](cli-reference.md#exit-codes))
-that lists every valid name, and a run whose snapshot did not complete cleanly — see
+that lists every valid name — in human mode as a `→` hint line below the failure, in `-o json`
+as the payload's `hint` field — and a run whose snapshot did not complete cleanly — see
 [Run Semantics](#run-semantics) for what "clean" means — also exits nonzero so a script can
 detect it without parsing output.
 

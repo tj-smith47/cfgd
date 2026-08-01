@@ -1,1 +1,3 @@
-Backup 'bogus' not found: backup error: backup 'bogus' not found — valid backups: docs, weekly: backup 'bogus' not found — valid backups: docs, weekly
+✗ Backup 'bogus' not found
+
+→ valid backups: docs, weekly

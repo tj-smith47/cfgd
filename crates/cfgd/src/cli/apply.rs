@@ -503,7 +503,35 @@ pub fn run_apply(
             let unit =
                 cfgd_core::backup::BackupUnit::new(spec, &config_dir, &profile_name, &state_dir)
                     .with_abort(&abort);
-            let record = cfgd_core::backup::run_backup(&unit, &state, printer)?;
+            // Best-effort, matching the neighboring `record_source_apply` call
+            // above: `run_backup` only returns `Err` on a state-store write
+            // failure (ordinary snapshot/hook failures are captured into the
+            // returned record, not propagated), so a `?` here would abort
+            // every remaining backup AND the rest of apply over what's really
+            // a single unit's storage problem. Warn, count the unit as
+            // failed for exit-code purposes, and keep going.
+            let record = match cfgd_core::backup::run_backup(&unit, &state, printer) {
+                Ok(record) => record,
+                Err(e) => {
+                    printer
+                        .status(Role::Fail, format!("backup '{backup_name}'"))
+                        .detail(cfgd_core::output::collapse_to_subject_line(&e));
+                    tracing::warn!(
+                        backup = %backup_name,
+                        error = %e,
+                        "backup run failed; continuing with remaining backups"
+                    );
+                    status = cfgd_core::state::ApplyStatus::Partial;
+                    backup_outputs.push(BackupRunOutput {
+                        name: backup_name.clone(),
+                        status: "failed".to_string(),
+                        destination_path: None,
+                        clean: false,
+                        error: Some(e.to_string()),
+                    });
+                    continue;
+                }
+            };
             let subject = format!("backup '{}'", record.name);
             let role = if record.is_clean() {
                 Role::Ok

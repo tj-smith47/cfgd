@@ -9,12 +9,17 @@
 //!     run yet (`last_run_status` is "never").
 //!   - `backup/run_named.{txt,json}`      — `cfgd backup run docs` against a
 //!     real `BackupUnit`; asserts the snapshot file actually landed on disk.
-//!   - `backup/run_unknown.txt`           — `cfgd backup run bogus` returns a
-//!     typed error listing the valid names.
+//!   - `backup/run_unknown.{txt,json}`    — `cfgd backup run bogus` returns a
+//!     typed error listing the valid names in BOTH the human `render_cli_error`
+//!     output and the structured payload's `hint` field.
 //!   - apply integration (no goldens; behavioural assertions): a schedule-less
 //!     backup runs during `cfgd apply` even when the file/package/module plan
-//!     is empty, a `--dry-run` apply runs no backups, and a scheduled backup
-//!     is left untouched by `cfgd apply` (daemon/explicit-run only).
+//!     is empty, a `--dry-run` apply runs no backups, a scheduled backup is
+//!     left untouched by `cfgd apply` (daemon/explicit-run only), and a
+//!     failing schedule-less backup does not block a sibling unit declared
+//!     after it or the rest of apply — it only downgrades the overall status
+//!     to `partial` (nonzero exit), matching the `record_source_apply`
+//!     best-effort pattern.
 
 mod common;
 
@@ -27,7 +32,10 @@ use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::Printer;
 use pretty_assertions::assert_eq;
 
-use common::{apply_args, apply_args_dry_run, backup_profile_setup, cli_for};
+use common::{
+    apply_args, apply_args_dry_run, backup_profile_setup, backup_profile_with_one_failure_setup,
+    cli_for,
+};
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
@@ -199,7 +207,41 @@ fn backup_run_named_json() {
 }
 
 #[test]
-fn backup_run_unknown_name_errors_with_valid_list_and_snapshots() {
+fn backup_run_named_scheduled_backup_runs_alone() {
+    // Naming a SCHEDULED backup directly (`Some("weekly")`, not the
+    // no-name-runs-all path already covered by
+    // `backup_run_all_runs_every_declared_backup_including_scheduled`) must
+    // run it — and only it — regardless of its `schedule`. Only the daemon's
+    // automatic path (and `cfgd apply`'s schedule-less loop) gates on
+    // `schedule`; an explicit `cfgd backup run <name>` never does.
+    let (config_dir, state_dir, _source) = backup_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+
+    cmd_backup_run(&cli, &printer, Some("weekly")).unwrap();
+    drop(printer);
+
+    let payload = cap.json().expect("backup run doc carries a payload");
+    let entries = payload.as_array().expect("array payload");
+    assert_eq!(entries.len(), 1, "naming 'weekly' must run only 'weekly'");
+    assert_eq!(entries[0]["name"], "weekly");
+    assert_eq!(entries[0]["status"], "success");
+
+    let weekly_dir = state_dir.path().join("backups").join("weekly");
+    assert_eq!(
+        std::fs::read_dir(&weekly_dir).unwrap().count(),
+        1,
+        "the scheduled 'weekly' backup must have written exactly one snapshot"
+    );
+    let docs_dir = state_dir.path().join("backups").join("docs");
+    assert!(
+        !docs_dir.exists(),
+        "naming 'weekly' must not touch the unrelated 'docs' backup"
+    );
+}
+
+#[test]
+fn backup_run_unknown_name_human_renders_hint_once() {
     // An unknown name never reaches `cmd_backup_run`'s
     // `ExitCode::Error.exit()` branch — `run_backup_run`'s `?` propagates the
     // typed error immediately, so this is safe to assert in-process.
@@ -208,16 +250,64 @@ fn backup_run_unknown_name_errors_with_valid_list_and_snapshots() {
     let (printer, _cap) = Printer::for_test_doc();
 
     let err = cmd_backup_run(&cli, &printer, Some("bogus")).unwrap_err();
-    let msg = format!("{err:#}");
-    assert!(
-        msg.contains("bogus"),
-        "error must name the unknown backup: {msg}"
+
+    // Render through the real CLI-boundary sink (`render_cli_error`) — the
+    // ONLY path a user's terminal actually sees. Asserting on `{err:#}`'s raw
+    // anyhow chain instead double-prints the message (thiserror auto-derives
+    // `source()` from `CfgdError::Backup`'s `#[from]`, and the wrapper's
+    // `{0}` interpolation already embeds that same text), which is a test
+    // artifact, not real product output — see the sibling `cli/error.rs`
+    // `render_cli_error_human_renders_attached_hints` test for the pattern.
+    let (render_printer, render_cap) = Printer::for_test_doc();
+    cfgd::cli::error::render_cli_error(&render_printer, &err);
+    drop(render_printer);
+
+    let human = strip_ansi(&render_cap.human());
+    assert_eq!(
+        human.matches('✗').count(),
+        1,
+        "exactly one fail line, got: {human:?}"
     );
     assert!(
-        msg.contains("docs") && msg.contains("weekly"),
-        "error must list every valid backup name: {msg}"
+        human.contains("bogus"),
+        "error must name the unknown backup: {human}"
     );
-    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "backup/run_unknown.txt", &msg);
+    assert!(
+        human.contains("docs") && human.contains("weekly"),
+        "the valid-names hint must render in human mode, got: {human}"
+    );
+    assert_snapshot!(Path::new(SNAPSHOT_ROOT), "backup/run_unknown.txt", &human);
+}
+
+#[test]
+fn backup_run_unknown_name_json_carries_hint() {
+    let (config_dir, state_dir, _source) = backup_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, _cap) = Printer::for_test_doc();
+
+    let err = cmd_backup_run(&cli, &printer, Some("bogus")).unwrap_err();
+
+    let (render_printer, render_cap) =
+        Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    cfgd::cli::error::render_cli_error(&render_printer, &err);
+    drop(render_printer);
+
+    let payload = render_cap.json().expect("error doc carries a payload");
+    assert_eq!(payload["error"], "not_found");
+    assert_eq!(payload["name"], "bogus");
+    let hint = payload["hint"].as_str().expect("hint field present");
+    assert!(
+        hint.contains("docs") && hint.contains("weekly"),
+        "json hint must list every valid backup name: {hint}"
+    );
+
+    let normalized = serde_json::to_string_pretty(&payload).unwrap();
+    cfgd_core::test_helpers::assert_snapshot_golden(
+        Path::new(SNAPSHOT_ROOT),
+        "backup/run_unknown.json",
+        &normalized,
+        env!("CARGO_PKG_VERSION"),
+    );
 }
 
 #[test]
@@ -338,6 +428,62 @@ fn apply_dry_run_skips_backups() {
         !docs_dir.exists(),
         "--dry-run must not execute any backup, even a schedule-less one"
     );
+}
+
+#[test]
+fn apply_backup_failure_does_not_block_subsequent_backups_or_apply() {
+    // `run_backup` only returns `Err` on a state-store write failure — an
+    // ordinary failure (missing source, a failed hook) is captured into the
+    // returned record instead, so this exercises the loop's continuation
+    // contract with a real, deterministic "failing unit" rather than trying
+    // to force the narrow (and not independently reachable through public
+    // API) DB-write-error branch. The observable behavior the coordinator
+    // asked to pin — a failing unit doesn't block a sibling unit or the rest
+    // of apply, and apply still exits nonzero overall — is identical either
+    // way, since both arms of the `match` in `apply.rs` set
+    // `status = ApplyStatus::Partial` and fall through to the next unit.
+    let (config_dir, state_dir, _ok_source) = backup_profile_with_one_failure_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    let args = apply_args();
+
+    let outcome = run_apply(&cli, &printer, &args).unwrap();
+    drop(printer);
+
+    assert_eq!(
+        outcome.status,
+        cfgd_core::state::ApplyStatus::Partial,
+        "a failed backup unit must downgrade apply's overall status"
+    );
+
+    let ok_dir = state_dir.path().join("backups").join("ok");
+    assert!(
+        ok_dir.exists() && std::fs::read_dir(&ok_dir).unwrap().count() == 1,
+        "the 'ok' backup declared AFTER the failing 'broken' one must still have run"
+    );
+    let broken_dir = state_dir.path().join("backups").join("broken");
+    assert!(
+        !broken_dir.exists(),
+        "the failing 'broken' backup must not have produced an artifact"
+    );
+
+    let payload = cap.json().expect("apply doc carries a payload");
+    let backups = payload["backups"].as_array().expect("backups array");
+    assert_eq!(
+        backups.len(),
+        2,
+        "both declared backups must be reported, not just the one before the failure"
+    );
+    let broken = backups
+        .iter()
+        .find(|b| b["name"] == "broken")
+        .expect("broken backup reported");
+    assert_eq!(broken["clean"], false);
+    let ok = backups
+        .iter()
+        .find(|b| b["name"] == "ok")
+        .expect("ok backup reported");
+    assert_eq!(ok["clean"], true);
 }
 
 #[test]

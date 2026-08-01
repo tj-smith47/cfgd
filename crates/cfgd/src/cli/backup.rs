@@ -12,7 +12,10 @@ fn backup_not_found_error(name: &str, valid: Vec<String>) -> anyhow::Error {
     } else {
         format!("valid backups: {}", valid.join(", "))
     };
-    cli_error_ctx(
+    // `_with_hints` (not `cli_error_ctx`) so the valid-names hint renders in
+    // human mode too, not just the `extras` JSON payload — see
+    // `cli/profile/switch.rs::cmd_profile_switch` for the sibling pattern.
+    cli_error_ctx_with_hints(
         cfgd_core::errors::CfgdError::Backup(cfgd_core::errors::BackupError::UnknownName {
             name: name.to_string(),
             valid,
@@ -22,6 +25,7 @@ fn backup_not_found_error(name: &str, valid: Vec<String>) -> anyhow::Error {
         "not_found",
         format!("Backup '{name}' not found"),
         serde_json::json!({ "hint": hint }),
+        vec![hint],
     )
 }
 

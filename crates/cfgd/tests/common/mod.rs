@@ -250,6 +250,37 @@ pub fn backup_profile_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf)
     (config_dir, state_dir, source_file)
 }
 
+/// Build a tempdir-backed profile with TWO schedule-less backups, declared
+/// `broken` **then** `ok`: `broken`'s source path doesn't exist (the run is
+/// recorded `Failed` with no artifact), `ok`'s source is real and succeeds.
+/// Both run automatically during `cfgd apply` in declaration order — proves
+/// a failed unit doesn't block the sibling that comes *after* it.
+///
+/// Returns `(config_dir, state_dir, ok_source)`.
+pub fn backup_profile_with_one_failure_setup() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let ok_source = config_dir.path().join("data").join("notes.txt");
+    std::fs::create_dir_all(ok_source.parent().unwrap()).unwrap();
+    std::fs::write(&ok_source, "hello backup").unwrap();
+    let broken_source = config_dir.path().join("data").join("does-not-exist.txt");
+
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: withbackups\nspec:\n  inherits: []\n  modules: []\n  backups:\n    - name: broken\n      source: {}\n      retention: 3\n    - name: ok\n      source: {}\n      retention: 3\n",
+        broken_source.display(),
+        ok_source.display(),
+    );
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("withbackups.yaml"), &profile).unwrap();
+
+    let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: withbackups\n";
+    std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
+
+    (config_dir, state_dir, ok_source)
+}
+
 // ---------------------------------------------------------------------------
 // Source-sync fixtures (cmd_sync).
 //
