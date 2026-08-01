@@ -3156,9 +3156,51 @@ fn load_source_rejects_absolute_path_origin_without_allow_env() {
 }
 
 // ---------------------------------------------------------------------------
-// load_source — single-name traversal coverage. validate_no_traversal accepts
-// `name` containing `/` but rejects names starting with `..`.
+// load_source — the source name becomes a cache directory of its own, so it has
+// to be a plain name and not merely free of `..`.
 // ---------------------------------------------------------------------------
+
+fn source_spec_named(name: &str) -> crate::config::SourceSpec {
+    crate::config::SourceSpec {
+        name: name.into(),
+        origin: crate::config::OriginSpec {
+            origin_type: OriginType::Git,
+            url: "https://example.com/repo.git".into(),
+            branch: "main".into(),
+            auth: None,
+            ssh_strict_host_key_checking: Default::default(),
+        },
+        subscription: Default::default(),
+        sync: Default::default(),
+    }
+}
+
+#[test]
+fn load_source_rejects_a_name_that_resolves_to_the_shared_cache_root() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cache_dir = tmp.path().join("cache");
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    let printer = test_printer();
+
+    for name in [".", "./repo", "repo/.", ""] {
+        let mut mgr = SourceManager::new(&cache_dir);
+        let spec = source_spec_named(name);
+        let err = mgr
+            .load_source(&spec, &printer)
+            .expect_err(&format!("name '{name}' must not reach a clone"));
+        assert!(
+            err.to_string().contains("invalid source name"),
+            "name '{name}': {err}"
+        );
+        // The cached read path guards identically — otherwise a `.` name would
+        // parse the cache root as one source's manifest.
+        let mut mgr = SourceManager::new(&cache_dir);
+        assert!(
+            mgr.load_source_cached(&source_spec_named(name), &printer)
+                .is_err()
+        );
+    }
+}
 
 #[test]
 fn load_source_rejects_double_dot_name_with_clear_error() {

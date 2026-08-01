@@ -396,6 +396,62 @@ fn validate_no_traversal_rejects_dotdot() {
 }
 
 #[test]
+fn validate_no_traversal_keeps_a_leading_dot_slash_legal() {
+    // Ordinary user syntax for "relative to here" — it still names a file.
+    assert!(validate_no_traversal(std::path::Path::new("./configs/vimrc")).is_ok());
+    assert!(validate_no_traversal(std::path::Path::new("configs/.")).is_ok());
+}
+
+#[test]
+fn validate_no_traversal_rejects_a_path_that_names_nothing_of_its_own() {
+    for candidate in [".", "./", "./.", "/"] {
+        let err = validate_no_traversal(std::path::Path::new(candidate)).expect_err(&format!(
+            "'{candidate}' resolves to whatever it is joined onto and must be rejected"
+        ));
+        assert!(err.contains("names no file or directory"), "got: {err}");
+    }
+}
+
+#[test]
+fn validate_plain_name_accepts_ordinary_names() {
+    for candidate in ["snapshot", "daily/2026", "a.b.c", "..hidden", "x..y"] {
+        assert!(
+            validate_plain_name(candidate).is_ok(),
+            "'{candidate}' should be a usable name"
+        );
+    }
+}
+
+#[test]
+fn validate_plain_name_rejects_every_directory_reference() {
+    // `daily/.` is the one `Path::components()` cannot see: it normalizes to the
+    // single component `daily` while the joined path still resolves to `daily`
+    // itself rather than to something new inside it.
+    for candidate in [".", "..", "daily/.", "./daily", "a/../b", "/daily", "a//b"] {
+        assert!(
+            validate_plain_name(candidate).is_err(),
+            "'{candidate}' does not name something new and must be rejected"
+        );
+    }
+    assert!(validate_plain_name("").is_err());
+    // Windows separators are judged too — the check runs before any `Path` parse,
+    // where a `\` would otherwise be an ordinary character on unix.
+    assert!(validate_plain_name(r"daily\.").is_err());
+}
+
+#[test]
+fn resolve_relative_path_rejects_an_input_that_collapses_onto_the_base() {
+    let base = std::path::Path::new("/srv/config");
+    // Validated before the join: `base.join(".")` carries the base's own
+    // components, so a check on the joined path would wave this through.
+    assert!(resolve_relative_path(std::path::Path::new("."), base).is_err());
+    assert_eq!(
+        resolve_relative_path(std::path::Path::new("a/b"), base).expect("plain relative path"),
+        std::path::PathBuf::from("/srv/config/a/b")
+    );
+}
+
+#[test]
 fn shell_escape_value_simple() {
     assert_eq!(shell_escape_value("hello"), "\"hello\"");
 }
@@ -699,6 +755,53 @@ fn copy_dir_recursive_preserves_directory_modes() {
     assert_eq!(
         std::fs::read_to_string(dst_path.join("private/secret")).unwrap(),
         "s"
+    );
+}
+
+#[test]
+fn copy_dir_recursive_does_not_descend_into_its_own_output() {
+    let root = tempfile::tempdir().unwrap();
+    let src = root.path().join("tree");
+    std::fs::create_dir_all(src.join("data")).unwrap();
+    std::fs::write(src.join("data/a.txt"), "a").unwrap();
+    // The output lives inside the tree being walked.
+    let dst = src.join("copy");
+
+    copy_dir_recursive(&src, &dst).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(dst.join("data/a.txt")).unwrap(),
+        "a"
+    );
+    assert!(
+        !dst.join("copy").exists(),
+        "the walk copied its own output into itself"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn copy_dir_recursive_does_not_descend_into_a_symlinked_output() {
+    let root = tempfile::tempdir().unwrap();
+    let src = root.path().join("tree");
+    std::fs::create_dir_all(src.join("data")).unwrap();
+    std::fs::write(src.join("data/a.txt"), "a").unwrap();
+    // Lexically disjoint from `src`, physically inside it: without resolving the
+    // link, the walk finds `tree/copy` and recurses until the path length gives
+    // out.
+    let link = root.path().join("link");
+    std::os::unix::fs::symlink(&src, &link).unwrap();
+    let dst = link.join("copy");
+
+    copy_dir_recursive(&src, &dst).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(dst.join("data/a.txt")).unwrap(),
+        "a"
+    );
+    assert!(
+        !src.join("copy/copy").exists(),
+        "the walk followed its own output back through the link"
     );
 }
 

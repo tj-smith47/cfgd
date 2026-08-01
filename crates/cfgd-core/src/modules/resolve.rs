@@ -219,9 +219,9 @@ pub fn resolve_module_files(
         } else {
             // Local path — relative to module directory
             let rel = std::path::Path::new(&entry.source);
-            crate::validate_no_traversal(rel).map_err(|_| ModuleError::InvalidSpec {
+            crate::validate_no_traversal(rel).map_err(|e| ModuleError::InvalidSpec {
                 name: module.name.clone(),
-                message: format!("file source contains path traversal: {}", entry.source),
+                message: format!("file source '{}' is not usable: {e}", entry.source),
             })?;
             let source = module.dir.join(rel);
             // Verify the resolved path stays within the module directory

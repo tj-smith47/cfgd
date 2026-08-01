@@ -145,12 +145,7 @@ impl SourceManager {
     /// never-synced source (no cache dir) is warned about and skipped; a cached
     /// source with a broken manifest or failed signature is a hard error.
     pub fn load_source_cached(&mut self, spec: &SourceSpec, printer: &Printer) -> Result<()> {
-        crate::validate_no_traversal(std::path::Path::new(&spec.name)).map_err(|e| {
-            SourceError::GitError {
-                name: spec.name.clone(),
-                message: format!("invalid source name: {e}"),
-            }
-        })?;
+        validate_source_name(&spec.name)?;
 
         let source_dir = self.cache_dir.join(&spec.name);
         if !source_dir.exists() {
@@ -189,12 +184,7 @@ impl SourceManager {
 
     /// Load a single source — clone or fetch, parse manifest, check version.
     pub fn load_source(&mut self, spec: &SourceSpec, printer: &Printer) -> Result<()> {
-        crate::validate_no_traversal(std::path::Path::new(&spec.name)).map_err(|e| {
-            SourceError::GitError {
-                name: spec.name.clone(),
-                message: format!("invalid source name: {e}"),
-            }
-        })?;
+        validate_source_name(&spec.name)?;
 
         // Reject local file URLs to prevent local filesystem access from composed sources.
         // CFGD_ALLOW_LOCAL_SOURCES bypasses this for dev/test environments only.
@@ -1028,6 +1018,19 @@ impl SourceManager {
             sync: Default::default(),
         }
     }
+}
+
+/// Reject a source name that cannot serve as a cache directory of its own.
+///
+/// The name is the only thing separating one source's cache from another's, and
+/// the sync path removes and re-clones that directory. A name of `.` would point
+/// at the cache root shared by every source.
+fn validate_source_name(name: &str) -> Result<()> {
+    crate::validate_plain_name(name).map_err(|e| SourceError::GitError {
+        name: name.to_string(),
+        message: format!("invalid source name: {e}"),
+    })?;
+    Ok(())
 }
 
 /// Read and parse a cfgd-source.yaml manifest from a directory.

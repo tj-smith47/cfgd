@@ -294,10 +294,13 @@ fn take_snapshot(
 
     let destination = unit.destination_dir();
     // A destination under the source turns the copy into a tree that grows into
-    // itself: `copy_dir_recursive` creates the staging directory before reading
-    // the source, so the walk finds it and descends forever. Checked before any
-    // filesystem write, so a misconfiguration costs nothing.
-    if is_at_or_within(&destination, source) {
+    // itself: the walk finds its own output and descends forever. Both operands
+    // are symlink-resolved, because a `destination` that is lexically disjoint
+    // from the source (`~/link/backups` where `~/link` -> `~/Pictures`) is still
+    // physically inside it. Checked before any filesystem write, so a
+    // misconfiguration costs nothing.
+    let real_source = resolve_for_containment(source);
+    if is_at_or_within(&resolve_for_containment(&destination), &real_source) {
         return Err(BackupError::DestinationInsideSource {
             name: spec.name.clone(),
             source_path: source.to_path_buf(),
@@ -309,7 +312,7 @@ fn take_snapshot(
     // A snapshot path that is (or contains) the source would have the source
     // deleted by `remove_existing` on the way to publishing the snapshot, and
     // would later be deleted outright by retention pruning.
-    if is_at_or_within(source, &target) {
+    if is_at_or_within(&real_source, &resolve_for_containment(&target)) {
         return Err(BackupError::SnapshotCollidesWithSource {
             name: spec.name.clone(),
             source_path: source.to_path_buf(),
@@ -358,9 +361,44 @@ fn posix_path(path: &Path) -> PathBuf {
 ///
 /// Lexical rather than `canonicalize`: the paths compared here routinely do not
 /// exist yet (a snapshot target) or no longer exist (a pruning candidate), and
-/// `canonicalize` fails on both.
+/// `canonicalize` fails on both. Callers that must also catch containment
+/// established through a symlink resolve their operands with
+/// [`resolve_for_containment`] first.
 fn is_at_or_within(path: &Path, root: &Path) -> bool {
     posix_path(path).starts_with(posix_path(root))
+}
+
+/// A path with its existing portion resolved through symlinks, so two paths that
+/// are lexically disjoint but physically nested compare as nested.
+///
+/// `canonicalize` alone cannot be used: a destination directory is routinely
+/// created by the very run being guarded, and a snapshot target never exists
+/// yet. The deepest ancestor that *does* exist is resolved and the missing tail
+/// re-appended, which is enough — a path cannot be moved into the source tree by
+/// components that do not exist.
+fn resolve_for_containment(path: &Path) -> PathBuf {
+    let mut missing_tail = Vec::new();
+    let mut cursor = path;
+    loop {
+        if let Ok(real) = cursor.canonicalize() {
+            let mut resolved =
+                PathBuf::from(crate::strip_windows_verbatim(&crate::to_posix_string(real)));
+            for segment in missing_tail.iter().rev() {
+                resolved.push(segment);
+            }
+            return resolved;
+        }
+        match (cursor.parent(), cursor.file_name()) {
+            (Some(parent), Some(name)) if parent != cursor => {
+                missing_tail.push(name.to_owned());
+                cursor = parent;
+            }
+            // A root, or a relative path whose first component does not exist:
+            // there is nothing left to resolve, so the lexical form is the
+            // best available answer.
+            _ => return posix_path(path),
+        }
+    }
 }
 
 /// Whether `path` is a snapshot **inside** `destination`: strictly below it, and
@@ -435,23 +473,7 @@ fn snapshot_name(spec: &BackupSpec, source: &Path) -> std::result::Result<PathBu
             "it is absolute; namePattern is relative to the destination".to_string(),
         ));
     }
-    // Judged on the raw rendered string, NOT `Path::components()`: the component
-    // iterator normalizes `.` away, so `"a/."` would read as one plain component
-    // while the joined path still ends in `/.` — and clearing a `/.`-suffixed
-    // directory empties it before the call reports failure. Every segment must
-    // be a plain name.
-    for segment in rendered.split(['/', '\\']) {
-        if segment.is_empty() {
-            return Err(invalid(
-                "it has an empty path segment; every segment must name something".to_string(),
-            ));
-        }
-        if segment == "." || segment == ".." {
-            return Err(invalid(format!(
-                "the segment '{segment}' is a directory reference, not a name"
-            )));
-        }
-    }
+    crate::validate_plain_name(&rendered).map_err(invalid)?;
     Ok(path)
 }
 

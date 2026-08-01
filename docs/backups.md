@@ -84,6 +84,17 @@ each snapshot part of the next one, without end, so cfgd rejects it before copyi
 A `namePattern` that renders to the source's own path is rejected for the same reason: taking the
 snapshot would destroy the data being backed up.
 
+The check resolves symlinks on both sides, so a destination that only *looks* separate is caught
+too:
+
+```yaml
+# also rejected — ~/link is a symlink to ~/Pictures, so the destination is
+# physically inside the source even though the two paths share no prefix
+- name: photos
+  source: ~/Pictures
+  destination: ~/link/backups
+```
+
 ### Permissions
 
 On Unix, snapshots carry the source's modes: file modes come across with the copy, and each copied

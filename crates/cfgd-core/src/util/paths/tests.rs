@@ -639,3 +639,14 @@ fn capture_file_resolved_state_oversized_skips_content() {
     assert!(state.content.is_empty());
     assert!(state.content_hash.is_empty());
 }
+
+#[cfg(unix)]
+#[test]
+fn copy_dir_mode_failure_never_fails_the_copy() {
+    // The real trigger is a filesystem with no mode bits (vfat, CIFS, some FUSE
+    // mounts), which no in-process test can mount. A missing target is the same
+    // shape: the chmod errors and the caller must still see a completed copy.
+    // This also pins the signature — restoring the `?` stops it compiling.
+    let src = tempfile::TempDir::new().unwrap();
+    super::copy_dir_mode(src.path(), &src.path().join("does-not-exist"));
+}

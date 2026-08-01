@@ -128,13 +128,10 @@ impl SystemConfigurator for SeccompConfigurator {
             };
 
             let profile_path = profiles_dir.join(file);
-            if cfgd_core::validate_no_traversal(std::path::Path::new(file)).is_err() {
+            if let Err(e) = cfgd_core::validate_no_traversal(std::path::Path::new(file)) {
                 printer.status_simple(
                     Role::Warn,
-                    format!(
-                        "Skipping seccomp profile {}: path traversal in file name",
-                        name
-                    ),
+                    format!("Skipping seccomp profile {name} ({file}): {e}"),
                 );
                 continue;
             }

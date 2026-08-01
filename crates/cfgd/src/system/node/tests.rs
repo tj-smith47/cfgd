@@ -2691,6 +2691,82 @@ fn apparmor_apply_skips_profile_entries_with_path_traversal() {
     );
 }
 
+#[test]
+fn apparmor_apply_skips_a_profile_path_that_names_no_file() {
+    // `/` and `/.` resolve to a directory, not a profile. `atomic_write_str`
+    // would fail on them anyway; the point is that the entry is refused with a
+    // warning instead of aborting the whole configurator on an io error.
+    let ac = AppArmorConfigurator;
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut profile = serde_yaml::Mapping::new();
+    profile.insert(
+        serde_yaml::Value::String("name".into()),
+        serde_yaml::Value::String("rootish".into()),
+    );
+    profile.insert(
+        serde_yaml::Value::String("path".into()),
+        serde_yaml::Value::String("/".into()),
+    );
+    profile.insert(
+        serde_yaml::Value::String("content".into()),
+        serde_yaml::Value::String("profile rootish {}".into()),
+    );
+    let mut desired = serde_yaml::Mapping::new();
+    desired.insert(
+        serde_yaml::Value::String("profiles".into()),
+        serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
+    );
+
+    ac.apply(&serde_yaml::Value::Mapping(desired), &printer)
+        .expect("a skipped entry must not fail apply");
+
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("names no file or directory"),
+        "should warn about the unusable path: {output}"
+    );
+}
+
+#[test]
+fn seccomp_apply_skips_a_file_name_that_resolves_to_the_profiles_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let sc = SeccompConfigurator;
+    let (printer, buf) =
+        cfgd_core::output::Printer::for_test_at(cfgd_core::output::Verbosity::Normal);
+    let mut profile = serde_yaml::Mapping::new();
+    profile.insert(
+        serde_yaml::Value::String("name".into()),
+        serde_yaml::Value::String("dotted".into()),
+    );
+    profile.insert(
+        serde_yaml::Value::String("file".into()),
+        serde_yaml::Value::String(".".into()),
+    );
+    profile.insert(
+        serde_yaml::Value::String("content".into()),
+        serde_yaml::Value::String("{}".into()),
+    );
+    let mut desired = serde_yaml::Mapping::new();
+    desired.insert(
+        serde_yaml::Value::String("profilesDir".into()),
+        serde_yaml::Value::String(cfgd_core::to_posix_string(dir.path())),
+    );
+    desired.insert(
+        serde_yaml::Value::String("profiles".into()),
+        serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(profile)]),
+    );
+
+    sc.apply(&serde_yaml::Value::Mapping(desired), &printer)
+        .expect("a skipped entry must not fail apply");
+
+    let output = buf.lock().unwrap();
+    assert!(
+        output.contains("names no file or directory"),
+        "should warn about the unusable file name: {output}"
+    );
+}
+
 // --- ContainerdConfigurator::apply paths ---
 //
 // Same shape as kubelet apply tests below: drive the no-op, empty-settings,

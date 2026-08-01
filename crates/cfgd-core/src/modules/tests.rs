@@ -2427,6 +2427,12 @@ fn resolve_subdir_traversal_rejected() {
     assert!(result.unwrap_err().to_string().contains("traversal"));
 }
 
+#[test]
+fn resolve_subdir_dot_only_rejected() {
+    let base = PathBuf::from("/cache/abc123");
+    assert!(resolve_subdir(base, &Some(".".to_string()), "test", "url").is_err());
+}
+
 // -----------------------------------------------------------------------
 // load_module
 // -----------------------------------------------------------------------
@@ -2638,6 +2644,40 @@ fn resolve_module_files_local_relative() {
     assert!(!resolved[0].is_git_source);
     assert!(resolved[0].strategy.is_none());
     assert!(resolved[0].encryption.is_none());
+}
+
+#[test]
+fn resolve_module_files_rejects_a_source_that_names_the_module_dir() {
+    let dir = tempfile::tempdir().unwrap();
+    let mod_dir = dir.path().join("modules").join("greedy");
+    std::fs::create_dir_all(&mod_dir).unwrap();
+
+    // `.` resolves to the module directory itself, which every downstream
+    // `source.is_dir()` branch would then deploy wholesale.
+    let module = LoadedModule {
+        name: "greedy".into(),
+        spec: ModuleSpec {
+            files: vec![ModuleFileEntry {
+                modify: None,
+                source: ".".into(),
+                target: "/tmp/everything".into(),
+                strategy: None,
+                private: false,
+                encryption: None,
+                permissions: None,
+            }],
+            ..Default::default()
+        },
+        dir: mod_dir,
+        origin: None,
+    };
+
+    let printer = test_printer();
+    let cache_base = dir.path().join("cache");
+    let err = resolve_module_files(&module, &cache_base, &printer)
+        .expect_err("a source of '.' must not resolve to the whole module directory")
+        .to_string();
+    assert!(err.contains("names no file or directory"), "got: {err}");
 }
 
 #[test]

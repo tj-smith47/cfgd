@@ -157,13 +157,10 @@ impl SystemConfigurator for AppArmorConfigurator {
                 Some(p) => PathBuf::from(p),
                 None => continue,
             };
-            if cfgd_core::validate_no_traversal(&path).is_err() {
+            if let Err(e) = cfgd_core::validate_no_traversal(&path) {
                 printer.status_simple(
                     Role::Warn,
-                    format!(
-                        "Skipping AppArmor profile {}: path traversal detected",
-                        name
-                    ),
+                    format!("Skipping AppArmor profile {name} ({}): {e}", path.posix()),
                 );
                 continue;
             }

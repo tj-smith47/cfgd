@@ -157,15 +157,15 @@ impl Cache {
     }
 
     fn entry_path(&self, module: &str, version: &str) -> Result<PathBuf, CsiError> {
-        cfgd_core::validate_no_traversal(Path::new(module)).map_err(|e| {
-            CsiError::InvalidAttribute {
-                key: format!("module: {e}"),
-            }
+        // Plain names, not merely traversal-free paths: these two segments are
+        // the whole containment story for an entry that gets `remove_dir_all`ed
+        // by eviction and bind-mounted into a pod. A `.` would resolve the entry
+        // to the cache root and hand a pod every cached module.
+        cfgd_core::validate_plain_name(module).map_err(|e| CsiError::InvalidAttribute {
+            key: format!("module: {e}"),
         })?;
-        cfgd_core::validate_no_traversal(Path::new(version)).map_err(|e| {
-            CsiError::InvalidAttribute {
-                key: format!("version: {e}"),
-            }
+        cfgd_core::validate_plain_name(version).map_err(|e| CsiError::InvalidAttribute {
+            key: format!("version: {e}"),
         })?;
         Ok(self.root.join(module).join(version))
     }
@@ -368,6 +368,27 @@ mod tests {
         let cache = make_cache(dir.path(), 1024);
         assert!(cache.entry_path("../../etc", "passwd").is_err());
         assert!(cache.entry_path("good-mod", "../../../tmp").is_err());
+    }
+
+    #[test]
+    fn entry_path_rejects_segments_that_resolve_to_the_cache_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = make_cache(dir.path(), 1024);
+        // Each of these would hand a pod the whole cache and expose every other
+        // module's contents through one volume.
+        for (module, version) in [
+            (".", "1.0.0"),
+            ("good-mod", "."),
+            (".", "."),
+            ("./good-mod", "1.0.0"),
+            ("good-mod/.", "1.0.0"),
+            ("", "1.0.0"),
+        ] {
+            assert!(
+                cache.entry_path(module, version).is_err(),
+                "entry_path({module:?}, {version:?}) escaped its own directory"
+            );
+        }
     }
 
     #[test]

@@ -15,7 +15,7 @@ External call sites do not change: `cfgd_core::utc_now_iso8601(...)`, `cfgd_core
 | `util/time.rs` | Timestamps + duration parsing |
 | `util/yaml_merge.rs` | YAML deep merge + Vec<EnvVar/ShellAlias>/Vec<String> mergers |
 | `util/strings.rs` | Env-var / alias parsing + validation, shell/XML/k8s-name escaping & sanitization |
-| `util/paths.rs` | `default_config_dir`, `expand_tilde`, `resolve_relative_path`, `validate_path_within`, `validate_no_traversal`, `copy_dir_recursive`, plus the test-home thread-local: `TestHomeGuard`, `with_test_home`, `with_test_home_guard`, `spawn_blocking_with_test_home` |
+| `util/paths.rs` | `default_config_dir`, `expand_tilde`, `resolve_relative_path`, `validate_path_within`, `validate_no_traversal`, `validate_plain_name`, `copy_dir_recursive`, plus the test-home thread-local: `TestHomeGuard`, `with_test_home`, `with_test_home_guard`, `spawn_blocking_with_test_home` |
 | `util/fs_perms.rs` | Cross-platform symlinks, permissions, exec-bit, inode/file-index identity |
 | `util/file_io.rs` | `atomic_write[_str]`, `capture_file_state[_resolved]`, `FileState` struct |
 | `util/process.rs` | Command helpers (`command_output_with_timeout`, `command_available`, `terminate_process`, `stdout/stderr_lossy_trimmed`, `is_root`, `hostname_string`, `tracing_env_filter`, `require_tool`) |
@@ -77,7 +77,8 @@ External call sites do not change: `cfgd_core::utc_now_iso8601(...)`, `cfgd_core
 - `expand_tilde(path)` — expand `~/...` or `~\...` to home; uses `HOME` on Unix, `USERPROFILE` (then `HOME`) on Windows
 - `resolve_relative_path(path, base)` — resolve relative to base with traversal validation
 - `validate_path_within(path, root)` — canonicalize and verify path within root
-- `validate_no_traversal(path)` — reject paths containing `..`
+- `validate_no_traversal(path)` — reject a user-written path reference that contains `..` **or** that names nothing of its own (`.`, `./`, so it would resolve to the directory it is joined onto). Use for paths cfgd reads from or writes to; a leading `./` stays legal
+- `validate_plain_name(raw)` — stricter, and judged on the raw string because `Path::components()` normalizes `.` away: every `/`-or-`\`-separated segment must be an ordinary name (`daily/2026` ok; `.`, `daily/.`, `./daily`, `/daily`, `daily/`, `daily//x` rejected). Use for any string that NAMES something cfgd creates under a root it may later delete or mount wholesale — source names, CSI cache module/version, backup snapshot names
 - `atomic_write(target, content)` — atomic write via temp+rename; returns SHA256 hash; use instead of `fs::write()` in ALL production code
 - `atomic_write_str(target, content)` — string variant
 - `ensure_parent_dir(target)` — create the parent directory of a file path (and ancestors) if missing; use instead of the inline `if let Some(parent) = path.parent() { create_dir_all(parent)? }` idiom before writing a file. For creating a named directory itself, call `create_dir_all` directly

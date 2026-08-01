@@ -945,6 +945,64 @@ fn a_snapshot_path_that_would_clobber_the_source_is_rejected() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn a_destination_symlinked_into_the_source_is_rejected() {
+    let h = Harness::new();
+    let source = h.root.join("Pictures");
+    std::fs::create_dir_all(&source).expect("source tree");
+    std::fs::write(source.join("a.jpg"), b"jpeg").expect("source file");
+    // Lexically disjoint from the source, physically inside it.
+    let link = h.root.join("link");
+    std::os::unix::fs::symlink(&source, &link).expect("symlink");
+    let mut s = spec("photos", &source);
+    s.destination = Some(link.join("backups"));
+
+    let record = h.run(&s);
+
+    assert_eq!(
+        record.status,
+        BackupRunStatus::Failed,
+        "a destination that reaches the source through a symlink was accepted"
+    );
+    let error = record.error.clone().expect("failure detail");
+    assert!(error.contains("is inside source"), "got: {error}");
+    assert!(
+        !source.join("backups").exists(),
+        "the rejected destination was created through the link anyway"
+    );
+    assert_eq!(
+        std::fs::read_dir(&source).expect("source readable").count(),
+        1,
+        "the source tree was modified by a rejected backup"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_source_symlinked_into_the_destination_is_rejected() {
+    let h = Harness::new();
+    let real = h.root.join("Pictures");
+    std::fs::create_dir_all(&real).expect("source tree");
+    let dest = real.join("backups");
+    std::fs::create_dir_all(&dest).expect("dest");
+    // The mirror image: the *source* is the aliased operand this time.
+    let link = h.root.join("link");
+    std::os::unix::fs::symlink(&real, &link).expect("symlink");
+    let mut s = spec("photos", &link);
+    s.destination = Some(dest);
+
+    let record = h.run(&s);
+
+    assert_eq!(record.status, BackupRunStatus::Failed);
+    assert!(
+        record
+            .error
+            .unwrap_or_default()
+            .contains("is inside source")
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Permissions
 // ---------------------------------------------------------------------------

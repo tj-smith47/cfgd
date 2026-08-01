@@ -778,9 +778,12 @@ pub(crate) fn home_dir_var() -> Option<String> {
 }
 
 /// Resolve a relative path against a base directory with traversal validation.
-/// Absolute paths are returned as-is. Relative paths are joined to `base` and
-/// validated with `validate_no_traversal`. Returns `Err` if the relative path
-/// contains `..` components.
+/// Absolute paths are returned as-is. Relative paths are validated with
+/// `validate_no_traversal` and then joined to `base`.
+///
+/// The *input* is validated rather than the joined result: `base` is trusted
+/// config-owned state, and joining first hides a `.`-only input behind the
+/// base's own components.
 pub fn resolve_relative_path(
     path: &std::path::Path,
     base: &std::path::Path,
@@ -788,9 +791,8 @@ pub fn resolve_relative_path(
     if path.is_absolute() {
         Ok(path.to_path_buf())
     } else {
-        let joined = base.join(path);
-        validate_no_traversal(&joined)?;
-        Ok(joined)
+        validate_no_traversal(path)?;
+        Ok(base.join(path))
     }
 }
 
@@ -817,14 +819,60 @@ pub fn validate_path_within(
     Ok(canonical_path)
 }
 
-/// Validate that a path contains no `..` components (pre-canonicalization check).
+/// Validate that a path neither traverses upward nor collapses onto the
+/// directory it would be resolved against (pre-canonicalization check).
 ///
-/// This catches traversal attempts even when intermediate directories don't
-/// exist yet, which `canonicalize()` cannot handle.
+/// Catches traversal attempts even when intermediate directories don't exist
+/// yet, which `canonicalize()` cannot handle. A leading `./` is ordinary user
+/// syntax and stays legal, but a path built only from `.` segments names
+/// whatever it is joined onto rather than anything inside it — the same class of
+/// mistake as `..`, and the one that turns "write this file" into "operate on
+/// the whole root".
 pub fn validate_no_traversal(path: &std::path::Path) -> std::result::Result<(), String> {
+    let mut named_something = false;
     for component in path.components() {
-        if let std::path::Component::ParentDir = component {
-            return Err(format!("path contains '..': {}", path.posix()));
+        match component {
+            std::path::Component::ParentDir => {
+                return Err("path traversal — it contains '..'".to_string());
+            }
+            std::path::Component::Normal(_) => named_something = true,
+            _ => {}
+        }
+    }
+    if !named_something {
+        return Err("it names no file or directory of its own".to_string());
+    }
+    Ok(())
+}
+
+/// Validate that `raw` is a plain relative name: at least one segment, every
+/// segment an ordinary name.
+///
+/// Stricter than [`validate_no_traversal`], and for a different job — this is
+/// for strings that *name something being created* (a snapshot, a cache
+/// directory for a source), where `.` is not path-writing convenience but a lie
+/// about what is named. `daily/2026` is accepted; `.`, `daily/.`, `./daily`,
+/// `/daily`, `daily/` and `daily//x` are not.
+///
+/// Judged on the raw string rather than [`std::path::Path::components`], which
+/// normalizes `.` away: `"daily/."` iterates as the single plain component
+/// `daily` while the joined path still ends in `/.` and resolves to `daily`
+/// itself — so a caller that then removes the "new" path removes the parent of
+/// everything already inside it.
+pub fn validate_plain_name(raw: &str) -> std::result::Result<(), String> {
+    if raw.is_empty() {
+        return Err("it is empty".to_string());
+    }
+    for segment in raw.split(['/', '\\']) {
+        if segment.is_empty() {
+            return Err(
+                "it has an empty path segment; every segment must name something".to_string(),
+            );
+        }
+        if segment == "." || segment == ".." {
+            return Err(format!(
+                "the segment '{segment}' is a directory reference, not a name"
+            ));
         }
     }
     Ok(())
@@ -864,6 +912,19 @@ pub fn copy_dir_recursive(
     dst: &std::path::Path,
 ) -> std::result::Result<(), std::io::Error> {
     std::fs::create_dir_all(dst)?;
+    // Resolved once, up front: a lexically disjoint `dst` can still land inside
+    // `src` through a symlinked ancestor, and the walk would then find its own
+    // output and descend into it forever.
+    let dst_root = dst.canonicalize().unwrap_or_else(|_| dst.to_path_buf());
+    copy_dir_into(src, dst, &dst_root)
+}
+
+fn copy_dir_into(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    dst_root: &std::path::Path,
+) -> std::result::Result<(), std::io::Error> {
+    std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let file_type = entry.file_type()?;
@@ -873,34 +934,45 @@ pub fn copy_dir_recursive(
         }
         let dst_path = dst.join(entry.file_name());
         if file_type.is_dir() {
-            copy_dir_recursive(&entry.path(), &dst_path)?;
+            let entry_path = entry.path();
+            if entry_path
+                .canonicalize()
+                .is_ok_and(|real| real.starts_with(dst_root))
+            {
+                continue;
+            }
+            copy_dir_into(&entry_path, &dst_path, dst_root)?;
         } else {
             std::fs::copy(entry.path(), &dst_path)?;
         }
     }
     // Applied after the walk: a restrictive source mode (0500, 0300) set on the
     // way in would block writing the very children being copied.
-    copy_dir_mode(src, dst)?;
+    copy_dir_mode(src, dst);
     Ok(())
 }
 
-/// Apply `src`'s directory mode to `dst`. No-op on Windows.
+/// Apply `src`'s directory mode to `dst`, best-effort. No-op on Windows.
+///
+/// A filesystem with no mode bits (vfat, CIFS, some FUSE mounts) rejects the
+/// `chmod`; losing the mode there is not a reason to fail a copy that otherwise
+/// succeeded, since the target could not have honoured the mode anyway.
 #[cfg(unix)]
-fn copy_dir_mode(
-    src: &std::path::Path,
-    dst: &std::path::Path,
-) -> std::result::Result<(), std::io::Error> {
-    let mode = std::fs::metadata(src)?.permissions();
-    std::fs::set_permissions(dst, mode)
+fn copy_dir_mode(src: &std::path::Path, dst: &std::path::Path) {
+    let applied =
+        std::fs::metadata(src).and_then(|meta| std::fs::set_permissions(dst, meta.permissions()));
+    if let Err(e) = applied {
+        tracing::warn!(
+            src = %src.posix(),
+            dst = %dst.posix(),
+            error = %e,
+            "could not carry the source directory mode across; the copy keeps the default mode",
+        );
+    }
 }
 
 #[cfg(not(unix))]
-fn copy_dir_mode(
-    _src: &std::path::Path,
-    _dst: &std::path::Path,
-) -> std::result::Result<(), std::io::Error> {
-    Ok(())
-}
+fn copy_dir_mode(_src: &std::path::Path, _dst: &std::path::Path) {}
 
 /// Always-fold POSIX form of a path. Use anywhere a path crosses into JSON,
 /// YAML, SQLite, gateway API, OCI annotations, `file://` URLs, or snapshot

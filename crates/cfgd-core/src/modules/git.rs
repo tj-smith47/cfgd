@@ -166,11 +166,11 @@ pub(super) fn resolve_subdir(
 ) -> Result<PathBuf> {
     match subdir {
         Some(sub) => {
-            crate::validate_no_traversal(std::path::Path::new(sub)).map_err(|_| {
+            crate::validate_no_traversal(std::path::Path::new(sub)).map_err(|e| {
                 ModuleError::GitFetchFailed {
                     module: module.to_string(),
                     url: url.to_string(),
-                    message: format!("subdir contains path traversal: {sub}"),
+                    message: format!("subdir '{sub}' is not usable: {e}"),
                 }
             })?;
             Ok(base.join(sub))
@@ -646,6 +646,25 @@ mod tests {
         assert!(
             msg.contains("traversal"),
             "error must mention traversal, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_subdir_rejects_a_subdir_that_names_the_cache_base() {
+        let base = PathBuf::from("/cache/abc123");
+        for candidate in [".", "./"] {
+            let err = resolve_subdir(base.clone(), &Some(candidate.into()), "mod", "url")
+                .expect_err("a subdir that resolves to the base is not a subdir");
+            assert!(
+                err.to_string().contains("names no file or directory"),
+                "got: {err}"
+            );
+        }
+        // A leading `./` is ordinary path-writing and still names something.
+        assert_eq!(
+            resolve_subdir(base.clone(), &Some("./charts".into()), "mod", "url")
+                .expect("./charts is a real subdir"),
+            base.join("./charts")
         );
     }
 
