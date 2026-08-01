@@ -1150,6 +1150,46 @@ fn a_dot_name_pattern_leaves_every_retained_snapshot_intact() {
     );
 }
 
+/// `:` is legal in a unix filename but not in a snapshot name, and the default
+/// pattern interpolates the filename verbatim — so the rejection has to point at
+/// the filename rather than reading as a complaint about a drive letter the user
+/// never typed.
+#[test]
+fn a_colon_in_the_source_filename_is_reported_against_the_filename() {
+    let source = Path::new("/home/u/notes:2026.md");
+    let s = spec("notes", source);
+    assert_eq!(s.name_pattern, "{filename}.{timestamp}");
+
+    let err = snapshot_name(&s, source)
+        .expect_err("a colon in the rendered name must be rejected, not rewritten")
+        .to_string();
+
+    // Asserted as the labelled clause, not a bare substring: the rendered name
+    // embeds the filename, so `contains("notes:2026.md")` would pass even with
+    // the filename dropped from the error.
+    assert!(
+        err.contains("{filename} was 'notes:2026.md'"),
+        "no filename attribution in: {err}"
+    );
+    assert!(
+        err.contains("set an explicit namePattern"),
+        "no remedy in: {err}"
+    );
+    assert!(err.contains("':'"), "no cause in: {err}");
+}
+
+#[test]
+fn an_explicit_name_pattern_works_around_a_colon_in_the_filename() {
+    let source = Path::new("/home/u/notes:2026.md");
+    let mut s = spec("notes", source);
+    s.name_pattern = "{name}.{timestamp}".to_string();
+
+    let rendered = snapshot_name(&s, source).expect("a pattern without {filename} must render");
+
+    let name = crate::to_posix_string(&rendered);
+    assert!(name.starts_with("notes."), "{name}");
+}
+
 #[test]
 fn snapshot_name_rejects_an_absolute_pattern() {
     let mut s = spec("db", Path::new("/var/lib/app/data.db"));

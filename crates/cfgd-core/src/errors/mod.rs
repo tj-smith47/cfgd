@@ -272,11 +272,14 @@ pub enum BackupError {
     },
 
     #[error(
-        "backup '{name}': namePattern rendered the unusable snapshot name '{rendered}' ({message})"
+        "backup '{name}': namePattern rendered the unusable snapshot name '{rendered}' ({message}); \
+         {{filename}} was '{source_filename}' — if the filename itself is what makes the name \
+         unusable, set an explicit namePattern that does not use it"
     )]
     InvalidSnapshotName {
         name: String,
         rendered: String,
+        source_filename: String,
         message: String,
     },
 

@@ -459,9 +459,15 @@ fn snapshot_name(spec: &BackupSpec, source: &Path) -> std::result::Result<PathBu
         &crate::utc_now_backup_stamp(),
     );
 
+    // The filename rides along on every rejection because the default pattern
+    // interpolates it: a source named `notes:2026.md` is a legal unix filename
+    // that renders a name the plain-name rule refuses, and without this the
+    // error reads as a complaint about drive letters in a pattern the user
+    // never wrote.
     let invalid = |message: String| BackupError::InvalidSnapshotName {
         name: spec.name.clone(),
         rendered: rendered.clone(),
+        source_filename: filename.clone(),
         message,
     };
     if rendered.trim().is_empty() {

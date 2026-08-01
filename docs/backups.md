@@ -56,6 +56,18 @@ A file or a directory. A leading `~` expands to the home directory.
 
 A source that does not exist is a failed run, not a silent no-op.
 
+The source's filename is what the default `namePattern` interpolates as `{filename}`, so a legal
+Unix filename containing `:` (`~/notes:2026.md`) renders a snapshot name cfgd refuses — `:` is a
+drive and data-stream separator on Windows, and snapshot names must be valid on every platform.
+cfgd does not rewrite the character; give the backup an explicit `namePattern` that leaves
+`{filename}` out:
+
+```yaml
+- name: notes
+  source: ~/notes:2026.md
+  namePattern: "notes.{timestamp}"   # default would render "notes:2026.md.{timestamp}"
+```
+
 ### `destination`
 
 Where snapshots are written. Defaults to `<state_dir>/backups/<name>/` — see
