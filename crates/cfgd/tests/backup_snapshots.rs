@@ -15,11 +15,12 @@
 //!   - apply integration (no goldens; behavioural assertions): a schedule-less
 //!     backup runs during `cfgd apply` even when the file/package/module plan
 //!     is empty, a `--dry-run` apply runs no backups, a scheduled backup is
-//!     left untouched by `cfgd apply` (daemon/explicit-run only), and a
-//!     failing schedule-less backup does not block a sibling unit declared
-//!     after it or the rest of apply — it only downgrades the overall status
-//!     to `partial` (nonzero exit), matching the `record_source_apply`
-//!     best-effort pattern.
+//!     left untouched by `cfgd apply` (daemon/explicit-run only), a failing
+//!     schedule-less backup does not block a sibling unit declared after it
+//!     or the rest of apply — it only downgrades the overall status to
+//!     `partial` (nonzero exit), matching the `record_source_apply`
+//!     best-effort pattern — and a backup failure never raises an
+//!     already-`Failed` apply back up to `partial`.
 
 mod common;
 
@@ -484,6 +485,42 @@ fn apply_backup_failure_does_not_block_subsequent_backups_or_apply() {
         .find(|b| b["name"] == "ok")
         .expect("ok backup reported");
     assert_eq!(ok["clean"], true);
+}
+
+#[test]
+fn apply_failed_file_phase_stays_failed_after_a_backup_also_fails() {
+    // Regression for a coordinator finding on the I2 fix itself: the backup
+    // loop's downgrade must never raise a `Failed` apply back up to
+    // `Partial`. `single_failed_file_and_broken_backup_setup` gives a file
+    // phase with `failed == total` (the reconciler's own status math yields
+    // `ApplyStatus::Failed`, not `Partial` — see
+    // `crates/cfgd-core/src/reconciler/apply.rs`), then a schedule-less
+    // backup whose source doesn't exist also runs and produces an
+    // `Ok(BackupRunStatus::Failed)` record. Both `apply.rs` call sites that
+    // touch `status` on an unclean/errored backup now route through the
+    // same `downgrade_to_partial` helper, which is a no-op unless `status`
+    // is currently `Success` — so this also stands as proof for the `Err`
+    // arm (state-store write failure), which isn't independently reachable
+    // from a public-API test (see the sibling
+    // `apply_backup_failure_does_not_block_subsequent_backups_or_apply`
+    // test's note): both arms share the exact same guarded call, so pinning
+    // the guard via the reachable `Ok(Failed)` arm pins it for both.
+    let (config_dir, state_dir) = common::single_failed_file_and_broken_backup_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let (printer, cap) = Printer::for_test_doc_with_format(cfgd_core::output::OutputFormat::Json);
+    let args = apply_args();
+
+    let outcome = run_apply(&cli, &printer, &args).unwrap();
+    drop(printer);
+
+    assert_eq!(
+        outcome.status,
+        cfgd_core::state::ApplyStatus::Failed,
+        "a failing backup must not downgrade an already-Failed apply to Partial"
+    );
+
+    let payload = cap.json().expect("apply doc carries a payload");
+    assert_eq!(payload["status"], "failed");
 }
 
 #[test]

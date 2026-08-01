@@ -281,6 +281,44 @@ pub fn backup_profile_with_one_failure_setup() -> (tempfile::TempDir, tempfile::
     (config_dir, state_dir, ok_source)
 }
 
+/// Build a tempdir-backed profile whose SOLE file action fails at apply time
+/// (its target's parent is a regular file, so `create_dir_all` returns
+/// `ENOTDIR`) — with `failed == total`, the reconciler's own status math
+/// (`crates/cfgd-core/src/reconciler/apply.rs`) yields `ApplyStatus::Failed`,
+/// not `Partial`. Also declares one schedule-less backup whose source
+/// doesn't exist, so the backup loop's own downgrade path runs on top of an
+/// apply that is already `Failed`.
+///
+/// Returns `(config_dir, state_dir)`.
+pub fn single_failed_file_and_broken_backup_setup() -> (tempfile::TempDir, tempfile::TempDir) {
+    let config_dir = tempfile::tempdir().unwrap();
+    let state_dir = tempfile::tempdir().unwrap();
+
+    let files_dir = config_dir.path().join("files");
+    std::fs::create_dir_all(&files_dir).unwrap();
+    std::fs::write(files_dir.join("hello.txt"), "hello world").unwrap();
+
+    let blocker = config_dir.path().join("blocker");
+    std::fs::write(&blocker, "i am a file, not a dir").unwrap();
+    let target_fail = blocker.join("hello.txt");
+
+    let broken_source = config_dir.path().join("data").join("does-not-exist.txt");
+
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  inherits: []\n  modules: []\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n        strategy: Copy\n  backups:\n    - name: broken\n      source: {}\n      retention: 3\n",
+        target_fail.display(),
+        broken_source.display(),
+    );
+    let profiles_dir = config_dir.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(profiles_dir.join("tiny.yaml"), &profile).unwrap();
+
+    let config = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: tiny\n";
+    std::fs::write(config_dir.path().join("cfgd.yaml"), config).unwrap();
+
+    (config_dir, state_dir)
+}
+
 // ---------------------------------------------------------------------------
 // Source-sync fixtures (cmd_sync).
 //

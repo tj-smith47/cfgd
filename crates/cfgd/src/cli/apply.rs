@@ -23,6 +23,17 @@ impl ApplyOutcome {
     }
 }
 
+/// Downgrade a running apply status to `Partial` for an unclean/failed
+/// backup unit — but only from `Success`. A prior file/package/module phase
+/// may have already set `status` to `Failed`; a backup unit's own trouble
+/// must never silently mask that higher severity by overwriting it with the
+/// lesser `Partial`.
+fn downgrade_to_partial(status: &mut cfgd_core::state::ApplyStatus) {
+    if matches!(status, cfgd_core::state::ApplyStatus::Success) {
+        *status = cfgd_core::state::ApplyStatus::Partial;
+    }
+}
+
 pub fn cmd_apply(
     cli: &Cli,
     printer: &cfgd_core::output::Printer,
@@ -521,7 +532,7 @@ pub fn run_apply(
                         error = %e,
                         "backup run failed; continuing with remaining backups"
                     );
-                    status = cfgd_core::state::ApplyStatus::Partial;
+                    downgrade_to_partial(&mut status);
                     backup_outputs.push(BackupRunOutput {
                         name: backup_name.clone(),
                         status: "failed".to_string(),
@@ -548,8 +559,8 @@ pub fn run_apply(
                 }
                 None => printer.status_simple(role, subject),
             }
-            if !record.is_clean() && matches!(status, cfgd_core::state::ApplyStatus::Success) {
-                status = cfgd_core::state::ApplyStatus::Partial;
+            if !record.is_clean() {
+                downgrade_to_partial(&mut status);
             }
             backup_outputs.push(BackupRunOutput::from(&record));
         }
