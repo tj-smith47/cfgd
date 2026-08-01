@@ -338,11 +338,14 @@ pub(super) struct ResolvedBackupTasks {
     pub(super) degraded: bool,
 }
 
-/// Why a timer set is degraded. The two have different blast radii and
+/// Why a timer set is degraded. The three have different blast radii and
 /// different operator remedies, so the startup banner names which one it is
-/// rather than reporting one degraded state that could mean either.
+/// rather than reporting one degraded state that could mean any of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DegradedReason {
+    /// The top-level config file itself would not load, so the profile was
+    /// never even reached.
+    ConfigUnreadable,
     /// The profile itself would not resolve, so there are no timers at all.
     ProfileUnresolved,
     /// The profile resolved but source composition did not, so the set on hand
@@ -354,6 +357,7 @@ impl DegradedReason {
     /// Suffix appended to the banner's `backups=` count.
     pub(super) fn banner_note(self) -> &'static str {
         match self {
+            Self::ConfigUnreadable => " (config unreadable)",
             Self::ProfileUnresolved => " (profile unresolved)",
             Self::SourcesUnavailable => " (source composition unavailable)",
         }

@@ -972,6 +972,21 @@ fn json_rejects_a_non_string_key_nested_in_the_overlay() {
 }
 
 #[test]
+fn json_path_label_keeps_a_literal_trailing_dot_in_a_key_name() {
+    // The label strips only the ONE separator dot the walker appends after
+    // each segment. A parent key that is itself named with a trailing dot
+    // must keep that dot in the rendered label, not have it eaten alongside
+    // the separator.
+    let err = apply_err("{}", &spec(None, "\"a.\":\n  42: value\n"), "/tmp/a.json");
+    assert_ensure_shape(&err);
+    assert!(
+        err.to_string()
+            .contains("but 'a.' has a non-string key: 42"),
+        "keeps the key's own trailing dot: {err}"
+    );
+}
+
+#[test]
 fn json_renders_a_structured_key_without_a_debug_form() {
     let err = apply_err("{}", &spec(None, "? [a, b]\n: value\n"), "/tmp/a.json");
     assert_ensure_shape(&err);

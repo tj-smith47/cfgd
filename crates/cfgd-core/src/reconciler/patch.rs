@@ -479,7 +479,7 @@ fn prepare_json_overlay(
 /// an error message must not show that separator dangling against whatever
 /// follows it (`list.[1]..inf`).
 fn json_path_label(path: &str) -> String {
-    let trimmed = path.trim_end_matches('.');
+    let trimmed = path.strip_suffix('.').unwrap_or(path);
     if trimmed.is_empty() {
         "the overlay root".to_string()
     } else {

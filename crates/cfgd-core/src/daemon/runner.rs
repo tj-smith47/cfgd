@@ -463,13 +463,13 @@ pub(super) async fn handle_backup_tick(
             Ok(cfg) => {
                 if refresh_backup_timers(ctx, &cfg, backup_timers, now).is_some() {
                     let (role, note) = backup_timers.reload_line_qualifier();
-                    ctx.printer.status_simple(
-                        role,
-                        format!(
-                            "Backup schedules restored: {} scheduled{note}",
-                            backup_timers.len()
-                        ),
-                    );
+                    let count = backup_timers.len();
+                    let message = if count == 0 {
+                        format!("Backup schedule resolved: no units configured{note}")
+                    } else {
+                        format!("Backup schedules restored: {count} scheduled{note}")
+                    };
+                    ctx.printer.status_simple(role, message);
                 }
             }
             Err(e) => {
@@ -477,7 +477,7 @@ pub(super) async fn handle_backup_tick(
                     error = %e,
                     "backup timers: config reload failed — keeping the running timer set, retrying"
                 );
-                backup_timers.arm_retry(now, DegradedReason::ProfileUnresolved);
+                backup_timers.arm_retry(now, DegradedReason::ConfigUnreadable);
             }
         }
     }

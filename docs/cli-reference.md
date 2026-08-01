@@ -705,7 +705,7 @@ field reference and run semantics.
 ```sh
 cfgd backup run                # run every backup declared in the active profile
 cfgd backup run openlist-db    # run just the named backup
-cfgd backup list                # inventory + last-run status (alias: ls)
+cfgd backup list                # inventory + last-run status; alias: ls
 cfgd --output json backup list
 ```
 

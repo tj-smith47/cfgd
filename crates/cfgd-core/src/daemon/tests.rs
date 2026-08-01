@@ -14068,6 +14068,65 @@ mod backup_timers {
         );
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_due_retry_over_a_backup_less_profile_does_not_claim_a_restoration() {
+        // Same recovery path, but the healed profile declares zero backups.
+        // "restored: 0 scheduled" reads as a broken recovery when it is really
+        // just an empty, healthy config — the zero case gets its own wording.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (mut ctx, _state, buf) = make_test_ctx(&tmp, false, false, None);
+        ctx.config_path = write_config_with_backups(&tmp, "");
+
+        let mut set = BackupTimers::new(
+            ResolvedBackupTasks {
+                tasks: Vec::new(),
+                degraded: true,
+            },
+            Instant::now() - StdDuration::from_secs(3600),
+        );
+        assert!(set.retry_due(Instant::now()));
+
+        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+
+        assert_eq!(set.len(), 0);
+        assert!(!set.is_degraded());
+        let captured = buf.lock().unwrap().clone();
+        assert!(
+            captured.contains("Backup schedule resolved: no units configured"),
+            "the zero case must not say 'restored': {captured}"
+        );
+        assert!(
+            !captured.contains("restored: 0 scheduled"),
+            "the odd zero-count phrasing must be gone: {captured}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_due_retry_over_an_unreadable_config_is_labeled_by_its_real_cause() {
+        // The config-load Err arm is a DIFFERENT failure than profile
+        // resolution: the profile is never even reached because the
+        // top-level config file itself would not parse. It must not borrow
+        // ProfileUnresolved's label.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _g = crate::with_test_home_guard(tmp.path());
+        let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
+        let config_path = tmp.path().join("cfgd.yaml");
+        std::fs::write(&config_path, "::: not valid yaml :::").unwrap();
+        ctx.config_path = config_path;
+
+        let mut set = BackupTimers::empty_with_retry(Instant::now() - StdDuration::from_secs(3600));
+        assert!(set.retry_due(Instant::now()));
+
+        runner::handle_backup_tick(&ctx, &mut set).await.unwrap();
+
+        assert_eq!(
+            set.degraded_reason(),
+            Some(crate::daemon::backup::DegradedReason::ConfigUnreadable),
+            "an unreadable top-level config must not be mislabeled as an unresolved profile"
+        );
+    }
+
     /// A config declaring a source whose cache is present but unreadable — the
     /// "source cache caught mid-rewrite" case. The profile resolves locally,
     /// `compose_daemon_desired_state` fails on the manifest, and

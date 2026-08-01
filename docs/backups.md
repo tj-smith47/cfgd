@@ -405,6 +405,13 @@ Timer behaviour:
   ✓ Backup schedules restored: 3 scheduled
   ```
 
+  A profile that heals into zero declared backups is not a restoration of anything, so it gets its
+  own line rather than the odd-looking `restored: 0 scheduled`:
+
+  ```console
+  ✓ Backup schedule resolved: no units configured
+  ```
+
   A recovery that is only *partial* — the profile parses again but sources are still unavailable —
   says so on the same line rather than reporting an all-clear, because the retry is still armed and
   a unit a source overrides would back up to its **local** destination once the first-fire deferral

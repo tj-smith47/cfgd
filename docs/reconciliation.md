@@ -52,6 +52,9 @@ Files:
 
 System:
   ~ macosDefaults: com.apple.dock.autohide: false → true
+
+Backups (run on apply)
+  mydata
 ```
 
 ## Filtering
